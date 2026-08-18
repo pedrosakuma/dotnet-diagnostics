@@ -1342,7 +1342,6 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
     public async Task DumpInspector_QueryTimersView_FindsLeakedTimers_FromBadCodeSample()
     {
         const int leakedTimerCount = 32;
-        const int maxSnapshotAttempts = 4;
         await using var badSample = await StartPublishedSampleAsync("BadCodeSample");
         using var http = new HttpClient { BaseAddress = new Uri(badSample.BaseUrl) };
         using var response = await http.GetAsync($"/timer-leak?count={leakedTimerCount}", CancellationToken.None);
@@ -1352,28 +1351,22 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
             payload.RootElement.GetProperty("totalLeaked").GetInt32().Should().BeGreaterThanOrEqualTo(leakedTimerCount);
         }
 
-        HeapSnapshotQueryResult? observed = null;
-        string? observedSummary = null;
-        for (var attempt = 1; attempt <= maxSnapshotAttempts; attempt++)
-        {
-            var snapshot = await InspectLiveOrSkipAsync(badSample.ProcessId);
-            var projection = HeapSnapshotQueryDispatcher.Dispatch(snapshot, "timer-test", "timers", topN: 10, rankBy: "bytes", typeFullName: null);
-
-            projection.Result.Should().NotBeNull();
-            projection.Result!.IsError.Should().BeFalse();
-            projection.Result.Data.Should().NotBeNull();
-            observed = projection.Result.Data;
-            observedSummary = projection.Result.Summary;
-            if (observed!.Timers is { TotalTimers: >= leakedTimerCount, TimersByCallback.Count: > 0 })
+        // Bounded polling instead of a one-shot snapshot (#853): the /timer-leak fixture publishes
+        // its timers asynchronously, so a single heap walk immediately after the response returns
+        // can race the fixture's own timer registration.
+        var (observed, observedSummary) = await LiveTestCoordination.PollUntilAsync(
+            probe: async () =>
             {
-                break;
-            }
-
-            if (attempt < maxSnapshotAttempts)
-            {
-                await Task.Delay(TimeSpan.FromSeconds(1), CancellationToken.None);
-            }
-        }
+                var snapshot = await InspectLiveOrSkipAsync(badSample.ProcessId);
+                var projection = HeapSnapshotQueryDispatcher.Dispatch(snapshot, "timer-test", "timers", topN: 10, rankBy: "bytes", typeFullName: null);
+                projection.Result.Should().NotBeNull();
+                projection.Result!.IsError.Should().BeFalse();
+                projection.Result.Data.Should().NotBeNull();
+                return (projection.Result.Data, projection.Result.Summary);
+            },
+            isReady: result => result.Data!.Timers is { TotalTimers: >= leakedTimerCount, TimersByCallback.Count: > 0 },
+            timeout: TimeSpan.FromSeconds(4),
+            pollInterval: TimeSpan.FromSeconds(1));
 
         observed.Should().NotBeNull();
         observed!.Timers.Should().NotBeNull();
@@ -2898,17 +2891,18 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         var handles = new MemoryDiagnosticHandleStore();
         var resolver = new FixedProcessContextResolver(badSample.ProcessId);
 
-        var driver = Task.Run(async () =>
-        {
-            await Task.Delay(TimeSpan.FromMilliseconds(1200));
-            for (var i = 0; i < 8; i++)
+        // Keep allocating/leaking for the whole collection window instead of a fixed 8-iteration
+        // burst (#853): a finite burst can finish before the GC EventPipe session finishes arming
+        // (~500ms-1s) on a loaded runner, starving the drilldown views below of evidence.
+        await using var driver = LiveTestCoordination.StartBackgroundWorkload(
+            async token =>
             {
-                using var loh = await http.GetAsync("/loh-alloc?count=200");
+                using var loh = await http.GetAsync("/loh-alloc?count=200", token);
                 loh.EnsureSuccessStatusCode();
-                using var leak = await http.GetAsync("/leak?mb=8");
+                using var leak = await http.GetAsync("/leak?mb=8", token);
                 leak.EnsureSuccessStatusCode();
-            }
-        });
+            },
+            initialDelay: TimeSpan.FromMilliseconds(1200));
 
         var collected = await DiagnosticTools.CollectGcEvents(
             collector,
@@ -2919,7 +2913,7 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
             depth: SamplingDepth.Detail,
             cancellationToken: CancellationToken.None);
 
-        await driver;
+        await driver.StopAsync();
 
         collected.Error.Should().BeNull();
         collected.Handle.Should().NotBeNullOrWhiteSpace();
