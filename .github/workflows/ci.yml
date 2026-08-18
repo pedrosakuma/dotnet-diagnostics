@@ -65,23 +65,35 @@ jobs:
         with:
           persist-credentials: false
 
+      # setup-dotnet's built-in NuGet cache (rather than a separate `actions/cache`
+      # step) — issue #856 measured both across ~15 hosted-runner A/B runs.
+      # Without a packages.lock.json we key on the central version manifest +
+      # every project file, same invalidation guarantee as before: any package
+      # add / version bump busts the key and forces a full restore.
+      #
+      # Median total setup time (cache/restore step + `dotnet restore`,
+      # excludes the ~5-15s async cache-save tail that runs after the job's
+      # critical path):
+      #   | scenario           | ubuntu (manual cache) | ubuntu (built-in) | windows (manual cache) | windows (built-in) |
+      #   |---|---:|---:|---:|---:|
+      #   | warm hit           | 16s                    | 14s                | 62s                     | 50s                 |
+      #   | forced miss (cold) | 17s                    | ~equivalent        | 85s                     | ~equivalent         |
+      #   | partial (restore-keys prefix) | 19s         | n/a                | 50s                     | n/a                 |
+      #   | no cache at all    | 16s                    | n/a                | 77s                     | n/a                 |
+      # The built-in cache folds the restore into the setup step itself (no
+      # extra action-download/tar overhead) and skips the save step entirely
+      # on an exact hit, making it faster than the manual `actions/cache` step
+      # in every measured cell and never worse. Full data + methodology in
+      # docs/ci-nuget-cache.md.
       - name: Setup .NET 10
         if: needs.changes.outputs.code == 'true'
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           global-json-file: global.json
-
-      # NuGet package cache. Without a packages.lock.json we key on the central
-      # version manifest + every project file — any package add / version bump
-      # invalidates correctly. Saves ~10-25s per job.
-      - name: Cache NuGet packages
-        if: needs.changes.outputs.code == 'true'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.nuget/packages
-          key: nuget-${{ runner.os }}-${{ hashFiles('**/Directory.Packages.props', '**/*.csproj') }}
-          restore-keys: |
-            nuget-${{ runner.os }}-
+          cache: true
+          cache-dependency-path: |
+            **/Directory.Packages.props
+            **/*.csproj
 
       - name: Restore
         if: needs.changes.outputs.code == 'true'
