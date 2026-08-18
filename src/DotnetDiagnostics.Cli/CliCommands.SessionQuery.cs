@@ -258,7 +258,17 @@ internal static partial class CliCommands
         }
 
         var topN = ResolveQueryTopN(options, 50);
-        var outcome = CollectionQueryDispatcher.Dispatch(kind, options.View, lookup.Value.Artifact, topN);
+        var redactor = string.Equals(options.View, "trace", StringComparison.OrdinalIgnoreCase)
+            ? services.GetService<SensitiveDataRedactor>() ?? new SensitiveDataRedactor()
+            : null;
+        var outcome = CollectionQueryDispatcher.Dispatch(
+            kind,
+            options.View,
+            lookup.Value.Artifact,
+            topN,
+            correlateArtifact: null,
+            traceId: options.TraceId,
+            redactor: redactor);
 
         if (outcome.Result is { } queryResult)
         {

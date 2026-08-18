@@ -502,7 +502,7 @@ Views available per `kind`:
 | `gc-events` | `collect_events(kind="gc")` | `summary` (default), `events`, `pauseHistogram`, `timeline`, `longestPauses`, `byGeneration`, `heap-stats` |
 | `gc-datas` | `collect_events(kind="datas")` | `overview` (default), `tuning` (honours `changesOnly`), `samples`, `gen2` |
 | `event-catalog` | `collect_events(kind="catalog")` | `catalog` (default), `byProvider`, `events` |
-| `activities` | `collect_events(kind="activities")` | `summary` (default), `bySource`, `byOperation`, `activities`, `gc-overlay` (requires `gcHandle`) |
+| `activities` | `collect_events(kind="activities")` | `summary` (default), `bySource`, `byOperation`, `activities`, `trace` (requires `traceId`), `gc-overlay` (requires `gcHandle`) |
 | `event-source` | `collect_events(kind="event_source")` | `summary` (default), `byEventName`, `events` |
 | `log-snapshot` | `collect_events(kind="logs")` | `summary` (default), `byCategory`, `byLevel`, `recent`, `errors` |
 | `jit-snapshot` | `collect_events(kind="jit")` | `summary` (default), `topMethods`, `tierDistribution`, `reJIT` |
@@ -2382,6 +2382,48 @@ EventPipe bridge, keeping completed span records inline and grouped rollups behi
 
 **Drilldown:** `query_snapshot(handle, view="bySource" | "byOperation" | "activities")`
 re-projects the same capture window without reopening EventPipe.
+`query_snapshot(handle, view="trace", traceId="<32-hex W3C trace-id>")` filters
+the retained artifact to one trace and returns a deterministic
+parent-before-child forest. Each completed span carries `nodeIndex`,
+`parentNodeIndex`, `depth`, source/operation, W3C IDs, timestamps, duration,
+residual duration, link classification, and a fixed allowlist of
+low-cardinality tags. Tag values pass through `SensitiveDataRedactor` and are
+capped at 128 characters; URL/path, database-statement, user/tenant, and other
+high-cardinality tags are omitted from this view.
+
+The trace view is deliberately honest about evidence boundaries:
+
+- It is **completed-only**: the Activity EventPipe bridge emits stop events, so
+  spans still in flight when collection ends are absent.
+- It is **capture-window-limited**: spans that stopped before the window opened
+  or after it closed are invisible. `canClaimComplete` is therefore always
+  `false`, even when every retained span links cleanly.
+- `totalActivities > retainedActivities` means the collector hit
+  `maxActivities`; an explicit retention warning says that membership,
+  hierarchy, timing, and critical-path evidence are incomplete.
+- Missing/malformed span IDs, malformed parent IDs, duplicate IDs, absent
+  parents, and cycles are reported explicitly. No edge is inferred from
+  timestamps or operation names. Orphans and invalid/cyclic links become
+  separate roots.
+- `topN` bounds returned span rows. All retained, completed spans matching the
+  trace still participate in timing calculations; truncation and a hidden tail
+  of the critical path are warned explicitly.
+
+`residualDurationMs` is the parent's interval minus the **union** of its
+resolved direct-child intervals after each child is clipped to the parent
+interval. Overlapping/parallel children are therefore subtracted once, not
+once per child. `maxResidualNodeIndex` identifies the single span with the
+largest residual.
+
+`criticalPathDurationMs` is separate from that max-residual metric. The
+critical path is the deterministic strict root→child chain that maximizes the
+sum of residual durations, selecting at most one resolved direct child at each
+level. It never chains siblings: even sequential siblings share a parent but
+do not prove a causal edge between each other. Ties use the same deterministic
+span ordering (start, stop, source, operation, IDs, retained ordinal).
+Consequently the critical-path duration can be lower than the trace's observed
+wall-clock extent when sibling work overlaps or runs sequentially without an
+explicit parent/child link.
 
 **Notes:**
 
@@ -2925,7 +2967,8 @@ contract.
 - **collection** (`collect_events(kind=…)`): `summary` (default), plus
   per-kind views such as `byProvider`, `byType`, `exceptions`, `pauseHistogram`,
   `byGeneration`, `heap-stats`, `n+1`, `connectionPool`, `queues`, `dns`,
-  `config`, `timeline`, `hillClimbing`, `requests`, `longRunning`, …
+  `config`, `timeline`, `hillClimbing`, `requests`, `longRunning`, … Activities
+  handles additionally accept `trace` with a required `traceId`.
 - **cpu-sample / allocation-sample / native-alloc-sample / native-lock-contention-sample**: `call-tree`
   (default), `top-methods`, `by-module`, `by-namespace`, `hot-path`,
   `caller-callee`, `triage`, `diff`.
@@ -2933,7 +2976,7 @@ contract.
 **Common view-specific parameters** (each ignored outside its view):
 `rankBy` (`bytes`/`instances`), `typeFullName`, `address`,
 `includeSensitiveValues`, `threadId`, `framesToHash`, `minCount`, `stackRank`,
-`rootMethodFilter`, `providerFilter`, `changesOnly`, `maxDepth`, `maxNodes`,
+`rootMethodFilter`, `providerFilter`, `traceId`, `changesOnly`, `maxDepth`, `maxNodes`,
 `baselineHandle`, `comparisonHandles`, `minDeltaPct`, `depth`, `mode`,
 `hotPathThresholdPercent`. See the tool's parameter descriptions for the exact
 view→parameter mapping.

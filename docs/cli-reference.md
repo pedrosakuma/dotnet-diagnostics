@@ -752,6 +752,10 @@ A `collect` or `inspect-heap` command prints a handle plus the views you can re-
 ```
 
 `query --handle <id> --view <view>` re-renders that artifact under the chosen view with no new collection.
+For an Activities handle, `query --handle <id> --view trace --trace-id <32-hex>`
+uses the same completed-only, capture-window-limited trace projection as the
+MCP `query_snapshot` tool; it never claims that the retained window is a
+complete trace.
 Handles are evicted when they expire (a TTL) or when the target process exits — a 5 s in-process sweep drops
 dead-target handles so you never drill into a stale trace.
 

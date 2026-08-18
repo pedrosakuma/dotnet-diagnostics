@@ -915,6 +915,25 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
                 activity.StoppedAt.HasValue &&
                 activity.Duration.HasValue &&
                 activity.Duration.Value > TimeSpan.Zero);
+
+        var query = CollectionQueryDispatcher.Dispatch(
+            CollectionHandleKinds.Activities,
+            "trace",
+            capture,
+            topN: 100,
+            correlateArtifact: null,
+            traceId: originalInbound.TraceId,
+            redactor: new SensitiveDataRedactor());
+        var projection = query.Result!.Payload.Should().BeOfType<ActivityTraceProjection>().Subject;
+        projection.CanClaimComplete.Should().BeFalse();
+        projection.Spans.Select(static span => span.OperationName)
+            .Should().ContainInOrder(
+                originalInbound.OperationName,
+                outboundHttp.OperationName,
+                loopbackInbound.OperationName,
+                database.OperationName);
+        projection.Spans.Skip(1).Should().OnlyContain(static span =>
+            span.ParentStatus == ActivityTraceParentStatus.Resolved);
     }
 
     [SkipOnLinuxCiFact("Quarantined on Linux CI: crashes test host inside libcoreclr's EventPipe SampleProfiler. Tracked in #147 (dotnet/runtime#128525). Runnable locally and on Windows CI.")]
