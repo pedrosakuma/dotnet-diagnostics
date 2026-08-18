@@ -176,8 +176,10 @@ jobs:
       # TRX result files are tiny — always keep them when tests ran. Crash dumps
       # (full process dumps from `--blame-crash`, hundreds of MB) are uploaded
       # only on failure: on a green run they used to add ~2min of upload for an
-      # artifact nobody reads. The #147 phantom-crash investigations have their
-      # own dedicated workflows (linux-crash-repro*.yml).
+      # artifact nobody reads. The #147 phantom-crash investigation's dedicated
+      # nightly reproduction workflows were retired in #857 once the root cause
+      # was identified in ClrMD; re-validation against the fixed ClrMD release is
+      # tracked in #685.
       - name: Upload test results (TRX)
         if: ${{ always() && needs.changes.outputs.code == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
