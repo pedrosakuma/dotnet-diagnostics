@@ -1,5 +1,6 @@
 using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.NativeLockContention;
+using DotnetDiagnostics.Core.Memory;
 using DotnetDiagnostics.Core.OffCpu;
 using FluentAssertions;
 
@@ -180,6 +181,46 @@ public sealed class PerfSchedAggregateTests
         top.Stack[0].Identity.Should().BeSameAs(identity, "Identity payload must propagate unmodified");
         top.Stack[1].Identity.Should().BeNull("native libc frame stays Identity=null");
         top.Stack[2].Identity.Should().BeNull("kernel frame stays Identity=null");
+    }
+
+    [Fact]
+    public void Aggregate_KeepsSameDisplayJitFramesIdentityDistinct()
+    {
+        var mvid = Guid.NewGuid();
+        var first = new MethodIdentity(
+            MethodName: "Foo",
+            GenericArity: 0,
+            ModuleName: "MyApp.dll",
+            ModulePath: "/app/MyApp.dll",
+            ModuleVersionId: mvid,
+            MetadataToken: 0x06000123,
+            TypeFullName: "MyApp.Overloads");
+        var second = first with { MetadataToken = 0x06000124 };
+        var firstStack = new List<OffCpuFrame>
+        {
+            new("[kernel.kallsyms]", "schedule"),
+            new("MyApp.dll", "MyApp.Overloads.Foo", Identity: first),
+        };
+        var secondStack = new List<OffCpuFrame>
+        {
+            new("[kernel.kallsyms]", "schedule"),
+            new("MyApp.dll", "MyApp.Overloads.Foo", Identity: second),
+        };
+        var spans = new List<OffCpuSpan>
+        {
+            new(Tid: 7, Comm: "w", DurationMicros: 1_000, PrevState: "S", BlockingStack: firstStack),
+            new(Tid: 7, Comm: "w", DurationMicros: 2_000, PrevState: "S", BlockingStack: secondStack),
+        };
+
+        var result = PerfSchedOffCpuSampler.Aggregate(
+            processId: 1, startedAt: DateTimeOffset.UtcNow, duration: TimeSpan.FromSeconds(1),
+            spans: spans, schedSwitches: 2, topN: 5);
+
+        var overloadStacks = result.Summary.TopBlockingStacks
+            .Where(s => s.LeafFrame == "[kernel.kallsyms]!schedule")
+            .ToList();
+        overloadStacks.Should().HaveCount(2);
+        overloadStacks.Select(s => s.Stack[0].Identity).Should().BeEquivalentTo([first, second]);
     }
 
     [Fact]
@@ -444,7 +485,7 @@ worker     4242 [000] 100.500000: sched:sched_switch: prev_comm=swapper prev_pid
             addr >= methodStart && addr < methodStart + methodSize ? identity : null;
         var tids = new HashSet<int> { 4242 };
 
-        var (spans, _) = PerfSchedScriptParser.Parse(script, tids, flushPending: false, addressResolver: Resolve);
+        var (spans, _) = PerfSchedScriptParser.Parse(script, tids, flushPending: false, frameEnricher: Enrich);
 
         spans.Should().HaveCount(1);
         var stack = spans[0].BlockingStack;
@@ -453,6 +494,11 @@ worker     4242 [000] 100.500000: sched:sched_switch: prev_comm=swapper prev_pid
         managed.Identity.Should().BeSameAs(identity, "the parser resolves the frame's PC address to the canonical handoff payload");
         stack.Where(f => f.Method != "MyApp.OrderService.Checkout")
              .Should().AllSatisfy(f => f.Identity.Should().BeNull("kernel and native frame addresses fall outside any JIT'd managed range"));
+
+        PerfFrame Enrich(PerfFrame frame)
+            => frame.Address is { } address && Resolve(address) is { } resolved
+                ? frame with { Identity = resolved }
+                : frame;
     }
 
     [Fact]
@@ -479,9 +525,14 @@ worker     4242 [000] 100.500000: sched:sched_switch: prev_comm=swapper prev_pid
             return null;
         }
 
-        var (spans, _) = PerfSchedScriptParser.Parse(script, new HashSet<int> { 4242 }, flushPending: false, addressResolver: Resolve);
+        var (spans, _) = PerfSchedScriptParser.Parse(script, new HashSet<int> { 4242 }, flushPending: false, frameEnricher: Enrich);
         spans.Single().BlockingStack.Single(f => f.Method == "MyApp.OrderService.Checkout")
              .Identity!.MetadataToken.Should().Be(0x06000111, "the frame's PC address falls within overload A's range, not overload B's");
+
+        PerfFrame Enrich(PerfFrame frame)
+            => frame.Address is { } address && Resolve(address) is { } resolved
+                ? frame with { Identity = resolved }
+                : frame;
     }
 
     [Fact]

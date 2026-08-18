@@ -1,3 +1,5 @@
+using DotnetDiagnostics.Core.Memory;
+
 namespace DotnetDiagnostics.Core.CpuSampling;
 
 /// <summary>
@@ -18,15 +20,24 @@ internal sealed class CallTreeBuilder
         List<(string Key, string Module, string Display)> rootToLeaf,
         string leafKey,
         SelfSampleBreakdown? leafSelfSamples = null)
+        => AddStack(
+            rootToLeaf.Select(frame => (frame.Key, frame.Module, frame.Display, Identity: (MethodIdentity?)null)).ToList(),
+            leafKey,
+            leafSelfSamples);
+
+    public void AddStack(
+        List<(string Key, string Module, string Display, MethodIdentity? Identity)> rootToLeaf,
+        string leafKey,
+        SelfSampleBreakdown? leafSelfSamples = null)
     {
         var current = _root;
         current.Inclusive++;
         for (var i = 0; i < rootToLeaf.Count; i++)
         {
-            var (key, module, display) = rootToLeaf[i];
+            var (key, module, display, identity) = rootToLeaf[i];
             if (!current.Children.TryGetValue(key, out var child))
             {
-                child = new Node(new SampledFrame(module, display));
+                child = new Node(new SampledFrame(module, display), identity);
                 current.Children[key] = child;
             }
             child.Inclusive++;
@@ -53,6 +64,7 @@ internal sealed class CallTreeBuilder
             .ToList();
         return new CallTreeNode(n.Frame, n.Inclusive, n.Exclusive, children)
         {
+            Identity = n.Identity,
             SelfSamples = n.RunningSelf > 0 || n.WaitingSelf > 0
                 ? new SelfSampleBreakdown(n.RunningSelf, n.WaitingSelf)
                 : null,
@@ -61,8 +73,14 @@ internal sealed class CallTreeBuilder
 
     private sealed class Node
     {
-        public Node(SampledFrame frame) { Frame = frame; }
+        public Node(SampledFrame frame, MethodIdentity? identity = null)
+        {
+            Frame = frame;
+            Identity = identity;
+        }
+
         public SampledFrame Frame { get; }
+        public MethodIdentity? Identity { get; }
         public long Inclusive;
         public long Exclusive;
         public long RunningSelf;

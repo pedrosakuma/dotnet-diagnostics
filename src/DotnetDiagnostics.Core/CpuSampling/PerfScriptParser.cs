@@ -42,7 +42,7 @@ internal static class PerfScriptParser
                 samples.Add(sample);
                 return true;
             },
-            CancellationToken.None).GetAwaiter().GetResult();
+            cancellationToken: CancellationToken.None).GetAwaiter().GetResult();
         return samples;
     }
 
@@ -50,6 +50,7 @@ internal static class PerfScriptParser
         TextReader reader,
         int processId,
         Func<PerfSample, bool> onSample,
+        Func<PerfFrame, PerfFrame>? frameEnricher = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(reader);
@@ -116,10 +117,10 @@ internal static class PerfScriptParser
                     continue;
                 }
 
-                var frame = ParseFrame(line);
+                var frame = PerfScriptFrameParser.Parse(line);
                 if (frame is not null)
                 {
-                    frames.Add(frame);
+                    frames.Add(frameEnricher?.Invoke(frame) ?? frame);
                 }
             }
 
@@ -182,43 +183,14 @@ internal static class PerfScriptParser
         return 0;
     }
 
-    private static PerfFrame? ParseFrame(string line)
-    {
-        var trimmed = line.TrimStart();
-        if (trimmed.Length == 0)
-        {
-            return null;
-        }
-
-        var lastOpen = trimmed.LastIndexOf('(');
-        var lastClose = trimmed.LastIndexOf(')');
-        string module;
-        string symbolPart;
-        if (lastOpen >= 0 && lastClose > lastOpen)
-        {
-            module = trimmed.Substring(lastOpen + 1, lastClose - lastOpen - 1);
-            symbolPart = trimmed[..lastOpen].TrimEnd();
-        }
-        else
-        {
-            module = string.Empty;
-            symbolPart = trimmed;
-        }
-
-        var firstSpace = symbolPart.IndexOf(' ');
-        var symbol = firstSpace > 0 ? symbolPart[(firstSpace + 1)..].TrimStart() : symbolPart;
-        var plus = symbol.LastIndexOf("+0x", StringComparison.Ordinal);
-        if (plus > 0)
-        {
-            symbol = symbol[..plus];
-        }
-
-        return symbol.Length == 0 ? null : new PerfFrame(Module: module, Symbol: symbol);
-    }
 }
 
 internal readonly record struct PerfScriptParseResult(long SamplesEmitted, bool Completed);
 
 internal sealed record PerfSample(int ProcessId, IReadOnlyList<PerfFrame> Frames);
 
-internal sealed record PerfFrame(string Module, string Symbol);
+internal sealed record PerfFrame(
+    string Module,
+    string Symbol,
+    ulong? Address = null,
+    DotnetDiagnostics.Core.Memory.MethodIdentity? Identity = null);

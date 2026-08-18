@@ -2,6 +2,8 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using DotnetDiagnostics.Core.CpuSampling;
+using DotnetDiagnostics.Core.Memory;
+using DotnetDiagnostics.Core.OffCpu;
 using FluentAssertions;
 using Xunit;
 
@@ -217,6 +219,156 @@ public class PerfScriptParserTests
     }
 
     [Fact]
+    public void Parser_PreservesAddressAndMemfdDoublemapperModule()
+    {
+        const string output = """
+            sample-target  7 [000] 1.0: cpu-clock:
+                            7ab2e757f784 [unknown] (/memfd:doublemapper (deleted))
+
+            """;
+
+        var samples = PerfScriptParser.Parse(output);
+
+        samples.Should().ContainSingle();
+        var frame = samples[0].Frames.Single();
+        frame.Address.Should().Be(0x7ab2e757f784);
+        frame.Symbol.Should().Be("[unknown]");
+        frame.Module.Should().Be("/memfd:doublemapper (deleted)");
+    }
+
+    [Fact]
+    public void Aggregate_WithJitMap_ResolvesDoublemapperUnknownByAddress()
+    {
+        const string output = """
+            sample-target  7 [000] 1.0: cpu-clock:
+                            7ab2e757f784 [unknown] (/memfd:doublemapper (deleted))
+                            7f1234560000 __libc_start_main+0x80 (/lib/libc.so.6)
+
+            """;
+        var identity = CreateIdentity("MemfdProof.Program", "<<Main>$>g__HotLoop|0_0", token: 0x06000042);
+        var jitMap = new JitMapResult(
+            "/tmp/perf-7.map",
+            [new JitMapRange(0x7ab2e757f760, 0x32, identity, "MemfdProof.Program.<<Main>$>g__HotLoop|0_0")],
+            MethodCount: 1);
+
+        var (_, hotspots, root, _, identities) = PerfNativeAotCpuSampler.Aggregate(
+            output,
+            processId: 0,
+            topN: 10,
+            jitMap: jitMap);
+
+        var managed = hotspots.Single(h => h.Frame.Method.Contains("HotLoop", StringComparison.Ordinal));
+        managed.Frame.Module.Should().Be("MemfdProof.dll");
+        managed.Identity.Should().Be(identity);
+        identities.Should().ContainKey(new SymbolRef("MemfdProof.dll", "MemfdProof.Program.<<Main>$>g__HotLoop|0_0"));
+
+        var stamped = CallTreeIdentityProjector.Stamp(root, identities);
+        stamped.Children.SelectMany(c => c.Children).Should().Contain(n => n.Identity == identity);
+
+        hotspots.Single(h => h.Frame.Method.Contains("libc_start_main", StringComparison.Ordinal))
+            .Identity.Should().BeNull("native frames must not inherit managed identity");
+    }
+
+    [Fact]
+    public void Aggregate_WithJitMap_KeepsSameDisplayOverloadsIdentityDistinct()
+    {
+        const string output = """
+            sample-target  7 [000] 1.0: cpu-clock:
+                            1008 [unknown] (/memfd:doublemapper (deleted))
+
+            sample-target  7 [000] 1.1: cpu-clock:
+                            2008 [unknown] (/memfd:doublemapper (deleted))
+
+            """;
+        var first = CreateIdentity("Overload.Program", "Foo", token: 0x06000051);
+        var second = CreateIdentity("Overload.Program", "Foo", token: 0x06000052);
+        var jitMap = new JitMapResult(
+            "/tmp/perf-7.map",
+            [
+                new JitMapRange(0x1000, 0x20, first, "Overload.Program.Foo"),
+                new JitMapRange(0x2000, 0x20, second, "Overload.Program.Foo"),
+            ],
+            MethodCount: 2);
+
+        var (_, hotspots, root, _, identities) = PerfNativeAotCpuSampler.Aggregate(
+            output,
+            processId: 0,
+            topN: 10,
+            jitMap: jitMap);
+
+        var overloads = hotspots
+            .Where(h => h.Frame is { Module: "MemfdProof.dll", Method: "Overload.Program.Foo" })
+            .ToList();
+        overloads.Should().HaveCount(2);
+        overloads.Select(h => h.Identity).Should().BeEquivalentTo([first, second]);
+
+        var stamped = CallTreeIdentityProjector.Stamp(root, identities);
+        stamped.Children
+            .Where(n => n.Frame is { Module: "MemfdProof.dll", Method: "Overload.Program.Foo" })
+            .Select(n => n.Identity)
+            .Should()
+            .BeEquivalentTo([first, second]);
+    }
+
+    [Fact]
+    public void Aggregate_WithoutJitMap_KeepsDoublemapperUnknownHonest()
+    {
+        const string output = """
+            sample-target  7 [000] 1.0: cpu-clock:
+                            7ab2e757f784 [unknown] (/memfd:doublemapper (deleted))
+
+            """;
+
+        var (_, hotspots, root, _, identities) = PerfNativeAotCpuSampler.Aggregate(output, processId: 0, topN: 10);
+
+        hotspots.Should().ContainSingle();
+        hotspots[0].Frame.Module.Should().Be("/memfd:doublemapper (deleted)");
+        hotspots[0].Frame.Method.Should().Be("[unknown]");
+        hotspots[0].Identity.Should().BeNull();
+        identities.Should().BeEmpty();
+        root.Children.Single().Frame.Method.Should().Be("[unknown]");
+    }
+
+    [Fact]
+    public void JitMapResolveFrame_UsesHalfOpenBoundaries()
+    {
+        var identity = CreateIdentity("Boundary.Program", "HotLoop", token: 0x06000043);
+        var jitMap = new JitMapResult(
+            "/tmp/perf-42.map",
+            [new JitMapRange(0x1000, 0x20, identity, "Boundary.Program.HotLoop")],
+            MethodCount: 1);
+
+        jitMap.Resolve(0x0fff).Should().BeNull();
+        jitMap.Resolve(0x1000).Should().Be(identity);
+        jitMap.Resolve(0x101f).Should().Be(identity);
+        jitMap.Resolve(0x1020).Should().BeNull();
+    }
+
+    [Fact]
+    public void JitMapResolveFrame_DeterministicallyPrefersGreatestStartThenSmallestRange()
+    {
+        var wide = CreateIdentity("Overlap.Program", "Wide", token: 0x06000044);
+        var narrow = CreateIdentity("Overlap.Program", "Narrow", token: 0x06000045);
+        var sameStartSmall = CreateIdentity("Overlap.Program", "SameStartSmall", token: 0x06000046);
+        var sameStartLarge = CreateIdentity("Overlap.Program", "SameStartLarge", token: 0x06000047);
+        var jitMap = new JitMapResult(
+            "/tmp/perf-42.map",
+            [
+                new JitMapRange(0x1000, 0x100, wide, "Overlap.Program.Wide"),
+                new JitMapRange(0x1080, 0x10, narrow, "Overlap.Program.Narrow"),
+                new JitMapRange(0x1100, 0x80, sameStartLarge, "Overlap.Program.SameStartLarge"),
+                new JitMapRange(0x1100, 0x20, sameStartSmall, "Overlap.Program.SameStartSmall"),
+            ],
+            MethodCount: 4);
+
+        jitMap.Resolve(0x1088).Should().Be(narrow);
+        jitMap.Resolve(0x1095).Should().Be(wide);
+        jitMap.Resolve(0x1110).Should().Be(sameStartSmall);
+        jitMap.Resolve(0x1170).Should().Be(sameStartLarge);
+        jitMap.Resolve(0x2000).Should().BeNull();
+    }
+
+    [Fact]
     public void Aggregate_ReportsSymbolSource_SoCpuSampleCanCarryIt()
     {
         // Regression for #35: the aggregate SymbolSource computed during NativeAOT
@@ -263,6 +415,16 @@ public class PerfScriptParserTests
 
     private static NativeAotMethodMap LoadAotMap()
         => NativeAotMethodMap.Load(new MemoryStream(System.Text.Encoding.UTF8.GetBytes(AotMapSample)));
+
+    private static MethodIdentity CreateIdentity(string typeFullName, string methodName, int token)
+        => new(
+            MethodName: methodName,
+            GenericArity: 0,
+            ModuleName: "MemfdProof.dll",
+            ModulePath: "/app/MemfdProof.dll",
+            ModuleVersionId: Guid.Parse("11111111-1111-1111-1111-111111111111"),
+            MetadataToken: token,
+            TypeFullName: typeFullName);
 
     [Fact]
     public void Aggregate_WithoutMap_EmitsNoMethodIdentities()

@@ -1,4 +1,5 @@
 using DotnetDiagnostics.Core.NativeLockContention;
+using System.Globalization;
 
 namespace DotnetDiagnostics.Core.OffCpu;
 
@@ -77,7 +78,7 @@ internal sealed class OffCpuAggregationBuilder
         }
 
         var leaf = frames.Count > 0 ? frames[^1] : new OffCpuFrame(string.Empty, "[no-stack]");
-        var key = string.Join('|', frames.Select(f => string.IsNullOrEmpty(f.Module) ? f.Method : $"{f.Module}!{f.Method}"));
+        var key = string.Join('|', frames.Select(BuildFrameKey));
 
         if (!_byStack.TryGetValue(key, out var agg))
         {
@@ -107,6 +108,31 @@ internal sealed class OffCpuAggregationBuilder
         var leafKey = string.IsNullOrEmpty(leaf.Module) ? leaf.Method : $"{leaf.Module}!{leaf.Method}";
         threadAgg.LeafCounts[leafKey] = threadAgg.LeafCounts.GetValueOrDefault(leafKey) + 1;
         _byThread[span.Tid] = threadAgg;
+    }
+
+    private static string BuildFrameKey(OffCpuFrame frame)
+    {
+        var key = string.IsNullOrEmpty(frame.Module) ? frame.Method : $"{frame.Module}!{frame.Method}";
+        var identity = frame.Identity;
+        if (identity is null)
+        {
+            return key;
+        }
+
+        return string.Concat(
+            key,
+            "\0jit:",
+            identity.ModuleVersionId,
+            ':',
+            identity.MetadataToken?.ToString(CultureInfo.InvariantCulture),
+            ':',
+            identity.ModulePath,
+            ':',
+            identity.TypeFullName,
+            ':',
+            identity.MethodName,
+            ':',
+            identity.GenericArity.ToString(CultureInfo.InvariantCulture));
     }
 
     public OffCpuSampleResult Build(

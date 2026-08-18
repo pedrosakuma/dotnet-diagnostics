@@ -1626,6 +1626,18 @@ when RSS / anonymous pages climb while the managed heap stays flat. On an unsupp
 `NotSupported` envelope — never a crash; a missing `CAP_SYS_ADMIN` (Linux) or denied ETW
 access (Windows) instead surfaces as `PermissionDenied`.
 
+On Linux CoreCLR targets, the perf-backed paths (`off_cpu`, `native-alloc`,
+`native-lock-contention`, and the perf CPU fallback) also run the existing
+EventPipe JIT rundown that writes `/tmp/perf-<pid>.map`. During perf-script
+post-processing the raw instruction pointer from each frame is matched against
+that in-memory JIT range map, so `/memfd:doublemapper (deleted)` and bracketed
+`[unknown]` frames can be replaced with the managed method name and stamped with
+the normal `MethodIdentity` when a range is available. This remains best-effort:
+NativeAOT/non-JIT targets, exited PIDs, missing diagnostic-socket access, dynamic
+tokenless methods, or addresses outside the captured map stay as raw perf frames
+and the sampler notes the unresolved JIT-frame fallback where its summary model
+has `Notes`.
+
 **`kind="native-lock-contention"` (issues #830/#840).** Attributes **native/OS-level** mutex
 activity — `pthread_mutex_lock`/`pthread_mutex_unlock` calls made by P/Invoke code, native
 libraries, or the runtime itself — to a call site. Companion to `collect_events(kind="contention")`,

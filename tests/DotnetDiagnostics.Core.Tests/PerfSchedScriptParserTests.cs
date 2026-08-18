@@ -1,4 +1,6 @@
 using System.IO;
+using DotnetDiagnostics.Core.CpuSampling;
+using DotnetDiagnostics.Core.Memory;
 using DotnetDiagnostics.Core.OffCpu;
 using FluentAssertions;
 
@@ -219,6 +221,42 @@ public sealed class PerfSchedScriptParserTests
 
         spans.Should().ContainSingle();
         spans[0].OutTimestampSeconds.Should().Be(1.000000);
+    }
+
+    [Fact]
+    public void Parse_StampsDoublemapperFrameIdentity_WhenJitMapResolvesAddress()
+    {
+        const string script = """
+                    target  1000 [001]   1.000000: sched:sched_switch: prev_comm=target prev_pid=1000 prev_prio=120 prev_state=S ==> next_comm=swapper/1 next_pid=0 next_prio=120
+                            ffffffff81234567 schedule+0x0 ([kernel.kallsyms])
+                            7ab2e757f784 [unknown] (/memfd:doublemapper (deleted))
+
+                   swapper     0 [001]   1.250000: sched:sched_switch: prev_comm=swapper/1 prev_pid=0 prev_prio=120 prev_state=R ==> next_comm=target next_pid=1000 next_prio=120
+
+            """;
+        var identity = new MethodIdentity(
+            MethodName: "HotLoop",
+            GenericArity: 0,
+            ModuleName: "MemfdProof.dll",
+            ModulePath: "/app/MemfdProof.dll",
+            ModuleVersionId: Guid.Parse("22222222-2222-2222-2222-222222222222"),
+            MetadataToken: 0x06000048,
+            TypeFullName: "MemfdProof.Program");
+        var jitMap = new JitMapResult(
+            "/tmp/perf-1000.map",
+            [new JitMapRange(0x7ab2e757f760, 0x32, identity, "MemfdProof.Program.HotLoop")],
+            MethodCount: 1);
+        var symbolizer = new PerfJitFrameSymbolizer(jitMap);
+
+        var (spans, _) = PerfSchedScriptParser.Parse(
+            script,
+            new HashSet<int> { 1000 },
+            frameEnricher: symbolizer.Symbolize);
+
+        var frame = spans.Single().BlockingStack.Single(f => f.Method.Contains("HotLoop", StringComparison.Ordinal));
+        frame.Module.Should().Be("MemfdProof.dll");
+        frame.Identity.Should().Be(identity);
+        frame.InstructionPointer.Should().Be(0x7ab2e757f784);
     }
 }
 
