@@ -39,6 +39,23 @@ public enum EvidenceInvariantKind
     ThreadOwnerCorrelation,
 }
 
+public enum BucketAggregation
+{
+    /// <summary>
+    /// Legacy behavior: a single bucket whose key contains one of the <c>containsAny</c> terms
+    /// must individually satisfy the comparison/threshold.
+    /// </summary>
+    Any,
+
+    /// <summary>
+    /// Every bucket whose key contains one of the <c>containsAny</c> terms is summed before the
+    /// comparison/threshold is applied. Use this when the terms enumerate equivalent
+    /// runtime/platform spellings of the same causal leaf (e.g. ICU vs. NLS vs. managed
+    /// globalization hashing) that samples can legitimately be split across.
+    /// </summary>
+    Sum,
+}
+
 public enum NumericComparison
 {
     GreaterThan,
@@ -88,7 +105,8 @@ public sealed record EvidenceInvariant(
     double? Threshold = null,
     int MinimumMatches = 1,
     string? Relation = null,
-    string? OwnerWaitReason = null);
+    string? OwnerWaitReason = null,
+    BucketAggregation Aggregation = BucketAggregation.Any);
 
 public sealed record ScenarioEnvironment(
     string Os,

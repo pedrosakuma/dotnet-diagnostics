@@ -32,13 +32,15 @@
       "id": "globalization-hash-leaf",
       "kind": "signalBucketMatch",
       "signal": "cpu.self-time.concentration",
-      "containsAny": [ "IcuGetHashCodeOfString", "NlsGetHashCodeOfString", "GetHashCodeOfString" ],
+      "containsAny": [ "IcuGetHashCodeOfString", "NlsGetHashCodeOfString", "GetHashCodeOfString", "GetHashCodeOfStringCore", "CompareInfo.GetHashCode" ],
       "comparison": "greaterThanOrEqual",
-      "threshold": 20
+      "threshold": 20,
+      "aggregation": "sum"
     }
   ],
   "misleadingSignals": [
-    "Inclusive ThreadPool dispatch frames can rank above the responsible exclusive leaf."
+    "Inclusive ThreadPool dispatch frames can rank above the responsible exclusive leaf.",
+    "Runtime globalization backend (ICU vs. NLS), tiering, and inlining can split the same causal cost across differently-spelled leaf frames or fold it into the managed fallback entry point."
   ],
   "temptingWrongHypotheses": [ "threadpool-runtime-overhead", "scale-compute" ],
   "acceptableHypotheses": [ "cpu-expensive-globalization-hash" ],
