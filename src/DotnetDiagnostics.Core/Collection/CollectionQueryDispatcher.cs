@@ -10,6 +10,7 @@ using DotnetDiagnostics.Core.Jit;
 using DotnetDiagnostics.Core.Kestrel;
 using DotnetDiagnostics.Core.Logs;
 using DotnetDiagnostics.Core.Requests;
+using DotnetDiagnostics.Core.Security;
 using DotnetDiagnostics.Core.Startup;
 using DotnetDiagnostics.Core.ThreadPool;
 
@@ -37,7 +38,7 @@ public static class CollectionQueryDispatcher
         CollectionHandleKinds.CrashGuardSnapshot => new[] { "summary", "exceptions", "stack" },
         CollectionHandleKinds.GcEvents => new[] { "summary", "events", "pauseHistogram", "timeline", "longestPauses", "byGeneration", "heap-stats" },
         CollectionHandleKinds.EventSource => new[] { "summary", "byEventName", "events" },
-        CollectionHandleKinds.Activities => new[] { "summary", "bySource", "byOperation", "activities", "gc-overlay" },
+        CollectionHandleKinds.Activities => new[] { "summary", "bySource", "byOperation", "activities", "trace", "gc-overlay" },
         CollectionHandleKinds.LogSnapshot => new[] { "summary", "byCategory", "byLevel", "recent", "errors" },
         CollectionHandleKinds.JitSnapshot => new[] { "summary", "topMethods", "tierDistribution", "reJIT" },
         CollectionHandleKinds.ThreadPoolSnapshot => new[] { "summary", "timeline", "hillClimbing", "workItemOrigins" },
@@ -67,7 +68,7 @@ public static class CollectionQueryDispatcher
     /// type matches what the dispatcher expects.
     /// </summary>
     public static DispatchOutcome Dispatch(string kind, string? view, object artifact, int topN)
-        => Dispatch(kind, view, artifact, topN, correlateArtifact: null);
+        => Dispatch(kind, view, artifact, topN, correlateArtifact: null, traceId: null, redactor: null);
 
     /// <summary>
     /// Renders <paramref name="artifact"/> under <paramref name="view"/> with optional correlation artifact.
@@ -75,6 +76,20 @@ public static class CollectionQueryDispatcher
     /// (e.g., "gc-overlay" requires a <see cref="GcSummary"/> to correlate with activities).
     /// </summary>
     public static DispatchOutcome Dispatch(string kind, string? view, object artifact, int topN, object? correlateArtifact)
+        => Dispatch(kind, view, artifact, topN, correlateArtifact, traceId: null, redactor: null);
+
+    /// <summary>
+    /// Renders an artifact with optional correlation input and view-specific trace projection
+    /// arguments. <paramref name="traceId"/> is required only for Activities <c>trace</c>.
+    /// </summary>
+    public static DispatchOutcome Dispatch(
+        string kind,
+        string? view,
+        object artifact,
+        int topN,
+        object? correlateArtifact,
+        string? traceId,
+        SensitiveDataRedactor? redactor)
     {
         if (topN < 1)
         {
@@ -105,7 +120,7 @@ public static class CollectionQueryDispatcher
             CollectionHandleKinds.EventSource when artifact is EventSourceCapture es
                 => Ok(Render(es, effectiveView, topN)),
             CollectionHandleKinds.Activities when artifact is ActivityCapture a
-                => RenderActivities(a, effectiveView, topN, correlateArtifact),
+                => RenderActivities(a, effectiveView, topN, correlateArtifact, traceId, redactor),
             CollectionHandleKinds.LogSnapshot when artifact is LogSnapshot logs
                 => Ok(Render(logs, effectiveView, topN)),
             CollectionHandleKinds.JitSnapshot when artifact is JitSnapshot jit
@@ -439,8 +454,40 @@ public static class CollectionQueryDispatcher
     /// <summary>
     /// Handles Activities rendering with optional GC correlation for the "gc-overlay" view.
     /// </summary>
-    private static DispatchOutcome RenderActivities(ActivityCapture capture, string view, int topN, object? correlateArtifact)
+    private static DispatchOutcome RenderActivities(
+        ActivityCapture capture,
+        string view,
+        int topN,
+        object? correlateArtifact,
+        string? traceId,
+        SensitiveDataRedactor? redactor)
     {
+        if (view.Equals("trace", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!ActivityTraceProjector.TryNormalizeTraceId(traceId, out var normalizedTraceId))
+            {
+                return new DispatchOutcome(
+                    null,
+                    null,
+                    null,
+                    "traceId must be a non-zero 32-hex W3C trace-id when view='trace'",
+                    null);
+            }
+
+            var trace = ActivityTraceProjector.Project(
+                capture,
+                normalizedTraceId,
+                topN,
+                redactor ?? new SensitiveDataRedactor());
+            return Ok(new CollectionQueryResult(
+                CollectionHandleKinds.Activities,
+                view,
+                capture.ProcessId,
+                capture.StartedAt,
+                capture.Duration,
+                trace));
+        }
+
         if (view.Equals("gc-overlay", StringComparison.OrdinalIgnoreCase))
         {
             if (correlateArtifact is not GcSummary gcSummary)

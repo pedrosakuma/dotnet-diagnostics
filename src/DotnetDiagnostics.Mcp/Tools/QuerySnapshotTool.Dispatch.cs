@@ -1,4 +1,5 @@
 using DotnetDiagnostics.Core;
+using DotnetDiagnostics.Core.Activities;
 using DotnetDiagnostics.Core.Collection;
 using DotnetDiagnostics.Core.Comparison;
 using DotnetDiagnostics.Core.CpuSampling;
@@ -37,7 +38,7 @@ public sealed partial class QuerySnapshotTool
             [CollectionHandleKinds.CrashGuardSnapshot] = HandleEventPipeCollectionAsync,
             [CollectionHandleKinds.GcEvents] = HandleEventPipeCollectionAsync,
             [CollectionHandleKinds.EventSource] = HandleEventPipeCollectionAsync,
-            [CollectionHandleKinds.Activities] = HandleEventPipeCollectionAsync,
+            [CollectionHandleKinds.Activities] = HandleActivitiesCollectionAsync,
             [CollectionHandleKinds.LogSnapshot] = HandleEventPipeCollectionAsync,
             [CollectionHandleKinds.JitSnapshot] = HandleEventPipeCollectionAsync,
             [CollectionHandleKinds.ThreadPoolSnapshot] = HandleEventPipeCollectionAsync,
@@ -77,6 +78,7 @@ public sealed partial class QuerySnapshotTool
         public required int? StackRank { get; init; }
         public required string? RootMethodFilter { get; init; }
         public required string? ProviderFilter { get; init; }
+        public required string? TraceId { get; init; }
         public required bool ChangesOnly { get; init; }
         public required int MaxDepth { get; init; }
         public required int MaxNodes { get; init; }
@@ -455,6 +457,33 @@ public sealed partial class QuerySnapshotTool
             context.Handle,
             string.IsNullOrWhiteSpace(context.View) ? null : context.View,
             context.TopN ?? 50);
+        return Task.FromResult(AsObjectEnvelope(collection));
+    }
+
+    private static Task<DiagnosticResult<object>> HandleActivitiesCollectionAsync(QuerySnapshotDispatchContext context)
+    {
+        if (!RequireScope(context.Principal, ScopeEventPipe, out var forbidden))
+        {
+            return Task.FromResult(forbidden!);
+        }
+
+        if (context.MatchesView("trace") &&
+            !ActivityTraceProjector.TryNormalizeTraceId(context.TraceId, out _))
+        {
+            return Task.FromResult(InvalidArgument(
+                nameof(context.TraceId),
+                "must be a non-zero 32-hex W3C trace-id when view='trace'"));
+        }
+
+        var collection = DiagnosticTools.QueryCollection(
+            context.Lookup,
+            context.PrincipalAccessor,
+            context.Handle,
+            string.IsNullOrWhiteSpace(context.View) ? null : context.View,
+            context.TopN ?? 50,
+            correlateArtifact: null,
+            traceId: context.TraceId,
+            redactor: context.Redactor);
         return Task.FromResult(AsObjectEnvelope(collection));
     }
 

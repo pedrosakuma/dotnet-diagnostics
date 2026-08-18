@@ -20,7 +20,7 @@ namespace DotnetDiagnostics.Core.Security;
 ///   <item><description><c>SymbolServerAllowlist</c> — string[]. Hosts that may appear
 ///   inside a <c>srv*https://…</c> segment of a caller-supplied <c>symbolPath</c>.</description></item>
 ///   <item><description><c>RedactionPatterns</c> — string[]. Additional regex patterns
-///   appended to the default redaction set used by the heap drilldowns.</description></item>
+///   appended to the default redaction set used by sensitive diagnostic drilldowns.</description></item>
 ///   <item><description><c>AllowMethodParameterCapture</c> — bool. When false (default),
 ///   <c>collect_sample(kind="method-params")</c> is disabled regardless of bearer scopes.
 ///   When true, callers still need the literal <c>sensitive-parameter-read</c> modifier scope

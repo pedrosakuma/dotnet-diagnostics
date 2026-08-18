@@ -1,6 +1,7 @@
 using System.Text;
 using DotnetDiagnostics.Cli;
 using DotnetDiagnostics.Core;
+using DotnetDiagnostics.Core.Activities;
 using DotnetDiagnostics.Core.Capabilities;
 using DotnetDiagnostics.Core.Collection;
 using DotnetDiagnostics.Core.Counters;
@@ -1146,6 +1147,51 @@ public sealed class SessionReplTests
         sessionViews.Should().NotContain("gc-overlay");
         sessionViews.Should().Contain("summary");
         sessionViews.Should().Contain("bySource");
+        sessionViews.Should().Contain("trace");
+    }
+
+    [Fact]
+    public async Task Query_ActivitiesTraceView_RequiresAndUsesTraceId()
+    {
+        const string traceId = "0af7651916cd43dd8448eb211c80319c";
+        var (services, store) = BuildServices();
+        var at = DateTimeOffset.UtcNow;
+        var activity = new CapturedActivity(
+            "tests",
+            "trace-operation",
+            "activity",
+            null,
+            traceId,
+            "1111111111111111",
+            null,
+            at,
+            at.AddMilliseconds(10),
+            TimeSpan.FromMilliseconds(10),
+            new Dictionary<string, string>());
+        var capture = new ActivityCapture(
+            Environment.ProcessId,
+            null,
+            at,
+            TimeSpan.FromSeconds(1),
+            1,
+            1,
+            new[] { activity },
+            Array.Empty<ActivitySourceSummary>(),
+            Array.Empty<ActivityOperationSummary>());
+        var handle = store.Register(
+            Environment.ProcessId,
+            CollectionHandleKinds.Activities,
+            capture,
+            TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, _) = await RunReplAsync(
+            $"query --handle {handle.Id} --view trace --trace-id {traceId}\nexit\n",
+            services);
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("view=trace");
+        stdout.Should().Contain("trace-operation");
+        stdout.Should().Contain("\"canClaimComplete\": false");
     }
 
     [Fact]

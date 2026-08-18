@@ -1372,6 +1372,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             using var child = IntegrationActivitySource.StartActivity("integration-child");
             child?.SetTag("db.system", "fake");
             await Task.Delay(20);
+            return parent?.TraceId.ToHexString();
         });
 
         var result = await client.CallToolAsync(
@@ -1386,7 +1387,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             },
             cancellationToken: CancellationToken.None);
 
-        await driver;
+        var traceId = await driver;
 
         result.IsError.Should().NotBe(true);
         var envelope = DeserializeStructured<CollectEventsEnvelope>(result);
@@ -1397,6 +1398,42 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         envelope.Activities.ByOperation.Should().Contain(summary => summary.SourceName == IntegrationActivitySource.Name && summary.OperationName == "integration-parent");
         envelope.Activities.ByOperation.Should().Contain(summary => summary.SourceName == IntegrationActivitySource.Name && summary.OperationName == "integration-child");
         envelope.Activities.Activities.Should().Contain(activity => activity.SourceName == IntegrationActivitySource.Name && activity.OperationName == "integration-parent");
+
+        traceId.Should().NotBeNullOrWhiteSpace();
+        var collectEnvelope = DeserializeEnvelope(result);
+        collectEnvelope!.Handle.Should().NotBeNullOrWhiteSpace();
+
+        var missingTraceId = await client.CallToolAsync(
+            "query_snapshot",
+            new Dictionary<string, object?>
+            {
+                ["handle"] = collectEnvelope.Handle!,
+                ["view"] = "trace",
+            },
+            cancellationToken: CancellationToken.None);
+        missingTraceId.IsError.Should().BeTrue();
+
+        var traceResult = await client.CallToolAsync(
+            "query_snapshot",
+            new Dictionary<string, object?>
+            {
+                ["handle"] = collectEnvelope.Handle!,
+                ["view"] = "trace",
+                ["traceId"] = traceId!,
+                ["topN"] = 20,
+            },
+            cancellationToken: CancellationToken.None);
+
+        traceResult.IsError.Should().NotBe(true);
+        var queried = DeserializeStructured<CollectionQueryResult>(traceResult);
+        queried.Should().NotBeNull();
+        queried!.View.Should().Be("trace");
+        var trace = (JsonElement)queried.Payload!;
+        trace.GetProperty("canClaimComplete").GetBoolean().Should().BeFalse();
+        var spans = trace.GetProperty("spans").EnumerateArray().ToArray();
+        spans.Select(span => span.GetProperty("operationName").GetString())
+            .Should().ContainInOrder("integration-parent", "integration-child");
+        spans[1].GetProperty("parentNodeIndex").GetInt32().Should().Be(0);
     }
 
     [Fact]

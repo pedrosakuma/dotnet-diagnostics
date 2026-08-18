@@ -493,16 +493,18 @@ public sealed class DiagnosticTools
         "returned by collect_events with kind one of counters/exceptions/crash-guard/gc/datas/catalog/event_source/activities/logs/jit/threadpool/contention/db/kestrel/networking/startup. " +
         "Supported views per kind: counters → summary|byProvider; exception-snapshot → " +
         "summary|byType|recent; crash-guard-snapshot → summary|exceptions|stack; gc-events → summary|events|pauseHistogram|timeline|longestPauses|byGeneration; event-catalog → catalog|byProvider|events; event-source → " +
-        "summary|byEventName|events; activities → summary|bySource|byOperation|activities|gc-overlay; " +
+        "summary|byEventName|events; activities → summary|bySource|byOperation|activities|trace|gc-overlay; " +
         "log-snapshot → summary|byCategory|byLevel|recent|errors; jit-snapshot → summary|topMethods|tierDistribution|reJIT; threadpool-snapshot → summary|timeline|hillClimbing|workItemOrigins; contention-snapshot → summary|byCallSite|byOwner; db-snapshot → summary|byCommand|n+1|connectionPool; kestrel-snapshot → summary|byOperation|queues|tls|config; networking-snapshot → summary|byOperation|queue|tls|dns; startup-snapshot → summary|assemblies|modules|di|timeline. " +
         "Handles expire ~10 minutes after collection.")]
     public static DiagnosticResult<CollectionQueryResult> QueryCollection(
         IDiagnosticHandleStore handles,
         IPrincipalAccessor principalAccessor,
+        SensitiveDataRedactor redactor,
         [Description("Handle returned by a prior collection tool, especially collect_events with kind one of counters/exceptions/crash-guard/gc/datas/catalog/event_source/activities/logs/jit/threadpool/contention/db/kestrel/networking/startup. ")] string handle,
         [Description("View name (kind-dependent). Defaults to 'summary', except event-catalog defaults to 'catalog'.")] string? view = null,
-        [Description("Cap on inline items for paginated views (recent / events / byType / byEventName / bySource / byOperation / activities / byCategory / byLevel / errors / topMethods / reJIT / hillClimbing / workItemOrigins / byCommand / n+1 / connectionPool). Must be >= 1. Defaults to 50.")] int topN = 50,
-        [Description("Handle to a gc-events artifact for correlation views (required for activities view='gc-overlay').")] string? gcHandle = null)
+        [Description("Cap on inline items for paginated views (recent / events / byType / byEventName / bySource / byOperation / activities / trace / byCategory / byLevel / errors / topMethods / reJIT / hillClimbing / workItemOrigins / byCommand / n+1 / connectionPool). Must be >= 1. Defaults to 50.")] int topN = 50,
+        [Description("Handle to a gc-events artifact for correlation views (required for activities view='gc-overlay').")] string? gcHandle = null,
+        [Description("Activities view='trace' only: required non-zero 32-hex W3C trace-id.")] string? traceId = null)
     {
         if (string.IsNullOrWhiteSpace(handle)) return InvalidArg<CollectionQueryResult>(nameof(handle), "is required");
         if (topN < 1) return InvalidArg<CollectionQueryResult>(nameof(topN), "must be >= 1");
@@ -546,7 +548,15 @@ public sealed class DiagnosticTools
             correlateArtifact = gcEntry.Value.Artifact;
         }
 
-        return QueryCollection(entry.Value, principalAccessor, handle, view, topN, correlateArtifact);
+        return QueryCollection(
+            entry.Value,
+            principalAccessor,
+            handle,
+            view,
+            topN,
+            correlateArtifact,
+            traceId,
+            redactor);
     }
 
     internal static DiagnosticResult<CollectionQueryResult> QueryCollection(
@@ -555,7 +565,9 @@ public sealed class DiagnosticTools
         string handle,
         string? view,
         int topN,
-        object? correlateArtifact = null)
+        object? correlateArtifact = null,
+        string? traceId = null,
+        SensitiveDataRedactor? redactor = null)
     {
         var principal = principalAccessor.Current;
         if (principal is not null)
@@ -594,7 +606,14 @@ public sealed class DiagnosticTools
                     new Dictionary<string, object?> { ["handle"] = handle }));
         }
 
-        var outcome = CollectionQueryDispatcher.Dispatch(entry.Kind, view, entry.Artifact, topN, correlateArtifact);
+        var outcome = CollectionQueryDispatcher.Dispatch(
+            entry.Kind,
+            view,
+            entry.Artifact,
+            topN,
+            correlateArtifact,
+            traceId,
+            redactor);
 
         if (outcome.UnknownKind is not null)
         {

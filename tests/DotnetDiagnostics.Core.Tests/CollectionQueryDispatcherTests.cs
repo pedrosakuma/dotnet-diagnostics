@@ -428,6 +428,47 @@ public class CollectionQueryDispatcherTests
     }
 
     [Fact]
+    public void Activities_TraceView_RequiresTraceIdAndReturnsTraceProjection()
+    {
+        const string traceId = "0af7651916cd43dd8448eb211c80319c";
+        var capture = new ActivityCapture(
+            ProcessId: 42,
+            SourceFilters: null,
+            StartedAt: At,
+            Duration: TimeSpan.FromSeconds(5),
+            TotalActivities: 2,
+            CompletedActivities: 2,
+            Activities:
+            [
+                new CapturedActivity("Demo.Service", "outer", "1", null, traceId, "1111111111111111", null, At, At.AddMilliseconds(12), TimeSpan.FromMilliseconds(12), new Dictionary<string, string>()),
+                new CapturedActivity("Demo.Service", "inner", "2", "1", traceId, "2222222222222222", "1111111111111111", At.AddMilliseconds(2), At.AddMilliseconds(6), TimeSpan.FromMilliseconds(4), new Dictionary<string, string>()),
+            ],
+            BySource: Array.Empty<ActivitySourceSummary>(),
+            ByOperation: Array.Empty<ActivityOperationSummary>());
+
+        var missing = CollectionQueryDispatcher.Dispatch(
+            CollectionHandleKinds.Activities,
+            "trace",
+            capture,
+            50);
+        missing.InvalidArgument.Should().Contain("traceId");
+
+        var outcome = CollectionQueryDispatcher.Dispatch(
+            CollectionHandleKinds.Activities,
+            "trace",
+            capture,
+            50,
+            correlateArtifact: null,
+            traceId,
+            redactor: null);
+
+        var payload = outcome.Result!.Payload.Should().BeOfType<ActivityTraceProjection>().Subject;
+        payload.TraceId.Should().Be(traceId);
+        payload.Spans.Should().HaveCount(2);
+        payload.Spans[1].ParentNodeIndex.Should().Be(0);
+    }
+
+    [Fact]
     public void Logs_SummaryAndErrorsViews_RenderExpectedSlices()
     {
         var snapshot = new LogSnapshot(

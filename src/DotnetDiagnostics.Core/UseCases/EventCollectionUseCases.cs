@@ -1249,7 +1249,7 @@ public static class EventCollectionUseCases
             handle.ExpiresAt,
             primaryHint,
             new NextActionHint("query_snapshot",
-                "Drill into these activities without re-collecting (views: summary, bySource, byOperation, activities).",
+                "Drill into these activities without re-collecting (views: summary, bySource, byOperation, activities, trace). The trace view requires traceId.",
                 new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "byOperation" })),
             resolved.Context);
     }

@@ -859,6 +859,83 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
             activity.ParentId == outer.Id);
     }
 
+    [Fact(Timeout = 60_000)]
+    public async Task CollectActivities_ReconstructsSingleProcessHttpAndDatabaseTrace()
+    {
+        await using var badSample = await StartPublishedSampleAsync("BadCodeSample");
+        using var http = new HttpClient { BaseAddress = new Uri(badSample.BaseUrl) };
+        var collector = new EventPipeActivityCollector();
+        var databaseTarget = Uri.EscapeDataString(
+            $"{badSample.BaseUrl.TrimEnd('/')}/db-n+1?count=1");
+
+        var driver = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(1200));
+            using var response = await http.GetAsync($"/slow-http?url={databaseTarget}");
+            response.EnsureSuccessStatusCode();
+        });
+
+        var capture = await collector.CollectAsync(
+            badSample.ProcessId,
+            TimeSpan.FromSeconds(8),
+            sources: ["Microsoft.AspNetCore", "System.Net.Http", "Microsoft.EntityFrameworkCore"],
+            maxActivities: 100,
+            cancellationToken: CancellationToken.None);
+
+        await driver;
+
+        var database = capture.Activities.Should().ContainSingle(activity =>
+            activity.SourceName == "Microsoft.EntityFrameworkCore" &&
+            activity.OperationName == "database.command").Subject;
+        var bySpanId = capture.Activities
+            .Where(static activity => activity.SpanId is not null)
+            .ToDictionary(static activity => activity.SpanId!, StringComparer.OrdinalIgnoreCase);
+
+        var loopbackInbound = bySpanId[database.ParentSpanId!];
+        var outboundHttp = bySpanId[loopbackInbound.ParentSpanId!];
+        var originalInbound = bySpanId[outboundHttp.ParentSpanId!];
+
+        loopbackInbound.SourceName.Should().Be("Microsoft.AspNetCore");
+        outboundHttp.SourceName.Should().Be("System.Net.Http");
+        originalInbound.SourceName.Should().Be("Microsoft.AspNetCore");
+        var trace = new[] { originalInbound, outboundHttp, loopbackInbound, database };
+        trace.Should().OnlyContain(static activity =>
+            !string.IsNullOrWhiteSpace(activity.TraceId) &&
+            !string.IsNullOrWhiteSpace(activity.SpanId));
+        trace.Select(static activity => activity.TraceId)
+            .Should().OnlyContain(traceId => traceId == originalInbound.TraceId);
+        outboundHttp.ParentSpanId.Should().Be(originalInbound.SpanId);
+        outboundHttp.ParentId.Should().Be(originalInbound.Id);
+        loopbackInbound.ParentSpanId.Should().Be(outboundHttp.SpanId);
+        loopbackInbound.ParentId.Should().Be(outboundHttp.Id);
+        database.ParentSpanId.Should().Be(loopbackInbound.SpanId);
+        database.ParentId.Should().Be(loopbackInbound.Id);
+        trace
+            .Should().OnlyContain(static activity =>
+                activity.StoppedAt.HasValue &&
+                activity.Duration.HasValue &&
+                activity.Duration.Value > TimeSpan.Zero);
+
+        var query = CollectionQueryDispatcher.Dispatch(
+            CollectionHandleKinds.Activities,
+            "trace",
+            capture,
+            topN: 100,
+            correlateArtifact: null,
+            traceId: originalInbound.TraceId,
+            redactor: new SensitiveDataRedactor());
+        var projection = query.Result!.Payload.Should().BeOfType<ActivityTraceProjection>().Subject;
+        projection.CanClaimComplete.Should().BeFalse();
+        projection.Spans.Select(static span => span.OperationName)
+            .Should().ContainInOrder(
+                originalInbound.OperationName,
+                outboundHttp.OperationName,
+                loopbackInbound.OperationName,
+                database.OperationName);
+        projection.Spans.Skip(1).Should().OnlyContain(static span =>
+            span.ParentStatus == ActivityTraceParentStatus.Resolved);
+    }
+
     [SkipOnLinuxCiFact("Quarantined on Linux CI: crashes test host inside libcoreclr's EventPipe SampleProfiler. Tracked in #147 (dotnet/runtime#128525). Runnable locally and on Windows CI.")]
     public async Task CpuSampler_ProducesHotspots()
     {

@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using Microsoft.Diagnostics.NETCore.Client;
 
 namespace DotnetDiagnostics.Core.Internal;
@@ -19,45 +18,64 @@ internal static class EventPipeSessionShutdown
         ArgumentNullException.ThrowIfNull(onError);
 
         var shutdownBudget = budget ?? DefaultBudget;
-        var sw = Stopwatch.StartNew();
         try
         {
-            await StopSessionAsync(session, onError, shutdownBudget).ConfigureAwait(false);
-
-            var remaining = shutdownBudget - sw.Elapsed;
-            if (processingTask.IsCompleted)
-            {
-                await ObserveProcessingTaskAsync(processingTask, onError, propagateProcessingErrors).ConfigureAwait(false);
-                return;
-            }
-
-            if (remaining <= TimeSpan.Zero)
-            {
-                ObserveLater(processingTask);
-                throw new TimeoutException($"EventPipe processing did not drain within {shutdownBudget.TotalSeconds:0.#} seconds.");
-            }
-
-            try
-            {
-                await processingTask.WaitAsync(remaining, CancellationToken.None).ConfigureAwait(false);
-            }
-            catch (TimeoutException)
-            {
-                ObserveLater(processingTask);
-                throw;
-            }
-            catch (Exception ex)
-            {
-                onError(ex);
-                if (propagateProcessingErrors)
-                {
-                    throw;
-                }
-            }
+            // Session-control calls are serialized and may spend this whole budget waiting for a
+            // sibling stop. The stream still needs its own bounded window to consume the stop marker.
+            await StopThenDrainAsync(
+                () => StopSessionAsync(session, onError, shutdownBudget),
+                processingTask,
+                onError,
+                shutdownBudget,
+                propagateProcessingErrors).ConfigureAwait(false);
         }
         finally
         {
             session.Dispose();
+        }
+    }
+
+    internal static async Task StopThenDrainAsync(
+        Func<Task> stopSessionAsync,
+        Task processingTask,
+        Action<Exception> onError,
+        TimeSpan drainBudget,
+        bool propagateProcessingErrors = false)
+    {
+        ArgumentNullException.ThrowIfNull(stopSessionAsync);
+        ArgumentNullException.ThrowIfNull(processingTask);
+        ArgumentNullException.ThrowIfNull(onError);
+
+        await stopSessionAsync().ConfigureAwait(false);
+
+        if (processingTask.IsCompleted)
+        {
+            await ObserveProcessingTaskAsync(processingTask, onError, propagateProcessingErrors).ConfigureAwait(false);
+            return;
+        }
+
+        if (drainBudget <= TimeSpan.Zero)
+        {
+            ObserveLater(processingTask);
+            throw CreateDrainTimeout(drainBudget);
+        }
+
+        try
+        {
+            await processingTask.WaitAsync(drainBudget, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (TimeoutException ex)
+        {
+            ObserveLater(processingTask);
+            throw CreateDrainTimeout(drainBudget, ex);
+        }
+        catch (Exception ex)
+        {
+            onError(ex);
+            if (propagateProcessingErrors)
+            {
+                throw;
+            }
         }
     }
 
@@ -123,4 +141,10 @@ internal static class EventPipeSessionShutdown
             TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);
     }
+
+    private static TimeoutException CreateDrainTimeout(TimeSpan drainBudget, Exception? innerException = null) =>
+        new(
+            FormattableString.Invariant(
+                $"EventPipe processing did not drain within {drainBudget.TotalSeconds:0.#} seconds after session stop completed."),
+            innerException);
 }

@@ -195,6 +195,9 @@ internal sealed record CliOptions
     /// <summary>Drill-down view name (<c>--view</c>) for the <c>query</c> command (parsed for forward-compat; the one-shot CLI cannot honour it — see #286).</summary>
     public string? View { get; init; }
 
+    /// <summary>W3C trace-id for the Activities <c>trace</c> query view (<c>--trace-id</c>).</summary>
+    public string? TraceId { get; init; }
+
     /// <summary>Ranking for the heap <c>top-types</c> view (<c>--rank-by</c>): <c>bytes</c> (default) or <c>instances</c>. Honoured only by the stateful <c>session</c> <c>query</c> path.</summary>
     public string? RankBy { get; init; }
 
@@ -544,6 +547,7 @@ internal sealed record CliOptions
             new StringOptionDescriptor((state, value) => state.Handle = value, "--handle"),
             new StringOptionDescriptor((state, value) => state.LatestOfKind = value, "--latest-of-kind"),
             new StringOptionDescriptor((state, value) => state.View = value, "--view"),
+            new StringOptionDescriptor((state, value) => state.TraceId = value, "--trace-id"),
             new StringOptionDescriptor((state, value) => state.RankBy = value, "--rank-by"),
             new StringOptionDescriptor((state, value) => state.TypeFilter = value, "--type-filter"),
             new StringOptionDescriptor((state, value) => state.Address = value, "--address"),
@@ -672,6 +676,8 @@ internal sealed record CliOptions
         public string? LatestOfKind { get; set; }
 
         public string? View { get; set; }
+
+        public string? TraceId { get; set; }
 
         public string? RankBy { get; set; }
 
@@ -808,6 +814,7 @@ internal sealed record CliOptions
                 Handle = Handle,
                 LatestOfKind = LatestOfKind,
                 View = View,
+                TraceId = TraceId,
                 RankBy = RankBy,
                 TypeFilter = TypeFilter,
                 Address = Address,
