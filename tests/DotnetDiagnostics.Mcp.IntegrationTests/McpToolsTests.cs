@@ -983,16 +983,12 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
     public async Task CollectBatch_CountersAndGc_PopulatesNarrowBoundedGen2MeterEvidence()
     {
         const int retainedEventLimit = 200;
-        // Generous safety cap only — not a pacing budget. #823 previously interleaved fixed
-        // Task.Delay(500ms) pauses every 25 forced collections, which ate ~12s of the 20s shared
-        // window and left too little time for 600 blocking Gen2 GCs to complete on a loaded
-        // Windows CI runner (observed landing consistently around 120-131, well under
-        // retainedEventLimit — a regression, not the original occasional flake). Drive forced
-        // Gen2 collections back-to-back with no artificial pacing, adaptively polling
-        // GC.CollectionCount(2) so the loop naturally keeps forcing collections for the whole
-        // window regardless of how long each blocking GC actually takes on the host, and stops
-        // early only once a comfortable safety margin over retainedEventLimit is reached (#822).
-        const int forcedCollectionLimit = retainedEventLimit * 3;
+        // Keep the workload active for the whole collector call instead of stopping after a finite
+        // burst. Concurrent collect_batch EventPipe sessions can take longer than the fixed startup
+        // delay to arm on loaded Windows runners, so an early finite burst is partly or entirely
+        // missed. A small pace also avoids flooding the stream and turning shutdown drain into the
+        // thing under test.
+        var collectionPace = TimeSpan.FromMilliseconds(20);
         await using var client = await ConnectAsync();
         using var driverCts = new CancellationTokenSource();
         var driver = Task.Run(async () =>
@@ -1000,12 +996,11 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             try
             {
                 await Task.Delay(TimeSpan.FromMilliseconds(1500), driverCts.Token);
-                var startingGen2Count = GC.CollectionCount(2);
-                while (!driverCts.IsCancellationRequested &&
-                       GC.CollectionCount(2) - startingGen2Count < forcedCollectionLimit)
+                while (!driverCts.IsCancellationRequested)
                 {
                     _ = new byte[128 * 1024];
                     GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: false);
+                    await Task.Delay(collectionPace, driverCts.Token);
                 }
             }
             catch (OperationCanceledException) when (driverCts.IsCancellationRequested)
