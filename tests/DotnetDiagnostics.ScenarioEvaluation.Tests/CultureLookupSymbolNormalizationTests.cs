@@ -61,6 +61,25 @@ public sealed class CultureLookupSymbolNormalizationTests
     }
 
     [Fact]
+    public void GlobalizationHashLeafInvariant_FailsForParameterlessCompareInfoGetHashCodeOnly()
+    {
+        // Regression guard: `CompareInfo.GetHashCode()` (parameterless — hashes the CompareInfo
+        // object itself) must never satisfy the invariant, even at a high magnitude, because it is
+        // unrelated to the culture-aware string/span hashing this scenario attributes CPU cost to.
+        var evidence = WithSignalBuckets(
+            [
+                new ObservedSignalBucket("System.Globalization.CompareInfo.GetHashCode()", 60, "%"),
+                new ObservedSignalBucket("System.Threading.Monitor.Wait(class System.Object,int32)", 17, "%"),
+            ]);
+
+        var report = ScenarioEvaluator.CreateReport(Manifest, evidence);
+
+        var result = report.Evidence.Single(item => item.Id == "globalization-hash-leaf");
+        result.Passed.Should().BeFalse(result.Detail);
+        result.Detail.Should().Contain("no buckets matched");
+    }
+
+    [Fact]
     public void GlobalizationHashLeafInvariant_FailsWhenGlobalizationHashingIsAbsent()
     {
         var evidence = WithSignalBuckets(

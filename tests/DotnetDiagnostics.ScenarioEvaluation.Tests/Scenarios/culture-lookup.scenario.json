@@ -32,7 +32,7 @@
       "id": "globalization-hash-leaf",
       "kind": "signalBucketMatch",
       "signal": "cpu.self-time.concentration",
-      "containsAny": [ "IcuGetHashCodeOfString", "NlsGetHashCodeOfString", "GetHashCodeOfString", "GetHashCodeOfStringCore", "CompareInfo.GetHashCode" ],
+      "containsAny": [ "IcuGetHashCodeOfString", "NlsGetHashCodeOfString", "GetHashCodeOfString", "GetHashCodeOfStringCore" ],
       "comparison": "greaterThanOrEqual",
       "threshold": 20,
       "aggregation": "sum"
