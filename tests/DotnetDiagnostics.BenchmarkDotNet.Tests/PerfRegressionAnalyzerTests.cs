@@ -542,6 +542,28 @@ public sealed class PerfAttributionDecisionTests
         decision.AttributionRequested.Should().BeTrue();
         decision.Forced.Should().BeTrue();
         decision.Reason.Should().Contain("Manual workflow_dispatch input forced");
+        // Forcing attribution must not suppress the real measurement analysis: the genuinely
+        // no-signal run set above still yields the actual computed verdict (Inconclusive), not a
+        // placeholder value.
+        decision.MeasurementVerdict.Should().Be(PerfRegressionVerdict.Inconclusive);
+        decision.Reason.Should().Contain("Inconclusive");
+    }
+
+    [Fact]
+    public void ForcedDispatch_WithGenuineRegressionSignal_StillReportsTheRealMeasurementVerdict()
+    {
+        var runs = Runs(
+            baselineTimes: [100, 100, 100],
+            candidateTimes: [120, 120, 120],
+            baselineAllocations: [64, 64, 64],
+            candidateAllocations: [64, 64, 64]);
+
+        var decision = PerfRegressionAnalyzer.DecideAttribution(runs, forceAttribution: true);
+
+        decision.AttributionRequested.Should().BeTrue();
+        decision.Forced.Should().BeTrue();
+        decision.MeasurementVerdict.Should().Be(PerfRegressionVerdict.Regression);
+        decision.Reason.Should().Contain("Regression");
     }
 
     [Fact]

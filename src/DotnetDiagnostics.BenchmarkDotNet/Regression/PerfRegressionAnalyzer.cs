@@ -145,19 +145,24 @@ public static class PerfRegressionAnalyzer
         ArgumentNullException.ThrowIfNull(runs);
         policy ??= new PerfRegressionPolicy();
 
+        var measurementOnly = Analyze(runs, diagnosticRun: null, policy);
+
         if (forceAttribution)
         {
+            var notes = new List<string>(measurementOnly.Notes)
+            {
+                "Forced attribution bypasses the measurement-only threshold check.",
+            };
             return new PerfAttributionDecision(
                 PerfAttributionDecision.SchemaV1,
                 DateTimeOffset.UtcNow,
                 AttributionRequested: true,
                 Forced: true,
-                MeasurementVerdict: PerfRegressionVerdict.Inconclusive,
-                Reason: "Manual workflow_dispatch input forced EventPipe attribution regardless of the measured signal.",
-                Notes: ["Forced attribution bypasses the measurement-only threshold check."]);
+                MeasurementVerdict: measurementOnly.Verdict,
+                Reason: "Manual workflow_dispatch input forced EventPipe attribution regardless of the measured "
+                    + $"signal (measurement-only verdict: {measurementOnly.Verdict}).",
+                notes);
         }
-
-        var measurementOnly = Analyze(runs, diagnosticRun: null, policy);
 
         if (!measurementOnly.Compatibility.Compatible)
         {
