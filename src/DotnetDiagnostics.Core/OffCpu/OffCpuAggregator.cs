@@ -1,3 +1,5 @@
+using DotnetDiagnostics.Core.NativeLockContention;
+
 namespace DotnetDiagnostics.Core.OffCpu;
 
 /// <summary>
@@ -51,12 +53,13 @@ internal sealed class OffCpuAggregationBuilder
     // scope for issue #829) — cap the number of distinct syscalls reported per stack group.
     private const int MaxSyscallsPerStack = 8;
 
-    private readonly Dictionary<string, (long Micros, long Count, Dictionary<string, long> States, List<OffCpuFrame> Frames, Dictionary<string, (long Count, long Micros)> Syscalls)> _byStack
+    private readonly Dictionary<string, StackAggregate> _byStack
         = new(StringComparer.Ordinal);
     private readonly Dictionary<int, (string Comm, long Micros, long Switches, Dictionary<string, long> LeafCounts)> _byThread = [];
     private long _totalMicros;
     private long _censoredCount;
     private long _censoredMicros;
+    private readonly NativeContentionEvidenceAccumulator _nativeContention = new();
 
     public void AddSpan(OffCpuSpan span)
     {
@@ -78,7 +81,7 @@ internal sealed class OffCpuAggregationBuilder
 
         if (!_byStack.TryGetValue(key, out var agg))
         {
-            agg = (0, 0, new Dictionary<string, long>(StringComparer.Ordinal), frames, new Dictionary<string, (long, long)>(StringComparer.Ordinal));
+            agg = new StackAggregate(frames);
         }
 
         agg.Micros += span.DurationMicros;
@@ -89,6 +92,9 @@ internal sealed class OffCpuAggregationBuilder
             var (prevCount, prevMicros) = agg.Syscalls.TryGetValue(span.Syscall, out var existing) ? existing : (0L, 0L);
             agg.Syscalls[span.Syscall] = (prevCount + 1, prevMicros + span.DurationMicros);
         }
+        var nativeContentionClassification = NativeLockContentionUx.ClassifyOffCpuSpan(span);
+        agg.NativeContention.Add(span, nativeContentionClassification);
+        _nativeContention.Add(span, nativeContentionClassification);
         _byStack[key] = agg;
 
         if (!_byThread.TryGetValue(span.Tid, out var threadAgg))
@@ -112,6 +118,15 @@ internal sealed class OffCpuAggregationBuilder
         string symbolSource,
         IReadOnlyList<string>? notes = null)
     {
+        var notesList = notes is { Count: > 0 } ? notes : null;
+        if (_censoredCount > 0)
+        {
+            var merged = new List<string>(notesList ?? Array.Empty<string>());
+            merged.Add($"{_censoredCount} span(s) ({_censoredMicros} µs) were censored: the thread was still blocked when the capture window ended, so the duration is a lower bound.");
+            notesList = merged;
+        }
+
+        var hasEvidenceDegradation = NativeLockContentionUx.HasBlockingEvidenceDegradation(notesList);
         var stacks = _byStack
             .Select(kv =>
             {
@@ -127,13 +142,18 @@ internal sealed class OffCpuAggregationBuilder
                         .Take(MaxSyscallsPerStack)
                         .ToList()
                     : null;
+                var evidence = NativeLockContentionUx.BuildOffCpuEvidence(
+                    kv.Value.NativeContention.ToStatistics(),
+                    notesList,
+                    hasEvidenceDegradation);
                 return new OffCpuStackHotspot(
                     LeafFrame: string.IsNullOrEmpty(leaf.Module) ? leaf.Method : $"{leaf.Module}!{leaf.Method}",
                     OffCpuMicros: kv.Value.Micros,
                     OccurrenceCount: kv.Value.Count,
                     DominantState: dominant,
                     Stack: kv.Value.Frames,
-                    SyscallBreakdown: syscallBreakdown);
+                    SyscallBreakdown: syscallBreakdown,
+                    NativeContentionEvidence: evidence);
             })
             .OrderByDescending(s => s.OffCpuMicros)
             .ToList();
@@ -152,13 +172,10 @@ internal sealed class OffCpuAggregationBuilder
             .OrderByDescending(t => t.OffCpuMicros)
             .ToList();
 
-        var notesList = notes is { Count: > 0 } ? notes : null;
-        if (_censoredCount > 0)
-        {
-            var merged = new List<string>(notesList ?? Array.Empty<string>());
-            merged.Add($"{_censoredCount} span(s) ({_censoredMicros} µs) were censored: the thread was still blocked when the capture window ended, so the duration is a lower bound.");
-            notesList = merged;
-        }
+        var aggregateNativeContentionEvidence = NativeLockContentionUx.BuildOffCpuEvidence(
+            _nativeContention.ToStatistics(),
+            notesList,
+            hasEvidenceDegradation);
 
         var summary = new OffCpuSnapshot(
             ProcessId: processId,
@@ -171,7 +188,8 @@ internal sealed class OffCpuAggregationBuilder
             SymbolSource: symbolSource,
             CensoredSpans: _censoredCount,
             CensoredOffCpuMicros: _censoredMicros,
-            Notes: notesList);
+            Notes: notesList,
+            NativeContentionEvidence: aggregateNativeContentionEvidence);
 
         var artifact = new OffCpuSnapshotArtifact(
             ProcessId: processId,
@@ -184,8 +202,78 @@ internal sealed class OffCpuAggregationBuilder
             SymbolSource: symbolSource,
             CensoredSpans: _censoredCount,
             CensoredOffCpuMicros: _censoredMicros,
-            Notes: notesList);
+            Notes: notesList,
+            NativeContentionEvidence: aggregateNativeContentionEvidence);
 
         return new OffCpuSampleResult(summary, artifact);
+    }
+
+    private sealed class StackAggregate(IReadOnlyList<OffCpuFrame> frames)
+    {
+        public long Micros;
+        public long Count;
+        public Dictionary<string, long> States { get; } = new(StringComparer.Ordinal);
+        public IReadOnlyList<OffCpuFrame> Frames { get; } = frames;
+        public Dictionary<string, (long Count, long Micros)> Syscalls { get; } = new(StringComparer.Ordinal);
+        public NativeContentionEvidenceAccumulator NativeContention { get; } = new();
+    }
+
+    private sealed class NativeContentionEvidenceAccumulator
+    {
+        private long _nativeSyncSpanCount;
+        private long _closedNativeSyncSpanCount;
+        private long _censoredNativeSyncSpanCount;
+        private long _nativeSyncMicros;
+        private long _closedNativeSyncMicros;
+        private long _censoredNativeSyncMicros;
+        private long _ambiguousNativeSyncFrameSpanCount;
+        private long _ambiguousNativeSyncFrameMicros;
+        private bool _hasProbableNonFutexNativeSync;
+
+        public void Add(OffCpuSpan span, NativeContentionSpanClassification classification)
+        {
+            switch (classification)
+            {
+                case NativeContentionSpanClassification.ConfirmedFutexBlocking:
+                    AddNativeSyncSpan(span);
+                    break;
+                case NativeContentionSpanClassification.ProbableNativeSync:
+                    _hasProbableNonFutexNativeSync = true;
+                    AddNativeSyncSpan(span);
+                    break;
+                case NativeContentionSpanClassification.AmbiguousNativeSyncFrame:
+                    _ambiguousNativeSyncFrameSpanCount++;
+                    _ambiguousNativeSyncFrameMicros += span.DurationMicros;
+                    break;
+            }
+        }
+
+        public NativeContentionEvidenceStatistics ToStatistics()
+            => new(
+                _nativeSyncSpanCount,
+                _closedNativeSyncSpanCount,
+                _censoredNativeSyncSpanCount,
+                _nativeSyncMicros,
+                _closedNativeSyncMicros,
+                _censoredNativeSyncMicros,
+                _ambiguousNativeSyncFrameSpanCount,
+                _ambiguousNativeSyncFrameMicros,
+                _hasProbableNonFutexNativeSync);
+
+        private void AddNativeSyncSpan(OffCpuSpan span)
+        {
+            _nativeSyncSpanCount++;
+            _nativeSyncMicros += span.DurationMicros;
+            if (span.IsCensored)
+            {
+                _censoredNativeSyncSpanCount++;
+                _censoredNativeSyncMicros += span.DurationMicros;
+            }
+            else
+            {
+                _closedNativeSyncSpanCount++;
+                _closedNativeSyncMicros += span.DurationMicros;
+            }
+        }
     }
 }

@@ -24,6 +24,7 @@ namespace DotnetDiagnostics.Core.NativeLockContention;
 /// <param name="SamplePeriod">perf sample period used: one recorded callchain per this many mutex-call hits.</param>
 /// <param name="SymbolSource">Aggregate symbol-resolution quality across all frames.</param>
 /// <param name="Notes">Best-effort caveats (overhead, partial probes, no samples, wait-vs-call-count, etc.) the LLM can disclose.</param>
+/// <param name="ContentionEvidence">Honest evidence classification for this sample. Native-lock uprobes report lock activity only.</param>
 public sealed record NativeLockContentionSample(
     int ProcessId,
     DateTimeOffset StartedAt,
@@ -34,7 +35,8 @@ public sealed record NativeLockContentionSample(
     string LibcPath,
     long SamplePeriod,
     string SymbolSource,
-    IReadOnlyList<string>? Notes = null);
+    IReadOnlyList<string>? Notes = null,
+    NativeContentionEvidence? ContentionEvidence = null);
 
 /// <summary>
 /// Pair returned by <see cref="INativeLockContentionSampler"/>: the lightweight summary plus the

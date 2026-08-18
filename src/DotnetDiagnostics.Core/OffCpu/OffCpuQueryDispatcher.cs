@@ -38,14 +38,16 @@ public static class OffCpuQueryDispatcher
                 new OffCpuQueryView(view, artifact.ProcessId, artifact.TotalOffCpuMicros,
                     Stacks: null,
                     Threads: artifact.Threads.Take(topN).ToList(),
-                    Stack: null),
+                    Stack: null,
+                    NativeContentionEvidence: artifact.NativeContentionEvidence),
                 $"{Math.Min(topN, artifact.Threads.Count)} of {artifact.Threads.Count} threads ranked by off-CPU micros."),
             "stack" => RenderStack(artifact, stackRank),
             "topstacks" or _ => DiagnosticResult.Ok(
                 new OffCpuQueryView(view, artifact.ProcessId, artifact.TotalOffCpuMicros,
                     Stacks: artifact.Stacks.Take(topN).ToList(),
                     Threads: null,
-                    Stack: null),
+                    Stack: null,
+                    NativeContentionEvidence: artifact.NativeContentionEvidence),
                 $"Top {Math.Min(topN, artifact.Stacks.Count)} blocking stacks of {artifact.Stacks.Count} distinct."),
         };
     }
@@ -68,7 +70,7 @@ public static class OffCpuQueryDispatcher
         var s = artifact.Stacks[idx];
         return DiagnosticResult.Ok(
             new OffCpuQueryView("stack", artifact.ProcessId, artifact.TotalOffCpuMicros,
-                Stacks: null, Threads: null, Stack: s),
+                Stacks: null, Threads: null, Stack: s, NativeContentionEvidence: artifact.NativeContentionEvidence),
             $"Rank {stackRank}/{artifact.Stacks.Count}: {s.LeafFrame} — {s.OffCpuMicros / 1000.0:F1} ms across {s.OccurrenceCount} switches (state={s.DominantState}).");
     }
 

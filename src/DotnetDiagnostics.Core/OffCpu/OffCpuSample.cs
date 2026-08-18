@@ -1,3 +1,5 @@
+using DotnetDiagnostics.Core.NativeLockContention;
+
 namespace DotnetDiagnostics.Core.OffCpu;
 
 /// <summary>
@@ -16,6 +18,7 @@ namespace DotnetDiagnostics.Core.OffCpu;
 /// <param name="CensoredSpans">Number of off-CPU spans whose IN event was never seen before capture ended; <see cref="TotalOffCpuMicros"/> includes their lower-bound contribution.</param>
 /// <param name="CensoredOffCpuMicros">Subset of <see cref="TotalOffCpuMicros"/> attributable to censored spans (truncated at capture end).</param>
 /// <param name="Notes">Best-effort warnings (size caps hit, late-attribution, partial TID set, etc.) so the LLM can disclose data-quality caveats.</param>
+/// <param name="NativeContentionEvidence">Aggregated native synchronization evidence derived from syscall-correlated off-CPU spans.</param>
 public sealed record OffCpuSnapshot(
     int ProcessId,
     DateTimeOffset StartedAt,
@@ -27,7 +30,8 @@ public sealed record OffCpuSnapshot(
     string SymbolSource,
     long CensoredSpans = 0,
     long CensoredOffCpuMicros = 0,
-    IReadOnlyList<string>? Notes = null);
+    IReadOnlyList<string>? Notes = null,
+    NativeContentionEvidence? NativeContentionEvidence = null);
 
 /// <summary>A blocking stack ranked by the total micros spent off-CPU below it.</summary>
 /// <param name="LeafFrame">Innermost frame in the blocking stack (module!method, or just method for kernel frames).</param>
@@ -44,13 +48,15 @@ public sealed record OffCpuSnapshot(
 /// (e.g. Linux: no matching perf.data <c>raw_syscalls</c> event; Windows: correlation is
 /// best-effort, see <c>EtwOffCpuSampler</c>).
 /// </param>
+/// <param name="NativeContentionEvidence">Per-stack native synchronization evidence; null only for older/manual artifacts that did not classify it.</param>
 public sealed record OffCpuStackHotspot(
     string LeafFrame,
     long OffCpuMicros,
     long OccurrenceCount,
     string DominantState,
     IReadOnlyList<OffCpuFrame> Stack,
-    IReadOnlyList<OffCpuSyscallAttribution>? SyscallBreakdown = null);
+    IReadOnlyList<OffCpuSyscallAttribution>? SyscallBreakdown = null,
+    NativeContentionEvidence? NativeContentionEvidence = null);
 
 /// <summary>
 /// One syscall/wait-reason label's share of a stack group's off-CPU time (issue #829).
@@ -91,7 +97,8 @@ public sealed record OffCpuSnapshotArtifact(
     string SymbolSource,
     long CensoredSpans = 0,
     long CensoredOffCpuMicros = 0,
-    IReadOnlyList<string>? Notes = null);
+    IReadOnlyList<string>? Notes = null,
+    NativeContentionEvidence? NativeContentionEvidence = null);
 
 /// <summary>Per-thread off-CPU rollup ranked by total micros blocked.</summary>
 public sealed record OffCpuThreadView(
@@ -115,4 +122,5 @@ public sealed record OffCpuQueryView(
     long TotalOffCpuMicros,
     IReadOnlyList<OffCpuStackHotspot>? Stacks,
     IReadOnlyList<OffCpuThreadView>? Threads,
-    OffCpuStackHotspot? Stack);
+    OffCpuStackHotspot? Stack,
+    NativeContentionEvidence? NativeContentionEvidence = null);

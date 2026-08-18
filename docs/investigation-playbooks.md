@@ -141,19 +141,23 @@ needs for drilldown.
 4. Drill with `query_snapshot(handle, view="byCallSite")` to find the hottest contended method, then `view="byOwner"` to see which owner thread is repeatedly holding the monitor.
 5. If contention is severe but the call site remains framework-heavy, pair it with `collect_thread_snapshot(view="lock-graph")` while the incident is live.
 6. To confirm the blocking is genuinely a **lock** rather than disk/network I/O masquerading as
-   contention, run `collect_sample(kind="off_cpu")` over the same window and inspect each hot
-   stack's `syscallBreakdown` (issue #829): a lock/monitor wait shows up as `futex` (Linux) or the
-   normalized `Sync` bucket (Windows); a stack dominated by `read`/`recvfrom` or `FileIO:Read`/
-   `TcpIp:Recv` instead points at a downstream I/O dependency, not in-process contention.
+   contention, run `collect_sample(kind="off_cpu")` over the same window and inspect
+   `nativeContentionEvidence` plus each hot stack's `syscallBreakdown` (issue #829/#840). Linux
+   `confirmed-blocking` requires closed futex/native-sync off-CPU spans on target threads.
+   Censored/open spans, capture caps, or non-futex/native-sync buckets stay `probable-blocking`.
+   Native synchronization-looking frames without syscall correlation remain ambiguous (`none`), and
+   stacks dominated by `read`/`recvfrom` or `FileIO:Read`/`TcpIp:Recv` point at downstream I/O.
 7. **P/Invoke-heavy code blocked in native mutex contention (issue #830).** `collect_events(kind="contention")`
    only sees *managed* `Monitor.Enter`/`lock` waits — if `totalEvents` stays low but threads still
    look blocked (thread snapshots show native frames, or `collect_sample(kind="off_cpu")` shows
    blocking under a P/Invoke boundary), the lock is likely a **native** `pthread_mutex_lock` held
    by unmanaged code (a native library, driver, or the runtime itself), invisible to the managed
    contention provider. On Linux, escalate to `collect_sample(kind="native-lock-contention",
-   durationSeconds=10)` to attribute the mutex hits to a call site with `query_snapshot(view="call-tree")`
-   — remember it counts **calls**, not confirmed waits, so corroborate a suspiciously hot call site
-   with `collect_sample(kind="off_cpu")` before concluding it's actually blocking. There is no
+   durationSeconds=10)` to attribute mutex **activity** to a call site with
+   `query_snapshot(view="call-tree")`. Its evidence level is `activity` even when the call count is
+   high: it samples `pthread_mutex_lock`/`unlock` entry points and does not measure wait duration,
+   owner/waiter state, or return latency. Corroborate a suspiciously hot call site with
+   `collect_sample(kind="off_cpu")` before concluding it actually blocked. There is no
    Windows backend for this capability yet (see [`tool-reference.md`](./tool-reference.md#collect_sample)
    for the investigated-and-rejected ETW path); on Windows, `collect_sample(kind="off_cpu")` remains
    the best available signal for native blocking.

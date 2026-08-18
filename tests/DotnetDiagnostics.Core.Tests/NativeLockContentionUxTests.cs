@@ -139,6 +139,24 @@ public sealed class NativeLockContentionUxTests
     }
 
     [Fact]
+    public async Task CollectNativeLockContentionSample_ClassifiesNativeLockSamples_AsActivityOnly()
+    {
+        var result = await SamplerUseCases.CollectNativeLockContentionSample(
+            new StubNativeLockContentionSampler(
+                new Hotspot(new SampledFrame("libnativecart.so", "cart_lock_bucket"), InclusiveSamples: 18, ExclusiveSamples: 4)),
+            new MemoryDiagnosticHandleStore(),
+            new FixedProcessContextResolver(canSampleNativeLockContention: true),
+            processId: Pid,
+            durationSeconds: 5);
+
+        result.Error.Should().BeNull();
+        result.Data!.ContentionEvidence.Should().NotBeNull();
+        result.Data!.ContentionEvidence!.Level.Should().Be(NativeContentionEvidenceLevels.Activity);
+        result.Summary.Should().Contain("Evidence level: activity");
+        result.Summary.Should().NotContain("confirmed", because: "pthread mutex activity alone must never be reported as confirmed blocking");
+    }
+
+    [Fact]
     public async Task CollectNativeLockContentionSample_OmitsCallTreeHint_WhenInlineCallerIsUseful()
     {
         var result = await SamplerUseCases.CollectNativeLockContentionSample(
@@ -155,6 +173,179 @@ public sealed class NativeLockContentionUxTests
         result.Hints.Should().NotContain(h => h.NextTool == "query_snapshot" &&
                                              h.Reason.Contains("call tree", StringComparison.Ordinal));
         result.Hints.Any(IsOffCpuHint).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task CollectNativeLockContentionSample_WhenOffCpuUnavailable_KeepsActivityOnlyAndSuggestsCapabilities()
+    {
+        var result = await SamplerUseCases.CollectNativeLockContentionSample(
+            new StubNativeLockContentionSampler(
+                new Hotspot(new SampledFrame("libnativecart.so", "cart_lock_bucket"), InclusiveSamples: 18, ExclusiveSamples: 4)),
+            new MemoryDiagnosticHandleStore(),
+            new FixedProcessContextResolver(canSampleNativeLockContention: true, canSampleOffCpu: false),
+            processId: Pid,
+            durationSeconds: 5);
+
+        result.Error.Should().BeNull();
+        result.Data!.ContentionEvidence!.Level.Should().Be(NativeContentionEvidenceLevels.Activity);
+        result.Hints.Should().Contain(h => h.NextTool == "inspect_process" &&
+                                           h.Reason.Contains("activity-only", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task CollectOffCpuSample_WithClosedFutexSpan_ClassifiesConfirmedBlocking()
+    {
+        var result = await SamplerUseCases.CollectOffCpuSample(
+            new StubOffCpuSampler(OffCpuSnapshotWith(
+                new OffCpuStackHotspot(
+                    "pthread_mutex_lock",
+                    OffCpuMicros: 25_000,
+                    OccurrenceCount: 1,
+                    DominantState: "S",
+                    Stack: new[] { new OffCpuFrame("libc.so.6", "pthread_mutex_lock") },
+                    SyscallBreakdown: new[] { new OffCpuSyscallAttribution("futex", 1, 25_000) },
+                    NativeContentionEvidence: new NativeContentionEvidence(
+                        NativeContentionEvidenceLevels.ConfirmedBlocking,
+                        "closed futex",
+                        NativeSyncSpanCount: 1,
+                        ClosedNativeSyncSpanCount: 1,
+                        NativeSyncOffCpuMicros: 25_000,
+                        ClosedNativeSyncOffCpuMicros: 25_000)))),
+            new MemoryDiagnosticHandleStore(),
+            new FixedProcessContextResolver(canSampleNativeLockContention: true),
+            new SymbolServerAllowlist(null),
+            principalAllowsSymbolsRemote: false,
+            processId: Pid,
+            durationSeconds: 5);
+
+        result.Error.Should().BeNull();
+        result.Data!.NativeContentionEvidence!.Level.Should().Be(NativeContentionEvidenceLevels.ConfirmedBlocking);
+        result.Summary.Should().Contain("Native sync blocking evidence: confirmed-blocking");
+        result.Hints.Single(IsNativeLockContentionHint).Reason.Should().Contain("confirmed");
+    }
+
+    [Fact]
+    public async Task CollectOffCpuSample_WithCensoredOnlyFutexSpan_ClassifiesProbableBlocking()
+    {
+        var result = await SamplerUseCases.CollectOffCpuSample(
+            new StubOffCpuSampler(OffCpuSnapshotWith(
+                new OffCpuStackHotspot(
+                    "pthread_mutex_lock",
+                    OffCpuMicros: 25_000,
+                    OccurrenceCount: 1,
+                    DominantState: "S",
+                    Stack: new[] { new OffCpuFrame("libc.so.6", "pthread_mutex_lock") },
+                    SyscallBreakdown: new[] { new OffCpuSyscallAttribution("futex", 1, 25_000) },
+                    NativeContentionEvidence: new NativeContentionEvidence(
+                        NativeContentionEvidenceLevels.ProbableBlocking,
+                        "censored futex",
+                        NativeSyncSpanCount: 1,
+                        CensoredNativeSyncSpanCount: 1,
+                        NativeSyncOffCpuMicros: 25_000,
+                        CensoredNativeSyncOffCpuMicros: 25_000)))),
+            new MemoryDiagnosticHandleStore(),
+            new FixedProcessContextResolver(canSampleNativeLockContention: true),
+            new SymbolServerAllowlist(null),
+            principalAllowsSymbolsRemote: false,
+            processId: Pid,
+            durationSeconds: 5);
+
+        result.Error.Should().BeNull();
+        result.Data!.NativeContentionEvidence!.Level.Should().Be(NativeContentionEvidenceLevels.ProbableBlocking);
+        result.Data.NativeContentionEvidence.ClosedNativeSyncSpanCount.Should().Be(0);
+        result.Summary.Should().Contain("Native sync blocking evidence: probable-blocking");
+    }
+
+    [Fact]
+    public async Task CollectOffCpuSample_WithAmbiguousNativeFrameButNoFutex_DoesNotSuggestNativeLockContention()
+    {
+        var result = await SamplerUseCases.CollectOffCpuSample(
+            new StubOffCpuSampler(OffCpuSnapshotWith(
+                new OffCpuStackHotspot(
+                    "pthread_mutex_lock",
+                    OffCpuMicros: 10_000,
+                    OccurrenceCount: 2,
+                    DominantState: "S",
+                    Stack: new[] { new OffCpuFrame("libc.so.6", "pthread_mutex_lock") }))),
+            new MemoryDiagnosticHandleStore(),
+            new FixedProcessContextResolver(canSampleNativeLockContention: true),
+            new SymbolServerAllowlist(null),
+            principalAllowsSymbolsRemote: false,
+            processId: Pid,
+            durationSeconds: 5);
+
+        result.Error.Should().BeNull();
+        result.Data!.NativeContentionEvidence!.Level.Should().Be(NativeContentionEvidenceLevels.None);
+        result.Data.NativeContentionEvidence.AmbiguousNativeSyncFrameSpanCount.Should().Be(2);
+        result.Hints.Any(IsNativeLockContentionHint).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task CollectOffCpuSample_WithPartialRawSyscallFallback_DoesNotPromoteNativeFrames()
+    {
+        var snapshot = OffCpuSnapshotWith(
+            new OffCpuStackHotspot(
+                "pthread_mutex_lock",
+                OffCpuMicros: 10_000,
+                OccurrenceCount: 1,
+                DominantState: "S",
+                Stack: new[] { new OffCpuFrame("libc.so.6", "pthread_mutex_lock") }))
+            with
+        {
+            Notes =
+            [
+                "Syscall companion capture failed with exit code 86; base off-CPU stacks were returned without syscall labels.",
+            ],
+        };
+
+        var result = await SamplerUseCases.CollectOffCpuSample(
+            new StubOffCpuSampler(snapshot),
+            new MemoryDiagnosticHandleStore(),
+            new FixedProcessContextResolver(canSampleNativeLockContention: true),
+            new SymbolServerAllowlist(null),
+            principalAllowsSymbolsRemote: false,
+            processId: Pid,
+            durationSeconds: 5);
+
+        result.Error.Should().BeNull();
+        result.Data!.NativeContentionEvidence!.Level.Should().Be(NativeContentionEvidenceLevels.None);
+        result.Data.NativeContentionEvidence.UncertaintyNotes.Should().Contain(n => n.Contains("failed with exit code 86", StringComparison.Ordinal));
+        result.Hints.Any(IsNativeLockContentionHint).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task CollectOffCpuSample_WithTruncatedFutexEvidence_DowngradesToProbable()
+    {
+        var snapshot = OffCpuSnapshotWith(
+            new OffCpuStackHotspot(
+                "pthread_mutex_lock",
+                OffCpuMicros: 25_000,
+                OccurrenceCount: 1,
+                DominantState: "S",
+                Stack: new[] { new OffCpuFrame("libc.so.6", "pthread_mutex_lock") },
+                SyscallBreakdown: new[] { new OffCpuSyscallAttribution("futex", 1, 25_000) }))
+            with
+        {
+            Notes =
+            [
+                "Syscall correlation hit the 500,000-interval cap; 10 syscall interval(s) were dropped.",
+            ],
+        };
+
+        var result = await SamplerUseCases.CollectOffCpuSample(
+            new StubOffCpuSampler(snapshot),
+            new MemoryDiagnosticHandleStore(),
+            new FixedProcessContextResolver(canSampleNativeLockContention: true),
+            new SymbolServerAllowlist(null),
+            principalAllowsSymbolsRemote: false,
+            processId: Pid,
+            durationSeconds: 5);
+
+        result.Error.Should().BeNull();
+        result.Data!.NativeContentionEvidence!.Level.Should().Be(NativeContentionEvidenceLevels.ProbableBlocking);
+        result.Data.NativeContentionEvidence.ClosedNativeSyncSpanCount.Should().Be(0);
+        result.Data.NativeContentionEvidence.NativeSyncSpanCount.Should().Be(1);
+        result.Data.NativeContentionEvidence.UncertaintyNotes.Should().Contain(n => n.Contains("cap", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
@@ -329,7 +520,7 @@ public sealed class NativeLockContentionUxTests
         }
     }
 
-    private sealed class FixedProcessContextResolver(bool canSampleNativeLockContention) : IProcessContextResolver
+    private sealed class FixedProcessContextResolver(bool canSampleNativeLockContention, bool canSampleOffCpu = true) : IProcessContextResolver
     {
         public Task<ProcessContextResolution> ResolveAsync(int? requestedProcessId, CancellationToken cancellationToken = default)
         {
@@ -343,7 +534,7 @@ public sealed class NativeLockContentionUxTests
                 RuntimeVersion: "10.0.0",
                 BindingSource: "test")
             {
-                CanSampleOffCpu = true,
+                CanSampleOffCpu = canSampleOffCpu,
                 CanSampleNativeLockContention = canSampleNativeLockContention,
             };
             return Task.FromResult(new ProcessContextResolution(context, Error: null));

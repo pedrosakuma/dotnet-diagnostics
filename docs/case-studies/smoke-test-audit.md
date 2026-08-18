@@ -796,6 +796,29 @@ application/native caller below `[unknown]`, perf plumbing, or the pthread entry
 points, PR2 now reports that first useful caller inline and omits the call-tree
 hint unless the useful frame was displaced or no useful caller exists.
 
+<a id="contention-evidence-model-840-smoke-2026-08-17"></a>
+
+## Native contention evidence model #840 smoke — 2026-08-17
+
+This addendum measured the #840 evidence taxonomy on top of the pushed split-capture parent branch
+(`pedrosakuma-off-cpu-split-capture-bounds`, PR #843). The MCP server and a scratch native-pthread
+.NET target were published as self-contained `linux-x64` artifacts, then run non-interactively as
+root under WSL2 with `PERF=/usr/lib/linux-tools/6.8.0-137-generic/perf`.
+
+The harness used MCP stdio `tools/call` requests only. Each high-risk sampler first returned the
+request-bound safety acknowledgement preview, then the harness retried the same tool call with that
+exact acknowledgement. No `inspect_process`, capabilities, or preflight tool call was made.
+
+| Workload | MCP tool calls | Result |
+|---|---:|---|
+| Blocking native pthread workload (`NativeSmoke blocking 5 2`) sampled with `collect_sample(kind="off_cpu", durationSeconds=1, topN=10)` | 2 (safety preview + acknowledged collect) | `probable-blocking`, not confirmed: **200** futex/native-sync spans, **198 closed** / **2 censored**, **1,603.9 ms closed** futex time. Syscall attribution: top stack `pthread_mutex_lock` / `__lll_lock_wait` / kernel futex with `syscallBreakdown=[{ name: "futex", count: 200, micros: 1614354 }]`. Notes reported 3 censored spans overall. The result correctly avoided `confirmed-blocking` because censored/open spans were present. |
+| High-activity uncontended native pthread workload (`NativeSmoke activity 4`) sampled with `collect_sample(kind="native-lock-contention", durationSeconds=2, nativeLockContentionSamplePeriod=1)` | 2 (safety preview + acknowledged collect) | `activity`: **3,380** sampled `pthread_mutex_lock`/`pthread_mutex_unlock` calls, first useful caller `run_native_activity`, `sampledLockCallCount=3380`, and zero native-sync/off-CPU span counts. The summary and payload kept the caveat that mutex-call samples are activity only and do not prove blocking. |
+
+Before tuning the scratch workload, WSL hit the collectors' bounded perf caps (128 MiB sched off-CPU
+and 512 MiB native-lock perf data). Those cap failures returned structured errors rather than false
+blocking evidence; the successful smoke above used shorter/lower-volume windows to measure the
+classification path.
+
 ### Positive native-caller smoke
 
 After the ambiguous `BadCodeSample` result, a second WSL-only smoke used a
