@@ -97,4 +97,13 @@ public sealed record CounterSnapshot(
     /// populate it (e.g. older callers, or a window too short to observe more than one tick).
     /// </summary>
     public IReadOnlyList<CounterValue>? FirstCounters { get; init; }
+
+    /// <summary>
+    /// The maximum-observed value for each counter present in <see cref="Counters"/>, tracked across every
+    /// tick of the observation window (<see cref="Counters"/> itself holds only the last-observed value per
+    /// key). This is what makes transient churn — e.g. a Gen2/LOH counter that peaks mid-window and is
+    /// already collected back down to (near) zero by the final tick — observable at all (see #858).
+    /// <c>null</c> when the collector didn't populate it (e.g. older callers).
+    /// </summary>
+    public IReadOnlyList<CounterValue>? MaxCounters { get; init; }
 }

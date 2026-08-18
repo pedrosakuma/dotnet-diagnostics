@@ -347,6 +347,12 @@ public sealed class ScenarioLiveRunner
         activationWatch.Stop();
         EnsureActivated(manifest.Id, load);
         var metrics = SelectCounters(counters, "gen-2-gc-count", "loh-size", "time-in-gc", "alloc-rate")
+            // `loh-size` above is the last-observed EventCounter tick: by the time the window
+            // closes, gen2/LOH churn can already have been collected back down to (near) zero, so
+            // it is not evidence that LOH pressure never happened (#858). `loh-size-max` is the
+            // maximum observed across every tick of the window and is what actually reflects
+            // transient LOH churn.
+            .Concat(SelectMaxCounters(counters, "loh-size"))
             .Append(new ObservedMetric("gc-total-collections", gc.TotalCollections, "collections"))
             .OrderBy(metric => metric.Name, StringComparer.Ordinal)
             .ToArray();
@@ -518,6 +524,23 @@ public sealed class ScenarioLiveRunner
                     string.Equals(value.Provider, "System.Runtime", StringComparison.Ordinal)
                     && string.Equals(value.Name, name, StringComparison.Ordinal));
                 return counter is null ? null : new ObservedMetric(name, counter.Value, counter.Unit);
+            })
+            .Where(metric => metric is not null)
+            .Cast<ObservedMetric>()
+            .OrderBy(metric => metric.Name, StringComparer.Ordinal)
+            .ToArray();
+
+    // Emits a "<name>-max" evidence metric sourced from CounterSnapshot.MaxCounters — the maximum
+    // value observed for that counter across every tick of the collection window, not just the
+    // last tick. This is what lets a scenario assert transient churn (e.g. LOH growth that is
+    // already collected back down by the final sample) instead of only retained final state (#858).
+    private static ObservedMetric[] SelectMaxCounters(CounterSnapshot snapshot, params string[] names)
+        => names.Select(name =>
+            {
+                var counter = snapshot.MaxCounters?.FirstOrDefault(value =>
+                    string.Equals(value.Provider, "System.Runtime", StringComparison.Ordinal)
+                    && string.Equals(value.Name, name, StringComparison.Ordinal));
+                return counter is null ? null : new ObservedMetric($"{name}-max", counter.Value, counter.Unit);
             })
             .Where(metric => metric is not null)
             .Cast<ObservedMetric>()

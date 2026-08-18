@@ -76,6 +76,54 @@ public sealed class ScenarioReplayTests
     }
 
     [Fact]
+    public void GcStorm_WithoutWindowChurnEvidence_FailsLohSizeMaxInvariant()
+    {
+        // #858: the windowed `loh-size-max` invariant must not pass merely because a final
+        // `loh-size` value happens to be present/absent — it must actually require churn to have
+        // been observed at some point during the window. A trial with zero LOH growth and no
+        // gen2 pressure anywhere in the window is not gc-storm and must still fail.
+        var manifest = ScenarioManifestLoader.LoadAll().Single(item => item.Id == "gc-storm");
+        var evidence = ScenarioJson.ReadEvidence(
+            ScenarioManifestLoader.ScenarioPath("Fixtures", "gc-storm.linux.evidence.json"));
+        var noChurnEvidence = evidence with
+        {
+            Metrics =
+            [
+                new ObservedMetric("alloc-rate", 1024, "B"),
+                new ObservedMetric("gc-total-collections", 2, "collections"),
+                new ObservedMetric("gen-2-gc-count", 0, null),
+                new ObservedMetric("loh-size", 0, "B"),
+                new ObservedMetric("loh-size-max", 0, "B"),
+                new ObservedMetric("time-in-gc", 1, "%"),
+            ],
+            Signals = [],
+        };
+
+        var report = ScenarioEvaluator.CreateReport(manifest, noChurnEvidence);
+
+        report.Evidence.Should().Contain(result => result.Id == "loh-size-elevated" && !result.Passed);
+        report.Evidence.Should().Contain(result => result.Id == "gen2-counter-elevated" && !result.Passed);
+        report.Evidence.Should().Contain(result => result.Id == "gen2-share-signal" && !result.Passed);
+    }
+
+    [Fact]
+    public void GcStorm_WithPeakLohMidWindowButZeroFinalRetained_PassesLohSizeMaxInvariant()
+    {
+        // The regression this scenario exercises: EventCounters report the *last-observed* tick,
+        // so a scenario that repeatedly allocates and collects LOH objects can legitimately show
+        // `loh-size == 0` at the final sample even though large-object churn happened throughout
+        // the window. `loh-size-max` (tracked across every tick) must still pass in that case.
+        var manifest = ScenarioManifestLoader.LoadAll().Single(item => item.Id == "gc-storm");
+        var evidence = ScenarioJson.ReadEvidence(
+            ScenarioManifestLoader.ScenarioPath("Fixtures", "gc-storm.linux.evidence.json"));
+        evidence.Metrics.Should().Contain(metric => metric.Name == "loh-size" && metric.Value == 0);
+
+        var report = ScenarioEvaluator.CreateReport(manifest, evidence);
+
+        report.Evidence.Should().Contain(result => result.Id == "loh-size-elevated" && result.Passed);
+    }
+
+    [Fact]
     public void StructuredInterpretation_CannotPassWhenRequiredEvidenceFails()
     {
         var manifest = ScenarioManifestLoader.LoadAll().Single(item => item.Id == "sync-over-async");
