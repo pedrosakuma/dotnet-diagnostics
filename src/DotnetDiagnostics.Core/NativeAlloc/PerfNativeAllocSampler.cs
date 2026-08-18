@@ -32,7 +32,7 @@ public sealed partial class PerfNativeAllocSampler : INativeAllocSampler
     private static partial Regex CreatedTracepointRegex();
 
     // 512 MiB cap mirrors the off-CPU sampler: bounds disaster on an allocator-hot multi-minute run.
-    private const long PerfDataMaxBytes = 512L * 1024 * 1024;
+    internal const long PerfDataMaxBytes = 512L * 1024 * 1024;
     private const long PerfScriptSampleBudget = 250_000;
     private static readonly TimeSpan PerfProbeTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan PerfProbeCleanupTimeout = TimeSpan.FromSeconds(5);
@@ -297,6 +297,29 @@ public sealed partial class PerfNativeAllocSampler : INativeAllocSampler
         int pid, string outputPath, TimeSpan duration, long samplePeriod,
         IReadOnlyList<string> tracepoints, CancellationToken ct)
     {
+        var args = BuildRecordArguments(pid, outputPath, duration, samplePeriod, tracepoints);
+
+        var (exit, _, stderr) = await RunPerfAsync(
+            args,
+            duration + TimeSpan.FromSeconds(15),
+            "perf record (native-alloc)",
+            ct).ConfigureAwait(false);
+        if (exit != 0)
+        {
+            throw new InvalidOperationException(
+                $"perf record (native-alloc) exited with code {exit}. stderr: {stderr.Trim()}");
+        }
+    }
+
+    /// <summary>
+    /// Pure command-line builder for the uprobe-scoped <c>perf record</c> invocation, split out so
+    /// the exact argument shape (tracepoint ordering, DWARF call-graph, portable <c>--max-size</c>,
+    /// sample-period throttle) can be unit-tested without spawning perf. See
+    /// <c>docs/perf-compat-matrix.md</c> for the compatibility rationale behind each flag.
+    /// </summary>
+    internal static IReadOnlyList<string> BuildRecordArguments(
+        int pid, string outputPath, TimeSpan duration, long samplePeriod, IReadOnlyList<string> tracepoints)
+    {
         var seconds = Math.Max(1, (int)Math.Ceiling(duration.TotalSeconds));
         var args = new List<string> { "record" };
         foreach (var tp in tracepoints)
@@ -315,17 +338,7 @@ public sealed partial class PerfNativeAllocSampler : INativeAllocSampler
             "-o", outputPath,
             "--", "sleep", seconds.ToString(CultureInfo.InvariantCulture),
         });
-
-        var (exit, _, stderr) = await RunPerfAsync(
-            args,
-            duration + TimeSpan.FromSeconds(15),
-            "perf record (native-alloc)",
-            ct).ConfigureAwait(false);
-        if (exit != 0)
-        {
-            throw new InvalidOperationException(
-                $"perf record (native-alloc) exited with code {exit}. stderr: {stderr.Trim()}");
-        }
+        return args;
     }
 
     private async Task<PerfScriptAggregationResult> RunScriptAsync(string perfDataPath, int topN, JitMapResult? jitMap, CancellationToken ct)

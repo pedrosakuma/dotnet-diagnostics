@@ -1,0 +1,180 @@
+name: Linux perf compatibility smoke matrix
+
+# Manual/opt-in bounded smoke for the Linux perf-backed collectors (CPU on NativeAOT,
+# off-CPU, native-alloc, native-lock-contention) — issue #851, following the same
+# gap the #830 smoke uncovered: unit tests exercise the pure command-construction /
+# discovery / parsing logic (tests/DotnetDiagnostics.Core.Tests/PerfCompatSmokeTests.cs
+# and friends) but never spawn real perf against a real perf-permissioned host. This
+# workflow closes that gap on native ubuntu-latest (perf under a container adds its own
+# --cap-add topology questions the repo already documents in docs/local-docker-sidecar.md
+# and is out of scope here) WITHOUT making it a required branch-protection check, so a
+# perf regression here does not block merges — it produces an actionable artifact/notes
+# report instead. See docs/perf-compat-matrix.md for the supported/tested matrix this
+# workflow is meant to keep honest, and AGENTS.md's "docs-only fast path" section for why
+# manual workflows like this stay off the required-checks list (pattern shared with
+# linux-crash-repro-preload.yml / kind-integration.yml's manual repro path).
+#
+# WSL2 is intentionally NOT covered here — there is no stable hosted GitHub Actions
+# runner for WSL2, so it stays a documented/manual environment (docs/perf-compat-matrix.md).
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 04:20 UTC weekly (Mondays) — perf/kernel packaging on ubuntu-latest changes far
+    # less often than day-to-day code, so a weekly cadence is enough to catch a
+    # regression before it reaches a release without adding noise.
+    - cron: "20 4 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  linux-perf-compat-smoke:
+    name: Perf compat smoke (native Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+
+      - name: Cache NuGet packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/Directory.Packages.props', '**/*.csproj') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
+
+      # ubuntu-latest ships a kernel-matching /usr/bin/perf wrapper (the same shape as the
+      # WSL wrapper this issue is about) that DOES resolve correctly here because
+      # linux-tools-generic + linux-tools-$(uname -r) install the matching backing binary.
+      # Installing both (rather than assuming one matches) mirrors PerfBinaryResolver's own
+      # fallback order and is the actionable fix operators are told to apply on WSL.
+      - name: Install perf (linux-tools)
+        run: |
+          set -x
+          sudo apt-get update -y
+          sudo apt-get install -y linux-tools-common linux-tools-generic "linux-tools-$(uname -r)" || true
+          # Report which candidate actually resolves, mirroring PerfBinaryResolver's own
+          # probe order, so a future packaging regression is visible in the job log even if
+          # every downstream step below still happens to succeed via a different candidate.
+          echo "--- perf resolution candidates ---"
+          for p in /usr/bin/perf "/usr/lib/linux-tools-$(uname -r)/perf" /usr/lib/linux-tools-*/perf; do
+            if [[ -x "$p" ]]; then
+              echo "candidate: $p"
+              "$p" --version || echo "  (unusable: exited non-zero or missing banner)"
+            fi
+          done
+
+      - name: Report host perf/kernel capability probe
+        run: |
+          echo "kernel: $(uname -r)"
+          echo "perf_event_paranoid: $(cat /proc/sys/kernel/perf_event_paranoid 2>/dev/null || echo 'file not present')"
+          echo "CapEff: $(grep '^CapEff:' /proc/self/status)"
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore --configuration Release
+
+      # Non-privileged unit coverage first — fast fail before spending the smoke budget on
+      # live perf capture below.
+      - name: Unit tests — perf compatibility surface
+        run: |
+          dotnet test tests/DotnetDiagnostics.Core.Tests/DotnetDiagnostics.Core.Tests.csproj \
+            --no-build --configuration Release \
+            --filter "FullyQualifiedName~Perf|FullyQualifiedName~NativeAlloc|FullyQualifiedName~NativeLockContention|FullyQualifiedName~OffCpu" \
+            --logger "trx;LogFileName=perf-compat-unit.trx" \
+            --results-directory TestResults
+
+      - name: Publish CoreClrSample and NativeAotSample
+        run: |
+          dotnet publish samples/CoreClrSample -c Release -o publish/CoreClrSample
+          # CPU perf sampling only ever routes through PerfNativeAotCpuSampler for a NativeAOT
+          # target (RoutingCpuSampler sends CoreCLR targets to the managed EventPipe sampler
+          # instead) — publish a real AOT binary so the `cpu` kind below actually exercises the
+          # refactored perf record command line rather than silently no-op-ing against CoreCLR.
+          dotnet publish samples/NativeAotSample -c Release -r linux-x64 -o publish/NativeAotSample
+
+      - name: Start sample processes and run live perf smoke matrix
+        id: smoke
+        continue-on-error: true
+        env:
+          ASPNETCORE_URLS: http://127.0.0.1:0
+        run: |
+          set -x
+          mkdir -p perf-smoke-notes
+          dotnet publish/CoreClrSample/CoreClrSample.dll > perf-smoke-notes/sample-stdout.log 2>&1 &
+          SAMPLE_PID=$!
+          echo "sample pid (CoreCLR): $SAMPLE_PID"
+
+          ASPNETCORE_URLS=http://127.0.0.1:0 publish/NativeAotSample/NativeAotSample > perf-smoke-notes/nativeaot-stdout.log 2>&1 &
+          NATIVEAOT_PID=$!
+          echo "sample pid (NativeAOT): $NATIVEAOT_PID"
+
+          # Give Kestrel + EventPipe a moment to come up (mirrors the >=500ms-1s startup
+          # note in AGENTS.md's "EventPipe session startup is not instant" section).
+          sleep 5
+
+          CLI="dotnet run --project src/DotnetDiagnostics.Cli -c Release --"
+          FAILS=0
+
+          run_kind () {
+            local kind="$1"; local pid="$2"; shift 2
+            echo "=== collect --kind $kind (pid $pid) ==="
+            if $CLI collect --kind "$kind" --pid "$pid" --duration 5 --acknowledge-risk high --json "$@" \
+                 > "perf-smoke-notes/${kind}.json" 2> "perf-smoke-notes/${kind}.stderr.log"; then
+              echo "OK: $kind"
+            else
+              echo "GAP: $kind failed (see perf-smoke-notes/${kind}.stderr.log) — likely a permission/tracepoint gap on this runner, not necessarily a regression."
+              FAILS=$((FAILS+1))
+            fi
+          }
+
+          # cpu: NativeAOT-only perf fallback (RoutingCpuSampler routes CoreCLR to the managed
+          # EventPipe SampleProfiler instead, which would never touch the perf command line).
+          run_kind cpu "$NATIVEAOT_PID" --top 10
+          # off_cpu / native-alloc / native-lock-contention attach at the OS/libc level and apply
+          # to any same-UID target process, so the CoreCLR sample is a representative target.
+          run_kind off_cpu "$SAMPLE_PID" --top 10
+          run_kind native-alloc "$SAMPLE_PID" --native-alloc-sample-period 200
+          run_kind native-lock-contention "$SAMPLE_PID" --native-lock-contention-sample-period 500
+
+          kill "$SAMPLE_PID" "$NATIVEAOT_PID" 2>/dev/null || true
+          wait "$SAMPLE_PID" 2>/dev/null || true
+          wait "$NATIVEAOT_PID" 2>/dev/null || true
+
+          echo "gap_count=$FAILS" >> "$GITHUB_OUTPUT"
+
+      - name: Summarize capability gaps
+        if: always()
+        run: |
+          echo "### Perf compat smoke summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "Gaps observed: ${{ steps.smoke.outputs.gap_count || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          for f in perf-smoke-notes/*.stderr.log; do
+            [[ -e "$f" ]] || continue
+            if [[ -s "$f" ]]; then
+              echo "#### $(basename "$f")" >> "$GITHUB_STEP_SUMMARY"
+              echo '```' >> "$GITHUB_STEP_SUMMARY"
+              tail -20 "$f" >> "$GITHUB_STEP_SUMMARY"
+              echo '```' >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+
+      - name: Upload perf smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-perf-compat-smoke
+          path: |
+            perf-smoke-notes/**
+            **/TestResults/*.trx
+          if-no-files-found: warn
+          retention-days: 14

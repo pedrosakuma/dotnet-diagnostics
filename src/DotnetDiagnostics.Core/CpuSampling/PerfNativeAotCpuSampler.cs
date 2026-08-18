@@ -226,12 +226,8 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
 
     private async Task RecordAsync(int pid, string outputPath, TimeSpan duration, CancellationToken ct)
     {
-        var seconds = Math.Max(1, (int)Math.Ceiling(duration.TotalSeconds));
-        // NativeAOT binaries may not always emit frame pointers; dwarf unwinding is required
-        // for reliable callstacks. The trade-off is larger perf.data files, so we pair
-        // the sampling window with an explicit perf.data size cap. See https://github.com/pedrosakuma/dotnet-diagnostics
-        // notes on NativeAOT validation for the bug history.
-        var args = $"record -F {_samplingFrequencyHz} --call-graph dwarf --max-size {FormatPerfFileSize(PerfDataMaxBytes)} -p {pid} -o \"{outputPath}\" -- sleep {seconds}";
+        var argsList = BuildRecordArguments(pid, outputPath, duration, _samplingFrequencyHz);
+        var args = string.Join(' ', argsList);
         _logger.LogDebug("Spawning perf: {Bin} {Args}", ResolvePerfPath()!, args);
 
         using var process = new Process
@@ -267,6 +263,33 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
             throw new InvalidOperationException(
                 $"perf record exited with code {process.ExitCode}. stderr: {stderr.Trim()}");
         }
+    }
+
+    /// <summary>
+    /// Pure command-line builder for the per-PID <c>perf record</c> invocation used to capture
+    /// CPU samples for NativeAOT processes, split out so the exact argument shape (sampling
+    /// frequency, DWARF call-graph requirement, portable <c>--max-size</c>, quoted output path)
+    /// can be unit-tested without spawning perf. See <c>docs/perf-compat-matrix.md</c> for the
+    /// compatibility rationale behind each flag.
+    /// </summary>
+    /// <remarks>
+    /// NativeAOT binaries may not always emit frame pointers; dwarf unwinding is required
+    /// for reliable callstacks. The trade-off is larger perf.data files, so we pair
+    /// the sampling window with an explicit perf.data size cap.
+    /// </remarks>
+    internal static IReadOnlyList<string> BuildRecordArguments(int pid, string outputPath, TimeSpan duration, int samplingFrequencyHz)
+    {
+        var seconds = Math.Max(1, (int)Math.Ceiling(duration.TotalSeconds));
+        return new[]
+        {
+            "record",
+            "-F", samplingFrequencyHz.ToString(CultureInfo.InvariantCulture),
+            "--call-graph", "dwarf",
+            "--max-size", FormatPerfFileSize(PerfDataMaxBytes),
+            "-p", pid.ToString(CultureInfo.InvariantCulture),
+            "-o", $"\"{outputPath}\"",
+            "--", "sleep", seconds.ToString(CultureInfo.InvariantCulture),
+        };
     }
 
     internal static string FormatPerfFileSize(long bytes)
