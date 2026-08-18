@@ -260,11 +260,14 @@ declarative on purpose — the goal is to bias decisions, not to script every
 turn. Skip them when the task is genuinely trivial.
 
 - **Mandatory code review before flipping a PR out of draft.** Use the
-  `task` tool with `agent_type: "code-review"` and `model: "gpt-5.5"` against
-  the staged / branch diff and address every real finding. Empirically this
-  has caught a real bug on most non-trivial PRs in this repo — including
-  several flake / race-condition regressions that the human + author-agent
-  pair both missed.
+  `task` tool with `agent_type: "code-review"` against the staged / branch
+  diff and address every real finding. Pick a review `model` that differs
+  from whichever model is driving the main implementation turn (e.g. review
+  with `gpt-5.6-sol` when implementing as `claude-sonnet-5`, or vice versa) —
+  don't hardcode a single review model regardless of which model wrote the
+  code. Empirically this has caught a real bug on most non-trivial PRs in
+  this repo — including several flake / race-condition regressions that the
+  human + author-agent pair both missed.
 - **Decompose-then-parallelise.** Features here tend to land as several small,
   independent PRs (one recent consolidation shipped as 13). When the work decomposes into ≥2
   independent trails (different directories, different test surfaces, no
