@@ -79,8 +79,8 @@ dotnet test tests/DotnetDiagnostics.Core.Tests/ -c Release --no-build \
    capturing stdout/stderr per kind.
 5. Uploads every collected JSON/log as a build artifact and writes a capability-gap summary to
    the job summary — a failure here is a **signal, not a merge blocker**: it is deliberately kept
-   off the required branch-protection status checks (same pattern as
-   `linux-crash-repro-preload.yml`), because GitHub-hosted runners can and do change their
+   off the required branch-protection status checks (same pattern used by other
+   best-effort/manual workflows in this repo), because GitHub-hosted runners can and do change their
    `perf_event_paranoid` default / available tracepoints between images without any code change
    on our side.
 

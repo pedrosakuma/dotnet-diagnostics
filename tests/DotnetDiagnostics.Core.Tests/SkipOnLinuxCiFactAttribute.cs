@@ -16,18 +16,20 @@ namespace DotnetDiagnostics.Core.Tests;
 ///
 /// The skip can be forced off by setting
 /// <see cref="RunQuarantinedEnvVar"/> (<c>DOTNET_DBG_MCP_RUN_QUARANTINED_LINUX_TESTS=1</c>).
-/// The dedicated <c>linux-crash-repro</c> CI job (see <c>.github/workflows/ci.yml</c>)
-/// sets it to deliberately reproduce the crash under <c>strace</c> so the runtime
-/// team can correlate the unmapped fault address against the mmap/munmap log
-/// (dotnet/runtime#128525).
+/// The dedicated nightly reproduction workflows that used to set this variable
+/// (<c>linux-crash-repro.yml</c> / <c>linux-crash-repro-preload.yml</c>) were retired in
+/// issue #857 once the root cause was identified in ClrMD; this override and the
+/// quarantine itself remain so the tests stay runnable when needed, e.g. to
+/// re-validate against a fixed ClrMD release (tracked in issue #685).
 /// </remarks>
 [AttributeUsage(AttributeTargets.Method, AllowMultiple = false, Inherited = true)]
 public sealed class SkipOnLinuxCiFactAttribute : FactAttribute
 {
     /// <summary>
     /// Environment variable that, when set to <c>1</c>/<c>true</c>, overrides the
-    /// Linux-CI quarantine so the test executes anyway. Used by the strace-based
-    /// crash-repro CI job (dotnet/runtime#128525).
+    /// Linux-CI quarantine so the test executes anyway. Historically set by the now-retired
+    /// crash-repro CI jobs (dotnet/runtime#128525); kept for manual re-validation, see
+    /// issue #685.
     /// </summary>
     public const string RunQuarantinedEnvVar = "DOTNET_DBG_MCP_RUN_QUARANTINED_LINUX_TESTS";
 

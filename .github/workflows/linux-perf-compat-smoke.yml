@@ -12,7 +12,7 @@ name: Linux perf compatibility smoke matrix
 # report instead. See docs/perf-compat-matrix.md for the supported/tested matrix this
 # workflow is meant to keep honest, and AGENTS.md's "docs-only fast path" section for why
 # manual workflows like this stay off the required-checks list (pattern shared with
-# linux-crash-repro-preload.yml / kind-integration.yml's manual repro path).
+# kind-integration.yml's manual repro path).
 #
 # WSL2 is intentionally NOT covered here — there is no stable hosted GitHub Actions
 # runner for WSL2, so it stays a documented/manual environment (docs/perf-compat-matrix.md).
