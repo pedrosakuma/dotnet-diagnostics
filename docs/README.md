@@ -63,6 +63,7 @@ you're using, then reach for the cross-cutting references.
 | [`client-setup.md`](./client-setup.md) | Connecting to the server from the C# SDK, GUI MCP clients, and `curl` smoke tests |
 | [`local-docker-sidecar.md`](./local-docker-sidecar.md) | Reproducing the K8s sidecar topology locally with an anchored Docker PID namespace + shared `/tmp` |
 | [`external-investigation-docker.md`](./external-investigation-docker.md) | Kubernetes-style `attach_to_pod`/proxy passthrough for a **Docker** sidecar — a central orchestrator MCP forwards diagnostic calls to an operator-configured external MCP profile, so the client never sees the sidecar's URL or bearer token |
+| [`perf-compat-matrix.md`](./perf-compat-matrix.md) | Linux `perf` compatibility matrix for the CPU/off-CPU/native-alloc/native-lock-contention collectors — supported environments, the non-privileged unit coverage, the opt-in live smoke workflow, and the structured perf failure-mode reference |
 
 ### CLI (`dotnet-diagnostics-cli`)
 
