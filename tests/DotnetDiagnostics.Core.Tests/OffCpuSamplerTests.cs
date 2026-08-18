@@ -1,4 +1,5 @@
 using DotnetDiagnostics.Core.CpuSampling;
+using DotnetDiagnostics.Core.NativeLockContention;
 using DotnetDiagnostics.Core.OffCpu;
 using FluentAssertions;
 
@@ -206,6 +207,187 @@ public sealed class PerfSchedAggregateTests
         top.SyscallBreakdown[0].Micros.Should().Be(900_000);
         top.SyscallBreakdown[1].Name.Should().Be("read");
         top.SyscallBreakdown[1].Micros.Should().Be(200_000);
+    }
+
+    [Fact]
+    public void NativeContentionEvidence_ConfirmedOnlyForClosedFutexSpans()
+    {
+        var stack = new List<OffCpuFrame>
+        {
+            new("[kernel.kallsyms]", "schedule"),
+            new("[kernel.kallsyms]", "futex_wait_queue"),
+            new("libc.so.6", "pthread_mutex_lock"),
+        };
+        var spans = new List<OffCpuSpan>
+        {
+            new(Tid: 1, Comm: "w1", DurationMicros: 800_000, PrevState: "S", BlockingStack: stack, Syscall: "futex"),
+        };
+
+        var result = PerfSchedOffCpuSampler.Aggregate(
+            processId: 1, startedAt: DateTimeOffset.UtcNow, duration: TimeSpan.FromSeconds(1),
+            spans: spans, schedSwitches: 1, topN: 5);
+
+        var evidence = result.Summary.NativeContentionEvidence!;
+        evidence.Level.Should().Be(NativeContentionEvidenceLevels.ConfirmedBlocking);
+        evidence.ClosedNativeSyncSpanCount.Should().Be(1);
+        evidence.CensoredNativeSyncSpanCount.Should().Be(0);
+        result.Summary.TopBlockingStacks.Single().NativeContentionEvidence!.Level
+            .Should().Be(NativeContentionEvidenceLevels.ConfirmedBlocking);
+    }
+
+    [Fact]
+    public void NativeContentionEvidence_CensoredOnlyFutexSpans_AreProbableNotConfirmed()
+    {
+        var stack = new List<OffCpuFrame>
+        {
+            new("[kernel.kallsyms]", "schedule"),
+            new("[kernel.kallsyms]", "futex_wait_queue"),
+        };
+        var spans = new List<OffCpuSpan>
+        {
+            new(Tid: 1, Comm: "w1", DurationMicros: 800_000, PrevState: "S", BlockingStack: stack, IsCensored: true, Syscall: "futex"),
+        };
+
+        var result = PerfSchedOffCpuSampler.Aggregate(
+            processId: 1, startedAt: DateTimeOffset.UtcNow, duration: TimeSpan.FromSeconds(1),
+            spans: spans, schedSwitches: 1, topN: 5);
+
+        var evidence = result.Summary.NativeContentionEvidence!;
+        evidence.Level.Should().Be(NativeContentionEvidenceLevels.ProbableBlocking);
+        evidence.ClosedNativeSyncSpanCount.Should().Be(0);
+        evidence.CensoredNativeSyncSpanCount.Should().Be(1);
+        evidence.UncertaintyNotes.Should().Contain(n => n.Contains("censored/open", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void NativeContentionEvidence_RunnableFutexSpans_AreProbableNotConfirmed()
+    {
+        var stack = new List<OffCpuFrame>
+        {
+            new("[kernel.kallsyms]", "schedule"),
+            new("[kernel.kallsyms]", "__x64_sys_futex"),
+        };
+        var spans = new List<OffCpuSpan>
+        {
+            new(Tid: 1, Comm: "w1", DurationMicros: 25_000, PrevState: "R", BlockingStack: stack, Syscall: "futex"),
+        };
+
+        var result = PerfSchedOffCpuSampler.Aggregate(
+            processId: 1, startedAt: DateTimeOffset.UtcNow, duration: TimeSpan.FromSeconds(1),
+            spans: spans, schedSwitches: 1, topN: 5);
+
+        var evidence = result.Summary.NativeContentionEvidence!;
+        evidence.Level.Should().Be(NativeContentionEvidenceLevels.ProbableBlocking);
+        evidence.ClosedNativeSyncSpanCount.Should().Be(1);
+        evidence.ConfidenceRationale.Should().Contain(n => n.Contains("probable rather than confirmed", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void NativeContentionEvidence_FrameOnlyNativeSync_IsAmbiguousNone()
+    {
+        var stack = new List<OffCpuFrame>
+        {
+            new("[kernel.kallsyms]", "schedule"),
+            new("libc.so.6", "pthread_mutex_lock"),
+        };
+        var spans = new List<OffCpuSpan>
+        {
+            new(Tid: 1, Comm: "w1", DurationMicros: 800_000, PrevState: "S", BlockingStack: stack),
+        };
+
+        var result = PerfSchedOffCpuSampler.Aggregate(
+            processId: 1, startedAt: DateTimeOffset.UtcNow, duration: TimeSpan.FromSeconds(1),
+            spans: spans, schedSwitches: 1, topN: 5);
+
+        var evidence = result.Summary.NativeContentionEvidence!;
+        evidence.Level.Should().Be(NativeContentionEvidenceLevels.None);
+        evidence.AmbiguousNativeSyncFrameSpanCount.Should().Be(1);
+        evidence.Summary.Should().Contain("no futex/native-sync syscall attribution");
+    }
+
+    [Fact]
+    public void NativeContentionEvidence_MixedClosedFutexAndAmbiguousFrames_AreProbableNotConfirmed()
+    {
+        var futexStack = new List<OffCpuFrame>
+        {
+            new("[kernel.kallsyms]", "schedule"),
+            new("[kernel.kallsyms]", "futex_wait_queue"),
+            new("libc.so.6", "pthread_mutex_lock"),
+        };
+        var ambiguousStack = new List<OffCpuFrame>
+        {
+            new("[kernel.kallsyms]", "schedule"),
+            new("libc.so.6", "pthread_mutex_unlock"),
+        };
+        var spans = new List<OffCpuSpan>
+        {
+            new(Tid: 1, Comm: "w1", DurationMicros: 800_000, PrevState: "S", BlockingStack: futexStack, Syscall: "futex"),
+            new(Tid: 1, Comm: "w1", DurationMicros: 100_000, PrevState: "R", BlockingStack: ambiguousStack),
+        };
+
+        var result = PerfSchedOffCpuSampler.Aggregate(
+            processId: 1, startedAt: DateTimeOffset.UtcNow, duration: TimeSpan.FromSeconds(1),
+            spans: spans, schedSwitches: 2, topN: 5);
+
+        var evidence = result.Summary.NativeContentionEvidence!;
+        evidence.Level.Should().Be(NativeContentionEvidenceLevels.ProbableBlocking);
+        evidence.ClosedNativeSyncSpanCount.Should().Be(1);
+        evidence.AmbiguousNativeSyncFrameSpanCount.Should().Be(1);
+        evidence.UncertaintyNotes.Should().Contain(n => n.Contains("without same-thread syscall attribution", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void NativeContentionEvidence_UnrelatedCensoredSpans_DowngradeClosedFutexToProbable()
+    {
+        var futexStack = new List<OffCpuFrame>
+        {
+            new("[kernel.kallsyms]", "schedule"),
+            new("[kernel.kallsyms]", "futex_wait_queue"),
+        };
+        var readStack = new List<OffCpuFrame>
+        {
+            new("[kernel.kallsyms]", "schedule"),
+            new("libc.so.6", "read"),
+        };
+        var spans = new List<OffCpuSpan>
+        {
+            new(Tid: 1, Comm: "w1", DurationMicros: 800_000, PrevState: "S", BlockingStack: futexStack, Syscall: "futex"),
+            new(Tid: 2, Comm: "io", DurationMicros: 100_000, PrevState: "S", BlockingStack: readStack, Syscall: "read", IsCensored: true),
+        };
+
+        var result = PerfSchedOffCpuSampler.Aggregate(
+            processId: 1, startedAt: DateTimeOffset.UtcNow, duration: TimeSpan.FromSeconds(1),
+            spans: spans, schedSwitches: 2, topN: 5);
+
+        var evidence = result.Summary.NativeContentionEvidence!;
+        evidence.Level.Should().Be(NativeContentionEvidenceLevels.ProbableBlocking);
+        evidence.ClosedNativeSyncSpanCount.Should().Be(1);
+        evidence.CensoredNativeSyncSpanCount.Should().Be(0);
+        evidence.UncertaintyNotes.Should().Contain(n => n.Contains("censored", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void NativeContentionEvidence_TruncatedCorrelation_DowngradesClosedFutexToProbable()
+    {
+        var stack = new List<OffCpuFrame>
+        {
+            new("[kernel.kallsyms]", "schedule"),
+            new("[kernel.kallsyms]", "futex_wait_queue"),
+        };
+        var spans = new List<OffCpuSpan>
+        {
+            new(Tid: 1, Comm: "w1", DurationMicros: 800_000, PrevState: "S", BlockingStack: stack, Syscall: "futex"),
+        };
+
+        var result = PerfSchedOffCpuSampler.Aggregate(
+            processId: 1, startedAt: DateTimeOffset.UtcNow, duration: TimeSpan.FromSeconds(1),
+            spans: spans, schedSwitches: 1, topN: 5,
+            notes: ["Syscall correlation stopped parsing raw_syscalls events after reaching the 1,000,000-event budget; 42 event(s) beyond that point were ignored."]);
+
+        var evidence = result.Summary.NativeContentionEvidence!;
+        evidence.Level.Should().Be(NativeContentionEvidenceLevels.ProbableBlocking);
+        evidence.ClosedNativeSyncSpanCount.Should().Be(1, "the measured closed span is still reported, just not overclaimed as fully confirmed under truncation");
+        evidence.UncertaintyNotes.Should().Contain(n => n.Contains("stopped parsing", StringComparison.Ordinal));
     }
 
     [Fact]

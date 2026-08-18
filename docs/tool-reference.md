@@ -1582,6 +1582,17 @@ dispatches by `kind` to the underlying CPU / off-CPU / allocation / native-alloc
 the underlying sampler verbatim, so `query_snapshot(view="call-tree")` and
 `query_snapshot` drilldowns continue to work unchanged.
 
+For native contention, `offCpu.nativeContentionEvidence`,
+`offCpu.topBlockingStacks[*].nativeContentionEvidence`, and
+`nativeLockContention.contentionEvidence` share the same honest taxonomy:
+`activity` means sampled mutex entry-point calls only; `probable-blocking`
+means native synchronization evidence exists but is censored, degraded, or not
+fully correlated; `confirmed-blocking` is reserved for closed futex/native-sync
+off-CPU wait spans with target/thread correlation; `none` means no reliable
+native synchronization evidence. Capability failures and unsupported platforms
+surface as the existing structured envelopes plus fallback notes; no mandatory
+preflight call or new MCP tool is required.
+
 **Platform notes.** `kind="off_cpu"` requires Linux (`perf record -e sched_switch`
 plus an optional target-scoped raw-syscall companion for syscall labels)
 or Windows admin (NT Kernel Logger ContextSwitch); on unsupported hosts the
@@ -1615,8 +1626,8 @@ when RSS / anonymous pages climb while the managed heap stays flat. On an unsupp
 `NotSupported` envelope — never a crash; a missing `CAP_SYS_ADMIN` (Linux) or denied ETW
 access (Windows) instead surfaces as `PermissionDenied`.
 
-**`kind="native-lock-contention"` (issue #830).** Attributes **native/OS-level** mutex
-contention — `pthread_mutex_lock`/`pthread_mutex_unlock` calls made by P/Invoke code, native
+**`kind="native-lock-contention"` (issues #830/#840).** Attributes **native/OS-level** mutex
+activity — `pthread_mutex_lock`/`pthread_mutex_unlock` calls made by P/Invoke code, native
 libraries, or the runtime itself — to a call site. Companion to `collect_events(kind="contention")`,
 which only sees *managed* `Monitor.Enter`/`lock` contention via the CLR `Contention` EventPipe
 provider; that managed-only collector is unchanged by this feature.
@@ -1644,15 +1655,18 @@ provider; that managed-only collector is unchanged by this feature.
 - **Narrowed scope, by design (issue #830):** only `pthread_mutex_lock`/`pthread_mutex_unlock`
   are probed. Condition variables, semaphores, and reader-writer locks are explicitly
   out of scope for this release — expand only if there's demonstrated future need.
-- **Call-count caveat:** a plain uprobe on `pthread_mutex_lock` counts *calls*, not confirmed
-  blocking waits — an uncontended fast-path acquisition (single CAS, no futex syscall) is
+- **Evidence caveat:** a plain uprobe on `pthread_mutex_lock` counts *calls*, not confirmed
+  blocking waits. The `nativeLockContention.contentionEvidence.level` is therefore always
+  `activity`; an uncontended fast-path acquisition (single CAS, no futex syscall) is
   indistinguishable from a genuinely blocked one at this uprobe. Corroborate with
-  `collect_sample(kind="off_cpu")` before concluding a hot call site is actually blocking.
+  `collect_sample(kind="off_cpu")` and its `nativeContentionEvidence` before concluding a hot
+  call site is actually blocking.
 
 Gated by `inspect_process(view="capabilities")`'s `CanSampleNativeLockContention`
 (Linux-only, unlike `CanSampleNativeAlloc`). **Hotspot-only**, same shape as `native-alloc`:
-call-site hit counts, not measured wait time, and no acquire/release pairing. Drill into the
-merged call tree with `query_snapshot(view="call-tree")`; compare two windows with
+call-site hit counts, not measured wait time, and no acquire/release pairing. It does not inspect
+libc mutex owner/waiter memory and does not enable uretprobe latency pairing by default. Drill into
+the merged call tree with `query_snapshot(view="call-tree")`; compare two windows with
 `query_snapshot(view="diff")`.
 
 **`kind="method-params"` (issue #562).** Live-captures rendered parameter values for an

@@ -2,13 +2,16 @@ using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Dump;
 using DotnetDiagnostics.Core.Memory;
 using DotnetDiagnostics.Core.OffCpu;
+using DotnetDiagnostics.Core.NativeLockContention;
 using DotnetDiagnostics.Core.Capabilities;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.Security;
 using DotnetDiagnostics.Core.Symbols;
 using DotnetDiagnostics.Core.Threads;
+using DotnetDiagnostics.Core.UseCases;
 using DotnetDiagnostics.Mcp.Tools;
 using FluentAssertions;
+using System.Text.RegularExpressions;
 
 namespace DotnetDiagnostics.Mcp.IntegrationTests;
 
@@ -81,6 +84,34 @@ public sealed class OffCpuSyscallAttributionMcpTests
     }
 
     [Fact]
+    public async Task CollectOffCpuSample_CoreAndMcp_ProjectSameNativeContentionEvidence()
+    {
+        var coreResult = await SamplerUseCases.CollectOffCpuSample(
+            new StubOffCpuSampler(),
+            new MemoryDiagnosticHandleStore(),
+            new FixedCapabilityResolver(canSampleNativeLockContention: true),
+            new SymbolServerAllowlist(null),
+            principalAllowsSymbolsRemote: false,
+            processId: Pid,
+            durationSeconds: 1);
+        var mcpResult = await DiagnosticTools.CollectOffCpuSample(
+            new StubOffCpuSampler(),
+            new MemoryDiagnosticHandleStore(),
+            new FixedCapabilityResolver(canSampleNativeLockContention: true),
+            new SymbolServerAllowlist(null),
+            TestPrincipalAccessors.Root,
+            processId: Pid,
+            durationSeconds: 1);
+
+        coreResult.Error.Should().BeNull();
+        mcpResult.Error.Should().BeNull();
+        coreResult.Data!.NativeContentionEvidence!.Level.Should().Be(NativeContentionEvidenceLevels.ProbableBlocking);
+        mcpResult.Data!.NativeContentionEvidence!.Level.Should().Be(coreResult.Data.NativeContentionEvidence.Level);
+        mcpResult.Summary.Should().Contain("Native sync blocking evidence: probable-blocking");
+        NormalizeHandle(mcpResult.Summary).Should().Be(NormalizeHandle(coreResult.Summary));
+    }
+
+    [Fact]
     public async Task QuerySnapshot_TopStacks_SurfacesSyscallBreakdown()
     {
         var store = new MemoryDiagnosticHandleStore();
@@ -133,6 +164,9 @@ public sealed class OffCpuSyscallAttributionMcpTests
             Threads: Array.Empty<OffCpuThreadView>(),
             SymbolSource: "stub");
     }
+
+    private static string NormalizeHandle(string summary)
+        => Regex.Replace(summary, "handle=\"[A-Z0-9]+\"", "handle=\"<handle>\"");
 
     private static Task<DotnetDiagnostics.Core.DiagnosticResult<object>> Invoke(
         MemoryDiagnosticHandleStore store,

@@ -280,7 +280,7 @@ public static class SamplerUseCases
                     new Dictionary<string, object?> { ["processId"] = pid }));
         }
 
-        var summary = result.Summary;
+        var summary = NativeLockContentionUx.EnsureOffCpuEvidence(result.Summary);
         var handle = handles.Register(
             pid,
             OffCpuHandleKind,
@@ -303,12 +303,15 @@ public static class SamplerUseCases
                 ? $"Captured {summary.SchedSwitches} switches across {summary.DistinctThreads} threads over {durationSeconds}s — showing top {inlineSummary.TopBlockingStacks.Count} of {summary.TopBlockingStacks.Count} blocking stack(s) (dropped {droppedStacks}; handle has all). " +
                   $"Total off-CPU: {summary.TotalOffCpuMicros / 1000.0:F1} ms. " +
                   $"Top blocker: {topStack.LeafFrame} ({topStack.OffCpuMicros / 1000.0:F1} ms, state={topStack.DominantState}). " +
+                  $"{NativeLockContentionUx.FormatOffCpuEvidenceClause(summary.NativeContentionEvidence)} " +
                   $"Drill with query_snapshot(handle=\"{handle.Id}\")."
                 : $"Captured {summary.SchedSwitches} switches across {summary.DistinctThreads} threads over {durationSeconds}s. " +
                   $"Total off-CPU: {summary.TotalOffCpuMicros / 1000.0:F1} ms. " +
                   $"Top blocker: {topStack.LeafFrame} ({topStack.OffCpuMicros / 1000.0:F1} ms, state={topStack.DominantState}). " +
+                  $"{NativeLockContentionUx.FormatOffCpuEvidenceClause(summary.NativeContentionEvidence)} " +
                   $"Drill with query_snapshot(handle=\"{handle.Id}\").")
             : $"Captured {summary.SchedSwitches} switches but no off-CPU spans closed within the window. " +
+              $"{NativeLockContentionUx.FormatOffCpuEvidenceClause(summary.NativeContentionEvidence)} " +
               "Either no thread blocked, or wakeups landed outside the capture — try a longer durationSeconds.";
 
         var ok = DiagnosticResult.OkWithHandle(
@@ -488,7 +491,7 @@ public static class SamplerUseCases
                     new Dictionary<string, object?> { ["processId"] = pid }));
         }
 
-        var sample = result.Summary;
+        var sample = NativeLockContentionUx.EnsureActivityEvidence(result.Summary);
         var handle = handles.Register(
             pid,
             NativeLockContentionHandleKind,
@@ -500,17 +503,12 @@ public static class SamplerUseCases
         var callerSelection = NativeLockContentionUx.SelectInlineCaller(sample.TopContendedCallSites);
         var summaryText = NativeLockContentionUx.BuildSummary(sample, durationSeconds, handle.Id, callerSelection);
 
-        var hints = new List<NextActionHint>
-        {
-            new("collect_sample", "Corroborate with off-CPU sampling to confirm the top call site actually blocked (vs. an uncontended fast-path lock).",
-                new Dictionary<string, object?> { ["kind"] = "off_cpu", ["processId"] = pid, ["durationSeconds"] = durationSeconds }),
-        };
-        if (NativeLockContentionUx.ShouldRecommendCallTree(callerSelection))
-        {
-            hints.Insert(0, new NextActionHint("query_snapshot", "Inline native-lock evidence is unresolved or displaced by plumbing; walk the call tree to find the first useful caller.",
-                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "call-tree", ["maxDepth"] = 8, ["maxNodes"] = 200 })
-            { Priority = NextActionHintPriority.High });
-        }
+        var hints = NativeLockContentionUx.BuildNativeLockHints(
+            callerSelection,
+            resolved.Context,
+            handle.Id,
+            pid,
+            durationSeconds);
 
         var ok = DiagnosticResult.OkWithHandle(
             sample,
