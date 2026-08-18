@@ -20,8 +20,8 @@ namespace DotnetDiagnostics.Core.OffCpu;
 /// <b>Resource-boundedness (per <c>docs/resource-boundedness.md</c>):</b> the interval count is
 /// capped at <see cref="MaxIntervals"/> AT THE POINT OF INSERTION (checked before each interval
 /// is added, not accumulate-then-truncate) so a pathologically high syscall-rate target cannot
-/// blow up memory here on top of the existing <c>PerfDataMaxBytes</c> cap on the underlying
-/// <c>perf.data</c> file. Once the cap is hit, further syscalls for that capture are simply left
+/// blow up memory here on top of the separate hard caps on the underlying sched and syscall
+/// <c>perf.data</c> files. Once the cap is hit, further syscalls for that capture are simply left
 /// unlabeled (<see cref="Lookup"/> returns <c>null</c>) — degrading attribution completeness, not
 /// correctness — and <see cref="HitCap"/> lets the caller surface a <c>notes[]</c> entry.
 /// </para>

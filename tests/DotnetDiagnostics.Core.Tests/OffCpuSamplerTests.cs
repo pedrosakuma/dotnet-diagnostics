@@ -1,3 +1,4 @@
+using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.OffCpu;
 using FluentAssertions;
 
@@ -59,6 +60,35 @@ public sealed class RoutingOffCpuSamplerTests
         ex.Which.Message.Should().Contain("ContextSwitch");
         ex.Which.Message.Should().Contain("BUILTIN\\Administrators", because: "the LLM needs the actionable elevation hint");
         ex.Which.Message.Should().Contain(EtwOffCpuSampler.SystemProfilePrivilegeName);
+    }
+}
+
+public sealed class PerfSchedOffCpuCommandBuilderTests
+{
+    [Fact]
+    public void BuildSchedRecordArguments_UsesSystemWideDwarfSchedOnlyCapture()
+    {
+        var args = PerfSchedOffCpuSampler.BuildSchedRecordArguments("/tmp/sched.data", TimeSpan.FromSeconds(1.2));
+
+        args.Should().ContainInOrder("record", "-a", "-e", "sched:sched_switch");
+        args.Should().ContainInOrder("--call-graph", "dwarf");
+        args.Should().ContainInOrder("--max-size", PerfNativeAotCpuSampler.FormatPerfFileSize(PerfSchedOffCpuSampler.SchedPerfDataMaxBytes));
+        args.Should().ContainInOrder("-o", "/tmp/sched.data", "--", "sleep", "2");
+        args.Should().NotContain("raw_syscalls:sys_enter,raw_syscalls:sys_exit");
+        args.Should().NotContain("-p", "sched_switch must stay system-wide so the IN-side switch can close target spans");
+    }
+
+    [Fact]
+    public void BuildSyscallRecordArguments_UsesTargetScopedStacklessRawSyscallCapture()
+    {
+        var args = PerfSchedOffCpuSampler.BuildSyscallRecordArguments(1234, "/tmp/syscalls.data", TimeSpan.FromSeconds(2));
+
+        args.Should().ContainInOrder("record", "-p", "1234");
+        args.Should().ContainInOrder("-e", "raw_syscalls:sys_enter,raw_syscalls:sys_exit");
+        args.Should().ContainInOrder("--max-size", PerfNativeAotCpuSampler.FormatPerfFileSize(PerfSchedOffCpuSampler.SyscallPerfDataMaxBytes));
+        args.Should().ContainInOrder("-o", "/tmp/syscalls.data", "--", "sleep", "2");
+        args.Should().NotContain("-a", "raw syscalls must not be collected system-wide");
+        args.Should().NotContain("--call-graph", "raw syscalls must not carry DWARF callchains");
     }
 }
 

@@ -21,7 +21,7 @@ namespace DotnetDiagnostics.Core.OffCpu;
 /// </remarks>
 internal static class PerfSchedScriptParser
 {
-    internal sealed record SchedEvent(double TimestampSeconds, string PrevComm, int PrevTid, string PrevState,
+    internal sealed record SchedEvent(double TimestampSeconds, int? HeaderTid, string PrevComm, int PrevTid, string PrevState,
         string NextComm, int NextTid, List<OffCpuFrame> Stack);
     internal sealed record LastSeenSwitchOut(int Tid, string Comm, string PrevState, IReadOnlyList<OffCpuFrame> Stack, double TimestampSeconds);
 
@@ -80,10 +80,29 @@ internal static class PerfSchedScriptParser
         ArgumentNullException.ThrowIfNull(targetTids);
         ArgumentNullException.ThrowIfNull(onSpan);
 
-        var pending = new Dictionary<int, (double Ts, string State, List<OffCpuFrame> Stack, string Comm)>();
+        var pending = new Dictionary<int, (double Ts, int ReportedTid, string State, List<OffCpuFrame> Stack, string Comm)>();
+        var targetPayloadTidMap = new Dictionary<int, int>();
         long switches = 0;
         double maxTs = double.MinValue;
         string? pendingHeader = null;
+
+        int? ResolveTargetTid(int payloadTid, int? headerTid = null)
+        {
+            if (targetTids.Contains(payloadTid))
+            {
+                return payloadTid;
+            }
+            if (targetPayloadTidMap.TryGetValue(payloadTid, out var mappedTid))
+            {
+                return mappedTid;
+            }
+            if (headerTid is { } h && targetTids.Contains(h))
+            {
+                targetPayloadTidMap[payloadTid] = h;
+                return h;
+            }
+            return null;
+        }
 
         while (true)
         {
@@ -133,18 +152,18 @@ internal static class PerfSchedScriptParser
                 }
             }
 
-            var prevIsTarget = targetTids.Contains(ev.PrevTid);
-            var nextIsTarget = targetTids.Contains(ev.NextTid);
+            var prevTargetTid = ResolveTargetTid(ev.PrevTid, ev.HeaderTid);
+            var nextTargetTid = ResolveTargetTid(ev.NextTid);
             if (ev.TimestampSeconds > maxTs)
             {
                 maxTs = ev.TimestampSeconds;
             }
 
-            if (nextIsTarget && pending.Remove(ev.NextTid, out var pendingOut))
+            if (nextTargetTid.HasValue && pending.Remove(ev.NextTid, out var pendingOut))
             {
                 var durMicros = (long)Math.Max(0, Math.Round((ev.TimestampSeconds - pendingOut.Ts) * 1_000_000.0));
                 onSpan(new OffCpuSpan(
-                    Tid: ev.NextTid,
+                    Tid: pendingOut.ReportedTid,
                     Comm: pendingOut.Comm,
                     DurationMicros: durMicros,
                     PrevState: pendingOut.State,
@@ -152,10 +171,10 @@ internal static class PerfSchedScriptParser
                     OutTimestampSeconds: pendingOut.Ts));
             }
 
-            if (prevIsTarget)
+            if (prevTargetTid.HasValue)
             {
                 switches++;
-                pending[ev.PrevTid] = (ev.TimestampSeconds, NormalizeState(ev.PrevState), ev.Stack, ev.PrevComm);
+                pending[ev.PrevTid] = (ev.TimestampSeconds, prevTargetTid.Value, NormalizeState(ev.PrevState), ev.Stack, ev.PrevComm);
             }
         }
 
@@ -163,11 +182,6 @@ internal static class PerfSchedScriptParser
         {
             foreach (var kv in pending)
             {
-                if (!targetTids.Contains(kv.Key))
-                {
-                    continue;
-                }
-
                 var pendingOut = kv.Value;
                 var durMicros = (long)Math.Max(0, Math.Round((maxTs - pendingOut.Ts) * 1_000_000.0));
                 if (durMicros <= 0)
@@ -176,7 +190,7 @@ internal static class PerfSchedScriptParser
                 }
 
                 onSpan(new OffCpuSpan(
-                    Tid: kv.Key,
+                    Tid: pendingOut.ReportedTid,
                     Comm: pendingOut.Comm,
                     DurationMicros: durMicros,
                     PrevState: pendingOut.State,
@@ -203,6 +217,25 @@ internal static class PerfSchedScriptParser
 
         var lines = output.Split('\n');
         var byTid = new Dictionary<int, LastSeenSwitchOut>();
+        var targetPayloadTidMap = new Dictionary<int, int>();
+
+        int? ResolveTargetTid(int payloadTid, int? headerTid = null)
+        {
+            if (targetTids.Contains(payloadTid))
+            {
+                return payloadTid;
+            }
+            if (targetPayloadTidMap.TryGetValue(payloadTid, out var mappedTid))
+            {
+                return mappedTid;
+            }
+            if (headerTid is { } h && targetTids.Contains(h))
+            {
+                targetPayloadTidMap[payloadTid] = h;
+                return h;
+            }
+            return null;
+        }
 
         var i = 0;
         while (i < lines.Length)
@@ -233,11 +266,12 @@ internal static class PerfSchedScriptParser
                 i++;
             }
 
-            if (!targetTids.Contains(ev.PrevTid)) continue;
+            var targetTid = ResolveTargetTid(ev.PrevTid, ev.HeaderTid);
+            if (!targetTid.HasValue) continue;
             if (ev.Stack.Count == 0) continue;
 
-            byTid[ev.PrevTid] = new LastSeenSwitchOut(
-                Tid: ev.PrevTid,
+            byTid[targetTid.Value] = new LastSeenSwitchOut(
+                Tid: targetTid.Value,
                 Comm: ev.PrevComm,
                 PrevState: NormalizeState(ev.PrevState),
                 Stack: ev.Stack,
@@ -264,6 +298,7 @@ internal static class PerfSchedScriptParser
         var colonIdx = prefix.LastIndexOf(':');
         if (colonIdx < 0) return null;
         var beforeColon = prefix[..colonIdx];
+        var headerTid = TryParseHeaderTid(beforeColon);
         var lastSpace = beforeColon.LastIndexOf(' ');
         if (lastSpace < 0) return null;
         var tsToken = beforeColon[(lastSpace + 1)..];
@@ -278,7 +313,26 @@ internal static class PerfSchedScriptParser
             return null;
         }
 
-        return new SchedEvent(ts, prevComm, prevTid, prevState, nextComm, nextTid, []);
+        return new SchedEvent(ts, headerTid, prevComm, prevTid, prevState, nextComm, nextTid, []);
+    }
+
+    private static int? TryParseHeaderTid(string beforeColon)
+    {
+        var lastSpace = beforeColon.LastIndexOf(' ');
+        if (lastSpace < 0) return null;
+        var commTidCpu = beforeColon[..lastSpace].TrimEnd();
+        var bracketIdx = commTidCpu.IndexOf('[');
+        var beforeBracket = (bracketIdx >= 0 ? commTidCpu[..bracketIdx] : commTidCpu).TrimEnd();
+        var lastSpace2 = beforeBracket.LastIndexOf(' ');
+        var tidToken = lastSpace2 >= 0 ? beforeBracket[(lastSpace2 + 1)..] : beforeBracket;
+        var slashIdx = tidToken.IndexOf('/');
+        if (slashIdx >= 0)
+        {
+            tidToken = tidToken[(slashIdx + 1)..];
+        }
+        return int.TryParse(tidToken, NumberStyles.Integer, CultureInfo.InvariantCulture, out var tid)
+            ? tid
+            : null;
     }
 
     private static bool TryParsePayload(string payload, out string prevComm, out int prevTid, out string prevState,
@@ -408,8 +462,8 @@ internal static class PerfSchedScriptParser
 /// Wall-clock-relative timestamp of the sched_switch OUT event (perf's <c>perf script</c> time
 /// column, seconds). Populated by <see cref="PerfSchedScriptParser"/> so
 /// <see cref="PerfSchedOffCpuSampler"/> can correlate the span against the
-/// <see cref="SyscallIntervalIndex"/> built from the co-recorded <c>raw_syscalls</c>
-/// tracepoints (issue #829). <c>null</c> on the Windows/ETW path, which has no equivalent
+/// <see cref="SyscallIntervalIndex"/> built from the companion <c>raw_syscalls</c>
+/// tracepoints (issues #829/#839). <c>null</c> on the Windows/ETW path, which has no equivalent
 /// perf-relative clock and correlates syscalls differently (see <c>EtwOffCpuSampler</c>).
 /// </param>
 /// <param name="Syscall">

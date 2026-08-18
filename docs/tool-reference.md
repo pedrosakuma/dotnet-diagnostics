@@ -863,9 +863,11 @@ ETW backends *are* true on-core profilers. The CPU sample result now exposes a
 see when a hot self-time frame is wait-dominated, but use `collect_sample(kind="off_cpu")`
 or `collect_thread_snapshot` for genuine wait-chain / blocking analysis.
 
-- **Linux:** uses `perf record -a -e sched:sched_switch,raw_syscalls:sys_enter,raw_syscalls:sys_exit --call-graph dwarf`
-  system-wide (the `sched_switch` tracepoint only fires on the thread leaving
-  CPU, so restricting by PID misses the IN event). Spans are filtered
+- **Linux:** uses a split perf capture: `sched:sched_switch` remains
+  system-wide with DWARF callchains (the tracepoint only fires on the thread leaving
+  CPU, so restricting by PID misses the IN event), while
+  `raw_syscalls:sys_enter`/`sys_exit` are captured in a separate target-scoped,
+  stackless companion recording for syscall labels. Spans are filtered
   post-collection by the target's `/proc/<pid>/task/*`. Requires `CAP_PERFMON` (kernel
   ≥ 5.8) or `perf_event_paranoid <= -1`, and `perf` installed
   (`linux-tools-common` / `linux-tools-$(uname -r)` on Debian/Ubuntu).
@@ -903,10 +905,8 @@ sorted by total time descending; `null` when nothing correlated. This is a
 span, since a hot off-CPU stack typically block on a small, repeating set of
 syscalls (e.g. "80% `futex`, 20% `read`").
 
-- **Linux** correlates the co-recorded `raw_syscalls:sys_enter`/`sys_exit`
-  tracepoints (single `perf record -e ...` invocation — cheaper than two
-  separate captures and keeps both tracepoint families on the same wall clock)
-  against each span's tid + `[in, out]` timestamp window, so `Name` is an
+- **Linux** correlates the target-scoped companion `raw_syscalls:sys_enter`/`sys_exit`
+  tracepoints against each span's tid + `[in, out]` timestamp window, so `Name` is an
   actual syscall name (e.g. `futex`, `read`, `epoll_wait`, or `syscall_<nr>` for
   an unrecognized number on the current architecture). A span with no syscall
   in flight at block time gets no attribution. The syscall interval index used
@@ -1582,7 +1582,8 @@ dispatches by `kind` to the underlying CPU / off-CPU / allocation / native-alloc
 the underlying sampler verbatim, so `query_snapshot(view="call-tree")` and
 `query_snapshot` drilldowns continue to work unchanged.
 
-**Platform notes.** `kind="off_cpu"` requires Linux (`perf record -e sched_switch`)
+**Platform notes.** `kind="off_cpu"` requires Linux (`perf record -e sched_switch`
+plus an optional target-scoped raw-syscall companion for syscall labels)
 or Windows admin (NT Kernel Logger ContextSwitch); on unsupported hosts the
 unified tool returns the same `NotSupported` / `PermissionDenied` envelope the
 backend returns. `kind="allocation"` works on CoreCLR

@@ -10,14 +10,10 @@ namespace DotnetDiagnostics.Core.OffCpu;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <see cref="PerfSchedOffCpuSampler"/> records both <c>sched:sched_switch</c> and the two
-/// <c>raw_syscalls</c> tracepoints in a <em>single</em> <c>perf record</c> invocation (multiple
-/// comma-separated <c>-e</c> events writing to one <c>perf.data</c> — supported natively by
-/// <c>perf</c>, and cheaper than a second, separately-triggered recording pass since it avoids
-/// doubling the <c>-a</c> system-wide collection window). This parser is then run as a
-/// <em>second</em>, independent <c>perf script</c> invocation over that same file with
-/// <c>--hide-call-graph</c> (<c>-G</c>) so the (potentially large, DWARF-unwound) call chains
-/// attached to the sched_switch events are not re-parsed here — we only need
+/// <see cref="PerfSchedOffCpuSampler"/> records syscall tracepoints in a separate, target-scoped
+/// <c>perf record -p &lt;pid&gt;</c> companion file without callgraphs. This keeps sched_switch DWARF
+/// callchains for wait-stack quality without co-recording global raw_syscalls with those callchains.
+/// This parser then reads the stackless companion file and only needs
 /// <c>tid</c>/<c>timestamp</c>/<c>id</c> per syscall event, not a stack.
 /// </para>
 /// <para>

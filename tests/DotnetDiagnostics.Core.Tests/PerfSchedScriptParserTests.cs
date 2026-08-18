@@ -101,6 +101,28 @@ public sealed class PerfSchedScriptParserTests
     }
 
     [Fact]
+    public void PairsOutAndInEvents_WhenHeaderTidDiffersFromPayloadTid()
+    {
+        // WSL can render a namespace TID in the perf-script header while the sched_switch payload
+        // carries the host-side prev_pid/next_pid. The parser must use the payload identity; a
+        // header-TID or comm-based filter would drop every event for this target shape.
+        const string script = """
+                   target 24255 [001]   1.000000: sched:sched_switch: prev_comm=target prev_pid=10964 prev_prio=120 prev_state=S ==> next_comm=swapper/1 next_pid=0 next_prio=120
+                            ffffffff81234567 schedule+0x0 ([kernel.kallsyms])
+
+                  swapper     0 [001]   1.125000: sched:sched_switch: prev_comm=swapper/1 prev_pid=0 prev_prio=120 prev_state=R ==> next_comm=target next_pid=10964 next_prio=120
+
+            """;
+
+        var (spans, switches) = PerfSchedScriptParser.Parse(script, new HashSet<int> { 24255 });
+
+        switches.Should().Be(1);
+        spans.Should().ContainSingle();
+        spans[0].Tid.Should().Be(24255, "the payload host TID is used only for pairing; artifacts keep the target namespace TID used by raw_syscalls and /proc");
+        spans[0].DurationMicros.Should().Be(125_000);
+    }
+
+    [Fact]
     public void IgnoresEventsForNonTargetTids()
     {
         // Two events involve TID 999 (not in target set) — they must not produce any span and
