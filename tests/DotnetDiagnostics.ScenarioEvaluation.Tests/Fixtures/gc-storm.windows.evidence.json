@@ -44,7 +44,7 @@
     },
     {
       "name": "loh-size-max",
-      "value": 3320512,
+      "value": 4455680,
       "unit": "B"
     },
     {
@@ -69,5 +69,7 @@
   ],
   "frames": [],
   "relations": [],
-  "notes": []
+  "notes": [
+    "loh-size ticked 0 B -> 1,835,008 B -> 4,455,680 B (peak, ~t+4.1s) -> 917,504 B -> 0 B (final tick, ~t+8.0s) across the 8s observation window; loh-size-max (4,455,680 B) reflects the peak tick, not the final tick that a gen2 collection had already reclaimed."
+  ]
 }

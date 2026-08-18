@@ -167,10 +167,7 @@ public sealed class EventPipeCounterCollector : ICounterCollector
                     var value = payload with { Provider = traceEvent.ProviderName };
                     latestCounters[key] = value;
                     firstCounters.TryAdd(key, value);
-                    maxCounters.AddOrUpdate(
-                        key,
-                        value,
-                        (_, existing) => value.Value > existing.Value ? value : existing);
+                    TrackMaxCounter(maxCounters, key, value);
                 };
 
                 source.Process();
@@ -461,6 +458,20 @@ public sealed class EventPipeCounterCollector : ICounterCollector
     private static string FormatTags(IReadOnlyDictionary<string, string?> tags) => tags.Count == 0
         ? string.Empty
         : string.Join(",", tags.OrderBy(kvp => kvp.Key, StringComparer.Ordinal).Select(kvp => $"{kvp.Key}={kvp.Value ?? "null"}"));
+
+    // Updates `maxCounters[key]` to the maximum-value tick observed so far for that counter. Kept
+    // as a small, directly-testable seam (rather than inlining the AddOrUpdate lambda in the
+    // EventPipe callback) so the aggregation logic itself — not just a fixture that happens to
+    // already show a peak — is covered by a unit test independent of a live EventPipe session
+    // (#858 follow-up).
+    internal static void TrackMaxCounter(
+        ConcurrentDictionary<string, CounterValue> maxCounters,
+        string key,
+        CounterValue value)
+        => maxCounters.AddOrUpdate(
+            key,
+            value,
+            (_, existing) => value.Value > existing.Value ? value : existing);
 
     private static CounterValue? ExtractCounterPayload(TraceEvent traceEvent)
     {
