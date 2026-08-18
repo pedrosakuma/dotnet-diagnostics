@@ -108,7 +108,11 @@
         "threshold": { "type": "number" },
         "minimumMatches": { "type": "integer", "minimum": 1 },
         "relation": { "type": "string", "minLength": 1 },
-        "ownerWaitReason": { "type": "string", "minLength": 1 }
+        "ownerWaitReason": { "type": "string", "minLength": 1 },
+        "aggregation": {
+          "enum": [ "any", "sum" ],
+          "description": "Only applies to signalBucketMatch. 'any' (default) requires a single matching bucket to satisfy the threshold. 'sum' adds every bucket matching containsAny before comparing against the threshold - use it when containsAny enumerates equivalent runtime/platform spellings of the same causal leaf that samples can be split across."
+        }
       }
     }
   }

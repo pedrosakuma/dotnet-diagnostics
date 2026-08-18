@@ -155,15 +155,78 @@ public static class ScenarioEvaluator
 
     private static EvidenceInvariantResult SignalBucketMatch(EvidenceInvariant invariant, ScenarioEvidence evidence)
     {
-        var buckets = evidence.Signals
+        var signalBuckets = evidence.Signals
             .Where(signal => string.Equals(signal.Signal, invariant.Signal, StringComparison.Ordinal))
             .SelectMany(signal => signal.Buckets)
+            .ToArray();
+        var matched = signalBuckets
             .Where(bucket => ContainsAny(bucket.Key, invariant.ContainsAny!))
             .ToArray();
-        var matched = buckets.FirstOrDefault(bucket => Compare(bucket.Magnitude, invariant.Comparison!.Value, invariant.Threshold!.Value));
-        return Result(invariant, matched is not null, matched is null
-            ? $"No '{invariant.Signal}' bucket matched [{string.Join(", ", invariant.ContainsAny!)}] and {invariant.Comparison} {invariant.Threshold}."
-            : $"Bucket '{matched.Key}' had magnitude {matched.Magnitude} {matched.Unit}.");
+
+        return invariant.Aggregation switch
+        {
+            BucketAggregation.Sum => SignalBucketMatchSum(invariant, signalBuckets, matched),
+            _ => SignalBucketMatchAny(invariant, signalBuckets, matched),
+        };
+    }
+
+    private static EvidenceInvariantResult SignalBucketMatchAny(
+        EvidenceInvariant invariant,
+        IReadOnlyList<ObservedSignalBucket> signalBuckets,
+        IReadOnlyList<ObservedSignalBucket> matched)
+    {
+        var passingBucket = matched.FirstOrDefault(bucket => Compare(bucket.Magnitude, invariant.Comparison!.Value, invariant.Threshold!.Value));
+        return Result(invariant, passingBucket is not null, passingBucket is null
+            ? UnmatchedDetail(invariant, signalBuckets, matched)
+            : $"Bucket '{passingBucket.Key}' had magnitude {passingBucket.Magnitude} {passingBucket.Unit}.");
+    }
+
+    private static EvidenceInvariantResult SignalBucketMatchSum(
+        EvidenceInvariant invariant,
+        IReadOnlyList<ObservedSignalBucket> signalBuckets,
+        IReadOnlyList<ObservedSignalBucket> matched)
+    {
+        var total = matched.Sum(bucket => bucket.Magnitude);
+        var passed = matched.Count > 0 && Compare(total, invariant.Comparison!.Value, invariant.Threshold!.Value);
+        if (passed)
+        {
+            var contributors = string.Join(
+                ", ",
+                matched
+                    .OrderByDescending(bucket => bucket.Magnitude)
+                    .Select(bucket => $"'{bucket.Key}'={bucket.Magnitude}{bucket.Unit}"));
+            return Result(
+                invariant,
+                true,
+                $"Aggregated {matched.Count} bucket(s) matching [{string.Join(", ", invariant.ContainsAny!)}] summed to {total} (>= {invariant.Threshold}): {contributors}.");
+        }
+
+        return Result(invariant, false, UnmatchedDetail(invariant, signalBuckets, matched, total));
+    }
+
+    private static string UnmatchedDetail(
+        EvidenceInvariant invariant,
+        IReadOnlyList<ObservedSignalBucket> signalBuckets,
+        IReadOnlyList<ObservedSignalBucket> matched,
+        double? aggregatedTotal = null)
+    {
+        var terms = string.Join(", ", invariant.ContainsAny!);
+        var matchedSummary = matched.Count == 0
+            ? "no buckets matched"
+            : $"matched bucket(s) [{string.Join(", ", matched.OrderByDescending(b => b.Magnitude).Select(b => $"'{b.Key}'={b.Magnitude}{b.Unit}"))}]"
+                + (aggregatedTotal is null ? string.Empty : $" summed to {aggregatedTotal}");
+        var unmatched = signalBuckets
+            .Except(matched)
+            .OrderByDescending(bucket => bucket.Magnitude)
+            .Take(10)
+            .Select(bucket => $"'{bucket.Key}'={bucket.Magnitude}{bucket.Unit}")
+            .ToArray();
+        var unmatchedSummary = unmatched.Length == 0
+            ? "no other buckets observed"
+            : $"observed non-matching bucket(s): [{string.Join(", ", unmatched)}]";
+
+        return $"No '{invariant.Signal}' bucket(s) matching [{terms}] satisfied {invariant.Comparison} {invariant.Threshold}. "
+            + $"{matchedSummary}; {unmatchedSummary}.";
     }
 
     private static EvidenceInvariantResult CounterComparison(EvidenceInvariant invariant, ScenarioEvidence evidence)
