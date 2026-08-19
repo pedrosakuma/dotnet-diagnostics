@@ -34,6 +34,19 @@ require_trx() {
     echo "::error::dotnet test exited successfully but did not produce nonempty TRX '$trx_path'." >&2
     return 1
   fi
+  # A nonempty TRX is not sufficient: a bad test filter, a mismatched/missing
+  # test assembly (e.g. an incomplete build-artifact hand-off), or any other
+  # cause of "the test host started and exited 0 but discovered zero tests"
+  # still produces a small, well-formed, nonempty TRX. Parse the
+  # `<Counters total="N" .../>` element and require total > 0 so this
+  # category of silent-zero-test bug fails loudly instead of passing.
+  local counters total
+  counters=$(grep -oE '<Counters[^/]*/>' "$trx_path" | head -1)
+  total=$(echo "$counters" | sed -nE 's/.*total="([0-9]+)".*/\1/p')
+  if [[ -z "$counters" || "${total:-0}" -eq 0 ]]; then
+    echo "::error::dotnet test exited successfully but '$trx_path' has no <Counters> element or reports total=0 executed tests." >&2
+    return 1
+  fi
 }
 
 # Returns 0 if the TRX from the last run looks like the documented phantom

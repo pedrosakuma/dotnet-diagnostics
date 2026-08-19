@@ -372,11 +372,27 @@ jobs:
         shell: bash
         run: |
           shopt -s globstar nullglob
+          # Bug #1861-2 (found in review): a nonempty TRX is not enough — the
+          # `obj/`-missing and NuGet-global-packages-folder bugs found during
+          # this PR's own empirical validation both produced a small, valid,
+          # *nonempty* TRX with zero executed tests (`dotnet test` silently
+          # short-circuited before running anything). Parse the TRX's
+          # `<Counters total="N" .../>` element (same regex `ci-test-with-retry.sh`
+          # already uses for its phantom-crash detection) and require total > 0,
+          # so this category of silent-zero-test bug fails the build instead of
+          # only being caught by a human reading raw CI output.
           trx="core-test-results.trx"
           found=false
           for trx_path in TestResults{,.attempt1}/"$trx" TestResults{,.attempt1}/**/"$trx"; do
             if [[ -s "$trx_path" ]]; then
               found=true
+              counters=$(grep -oE '<Counters[^/]*/>' "$trx_path" | head -1)
+              total=$(echo "$counters" | sed -nE 's/.*total="([0-9]+)".*/\1/p')
+              if [[ -z "$counters" || "${total:-0}" -eq 0 ]]; then
+                echo "::error::'$trx_path' has no <Counters> element or reports total=0 executed tests — treating a silently-zero-test run as a failure."
+                exit 1
+              fi
+              echo "$trx: total=$total"
               break
             fi
           done
@@ -480,11 +496,23 @@ jobs:
           BENCHMARK_TEST_OUTCOME: ${{ steps.benchmark_tests.outcome }}
         run: |
           shopt -s globstar nullglob
+          # Bug #1861-2 (found in review): a nonempty TRX is not enough — see
+          # the equivalent comment in `windows-core-test`'s "Verify expected
+          # test results" step for the full rationale (the obj/ and
+          # NuGet-restore bugs found during this PR's validation both produced
+          # a valid, nonempty TRX with zero executed tests).
           for trx in cli-test-results.trx benchmark-test-results.trx server-test-results.trx; do
             found=false
             for trx_path in TestResults{,.attempt1}/"$trx" TestResults{,.attempt1}/**/"$trx"; do
               if [[ -s "$trx_path" ]]; then
                 found=true
+                counters=$(grep -oE '<Counters[^/]*/>' "$trx_path" | head -1)
+                total=$(echo "$counters" | sed -nE 's/.*total="([0-9]+)".*/\1/p')
+                if [[ -z "$counters" || "${total:-0}" -eq 0 ]]; then
+                  echo "::error::'$trx_path' has no <Counters> element or reports total=0 executed tests — treating a silently-zero-test run as a failure."
+                  exit 1
+                fi
+                echo "$trx: total=$total"
                 break
               fi
             done
@@ -528,10 +556,17 @@ jobs:
   # reports as a *neutral* check rather than a failing one and would let a
   # broken Windows leg merge. On docs-only PRs the three jobs above are
   # *deliberately* skipped at the job level (see their `if:` comments), so
-  # this gate treats `skipped` as acceptable only when `changes.outputs.code`
-  # is false — a `skipped` result while `code` is true still fails the gate,
-  # since that can only mean one of them was skipped due to an upstream
-  # failure (e.g. `windows-build` failing skips both test jobs by default).
+  # this gate treats `skipped` as acceptable only when `changes` itself
+  # *succeeded* and its `code` output is the explicit string `false` — a
+  # `skipped` result while `code` is true still fails the gate, since that
+  # can only mean one of them was skipped due to an upstream failure (e.g.
+  # `windows-build` failing skips both test jobs by default). Requiring
+  # `needs.changes.result == 'success'` before trusting `code` matters
+  # because if `changes` itself fails or is cancelled, its `code` output is
+  # empty/unreliable — the three split jobs still skip themselves (their
+  # `if:` only becomes true when `code == 'true'`, which an empty value is
+  # not), but that must not be misread as "docs-only, skip is fine"; a
+  # failed `changes` job means we have no real signal, so the gate fails.
   windows-gate:
     name: Build & Test (windows-latest)
     needs: [changes, windows-build, windows-core-test, windows-mcp-test]
@@ -541,24 +576,46 @@ jobs:
       - name: Check split Windows job results
         shell: bash
         env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
           CODE: ${{ needs.changes.outputs.code }}
           BUILD_RESULT: ${{ needs.windows-build.result }}
           CORE_RESULT: ${{ needs.windows-core-test.result }}
           MCP_RESULT: ${{ needs.windows-mcp-test.result }}
         run: |
+          echo "changes:             $CHANGES_RESULT"
           echo "changes.code:        $CODE"
           echo "windows-build:       $BUILD_RESULT"
           echo "windows-core-test:   $CORE_RESULT"
           echo "windows-mcp-test:    $MCP_RESULT"
 
+          # `changes` itself must have succeeded before we trust its `code`
+          # output at all. If `changes` failed or was cancelled, `CODE` is
+          # empty/unreliable (not a legitimate "false") — the three split
+          # jobs would still correctly skip themselves (their `if:` requires
+          # `code == 'true'`, which is false when `changes` never ran to
+          # completion), but that must NOT be read as "docs-only, skip is
+          # fine". Fail loudly instead so a broken `changes` job can't
+          # masquerade as a docs-only pass.
+          if [[ "$CHANGES_RESULT" != "success" ]]; then
+            echo "::error::'changes' job did not succeed (result=$CHANGES_RESULT), so its 'code' output cannot be trusted. Failing the gate rather than treating this as a docs-only skip."
+            exit 1
+          fi
+
           # Docs-only PRs: the three jobs above skip themselves at the job
           # level, so "skipped" is the expected, successful outcome here.
-          if [[ "$CODE" != "true" ]]; then
+          # Require CODE to be the explicit string "false" (not just "not
+          # true") now that we know `changes` succeeded.
+          if [[ "$CODE" == "false" ]]; then
             if [[ "$BUILD_RESULT" == "skipped" && "$CORE_RESULT" == "skipped" && "$MCP_RESULT" == "skipped" ]]; then
               echo "Docs-only change: split Windows jobs skipped as expected."
               exit 0
             fi
             echo "::error::Docs-only change but split Windows jobs did not all report 'skipped' (build=$BUILD_RESULT, core=$CORE_RESULT, mcp=$MCP_RESULT)."
+            exit 1
+          fi
+
+          if [[ "$CODE" != "true" ]]; then
+            echo "::error::Unexpected 'changes.outputs.code' value: '$CODE' (expected 'true' or 'false')."
             exit 1
           fi
 
