@@ -7,11 +7,11 @@
   "groundTruth": "InvariantCultureIgnoreCase forces culture-aware globalization hashing for every dictionary lookup.",
   "workload": {
     "setup": "Launch a fresh Release BadCodeSample process over loopback.",
-    "activation": "Drive sustained GET /culture-lookup?iterations=3000000 requests after the CPU sampler arms.",
+    "activation": "Drive sustained GET /culture-lookup?iterations=6000000 requests after the CPU sampler arms.",
     "cleanup": "Cancel load generation and terminate the sample process tree.",
     "parameters": {
       "endpoint": "/culture-lookup",
-      "iterations": "3000000",
+      "iterations": "6000000",
       "minimumWorkers": "4",
       "maximumWorkers": "16"
     },
