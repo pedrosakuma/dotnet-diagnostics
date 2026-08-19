@@ -616,7 +616,7 @@ internal static class CliHost
     {
         // Pass NO command-line args to the host builder: the CLI command/flags are not configuration
         // and the default command-line config provider rejects bare positionals like "processes".
-        var builder = Host.CreateApplicationBuilder(Array.Empty<string>());
+        var builder = Host.CreateApplicationBuilder(["--hostBuilder:reloadConfigOnChange=false"]);
 
         // stdout carries the table / JSON; route every log to stderr and keep it quiet by default so
         // machine-readable stdout stays clean.

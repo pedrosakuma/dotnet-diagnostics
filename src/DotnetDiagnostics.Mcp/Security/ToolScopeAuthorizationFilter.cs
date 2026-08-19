@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.Text;
+using DotnetDiagnostics.Mcp.Tasks;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
@@ -121,7 +122,7 @@ internal static class ToolScopeAuthorizationFilter
                     toolName,
                     principal?.Name ?? "(none)",
                     FormatScopes(decision));
-                var taskNeedsPrincipalSnapshot = request.Params?.Task is not null;
+                var taskNeedsPrincipalSnapshot = McpTaskRequestMetadata.HasTasksExtension(request);
                 if (delegatedPrincipal is null && !taskNeedsPrincipalSnapshot)
                 {
                     return await next(request, cancellationToken).ConfigureAwait(false);

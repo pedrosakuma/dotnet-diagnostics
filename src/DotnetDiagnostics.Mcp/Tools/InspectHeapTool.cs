@@ -52,11 +52,7 @@ public sealed class InspectHeapTool
         Destructive = false,
         ReadOnly = true,
         Idempotent = false,
-        UseStructuredContent = true,
-        // Issue #425 — a ClrMD heap walk can be long (large heaps) and suspends a live target;
-        // promote to an MCP Task so the client owns progress + cancellation uniformly with
-        // collect_sample / collect_events. Optional: synchronous walks still work for older clients.
-        TaskSupport = ToolTaskSupport.Optional)]
+        UseStructuredContent = true)]
     [Description(
         "Walks the managed heap and returns aggregated runtime/heap totals plus top types by " +
         "retained bytes and instance count. Each TypeStat carries a TypeIdentity (ModuleVersionId + " +
@@ -164,7 +160,8 @@ public sealed class InspectHeapTool
 
         // Issue #425 — a heap walk has no a-priori duration, so emit an indeterminate progress
         // heartbeat and honour MCP-native cancellation (notifications/cancelled) uniformly with the
-        // other long-running collectors. The walk can be promoted to an MCP Task (TaskSupport=Optional).
+        // other long-running collectors. The walk can be promoted to an MCP Task when the client
+        // opts into the Tasks extension.
         try
         {
             return await CollectionProgressTicker.RunIndeterminateAsync(

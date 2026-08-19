@@ -26,6 +26,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol.Client;
+using ModelContextProtocol.Extensions.Tasks;
 using ModelContextProtocol.Protocol;
 
 namespace DotnetDiagnostics.Mcp.IntegrationTests;
@@ -227,19 +228,14 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
     {
         await using var client = await ConnectAsync();
 
-        client.ServerCapabilities.Tasks.Should().NotBeNull();
-        client.ServerCapabilities.Tasks!.List.Should().NotBeNull();
-        client.ServerCapabilities.Tasks.Cancel.Should().NotBeNull();
-        client.ServerCapabilities.Tasks.Requests.Should().NotBeNull();
-        client.ServerCapabilities.Tasks.Requests!.Tools.Should().NotBeNull();
-        client.ServerCapabilities.Tasks.Requests.Tools!.Call.Should().NotBeNull();
+        client.ServerCapabilities.Extensions.Should().NotBeNull();
+        client.ServerCapabilities.Extensions.Should().ContainKey(TasksProtocol.ExtensionId);
 
         var tools = await client.ListToolsAsync(cancellationToken: CancellationToken.None);
         foreach (var toolName in new[] { "collect_sample", "collect_events", "inspect_heap" })
         {
             var tool = tools.Single(t => t.Name == toolName);
-            tool.ProtocolTool.Execution.Should().NotBeNull($"{toolName} must advertise execution metadata for MCP Tasks");
-            tool.ProtocolTool.Execution!.TaskSupport.Should().Be(ModelContextProtocol.Protocol.ToolTaskSupport.Optional);
+            tool.ProtocolTool.Meta.Should().NotBeNull($"{toolName} must keep MCP metadata so clients can discover auth/safety details");
         }
     }
 
@@ -287,43 +283,43 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
     {
         await using var client = await ConnectAsync();
 
-        var task = await client.CallToolAsTaskAsync(
-            "collect_sample",
-            new Dictionary<string, object?>
+        var created = await client.CallToolAsTaskAsync(
+            new CallToolRequestParams
             {
-                ["kind"] = "cpu",
-                ["processId"] = Environment.ProcessId,
-                ["durationSeconds"] = 1,
-                ["topN"] = 5,
-                ["resolveSourceLines"] = false,
+                Name = "collect_sample",
+                Arguments = new Dictionary<string, JsonElement>
+                {
+                    ["kind"] = JsonSerializer.SerializeToElement("cpu"),
+                    ["processId"] = JsonSerializer.SerializeToElement(Environment.ProcessId),
+                    ["durationSeconds"] = JsonSerializer.SerializeToElement(1),
+                    ["topN"] = JsonSerializer.SerializeToElement(5),
+                    ["resolveSourceLines"] = JsonSerializer.SerializeToElement(false),
+                },
             },
-            new ModelContextProtocol.Protocol.McpTaskMetadata { TimeToLive = TimeSpan.FromMinutes(1) },
             cancellationToken: CancellationToken.None);
 
-        task.TaskId.Should().NotBeNullOrWhiteSpace();
-        task.Status.Should().Be(ModelContextProtocol.Protocol.McpTaskStatus.Working);
-        task.PollInterval.Should().NotBeNull();
-
-        var listed = await client.ListTasksAsync(cancellationToken: CancellationToken.None);
-        listed.Select(t => t.TaskId).Should().Contain(task.TaskId);
+        created.IsTask.Should().BeTrue();
+        created.TaskCreated.Should().NotBeNull();
+        var taskId = created.TaskCreated!.TaskId;
+        created.TaskCreated.Status.Should().Be(McpTaskStatus.Working);
+        created.TaskCreated.PollIntervalMs.Should().NotBeNull();
 
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(20);
-        ModelContextProtocol.Protocol.McpTask terminal = task;
+        GetTaskResult terminal = await client.GetTaskAsync(taskId, cancellationToken: CancellationToken.None);
         while (DateTime.UtcNow < deadline)
         {
-            terminal = await client.GetTaskAsync(task.TaskId, cancellationToken: CancellationToken.None);
-            if (terminal.Status is ModelContextProtocol.Protocol.McpTaskStatus.Completed or ModelContextProtocol.Protocol.McpTaskStatus.Failed or ModelContextProtocol.Protocol.McpTaskStatus.Cancelled)
+            if (terminal.Status is McpTaskStatus.Completed or McpTaskStatus.Failed or McpTaskStatus.Cancelled)
             {
                 break;
             }
 
-            await Task.Delay(terminal.PollInterval ?? TimeSpan.FromMilliseconds(200));
+            await Task.Delay(TimeSpan.FromMilliseconds(terminal.PollIntervalMs ?? 200));
+            terminal = await client.GetTaskAsync(taskId, cancellationToken: CancellationToken.None);
         }
 
-        terminal.Status.Should().Be(ModelContextProtocol.Protocol.McpTaskStatus.Completed);
+        terminal.Should().BeOfType<CompletedTaskResult>();
 
-        var rawResult = await client.GetTaskResultAsync(task.TaskId, cancellationToken: CancellationToken.None);
-        var callToolResult = JsonSerializer.Deserialize<ModelContextProtocol.Protocol.CallToolResult>(rawResult.GetRawText(), DeserializeOptions);
+        var callToolResult = JsonSerializer.Deserialize<CallToolResult>(((CompletedTaskResult)terminal).Result.GetRawText(), DeserializeOptions);
         callToolResult.Should().NotBeNull();
         callToolResult!.IsError.Should().NotBe(true);
 
@@ -498,14 +494,10 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
     [Fact]
     public async Task Initialize_AdvertisesServerInfoAndInstructions()
     {
-        // Pin the spec version we advertise so a future SDK bump that changes the default
-        // doesn't silently degrade the negotiated version.
-        var clientOptions = new ModelContextProtocol.Client.McpClientOptions
-        {
-            ProtocolVersion = "2025-11-25",
-        };
-
-        await using var client = await ConnectAsync(clientOptions);
+        // On SDK v2 the HTTP client prefers 2026-07-28 and skips the initialize handshake
+        // when the server supports stateless Streamable HTTP. Assert the advertised identity
+        // and instructions through that default path.
+        await using var client = await ConnectAsync();
 
         client.ServerInfo.Should().NotBeNull();
         client.ServerInfo!.Name.Should().Be("dotnet-diagnostics-mcp");

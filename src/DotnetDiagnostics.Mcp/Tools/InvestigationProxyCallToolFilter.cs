@@ -10,6 +10,7 @@ using DotnetDiagnostics.Mcp.Observability;
 using DotnetDiagnostics.Mcp.Orchestrator;
 using DotnetDiagnostics.Mcp.Orchestrator.Investigations;
 using DotnetDiagnostics.Mcp.Security;
+using DotnetDiagnostics.Mcp.Tasks;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol;
 using ModelContextProtocol.Protocol;
@@ -89,8 +90,10 @@ internal static class InvestigationProxyCallToolFilter
         return next => (request, cancellationToken) =>
         {
             var sessionId = sessionIdResolver(request);
+            var taskAwareRequest = McpTaskRequestMetadata.HasTasksExtension(request);
             return InvokeAsync(
                 request.Params,
+                taskAwareRequest,
                 sessionId,
                 next: (p, ct) => next(request, ct),
                 scopeRegistry,
@@ -126,6 +129,7 @@ internal static class InvestigationProxyCallToolFilter
     /// </summary>
     internal static async ValueTask<CallToolResult> InvokeAsync(
         CallToolRequestParams? requestParams,
+        bool taskAwareRequest,
         string? sessionId,
         Func<CallToolRequestParams?, CancellationToken, ValueTask<CallToolResult>> next,
         ToolScopeRegistry scopeRegistry,
@@ -178,7 +182,7 @@ internal static class InvestigationProxyCallToolFilter
             return await next(sanitizedRequest, cancellationToken).ConfigureAwait(false);
         }
 
-        using var activity = requestParams?.Task is null
+        using var activity = !taskAwareRequest
             ? observability.StartProxyActivity(handleId, toolName)
             : null;
 
@@ -273,7 +277,7 @@ internal static class InvestigationProxyCallToolFilter
 
         async ValueTask<CallToolResult> ForwardAsync(CancellationToken forwardCancellationToken)
         {
-            using var taskActivity = requestParams?.Task is not null
+            using var taskActivity = taskAwareRequest
                 ? observability.StartProxyActivity(handle.HandleId, toolName)
                 : null;
             var forwardingActivity = taskActivity ?? activity;
@@ -318,8 +322,8 @@ internal static class InvestigationProxyCallToolFilter
                 // The orchestrator owns the externally visible MCP task. Sending Task upstream
                 // would create a second task in the cached pod MCP session, orphaning its id,
                 // result, cancellation, and progress lifecycle from the caller's session.
-                var upstreamRequest = requestParams?.Task is not null && taskPromoter is not null
-                    ? InvestigationRoutingArguments.WithoutTask(sanitizedRequest!)
+                var upstreamRequest = taskAwareRequest && taskPromoter is not null
+                    ? InvestigationRoutingArguments.WithoutTasksExtension(sanitizedRequest!)
                     : sanitizedRequest!;
                 var delegatedRequest = ToolScopeDelegation.Add(
                     upstreamRequest,
@@ -365,7 +369,7 @@ internal static class InvestigationProxyCallToolFilter
             }
         }
 
-        if (requestParams?.Task is not null && taskPromoter is not null)
+        if (taskAwareRequest && taskPromoter is not null)
         {
             return await taskPromoter(ForwardAsync, cancellationToken).ConfigureAwait(false);
         }

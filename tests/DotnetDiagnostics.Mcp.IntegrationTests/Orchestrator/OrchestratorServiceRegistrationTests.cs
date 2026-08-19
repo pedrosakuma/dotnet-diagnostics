@@ -55,7 +55,7 @@ public sealed class OrchestratorServiceRegistrationTests
     [Fact]
     public void AddOrchestratorObservability_HostBuilder_RegistersObserverForStdio()
     {
-        var builder = Host.CreateApplicationBuilder();
+        var builder = Host.CreateApplicationBuilder(["--hostBuilder:reloadConfigOnChange=false"]);
         builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["Orchestrator:Enabled"] = "true",

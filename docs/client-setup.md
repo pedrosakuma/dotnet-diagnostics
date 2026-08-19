@@ -473,7 +473,7 @@ Cutover plan:
 
 1. Update your MCP client SDK to a version that emits a progress token on
    long-running `tools/call`, or — for spec-compliant clients — adopts
-   MCP Tasks (`params.task` + `tasks/get` + `tasks/result` + `tasks/cancel`).
+   MCP Tasks (`io.modelcontextprotocol/tasks` + `tasks/get` + `tasks/update` + `tasks/cancel`).
 2. Either path is sufficient: progress + cancel notifications cover the
    in-request lifecycle, while MCP Tasks cover the detached-poll lifecycle.
 
@@ -485,15 +485,17 @@ Cutover plan:
 
 ## MCP Tasks for long-running collectors
 
-`collect_sample`, `collect_events` and `inspect_heap` advertise
-`execution.taskSupport: "optional"` in `tools/list`, and the server advertises
-`capabilities.tasks.{list,cancel,requests.tools.call}`. Clients that implement the
+`collect_sample`, `collect_events` and `inspect_heap` can be promoted to
+Tasks when the client opts into `io.modelcontextprotocol/tasks`, and the server advertises
+that extension in `capabilities.extensions`. Clients that implement the
 full MCP **Tasks** lifecycle can promote any of these calls to a detached task:
 
-- **C# MCP SDK** (≥ `1.3.0`): `client.CallToolAsTaskAsync(...)`, then poll
-  `tasks/get` and fetch the terminal result with `tasks/result`; cancel via
-  `tasks/cancel`.
-- **Generic clients**: send `tools/call` with `params.task` set.
+- **C# MCP SDK** (≥ `2.0.0`): `client.CallToolAsTaskAsync(...)`, then poll
+  `tasks/get`; read the terminal `CallToolResult` from a `completed` response's
+  `result` field, answer `input_required` polls with `tasks/update`, and cancel
+  via `tasks/cancel`.
+- **Generic clients**: opt into
+  `params._meta.io.modelcontextprotocol/clientCapabilities.extensions["io.modelcontextprotocol/tasks"]`.
 
 Tasks are **optional** — synchronous `tools/call` (with the in-request
 progress/cancel notifications above) keeps working for clients that don't

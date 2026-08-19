@@ -65,7 +65,7 @@ public class HealthCheckCommandTests
     public async Task RunAsync_ReturnsZero_WhenServerAnswersHealth()
     {
         var port = GetFreePort();
-        var builder = WebApplication.CreateBuilder();
+        var builder = WebApplication.CreateBuilder(["--hostBuilder:reloadConfigOnChange=false"]);
         builder.WebHost.UseUrls($"http://127.0.0.1:{port}");
         builder.Logging.ClearProviders();
         await using var app = builder.Build();

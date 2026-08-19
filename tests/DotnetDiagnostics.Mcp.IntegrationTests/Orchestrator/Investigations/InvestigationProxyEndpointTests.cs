@@ -37,6 +37,7 @@ namespace DotnetDiagnostics.Mcp.IntegrationTests.Orchestrator.Investigations;
 [Collection(LegacyAdminBypassLatchCollection.Name)]
 public class InvestigationProxyEndpointTests : IAsyncLifetime
 {
+    private static readonly string[] DisableReloadOnChangeArgs = ["--hostBuilder:reloadConfigOnChange=false"];
     private IHost _host = default!;
     private TestServer _server = default!;
     private HttpClient _client = default!;
@@ -48,7 +49,7 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
 
     private async Task InitializeAsync(long? proxyBytesCap)
     {
-        var builder = Host.CreateDefaultBuilder();
+        var builder = Host.CreateDefaultBuilder(DisableReloadOnChangeArgs);
         builder.ConfigureWebHost(web =>
         {
             web.UseTestServer();
@@ -374,7 +375,7 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
         CapturingLoggerProvider? capture = null,
         SecurityOptions? securityOptions = null)
     {
-        var builder = Host.CreateDefaultBuilder();
+        var builder = Host.CreateDefaultBuilder(DisableReloadOnChangeArgs);
         builder.ConfigureWebHost(web =>
         {
             web.UseTestServer();
@@ -451,7 +452,7 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
 
     private async Task InitializeAdminAsync()
     {
-        var builder = Host.CreateDefaultBuilder();
+        var builder = Host.CreateDefaultBuilder(DisableReloadOnChangeArgs);
         builder.ConfigureWebHost(web =>
         {
             web.UseTestServer();
@@ -922,12 +923,12 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
             "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{" +
             "\"name\":\"collect_events\",\"arguments\":{\"kind\":\"counters\",\"" +
             ToolScopeDelegation.ArgumentName + "\":\"client-forged\"}," +
-            "\"task\":{\"ttl\":60000}}}";
+            "\"_meta\":{\"io.modelcontextprotocol/clientCapabilities\":{\"extensions\":{\"io.modelcontextprotocol/tasks\":{}}}}}}";
         var response = await _client.PostAsync("/proxy/inv_jrpc_ok/mcp", new StringContent(payload, Encoding.UTF8, "application/json"));
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         _upstream.LastRequest.Should().NotBeNull();
-        _upstream.LastRequestBody.Should().Contain("\"task\"");
+        _upstream.LastRequestBody.Should().Contain("\"io.modelcontextprotocol/tasks\"");
         _upstream.LastRequestBody.Should().Contain(ToolScopeDelegation.ArgumentName);
         _upstream.LastRequestBody.Should().NotContain("client-forged");
     }
@@ -943,7 +944,7 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
             allowCrossSessionAdmin: false);
 
         var payload =
-            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"collect_process_dump\",\"arguments\":{},\"task\":{\"ttl\":60000}}}";
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"collect_process_dump\",\"arguments\":{},\"_meta\":{\"io.modelcontextprotocol/clientCapabilities\":{\"extensions\":{\"io.modelcontextprotocol/tasks\":{}}}}}}";
 
         var response = await _client.PostAsync(
             "/proxy/inv_dump_scope/mcp",
@@ -1355,7 +1356,7 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
             "\"name\":\"collect_events\"," +
             "\"arguments\":{\"kind\":\"counters\",\"triggerWhen\":\"always-trigger\"," +
             "\"captureKind\":\"Dump\",\"confirmDump\":true}," +
-            "\"task\":{\"ttl\":60000}}}";
+            "\"_meta\":{\"io.modelcontextprotocol/clientCapabilities\":{\"extensions\":{\"io.modelcontextprotocol/tasks\":{}}}}}}";
 
         var response = await _client.PostAsync(
             "/proxy/inv_gated_dump/mcp",

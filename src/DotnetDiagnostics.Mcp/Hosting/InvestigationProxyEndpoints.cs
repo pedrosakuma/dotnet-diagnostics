@@ -630,8 +630,7 @@ internal static class InvestigationProxyEndpoints
         if (body.IsEmpty) return null;
         try
         {
-            using var document = JsonDocument.Parse(body);
-            if (HasDuplicateObjectKeys(document.RootElement))
+            if (HasDuplicateObjectKeys(body.Span))
             {
                 return new ProxyToolRejection(
                     ProxyToolRejectionKind.Malformed,
@@ -639,6 +638,8 @@ internal static class InvestigationProxyEndpoints
                     null,
                     false);
             }
+
+            using var document = JsonDocument.Parse(body);
             if (document.RootElement.ValueKind == JsonValueKind.Array)
             {
                 if (document.RootElement.GetArrayLength() == 0)
@@ -809,6 +810,15 @@ internal static class InvestigationProxyEndpoints
                 false);
         }
 
+        if (requestParams.TryGetProperty("task", out _))
+        {
+            return new ProxyToolRejection(
+                ProxyToolRejectionKind.Malformed,
+                "<legacy-task-params>",
+                null,
+                false);
+        }
+
         var toolName = name.GetString()!;
         if (!InvestigationProxyToolAllowlist.IsAllowed(toolName))
         {
@@ -947,31 +957,77 @@ internal static class InvestigationProxyEndpoints
             StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool HasDuplicateObjectKeys(JsonElement value)
+    private static bool HasDuplicateObjectKeys(ReadOnlySpan<byte> json)
     {
-        if (value.ValueKind == JsonValueKind.Object)
+        var reader = new Utf8JsonReader(json);
+        if (!reader.Read())
         {
-            var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var property in value.EnumerateObject())
-            {
-                if (!names.Add(property.Name) || HasDuplicateObjectKeys(property.Value))
-                {
-                    return true;
-                }
-            }
+            return false;
         }
-        else if (value.ValueKind == JsonValueKind.Array)
+
+        return HasDuplicateObjectKeys(ref reader);
+    }
+
+    private static bool HasDuplicateObjectKeys(ref Utf8JsonReader reader)
+    {
+        return reader.TokenType switch
         {
-            foreach (var item in value.EnumerateArray())
+            JsonTokenType.StartObject => HasDuplicateObjectKeysInObject(ref reader),
+            JsonTokenType.StartArray => HasDuplicateObjectKeysInArray(ref reader),
+            _ => false,
+        };
+    }
+
+    private static bool HasDuplicateObjectKeysInObject(ref Utf8JsonReader reader)
+    {
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        while (reader.Read())
+        {
+            if (reader.TokenType == JsonTokenType.EndObject)
             {
-                if (HasDuplicateObjectKeys(item))
-                {
-                    return true;
-                }
+                return false;
+            }
+
+            if (reader.TokenType != JsonTokenType.PropertyName)
+            {
+                throw new JsonException("Expected property name.");
+            }
+
+            if (!names.Add(reader.GetString() ?? string.Empty))
+            {
+                return true;
+            }
+
+            if (!reader.Read())
+            {
+                throw new JsonException("Expected property value.");
+            }
+
+            if (HasDuplicateObjectKeys(ref reader))
+            {
+                return true;
             }
         }
 
-        return false;
+        throw new JsonException("Expected end of object.");
+    }
+
+    private static bool HasDuplicateObjectKeysInArray(ref Utf8JsonReader reader)
+    {
+        while (reader.Read())
+        {
+            if (reader.TokenType == JsonTokenType.EndArray)
+            {
+                return false;
+            }
+
+            if (HasDuplicateObjectKeys(ref reader))
+            {
+                return true;
+            }
+        }
+
+        throw new JsonException("Expected end of array.");
     }
 
     private static bool HasNonCanonicalProperty(JsonElement value, string canonicalName)

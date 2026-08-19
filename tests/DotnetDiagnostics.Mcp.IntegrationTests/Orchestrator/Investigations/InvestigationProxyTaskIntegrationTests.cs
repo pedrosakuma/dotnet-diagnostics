@@ -13,6 +13,7 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using ModelContextProtocol.Client;
+using ModelContextProtocol.Extensions.Tasks;
 using ModelContextProtocol.Protocol;
 
 namespace DotnetDiagnostics.Mcp.IntegrationTests.Orchestrator.Investigations;
@@ -26,32 +27,15 @@ public sealed class InvestigationProxyTaskIntegrationTests
         await using var factory = new TaskProxyFactory();
         await using var client = await ConnectAsync(factory, TaskProxyFactory.AuthorizedToken);
         var arguments = MethodParameterArguments();
-        var metadata = new McpTaskMetadata { TimeToLive = TimeSpan.FromMinutes(1) };
-
-        var task = await client.CallToolAsTaskAsync(
-            "collect_sample",
-            arguments,
-            metadata,
-            cancellationToken: CancellationToken.None);
-
-        task.TaskId.Should().NotBeNullOrWhiteSpace();
-        (await client.ListTasksAsync(cancellationToken: CancellationToken.None))
-            .Select(static item => item.TaskId)
-            .Should().Contain(task.TaskId);
-        task = await WaitForTerminalAsync(client, task);
-        task.Status.Should().Be(McpTaskStatus.Completed);
-
-        var rawResult = await client.GetTaskResultAsync(
-            task.TaskId,
-            cancellationToken: CancellationToken.None);
-        var result = JsonSerializer.Deserialize<CallToolResult>(
-            rawResult.GetRawText(),
-            new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+        var task = await CallToolAsTaskAsync(client, "collect_sample", arguments);
+        var terminal = await WaitForTerminalAsync(client, task.TaskId);
+        terminal.Should().BeOfType<CompletedTaskResult>();
+        var result = DeserializeResult((CompletedTaskResult)terminal);
         ResultText(result).Should().Be("pod-call-completed");
 
         factory.Proxy.CallCount.Should().Be(1);
         factory.Proxy.LastPrincipalName.Should().Be(TaskProxyFactory.AuthorizedName);
-        factory.Proxy.LastRequest!.Task.Should().BeNull(
+        TasksExtensionTestSupport.HasTasks(factory.Proxy.LastRequest).Should().BeFalse(
             "the pod must execute synchronously inside the orchestrator-owned task");
         factory.Proxy.LastRequest.Arguments.Should().ContainKey(ToolScopeDelegation.ArgumentName);
 
@@ -68,28 +52,29 @@ public sealed class InvestigationProxyTaskIntegrationTests
     }
 
     [Fact]
-    public async Task ExplicitHandleExportTask_UsesOuterTaskAndExactDelegation()
+    public async Task ExplicitHandleExportCall_RunsSynchronously_AndUsesExactDelegation()
     {
         await using var factory = new TaskProxyFactory();
         await using var client = await ConnectAsync(factory, TaskProxyFactory.ExportToken);
-        var task = await client.CallToolAsTaskAsync(
-            "export_investigation_summary",
-            ExportArguments(),
-            new McpTaskMetadata { TimeToLive = TimeSpan.FromMinutes(1) },
-            cancellationToken: CancellationToken.None);
+        var response = await client.CallToolAsTaskAsync(
+            new CallToolRequestParams
+            {
+                Name = "export_investigation_summary",
+                Arguments = ExportArguments().ToDictionary(
+                    static pair => pair.Key,
+                    static pair => JsonSerializer.SerializeToElement(pair.Value),
+                    StringComparer.Ordinal),
+            },
+            CancellationToken.None);
 
-        task = await WaitForTerminalAsync(client, task);
-        task.Status.Should().Be(McpTaskStatus.Completed);
-        var rawResult = await client.GetTaskResultAsync(
-            task.TaskId,
-            cancellationToken: CancellationToken.None);
-        var result = JsonSerializer.Deserialize<CallToolResult>(
-            rawResult.GetRawText(),
-            new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+        response.IsTask.Should().BeFalse();
+        response.Result.Should().NotBeNull();
+        var result = response.Result!;
         ResultText(result).Should().Be("pod-call-completed");
 
         factory.Proxy.CallCount.Should().Be(1);
-        factory.Proxy.LastRequest!.Task.Should().BeNull();
+        TasksExtensionTestSupport.HasTasks(factory.Proxy.LastRequest).Should().BeFalse(
+            "non-task-capable tools should run through the synchronous path even when the caller used CallToolAsTaskAsync");
         factory.Proxy.LastDelegatedScopes.Should().BeEquivalentTo(
             "investigation-export",
             "read-counters");
@@ -113,21 +98,17 @@ public sealed class InvestigationProxyTaskIntegrationTests
         factory.Proxy.BlockNextCall = true;
         await using var client = await ConnectAsync(factory, TaskProxyFactory.AuthorizedToken);
 
-        var task = await client.CallToolAsTaskAsync(
-            "collect_sample",
-            MethodParameterArguments(),
-            new McpTaskMetadata { TimeToLive = TimeSpan.FromMinutes(1) },
-            cancellationToken: CancellationToken.None);
+        var task = await CallToolAsTaskAsync(client, "collect_sample", MethodParameterArguments());
         await factory.Proxy.CallStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
         var cancelled = await client.CancelTaskAsync(
             task.TaskId,
             cancellationToken: CancellationToken.None);
 
-        cancelled.Status.Should().Be(McpTaskStatus.Cancelled);
+        cancelled.Should().NotBeNull();
         await factory.Proxy.CallCancelled.Task.WaitAsync(TimeSpan.FromSeconds(10));
         (await client.GetTaskAsync(task.TaskId, cancellationToken: CancellationToken.None))
-            .Status.Should().Be(McpTaskStatus.Cancelled);
+            .Should().BeOfType<CancelledTaskResult>();
     }
 
     [Fact]
@@ -136,17 +117,10 @@ public sealed class InvestigationProxyTaskIntegrationTests
         await using var factory = new TaskProxyFactory();
         await using var client = await ConnectAsync(factory, TaskProxyFactory.AuthorizedToken);
 
-        var task = await client.CallToolAsTaskAsync(
-            "collect_sample",
-            MethodParameterArguments(),
-            new McpTaskMetadata { TimeToLive = TimeSpan.MaxValue },
-            cancellationToken: CancellationToken.None);
+        var task = await CallToolAsTaskAsync(client, "collect_sample", MethodParameterArguments());
 
-        task.TimeToLive.Should().Be(TimeSpan.FromHours(1));
-        task = await WaitForTerminalAsync(client, task);
-        task.Status.Should().Be(McpTaskStatus.Completed);
-        (await client.ListTasksAsync(cancellationToken: CancellationToken.None))
-            .Should().Contain(item => item.TaskId == task.TaskId);
+        task.TimeToLive.Should().Be(TimeSpan.FromMinutes(10));
+        (await WaitForTerminalAsync(client, task.TaskId)).Should().BeOfType<CompletedTaskResult>();
     }
 
     [Fact]
@@ -184,17 +158,43 @@ public sealed class InvestigationProxyTaskIntegrationTests
         ports.GetCalls.Should().Be(0);
     }
 
-    private static async Task<McpTask> WaitForTerminalAsync(McpClient client, McpTask task)
+    private static async Task<CreateTaskResult> CallToolAsTaskAsync(
+        McpClient client,
+        string toolName,
+        IReadOnlyDictionary<string, object?> arguments)
+    {
+        var request = new CallToolRequestParams
+        {
+            Name = toolName,
+            Arguments = arguments.ToDictionary(
+                static pair => pair.Key,
+                static pair => JsonSerializer.SerializeToElement(pair.Value),
+                StringComparer.Ordinal),
+        };
+
+        var result = await client.CallToolAsTaskAsync(request, CancellationToken.None);
+        result.IsTask.Should().BeTrue();
+        result.TaskCreated.Should().NotBeNull();
+        return result.TaskCreated!;
+    }
+
+    private static async Task<GetTaskResult> WaitForTerminalAsync(McpClient client, string taskId)
     {
         var deadline = DateTimeOffset.UtcNow.AddSeconds(15);
+        GetTaskResult task = await client.GetTaskAsync(taskId, cancellationToken: CancellationToken.None);
         while (task.Status is McpTaskStatus.Working && DateTimeOffset.UtcNow < deadline)
         {
-            await Task.Delay(task.PollInterval ?? TimeSpan.FromMilliseconds(100));
-            task = await client.GetTaskAsync(task.TaskId, cancellationToken: CancellationToken.None);
+            await Task.Delay(TimeSpan.FromMilliseconds(task.PollIntervalMs ?? 100));
+            task = await client.GetTaskAsync(taskId, cancellationToken: CancellationToken.None);
         }
 
         return task;
     }
+
+    private static CallToolResult DeserializeResult(CompletedTaskResult task)
+        => JsonSerializer.Deserialize<CallToolResult>(
+            task.Result.GetRawText(),
+            new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
 
     private static Dictionary<string, object?> MethodParameterArguments()
     {
