@@ -282,9 +282,15 @@ jobs:
       # `<dir>/<project>/bin/...` structure relative to the repo root, and
       # downloading with `path: .` onto a fresh checkout of the same commit
       # lays it back down exactly where each test host's `SampleLocator` (and
-      # `dotnet test --no-build` itself) expects to find it. `obj/` is
-      # deliberately excluded — it's only needed to *build* incrementally,
-      # not to run already-built assemblies.
+      # `dotnet test --no-build` itself) expects to find it. `obj/` also has
+      # to travel: even with `--no-build`, MSBuild's NuGet-generated files
+      # under `obj/` (`project.assets.json`, `*.nuget.g.{props,targets}`) are
+      # required to resolve package references for `dotnet test`/`dotnet
+      # pack --no-build` — without them the run fails fast with NETSDK1004
+      # (confirmed empirically: an earlier version of this workflow that
+      # uploaded only `bin/` produced `Assets file '...\project.assets.json'
+      # not found` on the pack-smoke step and silently-zero-test-executed
+      # runs on the test steps).
       - name: Upload build output (Windows)
         if: needs.changes.outputs.code == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -292,8 +298,11 @@ jobs:
           name: windows-build-output
           path: |
             src/**/bin/**
+            src/**/obj/**
             tests/**/bin/**
+            tests/**/obj/**
             samples/**/bin/**
+            samples/**/obj/**
           if-no-files-found: error
           retention-days: 1
 
