@@ -293,3 +293,4 @@ to every contributor and every agent on this repo.
 - **Persistent server-side state** — server stays stateless; investigation memory is portable JSON the agent persists externally (see issue [#10](https://github.com/pedrosakuma/dotnet-diagnostics/issues/10)).
 - **A web UI** — this is an MCP server; the UI is whatever MCP client the human uses.
 - **Replacing dotnet-monitor** — different goals. `dotnet-monitor` is rule-based collection for ops; we are interactive diagnosis for an LLM. They complement each other.
+Docs-only probe for #861 job-level skip validation.
