@@ -42,7 +42,8 @@ internal static class DiagnosticServiceRegistration
 {
     private const int MaxRetainedMcpTasks = 32;
     private const int TaskTimeToLiveMinutes = 10;
-    private const int MaxTaskBackedDurationSeconds = TaskTimeToLiveMinutes * 60;
+    private const int TaskExecutionSafetyMarginSeconds = 60;
+    private const int MaxTaskBackedDurationSeconds = (TaskTimeToLiveMinutes * 60) - TaskExecutionSafetyMarginSeconds;
 
     /// <summary>
     /// Registers every Core collector / planner / store the tool layer depends on, by delegating

@@ -124,6 +124,29 @@ public sealed class InvestigationProxyTaskIntegrationTests
     }
 
     [Fact]
+    public async Task LongCollectionWindow_RunsSynchronously_WhenItWouldApproachTaskExpiry()
+    {
+        await using var factory = new TaskProxyFactory();
+        await using var client = await ConnectAsync(factory, TaskProxyFactory.AuthorizedToken);
+
+        var response = await client.CallToolAsTaskAsync(
+            new CallToolRequestParams
+            {
+                Name = "collect_sample",
+                Arguments = MethodParameterArguments(durationSeconds: 600).ToDictionary(
+                    static pair => pair.Key,
+                    static pair => JsonSerializer.SerializeToElement(pair.Value),
+                    StringComparer.Ordinal),
+            },
+            CancellationToken.None);
+
+        response.IsTask.Should().BeFalse(
+            "task-backed execution must leave time for collection teardown and polling before the task TTL elapses");
+        response.Result.Should().NotBeNull();
+        ResultText(response.Result!).Should().Be("pod-call-completed");
+    }
+
+    [Fact]
     public async Task PodProxyClient_DoesNotRecreateTransport_AfterHandleClose()
     {
         var ports = new NeverUsedPortForwardManager();
@@ -196,7 +219,7 @@ public sealed class InvestigationProxyTaskIntegrationTests
             task.Result.GetRawText(),
             new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
 
-    private static Dictionary<string, object?> MethodParameterArguments()
+    private static Dictionary<string, object?> MethodParameterArguments(int durationSeconds = 1)
     {
         var arguments = new Dictionary<string, object?>(StringComparer.Ordinal)
         {
@@ -204,7 +227,7 @@ public sealed class InvestigationProxyTaskIntegrationTests
             ["methodFilters"] = new[] { "Example.Type::Method" },
             ["includeSensitiveValues"] = true,
             ["reason"] = "proxy task authorization regression",
-            ["durationSeconds"] = 1,
+            ["durationSeconds"] = durationSeconds,
             [InvestigationRoutingArguments.InvestigationHandleIdArgument] = TaskProxyFactory.HandleId,
         };
         var safety = InvocationSafetyResolver.Resolve(InvocationSafetyRequest.Create(
