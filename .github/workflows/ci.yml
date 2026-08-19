@@ -321,6 +321,25 @@ jobs:
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           global-json-file: global.json
+          cache: true
+          cache-dependency-path: |
+            **/Directory.Packages.props
+            **/*.csproj
+
+      # `obj/*.nuget.g.{props,targets}` (uploaded from `windows-build`) point
+      # at this machine's NuGet global-packages folder by absolute path, but
+      # that folder is physically empty on a fresh VM — nothing was ever
+      # restored *here*. Package-conditioned MSBuild imports silently no-op
+      # when `Exists(...)` is false, which was observed empirically to make
+      # `dotnet test --no-build` execute zero tests without printing an
+      # error (exit 0, no output, ~2s). Restoring again on this VM (fast:
+      # warm via the NuGet cache populated above) populates that folder so
+      # every conditioned import actually resolves; the artifact download
+      # below still supplies the actual build output so this restore does
+      # NOT trigger a rebuild.
+      - name: Restore
+        if: needs.changes.outputs.code == 'true'
+        run: dotnet restore
 
       - name: Download build output (Windows)
         if: needs.changes.outputs.code == 'true'
@@ -392,6 +411,18 @@ jobs:
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           global-json-file: global.json
+          cache: true
+          cache-dependency-path: |
+            **/Directory.Packages.props
+            **/*.csproj
+
+      # See the identical step + comment in `windows-core-test` above: a
+      # fresh restore on THIS VM is required so `obj/*.nuget.g.{props,targets}`
+      # imports (shipped via the artifact below) actually resolve against a
+      # populated NuGet global-packages folder, rather than silently no-op-ing.
+      - name: Restore
+        if: needs.changes.outputs.code == 'true'
+        run: dotnet restore
 
       - name: Download build output (Windows)
         if: needs.changes.outputs.code == 'true'
