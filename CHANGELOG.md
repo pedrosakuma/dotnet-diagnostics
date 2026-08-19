@@ -2,6 +2,70 @@
 
 ## [Unreleased]
 
+## [0.24.0] — 2026-08-19
+
+Highlights: **native contention/off-CPU diagnosis matures, and the MCP Tasks
+extension moves to the finalized SEP-2663 shape.** This release adds a
+dedicated native-lock-contention collector, off-CPU-to-syscall attribution, a
+CPU microarchitecture-efficiency snapshot, and cross-collector investigation
+digests for `collect_batch`. It also migrates long-running collectors off the
+experimental Tasks API onto the official, redesigned MCP Tasks extension now
+that the C# SDK ships stable support for it.
+
+### Migration notes
+
+- **MCP SDK bumped from `1.4.0` to `2.2.0`; MCP Tasks moved from the
+  experimental v1 shape to the finalized SEP-2663 extension** (#548, #878).
+  This is a breaking wire-format change for any client relying on the old
+  experimental `tasks/get` + `tasks/result` polling shape — it has no
+  API/wire compatibility with the redesigned extension. The extension only
+  activates when the client negotiates the `2026-07-28` (or later) protocol
+  revision; clients on older protocol versions continue to work unaffected
+  (verified via manual backward-compatibility smoke test — see
+  [`docs/manual-mcp-smoke-test.md`](./docs/manual-mcp-smoke-test.md)).
+  `collect_sample`, `collect_events`, and `inspect_heap` remain the
+  task-promotable tools; task state now lives in the shared
+  `IDiagnosticHandleStore` rather than session memory. Spec-compliant clients
+  should opt into `io.modelcontextprotocol/tasks` on `tools/call` and poll
+  `tasks/get`; clients that don't implement Tasks keep working through the
+  existing `notifications/progress` / `notifications/cancelled` flow.
+
+### Added
+
+- **Native mutex/lock contention evidence model** (#844, #837) —
+  `collect_sample(kind="native-lock-contention")` (#830, #833) samples
+  `pthread_mutex_lock`/`unlock` activity via `perf`, with an explicit
+  probable-vs-confirmed evidence classification.
+- **Off-CPU blocking attributed to syscalls and wait reasons** (#829, #832,
+  #843) — off-CPU sampling now correlates blocked time with the underlying
+  syscall, split into its own dedicated perf capture path.
+- **CPU microarchitecture-efficiency snapshot** — `collect_sample(kind="cpu-efficiency")`
+  (#834) via `perf stat`, plus JIT frame symbolization for the perf
+  doublemapper (#846) and a Linux perf compatibility smoke matrix (#851, #865)
+  covering environment/kernel variance.
+- **Cross-collector investigation digest for `collect_batch`** (#825, #826,
+  #827, #831) — a shared digest reused by the CLI and BenchmarkDotNet
+  diagnoser, correlating native-lock and off-CPU evidence in one collection
+  window (#867).
+- **`query_snapshot` drilldown improvements** — one-round-trip CPU triage
+  bundle via `view="triage"` (#812, #820), an Activity trace snapshot
+  drilldown (#847), `rankBy="running"` and a `waitReason` label on
+  `view="top-methods"` (#813, #817), a `foldAsync` option (#811, #818), and a
+  `latestOfKind` handle alias (#821).
+
+### Research / internal
+
+- Feasibility spike for paired uprobe/uretprobe native mutex latency
+  measurement (#852, #863) — see
+  [`docs/research/`](./docs/research) for findings; not yet implemented.
+- Retired the obsolete Linux host-crash reproduction workflows now that the
+  root cause has been identified in ClrMD (#868); the `[SkipOnLinuxCiFact]`
+  quarantine mechanism itself is unchanged (tracked in #685).
+- Multiple CI stability fixes: parallelized Windows Core/MCP integration
+  runners (#874), NuGet cache ROI measurement (#873, #856, #871), and several
+  flake-margin/culture-invariance hardenings across batch GC, perf-fixture,
+  and culture-lookup scenarios (#849, #850, #862, #869, #870, #872, #877).
+
 ## [0.22.0] — 2026-08-01
 
 Highlights: **production diagnostics now have an explicit safety contract.**
