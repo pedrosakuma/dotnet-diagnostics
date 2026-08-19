@@ -1,5 +1,6 @@
 using System.Text.Json;
 using DotnetDiagnostics.Core.Dump;
+using DotnetDiagnostics.Mcp.Protocol;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
@@ -38,7 +39,7 @@ internal static class DumpApprovalElicitation
         CancellationToken cancellationToken)
     {
         var server = request?.Server;
-        if (server is null || server.ClientCapabilities?.Elicitation is null)
+        if (server is null || !McpClientCapabilityMetadata.SupportsElicitation(request))
         {
             return DumpApprovalOutcome.NotSupported;
         }

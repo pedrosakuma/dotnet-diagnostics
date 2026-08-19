@@ -269,10 +269,6 @@ internal static class ToolScopeDelegation
                 }
             }
             writer.WriteEndObject();
-            writer.WritePropertyName("meta");
-            WriteCanonical(writer, JsonSerializer.SerializeToElement(request.Meta));
-            writer.WritePropertyName("task");
-            WriteCanonical(writer, JsonSerializer.SerializeToElement(request.Task));
             writer.WriteEndObject();
         }
 
@@ -305,6 +301,7 @@ internal static class ToolScopeDelegation
                 break;
         }
     }
+
 
     private static void PruneReplayCache(long nowUnixSeconds)
     {
@@ -410,7 +407,6 @@ internal static class ToolScopeDelegation
             Name = request.Name,
             Arguments = arguments,
             Meta = request.Meta,
-            Task = request.Task,
         };
 
     private sealed record DelegationPayload(

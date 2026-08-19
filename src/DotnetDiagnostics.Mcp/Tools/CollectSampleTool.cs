@@ -55,8 +55,7 @@ public sealed class CollectSampleTool
         Destructive = false,
         ReadOnly = true,
         Idempotent = false,
-        UseStructuredContent = true,
-        TaskSupport = ToolTaskSupport.Optional)]
+        UseStructuredContent = true)]
     [Description(
         "Unified bounded-time sampler. Choose the sampler via the 'kind' parameter " +
         "(cpu, off_cpu, allocation, native-alloc, native-lock-contention, method-params). Returns a drilldown handle.")]

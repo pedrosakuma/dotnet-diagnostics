@@ -20,11 +20,14 @@ using DotnetDiagnostics.Core.ThreadPool;
 using DotnetDiagnostics.Mcp.Azure;
 using DotnetDiagnostics.Mcp.Azure.Discovery;
 using DotnetDiagnostics.Mcp.Orchestrator;
+using DotnetDiagnostics.Mcp.Tasks;
 using DotnetDiagnostics.Mcp.Tools;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using ModelContextProtocol.Extensions.Tasks;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
+using System.Text.Json;
 
 namespace DotnetDiagnostics.Mcp.Hosting;
 
@@ -37,6 +40,11 @@ namespace DotnetDiagnostics.Mcp.Hosting;
 /// </summary>
 internal static class DiagnosticServiceRegistration
 {
+    private const int MaxRetainedMcpTasks = 32;
+    private const int TaskTimeToLiveMinutes = 10;
+    private const int TaskExecutionSafetyMarginSeconds = 60;
+    private const int MaxTaskBackedDurationSeconds = (TaskTimeToLiveMinutes * 60) - TaskExecutionSafetyMarginSeconds;
+
     /// <summary>
     /// Registers every Core collector / planner / store the tool layer depends on, by delegating
     /// to the host-neutral <see cref="DiagnosticCoreServiceRegistration.AddDiagnosticCoreServices"/>
@@ -72,13 +80,14 @@ internal static class DiagnosticServiceRegistration
         // survive across requests. Server-owned (not a Core type).
         services.AddSingleton<Security.LegacyDiagnosticsFlagDeprecation>();
 
-        services.AddSingleton<ModelContextProtocol.IMcpTaskStore>(_ =>
-            new ModelContextProtocol.InMemoryMcpTaskStore(
-                defaultTtl: System.TimeSpan.FromMinutes(10),
-                maxTtl: System.TimeSpan.FromHours(1),
-                pollInterval: System.TimeSpan.FromSeconds(1),
-                maxTasks: 32,
-                maxTasksPerSession: 32));
+        var taskStore = new BoundedMcpTaskStore(
+            new InMemoryMcpTaskStore
+            {
+                DefaultTimeToLive = System.TimeSpan.FromMinutes(TaskTimeToLiveMinutes),
+                DefaultPollIntervalMs = (long)System.TimeSpan.FromSeconds(1).TotalMilliseconds,
+            },
+            maxTrackedTasks: MaxRetainedMcpTasks);
+        services.AddSingleton<IMcpTaskStore>(taskStore);
         services.AddHostedService<HandleEvictionBackgroundService>();
 
         // #426 — opt-in OpenTelemetry emission of exported investigation summaries.
@@ -296,8 +305,6 @@ internal static class DiagnosticServiceRegistration
                 // deprecated surrogate tool has been deleted; no deprecation filter
                 // is registered because there are no deprecated tools left to notify on.
 
-                options.ProtocolVersion = "2025-11-25";
-
                 options.ServerInfo = new Implementation
                 {
                     Name = "dotnet-diagnostics-mcp",
@@ -333,7 +340,24 @@ internal static class DiagnosticServiceRegistration
             .WithResources<Resources.HeapSnapshotResources>()
             .WithResources<Resources.ThreadSnapshotResources>()
             .WithResources<Resources.JourneyDiffResources>()
-            .WithResources<Resources.SignalsResources>();
+            .WithResources<Resources.SignalsResources>()
+            .WithTasks(
+                GetTaskStore(services),
+                options =>
+                {
+                    options.ExecutionModeSelector = context =>
+                    {
+                        var toolName = context.Params?.Name;
+                        return toolName switch
+                        {
+                            CollectSampleTool.ToolName or "collect_events"
+                                when GetRequestedDurationSeconds(context.Params?.Arguments) <= MaxTaskBackedDurationSeconds
+                                => McpTaskExecutionMode.Optional,
+                            InspectHeapTool.ToolName => McpTaskExecutionMode.Optional,
+                            _ => McpTaskExecutionMode.Synchronous,
+                        };
+                    };
+                });
 
         if (enableOrchestratorTools)
         {
@@ -350,6 +374,33 @@ internal static class DiagnosticServiceRegistration
 
         DecorateToolInvocations(services);
         return builder;
+    }
+
+    private static IMcpTaskStore GetTaskStore(IServiceCollection services)
+    {
+        foreach (var descriptor in services)
+        {
+            if (descriptor.ServiceType == typeof(IMcpTaskStore) &&
+                descriptor.ImplementationInstance is IMcpTaskStore store)
+            {
+                return store;
+            }
+        }
+
+        throw new InvalidOperationException("IMcpTaskStore must be registered before AddDiagnosticMcpServer runs.");
+    }
+
+    private static int GetRequestedDurationSeconds(IDictionary<string, JsonElement>? arguments)
+    {
+        if (arguments is null ||
+            !arguments.TryGetValue("durationSeconds", out var durationElement) ||
+            durationElement.ValueKind != JsonValueKind.Number ||
+            !durationElement.TryGetInt32(out var durationSeconds))
+        {
+            return 10;
+        }
+
+        return durationSeconds;
     }
 
     private static void DecorateToolInvocations(IServiceCollection services)

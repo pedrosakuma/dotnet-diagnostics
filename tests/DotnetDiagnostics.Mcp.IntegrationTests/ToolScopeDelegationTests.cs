@@ -128,7 +128,6 @@ public sealed class ToolScopeDelegationTests
             Name = delegated.Name,
             Arguments = new Dictionary<string, JsonElement>(delegated.Arguments!, StringComparer.Ordinal),
             Meta = delegated.Meta,
-            Task = delegated.Task,
         };
 
         ToolScopeDelegation.TryConsume(
@@ -161,7 +160,6 @@ public sealed class ToolScopeDelegationTests
             Name = delegated.Name,
             Arguments = new Dictionary<string, JsonElement>(delegated.Arguments!, StringComparer.Ordinal),
             Meta = delegated.Meta,
-            Task = delegated.Task,
         };
         time.UtcNow = start.AddSeconds(31);
 
@@ -213,10 +211,10 @@ public sealed class ToolScopeDelegationTests
     }
 
     [Fact]
-    public void Delegation_Is_Bound_To_Task_Metadata()
+    public void Delegation_Ignores_ProtocolNegotiation_Metadata()
     {
         var (registry, delegated) = CreateMethodParameterDelegation();
-        delegated.Task = new McpTaskMetadata { TimeToLive = TimeSpan.FromMinutes(1) };
+        TasksExtensionTestSupport.EnableTasks(delegated);
 
         ToolScopeDelegation.TryConsume(
             delegated,
@@ -225,12 +223,11 @@ public sealed class ToolScopeDelegationTests
             Secret,
             TimeProvider.System,
             out _,
-            out var failure).Should().BeFalse();
-        failure.Should().Contain("does not match");
+            out var failure).Should().BeTrue(failure);
     }
 
     [Fact]
-    public void Delegation_Is_Bound_To_Request_Metadata()
+    public void Delegation_Ignores_Request_Metadata()
     {
         var (registry, delegated) = CreateMethodParameterDelegation();
         delegated.Meta = new JsonObject { ["progressToken"] = "swapped" };
@@ -242,8 +239,7 @@ public sealed class ToolScopeDelegationTests
             Secret,
             TimeProvider.System,
             out _,
-            out var failure).Should().BeFalse();
-        failure.Should().Contain("does not match");
+            out var failure).Should().BeTrue(failure);
     }
 
     [Fact]

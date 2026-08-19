@@ -7,6 +7,7 @@ using FluentAssertions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using ModelContextProtocol.Extensions.Tasks;
 using Xunit;
 
 namespace DotnetDiagnostics.Mcp.IntegrationTests;
@@ -67,7 +68,7 @@ public class DiagnosticServiceRegistrationTests
 
         // The three deliberately host-specific registrations that stay in Server (#284).
         services.Should().ContainSingle(d => d.ServiceType == typeof(LegacyDiagnosticsFlagDeprecation));
-        services.Should().ContainSingle(d => d.ServiceType == typeof(ModelContextProtocol.IMcpTaskStore));
+        services.Should().ContainSingle(d => d.ServiceType == typeof(IMcpTaskStore));
         services.Should().Contain(d => d.ServiceType == typeof(IHostedService));
     }
 

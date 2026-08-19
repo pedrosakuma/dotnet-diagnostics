@@ -207,6 +207,7 @@ public sealed class DumpApprovalElicitationTests : IClassFixture<DumpApprovalEli
 
         var options = new McpClientOptions
         {
+            ProtocolVersion = "2025-11-25",
             Capabilities = new ClientCapabilities
             {
                 Elicitation = new ElicitationCapability(),

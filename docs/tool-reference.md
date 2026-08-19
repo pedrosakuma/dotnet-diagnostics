@@ -380,9 +380,9 @@ collect_events(kind="counters")(processId=4242, triggerWhen="cpu>85", captureKin
 
 ### Long-running collects: MCP Tasks
 
-As of the `2025-11-25` protocol bump, the server registers an
-`IMcpTaskStore`, advertises `capabilities.tasks.{list,cancel,requests.tools.call}`
-and marks these tools with `execution.taskSupport: "optional"` in `tools/list`:
+As of the `2026-07-28` protocol bump, the server registers an
+`IMcpTaskStore`, advertises the `io.modelcontextprotocol/tasks` extension in
+`capabilities.extensions`, and promotes only these tools to task-backed execution when the client opts in:
 
 - `collect_sample` (every `kind` — cpu, off_cpu, allocation, native-alloc, native-lock-contention)
 - `collect_events` (every `kind` — counters, exceptions, crash-guard, gc, …)
@@ -406,10 +406,10 @@ access based on parameters or handle kind; see [authorization](./authorization.m
 
 **Spec-compliant clients should use MCP Tasks** for long windows:
 
-1. send `tools/call` with `params.task` (or use `McpClient.CallToolAsTaskAsync`)
+1. opt into `io.modelcontextprotocol/tasks` on `tools/call` (or use `McpClient.CallToolAsTaskAsync`)
 2. poll `tasks/get`
-3. fetch the terminal `CallToolResult` via `tasks/result`
-4. cancel via `tasks/cancel`
+3. read terminal output from the final `tasks/get` payload (`completed.result`, `failed.error`, or `cancelled`)
+4. answer `input_required` polls via `tasks/update`, or cancel via `tasks/cancel`
 
 ### MCP-native progress and cancellation (issue #211)
 
@@ -2137,11 +2137,7 @@ sudo apt install linux-tools-$(uname -r) linux-tools-generic
 **Sampling rate** is the runtime default (~1 kHz). A 10-second window typically
 yields a few thousand samples; bump `durationSeconds` for sparse workloads.
 
-**Long-running pattern:** this tool supports MCP Tasks (`execution.taskSupport:
-"optional"`). Spec clients should use task-augmented `tools/call` + `tasks/get` /
-`tasks/result`; for clients that don't implement Tasks, use the in-request
-`notifications/progress` + `notifications/cancelled` flow described under
-[MCP-native progress and cancellation](#mcp-native-progress-and-cancellation-issue-211).
+**Long-running pattern:** this tool can be promoted to MCP Tasks when the client opts into `io.modelcontextprotocol/tasks`. Spec clients should use task-augmented `tools/call` + `tasks/get` / `tasks/update`; terminal results arrive on the final `tasks/get` response. Clients that don't implement Tasks should use the in-request `notifications/progress` + `notifications/cancelled` flow described under [MCP-native progress and cancellation](#mcp-native-progress-and-cancellation-issue-211).
 
 ## Symbol resolution
 
@@ -2281,10 +2277,7 @@ capped to `maxRecent` (default `100`, echoed back as `recentCap`); when
 observed, not a random sample. Raise `maxRecent` for storms where the tail
 matters; lower it when you only want a quick signal.
 
-**Long-running pattern:** this tool supports MCP Tasks (`execution.taskSupport:
-"optional"`). Spec clients should use task-augmented `tools/call` + `tasks/get` /
-`tasks/result`. Clients that don't implement Tasks should use the in-request
-`notifications/progress` + `notifications/cancelled` flow.
+**Long-running pattern:** this tool can be promoted to MCP Tasks when the client opts into `io.modelcontextprotocol/tasks`. Spec clients should use task-augmented `tools/call` + `tasks/get` / `tasks/update`; terminal results arrive on the final `tasks/get` response. Clients that don't implement Tasks should use the in-request `notifications/progress` + `notifications/cancelled` flow.
 
 ---
 
@@ -2343,10 +2336,7 @@ returns aggregate + per-collection details.
 | `durationSeconds` | `int` | `10` | Window length |
 | `maxEvents` | `int` | `200` | Cap on retained raw GC event rows and heap-stat samples. Exact totals, total/max pause, and generation counts continue updating after the cap. |
 
-**Long-running pattern:** this tool supports MCP Tasks (`execution.taskSupport:
-"optional"`). Spec clients should use task-augmented `tools/call`; clients that
-don't implement Tasks should use the in-request `notifications/progress` +
-`notifications/cancelled` flow.
+**Long-running pattern:** this tool can be promoted to MCP Tasks when the client opts into `io.modelcontextprotocol/tasks`. Spec clients should use task-augmented `tools/call` + `tasks/get`; terminal results arrive on the final `tasks/get` response. Clients that don't implement Tasks should use the in-request `notifications/progress` + `notifications/cancelled` flow.
 
 **Returns:** `GcSummary`:
 

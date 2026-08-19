@@ -37,7 +37,7 @@ internal sealed class TestOidcAuthority : IAsyncDisposable
             KeyId = Guid.NewGuid().ToString("N"),
         };
 
-        var builder = WebApplication.CreateSlimBuilder();
+        var builder = WebApplication.CreateSlimBuilder(["--hostBuilder:reloadConfigOnChange=false"]);
         builder.WebHost.UseUrls("http://127.0.0.1:0");
         var app = builder.Build();
 

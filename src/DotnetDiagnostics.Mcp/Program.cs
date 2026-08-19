@@ -4,6 +4,7 @@ using DotnetDiagnostics.Mcp.Hosting;
 using DotnetDiagnostics.Mcp.Orchestrator;
 using DotnetDiagnostics.Mcp.Security;
 using Microsoft.AspNetCore.RateLimiting;
+using ModelContextProtocol.AspNetCore;
 using System.Threading.RateLimiting;
 
 // --health-check (issue #27): probe-only client mode. Used by supervisor units
@@ -28,7 +29,7 @@ if (args.Contains("--stdio"))
     return await RunStdioAsync(args).ConfigureAwait(false);
 }
 
-var builder = WebApplication.CreateBuilder(args);
+var builder = WebApplication.CreateBuilder(DisableConfigReloadOnChange(args));
 DockerBootstrapProfileConfiguration.AddTo(builder.Configuration);
 var oidcJwtAuth = builder.AddOidcJwtAuth();
 
@@ -118,7 +119,7 @@ builder.Services
         () => loggerFactoryHolder,
         enableOrchestratorTools: orchestratorEnabled,
         servicesAccessor: () => servicesHolder)
-    .WithHttpTransport();
+    .WithHttpTransport(options => options.SessionMode = HttpServerSessionMode.StatefulForInitializeClients);
 
 var app = builder.Build();
 loggerFactoryHolder = app.Services.GetRequiredService<ILoggerFactory>();
@@ -269,7 +270,7 @@ static string RateLimitPartitionKey(HttpContext httpContext)
 
 static async Task<int> RunStdioAsync(string[] args)
 {
-    var hostBuilder = Host.CreateApplicationBuilder(args);
+    var hostBuilder = Host.CreateApplicationBuilder(DisableConfigReloadOnChange(args));
 
     // Stdio uses stdout as the JSON-RPC channel — emit logs on stderr only and disable
     // all console formatting that would interleave ANSI/scope text into the wire stream.
@@ -314,6 +315,20 @@ static async Task<int> RunStdioAsync(string[] args)
 
     await host.RunAsync().ConfigureAwait(false);
     return 0;
+}
+
+static string[] DisableConfigReloadOnChange(string[] args)
+{
+    const string disableReloadArg = "--hostBuilder:reloadConfigOnChange=false";
+    if (args.Any(static arg => string.Equals(arg, disableReloadArg, StringComparison.OrdinalIgnoreCase)))
+    {
+        return args;
+    }
+
+    var builderArgs = new string[args.Length + 1];
+    Array.Copy(args, builderArgs, args.Length);
+    builderArgs[^1] = disableReloadArg;
+    return builderArgs;
 }
 
 // H9 (issue #162) bind detection lives in DotnetDiagnostics.Mcp.Hosting.BindingInspector

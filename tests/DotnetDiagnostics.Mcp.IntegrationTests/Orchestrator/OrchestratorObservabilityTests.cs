@@ -93,6 +93,7 @@ public sealed class OrchestratorObservabilityTests
                     ["kind"] = JsonSerializer.SerializeToElement("counters"),
                 },
             },
+            taskAwareRequest: false,
             sessionId: "session-1",
             next: (_, _) => ValueTask.FromResult(new CallToolResult()),
             scopeRegistry: ToolScopeRegistry.Build(DotnetDiagnostics.Mcp.Hosting.PodLocalToolSurfaces.Proxyable),
@@ -180,6 +181,7 @@ public sealed class OrchestratorObservabilityTests
                     ["secretValue"] = JsonDocument.Parse("\"do-not-log-this\"").RootElement,
                 },
             },
+            taskAwareRequest: false,
             sessionId: "audit-session",
             next: (_, _) => ValueTask.FromResult(new CallToolResult()),
             scopeRegistry: ToolScopeRegistry.Build(DotnetDiagnostics.Mcp.Hosting.PodLocalToolSurfaces.Proxyable),
@@ -254,7 +256,7 @@ public sealed class OrchestratorObservabilityTests
 
         public static async Task<MetricsHost> StartAsync()
         {
-            var builder = WebApplication.CreateBuilder();
+            var builder = WebApplication.CreateBuilder(["--hostBuilder:reloadConfigOnChange=false"]);
             builder.WebHost.UseTestServer();
             builder.Logging.ClearProviders();
             builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>

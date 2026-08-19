@@ -102,7 +102,6 @@ internal static class ToolScopeListToolsFilter
             InputSchema = AddSafetyAcknowledgementSchema(tool.InputSchema, safety),
             OutputSchema = AddSafetyResultSchema(tool.OutputSchema),
             Annotations = tool.Annotations,
-            Execution = tool.Execution,
             Icons = tool.Icons,
             Meta = meta,
         };

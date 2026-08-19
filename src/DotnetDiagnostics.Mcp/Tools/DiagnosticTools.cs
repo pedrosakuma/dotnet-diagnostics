@@ -230,7 +230,7 @@ public sealed class DiagnosticTools
         "Optionally, resolveMethodInstantiations=true performs a second ClrMD attach after sampling to recover closed generic method signatures for the hottest managed frames; on Linux that requires CAP_SYS_PTRACE (or ptrace_scope=0) and briefly suspends the target while the attach runs. " +
         "On NativeAOT (Linux) falls back to 'perf record' when available — frames are native symbols only, MethodIdentity is null. " +
         "Each hotspot reports both inclusive and exclusive sample counts. Run after collect_events(kind='counters') shows elevated cpu-usage. " +
-        "Spec-compliant clients can call this tool as an MCP Task (tools/call with params.task) and poll via tasks/get + tasks/result, " +
+        "Spec-compliant clients can opt into the MCP Tasks extension for this tool and poll via tasks/get (using tasks/update for input-required turns), " +
         "or rely on MCP-native notifications/progress + notifications/cancelled on the same tools/call request.")]
     public static async Task<DiagnosticResult<CpuSample>> CollectCpuSample(
         ICpuSampler sampler,
@@ -661,7 +661,7 @@ public sealed class DiagnosticTools
         "the first maxRecent individual exception details — when TotalExceptions exceeds " +
         "maxRecent the Recent list is truncated to the head of the stream (the cap that was " +
         "applied is echoed back as ExceptionSnapshot.RecentCap). " +
-        "Spec-compliant clients can call this tool as an MCP Task and poll via tasks/get + tasks/result. " +
+        "Spec-compliant clients can opt into the MCP Tasks extension for this tool and poll via tasks/get. " +
         "IMPORTANT: start this BEFORE the workload you want to observe — exceptions before the session opens are missed.")]
     public static async Task<DiagnosticResult<ExceptionSnapshot>> CollectExceptions(
         IExceptionCollector collector,
@@ -706,7 +706,7 @@ public sealed class DiagnosticTools
         "Subscribes to the runtime GC keyword and pairs GCStart/GCStop events to compute pause " +
         "durations per collection. Returns total collections, total/max pause time, counts per " +
         "generation, and a bounded list of individual GC events. Spec-compliant clients can call " +
-        "this tool as an MCP Task and poll via tasks/get + tasks/result.")]
+        "the MCP Tasks extension for this tool and poll via tasks/get.")]
     public static async Task<DiagnosticResult<GcSummary>> CollectGcEvents(
         IGcCollector collector,
         IProcessContextResolver resolver,

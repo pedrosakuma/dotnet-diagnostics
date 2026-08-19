@@ -145,16 +145,15 @@ public sealed class InvestigationProxyCallToolFilterTests
             ["kind"] = JsonSerializer.SerializeToElement("counters"),
         });
         p.Meta = new JsonObject { ["progressToken"] = "progress-707" };
-        p.Task = new McpTaskMetadata { TimeToLive = TimeSpan.FromSeconds(30) };
+        TasksExtensionTestSupport.EnableTasks(p);
         var result = await fx.Invoke(p, sessionId: "session-ok");
 
         result.Should().BeSameAs(upstream);
         fx.ProxyClient.CallCount.Should().Be(1);
         fx.ProxyClient.LastHandle.Should().BeSameAs(ActiveHandle);
         fx.ProxyClient.LastRequest.Should().NotBeSameAs(p);
-        fx.ProxyClient.LastRequest!.Meta.Should().BeSameAs(p.Meta);
         fx.ProxyClient.LastRequest.ProgressToken!.Value.Token.Should().Be("progress-707");
-        fx.ProxyClient.LastRequest!.Task.Should().BeSameAs(p.Task);
+        TasksExtensionTestSupport.HasTasks(fx.ProxyClient.LastRequest).Should().BeTrue();
         fx.ProxyClient.LastRequest!.Arguments.Should().ContainKey(ToolScopeDelegation.ArgumentName);
         p.Arguments.Should().NotContainKey(ToolScopeDelegation.ArgumentName);
         fx.LocalInvocations.Should().Be(0);
@@ -272,7 +271,7 @@ public sealed class InvestigationProxyCallToolFilterTests
             ["kind"] = JsonSerializer.SerializeToElement("counters"),
         });
         request.Meta = metadata;
-        request.Task = new McpTaskMetadata { TimeToLive = TimeSpan.FromMinutes(1) };
+        TasksExtensionTestSupport.EnableTasks(request);
         var promoterCalls = 0;
 
         var result = await fx.Invoke(
@@ -288,9 +287,10 @@ public sealed class InvestigationProxyCallToolFilterTests
         result.IsError.Should().NotBe(true);
         promoterCalls.Should().Be(1);
         fx.ProxyClient.CallCount.Should().Be(1);
-        fx.ProxyClient.LastRequest!.Task.Should().BeNull(
+        TasksExtensionTestSupport.HasTasks(fx.ProxyClient.LastRequest).Should().BeFalse(
             "the pod must not create an orphan task in its private MCP session");
-        fx.ProxyClient.LastRequest.Meta.Should().BeSameAs(metadata);
+        fx.ProxyClient.LastRequest.Meta.Should().NotBeSameAs(request.Meta);
+        fx.ProxyClient.LastRequest.Meta!["extension"]!.GetValue<string>().Should().Be("preserved");
         fx.ProxyClient.LastRequest.ProgressToken!.Value.Token.Should().Be("progress-task-707");
     }
 
@@ -307,7 +307,7 @@ public sealed class InvestigationProxyCallToolFilterTests
         {
             ["handle"] = JsonSerializer.SerializeToElement("opaque-cpu-handle"),
         });
-        request.Task = new McpTaskMetadata { TimeToLive = TimeSpan.FromMinutes(1) };
+        TasksExtensionTestSupport.EnableTasks(request);
         var promoterCalls = 0;
 
         var result = await fx.Invoke(
@@ -322,7 +322,7 @@ public sealed class InvestigationProxyCallToolFilterTests
         result.IsError.Should().NotBe(true);
         promoterCalls.Should().Be(1);
         fx.ProxyClient.CallCount.Should().Be(1);
-        fx.ProxyClient.LastRequest!.Task.Should().BeNull();
+        TasksExtensionTestSupport.HasTasks(fx.ProxyClient.LastRequest).Should().BeFalse();
         fx.LocalInvocations.Should().Be(0);
         ToolScopeDelegation.TryConsume(
             fx.ProxyClient.LastRequest,
@@ -383,7 +383,7 @@ public sealed class InvestigationProxyCallToolFilterTests
         {
             ["handle"] = JsonSerializer.SerializeToElement("opaque-cpu-handle"),
         });
-        request.Task = new McpTaskMetadata { TimeToLive = TimeSpan.FromMinutes(1) };
+        TasksExtensionTestSupport.EnableTasks(request);
         var promoterCalls = 0;
 
         var result = await fx.Invoke(
@@ -413,7 +413,7 @@ public sealed class InvestigationProxyCallToolFilterTests
         {
             ["handle"] = JsonSerializer.SerializeToElement("opaque-evidence-handle"),
         });
-        request.Task = new McpTaskMetadata { TimeToLive = TimeSpan.FromMinutes(1) };
+        TasksExtensionTestSupport.EnableTasks(request);
         var promoterCalls = 0;
 
         var result = await fx.Invoke(
@@ -478,7 +478,7 @@ public sealed class InvestigationProxyCallToolFilterTests
         var request = Params(toolName, arguments);
         if (taskAugmented)
         {
-            request.Task = new McpTaskMetadata { TimeToLive = TimeSpan.FromMinutes(1) };
+            TasksExtensionTestSupport.EnableTasks(request);
         }
         var promoterCalls = 0;
 
@@ -543,7 +543,7 @@ public sealed class InvestigationProxyCallToolFilterTests
         {
             ["kind"] = JsonSerializer.SerializeToElement("counters"),
         });
-        request.Task = new McpTaskMetadata { TimeToLive = TimeSpan.FromMinutes(1) };
+        TasksExtensionTestSupport.EnableTasks(request);
 
         var result = await fx.Invoke(
             request,
@@ -1301,6 +1301,7 @@ public sealed class InvestigationProxyCallToolFilterTests
         {
             return InvestigationProxyCallToolFilter.InvokeAsync(
                 request,
+                TasksExtensionTestSupport.HasTasks(request),
                 sessionId,
                 next: (p, _) =>
                 {

@@ -20,6 +20,7 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using ModelContextProtocol.Client;
+using ModelContextProtocol.Extensions.Tasks;
 using ModelContextProtocol.Protocol;
 
 namespace DotnetDiagnostics.Mcp.IntegrationTests;
@@ -269,7 +270,6 @@ public sealed class PodDelegatedAuthorizationIntegrationTests
         var caller = new BearerPrincipal(
             "central-task-caller",
             callerScopes.ToImmutableHashSet(StringComparer.Ordinal));
-        var taskMetadata = new McpTaskMetadata { TimeToLive = TimeSpan.FromMinutes(1) };
         var authorization = registry.Authorize(
             "collect_sample",
             arguments,
@@ -281,32 +281,35 @@ public sealed class PodDelegatedAuthorizationIntegrationTests
             {
                 Name = "collect_sample",
                 Arguments = arguments,
-                Task = taskMetadata,
+                Meta = TasksExtensionTestSupport.WithTasksExtension(),
             },
             authorization,
             caller,
             DelegationKey);
 
-        var task = await client.CallToolAsTaskAsync(
-            "collect_sample",
-            ToClientArguments(delegated.Arguments),
-            taskMetadata,
+        var created = await client.CallToolAsTaskAsync(
+            new CallToolRequestParams
+            {
+                Name = "collect_sample",
+                Arguments = new Dictionary<string, JsonElement>(delegated.Arguments!, StringComparer.Ordinal),
+                Meta = delegated.Meta,
+            },
             cancellationToken: CancellationToken.None);
+        created.IsTask.Should().BeTrue();
+        var taskId = created.TaskCreated!.TaskId;
         var deadline = DateTimeOffset.UtcNow.AddSeconds(15);
+        GetTaskResult task = await client.GetTaskAsync(taskId, cancellationToken: CancellationToken.None);
         while (task.Status is McpTaskStatus.Working && DateTimeOffset.UtcNow < deadline)
         {
-            await Task.Delay(task.PollInterval ?? TimeSpan.FromMilliseconds(100));
-            task = await client.GetTaskAsync(task.TaskId, cancellationToken: CancellationToken.None);
+            await Task.Delay(TimeSpan.FromMilliseconds(task.PollIntervalMs ?? 100));
+            task = await client.GetTaskAsync(taskId, cancellationToken: CancellationToken.None);
         }
 
-        task.Status.Should().BeOneOf(McpTaskStatus.Completed, McpTaskStatus.Failed);
-        var rawResult = await client.GetTaskResultAsync(
-            task.TaskId,
-            cancellationToken: CancellationToken.None);
+        task.Status.Should().Be(McpTaskStatus.Completed);
+        var completed = task.Should().BeOfType<CompletedTaskResult>().Subject;
         var taskResult = JsonSerializer.Deserialize<CallToolResult>(
-            rawResult.GetRawText(),
+            completed.Result.GetRawText(),
             new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
-        taskResult.IsError.Should().Be(task.Status == McpTaskStatus.Failed);
         ResultText(taskResult).Should().NotContain("internal scope delegation");
         ResultText(taskResult).Should().NotContain("literal modifier scope");
 
@@ -458,7 +461,15 @@ public sealed class PodDelegatedAuthorizationIntegrationTests
                 {
                     kind = "method-params",
                     processId = int.MaxValue,
-                    methodFilters = new[] { "Example.Type::Method" },
+                    methods = new[]
+                    {
+                        new
+                        {
+                            moduleName = "Example.dll",
+                            typeName = "Example.Type",
+                            methodName = "Method",
+                        },
+                    },
                     includeSensitiveValues = true,
                     reason = "authorization regression test",
                     durationSeconds = 1,

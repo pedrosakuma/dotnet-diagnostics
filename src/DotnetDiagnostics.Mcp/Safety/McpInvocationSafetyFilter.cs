@@ -6,6 +6,7 @@ using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Safety;
 using DotnetDiagnostics.Mcp.Orchestrator.Investigations;
+using DotnetDiagnostics.Mcp.Protocol;
 using DotnetDiagnostics.Mcp.Security;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
@@ -99,6 +100,7 @@ internal static class McpInvocationSafetyFilter
                 assessment,
                 acknowledgement,
                 requiredAcknowledgement,
+                parameters,
                 server,
                 cancellationToken).ConfigureAwait(false);
             if (gate is not null)
@@ -161,6 +163,7 @@ internal static class McpInvocationSafetyFilter
         McpInvocationSafety.Assessment assessment,
         JsonNode? acknowledgement,
         InvocationSafetyAcknowledgement requiredAcknowledgement,
+        CallToolRequestParams? parameters,
         McpServer? server,
         CancellationToken cancellationToken)
     {
@@ -182,7 +185,7 @@ internal static class McpInvocationSafetyFilter
                     IsError: false);
         }
 
-        if (server?.ClientCapabilities?.Elicitation is not null)
+        if (server is not null && McpClientCapabilityMetadata.SupportsElicitation(server, parameters))
         {
             var outcome = await RequestHumanApprovalAsync(
                 server,
