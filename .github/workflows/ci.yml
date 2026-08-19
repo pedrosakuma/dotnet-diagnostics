@@ -51,6 +51,14 @@ jobs:
               - '**'
               - '!**/*.md'
 
+  # Ubuntu runs Core + MCP integration tests sequentially on one runner, same
+  # as always: issue #147's instability was never reproduced on Linux, and
+  # ubuntu-latest's median wall time (setup+build+all suites) is well inside
+  # budget on its own, so there is no isolation win worth the extra VM here.
+  # Windows is split into windows-build / windows-core-test / windows-mcp-test
+  # below (issue #861) because it *is* the critical path and because #147's
+  # instability was specifically the two live-process assemblies sharing one
+  # 4-vCPU Windows runner.
   build-test:
     name: Build & Test (${{ matrix.os }})
     needs: changes
@@ -58,7 +66,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: needs.changes.outputs.code == 'true'
@@ -213,6 +221,408 @@ jobs:
             **/TestResults/**/*.dmp
             **/TestResults.attempt1/**/*.dmp
           if-no-files-found: ignore
+
+  # --- Windows isolation model (issue #861) ---------------------------------
+  #
+  # Windows was the critical path (build-test's `windows-latest` leg used to
+  # run build + every test suite serially on one 4-vCPU VM: ~2m42s setup/
+  # build + ~8m18s Core tests + ~4m15s MCP server integration tests, median
+  # ~16min/~27.4 runner-minutes for the whole required path). The two live-
+  # process assemblies (Core.Tests, Mcp.IntegrationTests) are intentionally
+  # NOT run concurrently in the *same* runner process — issue #147 showed
+  # that crashes the test host under load. But two separate Windows VMs give
+  # real process isolation, so the suites can run in parallel across jobs
+  # even though they must stay serialized within any one job.
+  #
+  # `windows-build` builds once and uploads the `bin/` output every
+  # downstream job needs (SampleLocator walks up from each test host's own
+  # bin/ directory looking for sibling `src|tests|samples/*/bin/**` folders,
+  # so as long as the artifact is unpacked back onto a fresh checkout at the
+  # same relative paths, `--no-build` test runs behave exactly as if they'd
+  # built in-process). `windows-core-test` and `windows-mcp-test` each
+  # download that artifact and run their own suite on their own VM — no
+  # shared runner, no shared process. `windows-gate` aggregates both plus the
+  # build job and republishes the result under the *same* required-check name
+  # the old single `windows-latest` matrix leg used
+  # (`Build & Test (windows-latest)`), so branch protection needs no
+  # migration.
+  windows-build:
+    name: Windows Build
+    needs: changes
+    # Job-level gate (safe here: this job is NOT itself a required check —
+    # only `windows-gate` below is). Without it, docs-only PRs would spin up
+    # three Windows VMs with every step skipped instead of the pre-split
+    # single empty leg. `windows-gate` treats a `skipped` result as OK
+    # whenever `changes.outputs.code` is false, so the required check still
+    # reports promptly either way.
+    if: needs.changes.outputs.code == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.changes.outputs.code == 'true'
+        with:
+          persist-credentials: false
+
+      - name: Setup .NET 10
+        if: needs.changes.outputs.code == 'true'
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: |
+            **/Directory.Packages.props
+            **/*.csproj
+
+      - name: Restore
+        if: needs.changes.outputs.code == 'true'
+        run: dotnet restore
+
+      - name: Build
+        if: needs.changes.outputs.code == 'true'
+        run: dotnet build --no-restore --configuration Release
+
+      # Every downstream Windows job needs the same build output (product +
+      # test assemblies + the sample apps the live tests spawn as child
+      # processes). Uploading every `bin/` folder under `src|tests|samples`
+      # is the simplest artifact shape that round-trips cleanly: the three
+      # top-level dirs are siblings, so upload-artifact preserves the full
+      # `<dir>/<project>/bin/...` structure relative to the repo root, and
+      # downloading with `path: .` onto a fresh checkout of the same commit
+      # lays it back down exactly where each test host's `SampleLocator` (and
+      # `dotnet test --no-build` itself) expects to find it. `obj/` also has
+      # to travel: even with `--no-build`, MSBuild's NuGet-generated files
+      # under `obj/` (`project.assets.json`, `*.nuget.g.{props,targets}`) are
+      # required to resolve package references for `dotnet test`/`dotnet
+      # pack --no-build` — without them the run fails fast with NETSDK1004
+      # (confirmed empirically: an earlier version of this workflow that
+      # uploaded only `bin/` produced `Assets file '...\project.assets.json'
+      # not found` on the pack-smoke step and silently-zero-test-executed
+      # runs on the test steps).
+      - name: Upload build output (Windows)
+        if: needs.changes.outputs.code == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-build-output
+          path: |
+            src/**/bin/**
+            src/**/obj/**
+            tests/**/bin/**
+            tests/**/obj/**
+            samples/**/bin/**
+            samples/**/obj/**
+          if-no-files-found: error
+          retention-days: 1
+
+  windows-core-test:
+    name: Windows Core tests
+    needs: [changes, windows-build]
+    # See `windows-build`'s job-level `if` comment above for the rationale.
+    if: needs.changes.outputs.code == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.changes.outputs.code == 'true'
+        with:
+          persist-credentials: false
+
+      - name: Setup .NET 10
+        if: needs.changes.outputs.code == 'true'
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: |
+            **/Directory.Packages.props
+            **/*.csproj
+
+      # `obj/*.nuget.g.{props,targets}` (uploaded from `windows-build`) point
+      # at this machine's NuGet global-packages folder by absolute path, but
+      # that folder is physically empty on a fresh VM — nothing was ever
+      # restored *here*. Package-conditioned MSBuild imports silently no-op
+      # when `Exists(...)` is false, which was observed empirically to make
+      # `dotnet test --no-build` execute zero tests without printing an
+      # error (exit 0, no output, ~2s). Restoring again on this VM (fast:
+      # warm via the NuGet cache populated above) populates that folder so
+      # every conditioned import actually resolves; the artifact download
+      # below still supplies the actual build output so this restore does
+      # NOT trigger a rebuild.
+      - name: Restore
+        if: needs.changes.outputs.code == 'true'
+        run: dotnet restore
+
+      - name: Download build output (Windows)
+        if: needs.changes.outputs.code == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: windows-build-output
+          path: .
+
+      # Same `--blame-hang-timeout`/`--blame-crash`/retry-script semantics as
+      # the pre-split single job (see the equivalent step in `build-test`
+      # above for the full rationale). Runs alone on this VM, so there is no
+      # cross-assembly-parallelism concern to preserve here anymore — Core
+      # tests simply own the whole runner.
+      - name: Test (Core)
+        if: needs.changes.outputs.code == 'true'
+        shell: bash
+        run: scripts/ci-test-with-retry.sh core-test-results.trx -- dotnet test tests/DotnetDiagnostics.Core.Tests/DotnetDiagnostics.Core.Tests.csproj --no-build --configuration Release --blame-hang-timeout 5m --blame-hang-dump-type none --blame-crash --blame-crash-dump-type full --logger "trx;LogFileName=core-test-results.trx" --results-directory TestResults
+
+      - name: Verify expected test results
+        if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        shell: bash
+        run: |
+          shopt -s globstar nullglob
+          # Bug #1861-2 (found in review): a nonempty TRX is not enough — the
+          # `obj/`-missing and NuGet-global-packages-folder bugs found during
+          # this PR's own empirical validation both produced a small, valid,
+          # *nonempty* TRX with zero executed tests (`dotnet test` silently
+          # short-circuited before running anything). Parse the TRX's
+          # `<Counters total="N" .../>` element (same regex `ci-test-with-retry.sh`
+          # already uses for its phantom-crash detection) and require total > 0,
+          # so this category of silent-zero-test bug fails the build instead of
+          # only being caught by a human reading raw CI output.
+          trx="core-test-results.trx"
+          found=false
+          for trx_path in TestResults{,.attempt1}/"$trx" TestResults{,.attempt1}/**/"$trx"; do
+            if [[ -s "$trx_path" ]]; then
+              found=true
+              counters=$(grep -oE '<Counters[^/]*/>' "$trx_path" | head -1)
+              total=$(echo "$counters" | sed -nE 's/.*total="([0-9]+)".*/\1/p')
+              if [[ -z "$counters" || "${total:-0}" -eq 0 ]]; then
+                echo "::error::'$trx_path' has no <Counters> element or reports total=0 executed tests — treating a silently-zero-test run as a failure."
+                exit 1
+              fi
+              echo "$trx: total=$total"
+              break
+            fi
+          done
+          if [[ "$found" == false ]]; then
+            echo "::error::Expected nonempty test result '$trx' was not produced."
+            exit 1
+          fi
+
+      - name: Upload test results (TRX)
+        if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-results-windows-latest-core
+          path: |
+            **/TestResults/*.trx
+            **/TestResults.attempt1/*.trx
+          if-no-files-found: ignore
+
+      - name: Upload crash dumps
+        if: ${{ failure() && needs.changes.outputs.code == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: crash-dumps-windows-latest-core
+          path: |
+            **/TestResults/**/*.dmp
+            **/TestResults.attempt1/**/*.dmp
+          if-no-files-found: ignore
+
+  windows-mcp-test:
+    name: Windows CLI, BenchmarkDotNet & MCP integration tests
+    needs: [changes, windows-build]
+    # See `windows-build`'s job-level `if` comment above for the rationale.
+    if: needs.changes.outputs.code == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.changes.outputs.code == 'true'
+        with:
+          persist-credentials: false
+
+      - name: Setup .NET 10
+        if: needs.changes.outputs.code == 'true'
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: |
+            **/Directory.Packages.props
+            **/*.csproj
+
+      # See the identical step + comment in `windows-core-test` above: a
+      # fresh restore on THIS VM is required so `obj/*.nuget.g.{props,targets}`
+      # imports (shipped via the artifact below) actually resolve against a
+      # populated NuGet global-packages folder, rather than silently no-op-ing.
+      - name: Restore
+        if: needs.changes.outputs.code == 'true'
+        run: dotnet restore
+
+      - name: Download build output (Windows)
+        if: needs.changes.outputs.code == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: windows-build-output
+          path: .
+
+      # CLI tests are lightweight (no live child processes); bundled onto
+      # this VM alongside the MCP server integration suite (below) rather
+      # than the Core-test VM purely to balance wall time across the two
+      # split jobs (Core tests alone are the longer pole at ~8m18s median).
+      - name: Test (CLI)
+        if: needs.changes.outputs.code == 'true'
+        run: dotnet test tests/DotnetDiagnostics.Cli.Tests/DotnetDiagnostics.Cli.Tests.csproj --no-build --configuration Release --logger "trx;LogFileName=cli-test-results.trx" --results-directory TestResults
+
+      # BenchmarkDotNet tests cover the in-process diagnoser and report formatting.
+      # Continue here so all suites emit TRX; the final verify step re-fails this outcome.
+      - name: Test (BenchmarkDotNet)
+        id: benchmark_tests
+        if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        continue-on-error: true
+        run: dotnet test tests/DotnetDiagnostics.BenchmarkDotNet.Tests/DotnetDiagnostics.BenchmarkDotNet.Tests.csproj --no-build --configuration Release --logger "trx;LogFileName=benchmark-test-results.trx" --results-directory TestResults
+
+      # Pack smoke (issue #288): `dotnet build` + the CLI unit tests do NOT exercise the
+      # PackAsTool metadata, README packing, or tool-manifest layout — those only fail at
+      # release/tag time otherwise. Packing here catches a broken tool package on every PR.
+      - name: Pack smoke (CLI tool)
+        if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        run: dotnet pack src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj --no-build --configuration Release -o artifacts/nupkg-smoke
+
+      # Same retry-script semantics as the pre-split single job. Runs alone on
+      # this VM (no Core.Tests sharing the process), which is exactly the
+      # isolation issue #861 asks for.
+      - name: Test (Server integration)
+        if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        shell: bash
+        run: scripts/ci-test-with-retry.sh server-test-results.trx -- dotnet test tests/DotnetDiagnostics.Mcp.IntegrationTests/DotnetDiagnostics.Mcp.IntegrationTests.csproj --no-build --configuration Release --blame-hang-timeout 5m --blame-hang-dump-type none --blame-crash --blame-crash-dump-type full --filter "Category!=KindIntegration&Category!=DockerIntegration" --logger "trx;LogFileName=server-test-results.trx" --results-directory TestResults
+
+      - name: Verify expected test results
+        if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        shell: bash
+        env:
+          BENCHMARK_TEST_OUTCOME: ${{ steps.benchmark_tests.outcome }}
+        run: |
+          shopt -s globstar nullglob
+          # Bug #1861-2 (found in review): a nonempty TRX is not enough — see
+          # the equivalent comment in `windows-core-test`'s "Verify expected
+          # test results" step for the full rationale (the obj/ and
+          # NuGet-restore bugs found during this PR's validation both produced
+          # a valid, nonempty TRX with zero executed tests).
+          for trx in cli-test-results.trx benchmark-test-results.trx server-test-results.trx; do
+            found=false
+            for trx_path in TestResults{,.attempt1}/"$trx" TestResults{,.attempt1}/**/"$trx"; do
+              if [[ -s "$trx_path" ]]; then
+                found=true
+                counters=$(grep -oE '<Counters[^/]*/>' "$trx_path" | head -1)
+                total=$(echo "$counters" | sed -nE 's/.*total="([0-9]+)".*/\1/p')
+                if [[ -z "$counters" || "${total:-0}" -eq 0 ]]; then
+                  echo "::error::'$trx_path' has no <Counters> element or reports total=0 executed tests — treating a silently-zero-test run as a failure."
+                  exit 1
+                fi
+                echo "$trx: total=$total"
+                break
+              fi
+            done
+            if [[ "$found" == false ]]; then
+              echo "::error::Expected nonempty test result '$trx' was not produced."
+              exit 1
+            fi
+          done
+          if [[ "$BENCHMARK_TEST_OUTCOME" != "success" ]]; then
+            echo "::error::BenchmarkDotNet tests completed with outcome '$BENCHMARK_TEST_OUTCOME'."
+            exit 1
+          fi
+
+      - name: Upload test results (TRX)
+        if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-results-windows-latest-mcp
+          path: |
+            **/TestResults/*.trx
+            **/TestResults.attempt1/*.trx
+          if-no-files-found: ignore
+
+      - name: Upload crash dumps
+        if: ${{ failure() && needs.changes.outputs.code == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: crash-dumps-windows-latest-mcp
+          path: |
+            **/TestResults/**/*.dmp
+            **/TestResults.attempt1/**/*.dmp
+          if-no-files-found: ignore
+
+  # Aggregator that republishes the split Windows jobs' combined result under
+  # the exact required-check name branch protection already expects
+  # (`Build & Test (windows-latest)`), so this split needs no branch-
+  # protection migration. `if: always()` is required so the gate itself still
+  # runs (and fails loudly) even when `windows-build`/`windows-core-test`/
+  # `windows-mcp-test` failed or were skipped by a failed dependency — a
+  # normal `needs:`-only job would otherwise be skipped in that case, which
+  # reports as a *neutral* check rather than a failing one and would let a
+  # broken Windows leg merge. On docs-only PRs the three jobs above are
+  # *deliberately* skipped at the job level (see their `if:` comments), so
+  # this gate treats `skipped` as acceptable only when `changes` itself
+  # *succeeded* and its `code` output is the explicit string `false` — a
+  # `skipped` result while `code` is true still fails the gate, since that
+  # can only mean one of them was skipped due to an upstream failure (e.g.
+  # `windows-build` failing skips both test jobs by default). Requiring
+  # `needs.changes.result == 'success'` before trusting `code` matters
+  # because if `changes` itself fails or is cancelled, its `code` output is
+  # empty/unreliable — the three split jobs still skip themselves (their
+  # `if:` only becomes true when `code == 'true'`, which an empty value is
+  # not), but that must not be misread as "docs-only, skip is fine"; a
+  # failed `changes` job means we have no real signal, so the gate fails.
+  windows-gate:
+    name: Build & Test (windows-latest)
+    needs: [changes, windows-build, windows-core-test, windows-mcp-test]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check split Windows job results
+        shell: bash
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          CODE: ${{ needs.changes.outputs.code }}
+          BUILD_RESULT: ${{ needs.windows-build.result }}
+          CORE_RESULT: ${{ needs.windows-core-test.result }}
+          MCP_RESULT: ${{ needs.windows-mcp-test.result }}
+        run: |
+          echo "changes:             $CHANGES_RESULT"
+          echo "changes.code:        $CODE"
+          echo "windows-build:       $BUILD_RESULT"
+          echo "windows-core-test:   $CORE_RESULT"
+          echo "windows-mcp-test:    $MCP_RESULT"
+
+          # `changes` itself must have succeeded before we trust its `code`
+          # output at all. If `changes` failed or was cancelled, `CODE` is
+          # empty/unreliable (not a legitimate "false") — the three split
+          # jobs would still correctly skip themselves (their `if:` requires
+          # `code == 'true'`, which is false when `changes` never ran to
+          # completion), but that must NOT be read as "docs-only, skip is
+          # fine". Fail loudly instead so a broken `changes` job can't
+          # masquerade as a docs-only pass.
+          if [[ "$CHANGES_RESULT" != "success" ]]; then
+            echo "::error::'changes' job did not succeed (result=$CHANGES_RESULT), so its 'code' output cannot be trusted. Failing the gate rather than treating this as a docs-only skip."
+            exit 1
+          fi
+
+          # Docs-only PRs: the three jobs above skip themselves at the job
+          # level, so "skipped" is the expected, successful outcome here.
+          # Require CODE to be the explicit string "false" (not just "not
+          # true") now that we know `changes` succeeded.
+          if [[ "$CODE" == "false" ]]; then
+            if [[ "$BUILD_RESULT" == "skipped" && "$CORE_RESULT" == "skipped" && "$MCP_RESULT" == "skipped" ]]; then
+              echo "Docs-only change: split Windows jobs skipped as expected."
+              exit 0
+            fi
+            echo "::error::Docs-only change but split Windows jobs did not all report 'skipped' (build=$BUILD_RESULT, core=$CORE_RESULT, mcp=$MCP_RESULT)."
+            exit 1
+          fi
+
+          if [[ "$CODE" != "true" ]]; then
+            echo "::error::Unexpected 'changes.outputs.code' value: '$CODE' (expected 'true' or 'false')."
+            exit 1
+          fi
+
+          if [[ "$BUILD_RESULT" != "success" || "$CORE_RESULT" != "success" || "$MCP_RESULT" != "success" ]]; then
+            echo "::error::One or more split Windows jobs did not succeed (build=$BUILD_RESULT, core=$CORE_RESULT, mcp=$MCP_RESULT)."
+            exit 1
+          fi
 
   docker-smoke:
     name: Docker image smoke
