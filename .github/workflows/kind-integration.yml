@@ -68,8 +68,10 @@ jobs:
           persist-credentials: false
 
       # Consistent policy with ci.yml (issue #856): setup-dotnet's built-in
-      # NuGet cache measured faster than a manual `actions/cache` step in
-      # every scenario. See docs/ci-nuget-cache.md for the measurements.
+      # NuGet cache measured at least as fast as a manual `actions/cache`
+      # step (faster on the steady-state warm-hit case) with no downside on
+      # cache invalidation. See docs/ci-nuget-cache.md for the measurements
+      # and metric definitions.
       - name: Setup .NET 10
         if: needs.changes.outputs.code == 'true'
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0

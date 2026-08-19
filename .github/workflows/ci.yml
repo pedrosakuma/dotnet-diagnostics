@@ -71,9 +71,11 @@ jobs:
       # every project file, same invalidation guarantee as before: any package
       # add / version bump busts the key and forces a full restore.
       #
-      # Median total setup time (cache/restore step + `dotnet restore`,
-      # excludes the ~5-15s async cache-save tail that runs after the job's
-      # critical path):
+      # Median critical-path setup time (Setup .NET + cache restore/hit +
+      # `dotnet restore`; excludes the ~1-15s async cache-save step that runs
+      # during post-job cleanup and doesn't block the build, but still
+      # counts toward billed runner-minutes — see docs/ci-nuget-cache.md for
+      # the "total incl. save" numbers too):
       #   | scenario           | ubuntu (manual cache) | ubuntu (built-in) | windows (manual cache) | windows (built-in) |
       #   |---|---:|---:|---:|---:|
       #   | warm hit           | 16s                    | 14s                | 62s                     | 50s                 |
@@ -82,9 +84,9 @@ jobs:
       #   | no cache at all    | 16s                    | n/a                | 77s                     | n/a                 |
       # The built-in cache folds the restore into the setup step itself (no
       # extra action-download/tar overhead) and skips the save step entirely
-      # on an exact hit, making it faster than the manual `actions/cache` step
-      # in every measured cell and never worse. Full data + methodology in
-      # docs/ci-nuget-cache.md.
+      # on an exact hit, making it at least as fast as the manual
+      # `actions/cache` step in every measured cell. Full data + methodology
+      # in docs/ci-nuget-cache.md.
       - name: Setup .NET 10
         if: needs.changes.outputs.code == 'true'
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
