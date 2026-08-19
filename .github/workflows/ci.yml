@@ -249,6 +249,13 @@ jobs:
   windows-build:
     name: Windows Build
     needs: changes
+    # Job-level gate (safe here: this job is NOT itself a required check —
+    # only `windows-gate` below is). Without it, docs-only PRs would spin up
+    # three Windows VMs with every step skipped instead of the pre-split
+    # single empty leg. `windows-gate` treats a `skipped` result as OK
+    # whenever `changes.outputs.code` is false, so the required check still
+    # reports promptly either way.
+    if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -309,6 +316,8 @@ jobs:
   windows-core-test:
     name: Windows Core tests
     needs: [changes, windows-build]
+    # See `windows-build`'s job-level `if` comment above for the rationale.
+    if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -399,6 +408,8 @@ jobs:
   windows-mcp-test:
     name: Windows CLI, BenchmarkDotNet & MCP integration tests
     needs: [changes, windows-build]
+    # See `windows-build`'s job-level `if` comment above for the rationale.
+    if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -515,23 +526,42 @@ jobs:
   # `windows-mcp-test` failed or were skipped by a failed dependency — a
   # normal `needs:`-only job would otherwise be skipped in that case, which
   # reports as a *neutral* check rather than a failing one and would let a
-  # broken Windows leg merge.
+  # broken Windows leg merge. On docs-only PRs the three jobs above are
+  # *deliberately* skipped at the job level (see their `if:` comments), so
+  # this gate treats `skipped` as acceptable only when `changes.outputs.code`
+  # is false — a `skipped` result while `code` is true still fails the gate,
+  # since that can only mean one of them was skipped due to an upstream
+  # failure (e.g. `windows-build` failing skips both test jobs by default).
   windows-gate:
     name: Build & Test (windows-latest)
-    needs: [windows-build, windows-core-test, windows-mcp-test]
+    needs: [changes, windows-build, windows-core-test, windows-mcp-test]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Check split Windows job results
         shell: bash
         env:
+          CODE: ${{ needs.changes.outputs.code }}
           BUILD_RESULT: ${{ needs.windows-build.result }}
           CORE_RESULT: ${{ needs.windows-core-test.result }}
           MCP_RESULT: ${{ needs.windows-mcp-test.result }}
         run: |
-          echo "windows-build:      $BUILD_RESULT"
-          echo "windows-core-test:  $CORE_RESULT"
-          echo "windows-mcp-test:   $MCP_RESULT"
+          echo "changes.code:        $CODE"
+          echo "windows-build:       $BUILD_RESULT"
+          echo "windows-core-test:   $CORE_RESULT"
+          echo "windows-mcp-test:    $MCP_RESULT"
+
+          # Docs-only PRs: the three jobs above skip themselves at the job
+          # level, so "skipped" is the expected, successful outcome here.
+          if [[ "$CODE" != "true" ]]; then
+            if [[ "$BUILD_RESULT" == "skipped" && "$CORE_RESULT" == "skipped" && "$MCP_RESULT" == "skipped" ]]; then
+              echo "Docs-only change: split Windows jobs skipped as expected."
+              exit 0
+            fi
+            echo "::error::Docs-only change but split Windows jobs did not all report 'skipped' (build=$BUILD_RESULT, core=$CORE_RESULT, mcp=$MCP_RESULT)."
+            exit 1
+          fi
+
           if [[ "$BUILD_RESULT" != "success" || "$CORE_RESULT" != "success" || "$MCP_RESULT" != "success" ]]; then
             echo "::error::One or more split Windows jobs did not succeed (build=$BUILD_RESULT, core=$CORE_RESULT, mcp=$MCP_RESULT)."
             exit 1
