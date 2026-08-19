@@ -67,20 +67,20 @@ jobs:
         with:
           persist-credentials: false
 
+      # Consistent policy with ci.yml (issue #856): setup-dotnet's built-in
+      # NuGet cache measured at least as fast as a manual `actions/cache`
+      # step (faster on the steady-state warm-hit case) with no downside on
+      # cache invalidation. See docs/ci-nuget-cache.md for the measurements
+      # and metric definitions.
       - name: Setup .NET 10
         if: needs.changes.outputs.code == 'true'
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           global-json-file: global.json
-
-      - name: Cache NuGet packages
-        if: needs.changes.outputs.code == 'true'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.nuget/packages
-          key: nuget-${{ runner.os }}-kind-${{ hashFiles('**/Directory.Packages.props', '**/*.csproj') }}
-          restore-keys: |
-            nuget-${{ runner.os }}-
+          cache: true
+          cache-dependency-path: |
+            **/Directory.Packages.props
+            **/*.csproj
 
       - name: Restore + build
         if: needs.changes.outputs.code == 'true'

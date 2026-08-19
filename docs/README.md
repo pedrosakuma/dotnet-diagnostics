@@ -51,6 +51,7 @@ you're using, then reach for the cross-cutting references.
 | [`investigation-playbooks.md`](./investigation-playbooks.md) | Step-by-step recipes for common symptoms (slow, leaking, 5xx, slow HTTP, NativeAOT) |
 | [`bad-code-scenarios.md`](./bad-code-scenarios.md) | The anti-patterns in `samples/BadCodeSample/` and the investigation flow each one exercises |
 | [`case-studies/`](./case-studies/) | **Narrated end-to-end investigations** — each tells the story of one non-obvious failure from misleading symptom → refuted wrong hypothesis → real cause → fix → verification, with the real captures at every step |
+| [`ci-nuget-cache.md`](./ci-nuget-cache.md) | A/B measurement of NuGet cache policy on hosted CI runners (`ci.yml`/`kind-integration.yml`) and the resulting `setup-dotnet` built-in cache decision |
 
 ### MCP server (`dotnet-diagnostics-mcp`)
 
