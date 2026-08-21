@@ -50,7 +50,7 @@ RUN dotnet publish src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj \
     /p:UseAppHost=true
 
 # mcr.microsoft.com/dotnet/aspnet:10.0
-FROM mcr.microsoft.com/dotnet/aspnet@sha256:1fa23fc4872d95fd71c2833ebe65d7e84a43b2d51a31d119516852f13d9505a7 AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet@sha256:a4556ed033fa96f984bb7a8d348851cb2d36b1281dd2420070045f664fbb5f94 AS runtime
 WORKDIR /app
 
 # Kestrel listens on 8080 by default in our ASPNETCORE_URLS below.
