@@ -90,7 +90,7 @@ jobs:
 
       - name: Setup Docker Buildx
         if: needs.changes.outputs.code == 'true'
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
       # `cache-from`/`cache-to: type=gha` reuses Docker layers across runs via
       # the Actions cache. main's cache is readable by every PR (branch scope);
