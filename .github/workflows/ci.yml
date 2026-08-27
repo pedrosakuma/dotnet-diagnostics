@@ -105,6 +105,22 @@ jobs:
             **/Directory.Packages.props
             **/*.csproj
 
+      # Cross-version target-process coverage (docs/research/multi-version-target-support.md,
+      # docs/runtime-version-compat-matrix.md): install the .NET 8 and 9 *shared runtimes* only
+      # (not their SDKs — nothing here is built with them) so CrossVersionTargetTests can launch
+      # samples/MultiVersionSample under each and attach to it. dotnet-install.sh installs
+      # side-by-side into the same DOTNET_ROOT the setup-dotnet step already configured; it does
+      # not touch the pinned net10.0 SDK from global.json. Ubuntu-only: this is the job that runs
+      # Test (Core), which is where CrossVersionTargetTests lives.
+      - name: Install .NET 8 / 9 runtimes for cross-version tests
+        if: needs.changes.outputs.code == 'true'
+        shell: bash
+        run: |
+          curl -sSL https://dot.net/v1/dotnet-install.sh -o dotnet-install.sh
+          bash dotnet-install.sh --channel 8.0 --runtime dotnet --install-dir "$DOTNET_ROOT"
+          bash dotnet-install.sh --channel 9.0 --runtime dotnet --install-dir "$DOTNET_ROOT"
+          rm dotnet-install.sh
+
       - name: Restore
         if: needs.changes.outputs.code == 'true'
         run: dotnet restore
