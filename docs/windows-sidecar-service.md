@@ -258,7 +258,7 @@ Remove-Item -Recurse -Force "$env:ProgramData\dotnet-diagnostics-mcp" -ErrorActi
 
 ## 6. Troubleshooting
 
-For permission-shaped failures on live diagnostics after the service is running, start with `inspect_process(view="preflight", processId=<pid>)` before retrying the failing tool. It reports attach readiness and remediation up front; for the Linux/container half of the same deployment contract, see the [Linux sidecar checklist](./consumer-install.md#14-linux-sidecar-checklist).
+For permission-shaped failures on live diagnostics after the service is running, `inspect_process(view="preflight", processId=<pid>)` is still useful for the generic cross-platform report shape, but on Windows it does **not** verify the `SeSystemProfilePrivilege` / Administrators requirement for `collect_sample(kind="off_cpu")`. Use the symptom table below for those Windows-specific privilege failures; for the Linux/container half of the deployment contract, see the [Linux sidecar checklist](./consumer-install.md#14-linux-sidecar-checklist).
 
 | Symptom                                                                                          | Likely cause                                                                  |
 |--------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------|

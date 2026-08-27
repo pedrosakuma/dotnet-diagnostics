@@ -44,8 +44,9 @@ All three publish the same MCP surface (Streamable HTTP, bearer-token authentica
 
 ```bash
 dotnet tool install -g dotnet-diagnostics-mcp
-export MCP_BEARER_TOKEN="$(openssl rand -hex 32)"  # or omit and copy the ephemeral token from the startup warning
+export MCP_BEARER_TOKEN="$(openssl rand -hex 32)"
 dotnet-diagnostics-mcp --urls http://127.0.0.1:8787
+# Loopback-only alternative: omit MCP_BEARER_TOKEN and copy the generated ephemeral token from the startup warning.
 ```
 
 Upgrade: `dotnet tool update -g dotnet-diagnostics-mcp`. Uninstall: `dotnet tool uninstall -g dotnet-diagnostics-mcp`.
@@ -77,7 +78,7 @@ docker run -d \
   ghcr.io/pedrosakuma/dotnet-diagnostics:latest
 ```
 
-If you intentionally omit `-e MCP_BEARER_TOKEN=...`, read the generated ephemeral token from `docker logs` before configuring the client.
+Do **not** omit `-e MCP_BEARER_TOKEN=...` here: this container binds `0.0.0.0:8080` internally, so the server refuses to start without credentials. For non-loopback production deployments, `Auth__BearerTokens__*` or OIDC are also valid up-front choices.
 
 Attaching to a **live local process** from inside the container requires UID parity + a shared `/tmp` mount — see [docs/local-docker-sidecar.md](./local-docker-sidecar.md) for the canonical walkthrough and the consolidated [Linux sidecar checklist](#14-linux-sidecar-checklist).
 
@@ -496,7 +497,7 @@ Shortcut rules are explicit:
 
 - If you already know the PID, skip straight to `capabilities`.
 - If exactly one .NET process is visible, direct tool calls can auto-resolve it.
-- If a tool call fails with `PermissionDenied` or `ServerNotAvailableException: Permission denied`, run `inspect_process(view="preflight", processId=<pid>)` first; it diagnoses UID, ptrace, perf, and other sidecar prerequisites before you pay for another failed collect.
+- If a tool call fails with `PermissionDenied` or `ServerNotAvailableException: Permission denied`, run `inspect_process(view="preflight", processId=<pid>)` first; it diagnoses target-specific attach blockers such as UID, ptrace, and perf readiness before you pay for another failed collect.
 
 ```jsonc
 // MCP call (from your client after connecting)
