@@ -22,8 +22,22 @@ dotnet tool install -g dotnet-diagnostics-cli   # requires the .NET 10 SDK
 
 Self-contained, per-OS binaries (no SDK required) are attached to every
 [GitHub Release](https://github.com/pedrosakuma/dotnet-diagnostics/releases) as
-`dotnet-diagnostics-cli-<version>-<rid>`. The diagnostics sidecar container image also ships the CLI on
-`PATH`, so `kubectl exec … -- dotnet-diagnostics-cli …` works inside the pod.
+`dotnet-diagnostics-cli-<version>-<rid>`. The downloaded archive keeps that name; the extracted
+executable inside it is `dotnet-diagnostics`. The diagnostics sidecar container image also ships the
+CLI on `PATH`, so `kubectl exec … -- dotnet-diagnostics-cli …` works inside the pod.
+
+## Quickstart
+
+If something does not work, run `dotnet-diagnostics-cli doctor` first — it prints actionable
+`fix:` / `affects:` remediation for common environment and permission problems.
+
+```bash
+dotnet tool install -g dotnet-diagnostics-cli
+dotnet-diagnostics-cli doctor
+dotnet-diagnostics-cli processes
+dotnet-diagnostics-cli collect --kind counters --pid 1234 --duration 5
+dotnet-diagnostics-cli session
+```
 
 ## One-shot usage
 
@@ -53,14 +67,24 @@ command to emit the raw `DiagnosticResult` envelope for scripting. Run `dotnet-d
 
 | Command | Purpose |
 |---|---|
+| `docker-bootstrap` | Start a Docker sidecar for a running target container and print the matching external-profile config for the central MCP. |
 | `processes` | List attachable .NET processes. |
 | `capabilities` | Probe a target's diagnostic capability matrix. |
-| `collect` | Open an EventPipe session and collect events (`--kind counters\|exceptions\|gc\|event_source\|activities\|logs\|jit\|threadpool\|contention\|db`). |
-| `inspect-heap` | Walk the managed heap of a live process or a `.dmp` (`--source live\|dump`). |
+| `doctor` | Diagnose the environment (UID, ptrace, perf) and print the exact fix. |
+| `collect` | Open an EventPipe session and collect events (`--kind ...`). |
+| `inspect` | Run one-shot process inspection (`--view triage\|runtime-config\|container`). |
+| `inspect-heap` | Walk the managed heap of a live process, `.dmp`, or `.gcdump` (`--source live\|dump\|gcdump`). |
 | `dump` | Write a Mini / Triage / WithHeap / Full process dump to disk (requires `--confirm`). |
 | `get-bytes` | Materialise a module (PE/PDB) or dump file to disk. |
 | `query` | Re-render a collected handle under a different view — **only inside `session`** (returns `NotSupported` one-shot). |
+| `compare` | Compare two or more comparable snapshot JSON files. |
+| `investigate` | Plan a .NET performance investigation and get the recommended first step. |
+| `export-summary` | Export a portable investigation summary JSON from a prior CPU-sample handle (**session only**). |
 | `session` | Start the stateful REPL (below). |
+| `completion` | Emit a shell-completion script for bash, zsh, or PowerShell. |
+
+For the full command catalog, flags, and examples, see
+[`docs/cli-reference.md`](https://github.com/pedrosakuma/dotnet-diagnostics/blob/main/docs/cli-reference.md).
 
 ## The `session` REPL
 

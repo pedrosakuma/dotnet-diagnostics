@@ -166,12 +166,19 @@ docker compose -f deploy/docker-compose.yml up -d
 command you drive yourself — no HTTP server, bearer token, MCP client, or daemon. Useful for scripts, CI,
 and `kubectl exec` into the sidecar (the container image ships it on `PATH`).
 
+If something does not work, run `dotnet-diagnostics-cli doctor` first — it prints actionable
+`fix:` / `affects:` remediation for common environment and permission problems.
+
 ```bash
 dotnet tool install -g dotnet-diagnostics-cli
-
-# One-shot
+dotnet-diagnostics-cli doctor
 dotnet-diagnostics-cli processes
 dotnet-diagnostics-cli collect --kind counters --pid 1234 --duration 5
+dotnet-diagnostics-cli session
+```
+
+```bash
+# Other one-shot commands
 dotnet-diagnostics-cli inspect-heap --pid 1234 --top-types 30 --acknowledge-risk high
 
 # Inside the sidecar container (image bundles the CLI):
@@ -191,7 +198,9 @@ diag(pid 1234)> exit
 ```
 
 Self-contained per-OS binaries are attached to each [Release](https://github.com/pedrosakuma/dotnet-diagnostics/releases)
-as `dotnet-diagnostics-cli-<version>-<rid>`. **Full reference:** [`docs/cli-reference.md`](./docs/cli-reference.md).
+as `dotnet-diagnostics-cli-<version>-<rid>`. The downloaded archive is named
+`dotnet-diagnostics-cli-<version>-<rid>`; the extracted executable inside it is
+`dotnet-diagnostics`. **Full reference:** [`docs/cli-reference.md`](./docs/cli-reference.md).
 
 ---
 
