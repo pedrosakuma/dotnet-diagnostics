@@ -10,7 +10,16 @@
   (default; intended for Kubernetes sidecar / shared-server scenarios where one
   long-running server is consumed by multiple clients or pods).
 
-This doc covers the three most common ways to connect.
+This is the MCP server's **start here** doc: pick one transport track first, then follow the matching recipe.
+
+## Start here
+
+| Track | Choose this when | First steps | Continue with |
+|---|---|---|---|
+| **Option A — `--stdio`** | Local dev; your MCP client can spawn the server on demand | Point the client at `dotnet-diagnostics-mcp --stdio` | [Option A](#option-a--stdio-local-dev) |
+| **Option B — Streamable HTTP** | Docker, Kubernetes, Windows service, or any shared long-running deployment | Start the server over HTTP, then configure a bearer token for the client | [Option B](#option-b--streamable-http-daemon-sidecar--shared-deploy), [Linux sidecar checklist](./consumer-install.md#14-linux-sidecar-checklist), [Local Docker sidecar](./local-docker-sidecar.md), [Kubernetes sidecar](../deploy/k8s/README.md#sidecar-topology-refresher) |
+
+For permission-shaped failures on the HTTP track, make `inspect_process(view="preflight")` your first troubleshooting step before retrying a more expensive tool.
 
 ## 1. Run the server
 
@@ -47,6 +56,8 @@ spawn / tear down the process per session:
 
 ### Option B — Streamable HTTP daemon (sidecar / shared deploy)
 
+For the short HTTP quickstarts below, either set `MCP_BEARER_TOKEN=<your-token>` before startup or, if you intentionally leave it unset, copy the generated ephemeral token from the startup warning before configuring the client. For non-loopback deployments, prefer `Auth__BearerTokens__*` or OIDC as documented below.
+
 For a **source checkout**, bind to loopback so that the non-loopback cleartext refusal does
 not fire (see [Transport security](#transport-security-non-loopback) below for non-loopback options):
 
@@ -60,6 +71,7 @@ dotnet run --project src/DotnetDiagnostics.Mcp --urls http://127.0.0.1:8787
 For an **installed global tool or self-contained binary**, bind to loopback:
 
 ```bash
+export MCP_BEARER_TOKEN="$(openssl rand -hex 32)"  # or omit and copy the ephemeral token from the startup warning
 dotnet-diagnostics-mcp --urls http://127.0.0.1:8787
 ```
 

@@ -3,6 +3,8 @@
 This page covers installing **dotnet-diagnostics-mcp** as an end user — no source clone, no .NET SDK on PATH (unless you pick the global-tool path), and no manual restart on crash / reboot.
 
 > Looking for the contributor walkthrough (clone, build from source, share a single dev instance across multiple terminals)? See [README → Contributor setup](../README.md#contributor-setup) and `scripts/local-mcp.sh`.
+>
+> New to the MCP server itself? Start with [`client-setup.md`](./client-setup.md) for the top-level `--stdio` vs. HTTP onboarding choice, then return here for packaging and supervisor details.
 
 ---
 
@@ -42,6 +44,7 @@ All three publish the same MCP surface (Streamable HTTP, bearer-token authentica
 
 ```bash
 dotnet tool install -g dotnet-diagnostics-mcp
+export MCP_BEARER_TOKEN="$(openssl rand -hex 32)"  # or omit and copy the ephemeral token from the startup warning
 dotnet-diagnostics-mcp --urls http://127.0.0.1:8787
 ```
 
@@ -74,7 +77,9 @@ docker run -d \
   ghcr.io/pedrosakuma/dotnet-diagnostics:latest
 ```
 
-Attaching to a **live local process** from inside the container requires UID parity + a shared `/tmp` mount — see [docs/local-docker-sidecar.md](./local-docker-sidecar.md) for the canonical walkthrough.
+If you intentionally omit `-e MCP_BEARER_TOKEN=...`, read the generated ephemeral token from `docker logs` before configuring the client.
+
+Attaching to a **live local process** from inside the container requires UID parity + a shared `/tmp` mount — see [docs/local-docker-sidecar.md](./local-docker-sidecar.md) for the canonical walkthrough and the consolidated [Linux sidecar checklist](#14-linux-sidecar-checklist).
 
 ### 1c. Single-file binary
 
@@ -84,6 +89,20 @@ Grab the per-OS archive from the [GitHub Releases](https://github.com/pedrosakum
 tar -xzf dotnet-diagnostics-mcp-*-linux-x64.tar.gz -C ~/.local/bin
 ~/.local/bin/dotnet-diagnostics-mcp --urls http://127.0.0.1:8787
 ```
+
+### 1.4. Linux sidecar checklist
+
+Use this table for every Docker / Kubernetes sidecar deployment before chasing attach failures:
+
+| Requirement | Why it matters | Docker / local validation | Kubernetes |
+|---|---|---|---|
+| **Matching UID/GID (or `fsGroup`)** | The diagnostic socket at `/tmp/dotnet-diagnostic-<pid>` inherits the target app's identity; the sidecar must be able to open it. | Run the sidecar as the same UID as the target (the local sample walkthrough uses `--user 0`). | Set matching `runAsUser` / `runAsGroup`, or a pod-level `fsGroup`, for the app + sidecar. |
+| **Shared `/tmp`** | Both containers must see the same diagnostic socket path. | Mount the same Docker volume at `/tmp` in the target and sidecar. | Mount the same `emptyDir` (or equivalent shared volume) at `/tmp` in both containers. |
+| **Shared PID visibility** | The sidecar must be able to enumerate the target process and its PID. | Join the same PID namespace (`--pid=container:<anchor>` in the supported recipe). | Set `shareProcessNamespace: true` on the Pod. |
+| **`DOTNET_EnableDiagnostics=1` on the target** | The .NET runtime must expose diagnostic IPC/EventPipe in the target process. | Leave the default on, or set `-e DOTNET_EnableDiagnostics=1` explicitly on the target container. | Set `env: { name: DOTNET_EnableDiagnostics, value: "1" }` on the target container. |
+| **`CAP_SYS_PTRACE` for live memory readers** | ClrMD live attach (`inspect_heap(source="live")`, `collect_thread_snapshot`, `runtime-config`, live module bytes, optional CPU enrichment) needs ptrace on Linux with `ptrace_scope=1`. | Add `--cap-add SYS_PTRACE` to the **sidecar** when you need live memory readers. | Add `securityContext.capabilities.add: ["SYS_PTRACE"]` to the **sidecar** container when you need those tools. |
+
+If a tool call still fails with `PermissionDenied` or `ServerNotAvailableException: Permission denied`, run `inspect_process(view="preflight", processId=<pid>)` as troubleshooting step 1. It checks the attach-related preconditions it can observe directly (especially UID / ptrace / perf readiness) and returns copy-pasteable remediation before you retry a more expensive collection; use this checklist for the shared `/tmp` and PID-namespace pieces.
 
 ### 1.5. Linux: enabling live memory readers (kernel ptrace)
 
@@ -467,11 +486,17 @@ Do not paste the token into issue text, command output, or logs.
 
 ### First diagnostic (low-risk)
 
-`inspect_process(view="list")` returns a list of running .NET processes with their PIDs and
-command lines — no EventPipe session, no ptrace, no side effects. It is the first call
-to confirm connectivity and discover what is running. (For runtime capability flags
-— CoreCLR vs NativeAOT, ptrace/PSI/perf gate availability — follow up with
-`inspect_process(view="capabilities")` on the target PID.)
+Use the same canonical bootstrap sequence described in [`tool-reference.md`](./tool-reference.md#inspect_process):
+
+1. `inspect_process(view="list")` — confirm connectivity and discover candidate PIDs.
+2. `inspect_process(view="capabilities", processId=<pid>)` — confirm CoreCLR vs. NativeAOT and runtime gates on the PID you chose.
+3. `inspect_process(view="triage", processId=<pid>)` — get an evidence-backed health snapshot before choosing a deeper collector.
+
+Shortcut rules are explicit:
+
+- If you already know the PID, skip straight to `capabilities`.
+- If exactly one .NET process is visible, direct tool calls can auto-resolve it.
+- If a tool call fails with `PermissionDenied` or `ServerNotAvailableException: Permission denied`, run `inspect_process(view="preflight", processId=<pid>)` first; it diagnoses UID, ptrace, perf, and other sidecar prerequisites before you pay for another failed collect.
 
 ```jsonc
 // MCP call (from your client after connecting)
@@ -484,7 +509,7 @@ With the CLI:
 dotnet-diagnostics-cli processes
 ```
 
-If the call returns process rows, the server is working. Move to `inspect_process(view="triage")`
+If the call returns process rows, the server is working. Follow the sequence above, then move to `inspect_process(view="triage")`
 on a target PID for an evidence-backed health snapshot. The response includes:
 
 - `assessment` — overall verdict: `healthy`, `degraded`, `critical`, or `inconclusive`

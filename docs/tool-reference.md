@@ -200,11 +200,8 @@ envelope alongside `data` / `summary` / `hints`:
 }
 ```
 
-This means the previously-obligatory opener of
-[`inspect_process(view="list")`](#inspect_process) → `inspect_process(view="capabilities")` → `<tool>` collapses to
-a single `<tool>` call when there is only one .NET process visible to the
-sidecar. The capability digest is cached per pid for 60 seconds so back-to-back
-tool calls within an investigation pay the probe cost once.
+The **canonical** bootstrap is still
+[`inspect_process(view="list")`](#inspect_process) → `inspect_process(view="capabilities")` → `<tool>`, because it makes PID selection and runtime gating explicit. When you already know the PID, or when exactly one .NET process is visible to the sidecar, you may skip the `list` step and let a direct tool call auto-resolve the target. The capability digest is cached per pid for 60 seconds so back-to-back tool calls within an investigation pay the probe cost once.
 
 ### Verbosity (`depth`)
 
@@ -1122,8 +1119,9 @@ constant for source compatibility but is no longer emitted by counter-only triag
 **Recommended bootstrap sequence:**
 
 ```text
-inspect_process(view="list")          # discover candidate PIDs (or rely on auto-resolve)
-inspect_process(view="capabilities")  # confirm CoreCLR vs NativeAOT + ptrace/PSI/perf gates
+inspect_process(view="preflight")       # first troubleshooting step when attach/permission readiness is unclear
+inspect_process(view="list")            # canonical discovery step when you do not already know the PID
+inspect_process(view="capabilities")    # canonical runtime gate once you picked a PID
 inspect_process(view="container")       # cheap cgroup/PSI signals before any EventPipe session
 inspect_process(view="memory_trend")    # lightweight leak signal — any OS process, no IPC
 inspect_process(view="runtime-config")  # GC / ThreadPool / tiered-comp startup settings + filtered env vars
@@ -1131,6 +1129,8 @@ inspect_process(view="resources")       # unmanaged FD / socket / handle signal 
 inspect_process(view="requests-now")    # in-flight ASP.NET Core requests + current thread stacks
 inspect_process(view="triage")          # observed signals + evidence-backed hypotheses + next drill-down
 ```
+
+Shortcut rules: skip `list` when you already know the PID; skip straight to a direct tool call when exactly one .NET process is visible and auto-resolution is acceptable.
 
 Unknown view values surface as the standard discriminator-dispatch error
 (`error.kind = "InvalidArgument"`, `error.detail = "view"`).
@@ -1215,7 +1215,7 @@ events is used to classify the runtime as **CoreCLR** vs **NativeAOT**.
 }
 ```
 
-**Notes:** always call this **first** in a session. The result tells the LLM
+**Notes:** in the canonical bootstrap, call this immediately after `inspect_process(view="list")` (or first when you already know the PID). The result tells the LLM
 (or human) which other tools can be used on the target. NativeAOT will return
 `runtime = "NativeAot"` and `canSampleCpu = false`.
 
@@ -1223,7 +1223,7 @@ events is used to classify the runtime as **CoreCLR** vs **NativeAOT**.
 
 ## `inspect_process(view="preflight")`
 
-**Environment self-diagnosis (Phase 13 / issue #436).** Unlike `view="capabilities"`
+**Environment self-diagnosis (Phase 13 / issue #436).** This is the **first troubleshooting step** for permission-shaped failures. Unlike `view="capabilities"`
 (a per-target boolean matrix), this view is **target-optional** and **remediation-first**:
 every non-OK finding carries a copy-pasteable fix (docker flag / k8s `securityContext`
 snippet / `sysctl`). Use it to answer *"why can't I attach to this PID and how do I fix

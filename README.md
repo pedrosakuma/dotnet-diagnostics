@@ -30,10 +30,23 @@ Most of this README is about the **MCP server**. If you want to run diagnostics 
 want to attribute *why* a benchmark is slow or allocates, jump to the
 [BenchmarkDotNet diagnoser README](./src/DotnetDiagnostics.BenchmarkDotNet/README.md).
 
+## MCP Server Start Here
+
+Choose the onboarding track **before** reading the rest of the docs:
+
+| Track | Choose this when | First steps | Continue with |
+|---|---|---|---|
+| **Local dev (`--stdio`)** | Your MCP client runs on the same machine and can spawn the server itself | No daemon, no bearer token, no ports | [`docs/client-setup.md` → Option A](./docs/client-setup.md#option-a--stdio-local-dev) |
+| **Sidecar / shared deploy (HTTP + bearer)** | You want one long-running MCP server for Docker, Kubernetes, or multiple clients | Start the server over HTTP, then either set `MCP_BEARER_TOKEN` yourself or copy the generated ephemeral token from the startup warning | [`docs/client-setup.md` → Option B](./docs/client-setup.md#option-b--streamable-http-daemon-sidecar--shared-deploy), [`docs/local-docker-sidecar.md`](./docs/local-docker-sidecar.md), [`deploy/k8s/README.md`](./deploy/k8s/README.md), [`docs/consumer-install.md` → Linux sidecar checklist](./docs/consumer-install.md#14-linux-sidecar-checklist) |
+
+If an HTTP tool call later fails with `PermissionDenied` or `ServerNotAvailableException: Permission denied`, run
+`inspect_process(view="preflight")` first; the troubleshooting guides below link back to the same remediation-first check.
+
 ---
 
 ## Table of Contents
 
+- [MCP Server Start Here](#mcp-server-start-here)
 - [Quick Start](#quick-start)
 - [Install](#install)
 - [Standalone CLI](#standalone-cli)
@@ -103,6 +116,7 @@ Three distributions — pick by environment. Full walkthrough: [`docs/consumer-i
 ```bash
 # .NET global tool (requires .NET 10 SDK)
 dotnet tool install -g dotnet-diagnostics-mcp
+export MCP_BEARER_TOKEN="$(openssl rand -hex 32)"  # or omit and copy the ephemeral token from the startup warning
 dotnet-diagnostics-mcp --urls http://127.0.0.1:8787
 
 # Container — host-loopback only, local dev (container binds 0.0.0.0:8080 internally)
@@ -115,6 +129,8 @@ docker run -d -p 127.0.0.1:8787:8080 \
 
 # Self-contained binary — see Releases page
 ```
+
+If you intentionally leave `MCP_BEARER_TOKEN` unset on the HTTP path, watch the server startup log for the generated ephemeral token before configuring the client.
 
 <details>
 <summary><strong>Transport options</strong></summary>
@@ -254,10 +270,12 @@ dedicated diagnostic job. **Full reference:** [`src/DotnetDiagnostics.BenchmarkD
 
 ## Documentation
 
-**📖 [`docs/`](./docs) is the documentation hub** — start there. It indexes the tool reference,
-CLI reference, the [BenchmarkDotNet diagnoser](./src/DotnetDiagnostics.BenchmarkDotNet/README.md),
-investigation playbooks, output examples, authorization/scopes, client setup, and all deployment
-guides (Kubernetes, Helm, Azure, AWS, GCP).
+**📖 [`docs/`](./docs) is the documentation hub** — start with
+[`docs/client-setup.md`](./docs/client-setup.md) for the stdio-vs-HTTP choice, then use the rest of
+the hub for the tool reference, CLI reference, the
+[BenchmarkDotNet diagnoser](./src/DotnetDiagnostics.BenchmarkDotNet/README.md), investigation
+playbooks, output examples, authorization/scopes, and deployment guides (Kubernetes, Helm, Azure,
+AWS, GCP).
 
 Before any production rollout, complete the
 [`production-readiness go/no-go checklist`](./docs/production-safety.md#production-readiness-checklist).

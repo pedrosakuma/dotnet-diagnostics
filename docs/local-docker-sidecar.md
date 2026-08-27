@@ -98,7 +98,9 @@ docker run -d --name mcp --network diagmcp-net \
 `--user 0` is the easy path for local validation because the sample image runs
 as root and creates its `/tmp/dotnet-diagnostic-<pid>` socket as root. In Kubernetes,
 the recommended setup is to run **both** containers as the same non-root UID
-(the sample manifest pins UID/GID `10001` and sets `fsGroup: 10001`).
+(the sample manifest pins UID/GID `10001` and sets `fsGroup: 10001`). Keep the consolidated
+[Linux sidecar checklist](./consumer-install.md#14-linux-sidecar-checklist) nearby when adapting
+this recipe to your own container image.
 
 The target PID is no longer `1`; discover it with
 `inspect_process(view="list", commandLineContains="CoreClrSample")`. Keeping the
@@ -124,6 +126,10 @@ on the sidecar container — the built-in `StaleBinaryWatcher` polls the
 on-disk MVID once a minute and, on drift, asks the host to stop gracefully so
 the supervisor (`--restart=always`, systemd, K8s) brings up the fresh build.
 Without the env var the watcher only logs a warning. See issue #75.
+
+### Troubleshooting attach / permission failures
+
+If a tool call fails with `ServerNotAvailableException: Permission denied`, `PermissionDenied`, or another attach-shaped error, run `inspect_process(view="preflight", processId=<sample-pid>)` before retrying the failing tool. It checks the attach-related preconditions it can observe directly (especially UID, ptrace, and perf readiness) and returns copy-pasteable remediation; use the shared [Linux sidecar checklist](./consumer-install.md#14-linux-sidecar-checklist) for the `/tmp` mount and PID-namespace pieces.
 
 ### Heads up: live memory readers need `CAP_SYS_PTRACE` on Linux
 
@@ -210,6 +216,17 @@ curl -fsS -X POST http://127.0.0.1:18887/mcp \
 You should see the sample and sidecar .NET processes; PID `1` is the non-.NET
 namespace anchor.
 
+If a later call fails with a permission-shaped error, run `inspect_process(view="preflight", processId=<sample-pid>)` before retrying:
+
+```bash
+curl -fsS -X POST http://127.0.0.1:18887/mcp \
+  -H "Authorization: ******" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H "mcp-session-id: $SID" \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"inspect_process","arguments":{"view":"preflight","processId":<sample-pid>}}}'
+```
+
 Discover the sample PID from the list response, then collect 5 seconds of
 `System.Runtime` counters from it:
 
@@ -219,7 +236,7 @@ curl -fsS -X POST http://127.0.0.1:18887/mcp \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
   -H "mcp-session-id: $SID" \
-  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"collect_events","arguments":{"kind":"counters","processId":<sample-pid>,"durationSeconds":5,"providers":["System.Runtime"]}}}'
+  -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"collect_events","arguments":{"kind":"counters","processId":<sample-pid>,"durationSeconds":5,"providers":["System.Runtime"]}}}'
 ```
 
 ## Tear down
