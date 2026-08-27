@@ -4,17 +4,29 @@ using System.Text;
 namespace DotnetDiagnostics.Cli;
 
 /// <summary>
-/// Composable help text for the CLI. <see cref="Global"/> reproduces the full usage screen
-/// (printed for a bare <c>--help</c>, no command, or a usage error); <see cref="ForCommand"/>
-/// renders a focused screen for a single subcommand (e.g. <c>collect --help</c>) so the user does
-/// not have to scroll the entire reference to find one command's flags (#302). Keeping each
-/// command's synopsis, options and examples in one structured table means the global screen and the
-/// per-command screens are built from the same source and cannot drift apart.
+/// Composable help text for the CLI. <see cref="Global"/> is the short orienting screen for a bare
+/// <c>--help</c>, no command, or a usage error; <see cref="ForCommand"/> renders the full focused
+/// screen for a single subcommand (e.g. <c>collect --help</c>) so the user does not have to scroll
+/// unrelated flags to find one command's options (#302, #896). Keeping each command's synopsis,
+/// options and examples in one structured table means the compact global screen and the per-command
+/// screens are still built from the same source and cannot drift apart.
 /// </summary>
 internal static class CliHelp
 {
     private const string Tagline =
         "dotnet-diagnostics-cli — one-shot diagnostics against a live .NET process (no HTTP, no bearer, no daemon).";
+    private const string CompactGlobalOptionsHelpText =
+"""
+Options:
+  -p, --pid <pid|name>          Target OS process id, or visible .NET process name/prefix.
+      --json                    Emit the raw DiagnosticResult envelope as JSON.
+      --explain-risk            Print the resolved Core safety descriptor without executing.
+      --acknowledge-risk <level>
+                                Non-interactive acknowledgement for high/critical operations.
+      --launch -- <app> [args]  Launch a child app for the commands that support descendant attach.
+      --suspend-startup         With 'collect --kind startup', arm EventPipe before managed startup.
+  -h, --help                    Show this help or 'dotnet-diagnostics-cli <command> --help'.
+""";
 
     /// <summary>The full usage screen (every command, options and examples).</summary>
     public static string Global { get; } = BuildGlobal();
@@ -62,24 +74,10 @@ internal static class CliHelp
             sb.Append("  ").Append(c.Name.PadRight(28)).Append("  ").Append(c.Synopsis).Append('\n');
         }
 
-        sb.Append('\n').Append(CliCommandCatalog.GlobalOptionsHelpText).Append('\n');
-
-        foreach (var c in CliCommandCatalog.CommandDescriptors)
-        {
-            if (!string.IsNullOrEmpty(c.OptionsHelpText))
-            {
-                sb.Append('\n').Append(c.OptionsHelpText).Append('\n');
-            }
-        }
-
-        sb.Append('\n').Append("Examples:").Append('\n');
-        foreach (var c in CliCommandCatalog.CommandDescriptors)
-        {
-            if (!string.IsNullOrEmpty(c.Examples))
-            {
-                sb.Append(c.Examples).Append('\n');
-            }
-        }
+        sb.Append('\n').Append(CompactGlobalOptionsHelpText).Append('\n');
+        sb.Append("Next steps:").Append('\n');
+        sb.Append("  Run 'dotnet-diagnostics-cli <command> --help' for command-specific flags and examples.").Append('\n');
+        sb.Append("  If something does not work, start with 'dotnet-diagnostics-cli doctor'.");
 
         return sb.ToString().TrimEnd('\n');
     }

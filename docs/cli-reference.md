@@ -29,6 +29,8 @@ Other distributions:
 - **Self-contained binary** (no SDK): per-OS archives are attached to every
   [Release](https://github.com/pedrosakuma/dotnet-diagnostics/releases) as
   `dotnet-diagnostics-cli-<version>-<rid>` (`linux-x64`, `linux-arm64`, `osx-arm64`, `win-x64`, `win-arm64`).
+  The downloaded archive uses that name; the extracted executable inside it is
+  `dotnet-diagnostics-cli` (`dotnet-diagnostics-cli.exe` on Windows).
 - **In the sidecar container**: the diagnostics sidecar image bundles the CLI on `PATH`, so
   `kubectl exec -it <pod> -c diagnostics-mcp -- dotnet-diagnostics-cli processes` works against the
   co-located workload.
@@ -64,8 +66,9 @@ dotnet-diagnostics-cli completion pwsh > "$HOME/.dotnet-diagnostics-completion.p
 Add-Content -Path $PROFILE -Value '. "$HOME/.dotnet-diagnostics-completion.ps1"'
 ```
 
-If you run the self-contained executable directly, replace `dotnet-diagnostics-cli` above with
-`dotnet-diagnostics`. The generated scripts register both command names.
+If you run the self-contained executable directly, keep using `dotnet-diagnostics-cli`
+(`dotnet-diagnostics-cli.exe` on Windows). The generated scripts also register the historical
+`dotnet-diagnostics` command name.
 
 ## Global options
 
