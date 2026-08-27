@@ -24,11 +24,7 @@ Before production exposure or privileged attach, complete the
 ## Sidecar topology refresher
 
 The sidecar topology remains the simplest direct deployment model when one Pod equals one diagnostics endpoint.
-It still requires the same Linux pod-level prerequisites:
-
-1. **Shared `/tmp`** between the app and diagnostics container so both see `/tmp/dotnet-diagnostic-<pid>`.
-2. **Shared PID visibility** (`shareProcessNamespace: true`) so the sidecar can enumerate the target process.
-3. **Matching UID/GID (or `fsGroup`)** so the sidecar can open the diagnostic socket.
+Use the consolidated [Linux sidecar checklist](../../docs/consumer-install.md#14-linux-sidecar-checklist) for the full requirement table: shared `/tmp`, `shareProcessNamespace: true`, matching UID/GID or `fsGroup`, `DOTNET_EnableDiagnostics=1` on the target, and `CAP_SYS_PTRACE` on the sidecar when you need live memory readers.
 
 With `shareProcessNamespace`, Kubernetes' pod sandbox owns namespace PID 1;
 the application container does not. The diagnostics sidecar can therefore

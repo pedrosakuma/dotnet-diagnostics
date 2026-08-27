@@ -258,6 +258,8 @@ Remove-Item -Recurse -Force "$env:ProgramData\dotnet-diagnostics-mcp" -ErrorActi
 
 ## 6. Troubleshooting
 
+For permission-shaped failures on live diagnostics after the service is running, `inspect_process(view="preflight", processId=<pid>)` is still useful for the generic cross-platform report shape, but on Windows it does **not** verify the `SeSystemProfilePrivilege` / Administrators requirement for `collect_sample(kind="off_cpu")`. Use the symptom table below for those Windows-specific privilege failures; for the Linux/container half of the deployment contract, see the [Linux sidecar checklist](./consumer-install.md#14-linux-sidecar-checklist).
+
 | Symptom                                                                                          | Likely cause                                                                  |
 |--------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------|
 | Service fails to start with **`Error 1069: logon failure`**                                       | The service account cannot log on as a service. If you followed § 3.2, Administrators membership grants `SeServiceLogonRight` implicitly — confirm `Add-LocalGroupMember` actually ran (check `Get-LocalGroupMember Administrators`). |
@@ -266,4 +268,4 @@ Remove-Item -Recurse -Force "$env:ProgramData\dotnet-diagnostics-mcp" -ErrorActi
 | `Authorization` header rejected with 401                                                          | The MCP client is reading a stale `MCP_BEARER_TOKEN` from User scope instead of the service account / token file. Refresh the client. |
 | `whoami /priv` does **not** list `SeSystemProfilePrivilege` for the service process               | The privilege is on the **account**, but the service was started with a **filtered token** (rare; legacy 32-bit hosts). Verify the service is 64-bit; restart the host once. |
 
-For Linux / containers, see [`consumer-install.md § 1.5`](./consumer-install.md#15-linux-enabling-live-memory-readers-kernel-ptrace).
+For Linux / containers, see [`consumer-install.md § 1.4`](./consumer-install.md#14-linux-sidecar-checklist) and [`consumer-install.md § 1.5`](./consumer-install.md#15-linux-enabling-live-memory-readers-kernel-ptrace).
