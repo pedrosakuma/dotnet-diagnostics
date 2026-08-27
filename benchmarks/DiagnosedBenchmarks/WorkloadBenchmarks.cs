@@ -15,7 +15,7 @@ public class WorkloadBenchmarks
 
     /// <summary>Allocation churn → high Gen0 collection rate. Diagnosed with the GC collector.</summary>
     [Benchmark]
-    [DiagnosticKind("gc", durationSeconds: 5)]
+    [DiagnosticKind(BenchmarkDiagnosticKind.Gc, DurationSeconds = 5)]
     public long GcChurn()
     {
         var sw = Stopwatch.StartNew();
@@ -35,7 +35,7 @@ public class WorkloadBenchmarks
 
     /// <summary>Many threads hammering one lock → heavy contention. Diagnosed with the contention collector.</summary>
     [Benchmark]
-    [DiagnosticKind("contention", durationSeconds: 5)]
+    [DiagnosticKind(BenchmarkDiagnosticKind.Contention, DurationSeconds = 5)]
     public long LockStorm()
     {
         var gate = new object();
@@ -67,7 +67,7 @@ public class WorkloadBenchmarks
     /// attributes per-frame exclusive (self) vs inclusive (self + callees) samples.
     /// </summary>
     [Benchmark]
-    [DiagnosticKind("cpu", durationSeconds: 5)]
+    [DiagnosticKind(BenchmarkDiagnosticKind.Cpu, DurationSeconds = 5)]
     public long CpuHotPath()
     {
         var sw = Stopwatch.StartNew();
@@ -97,7 +97,7 @@ public class WorkloadBenchmarks
     /// MemoryDiagnoser's Allocated column.
     /// </summary>
     [Benchmark]
-    [DiagnosticKind("allocation", durationSeconds: 5)]
+    [DiagnosticKind(BenchmarkDiagnosticKind.Allocation, DurationSeconds = 5)]
     public long AllocChurn()
     {
         var sw = Stopwatch.StartNew();

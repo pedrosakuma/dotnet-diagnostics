@@ -11,6 +11,22 @@ markdown report.
 > job) and treat its timing as non-publication-grade. Keep `MemoryDiagnoser`/`ThreadingDiagnoser`
 > for clean measurement; this adds the drill-down the MCP server / CLI provide.
 
+## Install
+
+```bash
+dotnet add package dotnet-diagnostics-benchmarkdotnet
+```
+
+```xml
+<ItemGroup>
+  <PackageReference Include="dotnet-diagnostics-benchmarkdotnet" Version="x.y.z" />
+</ItemGroup>
+```
+
+## Compatibility
+
+This package targets `net10.0`, so the consuming benchmark project must also target `net10.0`.
+
 ## Usage
 
 ```csharp
@@ -42,11 +58,80 @@ BenchmarkRunner.Run<Workload>();
 > completed kinds. The `string` overload remains for back-compat, but a typo there is only caught at
 > BenchmarkDotNet validation time.
 
+### Minimal vs Recommended setup
+
+**Minimal opt-in** is enough when you just want diagnostics on an existing benchmark class with the
+least possible setup:
+
+```csharp
+using BenchmarkDotNet.Attributes;
+using BenchmarkDotNet.Running;
+using DotnetDiagnostics.BenchmarkDotNet;
+
+[DotnetDiagnosticsDiagnoser]
+public class Workload
+{
+    [Benchmark]
+    [DiagnosticKind(BenchmarkDiagnosticKind.Gc, DurationSeconds = 5)]
+    public void AllocateLots() { /* ... */ }
+}
+
+BenchmarkRunner.Run<Workload>();
+```
+
+**Recommended setup** is a dedicated `IConfig` with `RunStrategy.Monitoring` when you want a
+repeatable diagnostic job whose timing stays clearly separate from your publication-grade runs:
+
+```csharp
+using BenchmarkDotNet.Configs;
+using BenchmarkDotNet.Engines;
+using BenchmarkDotNet.Jobs;
+using BenchmarkDotNet.Running;
+using DotnetDiagnostics.BenchmarkDotNet;
+
+public sealed class DiagnosedConfig : ManualConfig
+{
+    public DiagnosedConfig()
+    {
+        AddJob(Job.Default.WithStrategy(RunStrategy.Monitoring).WithId("Diagnose"));
+        AddDiagnoser(new DotnetDiagnosticsDiagnoser());
+    }
+}
+
+BenchmarkRunner.Run<Workload>(new DiagnosedConfig());
+```
+
+Use the minimal form for quick local exploration; switch to the dedicated config when you want a
+cleanly labeled monitoring job in CI or alongside native BenchmarkDotNet diagnosers. See
+[`benchmarks/DiagnosedBenchmarks/DiagnosedConfig.cs`](../../benchmarks/DiagnosedBenchmarks/DiagnosedConfig.cs)
+for the full reference implementation used in this repository.
+
 The diagnoser runs in the BenchmarkDotNet **orchestrator** process (not the measured child), so the
 heavy ClrMD/TraceEvent dependencies it pulls in never contaminate the benchmark's timing or
 allocations. Each `[DiagnosticKind]` method gets one EventPipe collection per kind against the
 child PID; results land in `<artifacts>/diagnostics/*.json` and a consolidated
 `*-dotnet-diagnostics-report.md`.
+
+## Output
+
+This diagnoser does **not** add columns to the BenchmarkDotNet summary table; `ProcessResults`
+returns `Array.Empty<Metric>()`, so look for console logs, `<artifacts>/diagnostics/*.json`, and
+the separate `*-dotnet-diagnostics-report.md` report instead.
+
+Real report excerpt:
+
+```md
+# dotnet-diagnostics — biggest offenders
+
+## WorkloadBenchmarks.GcChurn: Diagnose(InvocationCount=1, IterationCount=1, RunStrategy=Monitoring, UnrollFactor=1, WarmupCount=1)
+
+| kind | status | headline | artifact |
+| --- | --- | --- | --- |
+| gc | ok | 5407 collection(s), max pause 0.6ms, total pause 331.4ms. Omitted 200 retained event row(s) from inline; the handle retains them. Raw detail reached maxEvents=200; 5207 later event row(s) were omitted, but totals and generation counts remain exact. 5207 later heap-stat sample(s) were also omitted after maxEvents=200. | `DiagnosedBenchmarks.WorkloadBenchmarks_GcChurn_Diagnose-Diagnose.1.gc.json` |
+```
+
+Read the report top-down: each benchmark gets one table row per diagnostic kind, the `headline`
+column is the one-line takeaway, and the `artifact` file lets you drill into the full JSON payload.
 
 ## CI regression comparisons
 
