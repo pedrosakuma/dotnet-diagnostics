@@ -11,17 +11,21 @@ security-gated dynamic profiler attach that temporarily instruments an allowlist
 > HTTP + stdio transports, IoT-style triage (6+ steps → 2 steps).
 > See [`docs/`](./docs) for full reference.
 
-### Two ways to use it
+### Three ways to use it
 
-This repo ships **two NuGet tools** built on the same Core diagnostics engine — pick by who is driving:
+This repo ships **three NuGet packages** built on the same Core diagnostics engine — pick by who
+(or what) is driving:
 
 | Package | Driver | Surface | Docs |
 |---|---|---|---|
 | **`dotnet-diagnostics-mcp`** | An **LLM**, via an MCP client | MCP tools over HTTP (bearer) or stdio | this README + [`docs/`](./docs) |
 | **`dotnet-diagnostics-cli`** | A **human** / script / CI | Sub-commands + a stateful `session` REPL (no HTTP, no bearer, no daemon) | [`docs/cli-reference.md`](./docs/cli-reference.md) |
+| **`dotnet-diagnostics-benchmarkdotnet`** | **BenchmarkDotNet**, via `[DotnetDiagnosticsDiagnoser]` | In-process `IDiagnoser` that attaches Core captures to a `[Benchmark]` and emits a "biggest offenders" report | [`src/DotnetDiagnostics.BenchmarkDotNet/README.md`](./src/DotnetDiagnostics.BenchmarkDotNet/README.md) |
 
 Most of this README is about the **MCP server**. If you want to run diagnostics yourself, jump to the
-[Standalone CLI](#standalone-cli) section or the [CLI reference](./docs/cli-reference.md).
+[Standalone CLI](#standalone-cli) section or the [CLI reference](./docs/cli-reference.md). If you
+want to attribute *why* a benchmark is slow or allocates, jump to the
+[BenchmarkDotNet diagnoser README](./src/DotnetDiagnostics.BenchmarkDotNet/README.md).
 
 ---
 
@@ -30,6 +34,7 @@ Most of this README is about the **MCP server**. If you want to run diagnostics 
 - [Quick Start](#quick-start)
 - [Install](#install)
 - [Standalone CLI](#standalone-cli)
+- [BenchmarkDotNet Diagnoser](#benchmarkdotnet-diagnoser)
 - [Tools Overview](#tools-overview)
 - [Documentation](#documentation)
 - [Goals](#goals)
@@ -187,6 +192,32 @@ as `dotnet-diagnostics-cli-<version>-<rid>`. **Full reference:** [`docs/cli-refe
 
 ---
 
+## BenchmarkDotNet Diagnoser
+
+`dotnet-diagnostics-benchmarkdotnet` is a separate NuGet package that runs the **same Core
+diagnostics engine** as an `IDiagnoser`, attached in-process to a BenchmarkDotNet child process
+while it runs — no MCP client, no CLI, no separate host. Useful when a benchmark is slow or
+allocates more than expected and you want to know *why*, not just *how much*.
+
+```csharp
+[DotnetDiagnosticsDiagnoser]   // attach the diagnoser + offenders report (like [MemoryDiagnoser])
+public class Workload
+{
+    [Benchmark]
+    [DiagnosticKind(BenchmarkDiagnosticKind.Gc, DurationSeconds = 5)]
+    public void AllocateLots() { /* ... */ }
+}
+```
+
+Each tagged `[Benchmark]` gets one EventPipe collection per requested kind (`gc`, `cpu`,
+`allocation`, `contention`, `threadpool`, `gcdump`, and more) against the child PID; results land in
+`<artifacts>/diagnostics/*.json` plus a consolidated `*-dotnet-diagnostics-report.md` with a
+per-benchmark "biggest offenders" summary. It is diagnostic, not measurement — pair it with
+`MemoryDiagnoser`/`ThreadingDiagnoser` for clean, publication-grade numbers, and run it on a
+dedicated diagnostic job. **Full reference:** [`src/DotnetDiagnostics.BenchmarkDotNet/README.md`](./src/DotnetDiagnostics.BenchmarkDotNet/README.md).
+
+---
+
 ## Tools Overview
 
 **17 unified tools.** Full schemas and return shapes: [`docs/tool-reference.md`](./docs/tool-reference.md).
@@ -221,8 +252,9 @@ as `dotnet-diagnostics-cli-<version>-<rid>`. **Full reference:** [`docs/cli-refe
 ## Documentation
 
 **📖 [`docs/`](./docs) is the documentation hub** — start there. It indexes the tool reference,
-CLI reference, investigation playbooks, output examples, authorization/scopes, client setup, and
-all deployment guides (Kubernetes, Helm, Azure, AWS, GCP).
+CLI reference, the [BenchmarkDotNet diagnoser](./src/DotnetDiagnostics.BenchmarkDotNet/README.md),
+investigation playbooks, output examples, authorization/scopes, client setup, and all deployment
+guides (Kubernetes, Helm, Azure, AWS, GCP).
 
 Before any production rollout, complete the
 [`production-readiness go/no-go checklist`](./docs/production-safety.md#production-readiness-checklist).

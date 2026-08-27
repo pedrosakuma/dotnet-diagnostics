@@ -208,7 +208,9 @@ assuming a collector needs CPU tuning; add a new benchmark there instead of gues
 
 ### 🎯 One MCP tool per concept (17 tools)
 
-Anthropic recommends ≤10 tools per LLM context. We have 17 tools: #213 consolidated
+Anthropic recommends ≤10 tools per LLM context. See
+[`docs/research/mcp-tool-catalog-budget.md`](./docs/research/mcp-tool-catalog-budget.md) for the
+measured context-window cost of the 13/17-tool surface (issue #791, refreshing #628). We have 17 tools: #213 consolidated
 24 legacy aliases into 7 unified discriminator tools (`inspect_process`, `collect_events`, `collect_sample`,
 `query_snapshot`, `inspect_heap`, `list_orchestrator`, `get_bytes`), `discover_azure` was added
 alongside the cloud-integrations work (#16), plus 8 non-aliased tools
