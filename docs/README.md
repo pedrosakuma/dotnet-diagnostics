@@ -1,18 +1,22 @@
 # Documentation
 
-> **v0.22.0 — Explicit production safety contract, transport hardening, and approval gates** ([CHANGELOG](../CHANGELOG.md#0220--2026-08-01))
+> **v0.24.0 — Native contention/off-CPU diagnosis matures; MCP Tasks moves to the finalized SEP-2663 shape** ([CHANGELOG](../CHANGELOG.md#0240--2026-08-19))
 >
-> - **Non-loopback cleartext HTTP is refused by default.** Configure direct Kestrel TLS with
->   `MCP_TLS_CERTIFICATE_PEM` + `MCP_TLS_PRIVATE_KEY_PEM`, place the server behind a trusted
->   TLS-terminating proxy via `MCP_TRUSTED_PROXY_CIDRS`, or bind to loopback for local
->   development. See [`client-setup.md` → Transport security](./client-setup.md#transport-security-non-loopback).
-> - **High-risk operations pause before side effects** and require the caller to retry with the
->   exact server-returned `safetyApproval.requiredAcknowledgement`. Critical operations prefer
->   MCP elicitation. See [`authorization.md` → per-call confirmation](./authorization.md#per-call-confirmation).
-> - **CLI callers** must pass `--acknowledge-risk high|critical`; `--explain-risk` inspects
->   without executing. See [`cli-reference.md` → Risk preflight](./cli-reference.md#safety-preflight).
-> - The canonical operation matrix with target impact, data exposure, and evidence lifecycle is
->   [`production-safety.md`](./production-safety.md).
+> - **MCP SDK bumped `1.4.0` → `2.2.0`; MCP Tasks moved to the finalized SEP-2663 extension** — a
+>   breaking wire-format change for clients relying on the old experimental `tasks/get`/`tasks/result`
+>   polling shape. Clients on older protocol revisions keep working unaffected.
+> - **New native-lock-contention collector, off-CPU-to-syscall attribution, and a CPU
+>   microarchitecture-efficiency snapshot** — `collect_sample(kind="native-lock-contention" |
+>   "cpu-efficiency")` and syscall-correlated off-CPU sampling.
+> - **Cross-collector investigation digests for `collect_batch`** correlate native-lock and
+>   off-CPU evidence in one collection window, shared by the CLI and BenchmarkDotNet diagnoser.
+> - Still current: non-loopback cleartext HTTP is refused by default (see
+>   [`client-setup.md` → Transport security](./client-setup.md#transport-security-non-loopback)),
+>   high-risk operations pause for explicit acknowledgement — CLI callers pass
+>   `--acknowledge-risk high|critical` (see
+>   [`authorization.md` → per-call confirmation](./authorization.md#per-call-confirmation) and
+>   [`cli-reference.md` → Risk preflight](./cli-reference.md#safety-preflight)) — and the canonical
+>   operation matrix lives in [`production-safety.md`](./production-safety.md).
 
 ## New user onboarding path
 
@@ -51,7 +55,11 @@ you're using, then reach for the cross-cutting references.
 | [`investigation-playbooks.md`](./investigation-playbooks.md) | Step-by-step recipes for common symptoms (slow, leaking, 5xx, slow HTTP, NativeAOT) |
 | [`bad-code-scenarios.md`](./bad-code-scenarios.md) | The anti-patterns in `samples/BadCodeSample/` and the investigation flow each one exercises |
 | [`case-studies/`](./case-studies/) | **Narrated end-to-end investigations** — each tells the story of one non-obvious failure from misleading symptom → refuted wrong hypothesis → real cause → fix → verification, with the real captures at every step |
+| [`resource-boundedness.md`](./resource-boundedness.md) | Per-collector memory/retention caps for long or high-volume captures — what's bounded, the eviction strategy, and how a cap hit is surfaced in `notes[]` |
+| [`hotpaths/`](./hotpaths/README.md) | CPU/allocation profiling of each collector's *own* code (companion to `resource-boundedness.md`, which bounds memory rather than CPU) |
 | [`ci-nuget-cache.md`](./ci-nuget-cache.md) | A/B measurement of NuGet cache policy on hosted CI runners (`ci.yml`/`kind-integration.yml`) and the resulting `setup-dotnet` built-in cache decision |
+| [`design/`](./design/) | Feature design docs (security/UX/capability-gate tradeoffs) for shipped, higher-risk surfaces — currently method-parameter capture and unified ephemeral-process capture |
+| [`research/`](./research/README.md) | Point-in-time spikes and prototypes (feasibility studies, protocol migration assessments, tool-budget measurements) — read the linked issue for current status, since a spike's verdict can be superseded later |
 
 ### MCP server (`dotnet-diagnostics-mcp`)
 
@@ -65,6 +73,11 @@ you're using, then reach for the cross-cutting references.
 | [`local-docker-sidecar.md`](./local-docker-sidecar.md) | Reproducing the K8s sidecar topology locally with an anchored Docker PID namespace + shared `/tmp` |
 | [`external-investigation-docker.md`](./external-investigation-docker.md) | Kubernetes-style `attach_to_pod`/proxy passthrough for a **Docker** sidecar — a central orchestrator MCP forwards diagnostic calls to an operator-configured external MCP profile, so the client never sees the sidecar's URL or bearer token |
 | [`perf-compat-matrix.md`](./perf-compat-matrix.md) | Linux `perf` compatibility matrix for the CPU/off-CPU/native-alloc/native-lock-contention collectors — supported environments, the non-privileged unit coverage, the opt-in live smoke workflow, and the structured perf failure-mode reference |
+| [`central-orchestrator-design.md`](./central-orchestrator-design.md) | The central-orchestrator topology (`list_orchestrator`/`attach_to_pod`/`detach_from_pod`) — namespace/workload/pod discovery, ephemeral-container attach, and cross-MCP handoff options |
+| [`cross-mcp-byte-fetch-runbook.md`](./cross-mcp-byte-fetch-runbook.md) | Worked example of the `get_bytes` cross-MCP handoff path when sibling MCPs (`dotnet-assembly-mcp`, `dotnet-native-mcp`) can't see the pod-local filesystem and twin sidecars aren't feasible |
+| [`handoff-contract.md`](./handoff-contract.md) | The `MethodIdentity` handoff contract between `dotnet-diagnostics-mcp` and the companion `dotnet-assembly-mcp` |
+| [`windows-sidecar-service.md`](./windows-sidecar-service.md) | Running the MCP server as a privileged Windows service sidecar (companion to `consumer-install.md`'s dev-workstation Scheduled-Task path) — needed for off-CPU sampling and other elevated captures |
+| [`manual-mcp-smoke-test.md`](./manual-mcp-smoke-test.md) | Manual real-client smoke checklist run before cutting a release or after a change touching transport, auth, or protocol negotiation |
 
 ### CLI (`dotnet-diagnostics-cli`)
 

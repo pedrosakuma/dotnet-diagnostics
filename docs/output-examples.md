@@ -1,9 +1,13 @@
 # Output examples
 
-> **Current structured contracts, with real captures.** These examples replace the
-> v0.13-era payloads with the v0.22/current-main MCP shapes: discriminator envelopes,
-> drill-down handles, resolved-process metadata, safety descriptors, and triage
-> `modelVersion: 2`.
+> **Real captures, stamped per release — currently v0.22.0.** These examples show the v0.22-era
+> MCP shapes: discriminator envelopes, drill-down handles, resolved-process metadata, safety
+> descriptors, and triage `modelVersion: 2`. The wire *shape* (envelope, safety descriptors,
+> trimming rules) has not changed since; families added after v0.22.0 —
+> `native-lock-contention`, `cpu-efficiency`, syscall-correlated `off_cpu`, and the
+> cross-collector `collect_batch` digest (see [CHANGELOG](../CHANGELOG.md#0240--2026-08-19)) —
+> are not yet illustrated here. For those, see their parameter/return docs in
+> [`tool-reference.md`](./tool-reference.md); this page has not been regenerated against them.
 
 ## Capture provenance and trimming
 

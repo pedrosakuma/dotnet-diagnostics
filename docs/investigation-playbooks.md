@@ -24,7 +24,7 @@ a symptom and walks through the tool calls in order.
 > - When **troubleshooting a failed attach or an unexpected empty result** — not
 >   as a mandatory opener on every investigation.
 
-> **Safety protocol (v0.22.0 — [production-safety.md](./production-safety.md)):**
+> **Safety protocol (see [production-safety.md](./production-safety.md) for the canonical matrix):**
 >
 > - **Low** — executes; no prompt, no `safetyWarnings`.
 > - **Moderate** — executes automatically; returns `safetyWarnings[]` in the

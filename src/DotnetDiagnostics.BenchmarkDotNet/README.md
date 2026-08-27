@@ -50,6 +50,9 @@ child PID; results land in `<artifacts>/diagnostics/*.json` and a consolidated
 
 ## CI regression comparisons
 
+See [`docs/research/ci-performance-regression-spike.md`](../../docs/research/ci-performance-regression-spike.md)
+for the feasibility spike behind this section (issue #647).
+
 Performance gates need two physically separate runs:
 
 1. **Clean measurement:** ordinary BenchmarkDotNet jobs plus native diagnosers produce timing and

@@ -1672,7 +1672,9 @@ provider; that managed-only collector is unchanged by this feature.
   `activity`; an uncontended fast-path acquisition (single CAS, no futex syscall) is
   indistinguishable from a genuinely blocked one at this uprobe. Corroborate with
   `collect_sample(kind="off_cpu")` and its `nativeContentionEvidence` before concluding a hot
-  call site is actually blocking.
+  call site is actually blocking. Promoting this from *activity* to *confirmed blocking* via a
+  paired `uprobe`/`uretprobe` was investigated and deferred — see
+  [`docs/research/uprobe-uretprobe-native-lock-spike.md`](./research/uprobe-uretprobe-native-lock-spike.md) (issue #852).
 
 Gated by `inspect_process(view="capabilities")`'s `CanSampleNativeLockContention`
 (Linux-only, unlike `CanSampleNativeAlloc`). **Hotspot-only**, same shape as `native-alloc`:

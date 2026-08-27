@@ -1,8 +1,17 @@
 # MCP 2026 Draft Migration Assessment
 
 **Issue**: #546 (Phase 16 P1) · **Original assessment**: 2026-07-06 · **Last revalidated**: 2026-07-27
-**Status**: Pre-finalization revalidation complete. SDK `2.0.0-rc.1` released 2026-07-25; stable 2.0.0 confirmed for on or before 2026-07-28.
+**Status**: ✅ **Migration shipped in v0.24.0** (2026-08-19) — MCP SDK bumped `1.4.0` → `2.2.0`,
+MCP Tasks moved from the experimental v1 shape to the finalized SEP-2663 extension (#548, #878).
+See the [CHANGELOG v0.24.0 entry](../../CHANGELOG.md#0240--2026-08-19) for the shipped migration
+notes and wire-compatibility guarantees. Everything below predates the actual migration and is
+kept for the per-SEP technical inventory and the architectural rationale that carried forward
+(investigation handles as the primary orchestrator routing token — see
+[`../central-orchestrator-design.md`](../central-orchestrator-design.md) §3.8) — not as a guide to
+redo the migration.
 
+> **Historical status trail (superseded by the v0.24.0 ship above):**
+>
 > **Current status (2026-08-01):** Spike is complete; issue #546 is **closed**. The production
 > migration to SDK 2.0.0 has **not yet happened** — the repo remains on **SDK 1.4.0**
 > (`Directory.Packages.props`). Issue #548 (SEP-2663 Tasks watch item) remains open.
