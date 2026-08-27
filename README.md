@@ -200,7 +200,7 @@ diag(pid 1234)> exit
 Self-contained per-OS binaries are attached to each [Release](https://github.com/pedrosakuma/dotnet-diagnostics/releases)
 as `dotnet-diagnostics-cli-<version>-<rid>`. The downloaded archive is named
 `dotnet-diagnostics-cli-<version>-<rid>`; the extracted executable inside it is
-`dotnet-diagnostics`. **Full reference:** [`docs/cli-reference.md`](./docs/cli-reference.md).
+`dotnet-diagnostics-cli` (`dotnet-diagnostics-cli.exe` on Windows). **Full reference:** [`docs/cli-reference.md`](./docs/cli-reference.md).
 
 ---
 

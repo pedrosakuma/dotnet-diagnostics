@@ -23,8 +23,9 @@ dotnet tool install -g dotnet-diagnostics-cli   # requires the .NET 10 SDK
 Self-contained, per-OS binaries (no SDK required) are attached to every
 [GitHub Release](https://github.com/pedrosakuma/dotnet-diagnostics/releases) as
 `dotnet-diagnostics-cli-<version>-<rid>`. The downloaded archive keeps that name; the extracted
-executable inside it is `dotnet-diagnostics`. The diagnostics sidecar container image also ships the
-CLI on `PATH`, so `kubectl exec … -- dotnet-diagnostics-cli …` works inside the pod.
+executable inside it is `dotnet-diagnostics-cli` (`dotnet-diagnostics-cli.exe` on Windows). The
+diagnostics sidecar container image also ships the CLI on `PATH`, so `kubectl exec … -- dotnet-diagnostics-cli …`
+works inside the pod.
 
 ## Quickstart
 
