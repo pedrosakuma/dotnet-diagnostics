@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Multi-targets deliberately: this sample exists solely to give the live test suite (and
+       manual verification) a real process to attach to on each supported older runtime, per the
+       feasibility spike in docs/research/multi-version-target-support.md and the compat matrix
+       in docs/runtime-version-compat-matrix.md. Console (not ASP.NET Core) on purpose — it keeps
+       the workload identical across TFMs without dragging in a web framework version matrix too. -->
+  <PropertyGroup>
+    <!-- Directory.Build.props sets TargetFramework (singular) for the whole repo; clear it here
+         so MSBuild treats this project as a genuine multi-targeting outer build instead of
+         silently collapsing to just net10.0. -->
+    <TargetFramework></TargetFramework>
+    <TargetFrameworks>net8.0;net9.0;net10.0</TargetFrameworks>
+    <OutputType>Exe</OutputType>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- Test-only fixture, not a shipped deliverable: solution-level `dotnet publish` can't
+         resolve a single TFM for a multi-targeted project, so opt this one out of publish
+         traversal entirely (it's launched directly from its build output by the test harness). -->
+    <IsPublishable>false</IsPublishable>
+  </PropertyGroup>
+
+</Project>

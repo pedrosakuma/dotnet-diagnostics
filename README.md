@@ -2,10 +2,13 @@
 
 [![CI](https://github.com/pedrosakuma/dotnet-diagnostics/actions/workflows/ci.yml/badge.svg)](https://github.com/pedrosakuma/dotnet-diagnostics/actions/workflows/ci.yml)
 
-An **MCP server** for LLM-driven performance diagnostics on **.NET 10** applications.
+An **MCP server** for LLM-driven performance diagnostics on **.NET applications** — primarily
+targeting **.NET 10**, with **.NET 8/9 target processes** also officially supported and validated
+in CI (see [`docs/runtime-version-compat-matrix.md`](./docs/runtime-version-compat-matrix.md)).
 Normal EventPipe and ClrMD diagnostics require no target code changes or prior instrumentation.
 The explicit exception is `collect_sample(kind="method-params")`, an opt-in, privileged,
-security-gated dynamic profiler attach that temporarily instruments an allowlist of methods.
+security-gated dynamic profiler attach that temporarily instruments an allowlist of methods
+(requires the target to be .NET 8+).
 
 > **Status:** 17 unified tools in the full surface (13 default plus 4 configuration-gated),
 > HTTP + stdio transports, IoT-style triage (6+ steps → 2 steps).

@@ -1,8 +1,11 @@
 # Diagnosing Older .NET Target Processes — Feasibility Spike
 
 **Issue**: [#884](https://github.com/pedrosakuma/dotnet-diagnostics/issues/884) · **Date**: 2026-08-27
-**Status**: Research spike — no production code changed. Output is this findings doc plus a
-GO / scope recommendation.
+**Status**: Spike complete; findings acted on. `samples/MultiVersionSample` (multi-targeted
+`net8.0;net9.0;net10.0`), the `CrossVersionTargetTests` CI suite, and
+[`docs/runtime-version-compat-matrix.md`](../runtime-version-compat-matrix.md) now formalize the
+GO verdict below and keep it continuously validated instead of a one-time manual check. The
+analysis below is preserved as the original findings record.
 
 ## Question
 

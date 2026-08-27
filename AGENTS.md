@@ -4,7 +4,7 @@
 
 ## What this project is
 
-`dotnet-diagnostics-mcp` is an **MCP server** that lets an LLM perform on-demand performance diagnostics on running **.NET 10** applications — locally or in a Kubernetes sidecar. Normal EventPipe and ClrMD diagnostics require no target code changes or prior instrumentation. The explicit exception is `collect_sample(kind="method-params")`: an opt-in, privileged, security-gated dynamic profiler attach that temporarily instruments an allowlist of methods.
+`dotnet-diagnostics-mcp` is an **MCP server** that lets an LLM perform on-demand performance diagnostics on running **.NET applications** — locally or in a Kubernetes sidecar. Target processes on **.NET 8/9/10** are officially supported and validated in CI (see [`docs/runtime-version-compat-matrix.md`](./docs/runtime-version-compat-matrix.md)); .NET 6/7 targets are expected to work but are EOL and not CI-covered. Normal EventPipe and ClrMD diagnostics require no target code changes or prior instrumentation. The explicit exception is `collect_sample(kind="method-params")`: an opt-in, privileged, security-gated dynamic profiler attach that temporarily instruments an allowlist of methods, and requires the target to be .NET 8+.
 
 The server attaches to the .NET runtime diagnostic IPC socket and exposes a full **17-tool** MCP surface: 13 tools by default plus 3 Kubernetes-orchestrator tools and `discover_azure` when their configuration gates are enabled. It supports either **Streamable HTTP** (default, with bearer-token auth — designed for sidecar / shared-deploy) or **stdio** (`--stdio`, recommended for local dev — the MCP client owns the process lifecycle, no daemon or bearer token; see issue #74).
 

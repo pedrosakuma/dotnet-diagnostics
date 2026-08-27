@@ -56,6 +56,7 @@ you're using, then reach for the cross-cutting references.
 | [`bad-code-scenarios.md`](./bad-code-scenarios.md) | The anti-patterns in `samples/BadCodeSample/` and the investigation flow each one exercises |
 | [`case-studies/`](./case-studies/) | **Narrated end-to-end investigations** — each tells the story of one non-obvious failure from misleading symptom → refuted wrong hypothesis → real cause → fix → verification, with the real captures at every step |
 | [`resource-boundedness.md`](./resource-boundedness.md) | Per-collector memory/retention caps for long or high-volume captures — what's bounded, the eviction strategy, and how a cap hit is surfaced in `notes[]` |
+| [`runtime-version-compat-matrix.md`](./runtime-version-compat-matrix.md) | Which **target-process** .NET runtimes (6/7/8/9/10) are officially supported vs. CI-validated vs. untested, and the `CrossVersionTargetTests` suite backing it |
 | [`hotpaths/`](./hotpaths/README.md) | CPU/allocation profiling of each collector's *own* code (companion to `resource-boundedness.md`, which bounds memory rather than CPU) |
 | [`ci-nuget-cache.md`](./ci-nuget-cache.md) | A/B measurement of NuGet cache policy on hosted CI runners (`ci.yml`/`kind-integration.yml`) and the resulting `setup-dotnet` built-in cache decision |
 | [`design/`](./design/) | Feature design docs (security/UX/capability-gate tradeoffs) for shipped, higher-risk surfaces — currently method-parameter capture and unified ephemeral-process capture |

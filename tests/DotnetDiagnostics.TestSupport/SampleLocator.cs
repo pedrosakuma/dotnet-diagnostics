@@ -10,10 +10,11 @@ public static class SampleLocator
 {
     /// <summary>
     /// Locates the published <c>&lt;assemblyName&gt;.dll</c> for a project living under
-    /// <paramref name="topLevelDirectory"/>/<paramref name="projectDirectoryName"/>.
+    /// <paramref name="topLevelDirectory"/>/<paramref name="projectDirectoryName"/>, built for
+    /// <paramref name="targetFramework"/> (defaults to <c>net10.0</c>, the repo's pinned TFM).
     /// Returns <see langword="null"/> when the project directory or its build output is not found.
     /// </summary>
-    public static string? LocateProjectDll(string topLevelDirectory, string projectDirectoryName, string assemblyName)
+    public static string? LocateProjectDll(string topLevelDirectory, string projectDirectoryName, string assemblyName, string targetFramework = "net10.0")
     {
         var probe = AppContext.BaseDirectory;
         for (var i = 0; i < 8; i++)
@@ -23,7 +24,7 @@ public static class SampleLocator
             {
                 foreach (var configuration in new[] { "Release", "Debug" })
                 {
-                    var dll = Path.Combine(projectDir, "bin", configuration, "net10.0", $"{assemblyName}.dll");
+                    var dll = Path.Combine(projectDir, "bin", configuration, targetFramework, $"{assemblyName}.dll");
                     if (File.Exists(dll))
                     {
                         return dll;
@@ -42,4 +43,13 @@ public static class SampleLocator
     /// <summary>Locates <c>samples/&lt;sampleName&gt;/bin/&lt;config&gt;/net10.0/&lt;sampleName&gt;.dll</c>.</summary>
     public static string? LocateSampleDll(string sampleName = "CoreClrSample")
         => LocateProjectDll("samples", sampleName, sampleName);
+
+    /// <summary>
+    /// Locates the multi-targeted <c>MultiVersionSample.dll</c> built for <paramref name="targetFramework"/>
+    /// (e.g. <c>net8.0</c>, <c>net9.0</c>, <c>net10.0</c>) — used by cross-version diagnostic tests
+    /// (see docs/research/multi-version-target-support.md). Returns <see langword="null"/> if that
+    /// TFM's build output isn't present (e.g. `dotnet build -f &lt;tfm&gt;` was never run for it).
+    /// </summary>
+    public static string? LocateMultiVersionSampleDll(string targetFramework)
+        => LocateProjectDll("samples", "MultiVersionSample", "MultiVersionSample", targetFramework);
 }

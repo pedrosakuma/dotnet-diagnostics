@@ -105,6 +105,22 @@ jobs:
             **/Directory.Packages.props
             **/*.csproj
 
+      # Cross-version target-process coverage (docs/research/multi-version-target-support.md,
+      # docs/runtime-version-compat-matrix.md): install the .NET 8 and 9 *shared runtimes* only
+      # (not their SDKs — nothing here is built with them) so CrossVersionTargetTests can launch
+      # samples/MultiVersionSample under each and attach to it. dotnet-install.sh installs
+      # side-by-side into the same DOTNET_ROOT the setup-dotnet step already configured; it does
+      # not touch the pinned net10.0 SDK from global.json. Ubuntu-only: this is the job that runs
+      # Test (Core), which is where CrossVersionTargetTests lives.
+      - name: Install .NET 8 / 9 runtimes for cross-version tests
+        if: needs.changes.outputs.code == 'true'
+        shell: bash
+        run: |
+          curl -sSL https://dot.net/v1/dotnet-install.sh -o dotnet-install.sh
+          bash dotnet-install.sh --channel 8.0 --runtime dotnet --install-dir "$DOTNET_ROOT"
+          bash dotnet-install.sh --channel 9.0 --runtime dotnet --install-dir "$DOTNET_ROOT"
+          rm dotnet-install.sh
+
       - name: Restore
         if: needs.changes.outputs.code == 'true'
         run: dotnet restore
@@ -349,6 +365,20 @@ jobs:
       - name: Restore
         if: needs.changes.outputs.code == 'true'
         run: dotnet restore
+
+      # Same rationale as the Linux `build-test` job's equivalent step: this
+      # job is the one that runs Test (Core), where CrossVersionTargetTests
+      # lives, so it needs the .NET 8/9 shared runtimes side-by-side with the
+      # pinned net10.0 SDK too — otherwise every case skips (or, worse,
+      # MultiVersionSampleProcess's readiness wait just times out) on this VM.
+      - name: Install .NET 8 / 9 runtimes for cross-version tests
+        if: needs.changes.outputs.code == 'true'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri https://dot.net/v1/dotnet-install.ps1 -OutFile dotnet-install.ps1
+          ./dotnet-install.ps1 -Channel 8.0 -Runtime dotnet -InstallDir "$env:DOTNET_ROOT"
+          ./dotnet-install.ps1 -Channel 9.0 -Runtime dotnet -InstallDir "$env:DOTNET_ROOT"
+          Remove-Item dotnet-install.ps1
 
       - name: Download build output (Windows)
         if: needs.changes.outputs.code == 'true'

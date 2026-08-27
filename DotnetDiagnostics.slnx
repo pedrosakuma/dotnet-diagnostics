@@ -5,6 +5,7 @@
   <Folder Name="/samples/">
     <Project Path="samples/BadCodeSample/BadCodeSample.csproj" />
     <Project Path="samples/CoreClrSample/CoreClrSample.csproj" />
+    <Project Path="samples/MultiVersionSample/MultiVersionSample.csproj" />
     <Project Path="samples/NativeAotSample/NativeAotSample.csproj" />
   </Folder>
   <Folder Name="/src/">
