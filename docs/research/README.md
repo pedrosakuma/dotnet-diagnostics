@@ -3,11 +3,12 @@
 These are point-in-time investigations, not living reference docs: each records a question, the
 evidence gathered, and a GO/NO-GO or advisory verdict for a specific issue. Read the linked issue
 for current status — a spike's verdict can be superseded later (e.g. issue #467's NativeAOT
-heap-walk GO was empirically reversed by issue #474; the reversal and its rationale now live
-directly in [`../aot-coverage.md`](../aot-coverage.md)'s `[^aot-gcdump]` footnote, and the
-superseded spike doc itself was removed rather than kept as dead weight). Where a spike led to
-shipped work, the current contract lives in [`tool-reference.md`](../tool-reference.md),
-[`cli-reference.md`](../cli-reference.md), or the relevant `design/` doc, not here.
+heap-walk GO was empirically reversed once implementation issue #471 reproduced a crash; the
+reversal and its rationale now live directly in [`../aot-coverage.md`](../aot-coverage.md)'s
+`[^aot-gcdump]` footnote, and the superseded spike doc itself was removed rather than kept as
+dead weight). Where a spike led to shipped work, the current contract lives in
+[`tool-reference.md`](../tool-reference.md), [`cli-reference.md`](../cli-reference.md), or the
+relevant `design/` doc, not here.
 
 | Doc | Issue | What it investigates |
 |---|---|---|
