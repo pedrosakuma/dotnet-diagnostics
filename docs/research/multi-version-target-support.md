@@ -17,10 +17,11 @@ run with (that stays pinned via `global.json`, see `AGENTS.md`).
 ## Executive summary
 
 **Verdict: GO — empirically confirmed against .NET 6, 8, and 9 targets, all with zero code
-changes.** There is no technical barrier to any of these versions. `.NET 6`/`7` are both EOL
-(Nov 2024 / May 2024), so the recommendation below to scope *officially supported/tested* targets
-to **.NET 8+** is a support/maintenance-investment decision, not a capability gap — 6/7 already
-work today and would keep working with no further effort.
+changes.** There is no technical barrier observed on any tested version. `.NET 7` was not directly
+tested but is expected to behave the same by extrapolation (see caveat below). `.NET 6`/`7` are
+both EOL (Nov 2024 / May 2024), so the recommendation below to scope *officially supported/tested*
+targets to **.NET 8+** is a support/maintenance-investment decision, not a capability gap — 6
+already works today and would keep working with no further effort, and 7 is expected to as well.
 
 The core diagnostic dependencies — `Microsoft.Diagnostics.NETCore.Client`, ClrMD
 (`Microsoft.Diagnostics.Runtime`), `Microsoft.Diagnostics.Tracing.TraceEvent` — are the same
@@ -36,8 +37,9 @@ change:
 - `collect_sample(kind="method-params")` hard-gates `.NET 8+` via `TryParseMajor` in
   `MethodParameterCaptureCollector.cs` (profiler-attach + startup-hook injection genuinely requires
   8+; see [`method-parameter-capture.md`](./method-parameter-capture.md)).
-- DATAS (adaptive GC sizing, default-on .NET 9+) has no hard gate — it just produces no events on
-  older runtimes / Workstation GC, degrading gracefully rather than failing
+- DATAS (adaptive GC sizing, default-on .NET 9+) has no hard version gate; on runtimes/GC modes
+  where it isn't active it returns a controlled `DiagnosticResult.Fail<GcDatasSnapshot>` with a
+  `NoDatasEvents` reason — a handled, structured outcome, not a crash or unhandled exception
   (`EventCollectionUseCases.cs`, `GcDatas.cs`).
 
 No other hardcoded runtime-major-version gate exists anywhere in `src/`.
@@ -76,7 +78,8 @@ path above is the documented fallback and it worked without any elevated privile
 
 - **CI has zero multi-version coverage.** `.github/workflows/ci.yml` installs a single pinned SDK;
   nothing in the test suite spawns or attaches to an older-runtime target. The empirical check above
-  was manual, one collector family at a time, one runtime (8.0.26).
+  was manual, one collector family at a time, run ad hoc against three runtimes (6.0.36, 8.0.26,
+  9.0.14) rather than as a repeatable automated suite.
 - **Sample apps only target `net10.0`.** `CoreClrSample`, `BadCodeSample`, `NativeAotSample` have no
   older-TFM sibling or multi-target build, so there's no in-repo fixture for regression testing
   against 8/9.
@@ -85,13 +88,11 @@ path above is the documented fallback and it worked without any elevated privile
   flaky on Linux CI per issue #147), and other features that depend on CLR-internal layout details
   that can shift subtly between major versions. Theoretically low risk (the target's own runtime
   directory ships the matching DAC), but not exercised here.
-- **.NET 9** was not smoke-tested in this pass despite being available in the sandbox — DATAS
-  graceful-degrade behavior specifically is inferred from code reading, not re-verified live.
-  *(Update: .NET 9 was subsequently smoke-tested — see table above — but the DATAS-specific
-  graceful-degrade claim itself, as opposed to general collector functionality, is still inferred
-  from code reading, not directly observed.)*
-- **.NET 7** was not tested (no runtime downloaded); inferred safe by extrapolation from 6/8/9, not
-  directly observed.
+- **DATAS graceful-degrade specifically** is confirmed by code reading (see `GcDatas.cs`), not
+  re-verified live on a workload that would actually trigger DATAS-vs-non-DATAS divergence — the
+  test apps here didn't generate enough GC pressure to distinguish the two paths.
+- **.NET 7** was not tested (no runtime downloaded); expected to work by extrapolation from 6/8/9,
+  not directly observed.
 
 ## Recommendation
 
