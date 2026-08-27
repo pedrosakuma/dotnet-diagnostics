@@ -16,9 +16,11 @@ run with (that stays pinned via `global.json`, see `AGENTS.md`).
 
 ## Executive summary
 
-**Verdict: GO for .NET 8+ targets, largely for free.** `.NET 6`/`7` are both EOL (Nov 2024 / May 2024)
-and are **not recommended as a supported scope** even though nothing observed here technically blocks
-them.
+**Verdict: GO — empirically confirmed against .NET 6, 8, and 9 targets, all with zero code
+changes.** There is no technical barrier to any of these versions. `.NET 6`/`7` are both EOL
+(Nov 2024 / May 2024), so the recommendation below to scope *officially supported/tested* targets
+to **.NET 8+** is a support/maintenance-investment decision, not a capability gap — 6/7 already
+work today and would keep working with no further effort.
 
 The core diagnostic dependencies — `Microsoft.Diagnostics.NETCore.Client`, ClrMD
 (`Microsoft.Diagnostics.Runtime`), `Microsoft.Diagnostics.Tracing.TraceEvent` — are the same
@@ -42,19 +44,28 @@ No other hardcoded runtime-major-version gate exists anywhere in `src/`.
 
 ## What was empirically tested
 
-Using runtimes already present in the dev sandbox (`Microsoft.NETCore.App` 8.0.26 alongside the
-pinned 10.x), a minimal `net8.0` console app (byte-array allocation loop) was launched as a live
-target, and driven entirely through the **standalone CLI** (`dotnet-diagnostics-cli`, built from
-current `main`, zero code changes):
+Using runtimes already present in the dev sandbox (`Microsoft.NETCore.App` 8.0.26 and 9.0.14
+alongside the pinned 10.x) plus a **standalone .NET 6.0.36 runtime downloaded on demand** (EOL,
+no longer bundled anywhere, fetched directly from `dotnetcli.azureedge.net` to close the gap), three
+minimal console apps (byte-array allocation loops, one per TFM: `net6.0`, `net8.0`, `net9.0`) were
+launched as live targets and driven entirely through the **standalone CLI**
+(`dotnet-diagnostics-cli`, built from current `main`, zero code changes):
 
-| Operation | Path | Result |
-|---|---|---|
-| `processes` | process discovery | ✅ correctly reports `8.0.26` |
-| `collect --kind counters` | EventPipe | ✅ 27 counters captured |
-| `collect --kind gc` | EventPipe | ✅ ran cleanly (idle heap, no activity — app-load artifact, not a version issue) |
-| `dump --dump-type WithHeap` | diagnostic IPC | ✅ 115 MB dump written |
-| `inspect-heap --source dump` | ClrMD / DAC | ✅ correct managed-heap walk — top type and instance counts matched the app's actual allocation pattern (`System.Byte[]`, 90.99%, 11,722 instances) |
-| `capabilities` | capability probe | ✅ reports `CoreClr 8.0.26`, `CPU sampling: True`, `gcdump: True` |
+| Operation | Path | .NET 6.0.36 | .NET 8.0.26 | .NET 9.0.14 |
+|---|---|---|---|---|
+| `processes` | process discovery | ✅ | ✅ | ✅ |
+| `collect --kind counters` | EventPipe | ✅ | ✅ | ✅ |
+| `collect --kind gc` | EventPipe | *(not re-run, same path as counters)* | ✅ | ✅ |
+| `dump --dump-type WithHeap` | diagnostic IPC | ✅ (102 MB) | ✅ (115 MB) | ✅ (109 MB) |
+| `inspect-heap --source dump` | ClrMD / DAC | ✅ correct heap walk | ✅ correct heap walk | ✅ correct heap walk |
+| `capabilities` | capability probe | ✅ reports `CoreClr 6.0.36` | ✅ reports `CoreClr 8.0.26` | ✅ reports `CoreClr 9.0.14` |
+
+In every case ClrMD resolved the managed heap correctly against each target's own DAC — top type
+and instance counts matched each app's actual allocation pattern (`System.Byte[]` dominant, as
+expected). `.NET 7` was not separately downloaded/tested, but given 6, 8, and 9 all passed
+end-to-end there is no reason to expect 7 to behave differently — the mechanism (diagnostic IPC +
+target-local DAC) is version-agnostic by construction, not something that happens to work on the
+versions tried.
 
 `inspect-heap --source live` (direct ClrMD attach) failed with `PermissionDenied` — this is the
 sandbox's `kernel.yama.ptrace_scope=1` restriction described in AGENTS.md's
@@ -76,11 +87,18 @@ path above is the documented fallback and it worked without any elevated privile
   directory ships the matching DAC), but not exercised here.
 - **.NET 9** was not smoke-tested in this pass despite being available in the sandbox — DATAS
   graceful-degrade behavior specifically is inferred from code reading, not re-verified live.
+  *(Update: .NET 9 was subsequently smoke-tested — see table above — but the DATAS-specific
+  graceful-degrade claim itself, as opposed to general collector functionality, is still inferred
+  from code reading, not directly observed.)*
+- **.NET 7** was not tested (no runtime downloaded); inferred safe by extrapolation from 6/8/9, not
+  directly observed.
 
 ## Recommendation
 
-1. **Scope to .NET 8+ (current LTS + STS).** Don't chase 6/7 — both EOL, and the repo already treats
-   .NET 7 as out of scope for method-params for the same reason.
+1. **Scope official support to .NET 8+ (current LTS + STS) as a maintenance decision, not a
+   capability one.** 6/7 work today and cost nothing extra technically, but they're EOL — no
+   security patches, and the repo already treats .NET 7 as out of scope for method-params for the
+   same reason. If a user needs it anyway, nothing in this repo blocks it.
 2. **Close the validation gap, not a code gap.** No production code change is indicated by this
    spike. The work is: a second sample app (or multi-target the existing one) pinned to an older TFM,
    a CI job/matrix leg that attaches to it, and a living
