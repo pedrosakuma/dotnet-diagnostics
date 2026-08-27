@@ -279,7 +279,7 @@ public sealed class SessionReplTests
         stdout.Should().Contain("not available in the session yet");
         stdout.Should().Contain("NotSupportedInSession");
         stdout.Should().Contain("ClrMD runtime");
-        stdout.Should().Contain("query_snapshot");
+        stdout.Should().Contain("query --view");
     }
 
     [Fact]
@@ -507,6 +507,8 @@ public sealed class SessionReplTests
         exit.Should().Be(0);
         stdout.Should().Contain("NotSupportedInSession");
         stdout.Should().Contain("baseline");
+        stdout.Should().Contain("query --view");
+        stdout.Should().NotContain("query_snapshot");
     }
 
     [Fact]

@@ -346,7 +346,7 @@ internal static partial class CliCommands
 
             var detail = normalized == "duplicate-strings"
                 ? "The 'duplicate-strings' view exposes raw string previews behind the server's sensitive-value policy, which the standalone CLI cannot enforce; run the MCP server if you need it."
-                : "The 'object', 'gcroot' and 'objsize' views need a ClrMD runtime: 'gcroot'/'object' are served in-session for dump-origin handles, but a live attach (and 'objsize') require the MCP server's query_snapshot tool.";
+                : "The 'object', 'gcroot' and 'objsize' views need a ClrMD runtime: 'gcroot'/'object' are served in-session for dump-origin handles, but a live attach (and 'objsize') are not available for 'query --view ...' in the standalone CLI session.";
             return Fail($"query: view '{view}' for a heap snapshot is not available in the session yet.", "NotSupportedInSession", detail);
         }
 
@@ -515,7 +515,7 @@ internal static partial class CliCommands
         if (normalized == "diff")
         {
             return Fail($"query: view '{view}' for a CPU sample handle is not available in the session yet.", "NotSupportedInSession",
-                "The 'diff' view correlates a baseline handle the session cannot supply; run the MCP server's query_snapshot(view='diff') with a baselineHandle.");
+                "The 'diff' view correlates a baseline handle the session cannot supply; the standalone CLI session supports only single-handle 'query --view ...' drill-downs.");
         }
 
         var handle = options.Handle!;

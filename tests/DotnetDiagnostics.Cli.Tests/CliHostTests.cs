@@ -24,6 +24,10 @@ public sealed class CliHostTests
         stdout.Should().Contain("get-bytes");
         stdout.Should().Contain("compare");
         stdout.Should().Contain("completion");
+        stdout.Should().Contain("doctor");
+        stdout.Should().Contain("Run 'dotnet-diagnostics-cli <command> --help'");
+        stdout.Should().NotContain("collect options:");
+        stdout.Should().NotContain("Examples:");
         stderr.Should().BeEmpty();
     }
 
