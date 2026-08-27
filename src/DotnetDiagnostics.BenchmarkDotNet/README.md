@@ -83,9 +83,12 @@ BenchmarkRunner.Run<Workload>();
 repeatable diagnostic job whose timing stays clearly separate from your publication-grade runs:
 
 ```csharp
+using BenchmarkDotNet.Columns;
 using BenchmarkDotNet.Configs;
+using BenchmarkDotNet.Exporters;
 using BenchmarkDotNet.Engines;
 using BenchmarkDotNet.Jobs;
+using BenchmarkDotNet.Loggers;
 using BenchmarkDotNet.Running;
 using DotnetDiagnostics.BenchmarkDotNet;
 
@@ -95,6 +98,9 @@ public sealed class DiagnosedConfig : ManualConfig
     {
         AddJob(Job.Default.WithStrategy(RunStrategy.Monitoring).WithId("Diagnose"));
         AddDiagnoser(new DotnetDiagnosticsDiagnoser());
+        AddLogger(ConsoleLogger.Default);
+        AddColumnProvider(DefaultColumnProviders.Instance);
+        AddExporter(MarkdownExporter.GitHub);
     }
 }
 
@@ -104,7 +110,9 @@ BenchmarkRunner.Run<Workload>(new DiagnosedConfig());
 Use the minimal form for quick local exploration; switch to the dedicated config when you want a
 cleanly labeled monitoring job in CI or alongside native BenchmarkDotNet diagnosers. See
 [`benchmarks/DiagnosedBenchmarks/DiagnosedConfig.cs`](../../benchmarks/DiagnosedBenchmarks/DiagnosedConfig.cs)
-for the full reference implementation used in this repository.
+for the full reference implementation used in this repository. A `ManualConfig` starts empty, so
+you must add at least a logger and column provider yourself or BenchmarkDotNet will not show its
+normal console progress or summary table output.
 
 The diagnoser runs in the BenchmarkDotNet **orchestrator** process (not the measured child), so the
 heavy ClrMD/TraceEvent dependencies it pulls in never contaminate the benchmark's timing or
