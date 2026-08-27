@@ -35,9 +35,11 @@ public static class ThreadSnapshotUniqueStackGrouper
             var signatureKey = BuildSignatureKey(signatureFrames);
             if (!groups.TryGetValue(signatureKey, out var group))
             {
+                var canonicalFrames = signatureFrames.ToArray();
+                Array.Reverse(canonicalFrames);
                 group = new StackGroupAccumulator(
                     ComputeStableHash(signatureKey),
-                    signatureFrames.Reverse().ToArray(),
+                    canonicalFrames,
                     thread.InferredWaitReason);
                 groups.Add(signatureKey, group);
             }

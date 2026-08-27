@@ -1,10 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFrameworks>net8.0;net9.0;net10.0</TargetFrameworks>
     <IsPackable>true</IsPackable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <Description>Transport-agnostic .NET diagnostics engine: attaches to a live process over the runtime diagnostic IPC socket and exposes process discovery, EventCounters, CPU/allocation sampling, GC and exception collection, heap and thread snapshots, and dumps. Wraps Microsoft.Diagnostics.NETCore.Client, Microsoft.Diagnostics.Runtime (ClrMD) and TraceEvent behind a use-case API. Shared engine behind the dotnet-diagnostics MCP server and CLI.</Description>
+    <Description>Transport-agnostic .NET diagnostics engine for net8.0/net9.0/net10.0 consumers: attaches to a live process over the runtime diagnostic IPC socket and exposes process discovery, EventCounters, CPU/allocation sampling, GC and exception collection, heap and thread snapshots, and dumps. Wraps Microsoft.Diagnostics.NETCore.Client, Microsoft.Diagnostics.Runtime (ClrMD) and TraceEvent behind a use-case API. Shared engine behind the dotnet-diagnostics MCP server and CLI.</Description>
   </PropertyGroup>
 
   <!-- Packaging (issue #346 / PR 2). Published to NuGet as a referenceable LIBRARY
@@ -12,7 +12,9 @@
        engine in-process. Pattern B (curated facade): the SUPPORTED public surface is the
        UseCases entry points plus the result/envelope types they return (see README).
        Everything else is implementation detail that will be internalized incrementally;
-       while the package is 0.x the public API carries no SemVer stability guarantee. -->
+       while the package is 0.x the public API carries no SemVer stability guarantee.
+       This package multi-targets net8.0;net9.0;net10.0 so library consumers can reference
+       it in-process without having to move their own app/benchmark project to net10.0 first. -->
   <PropertyGroup>
     <PackageId>dotnet-diagnostics-core</PackageId>
     <Authors>pedrosakuma</Authors>

@@ -25,7 +25,8 @@ dotnet add package dotnet-diagnostics-benchmarkdotnet
 
 ## Compatibility
 
-This package targets `net10.0`, so the consuming benchmark project must also target `net10.0`.
+This package targets `net8.0`, `net9.0`, and `net10.0`, so the consuming benchmark project can
+reference it from any of those TFMs.
 
 ## Usage
 
