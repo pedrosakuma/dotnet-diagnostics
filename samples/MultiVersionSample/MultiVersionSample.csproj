@@ -15,6 +15,10 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- Test-only fixture, not a shipped deliverable: solution-level `dotnet publish` can't
+         resolve a single TFM for a multi-targeted project, so opt this one out of publish
+         traversal entirely (it's launched directly from its build output by the test harness). -->
+    <IsPublishable>false</IsPublishable>
   </PropertyGroup>
 
 </Project>

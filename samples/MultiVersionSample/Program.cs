@@ -19,10 +19,10 @@ Console.Out.Flush();
 // heap dump to show non-trivial content, without needing per-endpoint HTTP routing.
 while (true)
 {
-    cache.Add(new byte[4096]);
-    if (cache.Count > 2_000)
+    cache.Add(new byte[40_000]);
+    if (cache.Count > 400)
     {
-        cache.RemoveRange(0, 1_000);
+        cache.RemoveRange(0, 200);
     }
 
     if (rng.Next(20) == 0)
@@ -30,7 +30,7 @@ while (true)
         BurnCpu(TimeSpan.FromMilliseconds(20));
     }
 
-    Thread.Sleep(5);
+    Thread.Sleep(2);
 }
 
 static void BurnCpu(TimeSpan duration)

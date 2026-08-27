@@ -50,8 +50,8 @@ public class CrossVersionTargetTests
         var collector = new EventPipeGcCollector();
         var summary = await collector.CollectAsync(sample.ProcessId, TimeSpan.FromSeconds(6));
 
-        summary.Should().NotBeNull(
-            $"GC-event collection must work against a {targetFramework} target ({sample.RuntimeDescription}) with zero code changes");
+        summary.TotalCollections.Should().BeGreaterThan(0,
+            $"GC-event collection must actually observe at least one collection against a {targetFramework} target ({sample.RuntimeDescription}) with zero code changes");
     }
 
     [Theory]
