@@ -2,6 +2,45 @@
 
 ## [Unreleased]
 
+## [0.25.0] — 2026-08-28
+
+Highlights: **`dotnet-diagnostics-core` and `dotnet-diagnostics-benchmarkdotnet`
+now multi-target `net8.0`/`net9.0`/`net10.0`, closing the last hard adoption
+blocker for library consumers on older TFMs**, target-process diagnosis is now
+validated end-to-end against .NET 8/9 apps in CI, and an adoption-ease review
+pass shipped onboarding-friction fixes across all three deliverables (MCP
+server, CLI, BenchmarkDotNet diagnoser).
+
+### Added
+
+- **Multi-version *target process* support validated in CI** (#884, #885,
+  #886) — `CrossVersionTargetTests` now exercise EventPipe counters/GC events
+  and dump-write + ClrMD heap inspect against real .NET 8.0 and 9.0 target
+  processes on every CI run, backed by a new `samples/MultiVersionSample`
+  workload and a living
+  [runtime-version-compat-matrix](./docs/runtime-version-compat-matrix.md).
+- **`dotnet-diagnostics-core` and `dotnet-diagnostics-benchmarkdotnet` now
+  multi-target `net8.0;net9.0;net10.0`** (#906, #907) — previously both
+  packages were `net10.0`-only, which meant a benchmark or host project on
+  net8.0/net9.0 could not reference the BenchmarkDotNet diagnoser or the Core
+  engine at all. `DotnetDiagnostics.Mcp` and the CLI remain `net10.0`-only by
+  design (they run out-of-process and already ship as self-contained per-RID
+  binaries).
+- **Runtime smoke coverage for the newly multi-targeted packages** (#908,
+  #910) — a new `DotnetDiagnostics.MultiTargetSmoke` suite actually launches
+  the net8.0- and net9.0-built binaries and exercises a real Core use case
+  (process discovery + EventPipe counters) and a real BenchmarkDotNet
+  diagnoser run in-process, on top of the existing compile-only validation.
+
+### Documentation / onboarding
+
+- **Adoption-ease pass across all three deliverables** (#887-#902, shipped
+  via #903, #904, #905): a single "start here" doc with explicit `--stdio`
+  vs. HTTP-sidecar tracks and an explicit bearer-token quickstart for the MCP
+  server; a `doctor`-first quickstart and CLI-native (non-MCP) session error
+  wording for the CLI; and an Install/Compatibility section plus a real
+  report excerpt for the BenchmarkDotNet diagnoser README.
+
 ## [0.24.0] — 2026-08-19
 
 Highlights: **native contention/off-CPU diagnosis matures, and the MCP Tasks
