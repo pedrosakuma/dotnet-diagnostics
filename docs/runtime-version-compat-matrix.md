@@ -8,7 +8,10 @@
 
 This is about the runtime of the **process being diagnosed**, not the SDK this repo itself is
 built/run with (that stays pinned via `global.json`; see `AGENTS.md`). Nothing described here
-requires modifying the target application.
+requires modifying the target application. Separately, the referenceable `dotnet-diagnostics-core`
+and `dotnet-diagnostics-benchmarkdotnet` NuGet packages multi-target `net8.0;net9.0;net10.0` for
+consumer projects; that package-consumer TFM support is distinct from the target-process matrix
+documented below.
 
 ## Official support
 

@@ -450,7 +450,7 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
         var tempRoot = Path.GetTempPath();
         for (var attempt = 0; attempt < 16; attempt++)
         {
-            var candidate = Path.Combine(tempRoot, $"ddmp-{Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(4))}");
+            var candidate = Path.Combine(tempRoot, $"ddmp-{Convert.ToHexString(RandomNumberGenerator.GetBytes(4)).ToLowerInvariant()}");
             if (File.Exists(candidate) || Directory.Exists(candidate))
             {
                 continue;
@@ -496,7 +496,7 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
         var tempRoot = Path.GetTempPath();
         for (var attempt = 0; attempt < 16; attempt++)
         {
-            var candidate = Path.Combine(tempRoot, $"ddmp-{Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(4))}");
+            var candidate = Path.Combine(tempRoot, $"ddmp-{Convert.ToHexString(RandomNumberGenerator.GetBytes(4)).ToLowerInvariant()}");
             if (File.Exists(candidate) || Directory.Exists(candidate))
             {
                 continue;

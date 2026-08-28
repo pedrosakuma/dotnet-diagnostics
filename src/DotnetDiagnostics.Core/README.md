@@ -17,7 +17,7 @@ a tool. The first such consumer is the BenchmarkDotNet diagnoser
 dotnet add package dotnet-diagnostics-core
 ```
 
-> **Target framework:** `net10.0`. **Platform:** the engine attaches over the diagnostic IPC socket;
+> **Consumer target frameworks:** `net8.0`, `net9.0`, `net10.0`. **Platform:** the engine attaches over the diagnostic IPC socket;
 > live ClrMD memory readers (heap/thread snapshots, method bytes, module bytes) additionally need
 > `CAP_SYS_PTRACE` on Linux and the same UID as the target. Process dumps write through diagnostic
 > IPC and do not require that kernel capability. See the repo docs for the deployment matrix.
