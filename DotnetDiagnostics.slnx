@@ -19,6 +19,8 @@
     <Project Path="tests/DotnetDiagnostics.BenchmarkDotNet.Tests/DotnetDiagnostics.BenchmarkDotNet.Tests.csproj" />
     <Project Path="tests/DotnetDiagnostics.Core.Tests/DotnetDiagnostics.Core.Tests.csproj" />
     <Project Path="tests/DotnetDiagnostics.Mcp.IntegrationTests/DotnetDiagnostics.Mcp.IntegrationTests.csproj" />
+    <Project Path="tests/DotnetDiagnostics.MultiTargetSmoke.Tests/DotnetDiagnostics.MultiTargetSmoke.Tests.csproj" />
+    <Project Path="tests/DotnetDiagnostics.MultiTargetSmoke/DotnetDiagnostics.MultiTargetSmoke.csproj" />
     <Project Path="tests/DotnetDiagnostics.ScenarioEvaluation.Tests/DotnetDiagnostics.ScenarioEvaluation.Tests.csproj" />
     <Project Path="tests/DotnetDiagnostics.TestSupport/DotnetDiagnostics.TestSupport.csproj" />
   </Folder>

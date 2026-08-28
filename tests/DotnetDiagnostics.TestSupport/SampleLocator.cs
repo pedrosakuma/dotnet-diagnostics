@@ -45,6 +45,12 @@ public static class SampleLocator
         => LocateProjectDll("samples", sampleName, sampleName);
 
     /// <summary>
+    /// Locates <c>tests/&lt;projectDirectoryName&gt;/bin/&lt;config&gt;/&lt;targetFramework&gt;/&lt;assemblyName&gt;.dll</c>.
+    /// </summary>
+    public static string? LocateTestProjectDll(string projectDirectoryName, string assemblyName, string targetFramework = "net10.0")
+        => LocateProjectDll("tests", projectDirectoryName, assemblyName, targetFramework);
+
+    /// <summary>
     /// Locates the multi-targeted <c>MultiVersionSample.dll</c> built for <paramref name="targetFramework"/>
     /// (e.g. <c>net8.0</c>, <c>net9.0</c>, <c>net10.0</c>) — used by cross-version diagnostic tests
     /// (see docs/research/multi-version-target-support.md). Returns <see langword="null"/> if that
@@ -52,4 +58,11 @@ public static class SampleLocator
     /// </summary>
     public static string? LocateMultiVersionSampleDll(string targetFramework)
         => LocateProjectDll("samples", "MultiVersionSample", "MultiVersionSample", targetFramework);
+
+    /// <summary>
+    /// Locates the net8.0/net9.0 multi-target consumer smoke host built under
+    /// <c>tests/DotnetDiagnostics.MultiTargetSmoke</c>.
+    /// </summary>
+    public static string? LocateMultiTargetSmokeDll(string targetFramework)
+        => LocateTestProjectDll("DotnetDiagnostics.MultiTargetSmoke", "DotnetDiagnostics.MultiTargetSmoke", targetFramework);
 }
