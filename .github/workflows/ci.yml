@@ -108,10 +108,12 @@ jobs:
       # Cross-version target-process coverage (docs/research/multi-version-target-support.md,
       # docs/runtime-version-compat-matrix.md): install the .NET 8 and 9 *shared runtimes* only
       # (not their SDKs — nothing here is built with them) so CrossVersionTargetTests can launch
-      # samples/MultiVersionSample under each and attach to it. dotnet-install.sh installs
+      # samples/MultiVersionSample under each and attach to it, and so the multi-target runtime
+      # smoke suite can execute the net8.0/net9.0-built DotnetDiagnostics.Core /
+      # DotnetDiagnostics.BenchmarkDotNet host binaries in-process. dotnet-install.sh installs
       # side-by-side into the same DOTNET_ROOT the setup-dotnet step already configured; it does
       # not touch the pinned net10.0 SDK from global.json. Ubuntu-only: this is the job that runs
-      # Test (Core), which is where CrossVersionTargetTests lives.
+      # Test (Core) and the multi-target smoke suite.
       - name: Install .NET 8 / 9 runtimes for cross-version tests
         if: needs.changes.outputs.code == 'true'
         shell: bash
@@ -158,6 +160,14 @@ jobs:
         shell: bash
         run: scripts/ci-test-with-retry.sh core-test-results.trx -- dotnet test tests/DotnetDiagnostics.Core.Tests/DotnetDiagnostics.Core.Tests.csproj --no-build --configuration Release --blame-hang-timeout 5m --blame-hang-dump-type none --blame-crash --blame-crash-dump-type full --logger "trx;LogFileName=core-test-results.trx" --results-directory TestResults
 
+      # Runtime smoke for the multi-targeted libraries (#908): launch the net8.0 and
+      # net9.0-built smoke host binaries under their matching shared runtimes and verify they
+      # execute real Core + BenchmarkDotNet diagnostic paths, not just compile.
+      - name: Test (Multi-target runtime smoke)
+        if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        shell: bash
+        run: scripts/ci-test-with-retry.sh multitarget-smoke-test-results.trx -- dotnet test tests/DotnetDiagnostics.MultiTargetSmoke.Tests/DotnetDiagnostics.MultiTargetSmoke.Tests.csproj --no-build --configuration Release --blame-hang-timeout 5m --blame-hang-dump-type none --blame-crash --blame-crash-dump-type full --logger "trx;LogFileName=multitarget-smoke-test-results.trx" --results-directory TestResults
+
       # CLI tests are lightweight (parser/exit-code units + a `processes --json` smoke and the
       # Core-only seam guard); no live child processes or EventPipe sessions, so they run as a
       # plain step. Kept separate from the live-process suites to preserve the no-cross-assembly-
@@ -193,11 +203,18 @@ jobs:
           BENCHMARK_TEST_OUTCOME: ${{ steps.benchmark_tests.outcome }}
         run: |
           shopt -s globstar nullglob
-          for trx in core-test-results.trx cli-test-results.trx benchmark-test-results.trx server-test-results.trx; do
+          for trx in core-test-results.trx multitarget-smoke-test-results.trx cli-test-results.trx benchmark-test-results.trx server-test-results.trx; do
             found=false
             for trx_path in TestResults{,.attempt1}/"$trx" TestResults{,.attempt1}/**/"$trx"; do
               if [[ -s "$trx_path" ]]; then
                 found=true
+                counters=$(grep -oE '<Counters[^/]*/>' "$trx_path" | head -1)
+                total=$(echo "$counters" | sed -nE 's/.*total="([0-9]+)".*/\1/p')
+                if [[ -z "$counters" || "${total:-0}" -eq 0 ]]; then
+                  echo "::error::'$trx_path' has no <Counters> element or reports total=0 executed tests — treating a silently-zero-test run as a failure."
+                  exit 1
+                fi
+                echo "$trx: total=$total"
                 break
               fi
             done
@@ -206,6 +223,24 @@ jobs:
               exit 1
             fi
           done
+          smoke_found=false
+          for trx_path in TestResults{,.attempt1}/multitarget-smoke-test-results.trx TestResults{,.attempt1}/**/multitarget-smoke-test-results.trx; do
+            if [[ -s "$trx_path" ]]; then
+              smoke_found=true
+              counters=$(grep -oE '<Counters[^/]*/>' "$trx_path" | head -1)
+              executed=$(echo "$counters" | sed -nE 's/.*executed="([0-9]+)".*/\1/p')
+              passed=$(echo "$counters" | sed -nE 's/.*passed="([0-9]+)".*/\1/p')
+              if [[ "${executed:-0}" -lt 2 || "${passed:-0}" -lt 2 ]]; then
+                echo "::error::'$trx_path' did not execute and pass both net8.0/net9.0 smoke cases (executed=${executed:-0}, passed=${passed:-0})."
+                exit 1
+              fi
+              break
+            fi
+          done
+          if [[ "$smoke_found" == false ]]; then
+            echo "::error::Expected nonempty test result 'multitarget-smoke-test-results.trx' was not produced."
+            exit 1
+          fi
           if [[ "$BENCHMARK_TEST_OUTCOME" != "success" ]]; then
             echo "::error::BenchmarkDotNet tests completed with outcome '$BENCHMARK_TEST_OUTCOME'."
             exit 1
@@ -367,10 +402,10 @@ jobs:
         run: dotnet restore
 
       # Same rationale as the Linux `build-test` job's equivalent step: this
-      # job is the one that runs Test (Core), where CrossVersionTargetTests
-      # lives, so it needs the .NET 8/9 shared runtimes side-by-side with the
-      # pinned net10.0 SDK too — otherwise every case skips (or, worse,
-      # MultiVersionSampleProcess's readiness wait just times out) on this VM.
+      # job is the one that runs Test (Core) and the multi-target runtime
+      # smoke suite, so it needs the .NET 8/9 shared runtimes side-by-side
+      # with the pinned net10.0 SDK too — otherwise the cross-version cases
+      # skip (or, worse, their readiness waits just time out) on this VM.
       - name: Install .NET 8 / 9 runtimes for cross-version tests
         if: needs.changes.outputs.code == 'true'
         shell: pwsh
@@ -397,6 +432,11 @@ jobs:
         shell: bash
         run: scripts/ci-test-with-retry.sh core-test-results.trx -- dotnet test tests/DotnetDiagnostics.Core.Tests/DotnetDiagnostics.Core.Tests.csproj --no-build --configuration Release --blame-hang-timeout 5m --blame-hang-dump-type none --blame-crash --blame-crash-dump-type full --logger "trx;LogFileName=core-test-results.trx" --results-directory TestResults
 
+      - name: Test (Multi-target runtime smoke)
+        if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        shell: bash
+        run: scripts/ci-test-with-retry.sh multitarget-smoke-test-results.trx -- dotnet test tests/DotnetDiagnostics.MultiTargetSmoke.Tests/DotnetDiagnostics.MultiTargetSmoke.Tests.csproj --no-build --configuration Release --blame-hang-timeout 5m --blame-hang-dump-type none --blame-crash --blame-crash-dump-type full --logger "trx;LogFileName=multitarget-smoke-test-results.trx" --results-directory TestResults
+
       - name: Verify expected test results
         if: ${{ always() && needs.changes.outputs.code == 'true' }}
         shell: bash
@@ -411,23 +451,42 @@ jobs:
           # already uses for its phantom-crash detection) and require total > 0,
           # so this category of silent-zero-test bug fails the build instead of
           # only being caught by a human reading raw CI output.
-          trx="core-test-results.trx"
-          found=false
-          for trx_path in TestResults{,.attempt1}/"$trx" TestResults{,.attempt1}/**/"$trx"; do
+          for trx in core-test-results.trx multitarget-smoke-test-results.trx; do
+            found=false
+            for trx_path in TestResults{,.attempt1}/"$trx" TestResults{,.attempt1}/**/"$trx"; do
+              if [[ -s "$trx_path" ]]; then
+                found=true
+                counters=$(grep -oE '<Counters[^/]*/>' "$trx_path" | head -1)
+                total=$(echo "$counters" | sed -nE 's/.*total="([0-9]+)".*/\1/p')
+                if [[ -z "$counters" || "${total:-0}" -eq 0 ]]; then
+                  echo "::error::'$trx_path' has no <Counters> element or reports total=0 executed tests — treating a silently-zero-test run as a failure."
+                  exit 1
+                fi
+                echo "$trx: total=$total"
+                break
+              fi
+            done
+            if [[ "$found" == false ]]; then
+              echo "::error::Expected nonempty test result '$trx' was not produced."
+              exit 1
+            fi
+          done
+          smoke_found=false
+          for trx_path in TestResults{,.attempt1}/multitarget-smoke-test-results.trx TestResults{,.attempt1}/**/multitarget-smoke-test-results.trx; do
             if [[ -s "$trx_path" ]]; then
-              found=true
+              smoke_found=true
               counters=$(grep -oE '<Counters[^/]*/>' "$trx_path" | head -1)
-              total=$(echo "$counters" | sed -nE 's/.*total="([0-9]+)".*/\1/p')
-              if [[ -z "$counters" || "${total:-0}" -eq 0 ]]; then
-                echo "::error::'$trx_path' has no <Counters> element or reports total=0 executed tests — treating a silently-zero-test run as a failure."
+              executed=$(echo "$counters" | sed -nE 's/.*executed="([0-9]+)".*/\1/p')
+              passed=$(echo "$counters" | sed -nE 's/.*passed="([0-9]+)".*/\1/p')
+              if [[ "${executed:-0}" -lt 2 || "${passed:-0}" -lt 2 ]]; then
+                echo "::error::'$trx_path' did not execute and pass both net8.0/net9.0 smoke cases (executed=${executed:-0}, passed=${passed:-0})."
                 exit 1
               fi
-              echo "$trx: total=$total"
               break
             fi
           done
-          if [[ "$found" == false ]]; then
-            echo "::error::Expected nonempty test result '$trx' was not produced."
+          if [[ "$smoke_found" == false ]]; then
+            echo "::error::Expected nonempty test result 'multitarget-smoke-test-results.trx' was not produced."
             exit 1
           fi
 
