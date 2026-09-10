@@ -43,7 +43,7 @@ namespace DotnetDiagnostics.Core.Tests;
 /// requires the .NET SDK to be on PATH (CI satisfies this).
 /// </summary>
 [Collection("LiveProcess")]
-public class LiveCoreClrProcessTests : IAsyncLifetime
+public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output) : IAsyncLifetime
 {
     private LiveSampleProcess? _sample;
 
@@ -1959,20 +1959,29 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
         var sampler = new EventPipeCpuSampler();
 
-        var baseline = await SampleCpuUnderLoadAsync(http, sampler, "/generics?iterations=20000", TimeSpan.FromSeconds(10));
+        // CPU diff compares sample shares, not work per request: saturating /generics in
+        // both windows does not guarantee a regression when iterations/request increases.
+        // Introduce generic work absent from a busy rendering baseline instead.
+        var baseline = await SampleCpuUnderLoadAsync(http, sampler, "/render?count=1000", TimeSpan.FromSeconds(10));
         var current = await SampleCpuUnderLoadAsync(http, sampler, "/generics?iterations=200000", TimeSpan.FromSeconds(10));
 
         var diff = ComparablePairwiseSampleDiff.Compare(baseline.Artifact, "baseline", current.Artifact, "current", minDeltaPct: 1, topN: 25);
 
+        output.WriteLine(JsonSerializer.Serialize(diff));
+        baseline.Artifact.TotalSamples.Should().BeGreaterThan(0);
+        current.Artifact.TotalSamples.Should().BeGreaterThan(0);
         diff.Verdict.Should().BeOneOf("regression", "mixed");
-        diff.Added.Concat(diff.Changed).Any(row =>
+        diff.Added.Should().Contain(row =>
             row.Key.Symbol.Module.Contains("CoreClrSample", StringComparison.Ordinal)
-            && (row.Direction == "added" || row.Direction == "up")
+            && row.Direction == "added"
+            && row.Current != null && row.Current.ExclusiveSamples > 0
+            && row.Key.Identity != null
+            && row.Key.Identity.ModuleVersionId != null && row.Key.Identity.MetadataToken != null
             && (row.Key.Symbol.MethodFullName.Contains("GenericFixture", StringComparison.Ordinal)
                 || row.Key.Symbol.MethodFullName.Contains("Box`1", StringComparison.Ordinal)
                 || row.Key.Symbol.MethodFullName.Contains("Wrap", StringComparison.Ordinal)
-                || row.Key.Symbol.MethodFullName.Contains("Echo", StringComparison.Ordinal)))
-            .Should().BeTrue();
+                || row.Key.Symbol.MethodFullName.Contains("Echo", StringComparison.Ordinal)),
+            "the current workload introduces sampled generic methods with assembly handoff identities");
     }
 
     [Fact(Timeout = 60_000)]
@@ -2103,27 +2112,25 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
             await Task.Delay(TimeSpan.FromMilliseconds(1200), cts.Token);
             while (!cts.IsCancellationRequested)
             {
-                try
-                {
-                    using var response = await http.GetAsync(path, cts.Token);
-                    response.EnsureSuccessStatusCode();
-                }
-                catch (OperationCanceledException)
-                {
-                    break;
-                }
+                using var response = await http.GetAsync(path, cts.Token);
+                response.EnsureSuccessStatusCode();
             }
         }, cts.Token);
 
-        var result = await sampler.SampleAsync(
-            processId ?? Pid,
-            sampleDuration,
-            topN: 100,
-            cancellationToken: CancellationToken.None);
-
-        cts.Cancel();
-        try { await driver; } catch { /* expected on cancel */ }
-        return result;
+        try
+        {
+            return await sampler.SampleAsync(
+                processId ?? Pid,
+                sampleDuration,
+                topN: 100,
+                cancellationToken: CancellationToken.None);
+        }
+        finally
+        {
+            cts.Cancel();
+            try { await driver; }
+            catch (OperationCanceledException) when (cts.IsCancellationRequested) { }
+        }
     }
 
     [Fact(Timeout = 90_000)]

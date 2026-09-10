@@ -86,15 +86,51 @@ public sealed class SampleDifferTests
         diff.Changed.Should().ContainSingle();
     }
 
-    private static CpuSampleTraceArtifact CpuArtifact(SymbolRef symbol, MethodIdentity identity, long exclusive)
+    [Theory]
+    [InlineData(100, "no_change")]
+    [InlineData(200, "regression")]
+    [InlineData(50, "improvement")]
+    public void CpuDiff_UsesSampleShareRatherThanAbsoluteWork(long currentExclusive, string verdict)
+    {
+        var symbol = new SymbolRef("CoreClrSample.dll", "GenericFixture.Echo(!!0)");
+        var identity = new MethodIdentity(
+            MethodName: "Echo",
+            GenericArity: 1,
+            ModuleName: symbol.Module,
+            ModuleVersionId: Guid.Parse("11111111-1111-1111-1111-111111111111"),
+            MetadataToken: 0x06000042,
+            TypeFullName: "GenericFixture");
+        var baseline = CpuArtifact(symbol, identity, exclusive: 10);
+        var current = CpuArtifact(symbol, identity, currentExclusive, totalSamples: 1000);
+
+        var diff = ComparablePairwiseSampleDiff.Compare(baseline, "b", current, "c", minDeltaPct: 1, topN: 25);
+
+        diff.Verdict.Should().Be(verdict);
+        diff.Added.Should().BeEmpty();
+        diff.Removed.Should().BeEmpty();
+        if (verdict == "no_change")
+        {
+            diff.Changed.Should().BeEmpty("ten times as many samples at the same share is not a CPU regression");
+        }
+        else
+        {
+            var row = diff.Changed.Should().ContainSingle().Subject;
+            row.Key.Identity.Should().Be(identity);
+            row.Baseline!.ExclusivePercent.Should().Be(10);
+            row.Current!.ExclusivePercent.Should().Be(currentExclusive / 10.0);
+            row.Direction.Should().Be(verdict == "regression" ? "up" : "down");
+        }
+    }
+
+    private static CpuSampleTraceArtifact CpuArtifact(SymbolRef symbol, MethodIdentity identity, long exclusive, long totalSamples = 100)
         => new(
             123,
             DateTimeOffset.UtcNow,
             TimeSpan.FromSeconds(5),
-            100,
+            totalSamples,
             new CallTreeNode(
                 new SampledFrame(string.Empty, "<root>"),
-                100,
+                totalSamples,
                 0,
                 [new CallTreeNode(new SampledFrame(symbol.Module, symbol.MethodFullName), exclusive, exclusive, Array.Empty<CallTreeNode>())]),
             MethodIdentities: new Dictionary<SymbolRef, MethodIdentity>

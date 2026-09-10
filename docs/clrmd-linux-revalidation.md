@@ -22,9 +22,12 @@ and strace reproduction workflows.
   `dotnet test`, **never the retry wrapper**. The first test, timeout, discovery,
   or evidence-verification failure ends the sequence; no partial sequence counts
   as 20 clean runs.
-- The job has a 240-minute ceiling (220 minutes for the sequence), each suite a
+- The job has a 360-minute ceiling (340 minutes for the sequence), each suite a
   15-minute ceiling, and each individual test a five-minute hang limit.
   There is no 20-way matrix and no cross-assembly parallel execution.
+  Hosted timings (~8 minutes for unquarantined Core and ~4 minutes for MCP)
+  imply ~240 minutes for 20 iterations before overhead; the original 220-minute
+  sequence budget could not accommodate that workload.
 
 ## Required evidence
 
@@ -73,6 +76,36 @@ not an inference from the package publication date.
 
 This binary evidence justifies revalidation, not a claim that every observed
 native crash is resolved.
+
+## CPU-diff assertion found during revalidation
+
+[Run 34527622776](https://github.com/pedrosakuma/dotnet-diagnostics/actions/runs/34527622776)
+stopped in the first Core suite: 1,221 passed, four skipped, one assertion
+failure in `Diff_CpuSample_DetectsRegression`, with no host crash. The verdict
+assertion passed, but the returned top-25 added/changed rows did not contain the
+required increasing generic method. That run did not retain the actual diff,
+so it cannot distinguish a non-increasing generic share from ranking truncation.
+
+The test saturated `/generics` in both windows, increasing iterations per request
+from 20,000 to 200,000. CPU comparison measures **exclusive sample share**, not
+iterations, request latency, or absolute CPU work. The same saturated workload
+does not guarantee an increasing share; small relative changes can also rank
+behind unrelated changes in the top-25 result. Five instrumented original local
+runs passed, but reported generic shares around 2–3.5%, not a tenfold increase.
+This is an invalid workload assumption, not evidence of a collector regression.
+
+The test now contrasts the existing busy `/render` workload against `/generics`.
+It requires an **added** generic method with positive exclusive samples and a
+module MVID/metadata-token identity, retaining the original verdict, threshold,
+top-25 bound, collection durations, and quarantine. It records the diff in test
+output. The load helper also propagates HTTP failures and stops/awaits its driver
+even if collection fails. Deterministic unit cases cover equal, increasing, and
+decreasing sample shares despite larger absolute sample counts.
+
+Ten consecutive local targeted invocations passed (nine cases each; the last
+five restricted to two CPUs), plus all three other load-helper callers. These
+are focused test-fix checks, **not** the required 20 full Core+MCP iterations.
+Any hosted sequence after this change starts again at iteration 01.
 
 ## Local verifier checks
 

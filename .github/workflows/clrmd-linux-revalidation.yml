@@ -23,7 +23,7 @@ jobs:
       (github.event.pull_request.head.repo.full_name == github.repository &&
        contains(github.event.pull_request.labels.*.name, 'clrmd-revalidation'))
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 360
     env:
       CI: true
       DOTNET_NOLOGO: true
@@ -61,7 +61,8 @@ jobs:
         run: dotnet build DotnetDiagnostics.slnx --configuration Release
 
       - name: Twenty consecutive clean Core and MCP runs (no retries or deliberate crashes)
-        timeout-minutes: 220
+        # Hosted evidence: ~8m Core + ~4m MCP => ~240m for 20 iterations.
+        timeout-minutes: 340
         shell: bash
         run: bash scripts/revalidate-clrmd-linux.sh
 
