@@ -41,9 +41,12 @@ def verify(root, iteration, suite):
     require(set(outcomes) <= {"Passed", "NotExecuted"}, f"Bad outcomes: {outcomes}")
     require(counts.get("executed", 0) == counts.get("passed", 0)
             == outcomes["Passed"] > 0, "Executed tests did not all pass")
-    require(counts.get("notExecuted", 0) == outcomes["NotExecuted"],
+    # VSTest may leave notExecuted at zero even when individual xUnit
+    # results report NotExecuted. The result rows are the skip inventory.
+    skipped = outcomes["NotExecuted"]
+    require(counts.get("notExecuted", 0) in {0, skipped},
             "Skipped test counters mismatch")
-    require(counts["total"] == counts["passed"] + counts.get("notExecuted", 0),
+    require(counts["total"] == counts["passed"] + skipped,
             "TRX counters are incomplete")
     for key, value in counts.items():
         if key not in {"total", "executed", "passed", "notExecuted", "completed"}:
@@ -108,7 +111,7 @@ def verify(root, iteration, suite):
     else:
         baseline.write_text(json.dumps(inventory, indent=2) + "\n")
     print(f"{suite} {iteration}: {counts['passed']} passed, "
-          f"{counts.get('notExecuted', 0)} unrelated skips; "
+          f"{skipped} unrelated skips; "
           f"{len(required)} required live tests passed; discovery/TRX complete.")
 
 

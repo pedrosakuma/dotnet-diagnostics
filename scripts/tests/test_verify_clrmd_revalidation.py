@@ -47,7 +47,7 @@ class RevalidationEvidenceTests(unittest.TestCase):
         summary = ET.SubElement(tree, "ResultSummary", outcome="Completed")
         ET.SubElement(summary, "Counters", total=str(len(self.names)),
                       executed=str(len(self.names) - 1), passed=str(len(self.names) - 1),
-                      notExecuted="1", aborted="0", failed="0")
+                      notExecuted="0", aborted="0", failed="0")
         self.trx = self.directory / "core.trx"
         ET.ElementTree(tree).write(self.trx, encoding="utf-8")
         (self.directory / "console.log").write_text("Passed!\n")
@@ -65,6 +65,15 @@ class RevalidationEvidenceTests(unittest.TestCase):
     def test_complete_run_accepts_unrelated_platform_skip(self):
         self.verify()
         self.assertTrue((self.root / "core-baseline.json").exists())
+
+    def test_populated_skip_counter_is_accepted(self):
+        self.mutate("t:ResultSummary/t:Counters", "notExecuted", "1")
+        self.verify()
+
+    def test_incorrect_nonzero_skip_counter_is_rejected(self):
+        self.mutate("t:ResultSummary/t:Counters", "notExecuted", "2")
+        with self.assertRaisesRegex(ValueError, "Skipped test counters mismatch"):
+            self.verify()
 
     def test_skipped_quarantine_is_rejected(self):
         tree = ET.parse(self.trx)
