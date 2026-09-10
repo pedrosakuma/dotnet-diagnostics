@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 
 // Minimal, TFM-agnostic workload used by cross-version diagnostic tests (see
@@ -11,15 +12,21 @@ Console.Out.Flush();
 
 var cache = new List<byte[]>();
 var rng = new Random(42);
+var generateGcEvents = args.Contains("--gc-events", StringComparer.Ordinal);
+var progress = Stopwatch.StartNew();
+var progressInterval = TimeSpan.FromMilliseconds(generateGcEvents ? 250 : 1_000);
+long allocations = 0;
+var inducedCollections = 0;
 
 Console.WriteLine("READY");
 Console.Out.Flush();
 
-// Steady allocation + occasional CPU burn: enough signal for EventCounters, GC events, and a
+// Steady allocation + occasional CPU burn: enough signal for EventCounters and a
 // heap dump to show non-trivial content, without needing per-endpoint HTTP routing.
 while (true)
 {
     cache.Add(new byte[40_000]);
+    allocations++;
     if (cache.Count > 400)
     {
         cache.RemoveRange(0, 200);
@@ -28,6 +35,21 @@ while (true)
     if (rng.Next(20) == 0)
     {
         BurnCpu(TimeSpan.FromMilliseconds(20));
+    }
+
+    if (progress.Elapsed >= progressInterval)
+    {
+        // Allocation throughput and GC budgets vary by host. The GC-event fixture explicitly
+        // induces collections throughout its lifetime, not just before EventPipe attaches.
+        if (generateGcEvents)
+        {
+            GC.Collect(2, GCCollectionMode.Forced, blocking: true);
+            inducedCollections++;
+        }
+
+        Console.WriteLine($"Workload: allocations={allocations}, allocatedBytes={GC.GetTotalAllocatedBytes()}, gen0={GC.CollectionCount(0)}, gen1={GC.CollectionCount(1)}, gen2={GC.CollectionCount(2)}, induced={inducedCollections}");
+        Console.Out.Flush();
+        progress.Restart();
     }
 
     Thread.Sleep(2);
