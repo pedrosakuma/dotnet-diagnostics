@@ -1,8 +1,10 @@
 import importlib.util
 import json
+import os
 from pathlib import Path
 import re
 import shutil
+import subprocess
 import unittest
 import uuid
 import xml.etree.ElementTree as ET
@@ -151,6 +153,31 @@ class RevalidationEvidenceTests(unittest.TestCase):
         (self.root / "core-baseline.json").write_text(json.dumps([]))
         with self.assertRaisesRegex(ValueError, "inventory/outcomes changed"):
             VERIFIER.verify(self.root, "02", "core")
+
+    def test_runner_preserves_crash_and_timeout_exit_without_retry(self):
+        runner = Path("scripts/revalidate-clrmd-linux.sh").resolve()
+        for exit_code in (139, 124):
+            with self.subTest(exit_code=exit_code):
+                work = self.root / f"runner-{exit_code}"
+                binary = work / "bin"
+                binary.mkdir(parents=True)
+                shutil.copy("Directory.Packages.props", work)
+                stub = binary / "dotnet"
+                stub.write_text(
+                    "#!/usr/bin/env bash\n"
+                    'case "$*" in\n'
+                    '  *--info*|*--list-tests*) exit 0 ;;\n'
+                    'esac\n'
+                    'echo invoked >> calls.txt\n'
+                    f"exit {exit_code}\n")
+                stub.chmod(0o755)
+                environment = dict(os.environ, PATH=f"{binary.resolve()}:{os.environ['PATH']}")
+                result = subprocess.run(
+                    ["bash", str(runner)], cwd=work, env=environment,
+                    capture_output=True, text=True, timeout=15, check=False)
+                self.assertEqual(result.returncode, exit_code, result.stdout + result.stderr)
+                self.assertEqual((work / "calls.txt").read_text().splitlines(), ["invoked"])
+                self.assertFalse((work / "TestResults/clrmd-revalidation/completed.txt").exists())
 
 
 if __name__ == "__main__":
