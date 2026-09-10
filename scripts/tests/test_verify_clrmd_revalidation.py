@@ -38,10 +38,10 @@ class RevalidationEvidenceTests(unittest.TestCase):
         definitions = ET.SubElement(tree, "TestDefinitions")
         entries = ET.SubElement(tree, "TestEntries")
         for index, name in enumerate(self.names):
-            ET.SubElement(results, "UnitTestResult", testId=str(index), testName=name,
+            ET.SubElement(results, "UnitTestResult", testId=str(index), executionId=str(index), testName=name,
                           outcome="NotExecuted" if index == len(self.names) - 1 else "Passed")
             ET.SubElement(definitions, "UnitTest", id=str(index))
-            ET.SubElement(entries, "TestEntry", testId=str(index))
+            ET.SubElement(entries, "TestEntry", testId=str(index), executionId=str(index))
         summary = ET.SubElement(tree, "ResultSummary", outcome="Completed")
         ET.SubElement(summary, "Counters", total=str(len(self.names)),
                       executed=str(len(self.names) - 1), passed=str(len(self.names) - 1),
@@ -111,6 +111,33 @@ class RevalidationEvidenceTests(unittest.TestCase):
     def test_definition_mismatch_is_rejected(self):
         self.mutate("t:TestDefinitions/t:UnitTest", "id", "not-a-result")
         with self.assertRaisesRegex(ValueError, "identities mismatch"):
+            self.verify()
+
+    def test_expanded_theory_cases_can_share_a_definition(self):
+        tree = ET.parse(self.trx)
+        ns = {"t": NS}
+        results = tree.find("t:Results", ns)
+        entries = tree.find("t:TestEntries", ns)
+        definitions = tree.find("t:TestDefinitions", ns)
+        name = "DotnetDiagnostics.Core.Tests.OtherTest.Theory"
+        ET.SubElement(definitions, f"{{{NS}}}UnitTest", id="theory")
+        for value in (1, 2):
+            ET.SubElement(results, f"{{{NS}}}UnitTestResult", testId="theory",
+                          executionId=f"theory-{value}", testName=f"{name}(value: {value})",
+                          outcome="Passed")
+            ET.SubElement(entries, f"{{{NS}}}TestEntry", testId="theory",
+                          executionId=f"theory-{value}")
+        counts = tree.find("t:ResultSummary/t:Counters", ns)
+        for key in ("total", "passed", "executed"):
+            counts.set(key, str(int(counts.get(key)) + 2))
+        tree.write(self.trx)
+        with (self.root / "core-discovery.txt").open("a") as file:
+            file.write(f"\n    {name}")
+        self.verify()
+
+    def test_missing_execution_entry_is_rejected(self):
+        self.mutate("t:TestEntries/t:TestEntry", "executionId", "missing")
+        with self.assertRaisesRegex(ValueError, "execution identities mismatch"):
             self.verify()
 
     def test_truncated_xml_is_rejected(self):

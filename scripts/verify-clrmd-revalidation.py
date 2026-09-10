@@ -54,10 +54,17 @@ def verify(root, iteration, suite):
     definitions = tree.findall("t:TestDefinitions/t:UnitTest", ns)
     entries = tree.findall("t:TestEntries/t:TestEntry", ns)
     result_ids = {result.get("testId") for result in results}
-    require(len(result_ids) == len(results) == len(definitions) == len(entries),
+    # Runtime-expanded theories share a test definition, but every case must
+    # have a distinct execution and a matching TestEntry.
+    executions = {result.get("executionId") for result in results}
+    require(None not in executions and len(executions) == len(results) == len(entries)
+            and len(result_ids) == len(definitions),
             "Missing/duplicate TRX test definitions or entries")
     require(result_ids == {item.get("id") for item in definitions}
             == {item.get("testId") for item in entries}, "TRX identities mismatch")
+    require({(item.get("testId"), item.get("executionId")) for item in results}
+            == {(item.get("testId"), item.get("executionId")) for item in entries},
+            "TRX execution identities mismatch")
 
     discovery = (root / f"{suite}-discovery.txt").read_text(encoding="utf-8-sig")
     expected = {line.strip() for line in discovery.splitlines()
