@@ -1,0 +1,89 @@
+name: ClrMD Linux revalidation
+
+# Opt in on a same-repository PR with the clrmd-revalidation label. This also
+# permits validation before this workflow reaches main (workflow_dispatch cannot).
+# Not a required check; normal CI retains its quarantine and retry policy.
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize, labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: clrmd-linux-revalidation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  revalidate:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+       contains(github.event.pull_request.labels.*.name, 'clrmd-revalidation'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      CI: true
+      DOTNET_NOLOGO: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: true
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+      DOTNET_CLI_UI_LANGUAGE: en-US
+      DOTNET_DBG_MCP_RUN_QUARANTINED_LINUX_TESTS: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check evidence verifier
+        run: |
+          python3 -m unittest discover -s scripts/tests -p 'test_verify_clrmd_revalidation.py'
+          bash -n scripts/revalidate-clrmd-linux.sh
+
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: |
+            **/Directory.Packages.props
+            **/*.csproj
+
+      - name: Install cross-version target runtimes
+        shell: bash
+        run: |
+          curl --fail -sSL https://dot.net/v1/dotnet-install.sh -o dotnet-install.sh
+          bash dotnet-install.sh --channel 8.0 --runtime dotnet --install-dir "$DOTNET_ROOT"
+          bash dotnet-install.sh --channel 9.0 --runtime dotnet --install-dir "$DOTNET_ROOT"
+          rm dotnet-install.sh
+
+      - name: Build
+        run: dotnet build DotnetDiagnostics.slnx --configuration Release
+
+      - name: Twenty consecutive clean Core and MCP runs (no retries or deliberate crashes)
+        timeout-minutes: 220
+        shell: bash
+        run: bash scripts/revalidate-clrmd-linux.sh
+
+      - name: Upload TRX, discovery, and logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: clrmd-linux-evidence-${{ github.run_attempt }}
+          path: |
+            TestResults/clrmd-revalidation/**/*.trx
+            TestResults/clrmd-revalidation/**/*.log
+            TestResults/clrmd-revalidation/**/*.txt
+            TestResults/clrmd-revalidation/**/*.json
+            TestResults/clrmd-revalidation/**/*Sequence.xml
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload crash dumps only on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: clrmd-linux-crashes-${{ github.run_attempt }}
+          path: TestResults/clrmd-revalidation/**/*.dmp
+          if-no-files-found: ignore
+          retention-days: 7
