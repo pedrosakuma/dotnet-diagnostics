@@ -1,0 +1,19 @@
+{
+  "core": [
+    "DotnetDiagnostics.Core.Tests.LiveCoreClrProcessTests.CpuSampler_ProducesHotspots",
+    "DotnetDiagnostics.Core.Tests.LiveCoreClrProcessTests.CpuSampler_PopulatesTimingBreakdown",
+    "DotnetDiagnostics.Core.Tests.LiveCoreClrProcessTests.GatedCapture_FiresCpuSample_WhenCpuThresholdTrips",
+    "DotnetDiagnostics.Core.Tests.LiveCoreClrProcessTests.CpuSampler_ResolvesSourceLines_WhenEnabled",
+    "DotnetDiagnostics.Core.Tests.LiveCoreClrProcessTests.CpuSampler_EmitsMethodIdentities_ForUserCode",
+    "DotnetDiagnostics.Core.Tests.LiveCoreClrProcessTests.CpuSampler_EmitsClosedGenericInstantiations_FromCoreClrSampleFixture",
+    "DotnetDiagnostics.Core.Tests.LiveCoreClrProcessTests.CpuSampler_ResolvesMethodLevelClosedGenerics_OnlyWhenOptInEnabled",
+    "DotnetDiagnostics.Core.Tests.LiveCoreClrProcessTests.Diff_CpuSample_DetectsRegression",
+    "DotnetDiagnostics.Core.Tests.LiveCoreClrProcessTests.Cpu_HandleEnablesDrilldownViews",
+    "DotnetDiagnostics.Core.Tests.LiveCoreClrProcessTests.CpuSampler_CpuBurnCallTree_RootsAtEndpointLambda_WithoutRequiringSha256Leaf",
+    "DotnetDiagnostics.Core.Tests.LiveCoreClrProcessTests.DumpInspector_ExtractsHeapStats_AndTypeIdentityForUserCode",
+    "DotnetDiagnostics.Core.Tests.LiveCoreClrProcessTests.DumpInspector_InspectsObjectAndGcRoot_FromDumpOriginSnapshot"
+  ],
+  "mcp": [
+    "DotnetDiagnostics.Mcp.IntegrationTests.McpInvocationSafetyTests.LowCall_IsPromptFree_AndModerateCallCarriesWarnings"
+  ]
+}

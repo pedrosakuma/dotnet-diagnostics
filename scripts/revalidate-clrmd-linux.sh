@@ -2,7 +2,6 @@
 set -euo pipefail
 
 [[ "$(uname -s)" == Linux ]] || { echo "Linux is required." >&2; exit 1; }
-export DOTNET_DBG_MCP_RUN_QUARANTINED_LINUX_TESTS=1
 export DOTNET_CLI_UI_LANGUAGE=en-US
 
 root=TestResults/clrmd-revalidation
