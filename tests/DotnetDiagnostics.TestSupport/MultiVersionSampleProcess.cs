@@ -13,11 +13,11 @@ namespace DotnetDiagnostics.TestSupport;
 public sealed class MultiVersionSampleProcess : IAsyncDisposable
 {
     private readonly Process _process;
+    private string _lastOutputLine = "(no output)";
 
-    private MultiVersionSampleProcess(Process process, string runtimeDescription)
+    private MultiVersionSampleProcess(Process process)
     {
         _process = process;
-        RuntimeDescription = runtimeDescription;
     }
 
     /// <summary>OS process id of the running sample.</summary>
@@ -25,7 +25,10 @@ public sealed class MultiVersionSampleProcess : IAsyncDisposable
 
     /// <summary>The <c>RuntimeInformation.FrameworkDescription</c> string reported by the sample
     /// on startup (e.g. <c>.NET 8.0.26</c>), captured from its stdout.</summary>
-    public string RuntimeDescription { get; }
+    public string RuntimeDescription { get; private set; } = "(not reported)";
+
+    /// <summary>Latest stdout line, including bounded workload/GC progress for assertion diagnostics.</summary>
+    public string LastOutputLine => Volatile.Read(ref _lastOutputLine);
 
     /// <summary>True while the process is alive.</summary>
     public bool IsRunning => !_process.HasExited;
@@ -34,8 +37,13 @@ public sealed class MultiVersionSampleProcess : IAsyncDisposable
     /// Builds the required major version from <paramref name="targetFramework"/> (e.g. <c>net8.0</c>
     /// -&gt; <c>8</c>) and throws <see cref="SkipException"/> if that CoreCLR major isn't installed
     /// on this host, before attempting to locate or launch the sample.
+    /// When <paramref name="generateGcEvents"/> is true, the test fixture induces periodic
+    /// collections until disposal so GC-event tests do not depend on allocation throughput.
     /// </summary>
-    public static async Task<MultiVersionSampleProcess> StartAsync(string targetFramework, TimeSpan? timeout = null)
+    public static async Task<MultiVersionSampleProcess> StartAsync(
+        string targetFramework,
+        TimeSpan? timeout = null,
+        bool generateGcEvents = false)
     {
         var major = ParseMajorVersion(targetFramework);
         if (!InstalledRuntimes.HasMajorVersion(major))
@@ -57,10 +65,15 @@ public sealed class MultiVersionSampleProcess : IAsyncDisposable
             WorkingDirectory = Path.GetDirectoryName(sampleDll)!,
         };
         psi.ArgumentList.Add(sampleDll);
+        if (generateGcEvents)
+        {
+            psi.ArgumentList.Add("--gc-events");
+        }
         psi.Environment["DOTNET_NOLOGO"] = "1";
 
         var process = Process.Start(psi)
             ?? throw SkipException.ForReason($"Failed to start MultiVersionSample ({targetFramework}).");
+        var sample = new MultiVersionSampleProcess(process);
 
         var runtimeTcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
         var readyTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -73,6 +86,7 @@ public sealed class MultiVersionSampleProcess : IAsyncDisposable
                 string? line;
                 while ((line = await reader.ReadLineAsync().ConfigureAwait(false)) is not null)
                 {
+                    Volatile.Write(ref sample._lastOutputLine, line);
                     if (line.StartsWith("Runtime: ", StringComparison.Ordinal) && !runtimeTcs.Task.IsCompleted)
                     {
                         runtimeTcs.TrySetResult(line["Runtime: ".Length..]);
@@ -109,8 +123,8 @@ public sealed class MultiVersionSampleProcess : IAsyncDisposable
             using var cts = new CancellationTokenSource(effectiveTimeout);
             await DiagnosticReadiness.WaitForDiagnosticEndpointAsync(process.Id, effectiveTimeout).ConfigureAwait(false);
             await readyTcs.Task.WaitAsync(cts.Token).ConfigureAwait(false);
-            var runtimeDescription = await runtimeTcs.Task.WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
-            return new MultiVersionSampleProcess(process, runtimeDescription);
+            sample.RuntimeDescription = await runtimeTcs.Task.WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+            return sample;
         }
         catch (Exception ex) when (ex is OperationCanceledException or TimeoutException)
         {

@@ -45,13 +45,23 @@ public class CrossVersionTargetTests
     [InlineData("net9.0")]
     public async Task GcEvents_Collect_AgainstOlderRuntime(string targetFramework)
     {
-        await using var sample = await MultiVersionSampleProcess.StartAsync(targetFramework);
+        await using var sample = await MultiVersionSampleProcess.StartAsync(targetFramework, generateGcEvents: true);
 
         var collector = new EventPipeGcCollector();
-        var summary = await collector.CollectAsync(sample.ProcessId, TimeSpan.FromSeconds(6));
+        // A second independent session also has to observe the workload: a startup-only burst
+        // must not satisfy this regression test. Neither session is retried on failure.
+        for (var capture = 1; capture <= 2; capture++)
+        {
+            var summary = await collector.CollectAsync(sample.ProcessId, TimeSpan.FromSeconds(6));
+            var context = $"capture {capture} against {targetFramework} ({sample.RuntimeDescription}), " +
+                $"pid={sample.ProcessId}, running={sample.IsRunning}, {sample.LastOutputLine}, " +
+                $"observed={summary.TotalCollections}, heapStats={summary.HeapStats.Count}";
 
-        summary.TotalCollections.Should().BeGreaterThan(0,
-            $"GC-event collection must actually observe at least one collection against a {targetFramework} target ({sample.RuntimeDescription}) with zero code changes");
+            summary.TotalCollections.Should().BeGreaterThan(0,
+                $"GC-event collection must actually observe collections with an unmodified collector; {context}");
+            summary.Events.Should().Contain(e => e.Generation == 2 && e.Reason == "Induced",
+                $"the sustained fixture workload must generate observable forced GCs during each session; {context}");
+        }
     }
 
     [Theory]
