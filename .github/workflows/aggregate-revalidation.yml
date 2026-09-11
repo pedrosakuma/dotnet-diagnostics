@@ -1,0 +1,159 @@
+name: Aggregate solution revalidation
+
+# Experimental #879 evidence only; not a required check or a replacement for CI.
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize, labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aggregate-revalidation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  aggregate:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      contains(github.event.pull_request.labels.*.name, 'aggregate-revalidation')
+    runs-on: ubuntu-latest
+    timeout-minutes: 95
+    env:
+      CI: true
+      DOTNET_CLI_UI_LANGUAGE: en-US
+      DOTNET_NOLOGO: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - name: Install cross-version target runtimes
+        run: |
+          curl --fail -sSL https://dot.net/v1/dotnet-install.sh -o dotnet-install.sh
+          bash dotnet-install.sh --channel 8.0 --runtime dotnet --install-dir "$DOTNET_ROOT"
+          bash dotnet-install.sh --channel 9.0 --runtime dotnet --install-dir "$DOTNET_ROOT"
+          rm dotnet-install.sh
+      - name: Build
+        run: dotnet build DotnetDiagnostics.slnx -c Release
+      - name: Discover all six solution test assemblies
+        run: |
+          mkdir -p TestResults/aggregate
+          dotnet --info > TestResults/aggregate/environment.txt
+          git rev-parse HEAD >> TestResults/aggregate/environment.txt
+          for project in tests/*/*.csproj; do
+            if grep -q 'Microsoft.NET.Test.Sdk' "$project"; then
+              name="$(basename "$project" .csproj)"
+              dotnet test "$project" -c Release --no-build --list-tests \
+                > "TestResults/aggregate/$name-discovery.txt"
+            fi
+          done
+      - name: Three fixed aggregate trials without filters or retries
+        timeout-minutes: 80
+        run: |
+          status=0
+          for round in 1 2 3; do
+            directory="TestResults/aggregate/trial-$round"
+            mkdir "$directory"
+            # Numeric process/thread state only: no command arguments or environment secrets.
+            # Fifty samples cover the unchanged 25-minute wall-clock limit.
+            (
+              set +e
+              for sample in $(seq 1 50); do
+                date --utc --iso-8601=ns
+                ps -e -o pid,ppid,stat,nlwp,rss,pcpu,etime,wchan:32,comm
+                ps -eL -o pid,tid,ppid,stat,wchan:32,comm
+                grep -H -E '^(Name|State|PPid|TracerPid|Threads|VmRSS):' /proc/[0-9]*/status || true
+                cat /proc/meminfo /proc/pressure/{cpu,memory,io}
+                for metric in memory.events memory.current memory.max cpu.stat; do
+                  if [ -r "/sys/fs/cgroup/$metric" ]; then
+                    echo "cgroup $metric"
+                    cat "/sys/fs/cgroup/$metric"
+                  fi
+                done
+                sleep 30
+              done
+            ) > "$directory/process-state.log" 2>&1 &
+            sampler=$!
+            trap 'kill "$sampler" 2>/dev/null || true; wait "$sampler" 2>/dev/null || true' EXIT
+            set +e
+            timeout --kill-after=30s 25m dotnet test DotnetDiagnostics.slnx \
+              -c Release --no-build --blame-crash \
+              --blame-hang-timeout 5m --blame-hang-dump-type full \
+              --logger trx --results-directory "$directory" \
+              --diag "$directory/vstest.log" > "$directory/console.log" 2>&1
+            result=$?
+            set -e
+            kill "$sampler" 2>/dev/null || true
+            wait "$sampler" 2>/dev/null || true
+            trap - EXIT
+            echo "$result" > "$directory/exit-code.txt"
+            cat "$directory/console.log"
+            if [ "$result" -ne 0 ]; then status=1; fi
+          done
+          exit "$status"
+      - name: Verify every assembly and trial independently
+        if: always()
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import sys
+          import xml.etree.ElementTree as ET
+          sys.path.insert(0, "scripts")
+          from test_evidence import require, required_tests, verify_log, verify_trx
+          root = Path("TestResults/aggregate")
+          projects = {p.stem.lower(): p.stem for p in Path("tests").glob("*/*.csproj")
+                      if "Microsoft.NET.Test.Sdk" in p.read_text()}
+          require(len(projects) == 6, "Unexpected full-solution test-project inventory")
+          errors = []
+          ns = {"t": "http://microsoft.com/schemas/VisualStudio/TeamTest/2010"}
+          for trial in range(1, 4):
+              directory = root / f"trial-{trial}"
+              seen = set()
+              try:
+                  require((directory / "exit-code.txt").read_text().strip() == "0",
+                          f"Trial {trial}: nonzero test exit")
+                  verify_log(directory / "console.log")
+              except (OSError, ValueError) as error:
+                  errors.append(str(error))
+              for trx in directory.glob("*.trx"):
+                  try:
+                      unit = ET.parse(trx).find("t:TestDefinitions/t:UnitTest", ns)
+                      require(unit is not None, f"{trx}: no test definitions")
+                      key = Path(unit.get("storage", "")).stem.lower()
+                      require(key in projects and key not in seen, f"{trx}: unknown/duplicate assembly")
+                      seen.add(key)
+                      name = projects[key]
+                      suite = {"DotnetDiagnostics.Core.Tests": "core",
+                               "DotnetDiagnostics.Mcp.IntegrationTests": "mcp"}.get(name, "")
+                      verify_trx(trx, root / f"{name}-discovery.txt", required_tests(suite))
+                  except (OSError, ValueError, ET.ParseError) as error:
+                      errors.append(str(error))
+              if seen != projects.keys():
+                  errors.append(f"Trial {trial}: missing assemblies {projects.keys() - seen}")
+          if errors:
+              sys.exit("\n".join(errors))
+          PY
+      - name: Preserve evidence, including failed and incomplete trials
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: aggregate-evidence-${{ github.run_attempt }}
+          path: |
+            TestResults/aggregate/**/*.trx
+            TestResults/aggregate/**/*.txt
+            TestResults/aggregate/**/*.log
+            TestResults/aggregate/**/*Sequence*.xml
+          retention-days: 14
+      - name: Preserve dumps only on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: aggregate-dumps-${{ github.run_attempt }}
+          path: TestResults/aggregate/**/*.dmp
+          if-no-files-found: ignore
+          retention-days: 7
