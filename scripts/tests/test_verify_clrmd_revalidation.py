@@ -106,7 +106,7 @@ class RevalidationEvidenceTests(EvidenceFixture):
             self.verify()
 
     def test_crash_artifacts_are_rejected(self):
-        for name in ("host.dmp", "host.crashreport.json", "test_Sequence.xml"):
+        for name in ("host.dmp", "host.crashreport.json", "test_Sequence.xml", "Sequence_test.xml"):
             with self.subTest(name=name):
                 path = self.directory / name
                 path.write_text("evidence")

@@ -37,7 +37,7 @@ class CiEvidenceTests(EvidenceFixture):
             self.verify()
 
     def test_intentional_target_crash_artifacts_are_allowed(self):
-        for name in ("target.dmp", "target.crashreport.json", "target_Sequence.xml"):
+        for name in ("target.dmp", "target.crashreport.json", "target_Sequence.xml", "Sequence_target.xml"):
             (self.directory / name).write_text("Intentional CrashGuard target crash")
         self.verify()
 
@@ -83,7 +83,7 @@ class CiEvidenceTests(EvidenceFixture):
     def test_required_manifest_is_independent_of_test_attributes(self):
         required = RUNNER.required_tests("core")
         self.assertEqual(len(required), 12)
-        source = Path("tests/DotnetDiagnostics.Core.Tests/LiveCoreClrProcessTests.cs").read_text()
+        source = Path("tests/DotnetDiagnostics.Core.Tests/LiveCoreClrProcessTests.cs").read_text(encoding="utf-8")
         for name in required:
             self.assertIn("public async Task " + name.rsplit(".", 1)[1] + "(", source)
 

@@ -75,7 +75,7 @@ jobs:
             TestResults/clrmd-revalidation/**/*.log
             TestResults/clrmd-revalidation/**/*.txt
             TestResults/clrmd-revalidation/**/*.json
-            TestResults/clrmd-revalidation/**/*Sequence.xml
+            TestResults/clrmd-revalidation/**/*Sequence*.xml
           if-no-files-found: warn
           retention-days: 14
 

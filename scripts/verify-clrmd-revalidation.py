@@ -14,7 +14,8 @@ def verify(root, iteration, suite):
     directory = root / iteration / suite
     for path in directory.rglob("*"):
         require(
-            not (path.suffix == ".dmp" or path.name.endswith("Sequence.xml")
+            not (path.suffix == ".dmp"
+                 or (path.suffix == ".xml" and "Sequence" in path.name)
                  or "crashreport" in path.name.lower()),
             f"Crash/abort artifact: {path}",
         )

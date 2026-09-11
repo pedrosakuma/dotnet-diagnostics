@@ -212,7 +212,7 @@ jobs:
             TestResults/**/*.trx
             TestResults/**/*.txt
             TestResults/**/*.log
-            TestResults/**/*Sequence.xml
+            TestResults/**/*Sequence*.xml
           if-no-files-found: ignore
 
       - name: Upload crash dumps
@@ -408,7 +408,7 @@ jobs:
             TestResults/**/*.trx
             TestResults/**/*.txt
             TestResults/**/*.log
-            TestResults/**/*Sequence.xml
+            TestResults/**/*Sequence*.xml
           if-no-files-found: ignore
 
       - name: Upload crash dumps
@@ -502,7 +502,7 @@ jobs:
             TestResults/**/*.trx
             TestResults/**/*.txt
             TestResults/**/*.log
-            TestResults/**/*Sequence.xml
+            TestResults/**/*Sequence*.xml
           if-no-files-found: ignore
 
       - name: Upload crash dumps
