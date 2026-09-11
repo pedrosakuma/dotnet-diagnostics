@@ -59,14 +59,38 @@ jobs:
           for round in 1 2 3; do
             directory="TestResults/aggregate/trial-$round"
             mkdir "$directory"
+            # Numeric process/thread state only: no command arguments or environment secrets.
+            # Fifty samples cover the unchanged 25-minute wall-clock limit.
+            (
+              set +e
+              for sample in $(seq 1 50); do
+                date --utc --iso-8601=ns
+                ps -e -o pid,ppid,stat,nlwp,rss,pcpu,etime,wchan:32,comm
+                ps -eL -o pid,tid,ppid,stat,wchan:32,comm
+                grep -H -E '^(Name|State|PPid|TracerPid|Threads|VmRSS):' /proc/[0-9]*/status || true
+                cat /proc/meminfo /proc/pressure/{cpu,memory,io}
+                for metric in memory.events memory.current memory.max cpu.stat; do
+                  if [ -r "/sys/fs/cgroup/$metric" ]; then
+                    echo "cgroup $metric"
+                    cat "/sys/fs/cgroup/$metric"
+                  fi
+                done
+                sleep 30
+              done
+            ) > "$directory/process-state.log" 2>&1 &
+            sampler=$!
+            trap 'kill "$sampler" 2>/dev/null || true; wait "$sampler" 2>/dev/null || true' EXIT
             set +e
             timeout --kill-after=30s 25m dotnet test DotnetDiagnostics.slnx \
               -c Release --no-build --blame-crash \
-              --blame-hang-timeout 5m --blame-hang-dump-type none \
+              --blame-hang-timeout 5m --blame-hang-dump-type full \
               --logger trx --results-directory "$directory" \
               --diag "$directory/vstest.log" > "$directory/console.log" 2>&1
             result=$?
             set -e
+            kill "$sampler" 2>/dev/null || true
+            wait "$sampler" 2>/dev/null || true
+            trap - EXIT
             echo "$result" > "$directory/exit-code.txt"
             cat "$directory/console.log"
             if [ "$result" -ne 0 ]; then status=1; fi
