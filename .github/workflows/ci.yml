@@ -406,13 +406,15 @@ jobs:
       # smoke suite, so it needs the .NET 8/9 shared runtimes side-by-side
       # with the pinned net10.0 SDK too — otherwise the cross-version cases
       # skip (or, worse, their readiness waits just time out) on this VM.
+      # Preserve the newer host from Setup .NET 10; restore's build servers
+      # may still hold dotnet.exe open, so older runtimes must not overwrite it.
       - name: Install .NET 8 / 9 runtimes for cross-version tests
         if: needs.changes.outputs.code == 'true'
         shell: pwsh
         run: |
           Invoke-WebRequest -Uri https://dot.net/v1/dotnet-install.ps1 -OutFile dotnet-install.ps1
-          ./dotnet-install.ps1 -Channel 8.0 -Runtime dotnet -InstallDir "$env:DOTNET_ROOT"
-          ./dotnet-install.ps1 -Channel 9.0 -Runtime dotnet -InstallDir "$env:DOTNET_ROOT"
+          ./dotnet-install.ps1 -Channel 8.0 -Runtime dotnet -InstallDir "$env:DOTNET_ROOT" -SkipNonVersionedFiles
+          ./dotnet-install.ps1 -Channel 9.0 -Runtime dotnet -InstallDir "$env:DOTNET_ROOT" -SkipNonVersionedFiles
           Remove-Item dotnet-install.ps1
 
       - name: Download build output (Windows)
