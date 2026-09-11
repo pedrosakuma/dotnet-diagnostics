@@ -2,7 +2,7 @@ name: ClrMD Linux revalidation
 
 # Opt in on a same-repository PR with the clrmd-revalidation label. This also
 # permits validation before this workflow reaches main (workflow_dispatch cannot).
-# Not a required check; normal CI retains its quarantine and retry policy.
+# Not a required check; ordinary CI also runs without quarantine or retries.
 on:
   workflow_dispatch:
   pull_request:
@@ -30,7 +30,6 @@ jobs:
       DOTNET_CLI_TELEMETRY_OPTOUT: true
       DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
       DOTNET_CLI_UI_LANGUAGE: en-US
-      DOTNET_DBG_MCP_RUN_QUARANTINED_LINUX_TESTS: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

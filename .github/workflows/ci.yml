@@ -51,14 +51,10 @@ jobs:
               - '**'
               - '!**/*.md'
 
-  # Ubuntu runs Core + MCP integration tests sequentially on one runner, same
-  # as always: issue #147's instability was never reproduced on Linux, and
-  # ubuntu-latest's median wall time (setup+build+all suites) is well inside
-  # budget on its own, so there is no isolation win worth the extra VM here.
-  # Windows is split into windows-build / windows-core-test / windows-mcp-test
-  # below (issue #861) because it *is* the critical path and because #147's
-  # instability was specifically the two live-process assemblies sharing one
-  # 4-vCPU Windows runner.
+  # Ubuntu retains sequential per-assembly live tests. Windows uses separate
+  # Core/MCP runners to shorten the critical path (#861). ClrMD's Linux crash
+  # regression was revalidated in #685; concurrent aggregate-solution testing
+  # remains a separate investigation (#879), not evidence supplied by these jobs.
   build-test:
     name: Build & Test (${{ matrix.os }})
     needs: changes
@@ -148,17 +144,17 @@ jobs:
       # next time a test host actually dies, so future investigations don't
       # have to push a CI-only repro PR just to capture state.
       #
-      # `scripts/ci-test-with-retry.sh` tolerates the documented Ubuntu host-
-      # crash flake (issue #147): when the TRX shows every executed test
-      # passed but the host exited non-zero, the script retries once and, if
-      # the phantom crash reproduces, treats the run as successful. Real test
-      # failures are surfaced immediately with no retry. The first attempt's
-      # TestResults directory is preserved as TestResults.attempt1/ so the
-      # crash dump survives upload.
+      # Every suite runs once. ci-test.py preserves nonzero process exits and
+      # requires completed TRX with complete independently discovered inventory.
+      # The historical #685 regression tests must explicitly pass on both OSes.
+      - name: Check CI evidence verifier
+        if: needs.changes.outputs.code == 'true'
+        run: python -m unittest discover -s scripts/tests -p "test_*.py"
+
       - name: Test (Core)
         if: needs.changes.outputs.code == 'true'
         shell: bash
-        run: scripts/ci-test-with-retry.sh core-test-results.trx -- dotnet test tests/DotnetDiagnostics.Core.Tests/DotnetDiagnostics.Core.Tests.csproj --no-build --configuration Release --blame-hang-timeout 5m --blame-hang-dump-type none --blame-crash --blame-crash-dump-type full --logger "trx;LogFileName=core-test-results.trx" --results-directory TestResults
+        run: python scripts/ci-test.py core tests/DotnetDiagnostics.Core.Tests/DotnetDiagnostics.Core.Tests.csproj
 
       # Runtime smoke for the multi-targeted libraries (#908): launch the net8.0 and
       # net9.0-built smoke host binaries under their matching shared runtimes and verify they
@@ -166,7 +162,7 @@ jobs:
       - name: Test (Multi-target runtime smoke)
         if: ${{ always() && needs.changes.outputs.code == 'true' }}
         shell: bash
-        run: scripts/ci-test-with-retry.sh multitarget-smoke-test-results.trx -- dotnet test tests/DotnetDiagnostics.MultiTargetSmoke.Tests/DotnetDiagnostics.MultiTargetSmoke.Tests.csproj --no-build --configuration Release --blame-hang-timeout 5m --blame-hang-dump-type none --blame-crash --blame-crash-dump-type full --logger "trx;LogFileName=multitarget-smoke-test-results.trx" --results-directory TestResults
+        run: python scripts/ci-test.py smoke tests/DotnetDiagnostics.MultiTargetSmoke.Tests/DotnetDiagnostics.MultiTargetSmoke.Tests.csproj
 
       # CLI tests are lightweight (parser/exit-code units + a `processes --json` smoke and the
       # Core-only seam guard); no live child processes or EventPipe sessions, so they run as a
@@ -174,15 +170,13 @@ jobs:
       # parallelism invariant documented above.
       - name: Test (CLI)
         if: ${{ always() && needs.changes.outputs.code == 'true' }}
-        run: dotnet test tests/DotnetDiagnostics.Cli.Tests/DotnetDiagnostics.Cli.Tests.csproj --no-build --configuration Release --logger "trx;LogFileName=cli-test-results.trx" --results-directory TestResults
+        run: python scripts/ci-test.py cli tests/DotnetDiagnostics.Cli.Tests/DotnetDiagnostics.Cli.Tests.csproj
 
       # BenchmarkDotNet tests cover the in-process diagnoser and report formatting.
-      # Continue here so all suites emit TRX; the final gate re-fails this outcome.
+      # Later suites run even after failure so all suites can emit evidence.
       - name: Test (BenchmarkDotNet)
-        id: benchmark_tests
         if: ${{ always() && needs.changes.outputs.code == 'true' }}
-        continue-on-error: true
-        run: dotnet test tests/DotnetDiagnostics.BenchmarkDotNet.Tests/DotnetDiagnostics.BenchmarkDotNet.Tests.csproj --no-build --configuration Release --logger "trx;LogFileName=benchmark-test-results.trx" --results-directory TestResults
+        run: python scripts/ci-test.py benchmark tests/DotnetDiagnostics.BenchmarkDotNet.Tests/DotnetDiagnostics.BenchmarkDotNet.Tests.csproj
 
       # Pack smoke (issue #288): `dotnet build` + the CLI unit tests do NOT exercise the
       # PackAsTool metadata, README packing, or tool-manifest layout — those only fail at
@@ -194,73 +188,31 @@ jobs:
       - name: Test (Server integration)
         if: ${{ always() && needs.changes.outputs.code == 'true' }}
         shell: bash
-        run: scripts/ci-test-with-retry.sh server-test-results.trx -- dotnet test tests/DotnetDiagnostics.Mcp.IntegrationTests/DotnetDiagnostics.Mcp.IntegrationTests.csproj --no-build --configuration Release --blame-hang-timeout 5m --blame-hang-dump-type none --blame-crash --blame-crash-dump-type full --filter "Category!=KindIntegration&Category!=DockerIntegration" --logger "trx;LogFileName=server-test-results.trx" --results-directory TestResults
+        run: python scripts/ci-test.py mcp tests/DotnetDiagnostics.Mcp.IntegrationTests/DotnetDiagnostics.Mcp.IntegrationTests.csproj --filter "Category!=KindIntegration&Category!=DockerIntegration"
 
       - name: Verify expected test results
         if: ${{ always() && needs.changes.outputs.code == 'true' }}
         shell: bash
-        env:
-          BENCHMARK_TEST_OUTCOME: ${{ steps.benchmark_tests.outcome }}
         run: |
-          shopt -s globstar nullglob
-          for trx in core-test-results.trx multitarget-smoke-test-results.trx cli-test-results.trx benchmark-test-results.trx server-test-results.trx; do
-            found=false
-            for trx_path in TestResults{,.attempt1}/"$trx" TestResults{,.attempt1}/**/"$trx"; do
-              if [[ -s "$trx_path" ]]; then
-                found=true
-                counters=$(grep -oE '<Counters[^/]*/>' "$trx_path" | head -1)
-                total=$(echo "$counters" | sed -nE 's/.*total="([0-9]+)".*/\1/p')
-                if [[ -z "$counters" || "${total:-0}" -eq 0 ]]; then
-                  echo "::error::'$trx_path' has no <Counters> element or reports total=0 executed tests — treating a silently-zero-test run as a failure."
-                  exit 1
-                fi
-                echo "$trx: total=$total"
-                break
-              fi
-            done
-            if [[ "$found" == false ]]; then
-              echo "::error::Expected nonempty test result '$trx' was not produced."
-              exit 1
-            fi
+          for suite in core smoke cli benchmark mcp; do
+            python scripts/ci-test.py "$suite" --verify-only
           done
-          smoke_found=false
-          for trx_path in TestResults{,.attempt1}/multitarget-smoke-test-results.trx TestResults{,.attempt1}/**/multitarget-smoke-test-results.trx; do
-            if [[ -s "$trx_path" ]]; then
-              smoke_found=true
-              counters=$(grep -oE '<Counters[^/]*/>' "$trx_path" | head -1)
-              executed=$(echo "$counters" | sed -nE 's/.*executed="([0-9]+)".*/\1/p')
-              passed=$(echo "$counters" | sed -nE 's/.*passed="([0-9]+)".*/\1/p')
-              if [[ "${executed:-0}" -lt 2 || "${passed:-0}" -lt 2 ]]; then
-                echo "::error::'$trx_path' did not execute and pass both net8.0/net9.0 smoke cases (executed=${executed:-0}, passed=${passed:-0})."
-                exit 1
-              fi
-              break
-            fi
-          done
-          if [[ "$smoke_found" == false ]]; then
-            echo "::error::Expected nonempty test result 'multitarget-smoke-test-results.trx' was not produced."
-            exit 1
-          fi
-          if [[ "$BENCHMARK_TEST_OUTCOME" != "success" ]]; then
-            echo "::error::BenchmarkDotNet tests completed with outcome '$BENCHMARK_TEST_OUTCOME'."
-            exit 1
-          fi
 
       # TRX result files are tiny — always keep them when tests ran. Crash dumps
       # (full process dumps from `--blame-crash`, hundreds of MB) are uploaded
-      # only on failure: on a green run they used to add ~2min of upload for an
-      # artifact nobody reads. The #147 phantom-crash investigation's dedicated
-      # nightly reproduction workflows were retired in #857 once the root cause
-      # was identified in ClrMD; re-validation against the fixed ClrMD release is
-      # tracked in #685.
+      # only on failure. The intentional CrashGuard child crash can emit a dump
+      # on a successful run; unlike the opt-in revalidation gate, ordinary CI
+      # does not reject dumps globally. A host failure is never masked.
       - name: Upload test results (TRX)
         if: ${{ always() && needs.changes.outputs.code == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: test-results-${{ matrix.os }}
           path: |
-            **/TestResults/*.trx
-            **/TestResults.attempt1/*.trx
+            TestResults/**/*.trx
+            TestResults/**/*.txt
+            TestResults/**/*.log
+            TestResults/**/*Sequence.xml
           if-no-files-found: ignore
 
       - name: Upload crash dumps
@@ -269,8 +221,8 @@ jobs:
         with:
           name: crash-dumps-${{ matrix.os }}
           path: |
-            **/TestResults/**/*.dmp
-            **/TestResults.attempt1/**/*.dmp
+            TestResults/**/*.dmp
+            TestResults/**/*crashreport*
           if-no-files-found: ignore
 
   # --- Windows isolation model (issue #861) ---------------------------------
@@ -424,73 +376,28 @@ jobs:
           name: windows-build-output
           path: .
 
-      # Same `--blame-hang-timeout`/`--blame-crash`/retry-script semantics as
-      # the pre-split single job (see the equivalent step in `build-test`
-      # above for the full rationale). Runs alone on this VM, so there is no
-      # cross-assembly-parallelism concern to preserve here anymore — Core
-      # tests simply own the whole runner.
+      # Same single-run, fail-closed verification as Linux. Core owns this VM.
+      - name: Check CI evidence verifier
+        if: needs.changes.outputs.code == 'true'
+        run: python -m unittest discover -s scripts/tests -p "test_*.py"
+
       - name: Test (Core)
         if: needs.changes.outputs.code == 'true'
         shell: bash
-        run: scripts/ci-test-with-retry.sh core-test-results.trx -- dotnet test tests/DotnetDiagnostics.Core.Tests/DotnetDiagnostics.Core.Tests.csproj --no-build --configuration Release --blame-hang-timeout 5m --blame-hang-dump-type none --blame-crash --blame-crash-dump-type full --logger "trx;LogFileName=core-test-results.trx" --results-directory TestResults
+        run: python scripts/ci-test.py core tests/DotnetDiagnostics.Core.Tests/DotnetDiagnostics.Core.Tests.csproj
 
       - name: Test (Multi-target runtime smoke)
         if: ${{ always() && needs.changes.outputs.code == 'true' }}
         shell: bash
-        run: scripts/ci-test-with-retry.sh multitarget-smoke-test-results.trx -- dotnet test tests/DotnetDiagnostics.MultiTargetSmoke.Tests/DotnetDiagnostics.MultiTargetSmoke.Tests.csproj --no-build --configuration Release --blame-hang-timeout 5m --blame-hang-dump-type none --blame-crash --blame-crash-dump-type full --logger "trx;LogFileName=multitarget-smoke-test-results.trx" --results-directory TestResults
+        run: python scripts/ci-test.py smoke tests/DotnetDiagnostics.MultiTargetSmoke.Tests/DotnetDiagnostics.MultiTargetSmoke.Tests.csproj
 
       - name: Verify expected test results
         if: ${{ always() && needs.changes.outputs.code == 'true' }}
         shell: bash
         run: |
-          shopt -s globstar nullglob
-          # Bug #1861-2 (found in review): a nonempty TRX is not enough — the
-          # `obj/`-missing and NuGet-global-packages-folder bugs found during
-          # this PR's own empirical validation both produced a small, valid,
-          # *nonempty* TRX with zero executed tests (`dotnet test` silently
-          # short-circuited before running anything). Parse the TRX's
-          # `<Counters total="N" .../>` element (same regex `ci-test-with-retry.sh`
-          # already uses for its phantom-crash detection) and require total > 0,
-          # so this category of silent-zero-test bug fails the build instead of
-          # only being caught by a human reading raw CI output.
-          for trx in core-test-results.trx multitarget-smoke-test-results.trx; do
-            found=false
-            for trx_path in TestResults{,.attempt1}/"$trx" TestResults{,.attempt1}/**/"$trx"; do
-              if [[ -s "$trx_path" ]]; then
-                found=true
-                counters=$(grep -oE '<Counters[^/]*/>' "$trx_path" | head -1)
-                total=$(echo "$counters" | sed -nE 's/.*total="([0-9]+)".*/\1/p')
-                if [[ -z "$counters" || "${total:-0}" -eq 0 ]]; then
-                  echo "::error::'$trx_path' has no <Counters> element or reports total=0 executed tests — treating a silently-zero-test run as a failure."
-                  exit 1
-                fi
-                echo "$trx: total=$total"
-                break
-              fi
-            done
-            if [[ "$found" == false ]]; then
-              echo "::error::Expected nonempty test result '$trx' was not produced."
-              exit 1
-            fi
+          for suite in core smoke; do
+            python scripts/ci-test.py "$suite" --verify-only
           done
-          smoke_found=false
-          for trx_path in TestResults{,.attempt1}/multitarget-smoke-test-results.trx TestResults{,.attempt1}/**/multitarget-smoke-test-results.trx; do
-            if [[ -s "$trx_path" ]]; then
-              smoke_found=true
-              counters=$(grep -oE '<Counters[^/]*/>' "$trx_path" | head -1)
-              executed=$(echo "$counters" | sed -nE 's/.*executed="([0-9]+)".*/\1/p')
-              passed=$(echo "$counters" | sed -nE 's/.*passed="([0-9]+)".*/\1/p')
-              if [[ "${executed:-0}" -lt 2 || "${passed:-0}" -lt 2 ]]; then
-                echo "::error::'$trx_path' did not execute and pass both net8.0/net9.0 smoke cases (executed=${executed:-0}, passed=${passed:-0})."
-                exit 1
-              fi
-              break
-            fi
-          done
-          if [[ "$smoke_found" == false ]]; then
-            echo "::error::Expected nonempty test result 'multitarget-smoke-test-results.trx' was not produced."
-            exit 1
-          fi
 
       - name: Upload test results (TRX)
         if: ${{ always() && needs.changes.outputs.code == 'true' }}
@@ -498,8 +405,10 @@ jobs:
         with:
           name: test-results-windows-latest-core
           path: |
-            **/TestResults/*.trx
-            **/TestResults.attempt1/*.trx
+            TestResults/**/*.trx
+            TestResults/**/*.txt
+            TestResults/**/*.log
+            TestResults/**/*Sequence.xml
           if-no-files-found: ignore
 
       - name: Upload crash dumps
@@ -508,8 +417,8 @@ jobs:
         with:
           name: crash-dumps-windows-latest-core
           path: |
-            **/TestResults/**/*.dmp
-            **/TestResults.attempt1/**/*.dmp
+            TestResults/**/*.dmp
+            TestResults/**/*crashreport*
           if-no-files-found: ignore
 
   windows-mcp-test:
@@ -555,15 +464,13 @@ jobs:
       # split jobs (Core tests alone are the longer pole at ~8m18s median).
       - name: Test (CLI)
         if: needs.changes.outputs.code == 'true'
-        run: dotnet test tests/DotnetDiagnostics.Cli.Tests/DotnetDiagnostics.Cli.Tests.csproj --no-build --configuration Release --logger "trx;LogFileName=cli-test-results.trx" --results-directory TestResults
+        run: python scripts/ci-test.py cli tests/DotnetDiagnostics.Cli.Tests/DotnetDiagnostics.Cli.Tests.csproj
 
       # BenchmarkDotNet tests cover the in-process diagnoser and report formatting.
-      # Continue here so all suites emit TRX; the final verify step re-fails this outcome.
+      # Later suites run even after failure so all suites can emit evidence.
       - name: Test (BenchmarkDotNet)
-        id: benchmark_tests
         if: ${{ always() && needs.changes.outputs.code == 'true' }}
-        continue-on-error: true
-        run: dotnet test tests/DotnetDiagnostics.BenchmarkDotNet.Tests/DotnetDiagnostics.BenchmarkDotNet.Tests.csproj --no-build --configuration Release --logger "trx;LogFileName=benchmark-test-results.trx" --results-directory TestResults
+        run: python scripts/ci-test.py benchmark tests/DotnetDiagnostics.BenchmarkDotNet.Tests/DotnetDiagnostics.BenchmarkDotNet.Tests.csproj
 
       # Pack smoke (issue #288): `dotnet build` + the CLI unit tests do NOT exercise the
       # PackAsTool metadata, README packing, or tool-manifest layout — those only fail at
@@ -572,50 +479,19 @@ jobs:
         if: ${{ always() && needs.changes.outputs.code == 'true' }}
         run: dotnet pack src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj --no-build --configuration Release -o artifacts/nupkg-smoke
 
-      # Same retry-script semantics as the pre-split single job. Runs alone on
-      # this VM (no Core.Tests sharing the process), which is exactly the
-      # isolation issue #861 asks for.
+      # Same fail-closed semantics as Linux, with the isolation from #861.
       - name: Test (Server integration)
         if: ${{ always() && needs.changes.outputs.code == 'true' }}
         shell: bash
-        run: scripts/ci-test-with-retry.sh server-test-results.trx -- dotnet test tests/DotnetDiagnostics.Mcp.IntegrationTests/DotnetDiagnostics.Mcp.IntegrationTests.csproj --no-build --configuration Release --blame-hang-timeout 5m --blame-hang-dump-type none --blame-crash --blame-crash-dump-type full --filter "Category!=KindIntegration&Category!=DockerIntegration" --logger "trx;LogFileName=server-test-results.trx" --results-directory TestResults
+        run: python scripts/ci-test.py mcp tests/DotnetDiagnostics.Mcp.IntegrationTests/DotnetDiagnostics.Mcp.IntegrationTests.csproj --filter "Category!=KindIntegration&Category!=DockerIntegration"
 
       - name: Verify expected test results
         if: ${{ always() && needs.changes.outputs.code == 'true' }}
         shell: bash
-        env:
-          BENCHMARK_TEST_OUTCOME: ${{ steps.benchmark_tests.outcome }}
         run: |
-          shopt -s globstar nullglob
-          # Bug #1861-2 (found in review): a nonempty TRX is not enough — see
-          # the equivalent comment in `windows-core-test`'s "Verify expected
-          # test results" step for the full rationale (the obj/ and
-          # NuGet-restore bugs found during this PR's validation both produced
-          # a valid, nonempty TRX with zero executed tests).
-          for trx in cli-test-results.trx benchmark-test-results.trx server-test-results.trx; do
-            found=false
-            for trx_path in TestResults{,.attempt1}/"$trx" TestResults{,.attempt1}/**/"$trx"; do
-              if [[ -s "$trx_path" ]]; then
-                found=true
-                counters=$(grep -oE '<Counters[^/]*/>' "$trx_path" | head -1)
-                total=$(echo "$counters" | sed -nE 's/.*total="([0-9]+)".*/\1/p')
-                if [[ -z "$counters" || "${total:-0}" -eq 0 ]]; then
-                  echo "::error::'$trx_path' has no <Counters> element or reports total=0 executed tests — treating a silently-zero-test run as a failure."
-                  exit 1
-                fi
-                echo "$trx: total=$total"
-                break
-              fi
-            done
-            if [[ "$found" == false ]]; then
-              echo "::error::Expected nonempty test result '$trx' was not produced."
-              exit 1
-            fi
+          for suite in cli benchmark mcp; do
+            python scripts/ci-test.py "$suite" --verify-only
           done
-          if [[ "$BENCHMARK_TEST_OUTCOME" != "success" ]]; then
-            echo "::error::BenchmarkDotNet tests completed with outcome '$BENCHMARK_TEST_OUTCOME'."
-            exit 1
-          fi
 
       - name: Upload test results (TRX)
         if: ${{ always() && needs.changes.outputs.code == 'true' }}
@@ -623,8 +499,10 @@ jobs:
         with:
           name: test-results-windows-latest-mcp
           path: |
-            **/TestResults/*.trx
-            **/TestResults.attempt1/*.trx
+            TestResults/**/*.trx
+            TestResults/**/*.txt
+            TestResults/**/*.log
+            TestResults/**/*Sequence.xml
           if-no-files-found: ignore
 
       - name: Upload crash dumps
@@ -633,8 +511,8 @@ jobs:
         with:
           name: crash-dumps-windows-latest-mcp
           path: |
-            **/TestResults/**/*.dmp
-            **/TestResults.attempt1/**/*.dmp
+            TestResults/**/*.dmp
+            TestResults/**/*crashreport*
           if-no-files-found: ignore
 
   # Aggregator that republishes the split Windows jobs' combined result under

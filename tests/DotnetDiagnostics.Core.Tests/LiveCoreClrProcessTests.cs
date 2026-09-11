@@ -936,7 +936,7 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
             span.ParentStatus == ActivityTraceParentStatus.Resolved);
     }
 
-    [SkipOnLinuxCiFact("Quarantined on Linux CI: crashes test host inside libcoreclr's EventPipe SampleProfiler. Tracked in #147 (dotnet/runtime#128525). Runnable locally and on Windows CI.")]
+    [Fact]
     public async Task CpuSampler_ProducesHotspots()
     {
         EnsureSampleRunning();
@@ -953,7 +953,7 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         result.Artifact.Root.Children.Should().NotBeEmpty("the call-tree artifact must capture at least one stack");
     }
 
-    [SkipOnLinuxCiFact("Quarantined on Linux CI: crashes test host inside libcoreclr's EventPipe SampleProfiler. Tracked in #147 (dotnet/runtime#128525). Runnable locally and on Windows CI.")]
+    [Fact]
     public async Task CpuSampler_PopulatesTimingBreakdown()
     {
         EnsureSampleRunning();
@@ -985,7 +985,7 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
             "the per-phase breakdown should explain essentially all observed elapsed time");
     }
 
-    [SkipOnLinuxCiFact("Quarantined on Linux CI: the gated cpu-sample capture uses the EventPipe SampleProfiler crash path. Tracked in #147 (dotnet/runtime#128525). Runnable locally and on Windows CI.")]
+    [Fact]
     public async Task GatedCapture_FiresCpuSample_WhenCpuThresholdTrips()
     {
         EnsureSampleRunning();
@@ -1059,7 +1059,7 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         await Task.WhenAll(workers);
     }
 
-    [SkipOnLinuxCiFact("Quarantined on Linux CI: crashes test host inside libcoreclr's EventPipe SampleProfiler. Tracked in #147 (dotnet/runtime#128525). Runnable locally and on Windows CI.")]
+    [Fact]
     public async Task CpuSampler_ResolvesSourceLines_WhenEnabled()
     {
         EnsureSampleRunning();
@@ -1081,7 +1081,7 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         result.Artifact.ResolvedSources.Should().NotBeNull();
     }
 
-    [SkipOnLinuxCiFact("Quarantined on Linux CI: crashes test host inside libcoreclr's EventPipe SampleProfiler. Tracked in #147 (dotnet/runtime#128525). Runnable locally and on Windows CI.")]
+    [Fact]
     public async Task CpuSampler_EmitsMethodIdentities_ForUserCode()
     {
         EnsureSampleRunning();
@@ -1623,13 +1623,8 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         }
     }
 
-    // Quarantined on Linux CI only: this test reliably segfaults the xunit test host on
-    // ubuntu-latest under full-suite load (native crash inside libcoreclr's EventPipe
-    // SampleProfiler — see #147). Runs locally on Linux/macOS and on Windows CI so the
-    // closed-generic handoff contract from #21 stays covered while we pursue the upstream
-    // CoreCLR fix.
     [Trait("Category", "Flaky")]
-    [SkipOnLinuxCiFact("Quarantined on Linux CI: crashes test host inside libcoreclr's EventPipe SampleProfiler. Tracked in #147 (dump artifact 7161760638 on run 26290739828). Runnable locally and on Windows CI.", Timeout = 60_000)]
+    [Fact(Timeout = 60_000)]
     public async Task CpuSampler_EmitsClosedGenericInstantiations_FromCoreClrSampleFixture()
     {
         EnsureSampleRunning();
@@ -1751,11 +1746,8 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         }
     }
 
-    // Quarantined on Linux CI only (same native libcoreclr crash family as #147; this
-    // specific test is tracked in #145). Stays runnable locally and on Windows CI so the
-    // ClrMD opt-in method-level instantiation enrichment from #86 keeps coverage.
     [Trait("Category", "Flaky")]
-    [SkipOnLinuxCiFact("Quarantined on Linux CI: crashes test host inside libcoreclr's EventPipe SampleProfiler. Tracked in #145 / #147 (dump artifact 7161760638 on run 26290739828). Runnable locally and on Windows CI.", Timeout = 90_000)]
+    [Fact(Timeout = 90_000)]
     public async Task CpuSampler_ResolvesMethodLevelClosedGenerics_OnlyWhenOptInEnabled()
     {
         EnsureSampleRunning();
@@ -1950,7 +1942,7 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
     }
 
     [Trait("Category", "Flaky")]
-    [SkipOnLinuxCiFact("Quarantined on Linux CI: EventPipe SampleProfiler can crash the host under ubuntu-latest load (tracked in #147). Runnable locally and on Windows CI.", Timeout = 90_000)]
+    [Fact(Timeout = 90_000)]
     public async Task Diff_CpuSample_DetectsRegression()
     {
         EnsureSampleRunning();
@@ -2954,7 +2946,7 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
     }
 
     [Trait("Category", "Flaky")]
-    [SkipOnLinuxCiFact("Quarantined on Linux CI: EventPipe SampleProfiler can crash the host under ubuntu-latest load (tracked in #147). Runnable locally and on Windows CI.", Timeout = 90_000)]
+    [Fact(Timeout = 90_000)]
     public async Task Cpu_HandleEnablesDrilldownViews()
     {
         // CPU drill-down analytics views (#316): top-methods / by-module / by-namespace / hot-path /
@@ -3022,7 +3014,7 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
     }
 
     [Trait("Category", "Flaky")]
-    [SkipOnLinuxCiFact("Quarantined on Linux CI: EventPipe SampleProfiler can crash the host under ubuntu-latest load (tracked in #147). Runnable locally and on Windows CI.", Timeout = 90_000)]
+    [Fact(Timeout = 90_000)]
     public async Task CpuSampler_CpuBurnCallTree_RootsAtEndpointLambda_WithoutRequiringSha256Leaf()
     {
         await using var badSample = await StartPublishedSampleAsync("BadCodeSample");

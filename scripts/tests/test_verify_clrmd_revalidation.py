@@ -2,35 +2,28 @@ import importlib.util
 import json
 import os
 from pathlib import Path
-import re
 import shutil
 import subprocess
+import sys
 import unittest
 import uuid
 import xml.etree.ElementTree as ET
 
 SPEC = importlib.util.spec_from_file_location(
     "verifier", Path(__file__).parents[1] / "verify-clrmd-revalidation.py")
+sys.path.insert(0, str(Path(__file__).parents[1]))
 VERIFIER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(VERIFIER)
 NS = "http://microsoft.com/schemas/VisualStudio/TeamTest/2010"
 
 
-class RevalidationEvidenceTests(unittest.TestCase):
+class EvidenceFixture(unittest.TestCase):
     def setUp(self):
         self.root = Path("artifacts") / f"clrmd-verifier-test-{uuid.uuid4().hex}"
         self.directory = self.root / "01" / "core"
         self.directory.mkdir(parents=True)
         self.addCleanup(shutil.rmtree, self.root)
-        source = Path("tests/DotnetDiagnostics.Core.Tests/LiveCoreClrProcessTests.cs").read_text()
-        methods = re.findall(
-            r"\[SkipOnLinuxCiFact\(.*?\)\]\s*public async Task (\w+)\(", source, re.DOTALL)
-        methods += [
-            "DumpInspector_ExtractsHeapStats_AndTypeIdentityForUserCode",
-            "DumpInspector_InspectsObjectAndGcRoot_FromDumpOriginSnapshot",
-        ]
-        self.names = ["DotnetDiagnostics.Core.Tests.LiveCoreClrProcessTests." + name
-                      for name in methods]
+        self.names = sorted(VERIFIER.required_tests("core"))
         self.names += ["DotnetDiagnostics.Core.Tests.OtherTest.PlatformSpecific"]
         self.write_evidence()
 
@@ -54,13 +47,15 @@ class RevalidationEvidenceTests(unittest.TestCase):
         (self.root / "core-discovery.txt").write_text(
             "The following Tests are available:\n" + "\n".join("    " + name for name in self.names))
 
-    def verify(self):
-        VERIFIER.verify(self.root, "01", "core")
-
     def mutate(self, path, attribute, value):
         tree = ET.parse(self.trx)
         tree.find(path, {"t": NS}).set(attribute, value)
         tree.write(self.trx)
+
+
+class RevalidationEvidenceTests(EvidenceFixture):
+    def verify(self):
+        VERIFIER.verify(self.root, "01", "core")
 
     def test_complete_run_accepts_unrelated_platform_skip(self):
         self.verify()
@@ -75,7 +70,7 @@ class RevalidationEvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Skipped test counters mismatch"):
             self.verify()
 
-    def test_skipped_quarantine_is_rejected(self):
+    def test_skipped_historical_regression_is_rejected(self):
         tree = ET.parse(self.trx)
         results = tree.findall("t:Results/t:UnitTestResult", {"t": NS})
         results[0].set("outcome", "NotExecuted")
@@ -163,6 +158,7 @@ class RevalidationEvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "inventory/outcomes changed"):
             VERIFIER.verify(self.root, "02", "core")
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), "The opt-in runner requires Linux")
     def test_runner_preserves_crash_and_timeout_exit_without_retry(self):
         runner = Path("scripts/revalidate-clrmd-linux.sh").resolve()
         for exit_code in (139, 124):
