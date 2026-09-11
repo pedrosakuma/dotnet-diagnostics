@@ -360,11 +360,16 @@ jobs:
       # skip (or, worse, their readiness waits just time out) on this VM.
       # Preserve the newer host from Setup .NET 10; restore's build servers
       # may still hold dotnet.exe open, so older runtimes must not overwrite it.
+      - name: Check installer download transport handling
+        if: needs.changes.outputs.code == 'true'
+        run: python -m unittest discover -s scripts/tests -p 'test_installer_download.py'
+
       - name: Install .NET 8 / 9 runtimes for cross-version tests
         if: needs.changes.outputs.code == 'true'
         shell: pwsh
         run: |
-          Invoke-WebRequest -Uri https://dot.net/v1/dotnet-install.ps1 -OutFile dotnet-install.ps1
+          . ./scripts/download-dotnet-installer.ps1
+          Save-DotnetInstallScript
           ./dotnet-install.ps1 -Channel 8.0 -Runtime dotnet -InstallDir "$env:DOTNET_ROOT" -SkipNonVersionedFiles
           ./dotnet-install.ps1 -Channel 9.0 -Runtime dotnet -InstallDir "$env:DOTNET_ROOT" -SkipNonVersionedFiles
           Remove-Item dotnet-install.ps1
