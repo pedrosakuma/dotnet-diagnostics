@@ -133,6 +133,7 @@ post-call limit; it is not a harness hard budget and does not imply that a turn 
 For this transport, token/cost fields remain unavailable and the hard bounds are model turns, one
 decision per CLI process, tool calls, wall time, capture time, response bytes, and retained artifact
 bytes.
+
 The CLI is explicitly invoked with `--effort low` to reduce reasoning overhead; this does not
 guarantee a token count or change any hard response-byte, wall-time, or diagnostic budget.
 
@@ -161,8 +162,8 @@ turn emitted no structured decision. The protocol reminder was therefore repeate
 conversation payload so the strict output boundary is the final model-visible instruction; this
 changes no diagnostic hint, tool permission, or acceptance rule. Attempt 05 still emitted no
 structured decision on its first turn, so it called no diagnostic tool. All three attempts activated
-and independently cleaned up their real targets. No attempt produced a final diagnosis, citations,
-or assessment, so real-agent acceptance remains incomplete.
+and independently cleaned up their real targets. None of those three attempts produced an accepted
+final diagnosis or assessment.
 
 Instrumented attempt 06 transparently forwarded the same CLI arguments and streams while retaining
 only assistant text in a separate private debugging artifact after removing event metadata. It
@@ -174,6 +175,28 @@ it reads only `assistant.message.data.content`, never decisions embedded in even
 rejects nonempty native CLI tool requests. The prompt fingerprint includes the final reminder.
 Low reasoning effort is now explicit to reduce CLI output overhead. These changes do not establish
 a successful smoke by themselves; attempt 06 and its verified target cleanup remain recorded as a failure.
+
+### Successful bounded smoke and interpretation limits
+
+Uninstrumented attempt 07 passed on 2026-09-12 using code commit
+`6e84c07cb847e1b097444acbfa8ebaf1adeae62a`, the direct installed CLI, and `gpt-5.4-mini` with low
+reasoning effort. In 25.8 seconds, the model chose one six-second counters capture and returned a
+structured diagnosis on its second turn: three claims, evidence locations, explicit uncertainty,
+and next steps. Activation, collection, execution, citation resolution, and independently observed
+target cleanup all passed. Invocation directories were empty afterward. No hard budget was increased,
+no CLI tool executed, and token/cost usage remained explicitly unavailable.
+
+The evaluator-private report is retained as `copilot-920-smoke-07/report.json`, run ID
+`90a296f1e493432396e77703e4dfb228`, SHA-256
+`f95a09d6a222291ee2c8ebc8a258f78fb90aac64767aa7ece820b11e1243a8ff`.
+Attempts 01-06 remain failures; the transport-only probe and the earlier review deviation are not
+counted as successful diagnostic runs. One passing development smoke does not establish reliability.
+
+This satisfies the real-agent harness execution criterion, **not diagnostic correctness**. Some
+citations resolve but name different counters from the associated claim; for example, a claim about
+GC pause time cites a generation-size counter. Broad absence claims also require evidence-quality
+review. The current assessor only resolves locations, so its `passed` outcome cannot approve those
+interpretations. Preserve these examples for the separate human-calibrated advisory pilot in #921.
 
 ## Bounds and evidence
 
