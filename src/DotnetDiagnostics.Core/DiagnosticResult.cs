@@ -139,4 +139,8 @@ public enum NextActionHintPriority
 public sealed record DiagnosticError(
     string Kind,
     string Message,
-    string? Detail = null);
+    string? Detail = null)
+{
+    /// <summary>Structured evidence limitations relevant to this failed interpretation or view.</summary>
+    public DotnetDiagnostics.Core.Evidence.EvidenceQuality? Quality { get; init; }
+}

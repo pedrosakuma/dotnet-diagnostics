@@ -1,4 +1,5 @@
 using System.Globalization;
+using DotnetDiagnostics.Core.Evidence;
 using System.Text;
 using System.Text.Json;
 using DotnetDiagnostics.Core;
@@ -181,6 +182,20 @@ internal static partial class CliCommands
                 var tokenText = token is { } tk ? string.Create(CultureInfo.InvariantCulture, $"0x{tk:X8}") : "(none)";
                 sb.AppendLine(CultureInfo.InvariantCulture, $"    {id}: mvid={mvid} token={tokenText}");
             }
+        }
+    }
+
+    internal static void RenderEvidenceQuality(StringBuilder sb, EvidenceQuality? quality)
+    {
+        var effective = quality ?? EvidenceQuality.LegacyUnknown;
+        sb.AppendLine();
+        sb.AppendLine(CultureInfo.InvariantCulture,
+            $"  evidence : positive={effective.Conclusions.RetainedExplicitPositiveEvidence}, absence={effective.Conclusions.AbsenceOrExhaustiveCounts}, regression={effective.Conclusions.RegressionOrHealthyControl}");
+        foreach (var limitation in effective.Limitations)
+        {
+            var count = limitation.AffectedCount is { } affected ? $" ({affected:N0})" : string.Empty;
+            sb.AppendLine(CultureInfo.InvariantCulture,
+                $"    - {limitation.Category}/{limitation.Scope}{count}: {limitation.Detail}");
         }
     }
 

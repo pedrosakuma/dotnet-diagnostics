@@ -1,4 +1,5 @@
 using DotnetDiagnostics.Core.Dump;
+using DotnetDiagnostics.Core.Evidence;
 using FluentAssertions;
 
 namespace DotnetDiagnostics.Core.Tests;
@@ -62,5 +63,80 @@ public class GcDumpTypeAggregatorTests
         var (byBytes, _) = agg.Project(snapshotTopTypes: 5);
 
         byBytes.Should().HaveCount(5);
+    }
+
+    [Fact]
+    public void Quality_DistinguishesProjectionMissingNamesAndCompletion()
+    {
+        var status = new GcDumpCaptureStatus(
+            GcStopObserved: true,
+            EventStreamCompleted: true,
+            TimedOut: false,
+            ReaderFailed: false,
+            TraceExportRequested: false,
+            TraceExportCompleted: false);
+
+        var quality = GcDumpEvidence.BuildQuality(
+            nodeCount: 10,
+            typeCount: 5,
+            missingTypeNameCount: 2,
+            retainedTypeCount: 3,
+            status);
+
+        quality.Conclusions.RetainedExplicitPositiveEvidence.Should().Be(EvidenceConclusionSupport.Supported);
+        quality.Conclusions.AbsenceOrExhaustiveCounts.Should().Be(EvidenceConclusionSupport.Inconclusive);
+        quality.Limitations.Should().Contain(l =>
+            l.Category == EvidenceLimitationCategory.OutputProjection
+            && l.Scope == "snapshot-top-types"
+            && l.AffectedCount == 2);
+        quality.Limitations.Should().Contain(l =>
+            l.Category == EvidenceLimitationCategory.MechanismUnavailable
+            && l.Scope == "type-names"
+            && l.AffectedCount == 2);
+        quality.Limitations.Should().Contain(l =>
+            l.Category == EvidenceLimitationCategory.MechanismUnobservable
+            && l.Scope == "eventpipe-loss");
+        quality.Limitations.Should().NotContain(l => l.Scope == "gc-stop");
+    }
+
+    [Fact]
+    public void Quality_EmptyWindowDoesNotClaimStartupCause()
+    {
+        var quality = GcDumpEvidence.BuildQuality(
+            nodeCount: 0,
+            typeCount: 0,
+            missingTypeNameCount: 0,
+            retainedTypeCount: 0,
+            new GcDumpCaptureStatus(false, false, true, false, false, false));
+
+        quality.Conclusions.RetainedExplicitPositiveEvidence.Should().Be(EvidenceConclusionSupport.NotEstablished);
+        quality.Limitations.Should().Contain(l => l.Scope == "heap-nodes");
+        quality.Limitations.Should().NotContain(l => l.Category == EvidenceLimitationCategory.Startup);
+    }
+
+    [Fact]
+    public void Quality_ReaderAndTraceFailuresRemainDistinct()
+    {
+        var quality = GcDumpEvidence.BuildQuality(
+            nodeCount: 4,
+            typeCount: 1,
+            missingTypeNameCount: 0,
+            retainedTypeCount: 1,
+            new GcDumpCaptureStatus(
+                GcStopObserved: true,
+                EventStreamCompleted: false,
+                TimedOut: false,
+                ReaderFailed: true,
+                TraceExportRequested: true,
+                TraceExportCompleted: false));
+
+        quality.Limitations.Should().Contain(l =>
+            l.Category == EvidenceLimitationCategory.ProcessingFailure
+            && l.Scope == "event-stream"
+            && l.AffectedCount == 1);
+        quality.Limitations.Should().Contain(l =>
+            l.Category == EvidenceLimitationCategory.ProcessingFailure
+            && l.Scope == "trace-export");
+        quality.Limitations.Should().NotContain(l => l.Scope == "timeout");
     }
 }

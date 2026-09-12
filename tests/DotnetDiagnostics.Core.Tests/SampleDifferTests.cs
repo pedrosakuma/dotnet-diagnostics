@@ -2,6 +2,7 @@ using DotnetDiagnostics.Core.Comparison;
 using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Dump;
+using DotnetDiagnostics.Core.Evidence;
 using DotnetDiagnostics.Core.Memory;
 using FluentAssertions;
 
@@ -63,6 +64,46 @@ public sealed class SampleDifferTests
 
         diff.Verdict.Should().Be("no_change");
         diff.Notes.Should().Contain(note => note.Contains("No overlapping symbols/types", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData(HeapSnapshotOrigin.Live)]
+    [InlineData(HeapSnapshotOrigin.Dump)]
+    public void HeapDiff_ClrMdProducerShape_AllowsAddedRowsWithoutQuality(HeapSnapshotOrigin origin)
+    {
+        var baseline = HeapSnapshot(("Existing.Type", 100, 1)) with { Origin = origin };
+        var current = HeapSnapshot(("Existing.Type", 110, 1), ("Brand.New", 500, 3)) with
+        {
+            Origin = origin,
+        };
+
+        var diff = ComparablePairwiseSampleDiff.Compare(baseline, "b", current, "c", minDeltaPct: 0, topN: 10);
+
+        diff.Verdict.Should().Be("regression");
+        diff.Added.Should().ContainSingle(row => row.Key.TypeFullName == "Brand.New");
+        diff.BaselineQuality.Should().BeNull();
+        diff.CurrentQuality.Should().BeNull();
+    }
+
+    [Fact]
+    public void HeapDiff_LegacyGcDump_OmitsUnmatchedRowsAndIsInconclusive()
+    {
+        var baseline = HeapSnapshot(("Existing.Type", 100, 1)) with
+        {
+            Origin = HeapSnapshotOrigin.GcDump,
+        };
+        var current = HeapSnapshot(("Existing.Type", 110, 1), ("PossiblyOmitted.Type", 500, 3)) with
+        {
+            Origin = HeapSnapshotOrigin.GcDump,
+            Quality = CompleteGcDumpQuality,
+        };
+
+        var diff = ComparablePairwiseSampleDiff.Compare(baseline, "b", current, "c", minDeltaPct: 0, topN: 10);
+
+        diff.Verdict.Should().Be("inconclusive");
+        diff.Added.Should().BeEmpty();
+        diff.Changed.Should().ContainSingle();
+        diff.BaselineQuality.Should().BeEquivalentTo(EvidenceQuality.LegacyUnknown);
     }
 
     [Fact]
@@ -159,4 +200,12 @@ public sealed class SampleDifferTests
             TopTypesByBytes: stats,
             TopTypesByInstances: stats);
     }
+
+    private static EvidenceQuality CompleteGcDumpQuality { get; } = new(
+        EvidenceQuality.SchemaV1,
+        [],
+        new EvidenceConclusionPolicy(
+            EvidenceConclusionSupport.Supported,
+            EvidenceConclusionSupport.Supported,
+            EvidenceConclusionSupport.Supported));
 }

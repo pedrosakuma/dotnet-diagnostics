@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using DotnetDiagnostics.Cli;
 using DotnetDiagnostics.Core.Dump;
+using DotnetDiagnostics.Core.Evidence;
 using FluentAssertions;
 
 namespace DotnetDiagnostics.Cli.Tests;
@@ -74,5 +75,26 @@ public sealed class CliHeapTableTests
         CliCommands.RenderTopTypes(sb, Array.Empty<TypeStat>());
 
         sb.ToString().Should().BeEmpty();
+    }
+
+    [Fact]
+    public void RenderEvidenceQuality_StatesInconclusivePoliciesAndLimitations()
+    {
+        var sb = new StringBuilder();
+        var quality = new EvidenceQuality(
+            EvidenceQuality.SchemaV1,
+            [new EvidenceLimitation(EvidenceLimitationCategory.MechanismUnobservable, "eventpipe-loss", null, "Loss is unavailable.")],
+            new EvidenceConclusionPolicy(
+                EvidenceConclusionSupport.Supported,
+                EvidenceConclusionSupport.Inconclusive,
+                EvidenceConclusionSupport.Inconclusive));
+
+        CliCommands.RenderEvidenceQuality(sb, quality);
+
+        var rendered = sb.ToString();
+        rendered.Should().Contain("positive=Supported");
+        rendered.Should().Contain("absence=Inconclusive");
+        rendered.Should().Contain("regression=Inconclusive");
+        rendered.Should().Contain("MechanismUnobservable/eventpipe-loss");
     }
 }

@@ -423,6 +423,7 @@ internal static partial class CliCommands
         {
             Address = inspection.Address,
             GcRoot = inspection,
+            Quality = GcDumpEvidence.GetApplicableQuality(heap),
         };
         return DiagnosticResult.Ok(result, summary);
     }
@@ -438,6 +439,7 @@ internal static partial class CliCommands
         {
             Address = redacted.Address,
             ObjectDetails = redacted,
+            Quality = GcDumpEvidence.GetApplicableQuality(heap),
         };
         return DiagnosticResult.Ok(result, summary);
     }

@@ -61,13 +61,10 @@ public static class SnapshotDiffer
         var (keyMatrix, keySetPrimaryDir) = isKeySet
             ? BuildKeyMatrix(snapshots, mode, minDeltaPct, topN, notes)
             : (Array.Empty<KeyMatrixRow>(), (BetterDirection?)null);
-        var threadPoolQualityAdequate = !string.Equals(kind, Collection.CollectionHandleKinds.ThreadPoolSnapshot, StringComparison.Ordinal)
-            || snapshots.All(static snapshot =>
-                snapshot.Quality?.Conclusions.RegressionOrHealthyControl
-                    == Evidence.EvidenceConclusionSupport.Supported);
-        if (!threadPoolQualityAdequate)
+        var qualityAdequate = snapshots.All(IsVerdictQualityAdequate);
+        if (!qualityAdequate)
         {
-            AddThreadPoolQualityNotes(snapshots, notes);
+            AddQualityNotes(snapshots, notes);
             metricSeries = metricSeries
                 .Select(static series => series with
                 {
@@ -80,12 +77,12 @@ public static class SnapshotDiffer
 
         if (mode == JourneyMode.Dispersion)
         {
-            var dispVerdict = threadPoolQualityAdequate ? DispersionVerdict(metricSeries, keyMatrix) : Inconclusive;
+            var dispVerdict = qualityAdequate ? DispersionVerdict(metricSeries, keyMatrix) : Inconclusive;
             return WithQuality(new SnapshotJourneyDiff(kind, mode, labels, dispVerdict, metricSeries, keyMatrix, Pairwise: null, notes), snapshots);
         }
 
         var pairwise = BuildPairwise(snapshots, isKeySet, keySetPrimaryDir, minDeltaPct);
-        if (!threadPoolQualityAdequate)
+        if (!qualityAdequate)
         {
             pairwise = new PairwiseJourney(
                 pairwise.Headline with { Verdict = Inconclusive },
@@ -105,19 +102,19 @@ public static class SnapshotDiffer
         IReadOnlyList<ComparableSnapshot> snapshots)
         => diff with { CaptureQuality = snapshots.Select(static snapshot => snapshot.Quality).ToArray() };
 
-    private static void AddThreadPoolQualityNotes(
+    private static void AddQualityNotes(
         IReadOnlyList<ComparableSnapshot> snapshots,
         List<string> notes)
     {
         for (var index = 0; index < snapshots.Count; index++)
         {
             var snapshot = snapshots[index];
-            var quality = snapshot.Quality ?? Evidence.EvidenceQuality.LegacyUnknown;
-            if (quality.Conclusions.RegressionOrHealthyControl == Evidence.EvidenceConclusionSupport.Supported)
+            if (IsVerdictQualityAdequate(snapshot))
             {
                 continue;
             }
 
+            var quality = snapshot.Quality ?? Evidence.EvidenceQuality.LegacyUnknown;
             var categories = string.Join(
                 ", ",
                 quality.Limitations.Select(static limitation => limitation.Category).Distinct());
@@ -129,6 +126,34 @@ public static class SnapshotDiffer
                 $"Capture '{snapshot.Label}' cannot support regression or healthy-control conclusions ({categories}).");
         }
     }
+
+    private static bool IsVerdictQualityAdequate(ComparableSnapshot snapshot)
+    {
+        if (string.Equals(
+            snapshot.Kind,
+            Collection.CollectionHandleKinds.ThreadPoolSnapshot,
+            StringComparison.Ordinal))
+        {
+            return SupportsRegression(snapshot.Quality);
+        }
+
+        if (!string.Equals(snapshot.Kind, "heap-snapshot", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return snapshot.HeapOrigin switch
+        {
+            Dump.HeapSnapshotOrigin.Live or Dump.HeapSnapshotOrigin.Dump => true,
+            Dump.HeapSnapshotOrigin.GcDump => SupportsRegression(snapshot.Quality),
+            null => SupportsRegression(snapshot.Quality),
+            _ => false,
+        };
+    }
+
+    private static bool SupportsRegression(Evidence.EvidenceQuality? quality)
+        => quality?.Conclusions.RegressionOrHealthyControl
+            == Evidence.EvidenceConclusionSupport.Supported;
 
     // ---- Metric series ----------------------------------------------------------------------
 
@@ -213,6 +238,7 @@ public static class SnapshotDiffer
         IReadOnlyList<ComparableSnapshot> snapshots, JourneyMode mode, double minDeltaPct, int topN, List<string> notes)
     {
         var lookups = snapshots.Select(s => KeyLookup(s, notes)).ToArray();
+        var missingRowsAreZero = snapshots.All(SupportsAbsence);
 
         var order = new List<string>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -254,7 +280,7 @@ public static class SnapshotDiffer
 
             var (key, name) = display[id];
             var dispersion = mode == JourneyMode.Dispersion
-                ? Dispersion(values, missingAsZero: true)
+                ? Dispersion(values, missingAsZero: missingRowsAreZero)
                 : null;
             rows.Add(new KeyMatrixRow(key, name, values, deltaAbs, deltaPct, direction, dispersion));
         }
@@ -546,8 +572,10 @@ public static class SnapshotDiffer
             }
         }
 
-        var added = toMap.Keys.Except(fromMap.Keys, StringComparer.Ordinal).Any();
-        var removed = fromMap.Keys.Except(toMap.Keys, StringComparer.Ordinal).Any();
+        var added = SupportsAbsence(from)
+            && toMap.Keys.Except(fromMap.Keys, StringComparer.Ordinal).Any();
+        var removed = SupportsAbsence(to)
+            && fromMap.Keys.Except(toMap.Keys, StringComparer.Ordinal).Any();
         if (dir == BetterDirection.Lower)
         {
             regressed |= added;
@@ -567,6 +595,24 @@ public static class SnapshotDiffer
             : regressed ? Regression
             : improved ? Improvement
             : NoChange;
+
+    private static bool SupportsAbsence(ComparableSnapshot snapshot)
+    {
+        if (!string.Equals(snapshot.Kind, "heap-snapshot", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return snapshot.HeapOrigin switch
+        {
+            Dump.HeapSnapshotOrigin.Live or Dump.HeapSnapshotOrigin.Dump => true,
+            Dump.HeapSnapshotOrigin.GcDump => snapshot.Quality?.Conclusions.AbsenceOrExhaustiveCounts
+                == Evidence.EvidenceConclusionSupport.Supported,
+            null => snapshot.Quality?.Conclusions.AbsenceOrExhaustiveCounts
+                == Evidence.EvidenceConclusionSupport.Supported,
+            _ => false,
+        };
+    }
 
     private static MetricRole HighestRole(IEnumerable<MetricValue> metrics)
     {

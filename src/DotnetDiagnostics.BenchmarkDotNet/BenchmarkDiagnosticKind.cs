@@ -62,8 +62,9 @@ public enum BenchmarkDiagnosticKind
     Requests,
 
     /// <summary>
-    /// <c>gcdump</c> — managed-heap <b>retention</b> snapshot (per-type instance/byte totals) via the
-    /// EventPipe GCHeapSnapshot keyword. CoreCLR only; withheld (NotSupported) on NativeAOT children.
+    /// <c>gcdump</c> — observed managed-heap per-type instance/byte totals via the EventPipe
+    /// GCHeapSnapshot keyword. It induces a blocking Gen2 GC and does not retain object edges/roots.
+    /// CoreCLR only; withheld (NotSupported) on NativeAOT children.
     /// </summary>
     GcDump,
 }

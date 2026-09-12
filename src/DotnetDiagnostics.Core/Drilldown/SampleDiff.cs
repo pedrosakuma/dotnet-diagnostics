@@ -43,4 +43,6 @@ public sealed record SampleDiff<TKey, TMetric>(
     string Verdict)
 {
     public IReadOnlyList<string>? Notes { get; init; }
+    public Evidence.EvidenceQuality? BaselineQuality { get; init; }
+    public Evidence.EvidenceQuality? CurrentQuality { get; init; }
 }

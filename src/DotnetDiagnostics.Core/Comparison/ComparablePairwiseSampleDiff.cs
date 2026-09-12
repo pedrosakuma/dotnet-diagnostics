@@ -63,8 +63,22 @@ public static class ComparablePairwiseSampleDiff
             notes.Add($"Comparison spans different runs/processes: baseline pid {baseline.ProcessId}, current pid {current.ProcessId}.");
         }
 
-        var (baselineMetrics, currentMetrics) = CorrelateHeapMetrics(baseline, current);
-        return BuildDiff(
+        var baselineQuality = GcDumpEvidence.GetApplicableQuality(baseline);
+        var currentQuality = GcDumpEvidence.GetApplicableQuality(current);
+        var baselineSupportsAbsence = GcDumpEvidence.SupportsAbsence(baseline);
+        var currentSupportsAbsence = GcDumpEvidence.SupportsAbsence(current);
+        var (baselineMetrics, currentMetrics) = CorrelateHeapMetrics(
+            baseline,
+            current,
+            baselineSupportsAbsence,
+            currentSupportsAbsence);
+        if ((baseline.Origin == HeapSnapshotOrigin.GcDump && !baselineSupportsAbsence)
+            || (current.Origin == HeapSnapshotOrigin.GcDump && !currentSupportsAbsence))
+        {
+            notes.Add("Unmatched types were omitted because one or both captures do not support absence or exhaustive-count conclusions.");
+        }
+
+        var diff = BuildDiff(
             kind: "heap-snapshot",
             baselineHandle,
             currentHandle,
@@ -74,10 +88,23 @@ public static class ComparablePairwiseSampleDiff
             current: currentMetrics,
             primaryMetric: static metric => metric.TotalBytes,
             notes);
+        var supportsRegression =
+            GcDumpEvidence.SupportsRegression(baseline)
+            && GcDumpEvidence.SupportsRegression(current);
+        return diff with
+        {
+            Verdict = supportsRegression ? diff.Verdict : "inconclusive",
+            BaselineQuality = baselineQuality,
+            CurrentQuality = currentQuality,
+        };
     }
 
     private static (Dictionary<TypeIdentity, HeapDiffMetric> Baseline, Dictionary<TypeIdentity, HeapDiffMetric> Current)
-        CorrelateHeapMetrics(HeapSnapshotArtifact baseline, HeapSnapshotArtifact current)
+        CorrelateHeapMetrics(
+            HeapSnapshotArtifact baseline,
+            HeapSnapshotArtifact current,
+            bool baselineSupportsAbsence,
+            bool currentSupportsAbsence)
     {
         var baselineRows = HeapSnapshotComparableProjector.ProjectTypedByAvailableIdentity(baseline);
         var currentRows = HeapSnapshotComparableProjector.ProjectTypedByAvailableIdentity(current);
@@ -90,7 +117,10 @@ public static class ComparablePairwiseSampleDiff
             var selection = HeapSnapshotComparableProjector.FindUniqueBestMatch(currentRow.Identity, unmatchedBaseline);
             if (selection.Match is not { } match)
             {
-                currentMetrics[currentRow.Identity] = currentRow.Metric;
+                if (baselineSupportsAbsence)
+                {
+                    currentMetrics[currentRow.Identity] = currentRow.Metric;
+                }
                 continue;
             }
 
@@ -99,7 +129,10 @@ public static class ComparablePairwiseSampleDiff
                 || reverse.Match is null
                 || !Equals(reverse.Match.Identity, currentRow.Identity))
             {
-                currentMetrics[currentRow.Identity] = currentRow.Metric;
+                if (baselineSupportsAbsence)
+                {
+                    currentMetrics[currentRow.Identity] = currentRow.Metric;
+                }
                 continue;
             }
 
@@ -108,9 +141,12 @@ public static class ComparablePairwiseSampleDiff
             currentMetrics[currentRow.Identity] = currentRow.Metric;
         }
 
-        foreach (var baselineRow in unmatchedBaseline)
+        if (currentSupportsAbsence)
         {
-            baselineMetrics[baselineRow.Identity] = baselineRow.Metric;
+            foreach (var baselineRow in unmatchedBaseline)
+            {
+                baselineMetrics[baselineRow.Identity] = baselineRow.Metric;
+            }
         }
 
         return (baselineMetrics, currentMetrics);

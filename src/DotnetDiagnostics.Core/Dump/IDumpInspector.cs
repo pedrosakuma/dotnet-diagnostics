@@ -1,3 +1,5 @@
+using DotnetDiagnostics.Core.Evidence;
+
 namespace DotnetDiagnostics.Core.Dump;
 
 /// <summary>
@@ -126,6 +128,13 @@ public sealed record HeapSnapshotArtifact(
     IReadOnlyList<TypeStat> TopTypesByBytes,
     IReadOnlyList<TypeStat> TopTypesByInstances)
 {
+    /// <summary>
+    /// Structured limitations on conclusions drawn from this capture. A null value means the
+    /// artifact predates evidence-quality metadata and must be treated as legacy-unknown.
+    /// </summary>
+    public EvidenceQuality? Quality { get; init; }
+    /// <summary>EventPipe gcdump completion state; <c>null</c> for other origins and legacy captures.</summary>
+    public GcDumpCaptureStatus? GcDumpStatus { get; init; }
     /// <summary>Path to the originating dump file when <see cref="Origin"/> is <see cref="HeapSnapshotOrigin.Dump"/>; <c>null</c> for live captures.</summary>
     public string? DumpFilePath { get; init; }
     /// <summary>On-disk size of the originating dump file; <c>null</c> for live captures.</summary>
@@ -370,6 +379,8 @@ public sealed record DumpInspection(
 {
     /// <summary>Drilldown handle for follow-up queries; <c>null</c> when the inspector was invoked outside the MCP tool layer.</summary>
     public string? Handle { get; init; }
+    /// <summary>Structured limitations preserved from the canonical snapshot.</summary>
+    public EvidenceQuality? Quality { get; init; }
 }
 
 /// <summary>
@@ -391,7 +402,20 @@ public sealed record LiveHeapInspection(
     public string? Handle { get; init; }
     /// <summary>Relative path (under the artifact root) of the persisted raw .nettrace for an exported gcdump capture; <c>null</c> otherwise (issue #445).</summary>
     public string? TracePath { get; init; }
+    /// <summary>Structured limitations preserved from the canonical snapshot.</summary>
+    public EvidenceQuality? Quality { get; init; }
+    /// <summary>EventPipe gcdump completion state; <c>null</c> for other origins.</summary>
+    public GcDumpCaptureStatus? GcDumpStatus { get; init; }
 }
+
+/// <summary>Observed completion state for an EventPipe gcdump capture.</summary>
+public sealed record GcDumpCaptureStatus(
+    bool GcStopObserved,
+    bool EventStreamCompleted,
+    bool TimedOut,
+    bool ReaderFailed,
+    bool TraceExportRequested,
+    bool TraceExportCompleted);
 
 public sealed record DumpRuntimeInfo(
     string Name,

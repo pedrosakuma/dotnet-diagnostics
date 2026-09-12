@@ -316,6 +316,7 @@ internal static class DiagnosticToolHeapDump
         {
             Address = sanitized.Address,
             ObjectDetails = sanitized,
+            Quality = GcDumpEvidence.GetApplicableQuality(snapshot),
         };
         return DiagnosticResult.Ok(result, summary);
     }
@@ -389,6 +390,7 @@ internal static class DiagnosticToolHeapDump
         {
             Address = inspection.Address,
             GcRoot = inspection,
+            Quality = GcDumpEvidence.GetApplicableQuality(snapshot),
         };
         return DiagnosticResult.Ok(result, summary);
     }
@@ -409,6 +411,7 @@ internal static class DiagnosticToolHeapDump
         {
             Address = inspection.Address,
             ObjectSize = inspection,
+            Quality = GcDumpEvidence.GetApplicableQuality(snapshot),
         };
         return DiagnosticResult.Ok(result, summary);
     }
@@ -453,6 +456,11 @@ internal static class DiagnosticToolHeapDump
         var result = new HeapSnapshotQueryResult(handle, "duplicate-strings", origin, snapshot.ProcessId, snapshot.CapturedAt)
         {
             DuplicateStrings = slice,
+            Quality = GcDumpEvidence.WithApplicableProjection(
+                snapshot,
+                "query-duplicate-strings",
+                Math.Max(0, snapshot.DuplicateStrings.Count - slice.Length),
+                "Lower-ranked duplicate strings were omitted from this bounded response."),
         };
         return DiagnosticResult.Ok(result, summary);
     }

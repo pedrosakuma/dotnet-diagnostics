@@ -28,6 +28,21 @@ internal sealed class GcDumpTypeAggregator
     /// <summary>Number of objects observed.</summary>
     public long NodeCount { get { lock (_gate) { return _nodeCount; } } }
 
+    /// <summary>Number of distinct type ids represented by observed nodes.</summary>
+    public int TypeCount { get { lock (_gate) { return _stats.Count; } } }
+
+    /// <summary>Number of observed type ids for which the stream supplied no non-empty name.</summary>
+    public int MissingTypeNameCount
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _stats.Keys.Count(typeId => !_typeNames.ContainsKey(typeId));
+            }
+        }
+    }
+
     /// <summary>Registers a managed type name keyed by its EventPipe type id. Last write wins.</summary>
     public void RegisterType(ulong typeId, string typeName)
     {
@@ -79,6 +94,27 @@ internal sealed class GcDumpTypeAggregator
                 .ToArray();
 
             return (byBytes, byInstances);
+        }
+    }
+
+    /// <summary>
+    /// Counts distinct type ids retained by the union of the byte-ranked and instance-ranked
+    /// projections. This distinguishes response projection from collector retention.
+    /// </summary>
+    public int CountProjectedTypes(int snapshotTopTypes)
+    {
+        lock (_gate)
+        {
+            return _stats
+                .OrderByDescending(kv => kv.Value.Bytes)
+                .Take(snapshotTopTypes)
+                .Select(kv => kv.Key)
+                .Concat(_stats
+                    .OrderByDescending(kv => kv.Value.Count)
+                    .Take(snapshotTopTypes)
+                    .Select(kv => kv.Key))
+                .Distinct()
+                .Count();
         }
     }
 

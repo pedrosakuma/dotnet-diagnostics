@@ -41,9 +41,10 @@ internal sealed class InProcessDiagnosticCollector : IDisposable
     /// <c>CollectKinds</c> minus <c>event_source</c> (needs an explicit provider name and is
     /// not benchmark-relevant) and <c>startup</c> (the diagnoser attaches after the benchmark
     /// host is already running, so it cannot observe cold-start loader/DI events), plus
-    /// <c>gcdump</c> — a managed-heap <b>retention</b> snapshot (EventPipe GCHeapSnapshot, no
-    /// ptrace / no dump file) that complements the <c>allocation</c> churn view. <c>gcdump</c> is
-    /// CoreCLR-only and degrades to a <c>NotSupported</c> entry on NativeAOT children.
+    /// <c>gcdump</c> — observed managed-heap per-type totals (EventPipe GCHeapSnapshot, no
+    /// ptrace / no dump file) that complement the <c>allocation</c> churn view. It induces a
+    /// blocking Gen2 GC and does not retain object edges/roots. <c>gcdump</c> is CoreCLR-only and
+    /// degrades to a <c>NotSupported</c> entry on NativeAOT children.
     /// </summary>
     public static readonly IReadOnlySet<string> SupportedKinds = new HashSet<string>(StringComparer.Ordinal)
     {

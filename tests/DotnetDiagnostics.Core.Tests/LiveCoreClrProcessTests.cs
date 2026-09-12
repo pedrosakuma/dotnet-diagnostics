@@ -12,6 +12,7 @@ using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Db;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Dump;
+using DotnetDiagnostics.Core.Evidence;
 using DotnetDiagnostics.Core.Exceptions;
 using DotnetDiagnostics.Core.GatedCapture;
 using DotnetDiagnostics.Core.Gc;
@@ -3187,6 +3188,18 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         snapshot.GcHandles.Should().BeNull();
         snapshot.StaticFields.Should().BeNull();
         snapshot.Warnings.Should().NotBeNull();
+        snapshot.GcDumpStatus.Should().NotBeNull();
+        snapshot.GcDumpStatus!.GcStopObserved.Should().BeTrue();
+        snapshot.GcDumpStatus.EventStreamCompleted.Should().BeTrue();
+        snapshot.GcDumpStatus.TimedOut.Should().BeFalse();
+        snapshot.Quality.Should().NotBeNull();
+        snapshot.Quality!.Conclusions.RetainedExplicitPositiveEvidence.Should()
+            .Be(EvidenceConclusionSupport.Supported);
+        snapshot.Quality.Conclusions.AbsenceOrExhaustiveCounts.Should()
+            .Be(EvidenceConclusionSupport.Inconclusive);
+        snapshot.Quality.Limitations.Should().Contain(l =>
+            l.Category == EvidenceLimitationCategory.MechanismUnobservable
+            && l.Scope == "eventpipe-loss");
     }
 
     private void EnsureSampleRunning()

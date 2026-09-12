@@ -962,7 +962,7 @@ syscalls (e.g. "80% `futex`, 20% `read`").
 | [`collect_events(kind="event_source")`](#collect_events(kind="event_source")) | window-bound | no | ⚠️ provider must be embedded at publish | EventPipe session |
 | `collect_thread_snapshot` / `query_snapshot` | seconds | no | ✅ via `linux-native-stack` / `etw-native-stack` | ptrace attach (Linux) / kernel logger (Windows) |
 | `inspect_heap(source="live"|"dump")` / `query_snapshot` | seconds | **yes** | ❌ | ClrMD walks managed heap (heap drilldown values metadata-only by default — see [Security gates](#security-gates-b4)) |
-| `inspect_heap(source="gcdump")` | seconds | no (EventPipe, no ptrace) | ❌ | Induced-GC heap snapshot over EventPipe; no dump file, but it induces a GC and exposes heap type metadata. Consult the resolved descriptor/canonical matrix before execution. Per-type byte/instance totals only (ClrMD-only views empty). |
+| `inspect_heap(source="gcdump")` | seconds | no ptrace; **does induce a blocking Gen2 GC** | ❌ | EventPipe heap snapshot with target-pause impact during the induced GC. It reports observed per-type node/byte totals, not object edges or roots; ClrMD-only views are explicitly unavailable rather than observed empty. Structured quality records timeout, completion, type-name gaps, projections, and unobservable EventPipe loss. |
 | [`collect_process_dump`](#collect_process_dump) | seconds–minutes | no | ✅ (native dump) | **writes a dump file to disk** |
 | [`capture_method_bytes`](#capture_method_bytes) | cheap | **yes** | ❌ (use `dotnet-native-mcp.disassemble`) | reads JIT code-heap |
 | `get_bytes(kind="module")` | cheap | **yes** (live module attach) | ❌ (materialize locally, then hand off) | streams PE / PDB bytes over MCP chunks |
@@ -2964,6 +2964,14 @@ the heap views: `top-types`, `retention-paths`, `roots-by-kind`,
 `finalizer-queue`, `fragmentation`, `static-fields`, `delegate-targets`,
 `duplicate-strings`, `gchandles`, `timers`, `alc`, `object`, `gcroot`, `objsize`,
 `async`, `diff`, `growth`.
+
+For `source="gcdump"`, only `top-types` is supported from the captured artifact.
+The collector aggregates observed `GCBulkNode`/`GCBulkType` records into type and
+node totals; it does not retain object edges or roots. Other heap views therefore
+return `ViewUnavailableForGcDump`, with the capture's structured `quality`, rather
+than treating an unavailable property as an observed zero. `quality` also keeps
+GC-stop, stream/trace completion, timeout/reader failure, missing type names,
+top-N projection, and the unavailable EventPipe lost-event count distinct.
 
 **Scope:** `heap-read`. `source="live"` additionally requires the runtime
 `ptrace` scope on the bearer (root/wildcard tokens satisfy it; dedicated bearers

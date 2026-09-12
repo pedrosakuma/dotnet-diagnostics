@@ -1,3 +1,5 @@
+using DotnetDiagnostics.Core.Evidence;
+
 namespace DotnetDiagnostics.Core.Dump;
 
 /// <summary>
@@ -12,6 +14,8 @@ public sealed record HeapSnapshotQueryResult(
     int ProcessId,
     DateTimeOffset CapturedAt)
 {
+    /// <summary>Structured capture limitations plus any projection applied by this query.</summary>
+    public EvidenceQuality? Quality { get; init; }
     /// <summary>Echoes the exact object address targeted by address-based heap queries.</summary>
     public ulong? Address { get; init; }
     /// <summary>Populated when <see cref="View"/> is <c>"top-types"</c>.</summary>

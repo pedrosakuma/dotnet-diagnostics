@@ -26,7 +26,11 @@ public sealed class HeapSnapshotComparableProjector : IComparableProjector
             CapturedAt: snapshot.CapturedAt,
             ProcessId: snapshot.ProcessId,
             Metrics: Array.Empty<MetricValue>(),
-            Rows: rows);
+            Rows: rows)
+        {
+            Quality = snapshot.Quality,
+            HeapOrigin = snapshot.Origin,
+        };
     }
 
     public static Dictionary<TypeIdentity, HeapDiffMetric> ProjectTyped(HeapSnapshotArtifact snapshot)

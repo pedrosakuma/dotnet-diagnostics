@@ -286,6 +286,80 @@ public sealed class ComparableProjectorTests
     }
 
     [Fact]
+    public void HeapProjector_ClrMdMissingQuality_PreservesVerdictAndOrigin()
+    {
+        var mvid = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        var baselineArtifact = HeapSnapshotForProjector("System.Byte[]", "System.Private.CoreLib.dll", 100, 1, mvid, 0x02000042);
+        var currentArtifact = HeapSnapshotForProjector("System.Byte[]", "System.Private.CoreLib.dll", 150, 2, mvid, 0x02000042);
+        var baseline = new HeapSnapshotComparableProjector().Project(baselineArtifact, "baseline");
+        var current = new HeapSnapshotComparableProjector().Project(currentArtifact, "current");
+
+        var diff = SnapshotDiffer.Compare([baseline, current]);
+
+        diff.Verdict.Should().Be("regression");
+        baseline.HeapOrigin.Should().Be(HeapSnapshotOrigin.Live);
+        diff.CaptureQuality[0].Should().BeNull();
+        diff.Notes.Should().NotContain(note => note.Contains("LegacyUnknown", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void HeapProjector_LegacyGcDumpMissingQuality_MakesVerdictInconclusive()
+    {
+        var mvid = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        var baselineArtifact = HeapSnapshotForProjector("System.Byte[]", "System.Private.CoreLib.dll", 100, 1, mvid, 0x02000042) with
+        {
+            Origin = HeapSnapshotOrigin.GcDump,
+        };
+        var currentArtifact = HeapSnapshotForProjector("System.Byte[]", "System.Private.CoreLib.dll", 150, 2, mvid, 0x02000042) with
+        {
+            Origin = HeapSnapshotOrigin.GcDump,
+        };
+
+        var diff = SnapshotDiffer.Compare(
+            [
+                new HeapSnapshotComparableProjector().Project(baselineArtifact, "baseline"),
+                new HeapSnapshotComparableProjector().Project(currentArtifact, "current"),
+            ]);
+
+        diff.Verdict.Should().Be("inconclusive");
+        diff.Notes.Should().Contain(note => note.Contains("LegacyUnknown", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void HeapProjector_GcDumpProjection_DoesNotTreatMissingRowsAsZero()
+    {
+        var mvid = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        var quality = new EvidenceQuality(
+            EvidenceQuality.SchemaV1,
+            [new EvidenceLimitation(EvidenceLimitationCategory.OutputProjection, "snapshot-top-types", 10, "omitted")],
+            new EvidenceConclusionPolicy(
+                EvidenceConclusionSupport.Supported,
+                EvidenceConclusionSupport.Inconclusive,
+                EvidenceConclusionSupport.Inconclusive));
+        var first = new HeapSnapshotComparableProjector().Project(
+            HeapSnapshotForProjector("First.Type", "First.dll", 100, 1, mvid, 0x02000041) with
+            {
+                Origin = HeapSnapshotOrigin.GcDump,
+                Quality = quality,
+            },
+            "first");
+        var second = new HeapSnapshotComparableProjector().Project(
+            HeapSnapshotForProjector("Second.Type", "Second.dll", 200, 2, mvid, 0x02000042) with
+            {
+                Origin = HeapSnapshotOrigin.GcDump,
+                Quality = quality,
+            },
+            "second");
+
+        var diff = SnapshotDiffer.Compare([first, second], JourneyMode.Dispersion);
+
+        diff.Verdict.Should().Be("inconclusive");
+        diff.KeyMatrix.Should().OnlyContain(row => row.Values.Count(value => value.HasValue) == 1);
+        diff.KeyMatrix.Single(row => row.DisplayName == "First.Type").Dispersion!.Mean.Should().Be(100);
+        diff.KeyMatrix.Single(row => row.DisplayName == "Second.Type").Dispersion!.Mean.Should().Be(200);
+    }
+
+    [Fact]
     public void CpuProjector_UsesExclusivePercentAsLowerBetterPrimary_AndMethodKeys()
     {
         var mvid = Guid.Parse("22222222-2222-2222-2222-222222222222");

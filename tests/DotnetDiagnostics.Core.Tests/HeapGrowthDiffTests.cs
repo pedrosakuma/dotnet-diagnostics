@@ -1,6 +1,7 @@
 using DotnetDiagnostics.Core.Comparison;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Dump;
+using DotnetDiagnostics.Core.Evidence;
 using FluentAssertions;
 
 namespace DotnetDiagnostics.Core.Tests;
@@ -55,6 +56,48 @@ public sealed class HeapGrowthDiffTests
         newRow.BaselineBytes.Should().Be(0);
         newRow.BytesDelta.Should().Be(2_048);
         newRow.BytesDeltaPercent.Should().Be(100);
+    }
+
+    [Fact]
+    public void Build_DegradedBaseline_DoesNotInventZeroOrNewType()
+    {
+        var baseline = HeapSnapshot(("Existing.Type", 1_000, 10)) with
+        {
+            Origin = HeapSnapshotOrigin.GcDump,
+            Quality = EvidenceQuality.LegacyUnknown,
+        };
+        var current = HeapSnapshot(("Existing.Type", 2_000, 20), ("PossiblyOmitted.FromBaseline", 4_000, 40)) with
+        {
+            Origin = HeapSnapshotOrigin.GcDump,
+            Quality = CompleteGcDumpQuality,
+        };
+
+        var growth = HeapGrowthDiff.Build(baseline, "b", current, "c", "bytes", minDeltaPct: 0, topN: 25);
+
+        growth.Verdict.Should().Be("inconclusive");
+        growth.Growers.Should().ContainSingle(row => row.TypeFullName == "Existing.Type");
+        growth.Growers.Should().NotContain(row => row.TypeFullName == "PossiblyOmitted.FromBaseline");
+        growth.Notes.Should().Contain(note => note.Contains("not classified as new", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData(HeapSnapshotOrigin.Live)]
+    [InlineData(HeapSnapshotOrigin.Dump)]
+    public void Build_ClrMdProducerShape_PreservesUnmatchedGrowthWithoutQuality(
+        HeapSnapshotOrigin origin)
+    {
+        var baseline = HeapSnapshot(("Existing.Type", 1_000, 10)) with { Origin = origin };
+        var current = HeapSnapshot(("Existing.Type", 2_000, 20), ("Brand.New", 4_000, 40)) with
+        {
+            Origin = origin,
+        };
+
+        var growth = HeapGrowthDiff.Build(baseline, "b", current, "c", "bytes", minDeltaPct: 0, topN: 25);
+
+        growth.Verdict.Should().Be("leak_suspected");
+        growth.Growers.Should().Contain(row => row.TypeFullName == "Brand.New" && row.IsNew);
+        growth.BaselineQuality.Should().BeNull();
+        growth.CurrentQuality.Should().BeNull();
     }
 
     [Fact]
@@ -606,4 +649,12 @@ public sealed class HeapGrowthDiffTests
             new DumpHeapSummary(byBytes.Sum(stat => stat.TotalBytes), 0, 0, 0, 0, 0, 0),
             byBytes,
             byInstances);
+
+    private static EvidenceQuality CompleteGcDumpQuality { get; } = new(
+        EvidenceQuality.SchemaV1,
+        [],
+        new EvidenceConclusionPolicy(
+            EvidenceConclusionSupport.Supported,
+            EvidenceConclusionSupport.Supported,
+            EvidenceConclusionSupport.Supported));
 }

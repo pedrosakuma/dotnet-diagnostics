@@ -50,7 +50,11 @@ internal static partial class CliCommands
                 collector, handles, resolver,
                 options.Pid, topTypes, timeout: null, options.ExportTrace, cancellationToken).ConfigureAwait(false);
 
-            return BuildResult<LiveHeapInspection>(gcResult, static (sb, data) => RenderTopTypes(sb, data.TopTypesByBytes));
+            return BuildResult<LiveHeapInspection>(gcResult, static (sb, data) =>
+            {
+                RenderTopTypes(sb, data.TopTypesByBytes);
+                RenderEvidenceQuality(sb, data.Quality);
+            });
         }
 
         var liveResult = await HeapInspectionUseCases.InspectLiveHeap(

@@ -55,8 +55,23 @@ public static class HeapGrowthDiff
 
         var baselineByType = HeapSnapshotComparableProjector.ProjectTypedByAvailableIdentity(baseline);
         var currentByType = HeapSnapshotComparableProjector.ProjectTypedByAvailableIdentity(current);
+        var baselineQuality = GcDumpEvidence.GetApplicableQuality(baseline);
+        var currentQuality = GcDumpEvidence.GetApplicableQuality(current);
+        var baselineSupportsAbsence = GcDumpEvidence.SupportsAbsence(baseline);
+        var supportsRegression =
+            GcDumpEvidence.SupportsRegression(baseline)
+            && GcDumpEvidence.SupportsRegression(current);
 
         var notes = new List<string>();
+        if (baseline.Origin == HeapSnapshotOrigin.GcDump && !baselineSupportsAbsence)
+        {
+            notes.Add("The baseline does not support absence or exhaustive-count conclusions; unmatched current types are not classified as new or assigned a zero baseline.");
+        }
+        if ((baseline.Origin == HeapSnapshotOrigin.GcDump || current.Origin == HeapSnapshotOrigin.GcDump)
+            && !supportsRegression)
+        {
+            notes.Add("One or both captures cannot support regression or healthy-control conclusions; observed overlapping deltas are retained but the verdict is inconclusive.");
+        }
         if (baseline.ProcessId != current.ProcessId)
         {
             notes.Add($"Comparison spans different runs/processes: baseline pid {baseline.ProcessId}, current pid {current.ProcessId}. Per-type deltas may be meaningless across a restart.");
@@ -89,6 +104,10 @@ public static class HeapGrowthDiff
             }
 
             var baselineType = baselineSelection.Match;
+            if (baselineType is null && !baselineSupportsAbsence)
+            {
+                continue;
+            }
             if (baselineType is not null)
             {
                 var reverse = HeapSnapshotComparableProjector.FindUniqueBestMatch(baselineType.Identity, currentByType);
@@ -147,7 +166,7 @@ public static class HeapGrowthDiff
             });
         }
 
-        if (overlapCount == 0)
+        if (overlapCount == 0 && baselineSupportsAbsence)
         {
             notes.Add("No unambiguous overlapping types between baseline and current snapshots; unmatched growth is reported as new allocations.");
         }
@@ -166,7 +185,17 @@ public static class HeapGrowthDiff
         var totalGrowthBytes = current.Heap.TotalBytes - baseline.Heap.TotalBytes;
         // A leak is suspected whenever managed types retained more bytes/instances than the
         // baseline; the process-wide heap total is noisier (GC timing) so it stays informational.
-        var verdict = growers.Count > 0 ? "leak_suspected" : "stable";
+        var verdict = supportsRegression
+            ? growers.Count > 0 ? "leak_suspected" : "stable"
+            : "inconclusive";
+        if (current.Origin == HeapSnapshotOrigin.GcDump && growers.Count > ranked.Length)
+        {
+            currentQuality = GcDumpEvidence.WithProjection(
+                currentQuality,
+                "heap-growth-top-types",
+                growers.Count - ranked.Length,
+                "Lower-ranked observed growth rows were omitted from this bounded response.");
+        }
 
         return new HeapGrowthResult(
             baselineHandle,
@@ -185,6 +214,8 @@ public static class HeapGrowthDiff
             verdict)
         {
             Notes = notes.Count > 0 ? notes : null,
+            BaselineQuality = baselineQuality,
+            CurrentQuality = currentQuality,
         };
     }
 
