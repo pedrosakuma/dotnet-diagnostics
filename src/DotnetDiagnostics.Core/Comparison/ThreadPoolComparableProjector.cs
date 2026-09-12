@@ -26,9 +26,9 @@ public sealed class ThreadPoolComparableProjector : IComparableProjector
 
         if (evidence is not null)
         {
-            Add(metrics, "starvationAdjustments", MetricRole.Primary, BetterDirection.Lower, MetricAggregation.Total, "count", evidence.ConfirmedStarvationAdjustments);
-            Add(metrics, "cooperativeBlockingAdjustments", MetricRole.Primary, BetterDirection.Lower, MetricAggregation.Total, "count", evidence.ConfirmedCooperativeBlockingAdjustments);
-            Add(metrics, "hillClimbingEvents", MetricRole.Context, BetterDirection.Neutral, MetricAggregation.Total, "count", evidence.HillClimbingEvents);
+            AddOptional(metrics, "starvationAdjustments", MetricRole.Primary, BetterDirection.Lower, MetricAggregation.Total, "count", evidence.ConfirmedStarvationAdjustments);
+            AddOptional(metrics, "cooperativeBlockingAdjustments", MetricRole.Primary, BetterDirection.Lower, MetricAggregation.Total, "count", evidence.ConfirmedCooperativeBlockingAdjustments);
+            AddOptional(metrics, "hillClimbingEvents", MetricRole.Context, BetterDirection.Neutral, MetricAggregation.Total, "count", evidence.HillClimbingEvents);
         }
 
         AddOptional(metrics, "latestWorkerThreadCount", MetricRole.Context, BetterDirection.Neutral, MetricAggregation.Point, "count", LatestCount(snapshot.WorkerThreadTimeline));
@@ -56,7 +56,8 @@ public sealed class ThreadPoolComparableProjector : IComparableProjector
             CapturedAt: snapshot.StartedAt,
             ProcessId: snapshot.ProcessId,
             Metrics: metrics,
-            Rows: Array.Empty<ComparableRow>());
+            Rows: Array.Empty<ComparableRow>(),
+            Quality: ThreadPoolEvidence.GetQuality(snapshot));
     }
 
     private static int? LatestCount(IReadOnlyList<ThreadPoolCountBucket> timeline)

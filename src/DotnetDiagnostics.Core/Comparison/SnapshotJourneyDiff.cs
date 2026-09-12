@@ -108,4 +108,7 @@ public sealed record SnapshotJourneyDiff(
     [JsonPropertyOrder(-20)]
     public InvestigationEvidenceBoundary UntrustedDataBoundary { get; init; } =
         InvestigationEvidenceBoundary.UntrustedComparisonData;
+
+    public IReadOnlyList<Evidence.EvidenceQuality?> CaptureQuality { get; init; } =
+        Array.Empty<Evidence.EvidenceQuality?>();
 }

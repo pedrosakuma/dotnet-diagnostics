@@ -5,6 +5,7 @@ using DotnetDiagnostics.Core.Counters;
 using DotnetDiagnostics.Core.Db;
 using DotnetDiagnostics.Core.EventSources;
 using DotnetDiagnostics.Core.Exceptions;
+using DotnetDiagnostics.Core.Evidence;
 using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.Jit;
 using DotnetDiagnostics.Core.Logs;
@@ -589,11 +590,19 @@ public class CollectionQueryDispatcherTests
         summary.HasCompleteRuntimeReasonEvidence.Should().BeTrue();
         summary.WindowEnqueueDequeueDifference.Should().Be(5);
         summary.TopWorkItemOrigins.Should().ContainSingle();
+        summary.Quality.Limitations.Should().ContainSingle(l =>
+            l.Category == EvidenceLimitationCategory.OutputProjection
+            && l.Scope == "query:summary"
+            && l.AffectedCount == 1);
 
         var hillOutcome = CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.ThreadPoolSnapshot, "hillClimbing", snapshot, 1);
         var hill = hillOutcome.Result!.Payload.Should().BeOfType<ThreadPoolHillClimbingView>().Subject;
         hill.Returned.Should().Be(1);
         hill.Samples[0].Reason.Should().Be("Warmup");
+        hill.Quality.Limitations.Should().ContainSingle(l =>
+            l.Category == EvidenceLimitationCategory.OutputProjection
+            && l.Scope == "query:hill-climbing"
+            && l.AffectedCount == 1);
     }
 
     [Fact]
@@ -620,6 +629,8 @@ public class CollectionQueryDispatcherTests
         summary.StarvationAdjustments.Should().BeNull();
         summary.HillClimbingEvents.Should().BeNull();
         summary.HasCompleteRuntimeReasonEvidence.Should().BeNull();
+        summary.Quality.Limitations.Should().ContainSingle(l =>
+            l.Category == EvidenceLimitationCategory.LegacyUnknown);
     }
 
     [Fact]

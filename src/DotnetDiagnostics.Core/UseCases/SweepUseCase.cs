@@ -108,7 +108,7 @@ public static class SweepUseCase
 
         var failureText = FormatFailureText(failures.Count);
         var starvation = threadPool.Data is { } threadPoolData
-            ? ThreadPoolEvidence.GetSummary(threadPoolData)?.ConfirmedStarvationAdjustments.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "unavailable"
+            ? ThreadPoolEvidence.GetSummary(threadPoolData)?.ConfirmedStarvationAdjustments?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "unavailable"
             : "unavailable";
         var fdText = resource?.FdCount?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "n/a";
         var hypothesisText = triage.Hypotheses?.Count > 0

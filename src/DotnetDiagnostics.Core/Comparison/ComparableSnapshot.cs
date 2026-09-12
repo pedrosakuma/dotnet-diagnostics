@@ -108,7 +108,8 @@ public sealed record ComparableSnapshot(
     int ProcessId,
     IReadOnlyList<MetricValue> Metrics,
     IReadOnlyList<ComparableRow> Rows,
-    Memory.InvestigationProvenance? Provenance = null)
+    Memory.InvestigationProvenance? Provenance = null,
+    Evidence.EvidenceQuality? Quality = null)
 {
     public const string SchemaV1 = "dotnet-diagnostics-mcp/comparable-snapshot/v1";
 }

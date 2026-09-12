@@ -4,6 +4,7 @@ using DotnetDiagnostics.Core.Contention;
 using DotnetDiagnostics.Core.Counters;
 using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Dump;
+using DotnetDiagnostics.Core.Evidence;
 using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.Memory;
 using DotnetDiagnostics.Core.ThreadPool;
@@ -493,6 +494,8 @@ public sealed class ComparableProjectorTests
         byName["peakWorkerThreadCount"].Definition.BetterDirection.Should().Be(BetterDirection.Neutral);
         byName["latestWorkerThreadCount"].Value.Should().Be(6);
         byName["workItemOriginCount"].Definition.Role.Should().Be(MetricRole.Context);
+        snap.Quality!.Limitations.Should().ContainSingle(
+            limitation => limitation.Category == EvidenceLimitationCategory.LegacyUnknown);
     }
 
     [Fact]
@@ -550,6 +553,74 @@ public sealed class ComparableProjectorTests
         metrics.Should().NotContain(metric => metric.Definition.Name == "latestIocpThreadCount");
         metrics.Should().NotContain(metric => metric.Definition.Name == "peakIocpThreadCount");
     }
+
+    [Fact]
+    public void ThreadPoolComparison_InadequateOrLegacyQuality_IsInconclusive()
+    {
+        var adequate = ThreadPoolComparable(1, "before", AdequateQuality());
+        var degraded = ThreadPoolComparable(
+            3,
+            "after",
+            new EvidenceQuality(
+                EvidenceQuality.SchemaV1,
+                [new EvidenceLimitation(EvidenceLimitationCategory.CollectorEviction, "hill-climbing", 1, "evicted")],
+                new EvidenceConclusionPolicy(
+                    EvidenceConclusionSupport.Supported,
+                    EvidenceConclusionSupport.Inconclusive,
+                    EvidenceConclusionSupport.Inconclusive)));
+
+        var degradedDiff = SnapshotDiffer.Compare([adequate, degraded]);
+        var legacyDiff = SnapshotDiffer.Compare([adequate, adequate with { Label = "legacy", Quality = null }]);
+
+        degradedDiff.Verdict.Should().Be("inconclusive");
+        degradedDiff.Pairwise!.Headline.Verdict.Should().Be("inconclusive");
+        degradedDiff.MetricSeries.Single(s => s.Definition.Name == "starvationAdjustments").Direction.Should().Be("n/a");
+        degradedDiff.CaptureQuality.Should().HaveCount(2);
+        degradedDiff.Notes.Should().Contain(note => note.Contains("after", StringComparison.Ordinal));
+        legacyDiff.Verdict.Should().Be("inconclusive");
+        legacyDiff.Notes.Should().Contain(note => note.Contains("LegacyUnknown", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ThreadPoolComparison_AdequateQuality_AllowsRegressionConclusion()
+    {
+        var baseline = ThreadPoolComparable(1, "before", AdequateQuality());
+        var current = ThreadPoolComparable(3, "after", AdequateQuality());
+
+        var diff = SnapshotDiffer.Compare([baseline, current]);
+
+        diff.Verdict.Should().Be("regression");
+        diff.MetricSeries.Single(s => s.Definition.Name == "starvationAdjustments").Direction.Should().Be("regressed");
+    }
+
+    private static ComparableSnapshot ThreadPoolComparable(double starvation, string label, EvidenceQuality? quality)
+        => new(
+            ComparableSnapshot.SchemaV1,
+            CollectionHandleKinds.ThreadPoolSnapshot,
+            label,
+            DateTimeOffset.UtcNow,
+            11,
+            [
+                new MetricValue(
+                    new MetricDefinition(
+                        "starvationAdjustments",
+                        MetricRole.Primary,
+                        BetterDirection.Lower,
+                        MetricAggregation.Total,
+                        Unit: "count"),
+                    starvation),
+            ],
+            Array.Empty<ComparableRow>(),
+            Quality: quality);
+
+    private static EvidenceQuality AdequateQuality()
+        => new(
+            EvidenceQuality.SchemaV1,
+            Array.Empty<EvidenceLimitation>(),
+            new EvidenceConclusionPolicy(
+                EvidenceConclusionSupport.Supported,
+                EvidenceConclusionSupport.Supported,
+                EvidenceConclusionSupport.Supported));
 
     private static CpuSampleTraceArtifact CpuTraceForProjector(
         string module,

@@ -717,12 +717,21 @@ public static class EventCollectionUseCases
                     var inlineSnapshot = snapshot;
                     if (context.Depth == SamplingDepth.Summary)
                     {
+                        var omitted = snapshot.WorkerThreadTimeline.Count
+                            + snapshot.IocpThreadTimeline.Count
+                            + snapshot.HillClimbing.Count
+                            + Math.Max(0, snapshot.WorkItemOrigins.Count - 5);
                         inlineSnapshot = snapshot with
                         {
                             WorkerThreadTimeline = Array.Empty<ThreadPoolCountBucket>(),
                             IocpThreadTimeline = Array.Empty<ThreadPoolCountBucket>(),
                             HillClimbing = Array.Empty<ThreadPoolHillClimbingSample>(),
                             WorkItemOrigins = snapshot.WorkItemOrigins.Take(5).ToList(),
+                            Quality = ThreadPoolEvidence.WithProjection(
+                                snapshot.Quality,
+                                "inline:summary",
+                                omitted,
+                                "Summary depth omitted timeline and hill-climbing rows and retained only five work-item origins; the handle retains full collected detail."),
                         };
                     }
 
@@ -736,9 +745,13 @@ public static class EventCollectionUseCases
                     var causalText = evidence is null
                         ? "causal adjustment evidence=unavailable"
                         : $"confirmed starvation/cooperative-blocking={evidence.ConfirmedStarvationAdjustments}/{evidence.ConfirmedCooperativeBlockingAdjustments}";
+                    var conclusionText = ThreadPoolEvidence.GetQuality(snapshot).Conclusions.AbsenceOrExhaustiveCounts
+                        == Evidence.EvidenceConclusionSupport.Supported
+                            ? "absence/exhaustive-count claims=supported"
+                            : "absence/exhaustive-count and healthy-control claims=inconclusive";
                     var summary = evidence?.HillClimbingEvents == 0 && snapshot.TotalEnqueueEvents == 0
-                        ? $"No ThreadPool activity was captured in {context.DurationSeconds}s; this window does not prove the process healthy. Start the workload after collection begins if activity was expected."
-                        : $"Captured ThreadPool activity over {context.DurationSeconds}s: workers latest/peak={latestWorkers}/{peakWorkers}, hill-climbing events={evidence?.HillClimbingEvents.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "unavailable"}, {causalText}, enqueue/dequeue window events={snapshot.TotalEnqueueEvents}/{snapshot.TotalDequeueEvents}.";
+                        ? $"No ThreadPool activity was captured in {context.DurationSeconds}s; this window does not prove the process healthy. {conclusionText}. Start the workload after collection begins if activity was expected."
+                        : $"Captured ThreadPool activity over {context.DurationSeconds}s: workers latest/peak={latestWorkers}/{peakWorkers}, hill-climbing events={evidence?.HillClimbingEvents?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "unavailable"}, {causalText}, enqueue/dequeue window events={snapshot.TotalEnqueueEvents}/{snapshot.TotalDequeueEvents}; {conclusionText}.";
 
                     return DiagnosticResult.OkWithHandle(
                         inlineSnapshot,

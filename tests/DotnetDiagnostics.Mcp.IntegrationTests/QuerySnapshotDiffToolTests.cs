@@ -5,6 +5,7 @@ using DotnetDiagnostics.Core.Counters;
 using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Dump;
+using DotnetDiagnostics.Core.Evidence;
 using DotnetDiagnostics.Core.Memory;
 using DotnetDiagnostics.Core.Security;
 using DotnetDiagnostics.Core.Gc;
@@ -18,6 +19,47 @@ namespace DotnetDiagnostics.Mcp.IntegrationTests;
 
 public sealed class QuerySnapshotDiffToolTests
 {
+    [Fact]
+    public void CompactJourneyDiff_PreservesPerCaptureEvidenceQuality()
+    {
+        var quality = new EvidenceQuality(
+            EvidenceQuality.SchemaV1,
+            [new EvidenceLimitation(EvidenceLimitationCategory.CollectorEviction, "hill-climbing", 2, "evicted")],
+            new EvidenceConclusionPolicy(
+                EvidenceConclusionSupport.Supported,
+                EvidenceConclusionSupport.Inconclusive,
+                EvidenceConclusionSupport.Inconclusive));
+        var diff = new SnapshotJourneyDiff(
+            CollectionHandleKinds.ThreadPoolSnapshot,
+            JourneyMode.Trend,
+            ["before", "after"],
+            "inconclusive",
+            Array.Empty<MetricSeries>(),
+            Array.Empty<KeyMatrixRow>(),
+            null,
+            ["quality limited"])
+        {
+            CaptureQuality = [quality, EvidenceQuality.LegacyUnknown],
+        };
+
+        var result = JourneyDiffPresentation.BuildResult(
+            diff,
+            new MemoryDiagnosticHandleStore(),
+            123,
+            5,
+            JourneyDiffDepth.Compact,
+            "summary",
+            evictWhenProcessExits: false,
+            HandleOrigin.Imported);
+
+        var compact = result.Data.Should().BeOfType<JourneyDiffCompactSummary>().Subject;
+        compact.CaptureQuality.Should().HaveCount(2);
+        compact.CaptureQuality[0]!.Limitations.Should().ContainSingle(
+            limitation => limitation.Category == EvidenceLimitationCategory.CollectorEviction);
+        compact.CaptureQuality[1]!.Limitations.Should().ContainSingle(
+            limitation => limitation.Category == EvidenceLimitationCategory.LegacyUnknown);
+    }
+
     [Fact]
     public async Task Diff_RejectsMixedKinds()
     {
@@ -418,7 +460,7 @@ public sealed class QuerySnapshotDiffToolTests
     }
 
     [Fact]
-    public async Task Diff_ThreadPoolComparisonHandles_ReturnsJourneyDiffWithScalarVerdict()
+    public async Task Diff_ThreadPoolComparisonHandles_NoEventBaselineIsInconclusive()
     {
         var store = new MemoryDiagnosticHandleStore();
         var first = store.Register(123, CollectionHandleKinds.ThreadPoolSnapshot, ThreadPoolSnapshot(starvationAdjustments: 0, pendingWorkItems: 0), TimeSpan.FromMinutes(10));
@@ -430,8 +472,25 @@ public sealed class QuerySnapshotDiffToolTests
         result.Error.Should().BeNull();
         var diff = result.Data.Should().BeOfType<SnapshotJourneyDiff>().Subject;
         diff.Kind.Should().Be(CollectionHandleKinds.ThreadPoolSnapshot);
-        diff.Verdict.Should().Be("regression");
+        diff.Verdict.Should().Be("inconclusive");
         diff.KeyMatrix.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Diff_ThreadPoolComparisonHandles_AdequatePositiveWindowsReturnRegression()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var first = store.Register(123, CollectionHandleKinds.ThreadPoolSnapshot, ThreadPoolSnapshot(starvationAdjustments: 1, pendingWorkItems: 0), TimeSpan.FromMinutes(10));
+        var second = store.Register(123, CollectionHandleKinds.ThreadPoolSnapshot, ThreadPoolSnapshot(starvationAdjustments: 2, pendingWorkItems: 2), TimeSpan.FromMinutes(10));
+        var current = store.Register(123, CollectionHandleKinds.ThreadPoolSnapshot, ThreadPoolSnapshot(starvationAdjustments: 4, pendingWorkItems: 12), TimeSpan.FromMinutes(10));
+
+        var result = await QuerySnapshot(store, current.Id, comparisonHandles: [first.Id, second.Id]);
+
+        result.Error.Should().BeNull();
+        var diff = result.Data.Should().BeOfType<SnapshotJourneyDiff>().Subject;
+        diff.Verdict.Should().Be("regression");
+        diff.CaptureQuality.Should().OnlyContain(quality =>
+            quality!.Conclusions.RegressionOrHealthyControl == EvidenceConclusionSupport.Supported);
         diff.MetricSeries.Should().Contain(series => series.Definition.Name == "starvationAdjustments" && series.Direction == "regressed");
         diff.MetricSeries.Should().Contain(series =>
             series.Definition.Name == "windowEnqueueDequeueDifference"
@@ -730,6 +789,15 @@ public sealed class QuerySnapshotDiffToolTests
         var hillClimbing = Enumerable.Range(0, starvationAdjustments)
             .Select(i => new ThreadPoolHillClimbingSample(timestamp.AddMilliseconds(i), "Starvation", i, i + 1, 100 - i, ThreadPoolEvidence.RuntimeObserved))
             .ToArray();
+        var quality = new EvidenceQuality(
+            EvidenceQuality.SchemaV1,
+            starvationAdjustments == 0
+                ? [new EvidenceLimitation(EvidenceLimitationCategory.CaptureWindow, "hill-climbing", null, "no events")]
+                : Array.Empty<EvidenceLimitation>(),
+            new EvidenceConclusionPolicy(
+                starvationAdjustments > 0 ? EvidenceConclusionSupport.Supported : EvidenceConclusionSupport.NotEstablished,
+                starvationAdjustments > 0 ? EvidenceConclusionSupport.Supported : EvidenceConclusionSupport.Inconclusive,
+                starvationAdjustments > 0 ? EvidenceConclusionSupport.Supported : EvidenceConclusionSupport.Inconclusive));
 
         return new ThreadPoolEventSnapshot(
             ProcessId: 123,
@@ -747,7 +815,8 @@ public sealed class QuerySnapshotDiffToolTests
             TotalEnqueueEvents: 100 + pendingWorkItems,
             TotalDequeueEvents: 100,
             Notes: Array.Empty<string>(),
-            Evidence: ThreadPoolEvidence.Summarize(hillClimbing));
+            Evidence: ThreadPoolEvidence.Summarize(hillClimbing),
+            Quality: quality);
     }
 
     private sealed class StubDumpInspector : IDumpInspector

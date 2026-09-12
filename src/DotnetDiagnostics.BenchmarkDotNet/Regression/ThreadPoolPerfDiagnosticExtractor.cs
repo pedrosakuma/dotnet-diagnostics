@@ -6,7 +6,9 @@ namespace DotnetDiagnostics.BenchmarkDotNet.Regression;
 public sealed record ThreadPoolPerfDiagnosticEvidence(
     bool HasCausalWait,
     bool HasConclusiveCausalAssessment,
-    IReadOnlyList<PerfDiagnosticSignal> Signals);
+    IReadOnlyList<PerfDiagnosticSignal> Signals,
+    string EvidenceConclusion,
+    IReadOnlyList<string> QualityLimitations);
 
 /// <summary>Extracts causal blocking/starvation evidence from a structured ThreadPool diagnostic envelope.</summary>
 public static class ThreadPoolPerfDiagnosticExtractor
@@ -19,13 +21,13 @@ public static class ThreadPoolPerfDiagnosticExtractor
     {
         if (string.IsNullOrWhiteSpace(json) || json.StartsWith("//", StringComparison.Ordinal))
         {
-            return new(false, false, Array.Empty<PerfDiagnosticSignal>());
+            return Unknown();
         }
 
         using var document = JsonDocument.Parse(json);
         if (!document.RootElement.TryGetProperty("Data", out var data))
         {
-            return new(false, false, Array.Empty<PerfDiagnosticSignal>());
+            return Unknown();
         }
 
         var hillClimbing = data.TryGetProperty("HillClimbing", out var hillClimbingElement)
@@ -48,6 +50,9 @@ public static class ThreadPoolPerfDiagnosticExtractor
         var cooperativeBlockingCount = hasSummary ? NullableInt(summary, "ConfirmedCooperativeBlockingAdjustments") : cooperativeBlocking.Length;
         var hasConfirmedCausalEvidence = starvationCount > 0 || cooperativeBlockingCount > 0;
         var causalCountsAvailable = hasSummary || reasonProvenanceComplete || hasConfirmedCausalEvidence;
+        var qualityLimitations = ReadQualityLimitations(data);
+        var qualitySupportsConclusions = QualitySupportsConclusions(data);
+        var conclusiveAssessment = reasonProvenanceComplete && qualitySupportsConclusions;
         var hasMeasuredStarvationWorkerIncrease = TryGetMeasuredWorkerIncrease(starvation, starvationCount, out var starvationWorkerIncrease);
         var hasMeasuredBlockingWorkerIncrease = TryGetMeasuredWorkerIncrease(cooperativeBlocking, cooperativeBlockingCount, out var blockingWorkerIncrease);
 
@@ -67,7 +72,10 @@ public static class ThreadPoolPerfDiagnosticExtractor
                 : 0;
 
         var signals = new List<PerfDiagnosticSignal>();
-        if (causalCountsAvailable && starvationCount.HasValue && cooperativeBlockingCount.HasValue)
+        if (causalCountsAvailable
+            && starvationCount.HasValue
+            && cooperativeBlockingCount.HasValue
+            && (hasConfirmedCausalEvidence || conclusiveAssessment))
         {
             signals.Add(new(
                 "threadpool.starvationAdjustments",
@@ -140,8 +148,55 @@ public static class ThreadPoolPerfDiagnosticExtractor
 
         return new(
             hasConfirmedCausalEvidence,
-            reasonProvenanceComplete,
-            signals);
+            conclusiveAssessment,
+            signals,
+            hasConfirmedCausalEvidence
+                ? "retained-explicit-positive-evidence"
+                : conclusiveAssessment ? "absence-assessment-supported" : "inconclusive",
+            qualityLimitations);
+    }
+
+    private static ThreadPoolPerfDiagnosticEvidence Unknown()
+        => new(
+            false,
+            false,
+            Array.Empty<PerfDiagnosticSignal>(),
+            "legacy-or-missing-quality-unknown",
+            ["Structured ThreadPool evidence quality is unavailable."]);
+
+    private static bool QualitySupportsConclusions(JsonElement data)
+        => data.TryGetProperty("Quality", out var quality)
+            && quality.ValueKind == JsonValueKind.Object
+            && quality.TryGetProperty("Conclusions", out var conclusions)
+            && conclusions.ValueKind == JsonValueKind.Object
+            && conclusions.TryGetProperty("RegressionOrHealthyControl", out var support)
+            && support.ValueKind == JsonValueKind.String
+            && string.Equals(support.GetString(), "Supported", StringComparison.Ordinal);
+
+    private static string[] ReadQualityLimitations(JsonElement data)
+    {
+        if (!data.TryGetProperty("Quality", out var quality)
+            || quality.ValueKind != JsonValueKind.Object
+            || !quality.TryGetProperty("Limitations", out var limitations)
+            || limitations.ValueKind != JsonValueKind.Array)
+        {
+            return ["Legacy or missing structured evidence quality."];
+        }
+
+        return limitations
+            .EnumerateArray()
+            .Select(static limitation =>
+            {
+                var category = limitation.TryGetProperty("Category", out var categoryElement)
+                    ? categoryElement.ToString()
+                    : "Unknown";
+                var scope = limitation.TryGetProperty("Scope", out var scopeElement)
+                    ? scopeElement.GetString()
+                    : null;
+                return string.IsNullOrWhiteSpace(scope) ? category : $"{category}:{scope}";
+            })
+            .Take(16)
+            .ToArray();
     }
 
     private static bool IsConfirmedReason(JsonElement sample, string reason)

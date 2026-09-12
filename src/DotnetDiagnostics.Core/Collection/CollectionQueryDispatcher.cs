@@ -623,17 +623,28 @@ public static class CollectionQueryDispatcher
         var latestIocp = snapshot.IocpThreadTimeline.Count > 0 ? snapshot.IocpThreadTimeline[^1].Count : (int?)null;
         var peakIocp = snapshot.IocpThreadTimeline.Count > 0 ? snapshot.IocpThreadTimeline.Max(static bucket => bucket.Count) : (int?)null;
         var evidence = ThreadPoolEvidence.GetSummary(snapshot);
+        var quality = ThreadPoolEvidence.GetQuality(snapshot);
 
         object payload = view.ToLowerInvariant() switch
         {
-            "timeline" => new ThreadPoolTimelineView(snapshot.WorkerThreadTimeline, snapshot.IocpThreadTimeline),
+            "timeline" => new ThreadPoolTimelineView(snapshot.WorkerThreadTimeline, snapshot.IocpThreadTimeline, quality),
             "hillclimbing" => new ThreadPoolHillClimbingView(
                 Math.Min(topN, snapshot.HillClimbing.Count),
-                snapshot.HillClimbing.Take(topN).ToList()),
+                snapshot.HillClimbing.Take(topN).ToList(),
+                ThreadPoolEvidence.WithProjection(
+                    quality,
+                    "query:hill-climbing",
+                    Math.Max(0, snapshot.HillClimbing.Count - topN),
+                    "The query returned a top-N prefix; the handle retains the remaining hill-climbing samples.")),
             "workitemorigins" => new ThreadPoolWorkItemOriginsView(
                 snapshot.TotalEnqueueEvents,
                 Math.Min(topN, snapshot.WorkItemOrigins.Count),
-                snapshot.WorkItemOrigins.Take(topN).ToList()),
+                snapshot.WorkItemOrigins.Take(topN).ToList(),
+                ThreadPoolEvidence.WithProjection(
+                    quality,
+                    "query:work-item-origins",
+                    Math.Max(0, snapshot.WorkItemOrigins.Count - topN),
+                    "The query returned only top-N work-item origins; the handle retains the remaining origins.")),
             _ => new ThreadPoolSummaryView(
                 latestWorker,
                 peakWorker,
@@ -648,7 +659,12 @@ public static class CollectionQueryDispatcher
                 snapshot.TotalEnqueueEvents - snapshot.TotalDequeueEvents,
                 snapshot.EffectiveSettings,
                 snapshot.WorkItemOrigins.Take(topN).ToList(),
-                snapshot.Notes),
+                snapshot.Notes,
+                ThreadPoolEvidence.WithProjection(
+                    quality,
+                    "query:summary",
+                    Math.Max(0, snapshot.WorkItemOrigins.Count - topN),
+                    "The summary returned only top-N work-item origins; the handle retains the remaining origins.")),
         };
 
         return new CollectionQueryResult(

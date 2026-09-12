@@ -88,6 +88,8 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
         int? lastIocpCount = null;
         var totalEnqueueEvents = 0;
         var totalDequeueEvents = 0;
+        long? detectedTransportLossEvents = null;
+        var processingFailures = 0;
 
         var processingTask = Task.Run(() =>
         {
@@ -258,9 +260,11 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
                 };
 
                 source.Process();
+                detectedTransportLossEvents = source.EventsLost;
             }
             catch (Exception ex)
             {
+                Interlocked.Increment(ref processingFailures);
                 _logger.LogDebug(ex, "EventPipe threadpool source ended for pid {Pid}.", processId);
             }
         }, cancellationToken);
@@ -317,6 +321,28 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
             orderedNotes.Add("ThreadPool enqueue events were observed, but no managed call stacks were available for origin attribution.");
         }
 
+        var evidence = ThreadPoolEvidence.Summarize(normalizedHillClimbing);
+        var inferredValues = orderedWorkerSamples.Count(static sample => sample.Provenance != ThreadPoolEvidence.RuntimeObserved)
+            + orderedIocpSamples.Count(static sample => sample.Provenance != ThreadPoolEvidence.RuntimeObserved)
+            + normalizedHillClimbing.Sum(static sample =>
+                (sample.OldCountProvenance is ThreadPoolEvidence.CarriedForward
+                    or ThreadPoolEvidence.InferredFromDelta
+                    or ThreadPoolEvidence.InferredFromNeighbor ? 1 : 0)
+                + (sample.NewCountProvenance is ThreadPoolEvidence.CarriedForward
+                    or ThreadPoolEvidence.InferredFromDelta
+                    or ThreadPoolEvidence.InferredFromNeighbor ? 1 : 0));
+        var enqueueCount = Volatile.Read(ref totalEnqueueEvents);
+        var quality = ThreadPoolEvidence.BuildQuality(
+            evidence,
+            detectedTransportLossEvents,
+            Volatile.Read(ref processingFailures),
+            workerSamples.DroppedCount,
+            iocpSamples.DroppedCount,
+            hillClimbing.DroppedCount,
+            inferredValues,
+            effectiveSettings is not null,
+            enqueueCount == 0 || !workItemOrigins.IsEmpty);
+
         return new ThreadPoolEventSnapshot(
             ProcessId: processId,
             StartedAt: startedAt,
@@ -330,10 +356,11 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
                 .ThenBy(static origin => origin.Method, StringComparer.Ordinal)
                 .ToList(),
             EffectiveSettings: effectiveSettings,
-            TotalEnqueueEvents: Volatile.Read(ref totalEnqueueEvents),
+            TotalEnqueueEvents: enqueueCount,
             TotalDequeueEvents: Volatile.Read(ref totalDequeueEvents),
             Notes: orderedNotes,
-            Evidence: ThreadPoolEvidence.Summarize(normalizedHillClimbing));
+            Evidence: evidence,
+            Quality: quality);
     }
 
     private static string GetCanonicalEventName(TraceEvent traceEvent)

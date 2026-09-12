@@ -392,7 +392,9 @@ public sealed class PerfRegressionAnalyzerTests
                         128_000,
                         "bce8b16592d51d00415c59ca141deea40fb082290d75d4c33bfe255cc96739a4",
                         30),
-                    IsControl: true),
+                    IsControl: true,
+                    EvidenceConclusion: "inconclusive",
+                    QualityLimitations: ["DetectedTransportLoss:eventpipe"]),
             ]);
 
         var json = PerfRegressionReportSerializer.SerializeDiagnosticRun(original);
@@ -403,7 +405,10 @@ public sealed class PerfRegressionAnalyzerTests
             .Which.StableId.Should().Be("Benchmarks!Candidate()");
         restored.Attribution.Single().RawArtifact.Should().NotBeNull();
         restored.Attribution.Single().IsControl.Should().BeTrue();
+        restored.Attribution.Single().EvidenceConclusion.Should().Be("inconclusive");
+        restored.Attribution.Single().QualityLimitations.Should().ContainSingle("DetectedTransportLoss:eventpipe");
         json.Should().Contain("\"contentSha256\"");
+        json.Should().Contain("\"evidenceConclusion\": \"inconclusive\"");
         json.Should().Contain("\"isControl\": true");
         json.Should().Contain("\"retentionDays\": 30");
     }

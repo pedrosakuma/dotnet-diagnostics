@@ -26,4 +26,7 @@ namespace DotnetDiagnostics.Core.Comparison;
 [JsonSerializable(typeof(InvestigationProvenance))]
 [JsonSerializable(typeof(BuildProvenance))]
 [JsonSerializable(typeof(ContainerProvenance))]
+[JsonSerializable(typeof(Evidence.EvidenceQuality))]
+[JsonSerializable(typeof(Evidence.EvidenceLimitation))]
+[JsonSerializable(typeof(Evidence.EvidenceConclusionPolicy))]
 public sealed partial class ComparableSnapshotJsonContext : JsonSerializerContext;

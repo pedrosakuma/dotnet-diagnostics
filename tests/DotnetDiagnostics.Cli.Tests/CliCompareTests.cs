@@ -5,6 +5,7 @@ using DotnetDiagnostics.Cli;
 using DotnetDiagnostics.Core.Collection;
 using DotnetDiagnostics.Core.Comparison;
 using DotnetDiagnostics.Core.Counters;
+using DotnetDiagnostics.Core.Evidence;
 using DotnetDiagnostics.Core.ThreadPool;
 using FluentAssertions;
 
@@ -61,7 +62,9 @@ public sealed class CliCompareTests : IDisposable
             new ThreadPoolEffectiveSettings(1, 100, 1, 100),
             TotalEnqueueEvents: 10,
             TotalDequeueEvents: 7,
-            Notes: Array.Empty<string>());
+            Notes: Array.Empty<string>(),
+            Evidence: new ThreadPoolEvidenceSummary(1, 1, 0, true),
+            Quality: AdequateQuality());
 
         var saved = CliCommands.TrySaveComparableSnapshot(snapshot, output, out var comparable, out var error);
 
@@ -70,7 +73,11 @@ public sealed class CliCompareTests : IDisposable
         comparable!.Kind.Should().Be(CollectionHandleKinds.ThreadPoolSnapshot);
         comparable.Rows.Should().BeEmpty();
         comparable.Metrics.Should().Contain(m => m.Definition.Name == "starvationAdjustments" && m.Value == 1);
+        comparable.Quality.Should().BeEquivalentTo(AdequateQuality());
         File.Exists(output).Should().BeTrue();
+        using var stream = File.OpenRead(output);
+        var restored = JsonSerializer.Deserialize(stream, ComparableSnapshotJsonContext.Default.ComparableSnapshot);
+        restored!.Quality.Should().BeEquivalentTo(AdequateQuality());
     }
 
     [Fact]
@@ -153,6 +160,22 @@ public sealed class CliCompareTests : IDisposable
     }
 
     [Fact]
+    public async Task Compare_LegacyThreadPoolSnapshots_RendersInconclusiveAndPreservesUnknownQuality()
+    {
+        var before = WriteThreadPoolSnapshot("before", 0, quality: null);
+        var after = WriteThreadPoolSnapshot("after", 2, AdequateQuality());
+
+        var (exit, stdout, _) = await RunAsync("compare", before, after, "--json");
+
+        exit.Should().Be(0);
+        using var doc = JsonDocument.Parse(stdout);
+        doc.RootElement.GetProperty("verdict").GetString().Should().Be("inconclusive");
+        doc.RootElement.GetProperty("metricSeries")[0].GetProperty("direction").GetString().Should().Be("n/a");
+        doc.RootElement.GetProperty("captureQuality")[0].ValueKind.Should().Be(JsonValueKind.Null);
+        doc.RootElement.GetProperty("notes")[0].GetString().Should().Contain("LegacyUnknown");
+    }
+
+    [Fact]
     public void TrySaveComparableSnapshot_UnsupportedKind_ReturnsActionableMessage()
     {
         var saved = CliCommands.TrySaveComparableSnapshot(new object(), Path.Combine(_root, "unsupported.json"), out _, out var error);
@@ -189,6 +212,41 @@ public sealed class CliCompareTests : IDisposable
         JsonSerializer.Serialize(stream, snapshot, ComparableSnapshotJsonContext.Default.ComparableSnapshot);
         return path;
     }
+
+    private string WriteThreadPoolSnapshot(string label, double starvation, EvidenceQuality? quality)
+    {
+        var path = Path.Combine(_root, label + ".json");
+        var snapshot = new ComparableSnapshot(
+            ComparableSnapshot.SchemaV1,
+            CollectionHandleKinds.ThreadPoolSnapshot,
+            label,
+            DateTimeOffset.Parse("2026-01-01T00:00:00Z", CultureInfo.InvariantCulture),
+            Environment.ProcessId,
+            [
+                new MetricValue(
+                    new MetricDefinition(
+                        "starvationAdjustments",
+                        MetricRole.Primary,
+                        BetterDirection.Lower,
+                        MetricAggregation.Total,
+                        Unit: "count"),
+                    starvation),
+            ],
+            Array.Empty<ComparableRow>(),
+            Quality: quality);
+        using var stream = File.Create(path);
+        JsonSerializer.Serialize(stream, snapshot, ComparableSnapshotJsonContext.Default.ComparableSnapshot);
+        return path;
+    }
+
+    private static EvidenceQuality AdequateQuality()
+        => new(
+            EvidenceQuality.SchemaV1,
+            Array.Empty<EvidenceLimitation>(),
+            new EvidenceConclusionPolicy(
+                EvidenceConclusionSupport.Supported,
+                EvidenceConclusionSupport.Supported,
+                EvidenceConclusionSupport.Supported));
 
     private static async Task<(int Exit, string Stdout, string Stderr)> RunAsync(params string[] args)
     {

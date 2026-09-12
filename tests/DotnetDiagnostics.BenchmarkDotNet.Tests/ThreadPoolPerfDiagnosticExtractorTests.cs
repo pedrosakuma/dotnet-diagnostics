@@ -28,13 +28,20 @@ public sealed class ThreadPoolPerfDiagnosticExtractorTests
                     "NewCountProvenance": "runtime-observed"
                   }
                 ],
-                "TotalEnqueueEvents": 24
+                "TotalEnqueueEvents": 24,
+                "Quality": {
+                  "Limitations": [],
+                  "Conclusions": {
+                    "RegressionOrHealthyControl": "Supported"
+                  }
+                }
               }
             }
             """);
 
         evidence.HasCausalWait.Should().BeTrue();
         evidence.HasConclusiveCausalAssessment.Should().BeTrue();
+        evidence.EvidenceConclusion.Should().Be("retained-explicit-positive-evidence");
         evidence.Signals.Should().Contain(signal =>
             signal.Name == "threadpool.starvationAdjustments" && signal.Value == 1);
         evidence.Signals.Should().Contain(signal =>
@@ -97,8 +104,8 @@ public sealed class ThreadPoolPerfDiagnosticExtractorTests
 
         evidence.HasCausalWait.Should().BeFalse();
         evidence.HasConclusiveCausalAssessment.Should().BeFalse();
-        evidence.Signals.Should().Contain(signal =>
-            signal.Name == "threadpool.starvationAdjustments" && signal.Value == 0);
+        evidence.Signals.Should().NotContain(signal =>
+            signal.Name == "threadpool.starvationAdjustments");
         evidence.Signals.Should().NotContain(signal =>
             signal.Name == "threadpool.starvationWorkerIncrease"
                 || signal.Name == "threadpool.cooperativeBlockingWorkerIncrease");
@@ -118,7 +125,13 @@ public sealed class ThreadPoolPerfDiagnosticExtractorTests
                 "HillClimbing": [
                   { "Reason": "ClimbingMove", "ReasonProvenance": "runtime-observed", "OldCount": 4, "NewCount": 5 }
                 ],
-                "TotalEnqueueEvents": 8
+                "TotalEnqueueEvents": 8,
+                "Quality": {
+                  "Limitations": [],
+                  "Conclusions": {
+                    "RegressionOrHealthyControl": "Supported"
+                  }
+                }
               }
             }
             """);
@@ -181,6 +194,15 @@ public sealed class ThreadPoolPerfDiagnosticExtractorTests
                   "ConfirmedStarvationAdjustments": 2,
                   "ConfirmedCooperativeBlockingAdjustments": 0,
                   "HasCompleteRuntimeReasonEvidence": true
+                },
+                "Quality": {
+                  "Limitations": [{
+                    "Category": "OutputProjection",
+                    "Scope": "inline:summary"
+                  }],
+                  "Conclusions": {
+                    "RegressionOrHealthyControl": "Supported"
+                  }
                 }
               }
             }
@@ -207,6 +229,15 @@ public sealed class ThreadPoolPerfDiagnosticExtractorTests
                   "ConfirmedStarvationAdjustments": 1,
                   "ConfirmedCooperativeBlockingAdjustments": 0,
                   "HasCompleteRuntimeReasonEvidence": true
+                },
+                "Quality": {
+                  "Limitations": [{
+                    "Category": "OutputProjection",
+                    "Scope": "inline:summary"
+                  }],
+                  "Conclusions": {
+                    "RegressionOrHealthyControl": "Supported"
+                  }
                 }
               }
             }
@@ -218,6 +249,68 @@ public sealed class ThreadPoolPerfDiagnosticExtractorTests
             signal.Name == "threadpool.starvationAdjustments" && signal.Value == 1);
         evidence.Signals.Should().NotContain(signal => signal.Name == "threadpool.starvationWorkerIncrease");
         evidence.Signals.Should().NotContain(signal => signal.Name == "threadpool.workerPeak");
+    }
+
+    [Fact]
+    public void Extract_DetectedLoss_PreservesPositiveEvidenceButMakesRegressionAttributionInconclusive()
+    {
+        var evidence = ThreadPoolPerfDiagnosticExtractor.Extract(
+            """
+            {
+              "Data": {
+                "HillClimbing": [{
+                  "Reason": "Starvation",
+                  "ReasonProvenance": "runtime-observed",
+                  "OldCount": 4,
+                  "OldCountProvenance": "runtime-observed",
+                  "NewCount": 6,
+                  "NewCountProvenance": "runtime-observed"
+                }],
+                "Evidence": {
+                  "HillClimbingEvents": 1,
+                  "ConfirmedStarvationAdjustments": 1,
+                  "ConfirmedCooperativeBlockingAdjustments": 0,
+                  "HasCompleteRuntimeReasonEvidence": true
+                },
+                "Quality": {
+                  "Limitations": [{
+                    "Category": "DetectedTransportLoss",
+                    "Scope": "eventpipe",
+                    "AffectedCount": 3
+                  }],
+                  "Conclusions": {
+                    "RegressionOrHealthyControl": "Inconclusive"
+                  }
+                }
+              }
+            }
+            """);
+
+        evidence.HasCausalWait.Should().BeTrue();
+        evidence.HasConclusiveCausalAssessment.Should().BeFalse();
+        evidence.Signals.Should().Contain(signal => signal.Name == "threadpool.starvationAdjustments" && signal.Value == 1);
+        evidence.EvidenceConclusion.Should().Be("retained-explicit-positive-evidence");
+        evidence.QualityLimitations.Should().Contain("DetectedTransportLoss:eventpipe");
+    }
+
+    [Fact]
+    public void Extract_LegacyPositiveEvidence_RemainsPositiveButQualityUnknown()
+    {
+        var evidence = ThreadPoolPerfDiagnosticExtractor.Extract(
+            """
+            {
+              "Data": {
+                "HillClimbing": [{
+                  "Reason": "Starvation",
+                  "ReasonProvenance": "runtime-observed"
+                }]
+              }
+            }
+            """);
+
+        evidence.HasCausalWait.Should().BeTrue();
+        evidence.HasConclusiveCausalAssessment.Should().BeFalse();
+        evidence.QualityLimitations.Should().ContainSingle().Which.Should().Contain("Legacy");
     }
 
     [Theory]
