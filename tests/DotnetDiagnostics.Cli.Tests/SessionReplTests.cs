@@ -8,6 +8,7 @@ using DotnetDiagnostics.Core.Counters;
 using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Dump;
+using DotnetDiagnostics.Core.Evidence;
 using DotnetDiagnostics.Core.EventSources;
 using DotnetDiagnostics.Core.Logs;
 using DotnetDiagnostics.Core.OffCpu;
@@ -220,6 +221,8 @@ public sealed class SessionReplTests
         stderr.Should().BeEmpty();
         stdout.Should().Contain("top-types");
         stdout.Should().Contain("System.String");
+        stdout.Should().Contain("\"quality\"");
+        stdout.Should().Contain("eventpipe-loss");
     }
 
     [Fact]
@@ -280,6 +283,28 @@ public sealed class SessionReplTests
         stdout.Should().Contain("NotSupportedInSession");
         stdout.Should().Contain("ClrMD runtime");
         stdout.Should().Contain("query --view");
+    }
+
+    [Fact]
+    public async Task Query_GcDumpUnavailableView_RendersErrorAndEvidenceLimitations()
+    {
+        var (services, store) = BuildServices();
+        var snapshot = HeapSnapshot() with { Origin = HeapSnapshotOrigin.GcDump };
+        var handle = store.Register(
+            Environment.ProcessId,
+            HeapInspectionUseCases.HeapSnapshotKind,
+            snapshot,
+            TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, stderr) = await RunReplAsync(
+            $"query --handle {handle.Id} --view retention-paths\nexit\n", services);
+
+        exit.Should().Be(0);
+        stderr.Should().BeEmpty();
+        stdout.Should().Contain("ERROR:");
+        stdout.Should().Contain("ViewUnavailableForGcDump");
+        stdout.Should().Contain("eventpipe-loss");
+        stdout.Should().Contain("absence=Inconclusive");
     }
 
     [Fact]
@@ -1730,7 +1755,16 @@ public sealed class SessionReplTests
         Runtime: new DumpRuntimeInfo("CoreCLR", "10.0.0", "X64", IsServerGC: false, HeapCount: 1),
         Heap: new DumpHeapSummary(1024, 0, 0, 1024, 0, 0, 1024),
         TopTypesByBytes: new[] { new TypeStat("System.String", "System.Private.CoreLib", 100, 4096, 40.0) },
-        TopTypesByInstances: new[] { new TypeStat("System.String", "System.Private.CoreLib", 100, 4096, 40.0) });
+        TopTypesByInstances: new[] { new TypeStat("System.String", "System.Private.CoreLib", 100, 4096, 40.0) })
+    {
+        Quality = new EvidenceQuality(
+            EvidenceQuality.SchemaV1,
+            [new EvidenceLimitation(EvidenceLimitationCategory.MechanismUnobservable, "eventpipe-loss", null, "unknown")],
+            new EvidenceConclusionPolicy(
+                EvidenceConclusionSupport.Supported,
+                EvidenceConclusionSupport.Inconclusive,
+                EvidenceConclusionSupport.Inconclusive)),
+    };
 
     private static HeapSnapshotArtifact DumpHeapSnapshot() => new(
         Origin: HeapSnapshotOrigin.Dump,

@@ -16,7 +16,10 @@ public sealed record DiagnosticResult<T>(
     IReadOnlyList<NextActionHint> Hints,
     DiagnosticError? Error = null)
 {
-    /// <summary>The typed diagnostic payload, omitted on failure responses.</summary>
+    /// <summary>
+    /// The typed diagnostic payload. Usually omitted on failure responses; a failure may retain
+    /// bounded metadata when it is needed to interpret why the requested view is unavailable.
+    /// </summary>
     public T? Data { get; init; }
 
     /// <summary>

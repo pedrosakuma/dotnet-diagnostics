@@ -63,6 +63,16 @@ public static class HeapSnapshotQueryDispatcher
         ArgumentNullException.ThrowIfNull(snapshot);
         var normalized = (view ?? string.Empty).Trim().ToLowerInvariant();
 
+        if (snapshot.Origin == HeapSnapshotOrigin.GcDump
+            && normalized != "top-types"
+            && (ProjectionSet.Contains(normalized) || ServerOnly.Contains(normalized)))
+        {
+            return new HeapDispatchOutcome(
+                GcDumpViewUnavailable(snapshot, handle, normalized),
+                ServerOnlyView: false,
+                UnknownView: false);
+        }
+
         if (ServerOnly.Contains(normalized))
         {
             return new HeapDispatchOutcome(null, ServerOnlyView: true, UnknownView: false);
@@ -113,17 +123,49 @@ public static class HeapSnapshotQueryDispatcher
         }
 
         var slice = source.Take(topN).ToArray();
+        var quality = GcDumpEvidence.WithApplicableProjection(
+            snapshot,
+            $"query-top-types-{(normalizedRank == "instances" ? "instances" : "bytes")}",
+            Math.Max(0, source.Count - slice.Length),
+            "Lower-ranked types retained by the snapshot were omitted from this top-types response.");
         var origin = snapshot.Origin.ToString();
         var summary = slice.Length == 0
-            ? $"Snapshot '{handle}' has no recorded top types — heap walk produced 0 objects."
-            : $"Returning {slice.Length} types ranked by {(normalizedRank == "instances" ? "instance count" : "retained bytes")} from snapshot '{handle}' ({origin}, captured {snapshot.CapturedAt:u}, pid {snapshot.ProcessId}). Top: `{slice[0].TypeFullName}` ({slice[0].TotalBytesPercent}% / {slice[0].InstanceCount:N0} instances).";
+            ? $"Snapshot '{handle}' has no recorded top types; absence is not established unless its evidence-quality policy supports exhaustive counts."
+            : $"Returning {slice.Length} observed types ranked by {(normalizedRank == "instances" ? "instance count" : "bytes")} from snapshot '{handle}' ({origin}, captured {snapshot.CapturedAt:u}, pid {snapshot.ProcessId}). Top: `{slice[0].TypeFullName}` ({slice[0].TotalBytesPercent}% / {slice[0].InstanceCount:N0} instances).";
 
         var result = new HeapSnapshotQueryResult(handle, "top-types", origin, snapshot.ProcessId, snapshot.CapturedAt)
         {
             TopTypes = slice,
             RankBy = normalizedRank.Length == 0 ? "bytes" : normalizedRank,
+            Quality = quality,
         };
         return DiagnosticResult.Ok(result, summary);
+    }
+
+    private static DiagnosticResult<HeapSnapshotQueryResult> GcDumpViewUnavailable(
+        HeapSnapshotArtifact snapshot,
+        string handle,
+        string view)
+    {
+        var quality = GcDumpEvidence.GetApplicableQuality(snapshot);
+        var metadata = new HeapSnapshotQueryResult(
+            handle,
+            view,
+            snapshot.Origin.ToString(),
+            snapshot.ProcessId,
+            snapshot.CapturedAt)
+        {
+            Quality = quality,
+        };
+        return DiagnosticResult.Fail<HeapSnapshotQueryResult>(
+            $"Snapshot '{handle}' cannot provide view '{view}' because gcdump retains per-type node and byte totals, not object edges, roots, or ClrMD heap properties.",
+            new DiagnosticError(
+                "ViewUnavailableForGcDump",
+                $"The '{view}' view is intrinsically unavailable for source=\"gcdump\"; unavailable data is not an observed zero.",
+                handle)) with
+        {
+            Data = metadata,
+        };
     }
 
     private static DiagnosticResult<HeapSnapshotQueryResult> QueryRetentionPaths(
@@ -165,6 +207,11 @@ public static class HeapSnapshotQueryDispatcher
             TotalRetentionPaths = matching.Length,
             OmittedRetentionPaths = matching.Length - slice.Length,
             RetentionFrameLimit = MaxProjectedRetentionFrames,
+            Quality = GcDumpEvidence.WithApplicableProjection(
+                snapshot,
+                "query-retention-paths",
+                matching.Length - slice.Length,
+                "Matching retention paths were omitted from this bounded response."),
         };
         return DiagnosticResult.Ok(result, summary);
     }
@@ -240,6 +287,7 @@ public static class HeapSnapshotQueryDispatcher
         var result = new HeapSnapshotQueryResult(handle, "roots-by-kind", origin, snapshot.ProcessId, snapshot.CapturedAt)
         {
             RootsByKind = roots,
+            Quality = GcDumpEvidence.GetApplicableQuality(snapshot),
         };
         return DiagnosticResult.Ok(result, summary);
     }
@@ -256,6 +304,11 @@ public static class HeapSnapshotQueryDispatcher
         var result = new HeapSnapshotQueryResult(handle, "finalizer-queue", origin, snapshot.ProcessId, snapshot.CapturedAt)
         {
             FinalizableObjects = slice,
+            Quality = GcDumpEvidence.WithApplicableProjection(
+                snapshot,
+                "query-finalizer-queue",
+                Math.Max(0, finalizable.Count - slice.Length),
+                "Lower-ranked finalizable types were omitted from this bounded response."),
         };
         return DiagnosticResult.Ok(result, summary);
     }
@@ -278,6 +331,11 @@ public static class HeapSnapshotQueryDispatcher
         var result = new HeapSnapshotQueryResult(handle, "fragmentation", origin, snapshot.ProcessId, snapshot.CapturedAt)
         {
             Segments = ordered,
+            Quality = GcDumpEvidence.WithApplicableProjection(
+                snapshot,
+                "query-fragmentation",
+                Math.Max(0, segments.Count - ordered.Length),
+                "Lower-ranked heap segments were omitted from this bounded response."),
         };
         return DiagnosticResult.Ok(result, summary);
     }
@@ -302,6 +360,11 @@ public static class HeapSnapshotQueryDispatcher
         var result = new HeapSnapshotQueryResult(handle, "static-fields", origin, snapshot.ProcessId, snapshot.CapturedAt)
         {
             StaticFields = slice,
+            Quality = GcDumpEvidence.WithApplicableProjection(
+                snapshot,
+                "query-static-fields",
+                Math.Max(0, snapshot.StaticFields.Count - slice.Length),
+                "Lower-ranked static fields were omitted from this bounded response."),
         };
         return DiagnosticResult.Ok(result, summary);
     }
@@ -326,6 +389,11 @@ public static class HeapSnapshotQueryDispatcher
         var result = new HeapSnapshotQueryResult(handle, "delegate-targets", origin, snapshot.ProcessId, snapshot.CapturedAt)
         {
             DelegateTargets = slice,
+            Quality = GcDumpEvidence.WithApplicableProjection(
+                snapshot,
+                "query-delegate-targets",
+                Math.Max(0, snapshot.DelegateTargets.Count - slice.Length),
+                "Lower-ranked delegate target groups were omitted from this bounded response."),
         };
         return DiagnosticResult.Ok(result, summary);
     }
@@ -355,6 +423,7 @@ public static class HeapSnapshotQueryDispatcher
         var result = new HeapSnapshotQueryResult(handle, "gchandles", origin, snapshot.ProcessId, snapshot.CapturedAt)
         {
             GcHandles = view,
+            Quality = GcDumpEvidence.GetApplicableQuality(snapshot),
         };
 
         return DiagnosticResult.Ok(result, summary);
@@ -377,6 +446,11 @@ public static class HeapSnapshotQueryDispatcher
         {
             AsyncOperations = ordered,
             SortedBy = ordered.Any(op => op.ObservedOrder.HasValue) ? "heap-order" : "direct-size",
+            Quality = GcDumpEvidence.WithApplicableProjection(
+                snapshot,
+                "query-async",
+                Math.Max(0, asyncOperations.Count - ordered.Length),
+                "Lower-ranked async operations were omitted from this bounded response."),
         };
         return DiagnosticResult.Ok(result, summary);
     }
@@ -400,6 +474,7 @@ public static class HeapSnapshotQueryDispatcher
         var result = new HeapSnapshotQueryResult(handle, "timers", origin, snapshot.ProcessId, snapshot.CapturedAt)
         {
             Timers = sliced,
+            Quality = GcDumpEvidence.GetApplicableQuality(snapshot),
         };
 
         return DiagnosticResult.Ok(result, summary);
@@ -447,6 +522,7 @@ public static class HeapSnapshotQueryDispatcher
         var result = new HeapSnapshotQueryResult(handle, "alc", origin, snapshot.ProcessId, snapshot.CapturedAt)
         {
             AssemblyLoadContexts = sliced,
+            Quality = GcDumpEvidence.GetApplicableQuality(snapshot),
         };
 
         return DiagnosticResult.Ok(result, summary);

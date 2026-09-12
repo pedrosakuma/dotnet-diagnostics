@@ -27,4 +27,8 @@ internal sealed record HeapSnapshotErrorPayload(string Kind, string Error);
 [JsonSerializable(typeof(GcHandleTypeStat))]
 [JsonSerializable(typeof(AsyncOperationStat))]
 [JsonSerializable(typeof(AsyncChainFrame))]
+[JsonSerializable(typeof(GcDumpCaptureStatus))]
+[JsonSerializable(typeof(DotnetDiagnostics.Core.Evidence.EvidenceQuality))]
+[JsonSerializable(typeof(DotnetDiagnostics.Core.Evidence.EvidenceLimitation))]
+[JsonSerializable(typeof(DotnetDiagnostics.Core.Evidence.EvidenceConclusionPolicy))]
 internal sealed partial class HeapSnapshotJsonContext : JsonSerializerContext;

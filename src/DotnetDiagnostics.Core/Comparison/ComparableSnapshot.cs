@@ -112,4 +112,10 @@ public sealed record ComparableSnapshot(
     Evidence.EvidenceQuality? Quality = null)
 {
     public const string SchemaV1 = "dotnet-diagnostics-mcp/comparable-snapshot/v1";
+
+    /// <summary>
+    /// Heap capture mechanism for <c>heap-snapshot</c> projections. Null on legacy portable
+    /// snapshots, where a missing quality field cannot distinguish ClrMD from legacy gcdump.
+    /// </summary>
+    public Dump.HeapSnapshotOrigin? HeapOrigin { get; init; }
 }

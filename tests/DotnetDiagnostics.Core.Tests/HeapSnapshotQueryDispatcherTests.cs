@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using DotnetDiagnostics.Core.Dump;
+using DotnetDiagnostics.Core.Evidence;
 using FluentAssertions;
 
 namespace DotnetDiagnostics.Core.Tests;
@@ -53,6 +54,51 @@ public class HeapSnapshotQueryDispatcherTests
 
         outcome.Result!.Error.Should().BeNull();
         outcome.Result.Data!.RankBy.Should().Be("bytes");
+    }
+
+    [Fact]
+    public void TopTypes_ClrMdProducerShape_DoesNotFabricateQualityForProjection()
+    {
+        var outcome = HeapSnapshotQueryDispatcher.Dispatch(
+            Snapshot(),
+            Handle,
+            "top-types",
+            topN: 1,
+            rankBy: "bytes",
+            typeFullName: null);
+
+        outcome.Result!.Data!.TopTypes.Should().ContainSingle();
+        outcome.Result.Data.Quality.Should().BeNull();
+    }
+
+    [Fact]
+    public void TopTypes_PreservesQualityAndAddsResponseProjection()
+    {
+        var snapshot = Snapshot() with
+        {
+            Quality = new EvidenceQuality(
+                EvidenceQuality.SchemaV1,
+                [new EvidenceLimitation(EvidenceLimitationCategory.MechanismUnobservable, "eventpipe-loss", null, "unknown")],
+                new EvidenceConclusionPolicy(
+                    EvidenceConclusionSupport.Supported,
+                    EvidenceConclusionSupport.Inconclusive,
+                    EvidenceConclusionSupport.Inconclusive)),
+            TopTypesByBytes =
+            [
+                new TypeStat("A", null, 3, 300, 50),
+                new TypeStat("B", null, 2, 200, 33),
+                new TypeStat("C", null, 1, 100, 17),
+            ],
+        };
+
+        var outcome = HeapSnapshotQueryDispatcher.Dispatch(snapshot, Handle, "top-types", topN: 1, rankBy: "bytes", typeFullName: null);
+
+        outcome.Result!.Data!.Quality!.Limitations.Should().Contain(l =>
+            l.Category == EvidenceLimitationCategory.MechanismUnobservable && l.Scope == "eventpipe-loss");
+        outcome.Result.Data.Quality.Limitations.Should().Contain(l =>
+            l.Category == EvidenceLimitationCategory.OutputProjection
+            && l.Scope == "query-top-types-bytes"
+            && l.AffectedCount == 2);
     }
 
     [Fact]
@@ -126,7 +172,7 @@ public class HeapSnapshotQueryDispatcherTests
     }
 
     [Fact]
-    public void GcDumpClrMdOnlyRecapture_OmitsReplayArguments()
+    public void GcDumpClrMdOnlyView_IsExplicitlyUnavailableWithQuality()
     {
         var snapshot = Snapshot() with
         {
@@ -142,9 +188,11 @@ public class HeapSnapshotQueryDispatcherTests
             rankBy: null,
             typeFullName: null);
 
-        var hint = outcome.Result!.Hints.Should().ContainSingle().Which;
-        hint.NextTool.Should().Be("inspect_heap");
-        hint.SuggestedArguments.Should().BeNull();
+        outcome.Result!.Error!.Kind.Should().Be("ViewUnavailableForGcDump");
+        outcome.Result.Data.Should().NotBeNull();
+        outcome.Result.Data!.Quality.Should().NotBeNull();
+        outcome.Result.Data.Quality!.Limitations.Should().Contain(
+            limitation => limitation.Category == EvidenceLimitationCategory.LegacyUnknown);
     }
 
     private static HeapSnapshotArtifact Snapshot() => new(

@@ -16,8 +16,9 @@ namespace DotnetDiagnostics.Core.Dump;
 /// <summary>
 /// Default <see cref="IGcDumpHeapSnapshotCollector"/>. Opens an EventPipe session on
 /// <c>Microsoft-Windows-DotNETRuntime</c> with the <c>GCHeapSnapshot</c> keyword, which forces the
-/// runtime to induce a blocking gen-2 GC and stream the entire managed object graph as
-/// <c>GCBulkNode</c> / <c>GCBulkType</c> events. The node sizes and type names are aggregated into
+/// runtime to induce a blocking gen-2 GC and stream heap-dump events. This collector consumes
+/// <c>GCBulkNode</c> / <c>GCBulkType</c> records only; it does not retain object edges or roots.
+/// The observed node sizes and type names are aggregated into
 /// the same <see cref="HeapSnapshotArtifact"/> the ClrMD inspectors produce, so the existing
 /// <c>query_snapshot</c> heap views work unchanged — without ptrace, ClrMD attach, or a dump file.
 /// <para>
@@ -95,7 +96,7 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
         var aggregator = collection.Aggregator;
         sw.Stop();
         var traceAvailable = exportFullPath is not null
-            && collection.TraceCompleted
+            && collection.StreamCompleted
             && File.Exists(exportFullPath);
         if (traceAvailable)
         {
@@ -118,8 +119,42 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
         {
             warnings.Add("GC trace export was not completed before collection ended; no trace artifact was published.");
         }
+        if (collection.ReaderFailed)
+        {
+            warnings.Add("The EventPipe heap reader failed after partial per-type evidence may have been retained.");
+        }
+        else if (!collection.StreamCompleted)
+        {
+            warnings.Add("The EventPipe heap stream did not complete cleanly; retained per-type evidence may be partial.");
+        }
+        if (!collection.GcStopObserved)
+        {
+            warnings.Add("The induced blocking GC stop was not observed; this does not establish a startup cause or an empty heap.");
+        }
+        if (aggregator.MissingTypeNameCount > 0)
+        {
+            warnings.Add($"{aggregator.MissingTypeNameCount} observed type id(s) had no streamed name and are shown as hexadecimal ids.");
+        }
 
         var (byBytes, byInstances) = aggregator.Project(snapshotTopN);
+        var projectedTypeCount = aggregator.CountProjectedTypes(snapshotTopN);
+        if (projectedTypeCount < aggregator.TypeCount)
+        {
+            warnings.Add($"{aggregator.TypeCount - projectedTypeCount} lower-ranked observed type(s) were omitted by the snapshot top-N projection; aggregation itself was not capped.");
+        }
+        var status = new GcDumpCaptureStatus(
+            collection.GcStopObserved,
+            collection.StreamCompleted,
+            collection.TimedOut,
+            collection.ReaderFailed,
+            opts.ExportTrace,
+            traceAvailable);
+        var quality = GcDumpEvidence.BuildQuality(
+            aggregator.NodeCount,
+            aggregator.TypeCount,
+            aggregator.MissingTypeNameCount,
+            projectedTypeCount,
+            status);
 
         return new HeapSnapshotArtifact(
             Origin: HeapSnapshotOrigin.GcDump,
@@ -138,6 +173,8 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
         {
             Warnings = warnings,
             TracePath = traceAvailable ? exportRelative : null,
+            Quality = quality,
+            GcDumpStatus = status,
         };
     }
 
@@ -279,7 +316,9 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
         }
         else if (initialCompletion == noDataTask && !dataSeen.Task.IsCompleted)
         {
-            _logger.LogWarning("No EventPipe heap data within 5s for PID {Pid}; assuming no managed heap.", processId);
+            _logger.LogWarning(
+                "No EventPipe heap data was observed within 5s for PID {Pid}; ending the capture without inferring an empty heap or a startup cause.",
+                processId);
         }
         else if (initialCompletion == dataSeen.Task || (initialCompletion == noDataTask && dataSeen.Task.IsCompleted))
         {
@@ -299,7 +338,7 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
                 processing,
                 ex => _logger.LogDebug(ex, "Stopping gcdump EventPipe session for PID {Pid} threw.", processId),
                 Remaining(collectionTimer, timeout),
-                propagateProcessingErrors: true).ConfigureAwait(false);
+                propagateProcessingErrors: false).ConfigureAwait(false);
         }
         catch (TimeoutException)
         {
@@ -310,7 +349,9 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
         return new GcDumpCollection(
             aggregator,
             timedOut || collectionTimer.Elapsed >= timeout,
-            TraceCompleted: processing.IsCompletedSuccessfully);
+            GcStopObserved: dumpComplete.Task.IsCompletedSuccessfully,
+            StreamCompleted: processing.IsCompletedSuccessfully,
+            ReaderFailed: processing.IsFaulted);
     }
 
     private async Task<bool> FlushTypeTableAsync(DiagnosticsClient client, TimeSpan timeout, CancellationToken ct)
@@ -367,7 +408,9 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
     private sealed record GcDumpCollection(
         GcDumpTypeAggregator Aggregator,
         bool TimedOut,
-        bool TraceCompleted = false);
+        bool GcStopObserved = false,
+        bool StreamCompleted = false,
+        bool ReaderFailed = false);
 }
 
 /// <summary>

@@ -1,4 +1,5 @@
 using DotnetDiagnostics.Core.Dump;
+using DotnetDiagnostics.Core.Evidence;
 
 namespace DotnetDiagnostics.Core.Comparison;
 
@@ -25,6 +26,10 @@ public sealed record HeapGrowthResult(
 {
     /// <summary>Diagnostic notes (cross-process comparison, missing retention paths, …).</summary>
     public IReadOnlyList<string>? Notes { get; init; }
+    /// <summary>Evidence quality of the baseline gcdump capture; null for ClrMD live/dump captures.</summary>
+    public EvidenceQuality? BaselineQuality { get; init; }
+    /// <summary>Evidence quality of the current gcdump capture; null for ClrMD live/dump captures.</summary>
+    public EvidenceQuality? CurrentQuality { get; init; }
 }
 
 /// <summary>

@@ -52,7 +52,20 @@ Its parser propagates processing errors and drains the session tail after the in
 stop. It does **not** currently persist a reliable EventPipe lost-event count, distinguish
 collector retention from top-N projection in structured metadata, or prove graph
 completeness from the GC stop alone. Those are unknown/unavailable signals, not zero loss.
-Issue #927 will map these existing facts to the contract; this pilot does not change gcdump.
+Issue #927 maps these facts to the contract. Gcdump now records GC-stop, EventPipe
+stream and optional trace-export completion separately; reports timeout, reader
+failure, missing type names and top-N projection; and marks EventPipe loss
+unobservable. Its retained positive per-type totals remain useful, while absence,
+exhaustive-count, regression and healthy-control conclusions stay inconclusive.
+Unavailable graph/ClrMD views report an intrinsic mechanism limitation rather than
+an observed empty result.
+
+This quality gate is scoped by heap-source provenance. New portable heap
+comparables persist `heapOrigin`: `GcDump` captures obey the policy above, while
+existing `Live`/`Dump` ClrMD captures retain their established comparison behavior
+without fabricated completeness metadata. A legacy heap comparable with neither
+origin nor quality is ambiguous and therefore cannot support a regression or
+healthy-control verdict.
 
 `InvestigationSummaryExporter` supports its documented memory-summary inputs, not EventPipe
 ThreadPool or gcdump heap artifacts. This work does not add unsupported export artifact

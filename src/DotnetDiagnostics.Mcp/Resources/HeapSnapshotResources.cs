@@ -24,7 +24,9 @@ public sealed class HeapSnapshotResources
     [Description(
         "JSON snapshot of the HeapSnapshotArtifact registered under a drilldown handle by inspect_heap(source=\"dump\") " +
         "or inspect_heap(source=\"live\"). Includes runtime info, heap totals, top-N types (snapshot retains up to ~200), " +
-        "any walked retention paths, and provenance fields (origin, captured-at, walk duration). " +
+        "any walked retention paths, provenance fields (origin, captured-at, walk duration), and " +
+        "structured evidence-quality/completion metadata. For gcdump, type totals describe the " +
+        "observed stream and do not imply a complete rooted object graph. " +
         "Duplicate-string previews are ALWAYS metadata-only on this Resource (issue #165 / H4) — Resources have " +
         "no per-call opt-in surface, so we keep them closed regardless of `Diagnostics:AllowSensitiveHeapValues`. " +
         "Use `query_snapshot(view=\"duplicate-strings\", includeSensitiveValues=true)` (subject to the server gate) " +
@@ -65,4 +67,3 @@ public sealed class HeapSnapshotResources
         return snapshot with { DuplicateStrings = sanitizedDuplicates };
     }
 }
-

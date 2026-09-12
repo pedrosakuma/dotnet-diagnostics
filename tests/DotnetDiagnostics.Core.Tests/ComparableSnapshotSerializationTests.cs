@@ -42,7 +42,10 @@ public sealed class ComparableSnapshotSerializationTests
             new EvidenceConclusionPolicy(
                 EvidenceConclusionSupport.Supported,
                 EvidenceConclusionSupport.Inconclusive,
-                EvidenceConclusionSupport.Inconclusive)));
+                EvidenceConclusionSupport.Inconclusive)))
+    {
+        HeapOrigin = Dump.HeapSnapshotOrigin.GcDump,
+    };
 
     [Fact]
     public void RoundTrips_PreservingAllFields()
@@ -53,6 +56,7 @@ public sealed class ComparableSnapshotSerializationTests
         var restored = JsonSerializer.Deserialize(json, ComparableSnapshotJsonContext.Default.ComparableSnapshot);
 
         restored.Should().BeEquivalentTo(original);
+        restored!.HeapOrigin.Should().Be(Dump.HeapSnapshotOrigin.GcDump);
     }
 
     [Fact]
@@ -85,5 +89,23 @@ public sealed class ComparableSnapshotSerializationTests
 
         restored.Should().NotBeNull();
         restored!.Quality.Should().BeNull();
+    }
+
+    [Fact]
+    public void LegacyHeapJson_WithoutOriginOrQuality_IsTreatedAsAmbiguous()
+    {
+        var legacy = Sample() with
+        {
+            Kind = "heap-snapshot",
+            Quality = null,
+            HeapOrigin = null,
+        };
+        var json = JsonSerializer.Serialize(legacy, ComparableSnapshotJsonContext.Default.ComparableSnapshot);
+        var restored = JsonSerializer.Deserialize(json, ComparableSnapshotJsonContext.Default.ComparableSnapshot)!;
+
+        var diff = SnapshotDiffer.Compare([restored with { Label = "before" }, restored with { Label = "after" }]);
+
+        diff.Verdict.Should().Be("inconclusive");
+        diff.Notes.Should().Contain(note => note.Contains("LegacyUnknown", StringComparison.Ordinal));
     }
 }

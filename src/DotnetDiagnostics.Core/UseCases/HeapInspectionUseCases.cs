@@ -154,8 +154,9 @@ public static class HeapInspectionUseCases
 
     /// <summary>
     /// Captures a managed-heap snapshot over EventPipe (the dotnet-gcdump mechanism) — no ptrace,
-    /// no ClrMD attach, no dump file. Registers the same <c>heap-snapshot</c> handle so the
-    /// <c>query_snapshot</c> drilldown views work unchanged; ClrMD-only views stay empty.
+    /// no ClrMD attach, no dump file. The runtime induces a blocking Gen2 GC. Registers the same
+    /// <c>heap-snapshot</c> handle; only observed per-type totals are available and ClrMD-only
+    /// graph/property views report that they are intrinsically unavailable.
     /// </summary>
     public static async Task<DiagnosticResult<LiveHeapInspection>> InspectGcDump(
         IGcDumpHeapSnapshotCollector collector,
@@ -203,8 +204,13 @@ public static class HeapInspectionUseCases
 
         var topByBytes = inspection.TopTypesByBytes;
         var summary = topByBytes.Count == 0
-            ? $"gcdump of pid {pid} ({inspection.SuspendDuration.TotalMilliseconds:N0} ms) produced no objects. Snapshot handle: `{handle.Id}`."
-            : $"gcdump of pid {pid} ({inspection.SuspendDuration.TotalMilliseconds:N0} ms) — heap {inspection.Heap.TotalBytes:N0} bytes; top type: `{topByBytes[0].TypeFullName}` ({topByBytes[0].TotalBytesPercent}% / {topByBytes[0].InstanceCount:N0} instances). Snapshot handle: `{handle.Id}`.";
+            ? $"gcdump of pid {pid} ({inspection.SuspendDuration.TotalMilliseconds:N0} ms) observed no objects; absence is inconclusive. Snapshot handle: `{handle.Id}`."
+            : $"gcdump of pid {pid} ({inspection.SuspendDuration.TotalMilliseconds:N0} ms) — observed {inspection.Heap.TotalBytes:N0} bytes; top observed type: `{topByBytes[0].TypeFullName}` ({topByBytes[0].TotalBytesPercent}% / {topByBytes[0].InstanceCount:N0} instances). Snapshot handle: `{handle.Id}`.";
+        if (inspection.Quality?.Conclusions.RegressionOrHealthyControl
+            != DotnetDiagnostics.Core.Evidence.EvidenceConclusionSupport.Supported)
+        {
+            summary += " Absence, exhaustive-count, regression, and healthy-control conclusions are inconclusive; inspect quality for limitations.";
+        }
         if (!string.IsNullOrEmpty(inspection.TracePath))
         {
             summary += $" Raw trace exported to `{inspection.TracePath}` — fetch with get_bytes(kind=\"trace\").";

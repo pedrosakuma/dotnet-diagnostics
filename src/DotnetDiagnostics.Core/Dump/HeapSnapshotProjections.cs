@@ -17,6 +17,7 @@ public static class HeapSnapshotProjections
         ArgumentNullException.ThrowIfNull(snapshot);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(inlineTopTypes);
 
+        var omitted = Math.Max(0, snapshot.TopTypesByBytes.Count - inlineTopTypes);
         return new DumpInspection(
             FilePath: snapshot.DumpFilePath ?? string.Empty,
             FileSizeBytes: snapshot.DumpFileSizeBytes ?? 0,
@@ -28,6 +29,11 @@ public static class HeapSnapshotProjections
             Warnings: snapshot.Warnings)
         {
             Handle = handle,
+            Quality = GcDumpEvidence.WithApplicableProjection(
+                snapshot,
+                "inline-top-types",
+                omitted,
+                "Lower-ranked types retained by the snapshot were omitted from the inline response."),
         };
     }
 
@@ -40,6 +46,7 @@ public static class HeapSnapshotProjections
         ArgumentNullException.ThrowIfNull(snapshot);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(inlineTopTypes);
 
+        var omitted = Math.Max(0, snapshot.TopTypesByBytes.Count - inlineTopTypes);
         return new LiveHeapInspection(
             ProcessId: snapshot.ProcessId,
             SuspendDuration: snapshot.WalkDuration,
@@ -52,6 +59,12 @@ public static class HeapSnapshotProjections
         {
             Handle = handle,
             TracePath = snapshot.TracePath,
+            Quality = GcDumpEvidence.WithApplicableProjection(
+                snapshot,
+                "inline-top-types",
+                omitted,
+                "Lower-ranked types retained by the snapshot were omitted from the inline response."),
+            GcDumpStatus = snapshot.GcDumpStatus,
         };
     }
 }

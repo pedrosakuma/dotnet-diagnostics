@@ -241,7 +241,6 @@ public sealed class NextActionHintReplayabilityTests
     [Theory]
     [InlineData(HeapSnapshotOrigin.Dump, "dump")]
     [InlineData(HeapSnapshotOrigin.Live, "live")]
-    [InlineData(HeapSnapshotOrigin.GcDump, null)]
     public void HeapProjectionRecapture_PreservesOriginOrOmitsClrMdOnlyArguments(
         HeapSnapshotOrigin origin,
         string? expectedSource)
@@ -263,7 +262,6 @@ public sealed class NextActionHintReplayabilityTests
     [Theory]
     [InlineData(HeapSnapshotOrigin.Dump, "dump")]
     [InlineData(HeapSnapshotOrigin.Live, "live")]
-    [InlineData(HeapSnapshotOrigin.GcDump, null)]
     public async Task ServerHeapRecapture_PreservesOriginOrOmitsClrMdOnlyArguments(
         HeapSnapshotOrigin origin,
         string? expectedSource)
@@ -285,6 +283,46 @@ public sealed class NextActionHintReplayabilityTests
 
         var hint = result.Hints.Should().ContainSingle().Which;
         AssertHeapRecaptureArguments(hint, expectedSource);
+    }
+
+    [Fact]
+    public void GcDumpProjectionUnavailable_DoesNotSuggestClrMdRecapture()
+    {
+        var outcome = HeapSnapshotQueryDispatcher.Dispatch(
+            CreateHeapSnapshot(HeapSnapshotOrigin.GcDump),
+            handle: "HEAPHANDLE",
+            view: "retention-paths",
+            topN: 10,
+            rankBy: null,
+            typeFullName: null);
+
+        outcome.Result!.Error!.Kind.Should().Be("ViewUnavailableForGcDump");
+        outcome.Result.Hints.Should().BeEmpty();
+        outcome.Result.Data!.Quality.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task ServerGcDumpViewUnavailable_DoesNotSuggestClrMdRecapture()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var handle = store.Register(
+            424242,
+            HeapInspectionUseCases.HeapSnapshotKind,
+            CreateHeapSnapshot(HeapSnapshotOrigin.GcDump),
+            TimeSpan.FromMinutes(10));
+
+        var result = await DiagnosticToolHeapDump.QueryHeapSnapshot(
+            store,
+            new ThrowingDumpInspector(),
+            new SensitiveDataRedactor(null),
+            new SensitiveValueGate(null),
+            TestPrincipalAccessors.Root,
+            handle.Id,
+            view: "duplicate-strings");
+
+        result.Error!.Kind.Should().Be("ViewUnavailableForGcDump");
+        result.Hints.Should().BeEmpty();
+        result.Data!.Quality.Should().NotBeNull();
     }
 
     private static MemoryTrend CreateMemoryTrend(string verdict)
