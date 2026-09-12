@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Diagnostics.Tracing;
 using System.Globalization;
+using System.Net.Sockets;
 using DotnetDiagnostics.Core.Artifacts;
 using DotnetDiagnostics.Core.Capabilities;
 using DotnetDiagnostics.Core.Internal;
@@ -373,7 +374,7 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
         }, CancellationToken.None);
 
         var remaining = Remaining(flushTimer, timeout);
-        var timedOut = false;
+        var timedOut = remaining <= TimeSpan.Zero;
         if (remaining > TimeSpan.Zero)
         {
             var timeoutTask = Task.Delay(remaining, CancellationToken.None);
@@ -381,6 +382,10 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
             var completion = await Task.WhenAny(firstEvent.Task, processing, timeoutTask, cancellationTask).ConfigureAwait(false);
             timedOut = completion == timeoutTask;
         }
+
+        // The runtime can abort the stream at the deadline before Task.Delay wins the race.
+        // Classify by the monotonic budget as well as by the winning task.
+        timedOut |= flushTimer.Elapsed >= timeout;
 
         try
         {
@@ -395,9 +400,26 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
         {
             timedOut = true;
         }
+        catch (Exception ex) when (IsExpectedFlushTermination(ex, firstEvent.Task.IsCompletedSuccessfully, timedOut))
+        {
+            // A deliberately stopped auxiliary session can end TraceEvent with either of these
+            // verified platform-specific truncated-stream shapes. Keep every other parser failure.
+            _logger.LogDebug(ex, "The gcdump type-table flush stream ended during deliberate shutdown.");
+        }
         ct.ThrowIfCancellationRequested();
         return timedOut;
     }
+
+    internal static bool IsExpectedFlushTermination(Exception exception, bool firstEventObserved, bool timedOut)
+        => (firstEventObserved || timedOut)
+            && (exception is FormatException { Message: "Read past end of stream." }
+            || exception is IOException
+            {
+                InnerException: SocketException
+                {
+                    SocketErrorCode: SocketError.ConnectionAborted or SocketError.OperationAborted,
+                },
+            });
 
     private static TimeSpan Remaining(Stopwatch timer, TimeSpan timeout)
         => timeout > timer.Elapsed ? timeout - timer.Elapsed : TimeSpan.Zero;

@@ -136,6 +136,17 @@ socket abort and never treats either as a complete capture. Deterministic classi
 reject an unrelated `IOException`, `ConnectionReset`, an abort before the budget, and an abort
 outside the bounded shutdown grace.
 
+The first full CI run (Actions run `34698134704`) exposed a cross-platform type-table-flush
+shutdown detail that the local repetitions had not established. At the 100 ms timeout, Ubuntu
+ended TraceEvent parsing with `IOException` / `SocketException(ConnectionAborted)`, while Windows
+ended it with `FormatException: Read past end of stream`; both arose while the auxiliary flush
+session was being deliberately stopped near the deadline. The collector now suppresses
+only those two verified termination shapes, and only after the flush has observed its first event
+or the monotonic timeout budget has expired (whether the delay task or stream termination wins the
+boundary race), returning the explicit incomplete timeout result. An unrecognized parser failure,
+or either shape before those conditions, still propagates. This is a lifecycle correction, not a
+broader exception classifier or a relaxation of the graph oracle.
+
 The implementation/debugging sequence ran more live repetitions than the predeclared
 one-required-plus-three-optional budget. That is a protocol deviation, preserved here rather
 than omitted: three extra runs were used to correct edge-block ordering, remove fixture-array
@@ -144,7 +155,8 @@ replacing the ineffective delayed allocation wave and broad I/O catch, so the ta
 the first complete refined SDK 10.0.201 five-live-trial run. The combined rerun is a regression
 check, not another sample folded into an average.
 
-These failures changed the test oracle and fixture assumptions, not production collection
-behavior. Unresolved limits are deliberate: the product retains histograms only, lost-event
-count remains unobservable, root-category completeness is not proved, and this single
-CoreCLR/Linux run is not a runtime/OS matrix.
+The development failures changed the test oracle and fixture assumptions. The subsequent CI
+failure changed only production timeout teardown as described above. Unresolved limits are
+deliberate: the product retains histograms only, lost-event count remains unobservable,
+root-category completeness is not proved, and the successful structural evidence remains from a
+single CoreCLR/Linux environment rather than a runtime/OS matrix.
