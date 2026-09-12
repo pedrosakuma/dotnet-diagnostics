@@ -461,15 +461,15 @@ public sealed class ComparableProjectorTests
             Duration: TimeSpan.FromSeconds(5),
             WorkerThreadTimeline:
             [
-                new ThreadPoolCountBucket(DateTimeOffset.UtcNow, 2),
-                new ThreadPoolCountBucket(DateTimeOffset.UtcNow, 8),
-                new ThreadPoolCountBucket(DateTimeOffset.UtcNow, 6),
+                new ThreadPoolCountBucket(DateTimeOffset.UtcNow, 2, ThreadPoolEvidence.RuntimeObserved),
+                new ThreadPoolCountBucket(DateTimeOffset.UtcNow, 8, ThreadPoolEvidence.RuntimeObserved),
+                new ThreadPoolCountBucket(DateTimeOffset.UtcNow, 6, ThreadPoolEvidence.RuntimeObserved),
             ],
-            IocpThreadTimeline: [new ThreadPoolCountBucket(DateTimeOffset.UtcNow, 1)],
+            IocpThreadTimeline: [new ThreadPoolCountBucket(DateTimeOffset.UtcNow, 1, ThreadPoolEvidence.RuntimeObserved)],
             HillClimbing:
             [
-                new ThreadPoolHillClimbingSample(DateTimeOffset.UtcNow, "Warmup", 1, 2, 100),
-                new ThreadPoolHillClimbingSample(DateTimeOffset.UtcNow, "Starvation", 2, 4, 90),
+                new ThreadPoolHillClimbingSample(DateTimeOffset.UtcNow, "Warmup", 1, 2, 100, ThreadPoolEvidence.RuntimeObserved),
+                new ThreadPoolHillClimbingSample(DateTimeOffset.UtcNow, "Starvation", 2, 4, 90, ThreadPoolEvidence.RuntimeObserved),
             ],
             WorkItemOrigins: [new ThreadPoolWorkItemOrigin("MyApp.Queue.Work", 7)],
             EffectiveSettings: new ThreadPoolEffectiveSettings(1, 100, 1, 100),
@@ -485,11 +485,70 @@ public sealed class ComparableProjectorTests
         byName["starvationAdjustments"].Value.Should().Be(1);
         byName["starvationAdjustments"].Definition.Role.Should().Be(MetricRole.Primary);
         byName["starvationAdjustments"].Definition.BetterDirection.Should().Be(BetterDirection.Lower);
-        byName["pendingWorkItemsEstimate"].Value.Should().Be(7);
+        byName["windowEnqueueDequeueDifference"].Value.Should().Be(7);
+        byName["windowEnqueueDequeueDifference"].Definition.Role.Should().Be(MetricRole.Context);
+        byName["windowEnqueueDequeueDifference"].Definition.BetterDirection.Should().Be(BetterDirection.Neutral);
         byName["peakWorkerThreadCount"].Value.Should().Be(8);
-        byName["peakWorkerThreadCount"].Definition.Role.Should().Be(MetricRole.Primary);
+        byName["peakWorkerThreadCount"].Definition.Role.Should().Be(MetricRole.Context);
+        byName["peakWorkerThreadCount"].Definition.BetterDirection.Should().Be(BetterDirection.Neutral);
         byName["latestWorkerThreadCount"].Value.Should().Be(6);
         byName["workItemOriginCount"].Definition.Role.Should().Be(MetricRole.Context);
+    }
+
+    [Fact]
+    public void ThreadPoolProjector_OmitsUnavailableLegacyEvidenceAndCounts()
+    {
+        var snapshot = new ThreadPoolEventSnapshot(
+            11,
+            DateTimeOffset.UtcNow,
+            TimeSpan.FromSeconds(5),
+            Array.Empty<ThreadPoolCountBucket>(),
+            Array.Empty<ThreadPoolCountBucket>(),
+            [new ThreadPoolHillClimbingSample(DateTimeOffset.UtcNow, "Starvation", 1, 2, null)],
+            Array.Empty<ThreadPoolWorkItemOrigin>(),
+            null,
+            0,
+            0,
+            Array.Empty<string>());
+
+        var metrics = new ThreadPoolComparableProjector().Project(snapshot, "legacy").Metrics;
+
+        metrics.Should().NotContain(metric => metric.Definition.Name == "starvationAdjustments");
+        metrics.Should().NotContain(metric => metric.Definition.Name == "latestWorkerThreadCount");
+        metrics.Should().NotContain(metric => metric.Definition.Name == "peakWorkerThreadCount");
+    }
+
+    [Fact]
+    public void ThreadPoolProjector_UsesOnlyRuntimeObservedCounts()
+    {
+        var timestamp = DateTimeOffset.UtcNow;
+        var snapshot = new ThreadPoolEventSnapshot(
+            11,
+            timestamp,
+            TimeSpan.FromSeconds(5),
+            [
+                new ThreadPoolCountBucket(timestamp, 2, ThreadPoolEvidence.RuntimeObserved),
+                new ThreadPoolCountBucket(timestamp.AddSeconds(1), 50, ThreadPoolEvidence.CarriedForward),
+                new ThreadPoolCountBucket(timestamp.AddSeconds(2), 60, ThreadPoolEvidence.InferredFromDelta),
+                new ThreadPoolCountBucket(timestamp.AddSeconds(3), 70, ThreadPoolEvidence.InferredFromNeighbor),
+                new ThreadPoolCountBucket(timestamp.AddSeconds(4), 80, "future-provenance"),
+            ],
+            [new ThreadPoolCountBucket(timestamp, 9, "synthetic")],
+            Array.Empty<ThreadPoolHillClimbingSample>(),
+            Array.Empty<ThreadPoolWorkItemOrigin>(),
+            null,
+            0,
+            0,
+            Array.Empty<string>());
+
+        var metrics = new ThreadPoolComparableProjector().Project(snapshot, "provenance").Metrics;
+
+        metrics.Should().Contain(metric =>
+            metric.Definition.Name == "latestWorkerThreadCount" && metric.Value == 2);
+        metrics.Should().Contain(metric =>
+            metric.Definition.Name == "peakWorkerThreadCount" && metric.Value == 2);
+        metrics.Should().NotContain(metric => metric.Definition.Name == "latestIocpThreadCount");
+        metrics.Should().NotContain(metric => metric.Definition.Name == "peakIocpThreadCount");
     }
 
     private static CpuSampleTraceArtifact CpuTraceForProjector(

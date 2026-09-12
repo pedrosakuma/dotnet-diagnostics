@@ -5,6 +5,7 @@ namespace DotnetDiagnostics.BenchmarkDotNet.Regression;
 /// <summary>Compact parsed ThreadPool evidence used by the CI regression pilot.</summary>
 public sealed record ThreadPoolPerfDiagnosticEvidence(
     bool HasCausalWait,
+    bool HasConclusiveCausalAssessment,
     IReadOnlyList<PerfDiagnosticSignal> Signals);
 
 /// <summary>Extracts causal blocking/starvation evidence from a structured ThreadPool diagnostic envelope.</summary>
@@ -18,47 +19,41 @@ public static class ThreadPoolPerfDiagnosticExtractor
     {
         if (string.IsNullOrWhiteSpace(json) || json.StartsWith("//", StringComparison.Ordinal))
         {
-            return new(false, Array.Empty<PerfDiagnosticSignal>());
+            return new(false, false, Array.Empty<PerfDiagnosticSignal>());
         }
 
         using var document = JsonDocument.Parse(json);
         if (!document.RootElement.TryGetProperty("Data", out var data))
         {
-            return new(false, Array.Empty<PerfDiagnosticSignal>());
+            return new(false, false, Array.Empty<PerfDiagnosticSignal>());
         }
 
         var hillClimbing = data.TryGetProperty("HillClimbing", out var hillClimbingElement)
             ? hillClimbingElement.EnumerateArray().ToArray()
             : Array.Empty<JsonElement>();
-        var starvation = hillClimbing
-            .Where(static sample =>
-                sample.TryGetProperty("Reason", out var reason)
-                && string.Equals(reason.GetString(), "Starvation", StringComparison.OrdinalIgnoreCase))
-            .ToArray();
-        var cooperativeBlocking = hillClimbing
-            .Where(static sample =>
-                sample.TryGetProperty("Reason", out var reason)
-                && string.Equals(reason.GetString(), "CooperativeBlocking", StringComparison.OrdinalIgnoreCase))
-            .ToArray();
-        var starvationWorkerIncrease = starvation.Sum(static sample =>
-        {
-            var oldCount = NullableInt(sample, "OldCount");
-            var newCount = NullableInt(sample, "NewCount");
-            return oldCount is int oldValue && newCount is int newValue
-                ? Math.Max(0, newValue - oldValue)
-                : 0;
-        });
-        var blockingWorkerIncrease = cooperativeBlocking.Sum(static sample =>
-        {
-            var oldCount = NullableInt(sample, "OldCount");
-            var newCount = NullableInt(sample, "NewCount");
-            return oldCount is int oldValue && newCount is int newValue
-                ? Math.Max(0, newValue - oldValue)
-                : 0;
-        });
+        var hasSummary = data.TryGetProperty("Evidence", out var summary)
+            && summary.ValueKind == JsonValueKind.Object;
+        JsonElement hasProvenance = default;
+        var hasReasonProvenanceProperty = hasSummary
+            && summary.TryGetProperty("HasCompleteRuntimeReasonEvidence", out hasProvenance)
+            && hasProvenance.ValueKind is JsonValueKind.True or JsonValueKind.False;
+        var hillClimbingCount = hasSummary ? NullableInt(summary, "HillClimbingEvents") : hillClimbing.Length;
+        var reasonProvenanceComplete = hasSummary
+            ? hillClimbingCount > 0 && hasReasonProvenanceProperty && hasProvenance.GetBoolean()
+            : hillClimbing.Length > 0
+                && hillClimbing.All(static sample => HasRuntimeProvenanceProperty(sample));
+        var starvation = hillClimbing.Where(static sample => IsConfirmedReason(sample, "Starvation")).ToArray();
+        var cooperativeBlocking = hillClimbing.Where(static sample => IsConfirmedReason(sample, "CooperativeBlocking")).ToArray();
+        var starvationCount = hasSummary ? NullableInt(summary, "ConfirmedStarvationAdjustments") : starvation.Length;
+        var cooperativeBlockingCount = hasSummary ? NullableInt(summary, "ConfirmedCooperativeBlockingAdjustments") : cooperativeBlocking.Length;
+        var hasConfirmedCausalEvidence = starvationCount > 0 || cooperativeBlockingCount > 0;
+        var causalCountsAvailable = hasSummary || reasonProvenanceComplete || hasConfirmedCausalEvidence;
+        var hasMeasuredStarvationWorkerIncrease = TryGetMeasuredWorkerIncrease(starvation, starvationCount, out var starvationWorkerIncrease);
+        var hasMeasuredBlockingWorkerIncrease = TryGetMeasuredWorkerIncrease(cooperativeBlocking, cooperativeBlockingCount, out var blockingWorkerIncrease);
 
         var workerCounts = data.TryGetProperty("WorkerThreadTimeline", out var workerTimeline)
             ? workerTimeline.EnumerateArray()
+                .Where(static sample => HasRuntimeCountProvenance(sample, "CountProvenance"))
                 .Select(static sample => NullableInt(sample, "Count"))
                 .Where(static count => count.HasValue)
                 .Select(static count => count!.Value)
@@ -71,68 +66,125 @@ public static class ThreadPoolPerfDiagnosticExtractor
                 ? enqueueCount
                 : 0;
 
-        IReadOnlyList<PerfDiagnosticSignal> signals =
-        [
-            new(
+        var signals = new List<PerfDiagnosticSignal>();
+        if (causalCountsAvailable && starvationCount.HasValue && cooperativeBlockingCount.HasValue)
+        {
+            signals.Add(new(
                 "threadpool.starvationAdjustments",
                 "Starvation worker adjustments",
                 "ThreadPoolWorkerThreadAdjustmentAdjustment:Starvation",
-                starvation.Length,
+                starvationCount.Value,
                 "events",
-                PerfSignalDirection.Lower),
-            new(
-                "threadpool.starvationWorkerIncrease",
-                "Workers added for starvation",
-                "ThreadPoolWorkerThreadAdjustmentAdjustment:Starvation",
-                starvationWorkerIncrease,
-                "threads",
-                PerfSignalDirection.Lower),
-            new(
+                PerfSignalDirection.Lower));
+            if (hasMeasuredStarvationWorkerIncrease)
+            {
+                signals.Add(new(
+                    "threadpool.starvationWorkerIncrease",
+                    "Workers added for starvation",
+                    "ThreadPoolWorkerThreadAdjustmentAdjustment:Starvation",
+                    starvationWorkerIncrease,
+                    "threads",
+                    PerfSignalDirection.Lower));
+            }
+            signals.Add(new(
                 "threadpool.cooperativeBlockingAdjustments",
                 "Cooperative-blocking worker adjustments",
                 "ThreadPoolWorkerThreadAdjustmentAdjustment:CooperativeBlocking",
-                cooperativeBlocking.Length,
+                cooperativeBlockingCount.Value,
                 "events",
-                PerfSignalDirection.Lower),
-            new(
-                "threadpool.cooperativeBlockingWorkerIncrease",
-                "Workers added for cooperative blocking",
-                "ThreadPoolWorkerThreadAdjustmentAdjustment:CooperativeBlocking",
-                blockingWorkerIncrease,
-                "threads",
-                PerfSignalDirection.Lower),
-            new(
+                PerfSignalDirection.Lower));
+            if (hasMeasuredBlockingWorkerIncrease)
+            {
+                signals.Add(new(
+                    "threadpool.cooperativeBlockingWorkerIncrease",
+                    "Workers added for cooperative blocking",
+                    "ThreadPoolWorkerThreadAdjustmentAdjustment:CooperativeBlocking",
+                    blockingWorkerIncrease,
+                    "threads",
+                    PerfSignalDirection.Lower));
+            }
+        }
+
+        signals.Add(new(
                 "threadpool.hillClimbingEvents",
                 "Hill-climbing events",
                 null,
-                hillClimbing.Length,
+                hillClimbingCount ?? hillClimbing.Length,
                 "events",
-                PerfSignalDirection.Lower),
-            new(
+                PerfSignalDirection.Neutral));
+        if (workerCounts.Length > 0)
+        {
+            signals.Add(new(
                 "threadpool.workerPeak",
                 "Peak worker threads",
                 null,
                 workerPeak,
                 "threads",
-                PerfSignalDirection.Lower),
-            new(
+                PerfSignalDirection.Neutral));
+            signals.Add(new(
                 "threadpool.workerGrowth",
                 "Worker growth",
                 null,
                 workerGrowth,
                 "threads",
-                PerfSignalDirection.Lower),
-            new(
+                PerfSignalDirection.Neutral));
+        }
+
+        signals.Add(new(
                 "threadpool.enqueueEvents",
                 "Enqueue events",
                 null,
                 enqueueEvents,
                 "events",
-                PerfSignalDirection.Neutral),
-        ];
+                PerfSignalDirection.Neutral));
 
-        return new(starvation.Length > 0 || cooperativeBlocking.Length > 0, signals);
+        return new(
+            hasConfirmedCausalEvidence,
+            reasonProvenanceComplete,
+            signals);
     }
+
+    private static bool IsConfirmedReason(JsonElement sample, string reason)
+        => sample.TryGetProperty("Reason", out var reasonElement)
+            && string.Equals(reasonElement.GetString(), reason, StringComparison.OrdinalIgnoreCase)
+            && sample.TryGetProperty("ReasonProvenance", out var provenance)
+            && string.Equals(provenance.GetString(), "runtime-observed", StringComparison.Ordinal);
+
+    private static bool HasRuntimeProvenanceProperty(JsonElement sample)
+        => sample.TryGetProperty("ReasonProvenance", out var provenance)
+            && string.Equals(provenance.GetString(), "runtime-observed", StringComparison.Ordinal);
+
+    private static bool TryGetMeasuredWorkerIncrease(JsonElement[] samples, int? expectedCount, out int workerIncrease)
+    {
+        workerIncrease = 0;
+        if (samples.Length == 0 || expectedCount != samples.Length)
+        {
+            return false;
+        }
+
+        foreach (var sample in samples)
+        {
+            var oldCount = NullableInt(sample, "OldCount");
+            var newCount = NullableInt(sample, "NewCount");
+            if (!oldCount.HasValue
+                || !newCount.HasValue
+                || !HasRuntimeCountProvenance(sample, "OldCountProvenance")
+                || !HasRuntimeCountProvenance(sample, "NewCountProvenance"))
+            {
+                workerIncrease = 0;
+                return false;
+            }
+
+            workerIncrease += Math.Max(0, newCount.Value - oldCount.Value);
+        }
+
+        return true;
+    }
+
+    private static bool HasRuntimeCountProvenance(JsonElement sample, string propertyName)
+        => sample.TryGetProperty(propertyName, out var provenance)
+            && provenance.ValueKind == JsonValueKind.String
+            && string.Equals(provenance.GetString(), "runtime-observed", StringComparison.Ordinal);
 
     private static int? NullableInt(JsonElement element, string propertyName)
         => element.TryGetProperty(propertyName, out var value)

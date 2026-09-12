@@ -81,9 +81,10 @@ legacy EventCounters. Look at:
   `providerName = "System.Net.Http"` to see outbound call timing, or
   `Microsoft.AspNetCore.Hosting` for in-pipeline latency. Often the answer is
   a downstream dependency, not the app itself.
-- **Connection queue growing** → thread-pool starvation. `collect_events(kind="threadpool")`
-  for 6–10 s, then inspect `query_snapshot(handle, view="timeline")` for worker/IOCP growth,
-  `view="hillClimbing"` for `Starvation` / `ThreadTimedOut` transitions, and
+- **Connection queue growing** → investigate possible thread-pool pressure. Queue growth alone
+  does not establish starvation. Run `collect_events(kind="threadpool")` for 6–10 s, then inspect
+  `query_snapshot(handle, view="timeline")` for worker/IOCP growth,
+  `view="hillClimbing"` for runtime-observed `Starvation` / `CooperativeBlocking` transitions, and
   `view="workItemOrigins"` for the hottest enqueue origins when call stacks are available.
 
 ---
@@ -93,7 +94,9 @@ legacy EventCounters. Look at:
 1. Run `collect_events(kind="threadpool", durationSeconds=6)` **before** the suspected blocking workload starts.
 2. Drive the workload (for example `GET /threadpool-starve?blockers=50` in `BadCodeSample`) while the window is open.
 3. Read the inline summary first:
-   - `starvationAdjustments > 0` or `hillClimbingEvents > 0` + rising worker timeline → starvation confirmed.
+   - `starvationAdjustments > 0` with `reasonProvenance="runtime-observed"` → explicit runtime
+     starvation evidence. Generic hill-climbing, warmup, worker growth, carried/inferred counts,
+     and enqueue/dequeue differences are context, not confirmation.
    - `effectiveSettings` near `workerMinThreads` with a flat worker timeline → the pool may not be injecting quickly enough.
 4. Drill down with `query_snapshot`:
    - `view="timeline"` → worker vs IOCP bucketed counts.
@@ -103,7 +106,7 @@ legacy EventCounters. Look at:
 
 ### Minimum persisted sync-over-async before/after flow (7 tool calls)
 
-Use this when queue growth plus blocking stacks already establishes the cause;
+Use this when runtime-observed starvation evidence plus blocking stacks establishes the cause;
 the fixed side does **not** need a CPU capture merely to satisfy the summary
 contract.
 

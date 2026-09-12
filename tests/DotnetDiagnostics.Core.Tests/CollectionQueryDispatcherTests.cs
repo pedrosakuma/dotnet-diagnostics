@@ -560,17 +560,17 @@ public class CollectionQueryDispatcherTests
             Duration: TimeSpan.FromSeconds(6),
             WorkerThreadTimeline:
             [
-                new ThreadPoolCountBucket(At, 4),
-                new ThreadPoolCountBucket(At.AddSeconds(1), 9),
+                new ThreadPoolCountBucket(At, 4, ThreadPoolEvidence.RuntimeObserved),
+                new ThreadPoolCountBucket(At.AddSeconds(1), 9, ThreadPoolEvidence.RuntimeObserved),
             ],
             IocpThreadTimeline:
             [
-                new ThreadPoolCountBucket(At, 1),
+                new ThreadPoolCountBucket(At, 1, ThreadPoolEvidence.RuntimeObserved),
             ],
             HillClimbing:
             [
-                new ThreadPoolHillClimbingSample(At, "Warmup", 4, 6, 10),
-                new ThreadPoolHillClimbingSample(At.AddSeconds(1), "Starvation", 6, 9, 25),
+                new ThreadPoolHillClimbingSample(At, "Warmup", 4, 6, 10, ThreadPoolEvidence.RuntimeObserved),
+                new ThreadPoolHillClimbingSample(At.AddSeconds(1), "Starvation", 6, 9, 25, ThreadPoolEvidence.RuntimeObserved),
             ],
             WorkItemOrigins:
             [
@@ -586,12 +586,40 @@ public class CollectionQueryDispatcherTests
         var summary = summaryOutcome.Result!.Payload.Should().BeOfType<ThreadPoolSummaryView>().Subject;
         summary.PeakWorkerThreadCount.Should().Be(9);
         summary.StarvationAdjustments.Should().Be(1);
+        summary.HasCompleteRuntimeReasonEvidence.Should().BeTrue();
+        summary.WindowEnqueueDequeueDifference.Should().Be(5);
         summary.TopWorkItemOrigins.Should().ContainSingle();
 
         var hillOutcome = CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.ThreadPoolSnapshot, "hillClimbing", snapshot, 1);
         var hill = hillOutcome.Result!.Payload.Should().BeOfType<ThreadPoolHillClimbingView>().Subject;
         hill.Returned.Should().Be(1);
         hill.Samples[0].Reason.Should().Be("Warmup");
+    }
+
+    [Fact]
+    public void ThreadPool_LegacySnapshot_DoesNotPromoteUnattributedStarvationOrMissingCounts()
+    {
+        var snapshot = new ThreadPoolEventSnapshot(
+            42,
+            At,
+            TimeSpan.FromSeconds(5),
+            Array.Empty<ThreadPoolCountBucket>(),
+            Array.Empty<ThreadPoolCountBucket>(),
+            [new ThreadPoolHillClimbingSample(At, "Starvation", 2, 3, null)],
+            Array.Empty<ThreadPoolWorkItemOrigin>(),
+            null,
+            0,
+            0,
+            Array.Empty<string>());
+
+        var outcome = CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.ThreadPoolSnapshot, "summary", snapshot, 10);
+        var summary = outcome.Result!.Payload.Should().BeOfType<ThreadPoolSummaryView>().Subject;
+
+        summary.LatestWorkerThreadCount.Should().BeNull();
+        summary.PeakWorkerThreadCount.Should().BeNull();
+        summary.StarvationAdjustments.Should().BeNull();
+        summary.HillClimbingEvents.Should().BeNull();
+        summary.HasCompleteRuntimeReasonEvidence.Should().BeNull();
     }
 
     [Fact]

@@ -726,12 +726,19 @@ public static class EventCollectionUseCases
                         };
                     }
 
-                    var peakWorkers = snapshot.WorkerThreadTimeline.Count > 0 ? snapshot.WorkerThreadTimeline.Max(static bucket => bucket.Count) : 0;
-                    var latestWorkers = snapshot.WorkerThreadTimeline.Count > 0 ? snapshot.WorkerThreadTimeline[^1].Count : 0;
-                    var starvationEvents = snapshot.HillClimbing.Count(static sample => string.Equals(sample.Reason, "Starvation", StringComparison.OrdinalIgnoreCase));
-                    var summary = snapshot.HillClimbing.Count == 0 && snapshot.TotalEnqueueEvents == 0
-                        ? $"No ThreadPool starvation signals were captured in {context.DurationSeconds}s. Start the workload after collection begins if you expected queue growth."
-                        : $"Captured ThreadPool activity over {context.DurationSeconds}s: workers latest/peak={latestWorkers}/{peakWorkers}, hill-climbing events={snapshot.HillClimbing.Count}, starvation reasons={starvationEvents}, enqueue/dequeue={snapshot.TotalEnqueueEvents}/{snapshot.TotalDequeueEvents}.";
+                    var peakWorkers = snapshot.WorkerThreadTimeline.Count > 0
+                        ? snapshot.WorkerThreadTimeline.Max(static bucket => bucket.Count).ToString(System.Globalization.CultureInfo.InvariantCulture)
+                        : "unavailable";
+                    var latestWorkers = snapshot.WorkerThreadTimeline.Count > 0
+                        ? snapshot.WorkerThreadTimeline[^1].Count.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                        : "unavailable";
+                    var evidence = ThreadPoolEvidence.GetSummary(snapshot);
+                    var causalText = evidence is null
+                        ? "causal adjustment evidence=unavailable"
+                        : $"confirmed starvation/cooperative-blocking={evidence.ConfirmedStarvationAdjustments}/{evidence.ConfirmedCooperativeBlockingAdjustments}";
+                    var summary = evidence?.HillClimbingEvents == 0 && snapshot.TotalEnqueueEvents == 0
+                        ? $"No ThreadPool activity was captured in {context.DurationSeconds}s; this window does not prove the process healthy. Start the workload after collection begins if activity was expected."
+                        : $"Captured ThreadPool activity over {context.DurationSeconds}s: workers latest/peak={latestWorkers}/{peakWorkers}, hill-climbing events={evidence?.HillClimbingEvents.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "unavailable"}, {causalText}, enqueue/dequeue window events={snapshot.TotalEnqueueEvents}/{snapshot.TotalDequeueEvents}.";
 
                     return DiagnosticResult.OkWithHandle(
                         inlineSnapshot,
@@ -742,7 +749,7 @@ public static class EventCollectionUseCases
                             "Drill into the worker + IOCP timelines for this ThreadPool snapshot.",
                             new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "timeline" }),
                         new NextActionHint("query_snapshot",
-                            "Inspect hill-climbing transitions and starvation reasons without re-collecting.",
+                            "Inspect hill-climbing transitions, runtime reason provenance, and count provenance without re-collecting.",
                             new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "hillClimbing" }),
                         new NextActionHint("query_snapshot",
                             "Inspect top work-item origins without re-collecting.",

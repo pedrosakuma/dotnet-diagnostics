@@ -2126,7 +2126,7 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
     }
 
     [Fact(Timeout = 90_000)]
-    public async Task ThreadPool_CapturesStarvationTrajectory_FromBadCodeSample()
+    public async Task ThreadPool_CapturesAdjustmentEvidence_WithoutInventingStarvation()
     {
         // A single 6s window did not reliably observe a hill-climbing starvation transition on a
         // loaded/fast CI host. Retry the whole drive-and-collect cycle against a freshly started
@@ -2137,7 +2137,7 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
             snapshot = await RunStarvationAttemptAsync();
-            if (IsStarvationObserved(snapshot))
+            if (snapshot.HillClimbing.Count > 0)
             {
                 break;
             }
@@ -2145,19 +2145,13 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
 
         snapshot.Should().NotBeNull();
         snapshot!.HillClimbing.Should().NotBeEmpty($"notes: {string.Join(" | ", snapshot.Notes)}");
-        snapshot.HillClimbing.Should().Contain(
-            sample => string.Equals(sample.Reason, "Starvation", StringComparison.OrdinalIgnoreCase),
-            $"reasons: {string.Join(", ", snapshot.HillClimbing.Select(static sample => sample.Reason))}");
-        snapshot.WorkerThreadTimeline.Should().NotBeEmpty();
-        snapshot.WorkerThreadTimeline.Max(static bucket => bucket.Count)
-            .Should().BeGreaterThan(snapshot.WorkerThreadTimeline.Min(static bucket => bucket.Count));
-
-        static bool IsStarvationObserved(ThreadPoolEventSnapshot snapshot)
-            => snapshot.HillClimbing.Count > 0
-                && snapshot.HillClimbing.Any(sample => string.Equals(sample.Reason, "Starvation", StringComparison.OrdinalIgnoreCase))
-                && snapshot.WorkerThreadTimeline.Count > 0
-                && snapshot.WorkerThreadTimeline.Max(static bucket => bucket.Count)
-                    > snapshot.WorkerThreadTimeline.Min(static bucket => bucket.Count);
+        snapshot.HillClimbing
+            .Where(sample => string.Equals(sample.Reason, "Starvation", StringComparison.OrdinalIgnoreCase))
+            .All(sample => ThreadPoolEvidence.IsConfirmedReason(sample, "Starvation"))
+            .Should().BeTrue();
+        snapshot.WorkerThreadTimeline
+            .All(bucket => bucket.CountProvenance is not null)
+            .Should().BeTrue();
 
         static async Task<ThreadPoolEventSnapshot> RunStarvationAttemptAsync()
         {

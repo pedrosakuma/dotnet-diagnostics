@@ -87,7 +87,7 @@ public sealed class InvestigationPlanner : IInvestigationPlanner
                 {
                     new DecisionBranch("cpu_pct > 70", "cpu-sample", "Hot CPU → sample the process."),
                     new DecisionBranch("gc_time_pct > 20", "gc-events", "GC-bound → collect GC events."),
-                    new DecisionBranch("threadpool_thread_count growing", "threadpool", "ThreadPool starvation pattern."),
+                    new DecisionBranch("threadpool_thread_count growing", "threadpool", "ThreadPool pressure signal; collect runtime adjustment evidence before assigning a cause."),
                     new DecisionBranch("exceptions_per_sec > 10", "exceptions", "Exception storm."),
                     new DecisionBranch("default", "http", "No obvious signal → outbound HTTP."),
                 }),

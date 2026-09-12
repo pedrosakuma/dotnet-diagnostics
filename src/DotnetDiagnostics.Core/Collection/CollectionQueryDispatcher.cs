@@ -618,11 +618,11 @@ public static class CollectionQueryDispatcher
 
     private static CollectionQueryResult Render(ThreadPoolEventSnapshot snapshot, string view, int topN)
     {
-        var latestWorker = snapshot.WorkerThreadTimeline.Count > 0 ? snapshot.WorkerThreadTimeline[^1].Count : 0;
-        var peakWorker = snapshot.WorkerThreadTimeline.Count > 0 ? snapshot.WorkerThreadTimeline.Max(static bucket => bucket.Count) : 0;
-        var latestIocp = snapshot.IocpThreadTimeline.Count > 0 ? snapshot.IocpThreadTimeline[^1].Count : 0;
-        var peakIocp = snapshot.IocpThreadTimeline.Count > 0 ? snapshot.IocpThreadTimeline.Max(static bucket => bucket.Count) : 0;
-        var starvationAdjustments = snapshot.HillClimbing.Count(static sample => string.Equals(sample.Reason, "Starvation", StringComparison.OrdinalIgnoreCase));
+        var latestWorker = snapshot.WorkerThreadTimeline.Count > 0 ? snapshot.WorkerThreadTimeline[^1].Count : (int?)null;
+        var peakWorker = snapshot.WorkerThreadTimeline.Count > 0 ? snapshot.WorkerThreadTimeline.Max(static bucket => bucket.Count) : (int?)null;
+        var latestIocp = snapshot.IocpThreadTimeline.Count > 0 ? snapshot.IocpThreadTimeline[^1].Count : (int?)null;
+        var peakIocp = snapshot.IocpThreadTimeline.Count > 0 ? snapshot.IocpThreadTimeline.Max(static bucket => bucket.Count) : (int?)null;
+        var evidence = ThreadPoolEvidence.GetSummary(snapshot);
 
         object payload = view.ToLowerInvariant() switch
         {
@@ -639,10 +639,13 @@ public static class CollectionQueryDispatcher
                 peakWorker,
                 latestIocp,
                 peakIocp,
-                snapshot.HillClimbing.Count,
-                starvationAdjustments,
+                evidence?.HillClimbingEvents,
+                evidence?.ConfirmedStarvationAdjustments,
+                evidence?.ConfirmedCooperativeBlockingAdjustments,
+                evidence?.HasCompleteRuntimeReasonEvidence,
                 snapshot.TotalEnqueueEvents,
                 snapshot.TotalDequeueEvents,
+                snapshot.TotalEnqueueEvents - snapshot.TotalDequeueEvents,
                 snapshot.EffectiveSettings,
                 snapshot.WorkItemOrigins.Take(topN).ToList(),
                 snapshot.Notes),

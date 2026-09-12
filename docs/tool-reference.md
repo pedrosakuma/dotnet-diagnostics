@@ -237,7 +237,7 @@ Per-tool `Summary` semantics:
 | `collect_events(kind="event_source")` | The `Events[]` list. Provider + total count remain. Drill in with `query_snapshot(handle, view=byEventName)`. |
 | `collect_events(kind="logs")` | The `Recent[]` list. Level counts + per-category rollups remain exact for the window. |
 | `collect_events(kind="jit")` | Method rows beyond the hottest 10. Healthcheck + tier counts remain exact for the window. |
-| `collect_events(kind="threadpool")` | The full worker/IOCP timelines and hill-climbing sequence. Summary keeps headline counts + top origins; drill in with `query_snapshot(handle, view=timeline|hillClimbing|workItemOrigins)`. |
+| `collect_events(kind="threadpool")` | The full worker/IOCP timelines and hill-climbing sequence. Summary keeps provenance-aware causal counts + top origins; omitted timelines remain unavailable rather than becoming zero. Drill in with `query_snapshot(handle, view=timeline|hillClimbing|workItemOrigins)`. |
 | `collect_events(kind="contention")` | The raw contention event list. Summary keeps headline wait totals + percentiles; drill in with `query_snapshot(handle, view=byCallSite|byOwner)`. |
 | `collect_events(kind="db")` | The long `ByCommand[]` / `NPlusOne[]` lists. Summary keeps the headline aggregates + pool slice. |
 | `collect_events(kind="kestrel")` | The `byOperation[]` list, queue-length timeline, and `configurationJson`. Summary keeps the headline connection/request/TLS aggregates + latency tail. |
@@ -2700,6 +2700,10 @@ per-tier counts, `reJitCount`, `osrCount`, and `hasIlMap`.
 
 - `workerThreadTimeline` / `iocpThreadTimeline`
 - `hillClimbing` (`ThreadPoolHillClimbingSample[]`)
+- per-value provenance: `countProvenance` on timeline buckets and
+  `reasonProvenance` / `oldCountProvenance` / `newCountProvenance` on adjustments
+- `evidence` with persisted confirmed runtime starvation/cooperative-blocking counts, retained
+  even when summary depth omits the detailed sequence
 - `workItemOrigins` (`ThreadPoolWorkItemOrigin[]`)
 - `effectiveSettings` (`workerMinThreads`, `workerMaxThreads`, `iocpMinThreads`, `iocpMaxThreads`) when the runtime emits `ThreadPoolMinMaxThreadsChanged`
 - `totalEnqueueEvents` / `totalDequeueEvents`
@@ -2709,7 +2713,15 @@ per-tier counts, `reJitCount`, `osrCount`, and `hasIlMap`.
 
 **Notes:**
 
-- The runtime does not always publish named ThreadPool adjustment payloads on every platform; when that happens the collector annotates `notes` and infers the transition reason from the timing / direction of worker growth.
+- The collector never infers an adjustment reason from worker growth. Missing reasons remain
+  `Unknown`; unrecognized numeric/future reasons are preserved and marked
+  `runtime-unrecognized`. Only `runtime-observed` `Starvation` or `CooperativeBlocking` reasons
+  are causal evidence.
+- Counts may be `runtime-observed`, `carried-forward`, `inferred-from-delta`, or
+  `inferred-from-neighbor`. Buckets before the first measurement are omitted. Worker growth and
+  the window-local enqueue/dequeue difference are contextual and are not measured queue depth.
+- Legacy artifacts without provenance remain readable, but their adjustment reasons and absent
+  measurements are treated as unavailable rather than retroactively observed or zero.
 - Work-item origins require EventPipe call stacks on `ThreadPoolEnqueueWork`; when stacks are unavailable the collector returns a note and leaves `workItemOrigins` empty.
 - Effective min/max counts are best-effort: the collector stays EventPipe-only and fills `effectiveSettings` only when the runtime emits `ThreadPoolMinMaxThreadsChanged`; otherwise it falls back to a note and points callers at `collect_thread_snapshot`, followed by `query_snapshot(view="threadpool")`, for a ptrace-backed snapshot.
 | `intervalSeconds` | `int` | `1` | Refresh interval requested from SqlClient EventCounters |
