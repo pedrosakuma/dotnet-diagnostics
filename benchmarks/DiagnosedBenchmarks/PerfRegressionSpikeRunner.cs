@@ -169,7 +169,9 @@ internal static class PerfRegressionSpikeRunner
                 entry.IsError,
                 signals,
                 RawArtifact(entry.ArtifactPath, relativeArtifactPath),
-                contract.IsControl));
+                contract.IsControl,
+                threadPoolEvidence?.EvidenceConclusion,
+                threadPoolEvidence?.QualityLimitations));
         }
 
         var run = new PerfDiagnosticRun(

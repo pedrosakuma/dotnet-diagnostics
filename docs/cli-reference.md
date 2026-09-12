@@ -574,7 +574,12 @@ For ThreadPool snapshots, only provenance-backed runtime `Starvation` and
 generic hill-climbing, and the window-local enqueue/dequeue difference are neutral
 context; missing or summary-trimmed measurements are omitted rather than serialized
 as observed zero. Legacy snapshots without provenance remain readable but cannot by
-themselves establish a causal regression or healthy control.
+themselves establish a causal regression or healthy control. Saved ThreadPool
+comparables also carry bounded per-capture `Quality` limitations. If either capture
+has detected loss, hill-climbing eviction, a processing failure, an inadequate
+no-event window, incomplete reason provenance, or legacy/missing quality metadata,
+the comparison reports `inconclusive` and keeps raw deltas as non-directional context
+instead of claiming improvement or regression.
 
 | Option | Meaning |
 |---|---|

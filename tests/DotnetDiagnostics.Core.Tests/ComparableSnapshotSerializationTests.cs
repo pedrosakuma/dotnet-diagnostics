@@ -1,5 +1,6 @@
 using System.Text.Json;
 using DotnetDiagnostics.Core.Comparison;
+using DotnetDiagnostics.Core.Evidence;
 using DotnetDiagnostics.Core.Memory;
 using FluentAssertions;
 
@@ -34,7 +35,14 @@ public sealed class ComparableSnapshotSerializationTests
         Provenance: new InvestigationProvenance("host-1")
         {
             Container = new ContainerProvenance(PodName: "pod-3"),
-        });
+        },
+        Quality: new EvidenceQuality(
+            EvidenceQuality.SchemaV1,
+            [new EvidenceLimitation(EvidenceLimitationCategory.OutputProjection, "test", 2, "bounded")],
+            new EvidenceConclusionPolicy(
+                EvidenceConclusionSupport.Supported,
+                EvidenceConclusionSupport.Inconclusive,
+                EvidenceConclusionSupport.Inconclusive)));
 
     [Fact]
     public void RoundTrips_PreservingAllFields()
@@ -66,5 +74,16 @@ public sealed class ComparableSnapshotSerializationTests
         json.Should().Contain(ComparableSnapshot.SchemaV1);
         // ExactId is set on the row key but TypeName-less optional fields stay omitted when null.
         json.Should().NotContain("\"GenericSignature\"");
+    }
+
+    [Fact]
+    public void LegacyJson_WithoutQuality_RemainsUnknown()
+    {
+        var json = JsonSerializer.Serialize(Sample() with { Quality = null }, ComparableSnapshotJsonContext.Default.ComparableSnapshot);
+
+        var restored = JsonSerializer.Deserialize(json, ComparableSnapshotJsonContext.Default.ComparableSnapshot);
+
+        restored.Should().NotBeNull();
+        restored!.Quality.Should().BeNull();
     }
 }

@@ -14,6 +14,7 @@ public static class SnapshotDiffer
     private const string NoChange = "no_change";
     private const string NoOverlap = "no_overlap";
     private const string Incomparable = "incomparable";
+    private const string Inconclusive = "inconclusive";
     private const string Uniform = "uniform";
     private const string Dispersed = "dispersed";
 
@@ -60,21 +61,74 @@ public static class SnapshotDiffer
         var (keyMatrix, keySetPrimaryDir) = isKeySet
             ? BuildKeyMatrix(snapshots, mode, minDeltaPct, topN, notes)
             : (Array.Empty<KeyMatrixRow>(), (BetterDirection?)null);
+        var threadPoolQualityAdequate = !string.Equals(kind, Collection.CollectionHandleKinds.ThreadPoolSnapshot, StringComparison.Ordinal)
+            || snapshots.All(static snapshot =>
+                snapshot.Quality?.Conclusions.RegressionOrHealthyControl
+                    == Evidence.EvidenceConclusionSupport.Supported);
+        if (!threadPoolQualityAdequate)
+        {
+            AddThreadPoolQualityNotes(snapshots, notes);
+            metricSeries = metricSeries
+                .Select(static series => series with
+                {
+                    Direction = NotApplicable,
+                    Trend = MetricTrend.Insufficient,
+                    Dispersion = null,
+                })
+                .ToList();
+        }
 
         if (mode == JourneyMode.Dispersion)
         {
-            var dispVerdict = DispersionVerdict(metricSeries, keyMatrix);
-            return new SnapshotJourneyDiff(kind, mode, labels, dispVerdict, metricSeries, keyMatrix, Pairwise: null, notes);
+            var dispVerdict = threadPoolQualityAdequate ? DispersionVerdict(metricSeries, keyMatrix) : Inconclusive;
+            return WithQuality(new SnapshotJourneyDiff(kind, mode, labels, dispVerdict, metricSeries, keyMatrix, Pairwise: null, notes), snapshots);
         }
 
         var pairwise = BuildPairwise(snapshots, isKeySet, keySetPrimaryDir, minDeltaPct);
+        if (!threadPoolQualityAdequate)
+        {
+            pairwise = new PairwiseJourney(
+                pairwise.Headline with { Verdict = Inconclusive },
+                pairwise.BaselineEach.Select(static comparison => comparison with { Verdict = Inconclusive }).ToArray(),
+                pairwise.Adjacent.Select(static comparison => comparison with { Verdict = Inconclusive }).ToArray());
+        }
         var verdict = pairwise.Headline.Verdict;
-        return new SnapshotJourneyDiff(kind, mode, labels, verdict, metricSeries, keyMatrix, pairwise, notes);
+        return WithQuality(new SnapshotJourneyDiff(kind, mode, labels, verdict, metricSeries, keyMatrix, pairwise, notes), snapshots);
     }
 
     private static SnapshotJourneyDiff Empty(
         string kind, JourneyMode mode, IReadOnlyList<string> labels, string verdict, string note)
         => new(kind, mode, labels, verdict, Array.Empty<MetricSeries>(), Array.Empty<KeyMatrixRow>(), null, new[] { note });
+
+    private static SnapshotJourneyDiff WithQuality(
+        SnapshotJourneyDiff diff,
+        IReadOnlyList<ComparableSnapshot> snapshots)
+        => diff with { CaptureQuality = snapshots.Select(static snapshot => snapshot.Quality).ToArray() };
+
+    private static void AddThreadPoolQualityNotes(
+        IReadOnlyList<ComparableSnapshot> snapshots,
+        List<string> notes)
+    {
+        for (var index = 0; index < snapshots.Count; index++)
+        {
+            var snapshot = snapshots[index];
+            var quality = snapshot.Quality ?? Evidence.EvidenceQuality.LegacyUnknown;
+            if (quality.Conclusions.RegressionOrHealthyControl == Evidence.EvidenceConclusionSupport.Supported)
+            {
+                continue;
+            }
+
+            var categories = string.Join(
+                ", ",
+                quality.Limitations.Select(static limitation => limitation.Category).Distinct());
+            if (categories.Length == 0)
+            {
+                categories = "quality policy is inconclusive";
+            }
+            notes.Add(
+                $"Capture '{snapshot.Label}' cannot support regression or healthy-control conclusions ({categories}).");
+        }
+    }
 
     // ---- Metric series ----------------------------------------------------------------------
 

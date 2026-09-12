@@ -380,20 +380,24 @@ public sealed record ThreadPoolSummaryView(
     int WindowEnqueueDequeueDifference,
     ThreadPoolEffectiveSettings? EffectiveSettings,
     IReadOnlyList<ThreadPoolWorkItemOrigin> TopWorkItemOrigins,
-    IReadOnlyList<string> Notes);
+    IReadOnlyList<string> Notes,
+    Evidence.EvidenceQuality Quality);
 
 public sealed record ThreadPoolTimelineView(
     IReadOnlyList<ThreadPoolCountBucket> WorkerThreads,
-    IReadOnlyList<ThreadPoolCountBucket> IocpThreads);
+    IReadOnlyList<ThreadPoolCountBucket> IocpThreads,
+    Evidence.EvidenceQuality Quality);
 
 public sealed record ThreadPoolHillClimbingView(
     int Returned,
-    IReadOnlyList<ThreadPoolHillClimbingSample> Samples);
+    IReadOnlyList<ThreadPoolHillClimbingSample> Samples,
+    Evidence.EvidenceQuality Quality);
 
 public sealed record ThreadPoolWorkItemOriginsView(
     int TotalEnqueueEvents,
     int Returned,
-    IReadOnlyList<ThreadPoolWorkItemOrigin> Origins);
+    IReadOnlyList<ThreadPoolWorkItemOrigin> Origins,
+    Evidence.EvidenceQuality Quality);
 
 // --- Contention snapshot views -----------------------------------------------------------------
 

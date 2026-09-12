@@ -1,6 +1,7 @@
 using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Capabilities;
 using DotnetDiagnostics.Core.Dump;
+using DotnetDiagnostics.Core.Evidence;
 using DotnetDiagnostics.Core.ThreadPool;
 using FluentAssertions;
 
@@ -441,6 +442,36 @@ public sealed class CliHintProjectionTests
         projected.Data!.Notes.Should().ContainSingle()
             .Which.Should().Be("Plain ThreadPool observation with no MCP vocabulary.");
         AssertNoLeak(string.Join(" ", projected.Data.Notes));
+    }
+
+    [Fact]
+    public void ProjectThreadPoolNotes_DoesNotEraseStructuredLimitations()
+    {
+        var quality = new EvidenceQuality(
+            EvidenceQuality.SchemaV1,
+            [
+                new EvidenceLimitation(
+                    EvidenceLimitationCategory.MechanismUnavailable,
+                    "effective-settings",
+                    null,
+                    "collect_thread_snapshot vocabulary is intentionally irrelevant to this structured field."),
+            ],
+            new EvidenceConclusionPolicy(
+                EvidenceConclusionSupport.NotEstablished,
+                EvidenceConclusionSupport.Inconclusive,
+                EvidenceConclusionSupport.Inconclusive));
+        var result = DiagnosticResult.Ok(
+            ThreadPool("Pivot to collect_thread_snapshot(view=\"threadpool\") for stacks.") with { Quality = quality },
+            "summary");
+
+        var projected = CliHintProjection.ProjectThreadPoolNotes(result);
+
+        projected.Data!.Notes.Should().BeEmpty();
+        projected.Data.Quality.Should().BeSameAs(quality);
+        projected.Data.Quality!.Limitations.Should().ContainSingle();
+        var json = System.Text.Json.JsonSerializer.Serialize(projected);
+        json.Should().Contain("\"Category\":\"MechanismUnavailable\"");
+        json.Should().Contain("\"AbsenceOrExhaustiveCounts\":\"Inconclusive\"");
     }
 
     private static DiagnosticCapabilities Caps(RuntimeFlavor runtime, bool canAttach, string? attachReason) =>
