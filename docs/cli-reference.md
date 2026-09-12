@@ -569,6 +569,13 @@ dotnet-diagnostics-cli get-bytes --kind trace --dump-file ./cpu.nettrace --out .
 
 Compare two or more saved comparable snapshots from `collect --save`. Human output keeps the compact verdict, first→last headline, and top metric/key deltas in the terminal; `--json` emits the full `SnapshotJourneyDiff`, and `--save` writes that full matrix to a file. Local MCP `compare_to_baseline` / `query_snapshot(view="diff")` calls use a `journey://diff/{handle}` Resource link when the matrix is large. Proxied pod calls return full results inline because dynamic pod Resources are not forwarded.
 
+For ThreadPool snapshots, only provenance-backed runtime `Starvation` and
+`CooperativeBlocking` adjustments are regression-driving metrics. Worker counts,
+generic hill-climbing, and the window-local enqueue/dequeue difference are neutral
+context; missing or summary-trimmed measurements are omitted rather than serialized
+as observed zero. Legacy snapshots without provenance remain readable but cannot by
+themselves establish a causal regression or healthy control.
+
 | Option | Meaning |
 |---|---|
 | `--json` | Emit the full journey diff JSON. |

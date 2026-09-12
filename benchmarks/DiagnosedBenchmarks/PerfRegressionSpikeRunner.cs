@@ -150,7 +150,7 @@ internal static class PerfRegressionSpikeRunner
             var signals = threadPoolEvidence?.Signals ?? ExtractSignals(entry.Kind, artifactText);
             var matched = threadPoolEvidence is not null
                 ? contract.IsControl
-                    ? !threadPoolEvidence.HasCausalWait
+                    ? threadPoolEvidence.HasConclusiveCausalAssessment && !threadPoolEvidence.HasCausalWait
                     : threadPoolEvidence.HasCausalWait
                 : entry.Headline.Contains(contract.ExpectedEvidence, StringComparison.Ordinal)
                     || signals.Any(signal =>

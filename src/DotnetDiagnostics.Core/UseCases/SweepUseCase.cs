@@ -107,7 +107,9 @@ public static class SweepUseCase
             handleMap, failures);
 
         var failureText = FormatFailureText(failures.Count);
-        var starvation = threadPool.Data?.HillClimbing.Count(static s => string.Equals(s.Reason, "Starvation", StringComparison.OrdinalIgnoreCase)) ?? 0;
+        var starvation = threadPool.Data is { } threadPoolData
+            ? ThreadPoolEvidence.GetSummary(threadPoolData)?.ConfirmedStarvationAdjustments.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "unavailable"
+            : "unavailable";
         var fdText = resource?.FdCount?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "n/a";
         var hypothesisText = triage.Hypotheses?.Count > 0
             ? string.Join(", ", triage.Hypotheses.Select(static h => $"{h.Name} ({h.Confidence})"))
@@ -115,7 +117,7 @@ public static class SweepUseCase
         var summary =
             $"Sweep over {window}s: assessment={triage.Assessment} ({triage.Severity}), hypotheses={hypothesisText}. " +
             $"GC collections={gc.Data?.TotalCollections ?? 0}, exceptions={exceptions.Data?.TotalExceptions ?? 0}, " +
-            $"threadpool starvation={starvation}, fd={fdText}.{failureText}";
+            $"confirmed threadpool starvation adjustments={starvation}, fd={fdText}.{failureText}";
 
         var hints = BuildSweepHints(triage, pid, handleMap);
 

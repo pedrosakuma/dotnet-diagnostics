@@ -22,20 +22,20 @@ public sealed class ThreadPoolComparableProjector : IComparableProjector
         }
 
         var metrics = new List<MetricValue>();
-        var latestWorker = LatestCount(snapshot.WorkerThreadTimeline);
-        var peakWorker = PeakCount(snapshot.WorkerThreadTimeline);
-        var latestIocp = LatestCount(snapshot.IocpThreadTimeline);
-        var peakIocp = PeakCount(snapshot.IocpThreadTimeline);
-        var starvationAdjustments = snapshot.HillClimbing.Count(static sample => string.Equals(sample.Reason, "Starvation", StringComparison.OrdinalIgnoreCase));
-        var pendingWorkItemsEstimate = Math.Max(0, snapshot.TotalEnqueueEvents - snapshot.TotalDequeueEvents);
+        var evidence = ThreadPoolEvidence.GetSummary(snapshot);
 
-        Add(metrics, "starvationAdjustments", MetricRole.Primary, BetterDirection.Lower, MetricAggregation.Total, "count", starvationAdjustments);
-        Add(metrics, "pendingWorkItemsEstimate", MetricRole.Primary, BetterDirection.Lower, MetricAggregation.Point, "count", pendingWorkItemsEstimate);
-        Add(metrics, "latestWorkerThreadCount", MetricRole.Primary, BetterDirection.Lower, MetricAggregation.Point, "count", latestWorker);
-        Add(metrics, "peakWorkerThreadCount", MetricRole.Primary, BetterDirection.Lower, MetricAggregation.Point, "count", peakWorker);
-        Add(metrics, "latestIocpThreadCount", MetricRole.Primary, BetterDirection.Lower, MetricAggregation.Point, "count", latestIocp);
-        Add(metrics, "peakIocpThreadCount", MetricRole.Primary, BetterDirection.Lower, MetricAggregation.Point, "count", peakIocp);
-        Add(metrics, "hillClimbingEvents", MetricRole.Primary, BetterDirection.Lower, MetricAggregation.Total, "count", snapshot.HillClimbing.Count);
+        if (evidence is not null)
+        {
+            Add(metrics, "starvationAdjustments", MetricRole.Primary, BetterDirection.Lower, MetricAggregation.Total, "count", evidence.ConfirmedStarvationAdjustments);
+            Add(metrics, "cooperativeBlockingAdjustments", MetricRole.Primary, BetterDirection.Lower, MetricAggregation.Total, "count", evidence.ConfirmedCooperativeBlockingAdjustments);
+            Add(metrics, "hillClimbingEvents", MetricRole.Context, BetterDirection.Neutral, MetricAggregation.Total, "count", evidence.HillClimbingEvents);
+        }
+
+        AddOptional(metrics, "latestWorkerThreadCount", MetricRole.Context, BetterDirection.Neutral, MetricAggregation.Point, "count", LatestCount(snapshot.WorkerThreadTimeline));
+        AddOptional(metrics, "peakWorkerThreadCount", MetricRole.Context, BetterDirection.Neutral, MetricAggregation.Point, "count", PeakCount(snapshot.WorkerThreadTimeline));
+        AddOptional(metrics, "latestIocpThreadCount", MetricRole.Context, BetterDirection.Neutral, MetricAggregation.Point, "count", LatestCount(snapshot.IocpThreadTimeline));
+        AddOptional(metrics, "peakIocpThreadCount", MetricRole.Context, BetterDirection.Neutral, MetricAggregation.Point, "count", PeakCount(snapshot.IocpThreadTimeline));
+        Add(metrics, "windowEnqueueDequeueDifference", MetricRole.Context, BetterDirection.Neutral, MetricAggregation.Total, "count", snapshot.TotalEnqueueEvents - snapshot.TotalDequeueEvents);
         Add(metrics, "totalEnqueueEvents", MetricRole.Context, BetterDirection.Neutral, MetricAggregation.Total, "count", snapshot.TotalEnqueueEvents);
         Add(metrics, "totalDequeueEvents", MetricRole.Context, BetterDirection.Neutral, MetricAggregation.Total, "count", snapshot.TotalDequeueEvents);
         Add(metrics, "workItemOriginCount", MetricRole.Context, BetterDirection.Neutral, MetricAggregation.Total, "count", snapshot.WorkItemOrigins.Count);
@@ -59,11 +59,35 @@ public sealed class ThreadPoolComparableProjector : IComparableProjector
             Rows: Array.Empty<ComparableRow>());
     }
 
-    private static int LatestCount(IReadOnlyList<ThreadPoolCountBucket> timeline)
-        => timeline.Count > 0 ? timeline[^1].Count : 0;
+    private static int? LatestCount(IReadOnlyList<ThreadPoolCountBucket> timeline)
+        => timeline.LastOrDefault(static bucket => HasRuntimeObservedCount(bucket))?.Count;
 
-    private static int PeakCount(IReadOnlyList<ThreadPoolCountBucket> timeline)
-        => timeline.Count > 0 ? timeline.Max(static bucket => bucket.Count) : 0;
+    private static int? PeakCount(IReadOnlyList<ThreadPoolCountBucket> timeline)
+    {
+        var observedCounts = timeline
+            .Where(static bucket => HasRuntimeObservedCount(bucket))
+            .Select(static bucket => bucket.Count)
+            .ToArray();
+        return observedCounts.Length > 0 ? observedCounts.Max() : null;
+    }
+
+    private static bool HasRuntimeObservedCount(ThreadPoolCountBucket bucket)
+        => string.Equals(bucket.CountProvenance, ThreadPoolEvidence.RuntimeObserved, StringComparison.Ordinal);
+
+    private static void AddOptional(
+        List<MetricValue> metrics,
+        string name,
+        MetricRole role,
+        BetterDirection direction,
+        MetricAggregation aggregation,
+        string unit,
+        double? value)
+    {
+        if (value.HasValue)
+        {
+            Add(metrics, name, role, direction, aggregation, unit, value.Value);
+        }
+    }
 
     private static void Add(
         List<MetricValue> metrics,

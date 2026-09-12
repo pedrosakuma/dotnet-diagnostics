@@ -119,7 +119,7 @@ public sealed partial class CollectEventsTool
             "'datas' (DATAS Server-GC heap-count tuning), 'catalog' (metadata-only provider/event-name catalog), " +
             "'event_source' (generic provider passthrough — requires providerName), 'activities' (ActivitySource spans), " +
             "'logs' (curated ILogger view), 'jit' (tiered compilation / ReadyToRun activity), " +
-            "'threadpool' (ThreadPool starvation: worker/IOCP timelines, hill-climbing, work-item origins), " +
+            "'threadpool' (ThreadPool evidence: provenance-aware worker/IOCP timelines, hill-climbing, work-item origins), " +
             "'contention' (lock contention by call site + owner thread), 'db' (curated EF Core / SqlClient view), " +
             "'kestrel' (Kestrel HTTP server: connection/request/TLS latency, queue lengths, live KestrelServerOptions config), " +
             "'networking' (curated outbound HTTP / DNS / TLS / socket view: latency percentiles + HttpClient time-in-queue), " +

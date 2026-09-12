@@ -367,14 +367,17 @@ public sealed record JitReJitView(
 // --- ThreadPool snapshot views -----------------------------------------------------------------
 
 public sealed record ThreadPoolSummaryView(
-    int LatestWorkerThreadCount,
-    int PeakWorkerThreadCount,
-    int LatestIocpThreadCount,
-    int PeakIocpThreadCount,
-    int HillClimbingEvents,
-    int StarvationAdjustments,
+    int? LatestWorkerThreadCount,
+    int? PeakWorkerThreadCount,
+    int? LatestIocpThreadCount,
+    int? PeakIocpThreadCount,
+    int? HillClimbingEvents,
+    int? StarvationAdjustments,
+    int? ConfirmedCooperativeBlockingAdjustments,
+    bool? HasCompleteRuntimeReasonEvidence,
     int TotalEnqueueEvents,
     int TotalDequeueEvents,
+    int WindowEnqueueDequeueDifference,
     ThreadPoolEffectiveSettings? EffectiveSettings,
     IReadOnlyList<ThreadPoolWorkItemOrigin> TopWorkItemOrigins,
     IReadOnlyList<string> Notes);

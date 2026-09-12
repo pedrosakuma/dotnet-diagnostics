@@ -835,7 +835,7 @@ public sealed class DiagnosticTools
 
     [RequireScope("eventpipe")]
     [Description(
-        "Subscribes to the runtime ThreadingKeyword and returns a curated ThreadPool starvation view: worker + IOCP timelines, hill-climbing transitions, work-item origins, and best-effort effective min/max settings.")]
+        "Subscribes to the runtime ThreadingKeyword and returns provenance-aware ThreadPool evidence: worker + IOCP timelines, runtime adjustment reasons, work-item origins, and best-effort effective min/max settings. Worker growth alone is not reported as confirmed starvation.")]
     public static async Task<DiagnosticResult<ThreadPoolEventSnapshot>> CollectThreadPool(
         IThreadPoolCollector collector,
         IProcessContextResolver resolver,

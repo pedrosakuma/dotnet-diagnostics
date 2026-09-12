@@ -433,7 +433,10 @@ public sealed class QuerySnapshotDiffToolTests
         diff.Verdict.Should().Be("regression");
         diff.KeyMatrix.Should().BeEmpty();
         diff.MetricSeries.Should().Contain(series => series.Definition.Name == "starvationAdjustments" && series.Direction == "regressed");
-        diff.MetricSeries.Should().Contain(series => series.Definition.Name == "pendingWorkItemsEstimate" && series.Direction == "regressed");
+        diff.MetricSeries.Should().Contain(series =>
+            series.Definition.Name == "windowEnqueueDequeueDifference"
+            && series.Definition.Role == MetricRole.Context
+            && series.Definition.BetterDirection == BetterDirection.Neutral);
         diff.Pairwise.Should().NotBeNull();
         diff.Pairwise!.Headline.Verdict.Should().Be("regression");
     }
@@ -725,7 +728,7 @@ public sealed class QuerySnapshotDiffToolTests
     {
         var timestamp = DateTimeOffset.UtcNow;
         var hillClimbing = Enumerable.Range(0, starvationAdjustments)
-            .Select(i => new ThreadPoolHillClimbingSample(timestamp.AddMilliseconds(i), "Starvation", i, i + 1, 100 - i))
+            .Select(i => new ThreadPoolHillClimbingSample(timestamp.AddMilliseconds(i), "Starvation", i, i + 1, 100 - i, ThreadPoolEvidence.RuntimeObserved))
             .ToArray();
 
         return new ThreadPoolEventSnapshot(
@@ -734,16 +737,17 @@ public sealed class QuerySnapshotDiffToolTests
             Duration: TimeSpan.FromSeconds(5),
             WorkerThreadTimeline:
             [
-                new ThreadPoolCountBucket(timestamp, 2),
-                new ThreadPoolCountBucket(timestamp.AddSeconds(1), 2 + starvationAdjustments),
+                new ThreadPoolCountBucket(timestamp, 2, ThreadPoolEvidence.RuntimeObserved),
+                new ThreadPoolCountBucket(timestamp.AddSeconds(1), 2 + starvationAdjustments, ThreadPoolEvidence.RuntimeObserved),
             ],
-            IocpThreadTimeline: [new ThreadPoolCountBucket(timestamp, 1)],
+            IocpThreadTimeline: [new ThreadPoolCountBucket(timestamp, 1, ThreadPoolEvidence.RuntimeObserved)],
             HillClimbing: hillClimbing,
             WorkItemOrigins: [new ThreadPoolWorkItemOrigin("MyApp.Queue.Work", 99)],
             EffectiveSettings: new ThreadPoolEffectiveSettings(1, 100, 1, 100),
             TotalEnqueueEvents: 100 + pendingWorkItems,
             TotalDequeueEvents: 100,
-            Notes: Array.Empty<string>());
+            Notes: Array.Empty<string>(),
+            Evidence: ThreadPoolEvidence.Summarize(hillClimbing));
     }
 
     private sealed class StubDumpInspector : IDumpInspector

@@ -110,10 +110,10 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
                         case "IOThreadCreate":
                         case "IOThreadCreationStop":
                         {
-                            if (TryReadIocpCount(traceEvent, lastIocpCount, out var iocpCount))
+                            if (TryReadIocpCount(traceEvent, lastIocpCount, out var iocpCount, out var countProvenance))
                             {
                                 lastIocpCount = iocpCount;
-                                iocpSamples.Enqueue(new CountSample(timestamp, iocpCount));
+                                iocpSamples.Enqueue(new CountSample(timestamp, iocpCount, countProvenance));
                             }
 
                             break;
@@ -124,7 +124,7 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
                             if (lastIocpCount is int currentIocpCount)
                             {
                                 lastIocpCount = Math.Max(0, currentIocpCount - 1);
-                                iocpSamples.Enqueue(new CountSample(timestamp, lastIocpCount.Value));
+                                iocpSamples.Enqueue(new CountSample(timestamp, lastIocpCount.Value, ThreadPoolEvidence.InferredFromDelta));
                             }
 
                             break;
@@ -136,21 +136,23 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
                             if (TryReadWorkerCount(traceEvent, out var workerCount))
                             {
                                 lastWorkerCount = workerCount;
-                                workerSamples.Enqueue(new CountSample(timestamp, workerCount));
+                                workerSamples.Enqueue(new CountSample(timestamp, workerCount, ThreadPoolEvidence.RuntimeObserved));
                             }
 
                             break;
                         }
                         case "ThreadPoolWorkerThreadAdjustmentSample":
                         {
-                            var sampledWorkerCount = TryReadInt(traceEvent, out var workerCount, "NewWorkerThreadCount", "WorkerThreadCount", "ThreadCount", "NumThreads")
-                                || TryReadIntByIndex(traceEvent, 2, out workerCount)
-                                ? workerCount
-                                : lastWorkerCount;
+                            var observedWorkerCount = TryReadInt(traceEvent, out var workerCount, "NewWorkerThreadCount", "WorkerThreadCount", "ThreadCount", "NumThreads")
+                                || TryReadIntByIndex(traceEvent, 1, out workerCount);
+                            var sampledWorkerCount = observedWorkerCount ? workerCount : lastWorkerCount;
                             if (sampledWorkerCount is int concreteWorkerCount)
                             {
                                 lastWorkerCount = concreteWorkerCount;
-                                workerSamples.Enqueue(new CountSample(timestamp, concreteWorkerCount));
+                                workerSamples.Enqueue(new CountSample(
+                                    timestamp,
+                                    concreteWorkerCount,
+                                    observedWorkerCount ? ThreadPoolEvidence.RuntimeObserved : ThreadPoolEvidence.CarriedForward));
                             }
 
                             if (TryReadDouble(traceEvent, out var throughput, "Throughput", "AverageThroughput")
@@ -168,22 +170,27 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
                                 || TryReadIntByIndex(traceEvent, 0, out workingCount))
                             {
                                 lastWorkerCount = workingCount;
-                                workerSamples.Enqueue(new CountSample(timestamp, workingCount));
+                                workerSamples.Enqueue(new CountSample(timestamp, workingCount, ThreadPoolEvidence.RuntimeObserved));
                             }
 
                             break;
                         }
                         case "ThreadPoolWorkerThreadAdjustmentAdjustment":
                         {
-                            var reason = ResolveAdjustmentReason(traceEvent);
-                            var oldCount = TryReadInt(traceEvent, out var explicitOld, "OldWorkerThreadCount", "OldThreadCount", "OldControlSetting")
-                                ? explicitOld
-                                : lastWorkerCount;
-                            int? newCount = TryReadInt(traceEvent, out var explicitNew, "NewWorkerThreadCount", "NewThreadCount", "NewControlSetting")
-                                ? explicitNew
-                                : null;
+                            var (reason, reasonProvenance) = ResolveAdjustmentReason(traceEvent);
+                            var hasExplicitOld = TryReadInt(traceEvent, out var explicitOld, "OldWorkerThreadCount", "OldThreadCount", "OldControlSetting");
+                            var oldCount = hasExplicitOld ? explicitOld : lastWorkerCount;
+                            var oldCountProvenance = hasExplicitOld
+                                ? ThreadPoolEvidence.RuntimeObserved
+                                : oldCount.HasValue ? ThreadPoolEvidence.CarriedForward : ThreadPoolEvidence.Missing;
+                            var hasExplicitNew = TryReadInt(traceEvent, out var explicitNew, "NewWorkerThreadCount", "NewThreadCount", "NewControlSetting")
+                                || TryReadIntByIndex(traceEvent, 1, out explicitNew);
+                            int? newCount = hasExplicitNew ? explicitNew : null;
+                            var newCountProvenance = hasExplicitNew
+                                ? ThreadPoolEvidence.RuntimeObserved
+                                : ThreadPoolEvidence.Missing;
 
-                            if (newCount is null && (TryReadInt(traceEvent, out var delta, "NumberOfNewThreads") || TryReadIntByIndex(traceEvent, 1, out delta)))
+                            if (newCount is null && TryReadInt(traceEvent, out var delta, "NumberOfNewThreads"))
                             {
                                 if (oldCount is int inferredOld)
                                 {
@@ -193,11 +200,12 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
                                 {
                                     newCount = delta;
                                 }
+
+                                newCountProvenance = ThreadPoolEvidence.InferredFromDelta;
                             }
 
                             if (TryReadDouble(traceEvent, out var throughput, "Throughput", "AverageThroughput")
-                                || TryReadDoubleByIndex(traceEvent, 2, out throughput)
-                                || TryReadDoubleByIndex(traceEvent, 3, out throughput))
+                                || TryReadDoubleByIndex(traceEvent, 0, out throughput))
                             {
                                 latestThroughput = throughput;
                             }
@@ -205,7 +213,7 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
                             if (newCount is int concreteNewCount)
                             {
                                 lastWorkerCount = concreteNewCount;
-                                workerSamples.Enqueue(new CountSample(timestamp, concreteNewCount));
+                                workerSamples.Enqueue(new CountSample(timestamp, concreteNewCount, newCountProvenance));
                             }
 
                             hillClimbing.Enqueue(new ThreadPoolHillClimbingSample(
@@ -213,7 +221,10 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
                                 reason,
                                 oldCount,
                                 newCount,
-                                latestThroughput));
+                                latestThroughput,
+                                reasonProvenance,
+                                oldCountProvenance,
+                                newCountProvenance));
                             break;
                         }
                         case "ThreadPoolEnqueueWork":
@@ -283,23 +294,8 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
         }
 
         var orderedWorkerSamples = workerSamples.Items.OrderBy(static sample => sample.Timestamp).ToList();
-        var normalizedHillClimbing = NormalizeHillClimbing(hillClimbing.Items.OrderBy(static sample => sample.Timestamp).ToList(), orderedWorkerSamples, startedAt, notes);
+        var normalizedHillClimbing = NormalizeHillClimbing(hillClimbing.Items.OrderBy(static sample => sample.Timestamp).ToList(), orderedWorkerSamples, notes);
         var orderedIocpSamples = iocpSamples.Items.OrderBy(static sample => sample.Timestamp).ToList();
-        if (orderedWorkerSamples.Count == 0 && normalizedHillClimbing.Count > 0)
-        {
-            orderedWorkerSamples = new List<CountSample>(normalizedHillClimbing.Count);
-            var syntheticWorkerCount = 0;
-            foreach (var sample in normalizedHillClimbing)
-            {
-                syntheticWorkerCount = sample.NewCount
-                    ?? (string.Equals(sample.Reason, "ThreadTimedOut", StringComparison.OrdinalIgnoreCase)
-                        ? Math.Max(0, syntheticWorkerCount - 1)
-                        : syntheticWorkerCount + 1);
-                orderedWorkerSamples.Add(new CountSample(sample.Timestamp, syntheticWorkerCount));
-            }
-
-            notes.TryAdd("Worker thread timeline was inferred from hill-climbing transitions because per-event worker counts were unavailable.", 0);
-        }
         if (effectiveSettings is null)
         {
             notes.TryAdd("Effective MinThreads/MaxThreads unavailable from the EventPipe-only ThreadPool collector. Use collect_thread_snapshot(view=\"threadpool\") when a ptrace-backed snapshot is acceptable.", 0);
@@ -336,7 +332,8 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
             EffectiveSettings: effectiveSettings,
             TotalEnqueueEvents: Volatile.Read(ref totalEnqueueEvents),
             TotalDequeueEvents: Volatile.Read(ref totalDequeueEvents),
-            Notes: orderedNotes);
+            Notes: orderedNotes,
+            Evidence: ThreadPoolEvidence.Summarize(normalizedHillClimbing));
     }
 
     private static string GetCanonicalEventName(TraceEvent traceEvent)
@@ -378,10 +375,9 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
         return builder.ToString();
     }
 
-    private static List<ThreadPoolHillClimbingSample> NormalizeHillClimbing(
+    internal static List<ThreadPoolHillClimbingSample> NormalizeHillClimbing(
         List<ThreadPoolHillClimbingSample> samples,
         List<CountSample> workerSamples,
-        DateTimeOffset startedAt,
         ConcurrentDictionary<string, byte> notes)
     {
         if (samples.Count == 0)
@@ -391,7 +387,6 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
 
         var normalized = new List<ThreadPoolHillClimbingSample>(samples.Count);
         var inferredAny = false;
-        var syntheticWorkerCount = workerSamples.Count > 0 ? workerSamples[0].Count : 0;
         var beforeIndex = -1;
         var afterIndex = 0;
         foreach (var sample in samples)
@@ -411,59 +406,48 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
                 afterIndex++;
             }
 
-            var oldCount = sample.OldCount ?? ResolvePreviousWorkerCount(workerSamples, beforeIndex);
-            var newCount = sample.NewCount ?? ResolveNextWorkerCount(workerSamples, afterIndex);
-            var reason = sample.Reason;
-            if (string.Equals(reason, "Unknown", StringComparison.OrdinalIgnoreCase))
+            var oldCount = sample.OldCount;
+            var oldCountProvenance = sample.OldCountProvenance;
+            if (oldCount is null)
             {
-                if (oldCount is int oldWorkerCount && newCount is int newWorkerCount)
+                oldCount = ResolvePreviousWorkerCount(workerSamples, beforeIndex);
+                if (oldCount.HasValue)
                 {
-                    if (newWorkerCount > oldWorkerCount)
-                    {
-                        reason = sample.Timestamp - startedAt <= TimeSpan.FromSeconds(1)
-                            ? "Warmup"
-                            : "Starvation";
-                        inferredAny = true;
-                    }
-                    else if (newWorkerCount < oldWorkerCount)
-                    {
-                        reason = "ThreadTimedOut";
-                        inferredAny = true;
-                    }
-                }
-                else
-                {
-                    oldCount = syntheticWorkerCount;
-                    newCount = syntheticWorkerCount + 1;
-                    syntheticWorkerCount = newCount.Value;
-                    reason = sample.Timestamp - startedAt <= TimeSpan.FromSeconds(1)
-                        ? "Warmup"
-                        : "Starvation";
+                    oldCountProvenance = ThreadPoolEvidence.InferredFromNeighbor;
                     inferredAny = true;
                 }
             }
-            else if (newCount is int concreteNewCount)
+
+            var newCount = sample.NewCount;
+            var newCountProvenance = sample.NewCountProvenance;
+            if (newCount is null)
             {
-                syntheticWorkerCount = concreteNewCount;
+                newCount = ResolveNextWorkerCount(workerSamples, afterIndex);
+                if (newCount.HasValue)
+                {
+                    newCountProvenance = ThreadPoolEvidence.InferredFromNeighbor;
+                    inferredAny = true;
+                }
             }
 
             normalized.Add(sample with
             {
-                Reason = reason,
                 OldCount = oldCount,
                 NewCount = newCount,
+                OldCountProvenance = oldCountProvenance ?? ThreadPoolEvidence.Missing,
+                NewCountProvenance = newCountProvenance ?? ThreadPoolEvidence.Missing,
             });
         }
 
         if (inferredAny)
         {
-            notes.TryAdd("ThreadPool hill-climbing reasons were inferred from worker-count transitions because the runtime manifest did not expose named adjustment reasons on this platform.", 0);
+            notes.TryAdd("Missing ThreadPool adjustment counts were inferred from neighboring worker-count observations; adjustment reasons were not inferred.", 0);
         }
 
         return normalized;
     }
 
-    private static int? ResolvePreviousWorkerCount(IReadOnlyList<CountSample> workerSamples, int beforeIndex)
+    private static int? ResolvePreviousWorkerCount(List<CountSample> workerSamples, int beforeIndex)
     {
         if (workerSamples.Count == 0)
         {
@@ -475,7 +459,7 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
             : workerSamples[0].Count;
     }
 
-    private static int? ResolveNextWorkerCount(IReadOnlyList<CountSample> workerSamples, int afterIndex)
+    private static int? ResolveNextWorkerCount(List<CountSample> workerSamples, int afterIndex)
     {
         if (workerSamples.Count == 0)
         {
@@ -506,12 +490,17 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
         return false;
     }
 
-    private static bool TryReadIocpCount(TraceEvent traceEvent, int? lastIocpCount, out int iocpCount)
+    private static bool TryReadIocpCount(
+        TraceEvent traceEvent,
+        int? lastIocpCount,
+        out int iocpCount,
+        out string countProvenance)
     {
         iocpCount = 0;
         if (TryReadInt(traceEvent, out var total, "IOThreadCount", "NumIOThreads", "ThreadCount", "NumThreads"))
         {
             iocpCount = total;
+            countProvenance = ThreadPoolEvidence.RuntimeObserved;
             return true;
         }
 
@@ -524,35 +513,44 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
             if (lastIocpCount is int previous)
             {
                 iocpCount = Math.Max(previous + 1, iocpCount);
+                countProvenance = ThreadPoolEvidence.InferredFromDelta;
+                return true;
             }
 
+            countProvenance = ThreadPoolEvidence.RuntimeObserved;
             return true;
         }
 
         if (lastIocpCount is int fallback)
         {
             iocpCount = fallback + 1;
+            countProvenance = ThreadPoolEvidence.InferredFromDelta;
             return true;
         }
 
+        countProvenance = ThreadPoolEvidence.Missing;
         return false;
     }
 
-    private static string ResolveAdjustmentReason(TraceEvent traceEvent)
+    private static (string Reason, string Provenance) ResolveAdjustmentReason(TraceEvent traceEvent)
     {
         if (TryReadString(traceEvent, out var reasonText, "Reason") && !string.IsNullOrWhiteSpace(reasonText))
         {
-            return NormalizeAdjustmentReason(reasonText);
+            var normalized = NormalizeAdjustmentReason(reasonText);
+            return (normalized, IsKnownAdjustmentReason(normalized)
+                ? ThreadPoolEvidence.RuntimeObserved
+                : ThreadPoolEvidence.RuntimeUnrecognized);
         }
 
-        if ((TryReadInt(traceEvent, out var reason, "AdjustmentReason", "Reason")
-                || TryReadIntByIndex(traceEvent, 0, out reason))
-            && AdjustmentReasons.TryGetValue(reason, out var mapped))
+        if (TryReadInt(traceEvent, out var reason, "AdjustmentReason", "Reason")
+            || TryReadIntByIndex(traceEvent, 2, out reason))
         {
-            return mapped;
+            return AdjustmentReasons.TryGetValue(reason, out var mapped)
+                ? (mapped, ThreadPoolEvidence.RuntimeObserved)
+                : (reason.ToString(System.Globalization.CultureInfo.InvariantCulture), ThreadPoolEvidence.RuntimeUnrecognized);
         }
 
-        return "Unknown";
+        return ("Unknown", ThreadPoolEvidence.Missing);
     }
 
     internal static string NormalizeAdjustmentReason(string reason)
@@ -560,6 +558,9 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
             && AdjustmentReasons.TryGetValue(numericReason, out var mapped)
                 ? mapped
                 : reason;
+
+    private static bool IsKnownAdjustmentReason(string reason)
+        => AdjustmentReasons.Values.Contains(reason, StringComparer.OrdinalIgnoreCase);
 
     private static string? ExtractWorkItemOrigin(TraceEvent traceEvent, ConcurrentDictionary<string, byte> notes)
     {
@@ -645,7 +646,7 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
     }
 
     private static IReadOnlyList<ThreadPoolCountBucket> Bucketize(
-        IReadOnlyList<CountSample> ordered,
+        List<CountSample> ordered,
         DateTimeOffset startedAt,
         TimeSpan duration)
     {
@@ -657,18 +658,24 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
         var bucketCount = Math.Max(1, (int)Math.Ceiling(duration.TotalSeconds));
         var buckets = new List<ThreadPoolCountBucket>(bucketCount);
         var sampleIndex = 0;
-        var lastSeen = 0;
+        CountSample? lastSeen = null;
 
         for (var i = 0; i < bucketCount; i++)
         {
             var bucketEnd = startedAt.AddSeconds(i + 1);
             while (sampleIndex < ordered.Count && ordered[sampleIndex].Timestamp <= bucketEnd)
             {
-                lastSeen = ordered[sampleIndex].Count;
+                lastSeen = ordered[sampleIndex];
                 sampleIndex++;
             }
 
-            buckets.Add(new ThreadPoolCountBucket(startedAt.AddSeconds(i), lastSeen));
+            if (lastSeen is { } sample)
+            {
+                var provenance = sample.Timestamp >= startedAt.AddSeconds(i)
+                    ? sample.Provenance
+                    : ThreadPoolEvidence.CarriedForward;
+                buckets.Add(new ThreadPoolCountBucket(startedAt.AddSeconds(i), sample.Count, provenance));
+            }
         }
 
         return buckets;
@@ -931,5 +938,5 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
         }
     }
 
-    private readonly record struct CountSample(DateTimeOffset Timestamp, int Count);
+    internal readonly record struct CountSample(DateTimeOffset Timestamp, int Count, string Provenance);
 }
