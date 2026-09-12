@@ -32,6 +32,14 @@ public static class BlindedAgentHarness
         out AgentModelConfiguration? configuration,
         out string detail)
     {
+        if (string.Equals(
+            Environment.GetEnvironmentVariable("DOTNET_DIAGNOSTICS_AGENT_TRANSPORT"),
+            "copilot-cli",
+            StringComparison.OrdinalIgnoreCase))
+        {
+            return TryCreateCopilotCliTransport(out transport, out configuration, out detail);
+        }
+
         const string endpointVariable = "DOTNET_DIAGNOSTICS_AGENT_ENDPOINT";
         const string keyVariable = "DOTNET_DIAGNOSTICS_AGENT_API_KEY";
         const string modelVariable = "DOTNET_DIAGNOSTICS_AGENT_MODEL";
@@ -69,6 +77,56 @@ public static class BlindedAgentHarness
             Version: Environment.GetEnvironmentVariable("DOTNET_DIAGNOSTICS_AGENT_MODEL_VERSION"),
             MaximumResponseBytes: 131_072);
         detail = "Configured.";
+        return true;
+    }
+
+    private static bool TryCreateCopilotCliTransport(
+        out IAgentModelTransport? transport,
+        out AgentModelConfiguration? configuration,
+        out string detail)
+    {
+        const string executableVariable = "DOTNET_DIAGNOSTICS_AGENT_COPILOT_PATH";
+        const string homeVariable = "DOTNET_DIAGNOSTICS_AGENT_COPILOT_HOME";
+        const string workRootVariable = "DOTNET_DIAGNOSTICS_AGENT_COPILOT_WORK_ROOT";
+        const string modelVariable = "DOTNET_DIAGNOSTICS_AGENT_MODEL";
+        var executable = Environment.GetEnvironmentVariable(executableVariable);
+        var copilotHome = Environment.GetEnvironmentVariable(homeVariable);
+        var workRoot = Environment.GetEnvironmentVariable(workRootVariable);
+        var model = Environment.GetEnvironmentVariable(modelVariable);
+        if (string.IsNullOrWhiteSpace(executable)
+            || string.IsNullOrWhiteSpace(copilotHome)
+            || string.IsNullOrWhiteSpace(workRoot)
+            || string.IsNullOrWhiteSpace(model))
+        {
+            transport = null;
+            configuration = null;
+            detail =
+                $"Blocked: {executableVariable}, {homeVariable}, {workRootVariable}, and {modelVariable} are required for copilot-cli.";
+            return false;
+        }
+
+        try
+        {
+            transport = new CopilotCliAgentTransport(executable, copilotHome, workRoot);
+        }
+        catch (ArgumentException exception)
+        {
+            transport = null;
+            configuration = null;
+            detail = $"Blocked: {exception.Message}";
+            return false;
+        }
+
+        configuration = new AgentModelConfiguration(
+            Provider: "github-copilot-cli",
+            Model: model,
+            Endpoint: new Uri("copilot-cli://local-process"),
+            Temperature: 0,
+            MaximumOutputTokens: 1200,
+            Version: Environment.GetEnvironmentVariable("DOTNET_DIAGNOSTICS_AGENT_MODEL_VERSION"),
+            MaximumResponseBytes: 131_072);
+        detail =
+            "Configured Copilot CLI transport. Inference uses GitHub Copilot cloud models through the CLI's own authentication; it is not offline.";
         return true;
     }
 
@@ -226,6 +284,13 @@ public static class BlindedAgentHarness
             "Model-quality assessment is advisory and is not a required PR check.",
             "Provider-reported token usage and cost remain unavailable when the endpoint omits them.",
         };
+        if (request.Model.Provider == "github-copilot-cli")
+        {
+            limitations.Add(
+                "Copilot CLI uses cloud inference through its own login. The CLI does not expose provider token/cost usage or a hard output-token setting here; wall-time, turn, tool, capture, response-byte, and artifact-byte caps remain enforced.");
+            limitations.Add(
+                "Temperature zero and the output-token value are requested evaluation metadata, not CLI-enforced generation settings.");
+        }
 
         try
         {
@@ -554,7 +619,10 @@ public static class BlindedAgentHarness
             EndpointOrigin(request.Model.Endpoint),
             request.Model.Temperature,
             request.Model.MaximumOutputTokens,
-            BlindedDiagnosticToolGateway.Sha256(SystemPrompt),
+            BlindedDiagnosticToolGateway.Sha256(
+                request.Model.Provider == "github-copilot-cli"
+                    ? SystemPrompt + "\n" + CopilotCliAgentTransport.ProtocolInstructions
+                    : SystemPrompt),
             BlindedDiagnosticToolGateway.Sha256(JsonSerializer.Serialize(BlindedDiagnosticToolGateway.ToolDefinitions)),
             ProductCommit(),
             assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "unavailable",

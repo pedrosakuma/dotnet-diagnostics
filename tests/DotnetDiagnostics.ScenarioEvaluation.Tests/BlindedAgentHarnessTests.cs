@@ -150,6 +150,174 @@ public sealed class BlindedAgentHarnessTests
     }
 
     [Fact]
+    public void CopilotCliTransport_BuildsIsolatedNonAgenticInvocation()
+    {
+        var root = Path.Combine(
+            AppContext.BaseDirectory,
+            "dotnet-diagnostics-copilot-transport-" + Guid.NewGuid().ToString("n"));
+        var home = Path.Combine(root, "home");
+        var work = Path.Combine(root, "work");
+        Directory.CreateDirectory(home);
+        Directory.CreateDirectory(work);
+        var executable = Path.Combine(root, OperatingSystem.IsWindows() ? "copilot.exe" : "copilot");
+        File.WriteAllText(executable, string.Empty);
+        try
+        {
+            var transport = new CopilotCliAgentTransport(
+                executable,
+                home,
+                work,
+                enforceOutsideRepository: false);
+            var configuration = new AgentModelConfiguration(
+                "github-copilot-cli",
+                "test-model",
+                new Uri("copilot-cli://local-process"),
+                0,
+                100);
+            var invocationDirectory = Path.Combine(work, "invocation");
+            var info = transport.CreateStartInfo(
+                configuration,
+                """{"private":"prompt"}""",
+                invocationDirectory,
+                Guid.Parse("e1bf1639-7d23-4d66-a7f3-c21a2280201f"));
+
+            info.UseShellExecute.Should().BeFalse();
+            info.WorkingDirectory.Should().Be(invocationDirectory);
+            info.ArgumentList.Should().ContainInOrder(
+                "--session-id",
+                "e1bf1639-7d23-4d66-a7f3-c21a2280201f");
+            info.ArgumentList.Should().ContainInOrder("--max-ai-credits", "1");
+            info.ArgumentList.Should().ContainInOrder(
+                "--available-tools",
+                "blinded-harness-no-cli-tools",
+                "--disable-builtin-mcps",
+                "--no-custom-instructions",
+                "--no-ask-user",
+                "--no-remote-export",
+                "--no-remote",
+                "--no-auto-update",
+                "--no-bash-env",
+                "--disallow-temp-dir");
+            info.ArgumentList.Should().NotContain("--allow-all");
+            info.ArgumentList.Should().NotContain("--allow-all-tools");
+            info.Environment["COPILOT_HOME"].Should().Be(home);
+            info.Environment.Should().NotContainKey("GITHUB_TOKEN");
+            info.Environment.Should().NotContainKey("GH_TOKEN");
+            info.Environment.Should().NotContainKey("COPILOT_GITHUB_TOKEN");
+
+            var preflight = transport.CreatePreflightStartInfo(invocationDirectory);
+            preflight.ArgumentList.Should().Equal("--no-auto-update", "plugins", "list", "--json");
+            preflight.UseShellExecute.Should().BeFalse();
+            preflight.WorkingDirectory.Should().Be(invocationDirectory);
+            preflight.Environment["COPILOT_HOME"].Should().Be(home);
+            preflight.Environment.Should().NotContainKey("GITHUB_TOKEN");
+            preflight.Environment.Should().NotContainKey("GH_TOKEN");
+            preflight.Environment.Should().NotContainKey("COPILOT_GITHUB_TOKEN");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void CopilotCliTransport_ParsesOnlyStrictDecisionAndDropsCliMetadata()
+    {
+        const string output =
+            """
+            {"type":"session.start","data":{"sessionId":"private-cli-session","model":"test-model"}}
+            {"type":"session.tools_updated","data":{"model":"test-model"}}
+            {"type":"assistant.message","data":{"content":"{\"action\":\"tool\",\"toolCall\":{\"id\":\"call-1\",\"name\":\"collect_events\",\"arguments\":{\"target\":\"target-1\",\"kind\":\"counters\",\"durationSeconds\":2}}}"}}
+            {"type":"usage","data":{"premiumRequests":1}}
+            """;
+
+        var turn = CopilotCliAgentTransport.ParseOutput(output);
+
+        turn.RawResponse.Should().NotContain("private-cli-session");
+        turn.RawResponse.Should().NotContain("premiumRequests");
+        turn.ToolCalls.Should().ContainSingle();
+        turn.ToolCalls[0].Name.Should().Be("collect_events");
+        turn.Usage.Should().Be(new AgentModelUsage(null, null, null));
+        turn.ProviderRequestId.Should().BeNull();
+    }
+
+    [Fact]
+    public void CopilotCliTransport_RejectsEnabledAmbientConfiguration()
+    {
+        const string inventory =
+            """
+            {"plugins":[{"kind":"mcp","name":"private-server","scope":"user","source":"user","enabled":true}],"errors":[]}
+            """;
+
+        var action = () => CopilotCliAgentTransport.ValidatePluginInventory(inventory);
+
+        action.Should().Throw<AgentTransportException>()
+            .WithMessage("*enabled non-builtin configuration*");
+    }
+
+    [Theory]
+    [InlineData("tool.execution_start")]
+    [InlineData("tool.execution_complete")]
+    [InlineData("tool.execution_progress")]
+    [InlineData("assistant.tool_call")]
+    public void CopilotCliTransport_RejectsAnyCliToolActivity(string eventType)
+    {
+        var output = JsonSerializer.Serialize(new { type = eventType, data = new { toolName = "shell" } })
+            + "\n" +
+            """
+            {"type":"assistant.message","data":{"content":"{\"action\":\"final\",\"diagnosis\":{\"claims\":[],\"uncertainty\":\"none\",\"nextSteps\":[]}}"}}
+            """;
+
+        var action = () => CopilotCliAgentTransport.ParseOutput(output);
+
+        action.Should().Throw<JsonException>()
+            .WithMessage("*tool activity*");
+    }
+
+    [Fact]
+    public void CopilotCliTransport_AcceptsBuiltinOnlyInventory()
+    {
+        const string inventory =
+            """
+            {"plugins":[{"kind":"skill","name":"builtin-skill","scope":"builtin","source":"builtin","enabled":true}],"errors":[]}
+            """;
+
+        var action = () => CopilotCliAgentTransport.ValidatePluginInventory(inventory);
+
+        action.Should().NotThrow();
+    }
+
+    [Fact]
+    public void CopilotCliTransport_RejectsProfileWithSettings()
+    {
+        var root = Path.Combine(
+            AppContext.BaseDirectory,
+            "dotnet-diagnostics-copilot-profile-" + Guid.NewGuid().ToString("n"));
+        var home = Path.Combine(root, "home");
+        var work = Path.Combine(root, "work");
+        Directory.CreateDirectory(home);
+        Directory.CreateDirectory(work);
+        File.WriteAllText(Path.Combine(home, "settings.json"), "{}");
+        var executable = Path.Combine(root, OperatingSystem.IsWindows() ? "copilot.exe" : "copilot");
+        File.WriteAllText(executable, string.Empty);
+        try
+        {
+            var action = () => new CopilotCliAgentTransport(
+                executable,
+                home,
+                work,
+                enforceOutsideRepository: false);
+
+            action.Should().Throw<ArgumentException>()
+                .WithMessage("*dedicated Copilot home contains settings*");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public void ConfiguredTransport_MissingExplicitSettings_IsBlocked()
     {
         using var endpoint = new EnvironmentScope("DOTNET_DIAGNOSTICS_AGENT_ENDPOINT", null);
