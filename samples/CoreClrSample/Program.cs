@@ -225,6 +225,24 @@ app.MapGet("/method-params", () =>
 })
 .WithName("CaptureMethodParameters");
 
+app.MapPost("/gcdump-known-graph/reset", () =>
+{
+    var state = GcDumpKnownGraphFixture.Reset();
+    return Results.Json(state);
+})
+.WithName("ResetGcDumpKnownGraph");
+
+app.MapPost("/gcdump-known-graph/pressure/prepare", (int? objectCount, int? payloadBytes) =>
+{
+    var count = Math.Clamp(objectCount ?? 40_000, 1, 100_000);
+    var bytes = Math.Clamp(payloadBytes ?? 256, 16, 1_024);
+    return Results.Json(GcDumpKnownGraphFixture.PreparePressure(count, bytes));
+})
+.WithName("PrepareGcDumpKnownGraphPressure");
+
+app.MapGet("/gcdump-known-graph/status", () => Results.Json(GcDumpKnownGraphFixture.Status()))
+    .WithName("GetGcDumpKnownGraphStatus");
+
 app.Run();
 
 [MethodImpl(MethodImplOptions.NoInlining)]
@@ -298,6 +316,100 @@ static class AsyncFixture
         await Never.Task.ConfigureAwait(false);
         return $"never-{id}";
     }
+}
+
+static class GcDumpKnownGraphFixture
+{
+    private static readonly object Gate = new();
+    private static GcDumpKnownRoot? _root0;
+    private static GcDumpKnownRoot? _root1;
+    private static GcDumpPressureNode[] _pressure = [];
+    private static DateTimeOffset _resetAtUtc;
+    private static DateTimeOffset? _pressureReadyAtUtc;
+
+    public static object Reset()
+    {
+        lock (Gate)
+        {
+            var leaves = Enumerable.Range(0, 8).Select(static i => new GcDumpKnownLeaf(i)).ToArray();
+            var branches = Enumerable.Range(0, 4)
+                .Select(i => new GcDumpKnownBranch(i, leaves[i * 2], leaves[(i * 2) + 1]))
+                .ToArray();
+            _root0 = new GcDumpKnownRoot(0, branches[0], branches[1]);
+            _root1 = new GcDumpKnownRoot(1, branches[2], branches[3]);
+            _pressure = [];
+            _resetAtUtc = DateTimeOffset.UtcNow;
+            _pressureReadyAtUtc = null;
+        }
+
+        GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
+        return Status();
+    }
+
+    public static object PreparePressure(int objectCount, int payloadBytes)
+    {
+        var pressure = new GcDumpPressureNode[objectCount];
+        for (var i = 0; i < pressure.Length; i++)
+        {
+            pressure[i] = new GcDumpPressureNode(i, payloadBytes);
+        }
+
+        lock (Gate)
+        {
+            _pressure = pressure;
+            _pressureReadyAtUtc = DateTimeOffset.UtcNow;
+        }
+
+        GC.KeepAlive(pressure);
+        return Status();
+    }
+
+    public static object Status()
+    {
+        lock (Gate)
+        {
+            return new
+            {
+                rootCount = _root0 is not null && _root1 is not null ? 2 : 0,
+                branchCount = 4,
+                leafCount = 8,
+                expectedRootBranchEdges = 4,
+                expectedBranchLeafEdges = 8,
+                pressureCount = _pressure.Length,
+                pressureReady = _pressureReadyAtUtc is not null,
+                resetAtUtc = _resetAtUtc,
+                pressureReadyAtUtc = _pressureReadyAtUtc,
+                gen0Collections = GC.CollectionCount(0),
+                gen1Collections = GC.CollectionCount(1),
+                gen2Collections = GC.CollectionCount(2),
+            };
+        }
+    }
+}
+
+sealed class GcDumpKnownRoot(int id, GcDumpKnownBranch first, GcDumpKnownBranch second)
+{
+    public int Id { get; } = id;
+    public GcDumpKnownBranch First { get; } = first;
+    public GcDumpKnownBranch Second { get; } = second;
+}
+
+sealed class GcDumpKnownBranch(int id, GcDumpKnownLeaf first, GcDumpKnownLeaf second)
+{
+    public int Id { get; } = id;
+    public GcDumpKnownLeaf First { get; } = first;
+    public GcDumpKnownLeaf Second { get; } = second;
+}
+
+sealed class GcDumpKnownLeaf(int id)
+{
+    public int Id { get; } = id;
+}
+
+sealed class GcDumpPressureNode(int id, int payloadBytes)
+{
+    public int Id { get; } = id;
+    public byte[] Payload { get; } = new byte[payloadBytes];
 }
 
 static class MethodParameterFixture
