@@ -183,10 +183,11 @@ public sealed class BlindedAgentHarnessTests
 
             info.UseShellExecute.Should().BeFalse();
             info.WorkingDirectory.Should().Be(invocationDirectory);
+            info.ArgumentList.Should().ContainInOrder("--effort", "low");
             info.ArgumentList.Should().ContainInOrder(
                 "--session-id",
                 "e1bf1639-7d23-4d66-a7f3-c21a2280201f");
-            info.ArgumentList.Should().ContainInOrder("--max-ai-credits", "1");
+            info.ArgumentList.Should().ContainInOrder("--max-ai-credits", "30");
             info.ArgumentList.Should().ContainInOrder(
                 "--available-tools",
                 "blinded-harness-no-cli-tools",
@@ -242,6 +243,20 @@ public sealed class BlindedAgentHarnessTests
     }
 
     [Fact]
+    public void CopilotCliTransport_RepeatsStrictDecisionBoundaryAfterConversationData()
+    {
+        var prompt = CopilotCliAgentTransport.BuildPrompt(
+            [new JsonObject { ["role"] = "user", ["content"] = "neutral symptom" }],
+            BlindedDiagnosticToolGateway.ToolDefinitions);
+
+        prompt.Should().EndWith(CopilotCliAgentTransport.ProtocolReminder);
+        prompt.Should().Contain("Return exactly one JSON decision object now.");
+        prompt.Should().Contain("""{"action":"final","diagnosis":{...}}""");
+        prompt.Should().Contain("never return bare");
+        prompt.Should().NotContain("sync-over-async");
+    }
+
+    [Fact]
     public void CopilotCliTransport_RejectsEnabledAmbientConfiguration()
     {
         const string inventory =
@@ -275,6 +290,46 @@ public sealed class BlindedAgentHarnessTests
     }
 
     [Fact]
+    public void CopilotCliTransport_OnlyAcceptsAssistantContent()
+    {
+        const string decision = """{"action":"final","diagnosis":{"claims":[],"uncertainty":"unknown","nextSteps":[]}}""";
+        var metadata = JsonSerializer.Serialize(new { type = "session.context", data = new { content = decision } });
+        var noDecision = JsonSerializer.Serialize(new
+        {
+            type = "assistant.message",
+            data = new { content = "No decision.", reasoningText = decision },
+        });
+        var action = () => CopilotCliAgentTransport.ParseOutput(metadata + "\n" + noDecision);
+        action.Should().Throw<JsonException>().WithMessage("*required structured decision*");
+
+        var message = JsonSerializer.Serialize(new
+        {
+            type = "assistant.message",
+            data = new { content = decision, reasoningText = decision, encryptedContent = "opaque-metadata" },
+        });
+        var turn = CopilotCliAgentTransport.ParseOutput(metadata + "\n" + message);
+        turn.RawResponse.Should().Be(decision);
+        turn.RawResponse.Should().NotContain("opaque-metadata");
+    }
+
+    [Fact]
+    public void CopilotCliTransport_RejectsBareDiagnosisAndNativeToolRequests()
+    {
+        const string diagnosis = """{"claims":[],"uncertainty":"unknown","nextSteps":[]}""";
+        var bare = JsonSerializer.Serialize(new { type = "assistant.message", data = new { content = diagnosis } });
+        var bareAction = () => CopilotCliAgentTransport.ParseOutput(bare);
+        bareAction.Should().Throw<JsonException>().WithMessage("*required structured decision*");
+
+        var native = JsonSerializer.Serialize(new
+        {
+            type = "assistant.message",
+            data = new { content = diagnosis, toolRequests = new[] { new { name = "shell" } } },
+        });
+        var nativeAction = () => CopilotCliAgentTransport.ParseOutput(native);
+        nativeAction.Should().Throw<JsonException>().WithMessage("*tool activity*");
+    }
+
+    [Fact]
     public void CopilotCliTransport_AcceptsBuiltinOnlyInventory()
     {
         const string inventory =
@@ -285,6 +340,21 @@ public sealed class BlindedAgentHarnessTests
         var action = () => CopilotCliAgentTransport.ValidatePluginInventory(inventory);
 
         action.Should().NotThrow();
+    }
+
+    [Fact]
+    public void CopilotCliTransport_ClassifiesKnownCliErrorWithoutRetainingRawStderr()
+    {
+        const string stderr =
+            "error: option '--max-ai-credits <credits>' argument '1' is invalid. "
+            + "Invalid value for --max-ai-credits: \"1\". Use at least 30 AI credits.";
+
+        var detail = CopilotCliAgentTransport.DescribeFailure("invocation", 1, stderr);
+
+        detail.Should().Be(
+            "Copilot CLI invocation exited with code 1: "
+            + "the installed CLI requires --max-ai-credits to be at least 30.");
+        detail.Should().NotContain("argument '1'");
     }
 
     [Fact]

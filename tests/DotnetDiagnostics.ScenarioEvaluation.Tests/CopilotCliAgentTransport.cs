@@ -7,6 +7,7 @@ namespace DotnetDiagnostics.ScenarioEvaluation.Tests;
 
 public sealed class CopilotCliAgentTransport : IAgentModelTransport
 {
+    private const int MinimumCliAiCredits = 30;
     private const string UnavailableToolSentinel = "blinded-harness-no-cli-tools";
     internal const string ProtocolInstructions =
         """
@@ -22,6 +23,16 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
         {"action":"final","diagnosis":{"claims":[{"text":"...","posture":"observed|inferred|unknown","evidenceLocations":["tool-result://call-id#/json/pointer"]}],"uncertainty":"...","nextSteps":["..."]}}
 
         Conversation and schemas:
+        """;
+    internal const string ProtocolReminder =
+        """
+
+        End of conversation and schemas. Return exactly one JSON decision object now. Do not use
+        markdown fences, commentary, or any CLI tool.
+        The final-answer schema inside messages describes the diagnosis payload, NOT this transport's
+        outer response. Wrap that payload in {"action":"final","diagnosis":{...}}; never return bare
+        claims/uncertainty/nextSteps. To request a diagnostic operation instead, return
+        {"action":"tool","toolCall":{"id":"fresh-nonempty-id","name":"allowed-name","arguments":{...}}}.
         """;
     private static readonly string[] ForbiddenProfileEntries =
     [
@@ -123,8 +134,10 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
 
             if (process.ExitCode != 0)
             {
-                throw new AgentTransportException(
-                    $"Copilot CLI exited with code {process.ExitCode}; output was not retained.");
+                throw new AgentTransportException(DescribeFailure(
+                    "invocation",
+                    process.ExitCode,
+                    await stderrTask.ConfigureAwait(false)));
             }
 
             return ParseOutput(await stdoutTask.ConfigureAwait(false));
@@ -137,11 +150,16 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
         {
             throw;
         }
+        catch (JsonException exception)
+        {
+            throw new AgentTransportException(
+                $"Copilot CLI output violated the decision protocol: {exception.Message}",
+                innerException: exception);
+        }
         catch (Exception exception) when (
             exception is IOException
             or InvalidOperationException
-            or System.ComponentModel.Win32Exception
-            or JsonException)
+            or System.ComponentModel.Win32Exception)
         {
             throw new AgentTransportException("Copilot CLI transport failed.", innerException: exception);
         }
@@ -171,6 +189,8 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
         info.ArgumentList.Add(prompt);
         info.ArgumentList.Add("--model");
         info.ArgumentList.Add(configuration.Model);
+        info.ArgumentList.Add("--effort");
+        info.ArgumentList.Add("low");
         info.ArgumentList.Add("--session-id");
         info.ArgumentList.Add(invocationId.ToString("D"));
         info.ArgumentList.Add("--output-format");
@@ -192,7 +212,7 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
         info.ArgumentList.Add("--log-dir");
         info.ArgumentList.Add(Path.Combine(workingDirectory, "logs"));
         info.ArgumentList.Add("--max-ai-credits");
-        info.ArgumentList.Add("1");
+        info.ArgumentList.Add(MinimumCliAiCredits.ToString(System.Globalization.CultureInfo.InvariantCulture));
         info.ArgumentList.Add("-C");
         info.ArgumentList.Add(workingDirectory);
 
@@ -256,8 +276,10 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
 
         if (process.ExitCode != 0)
         {
-            throw new AgentTransportException(
-                $"Copilot CLI isolation preflight exited with code {process.ExitCode}; output was not retained.");
+            throw new AgentTransportException(DescribeFailure(
+                "isolation preflight",
+                process.ExitCode,
+                await stderrTask.ConfigureAwait(false)));
         }
 
         ValidatePluginInventory(await stdoutTask.ConfigureAwait(false));
@@ -296,24 +318,79 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
         }
     }
 
+    internal static string DescribeFailure(string phase, int exitCode, string stderr)
+    {
+        if (stderr.Contains("--max-ai-credits", StringComparison.OrdinalIgnoreCase)
+            && stderr.Contains("at least 30 AI credits", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"Copilot CLI {phase} exited with code {exitCode}: "
+                + "the installed CLI requires --max-ai-credits to be at least 30.";
+        }
+
+        if (stderr.Contains("authentication", StringComparison.OrdinalIgnoreCase)
+            || stderr.Contains("not logged in", StringComparison.OrdinalIgnoreCase)
+            || stderr.Contains("login required", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"Copilot CLI {phase} exited with code {exitCode}: "
+                + "normal CLI authentication was unavailable.";
+        }
+
+        if (stderr.Contains("model", StringComparison.OrdinalIgnoreCase)
+            && (stderr.Contains("not available", StringComparison.OrdinalIgnoreCase)
+                || stderr.Contains("unknown", StringComparison.OrdinalIgnoreCase)
+                || stderr.Contains("invalid", StringComparison.OrdinalIgnoreCase)))
+        {
+            return $"Copilot CLI {phase} exited with code {exitCode}: "
+                + "the configured model was rejected or unavailable.";
+        }
+
+        if (stderr.Contains("unknown option", StringComparison.OrdinalIgnoreCase)
+            || stderr.Contains("invalid option", StringComparison.OrdinalIgnoreCase)
+            || stderr.Contains("invalid argument", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"Copilot CLI {phase} exited with code {exitCode}: "
+                + "the installed CLI rejected the isolated command-line configuration.";
+        }
+
+        return $"Copilot CLI {phase} exited with code {exitCode}; stderr was not retained "
+            + "because it did not match a safe error classification.";
+    }
+
     internal static AgentModelTurn ParseOutput(string jsonLines)
     {
         string? accepted = null;
         foreach (var line in jsonLines.Split('\n', StringSplitOptions.RemoveEmptyEntries))
         {
             using var document = JsonDocument.Parse(line);
-            RejectCliToolActivity(document.RootElement);
-            foreach (var candidate in FindJsonCandidates(document.RootElement))
+            var eventRoot = document.RootElement;
+            RejectCliToolActivity(eventRoot);
+            if (eventRoot.ValueKind != JsonValueKind.Object
+                || !eventRoot.TryGetProperty("type", out var type)
+                || type.ValueKind != JsonValueKind.String
+                || type.GetString() != "assistant.message"
+                || !eventRoot.TryGetProperty("data", out var data)
+                || data.ValueKind != JsonValueKind.Object)
             {
-                if (TryParseDecision(candidate, out var normalized))
-                {
-                    if (accepted is not null)
-                    {
-                        throw new JsonException("Copilot CLI emitted more than one decision.");
-                    }
+                continue;
+            }
 
-                    accepted = normalized;
+            if (data.TryGetProperty("toolRequests", out var toolRequests)
+                && toolRequests.ValueKind == JsonValueKind.Array
+                && toolRequests.GetArrayLength() != 0)
+            {
+                throw new JsonException("Copilot CLI reported tool activity despite the empty tool boundary.");
+            }
+
+            if (data.TryGetProperty("content", out var content)
+                && content.ValueKind == JsonValueKind.String
+                && TryParseDecision(content.GetString()!, out var normalized))
+            {
+                if (accepted is not null)
+                {
+                    throw new JsonException("Copilot CLI emitted more than one decision.");
                 }
+
+                accepted = normalized;
             }
         }
 
@@ -376,7 +453,7 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
                 ["parameters"] = tool.Parameters.DeepClone(),
             }).ToArray()),
         };
-        return ProtocolInstructions + envelope.ToJsonString();
+        return ProtocolInstructions + envelope.ToJsonString() + ProtocolReminder;
     }
 
     private static bool TryParseDecision(string candidate, out string normalized)
@@ -438,47 +515,6 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
         catch (JsonException) when (!candidate.TrimStart().StartsWith('{'))
         {
             return false;
-        }
-    }
-
-    private static IEnumerable<string> FindJsonCandidates(JsonElement element)
-    {
-        if (element.ValueKind == JsonValueKind.String)
-        {
-            var value = element.GetString();
-            if (!string.IsNullOrWhiteSpace(value))
-            {
-                yield return value;
-            }
-
-            yield break;
-        }
-
-        if (element.ValueKind == JsonValueKind.Object)
-        {
-            if (element.TryGetProperty("action", out _))
-            {
-                yield return element.GetRawText();
-                yield break;
-            }
-
-            foreach (var property in element.EnumerateObject())
-            {
-                foreach (var candidate in FindJsonCandidates(property.Value))
-                {
-                    yield return candidate;
-                }
-            }
-        }
-        else if (element.ValueKind == JsonValueKind.Array)
-        {
-            foreach (var item in element.EnumerateArray())
-            {
-                foreach (var candidate in FindJsonCandidates(item))
-                {
-                    yield return candidate;
-                }
-            }
         }
     }
 

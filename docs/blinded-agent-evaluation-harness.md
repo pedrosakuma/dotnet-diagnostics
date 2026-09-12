@@ -127,20 +127,53 @@ usage, the report marks those values unavailable; the hard turn, tool, wall-time
 and artifact caps still apply.
 
 Copilot CLI 1.0.83 does not expose provider token/cost usage in the accepted response or a hard
-output-token option. `--max-ai-credits 1` per model turn is defense in depth only: the CLI documents it as a soft
-post-call limit and it is not counted as a harness hard budget. For this transport, token/cost fields
-remain unavailable and the hard bounds are model turns, one decision per CLI process, tool calls,
-wall time, capture time, response bytes, and retained artifact bytes.
+output-token option. The installed CLI requires `--max-ai-credits` to be at least 30, so the transport
+uses `--max-ai-credits 30` per model turn as defense in depth only. The CLI documents this as a soft
+post-call limit; it is not a harness hard budget and does not imply that a turn consumes 30 credits.
+For this transport, token/cost fields remain unavailable and the hard bounds are model turns, one
+decision per CLI process, tool calls, wall time, capture time, response bytes, and retained artifact
+bytes.
+The CLI is explicitly invoked with `--effort low` to reduce reasoning overhead; this does not
+guarantee a token count or change any hard response-byte, wall-time, or diagnostic budget.
 
 ### Local smoke status
 
-The first predeclared local attempt used `gpt-5.4-mini`. Workload activation passed, but the CLI
-process exited with code 1 before returning a model decision; no diagnostic tool was called.
-The report records transport failure, no assessment, and independently observed target cleanup.
-Because CLI stderr was intentionally not retained, the exact launch failure is not established.
-The invocation has subsequently been corrected to use the documented hyphenated UUID session-ID
-format rather than a compact GUID. This correction is not evidence that the smoke succeeds.
-The failed evaluator-private report is retained; real-model acceptance remains incomplete.
+The first two predeclared local attempts used `gpt-5.4-mini`. Workload activation passed, but the CLI
+process exited with code 1 before returning a model decision; no diagnostic tool was called. Both
+reports record transport failure, no assessment, and independently observed target cleanup. The
+second attempt included the correction from a compact GUID to the documented hyphenated UUID
+session-ID format, so that change did not explain the failure.
+
+A single transport-only probe then reproduced the isolated invocation and safely classified the
+actual CLI error: the configured `--max-ai-credits 1` was rejected because this CLI requires at least
+30. The adapter now uses the minimum accepted value and retains only allowlisted error
+classifications in reports rather than arbitrary stderr. The probe is launch-debugging evidence, not
+diagnostic acceptance evidence. The two failed evaluator-private reports remain preserved.
+
+After launch succeeds, parser failures retain the adapter-generated protocol error text but not raw
+CLI event streams. This distinguishes invalid or missing structured decisions from process launch,
+authentication, and model-availability failures without persisting arbitrary stderr.
+
+Post-fix attempt 03 completed one genuine brokered counters collection, then its second CLI turn
+failed before a final diagnosis; it ran before parser failures retained their safe classification.
+Attempt 04 again completed one genuine counters collection and then safely reported that the second
+turn emitted no structured decision. The protocol reminder was therefore repeated after the
+conversation payload so the strict output boundary is the final model-visible instruction; this
+changes no diagnostic hint, tool permission, or acceptance rule. Attempt 05 still emitted no
+structured decision on its first turn, so it called no diagnostic tool. All three attempts activated
+and independently cleaned up their real targets. No attempt produced a final diagnosis, citations,
+or assessment, so real-agent acceptance remains incomplete.
+
+Instrumented attempt 06 transparently forwarded the same CLI arguments and streams while retaining
+only assistant text in a separate private debugging artifact after removing event metadata. It
+completed one real thread snapshot, then exceeded the unchanged response-byte limit. The observed
+assistant text also exposed a protocol conflict: the inner conversation requested a bare diagnosis
+object, while the outer CLI protocol required `{"action":"final","diagnosis":{...}}`. The final
+transport reminder now explicitly reconciles those schemas. Parsing still rejects bare diagnoses;
+it reads only `assistant.message.data.content`, never decisions embedded in event metadata, and
+rejects nonempty native CLI tool requests. The prompt fingerprint includes the final reminder.
+Low reasoning effort is now explicit to reduce CLI output overhead. These changes do not establish
+a successful smoke by themselves; attempt 06 and its verified target cleanup remain recorded as a failure.
 
 ## Bounds and evidence
 

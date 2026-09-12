@@ -289,7 +289,7 @@ public static class BlindedAgentHarness
             limitations.Add(
                 "Copilot CLI uses cloud inference through its own login. The CLI does not expose provider token/cost usage or a hard output-token setting here; wall-time, turn, tool, capture, response-byte, and artifact-byte caps remain enforced.");
             limitations.Add(
-                "Temperature zero and the output-token value are requested evaluation metadata, not CLI-enforced generation settings.");
+                "Temperature zero and the output-token value are requested evaluation metadata, not CLI-enforced generation settings. CLI invocation explicitly requests --effort low and --max-ai-credits 30 (a soft limit, not measured spend).");
         }
 
         try
@@ -621,7 +621,7 @@ public static class BlindedAgentHarness
             request.Model.MaximumOutputTokens,
             BlindedDiagnosticToolGateway.Sha256(
                 request.Model.Provider == "github-copilot-cli"
-                    ? SystemPrompt + "\n" + CopilotCliAgentTransport.ProtocolInstructions
+                    ? SystemPrompt + "\n" + CopilotCliAgentTransport.ProtocolInstructions + CopilotCliAgentTransport.ProtocolReminder
                     : SystemPrompt),
             BlindedDiagnosticToolGateway.Sha256(JsonSerializer.Serialize(BlindedDiagnosticToolGateway.ToolDefinitions)),
             ProductCommit(),
