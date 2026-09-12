@@ -330,6 +330,12 @@ internal static partial class CliCommands
             {
                 sb.AppendLine();
                 sb.AppendLine(JsonSerializer.Serialize(qr, QueryJsonOptions));
+            }, static (sb, qr) =>
+            {
+                if (qr.Quality is { } quality)
+                {
+                    RenderEvidenceQuality(sb, quality);
+                }
             });
         }
 

@@ -148,15 +148,24 @@ public static class HeapSnapshotQueryDispatcher
         string view)
     {
         var quality = GcDumpEvidence.GetApplicableQuality(snapshot);
+        var metadata = new HeapSnapshotQueryResult(
+            handle,
+            view,
+            snapshot.Origin.ToString(),
+            snapshot.ProcessId,
+            snapshot.CapturedAt)
+        {
+            Quality = quality,
+        };
         return DiagnosticResult.Fail<HeapSnapshotQueryResult>(
             $"Snapshot '{handle}' cannot provide view '{view}' because gcdump retains per-type node and byte totals, not object edges, roots, or ClrMD heap properties.",
             new DiagnosticError(
                 "ViewUnavailableForGcDump",
                 $"The '{view}' view is intrinsically unavailable for source=\"gcdump\"; unavailable data is not an observed zero.",
-                handle)
-            {
-                Quality = quality,
-            });
+                handle)) with
+        {
+            Data = metadata,
+        };
     }
 
     private static DiagnosticResult<HeapSnapshotQueryResult> QueryRetentionPaths(

@@ -426,14 +426,19 @@ internal static partial class CliCommands
     /// <summary>
     /// Renders the host-neutral parts of any <see cref="DiagnosticResult{T}"/> (summary, error,
     /// resolved-process digest, next-action hints) plus a command-specific data block supplied by
-    /// <paramref name="renderData"/> (skipped on error / null payload).
+    /// <paramref name="renderData"/> (skipped on error / null payload). An optional
+    /// <paramref name="renderErrorData"/> renders retained metadata on error without
+    /// treating the payload as a successful result.
     /// </summary>
-    internal static CliCommandResult BuildResult<T>(DiagnosticResult<T> result, Action<StringBuilder, T> renderData)
+    internal static CliCommandResult BuildResult<T>(
+        DiagnosticResult<T> result,
+        Action<StringBuilder, T> renderData,
+        Action<StringBuilder, T>? renderErrorData = null)
     {
         // Project Core's MCP-audience hints into CLI vocabulary ONCE, before both the human table and
         // the --json envelope are produced, so neither leaks MCP tool names / call syntax (#301).
         var projected = CliHintProjection.Project(result);
-        var human = RenderEnvelope(projected, renderData);
+        var human = RenderEnvelope(projected, renderData, renderErrorData: renderErrorData);
         return new CliCommandResult(projected.IsError, projected.Cancelled, projected, human)
         {
             Handle = projected.Handle,
@@ -441,14 +446,16 @@ internal static partial class CliCommands
             RenderHumanForBoundTarget = boundPid => RenderEnvelope(
                 projected,
                 renderData,
-                reason => CliCommandExecution.RemoveBoundPidArgument(reason, boundPid)),
+                reason => CliCommandExecution.RemoveBoundPidArgument(reason, boundPid),
+                renderErrorData),
         };
     }
 
     private static string RenderEnvelope<T>(
         DiagnosticResult<T> result,
         Action<StringBuilder, T> renderData,
-        Func<string, string>? transformHintReason = null)
+        Func<string, string>? transformHintReason = null,
+        Action<StringBuilder, T>? renderErrorData = null)
     {
         var sb = new StringBuilder();
         sb.Append(result.IsError ? "ERROR: " : string.Empty);
@@ -472,6 +479,10 @@ internal static partial class CliCommands
         if (!result.IsError && result.Data is not null)
         {
             renderData(sb, result.Data);
+        }
+        else if (result.IsError && result.Data is not null)
+        {
+            renderErrorData?.Invoke(sb, result.Data);
         }
 
         if (result.Hints.Count > 0)

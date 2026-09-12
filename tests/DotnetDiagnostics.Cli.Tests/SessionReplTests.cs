@@ -286,6 +286,28 @@ public sealed class SessionReplTests
     }
 
     [Fact]
+    public async Task Query_GcDumpUnavailableView_RendersErrorAndEvidenceLimitations()
+    {
+        var (services, store) = BuildServices();
+        var snapshot = HeapSnapshot() with { Origin = HeapSnapshotOrigin.GcDump };
+        var handle = store.Register(
+            Environment.ProcessId,
+            HeapInspectionUseCases.HeapSnapshotKind,
+            snapshot,
+            TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, stderr) = await RunReplAsync(
+            $"query --handle {handle.Id} --view retention-paths\nexit\n", services);
+
+        exit.Should().Be(0);
+        stderr.Should().BeEmpty();
+        stdout.Should().Contain("ERROR:");
+        stdout.Should().Contain("ViewUnavailableForGcDump");
+        stdout.Should().Contain("eventpipe-loss");
+        stdout.Should().Contain("absence=Inconclusive");
+    }
+
+    [Fact]
     public async Task Query_HeapHandle_GcRootView_DumpOrigin_ServesChainFromDump()
     {
         var inspector = new StubDumpInspector

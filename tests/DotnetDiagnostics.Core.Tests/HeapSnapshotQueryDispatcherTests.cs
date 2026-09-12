@@ -189,8 +189,9 @@ public class HeapSnapshotQueryDispatcherTests
             typeFullName: null);
 
         outcome.Result!.Error!.Kind.Should().Be("ViewUnavailableForGcDump");
-        outcome.Result.Error.Quality.Should().NotBeNull();
-        outcome.Result.Error.Quality!.Limitations.Should().Contain(
+        outcome.Result.Data.Should().NotBeNull();
+        outcome.Result.Data!.Quality.Should().NotBeNull();
+        outcome.Result.Data.Quality!.Limitations.Should().Contain(
             limitation => limitation.Category == EvidenceLimitationCategory.LegacyUnknown);
     }
 
