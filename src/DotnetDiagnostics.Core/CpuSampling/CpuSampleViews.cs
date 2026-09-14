@@ -15,7 +15,8 @@ public sealed record MethodSampleStat(
     MethodIdentity? Identity)
 {
     /// <summary>
-    /// Optional split of <see cref="ExclusiveSamples"/> into running vs waiting observations.
+    /// Optional split of <see cref="ExclusiveSamples"/> into on-CPU, heuristic-wait, and unknown
+    /// observations.
     /// </summary>
     public SelfSampleBreakdown? SelfSamples { get; init; }
 
@@ -47,6 +48,8 @@ public sealed record TopMethodsView(
     IReadOnlyList<MethodSampleStat> Methods)
 {
     public SelfSampleBreakdown? SelfSamples { get; init; }
+    public CpuSampleBackend? EvidenceBackend { get; init; }
+    public CpuSampleEvidenceKind? EvidenceKind { get; init; }
 }
 
 /// <summary>One group's (module or namespace) aggregated sample attribution.</summary>
@@ -58,6 +61,8 @@ public sealed record GroupSampleStat(
     double InclusivePercent)
 {
     public SelfSampleBreakdown? SelfSamples { get; init; }
+    public CpuSampleBackend? EvidenceBackend { get; init; }
+    public CpuSampleEvidenceKind? EvidenceKind { get; init; }
 }
 
 /// <summary>Samples aggregated by module or namespace.</summary>
@@ -69,6 +74,8 @@ public sealed record GroupedSamplesView(
     IReadOnlyList<GroupSampleStat> Groups)
 {
     public SelfSampleBreakdown? SelfSamples { get; init; }
+    public CpuSampleBackend? EvidenceBackend { get; init; }
+    public CpuSampleEvidenceKind? EvidenceKind { get; init; }
 }
 
 /// <summary>One frame on the dominant call chain.</summary>
@@ -82,6 +89,8 @@ public sealed record HotPathFrame(
     MethodIdentity? Identity)
 {
     public SelfSampleBreakdown? SelfSamples { get; init; }
+    public CpuSampleBackend? EvidenceBackend { get; init; }
+    public CpuSampleEvidenceKind? EvidenceKind { get; init; }
 }
 
 /// <summary>The dominant call chain — follow the heaviest child until it drops below the threshold.</summary>
@@ -93,6 +102,8 @@ public sealed record HotPathView(
     IReadOnlyList<HotPathFrame> Frames)
 {
     public SelfSampleBreakdown? SelfSamples { get; init; }
+    public CpuSampleBackend? EvidenceBackend { get; init; }
+    public CpuSampleEvidenceKind? EvidenceKind { get; init; }
 }
 
 /// <summary>One recognized wait/park category's aggregated exclusive attribution across every
@@ -105,7 +116,7 @@ public sealed record CpuWaitCategoryStat(
 
 /// <summary>
 /// One-shot performance-triage projection for a <c>cpu-sample</c> handle (issue #812): bundles the
-/// top "busy user code" hotspots (reusing the <c>rankBy="running"</c> ordering from issue #811 part 1),
+/// top measured on-CPU methods or conservative stack-frequency candidates (depending on evidence),
 /// the top noise/wait categories (reusing the <see cref="MethodSampleStat.WaitReason"/> tag from issue
 /// #811 part 2), and the dominant hot-path leaf — the same evidence an operator would otherwise gather
 /// across three separate round trips (<c>top-methods</c> + <c>hot-path</c>, cross-referenced by hand).
@@ -120,6 +131,8 @@ public sealed record TriageView(
     int HotPathDepth)
 {
     public SelfSampleBreakdown? SelfSamples { get; init; }
+    public CpuSampleBackend? EvidenceBackend { get; init; }
+    public CpuSampleEvidenceKind? EvidenceKind { get; init; }
 }
 
 /// <summary>One caller or callee edge of a focus method.</summary>
@@ -146,6 +159,8 @@ public sealed record CallerCalleeView(
     MethodIdentity? Identity)
 {
     public SelfSampleBreakdown? SelfSamples { get; init; }
+    public CpuSampleBackend? EvidenceBackend { get; init; }
+    public CpuSampleEvidenceKind? EvidenceKind { get; init; }
 }
 
 /// <summary>
@@ -174,6 +189,7 @@ internal static class CpuSampleAnalytics
         public long Inclusive;
         public long RunningSelf;
         public long WaitingSelf;
+        public long UnknownSelf;
         public CallTreeNode Representative = null!;
     }
 
@@ -234,6 +250,7 @@ internal static class CpuSampleAnalytics
     {
         long running = 0;
         long waiting = 0;
+        long unknown = 0;
         var sawClassification = false;
         var stack = new Stack<CallTreeNode>();
         stack.Push(root);
@@ -244,6 +261,7 @@ internal static class CpuSampleAnalytics
             {
                 running += self.RunningSamples;
                 waiting += self.WaitingSamples;
+                unknown += self.UnknownSamples;
                 sawClassification = true;
             }
 
@@ -253,7 +271,7 @@ internal static class CpuSampleAnalytics
             }
         }
 
-        return sawClassification ? new SelfSampleBreakdown(running, waiting) : null;
+        return sawClassification ? new SelfSampleBreakdown(running, waiting, unknown) : null;
     }
 
     /// <summary>Aggregates exclusive/inclusive samples by a caller-chosen key over the whole tree.</summary>
@@ -282,6 +300,7 @@ internal static class CpuSampleAnalytics
                 {
                     agg.RunningSelf += self.RunningSamples;
                     agg.WaitingSelf += self.WaitingSamples;
+                    agg.UnknownSelf += self.UnknownSamples;
                 }
 
                 if (ancestors.Add(key))
@@ -329,7 +348,7 @@ internal static class CpuSampleAnalytics
                 Percent(agg.Inclusive, total),
                 rep.Identity)
             {
-                SelfSamples = totalSelf is null ? null : new SelfSampleBreakdown(agg.RunningSelf, agg.WaitingSelf),
+                SelfSamples = totalSelf is null ? null : new SelfSampleBreakdown(agg.RunningSelf, agg.WaitingSelf, agg.UnknownSelf),
                 WaitReason = totalSelf is null ? null : WellKnownWaitFrameClassifier.Classify(rep.Frame.Method)?.Reason,
                 AsyncFolded = asyncFolded,
             });
@@ -342,10 +361,9 @@ internal static class CpuSampleAnalytics
     }
 
     /// <summary>
-    /// Re-ranks an already-aggregated exclusive-ordered method list by "busy user code" — running
-    /// (on-CPU) self-time — instead of raw exclusive samples (issue #811). Frames with no known
-    /// wait/park classification fall back to their exclusive count, so a trace with no classified
-    /// leaves at all degrades to the same order as <c>rankBy="exclusive"</c>.
+    /// Re-ranks by measured on-CPU self observations when present. Captures without positive
+    /// on-CPU evidence retain exclusive-frequency ordering so candidates remain discoverable
+    /// without strengthening their scheduler-state semantics.
     /// </summary>
     internal static IReadOnlyList<MethodSampleStat> RankMethodsByRunningSelf(IReadOnlyList<MethodSampleStat> exclusiveRanked)
         => exclusiveRanked
@@ -412,7 +430,7 @@ internal static class CpuSampleAnalytics
                 Percent(agg.Exclusive, total),
                 Percent(agg.Inclusive, total))
             {
-                SelfSamples = totalSelf is null ? null : new SelfSampleBreakdown(agg.RunningSelf, agg.WaitingSelf),
+                SelfSamples = totalSelf is null ? null : new SelfSampleBreakdown(agg.RunningSelf, agg.WaitingSelf, agg.UnknownSelf),
             });
         }
 
@@ -505,6 +523,7 @@ internal static class CpuSampleAnalytics
         long focusExclusive = 0;
         long focusRunning = 0;
         long focusWaiting = 0;
+        long focusUnknown = 0;
         var callers = new Dictionary<string, Agg>(StringComparer.Ordinal);
         var callees = new Dictionary<string, Agg>(StringComparer.Ordinal);
         var totalSelf = TotalSelfSamples(root);
@@ -528,7 +547,7 @@ internal static class CpuSampleAnalytics
             calleeEdges,
             representative.Identity)
         {
-            SelfSamples = totalSelf is null ? null : new SelfSampleBreakdown(focusRunning, focusWaiting),
+            SelfSamples = totalSelf is null ? null : new SelfSampleBreakdown(focusRunning, focusWaiting, focusUnknown),
         };
 
         void Visit(CallTreeNode node, CallTreeNode? parent, bool focusSeen)
@@ -541,6 +560,7 @@ internal static class CpuSampleAnalytics
                 {
                     focusRunning += self.RunningSamples;
                     focusWaiting += self.WaitingSamples;
+                    focusUnknown += self.UnknownSamples;
                 }
 
                 if (!focusSeen)

@@ -95,14 +95,17 @@ public sealed class DotnetDiagnosticsReportExporter : IExporter
 
         if (digest.TopCpuSelfTime is { Count: > 0 } topCpu)
         {
-            sb.Append("- **Top CPU self-time:** ")
+            var label = digest.CpuEvidence?.Kind == CpuSampleEvidenceKind.OsOnCpuSamples
+                ? "Top measured on-CPU self samples"
+                : "Top stack-frequency candidates (CPU state unknown)";
+            sb.Append("- **").Append(label).Append(":** ")
                 .AppendLine(Escape(string.Join(", ", topCpu.Select(m =>
                     FormattableString.Invariant($"{m.Method} ({m.ExclusivePercent:N1}%)")))));
         }
 
         if (digest.TopCpuWaitCategories is { Count: > 0 } topWait)
         {
-            sb.Append("- **Top wait categories:** ")
+            sb.Append("- **Top heuristic wait categories:** ")
                 .AppendLine(Escape(string.Join(", ", topWait.Select(w =>
                     FormattableString.Invariant($"{w.WaitReason} ({w.ExclusivePercent:N1}%)")))));
         }

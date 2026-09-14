@@ -123,7 +123,6 @@ public sealed class EventPipeCpuSampler : ICpuSampler
             // TopHotspots — the true global leaf can sit outside the inclusive top-N on a deep stack.
             // Same ranking the query_snapshot(view="top-methods", rankBy="exclusive") view uses.
             var topSelfTime = CpuSampleAnalytics.TopSelfTime(aggregate.Root, aggregate.Total);
-            var topRunningSelfTime = CpuSampleAnalytics.TopRunningSelfTime(aggregate.Root, aggregate.Total);
             var timings = new CpuSampleTimings(
                 CaptureDuration: captureTimings.TotalDuration,
                 SymbolicationDuration: aggregate.SymbolicationDuration + aggregate.MethodInstantiationResolutionDuration,
@@ -137,14 +136,15 @@ public sealed class EventPipeCpuSampler : ICpuSampler
             };
             var summary = new CpuSample(processId, startedAt, duration, aggregate.Total, aggregate.Hotspots)
             {
+                Evidence = CpuSampleEvidence.EventPipeSampleProfiler,
                 SelfSamples = aggregate.SelfSamples,
                 TopSelfTime = topSelfTime,
-                TopRunningSelfTime = topRunningSelfTime,
                 Timings = timings,
             };
             var relativeTrace = exportPath is null ? null : RelativeToRoot(exportPath);
             var artifact = new CpuSampleTraceArtifact(processId, startedAt, duration, aggregate.Total, aggregate.Root, aggregate.Sources, aggregate.Identities, TracePath: relativeTrace)
             {
+                Evidence = CpuSampleEvidence.EventPipeSampleProfiler,
                 SelfSamples = aggregate.SelfSamples,
             };
             return new CpuSampleResult(summary, artifact);
@@ -273,17 +273,17 @@ public sealed class EventPipeCpuSampler : ICpuSampler
 
             var inclusive = new Dictionary<string, long>(StringComparer.Ordinal);
             var exclusive = new Dictionary<string, long>(StringComparer.Ordinal);
-            var runningExclusive = new Dictionary<string, long>(StringComparer.Ordinal);
+            var unknownExclusive = new Dictionary<string, long>(StringComparer.Ordinal);
             var waitingExclusive = new Dictionary<string, long>(StringComparer.Ordinal);
             var inclusiveByCandidate = new Dictionary<MethodInstantiationCandidate, long>();
             var exclusiveByCandidate = new Dictionary<MethodInstantiationCandidate, long>();
-            var runningExclusiveByCandidate = new Dictionary<MethodInstantiationCandidate, long>();
+            var unknownExclusiveByCandidate = new Dictionary<MethodInstantiationCandidate, long>();
             var waitingExclusiveByCandidate = new Dictionary<MethodInstantiationCandidate, long>();
             var modules = new Dictionary<string, string>(StringComparer.Ordinal);
             var codeAddressByKey = new Dictionary<string, Microsoft.Diagnostics.Tracing.Etlx.TraceCodeAddress>(StringComparer.Ordinal);
             var rootBuilder = new CallTreeBuilder();
             long total = 0;
-            long runningSamples = 0;
+            long unknownSamples = 0;
             long waitingSamples = 0;
             var aggregationStopwatch = Stopwatch.StartNew();
 
@@ -340,14 +340,13 @@ public sealed class EventPipeCpuSampler : ICpuSampler
                 var leafKey = stackFrames[^1].Key;
                 exclusive[leafKey] = exclusive.GetValueOrDefault(leafKey) + 1;
                 var waitMatch = WellKnownWaitFrameClassifier.Classify(stackFrames[^1].Display);
-                var leafSelfSamples = waitMatch is null
-                    ? new SelfSampleBreakdown(1, 0)
-                    : new SelfSampleBreakdown(0, 1);
+                var leafSelfSamples = ClassifyLeafEvidence(stackFrames[^1].Display);
                 if (waitMatch is null)
                 {
-                    runningSamples++;
-                    runningExclusive[leafKey] = runningExclusive.GetValueOrDefault(leafKey) + 1;
+                    unknownSamples++;
+                    unknownExclusive[leafKey] = unknownExclusive.GetValueOrDefault(leafKey) + 1;
                 }
+
                 else
                 {
                     waitingSamples++;
@@ -359,7 +358,7 @@ public sealed class EventPipeCpuSampler : ICpuSampler
                     exclusiveByCandidate[leafCandidate] = exclusiveByCandidate.GetValueOrDefault(leafCandidate) + 1;
                     if (waitMatch is null)
                     {
-                        runningExclusiveByCandidate[leafCandidate] = runningExclusiveByCandidate.GetValueOrDefault(leafCandidate) + 1;
+                        unknownExclusiveByCandidate[leafCandidate] = unknownExclusiveByCandidate.GetValueOrDefault(leafCandidate) + 1;
                     }
                     else
                     {
@@ -409,8 +408,8 @@ public sealed class EventPipeCpuSampler : ICpuSampler
 
             var identityStopwatch = Stopwatch.StartNew();
             var identityMap = BuildMethodIdentities(ranked, modules, codeAddressByKey, sources);
-            var selfSamples = new SelfSampleBreakdown(runningSamples, waitingSamples);
-            var openHotspots = BuildHotspots(ranked, modules, exclusive, runningExclusive, waitingExclusive, identityMap);
+            var selfSamples = new SelfSampleBreakdown(0, waitingSamples, unknownSamples);
+            var openHotspots = BuildHotspots(ranked, modules, exclusive, unknownExclusive, waitingExclusive, identityMap);
             var symbolicationPhaseDuration = symbolicationDuration + identityStopwatch.Elapsed;
             IReadOnlyDictionary<DotnetDiagnostics.Core.Memory.SymbolRef, DotnetDiagnostics.Core.Memory.MethodIdentity> identities = identityMap;
             var hotspots = openHotspots;
@@ -435,7 +434,7 @@ public sealed class EventPipeCpuSampler : ICpuSampler
                         sources,
                         inclusiveByCandidate,
                         exclusiveByCandidate,
-                        runningExclusiveByCandidate,
+                        unknownExclusiveByCandidate,
                         waitingExclusiveByCandidate,
                         resolved,
                         enrichedIdentities,
@@ -466,6 +465,11 @@ public sealed class EventPipeCpuSampler : ICpuSampler
         }
     }
 
+    internal static SelfSampleBreakdown ClassifyLeafEvidence(string methodDisplay)
+        => WellKnownWaitFrameClassifier.Classify(methodDisplay) is null
+            ? new SelfSampleBreakdown(0, 0, 1)
+            : new SelfSampleBreakdown(0, 1, 0);
+
     private static List<MethodInstantiationCandidate> BuildMethodInstantiationCandidates(
         KeyValuePair<string, long>[] ranked,
         Dictionary<string, string> modules,
@@ -488,7 +492,7 @@ public sealed class EventPipeCpuSampler : ICpuSampler
         KeyValuePair<string, long>[] ranked,
         Dictionary<string, string> modules,
         Dictionary<string, long> exclusive,
-        Dictionary<string, long> runningExclusive,
+        Dictionary<string, long> unknownExclusive,
         Dictionary<string, long> waitingExclusive,
         Dictionary<DotnetDiagnostics.Core.Memory.SymbolRef, DotnetDiagnostics.Core.Memory.MethodIdentity> identities)
     {
@@ -504,8 +508,9 @@ public sealed class EventPipeCpuSampler : ICpuSampler
                     Identity: identity)
                 {
                     SelfSamples = new SelfSampleBreakdown(
-                        runningExclusive.GetValueOrDefault(kv.Key),
-                        waitingExclusive.GetValueOrDefault(kv.Key)),
+                        0,
+                        waitingExclusive.GetValueOrDefault(kv.Key),
+                        unknownExclusive.GetValueOrDefault(kv.Key)),
                 };
             })
             .ToList();
@@ -516,7 +521,7 @@ public sealed class EventPipeCpuSampler : ICpuSampler
         IReadOnlyDictionary<DotnetDiagnostics.Core.Memory.SymbolRef, DotnetDiagnostics.Core.Memory.SourceLocation>? openSources,
         IReadOnlyDictionary<MethodInstantiationCandidate, long> inclusiveByCandidate,
         IReadOnlyDictionary<MethodInstantiationCandidate, long> exclusiveByCandidate,
-        IReadOnlyDictionary<MethodInstantiationCandidate, long> runningExclusiveByCandidate,
+        IReadOnlyDictionary<MethodInstantiationCandidate, long> unknownExclusiveByCandidate,
         IReadOnlyDictionary<MethodInstantiationCandidate, long> waitingExclusiveByCandidate,
         IReadOnlyList<ResolvedMethodInstantiation> resolved,
         Dictionary<DotnetDiagnostics.Core.Memory.SymbolRef, DotnetDiagnostics.Core.Memory.MethodIdentity> enrichedIdentities,
@@ -539,13 +544,13 @@ public sealed class EventPipeCpuSampler : ICpuSampler
 
             long resolvedInclusive = 0;
             long resolvedExclusive = 0;
-            long resolvedRunning = 0;
+            long resolvedUnknown = 0;
             long resolvedWaiting = 0;
             foreach (var closedGroup in concreteMatches.GroupBy(item => item.ClosedSymbol))
             {
                 var inclusive = closedGroup.Sum(item => inclusiveByCandidate.GetValueOrDefault(item.Candidate));
                 var exclusive = closedGroup.Sum(item => exclusiveByCandidate.GetValueOrDefault(item.Candidate));
-                var running = closedGroup.Sum(item => runningExclusiveByCandidate.GetValueOrDefault(item.Candidate));
+                var unknown = closedGroup.Sum(item => unknownExclusiveByCandidate.GetValueOrDefault(item.Candidate));
                 var waiting = closedGroup.Sum(item => waitingExclusiveByCandidate.GetValueOrDefault(item.Candidate));
                 if (inclusive == 0)
                 {
@@ -555,7 +560,7 @@ public sealed class EventPipeCpuSampler : ICpuSampler
                 var identity = closedGroup.First().Identity;
                 resolvedInclusive += inclusive;
                 resolvedExclusive += exclusive;
-                resolvedRunning += running;
+                resolvedUnknown += unknown;
                 resolvedWaiting += waiting;
                 enrichedIdentities[closedGroup.Key] = identity;
                 if (openSources is not null && enrichedSources is not null && openSources.TryGetValue(openSymbol, out var source))
@@ -569,13 +574,13 @@ public sealed class EventPipeCpuSampler : ICpuSampler
                     ExclusiveSamples: exclusive,
                     Identity: identity)
                 {
-                    SelfSamples = new SelfSampleBreakdown(running, waiting),
+                    SelfSamples = new SelfSampleBreakdown(0, waiting, unknown),
                 });
             }
 
             var remainingInclusive = openHotspot.InclusiveSamples - resolvedInclusive;
             var remainingExclusive = openHotspot.ExclusiveSamples - resolvedExclusive;
-            var remainingRunning = (openHotspot.SelfSamples?.RunningSamples ?? 0) - resolvedRunning;
+            var remainingUnknown = (openHotspot.SelfSamples?.UnknownSamples ?? 0) - resolvedUnknown;
             var remainingWaiting = (openHotspot.SelfSamples?.WaitingSamples ?? 0) - resolvedWaiting;
             if (remainingInclusive > 0 || remainingExclusive > 0)
             {
@@ -584,8 +589,9 @@ public sealed class EventPipeCpuSampler : ICpuSampler
                     InclusiveSamples = remainingInclusive > 0 ? remainingInclusive : 0,
                     ExclusiveSamples = remainingExclusive > 0 ? remainingExclusive : 0,
                     SelfSamples = new SelfSampleBreakdown(
-                        remainingRunning > 0 ? remainingRunning : 0,
-                        remainingWaiting > 0 ? remainingWaiting : 0),
+                        0,
+                        remainingWaiting > 0 ? remainingWaiting : 0,
+                        remainingUnknown > 0 ? remainingUnknown : 0),
                 });
             }
         }

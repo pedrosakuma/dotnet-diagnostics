@@ -25,7 +25,11 @@ public sealed class SignalsResourceTests
             StartedAt: DateTimeOffset.UtcNow,
             Duration: TimeSpan.FromSeconds(10),
             TotalSamples: 100,
-            Root: root);
+            Root: root)
+        {
+            Evidence = CpuSampleEvidence.LinuxPerfOnCpu,
+            SelfSamples = new SelfSampleBreakdown(100, 0),
+        };
     }
 
     [Fact]

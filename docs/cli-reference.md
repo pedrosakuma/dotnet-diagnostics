@@ -419,7 +419,7 @@ The standalone CLI now exposes the same **Core-only** sampler families the MCP s
 
 | Kind | What it captures | Key flags | Summary shape |
 |---|---|---|---|
-| `cpu` | CPU stack samples via EventPipe SampleProfiler (CoreCLR) or true on-core perf/ETW (NativeAOT/native). CoreCLR's SampleProfiler snapshots managed thread stacks and can therefore include blocked/waiting threads. | `--top`, `--symbol-path`, `--export-trace`, `--resolve-source-lines`, `--resolve-method-instantiations`, `--native-aot-map` | top hotspots by inclusive/exclusive samples, `selfSamples.runningSamples` vs `selfSamples.waitingSamples`, a `timings` breakdown (`captureDuration`, `symbolicationDuration`, `sourceLineResolutionDuration`, `aggregationDuration`, `totalDuration`), plus `signals[]` such as `cpu.self-time.*` when something dominates |
+| `cpu` | CPU stack observations via EventPipe SampleProfiler (CoreCLR) or OS-backed on-CPU perf/ETW sampling (NativeAOT/native). CoreCLR's SampleProfiler can include blocked/waiting threads and does not establish scheduler state. | `--top`, `--symbol-path`, `--export-trace`, `--resolve-source-lines`, `--resolve-method-instantiations`, `--native-aot-map` | evidence metadata; top inclusive/exclusive stack frequencies; `selfSamples.runningSamples` (OS-backed only), `waitingSamples` (heuristic), and `unknownSamples`; timings; and `cpu.self-time.*` signals only for OS-backed evidence |
 | `allocation` | Managed allocation samples (`GCAllocationTick`) with top types by bytes/count and call-tree drilldown. | `--top` | top types by bytes/count, plus `signals[]` such as `allocations.by-type` / `allocations.by-site` |
 | `off_cpu` / `off-cpu` | Off-CPU stacks (where threads wait / block) via perf or ETW backend. Linux keeps system-wide sched_switch DWARF stacks and records target-scoped stackless raw syscalls separately for labels; if the syscall companion fails, stacks still return with an explicit note and no syscall breakdown. `nativeContentionEvidence` reports `confirmed-blocking` only for closed futex/native-sync waits, `probable-blocking` for censored/degraded native-sync evidence, and `none` for ambiguous frames without syscall correlation. | `--top`, `--symbol-path` | top blocking stacks ranked by off-CPU time + native sync evidence classification |
 | `native-alloc` | Native allocator-call hotspots (`malloc` / `calloc` / `realloc`) via perf/ETW backend. Counts are sampled **calls**, not bytes. | `--top`, `--native-alloc-sample-period` | top allocator stacks + shared call-tree handle |
@@ -811,21 +811,23 @@ exposes drilldown views computed from the merged call tree without re-sampling:
 | View | What it shows | Relevant flags |
 | --- | --- | --- |
 | `call-tree` (default) | the merged inclusive/exclusive call tree; CPU handles can also carry `selfSamples` on the view and per node | `--max-depth` (tree depth, default `8`), `--max-nodes` (default `64`; larger requests are clamped to the `64`-node wire cap), `--min-count`, `--root-method-filter`, `--rank-by` |
-| `top-methods` | methods ranked by sample cost; CPU handles include per-method `selfSamples.runningSamples` vs `selfSamples.waitingSamples` | `--top` (default `20`), `--rank-by exclusive\|inclusive`, `--fold-async` (rename async `MoveNext` leaves to their declaring method) |
+| `top-methods` | methods ranked by stack-observation frequency; CPU handles include `evidence` plus per-method `selfSamples.runningSamples` (OS-backed on-CPU), `waitingSamples` (heuristic wait), and `unknownSamples` | `--top` (default `20`), `--rank-by exclusive\|inclusive\|running`, `--fold-async` (rename async `MoveNext` leaves to their declaring method) |
 | `by-module` | samples grouped by owning module | `--top`, `--rank-by` |
 | `by-namespace` | samples grouped by namespace | `--top`, `--rank-by` |
 | `hot-path` | the dominant stack from the root down; CPU handles include per-frame `selfSamples` | `--threshold` (percent, default `50`) |
 | `caller-callee` | a focus method with its direct callers + callees; CPU handles include the focus method's `selfSamples` | `--root-method-filter <substring>` (required), `--top` |
-| `triage` | one round-trip bundle (issue #812): top busy methods (`rank-by=running` order), top wait/noise categories, dominant hot-path leaf, and a `verdict` (`cpu-bound`\|`wait-bound`\|`mixed`\|`unclassified`) | `--top` (default `5`, smaller than the usual `20`), `--threshold` (hot-path leaf, default `50`) |
+| `triage` | one round-trip bundle: measured on-CPU leaders for OS-backed captures, otherwise conservative stack-frequency candidates; heuristic wait categories; dominant hot-path leaf; and an evidence-aware verdict (`on-cpu-observed` or `unclassified`) | `--top` (default `5`, smaller than the usual `20`), `--threshold` (hot-path leaf, default `50`) |
 
 For session ranked views, `--top` is preferred. The older `--top-types` remains a compatibility
 alias; when both are present, `--top` wins.
 
-`--rank-by inclusive` ranks/credits by inclusive samples; any other value (including the default) uses
-exclusive samples. `--fold-async` (issue #811) is opt-in and only affects `top-methods`: it renames a
+`--rank-by inclusive` ranks by inclusive observations; `exclusive` ranks leaf observations.
+`--rank-by running` uses measured on-CPU self samples only for perf/ETW evidence. On CoreCLR
+EventPipe it remains a discoverability ranking over exclusive stack frequency and is explicitly
+labeled as not establishing scheduler state. `--fold-async` (issue #811) is opt-in and only affects `top-methods`: it renames a
 compiler-generated async state-machine `MoveNext` leaf (e.g. `Owner+<Method>d__22.MoveNext()`) to its
-declaring async method name (`Owner.Method() [async]`), so on-CPU work inside an async method's own body
-reads as recognizable user code instead of unfamiliar runtime plumbing; rows include an `asyncFolded`
+declaring async method name (`Owner.Method() [async]`), so the frame reads as recognizable user code;
+this does not turn EventPipe frequency into measured CPU evidence. Rows include an `asyncFolded`
 flag reporting whether a match occurred. `caller-callee` requires `--root-method-filter` to resolve exactly one method: zero matches
 return a `NotFound` envelope, more than one returns `InvalidArgument` with the candidate list.
 
@@ -835,7 +837,7 @@ Rather than a new multi-kind `collect` verb, the `session` REPL surfaces the sam
 "investigation digest" the MCP server's `collect_batch` tool computes (issue #825) **automatically**:
 once both `collect --kind cpu` and `collect --kind allocation` have run against the same bound pid in
 one session (in either order), the next `cpu`/`allocation` collect prints a compact correlated summary
-right after its handle line — the top CPU self-time hotspots, top CPU wait/noise categories, the
+right after its handle line — CPU evidence-aware method candidates, heuristic wait categories, the
 dominant hot-path leaf, and the top allocation types/call sites, in one place instead of two separate
 `query --view triage` / `query --view call-tree` round trips:
 

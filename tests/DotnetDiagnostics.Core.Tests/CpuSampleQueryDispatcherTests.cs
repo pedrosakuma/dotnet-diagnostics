@@ -307,9 +307,9 @@ public class CpuSampleQueryDispatcherTests
     }
 
     [Theory]
-    [InlineData(90, 10, "cpu-bound")]   // 10% waiting < 20% threshold
-    [InlineData(50, 50, "wait-bound")]  // 50% waiting >= 50% threshold
-    [InlineData(70, 30, "mixed")]       // between 20% and 50%
+    [InlineData(90, 10, "on-cpu-observed")]
+    [InlineData(50, 50, "on-cpu-observed")]
+    [InlineData(70, 30, "on-cpu-observed")]
     public void RenderTriage_ClassifiesVerdictFromRunningWaitingSplit(long running, long waiting, string expectedVerdict)
     {
         var leaf = new CallTreeNode(new SampledFrame("App.dll", "Leaf"), running + waiting, running + waiting, Array.Empty<CallTreeNode>())
@@ -319,6 +319,7 @@ public class CpuSampleQueryDispatcherTests
         var root = new CallTreeNode(new SampledFrame(string.Empty, "<root>"), running + waiting, 0, new[] { leaf });
         var artifact = new CpuSampleTraceArtifact(123, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(5), running + waiting, root)
         {
+            Evidence = CpuSampleEvidence.LinuxPerfOnCpu,
             SelfSamples = new SelfSampleBreakdown(running, waiting),
         };
 
@@ -344,7 +345,7 @@ public class CpuSampleQueryDispatcherTests
     {
         var outcome = CpuSampleQueryDispatcher.RenderTriage(ClassifiedTrace(), Handle, topN: 5, hotPathThresholdPercent: 50);
 
-        outcome.Summary.Should().Contain("wait-bound").And.Contain("BurnCpu").And.Contain("ThreadPool worker idle wait");
+        outcome.Summary.Should().Contain("on-cpu-observed").And.Contain("BurnCpu").And.Contain("ThreadPool worker idle wait");
     }
 
     [Fact]
@@ -694,6 +695,7 @@ public class CpuSampleQueryDispatcherTests
         var root = new CallTreeNode(new SampledFrame(string.Empty, "<root>"), 100, 0, new[] { waiting, running });
         return new CpuSampleTraceArtifact(123, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(5), 100, root)
         {
+            Evidence = CpuSampleEvidence.LinuxPerfOnCpu,
             SelfSamples = new SelfSampleBreakdown(40, 60),
         };
     }

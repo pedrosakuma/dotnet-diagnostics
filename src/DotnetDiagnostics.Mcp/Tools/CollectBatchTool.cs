@@ -559,8 +559,8 @@ public sealed record CollectBatchGen2Evidence(
     string Explanation);
 
 /// <summary>
-/// A "first page" cross-collector summary bundling the top CPU self-time hotspots, top CPU
-/// wait/noise categories, dominant hot-path leaf, and top allocation types/call sites — the same
+/// A "first page" cross-collector summary bundling CPU evidence-aware method candidates, heuristic
+/// wait categories, the dominant hot-path leaf, and top allocation types/call sites — the same
 /// evidence an operator would otherwise gather from two or more separate <c>query_snapshot</c>
 /// round trips against the <c>collect_sample(kind="cpu")</c> and/or
 /// <c>collect_sample(kind="allocation")</c> handles in this batch, bundled into one. Each half is
@@ -573,7 +573,11 @@ public sealed record CollectBatchInvestigationDigest(
     HotPathFrame? HotPathLeaf,
     int? HotPathDepth,
     IReadOnlyList<AllocatedType>? TopAllocationTypes,
-    IReadOnlyList<AllocationSite>? TopAllocationCallsites);
+    IReadOnlyList<AllocationSite>? TopAllocationCallsites)
+{
+    public CpuSampleBackend? CpuEvidenceBackend { get; init; }
+    public CpuSampleEvidenceKind? CpuEvidenceKind { get; init; }
+}
 
 /// <param name="Tool">Echoes the request's Tool.</param>
 /// <param name="Kind">Echoes the request's Kind.</param>

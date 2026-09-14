@@ -11,9 +11,9 @@ public sealed record CallTreeNode(
     MethodIdentity? Identity = null)
 {
     /// <summary>
-    /// Optional split of this node's <see cref="ExclusiveSamples"/> into running vs waiting
-    /// observations. Populated for CPU-sample trees; omitted for allocation/native-alloc trees
-    /// that reuse the same call-tree shape.
+    /// Optional evidence split of this node's <see cref="ExclusiveSamples"/> into on-CPU,
+    /// heuristic-wait, and unknown observations. Populated for CPU-sample trees; omitted for
+    /// allocation/native-alloc trees that reuse the same call-tree shape.
     /// </summary>
     public SelfSampleBreakdown? SelfSamples { get; init; }
 }
@@ -59,6 +59,9 @@ public sealed record CallTreeView(
     bool Truncated,
     CallTreeNode Root)
 {
+    public CpuSampleBackend? EvidenceBackend { get; init; }
+    public CpuSampleEvidenceKind? EvidenceKind { get; init; }
+
     /// <summary>
     /// Overall split of sampled leaf/self observations for this call-tree capture, when the
     /// originating artifact carried wait/run classification.
@@ -96,6 +99,9 @@ public sealed record CpuSampleTraceArtifact(
     NativeAotSymbolDemangler.SymbolSource SymbolSource = NativeAotSymbolDemangler.SymbolSource.Unknown,
     string? TracePath = null)
 {
+    /// <summary>Capture-wide backend and scheduler-state semantics. Null means legacy-unknown.</summary>
+    public CpuSampleEvidence? Evidence { get; init; }
+
     public IReadOnlyDictionary<SymbolRef, SourceLocation> ResolvedSources { get; init; }
         = ResolvedSources ?? EmptyResolved;
 

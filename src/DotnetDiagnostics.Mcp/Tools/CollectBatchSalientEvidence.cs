@@ -182,7 +182,11 @@ internal static class CollectBatchSalientEvidence
                 digest.HotPathLeaf,
                 digest.HotPathDepth,
                 digest.TopAllocationTypes,
-                digest.TopAllocationCallsites),
+                digest.TopAllocationCallsites)
+            {
+                CpuEvidenceBackend = digest.CpuEvidence?.Backend,
+                CpuEvidenceKind = digest.CpuEvidence?.Kind,
+            },
         };
     }
 

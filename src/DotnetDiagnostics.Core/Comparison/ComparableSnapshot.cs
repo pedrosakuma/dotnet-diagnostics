@@ -118,4 +118,10 @@ public sealed record ComparableSnapshot(
     /// snapshots, where a missing quality field cannot distinguish ClrMD from legacy gcdump.
     /// </summary>
     public Dump.HeapSnapshotOrigin? HeapOrigin { get; init; }
+
+    /// <summary>
+    /// CPU backend/evidence semantics for <c>cpu-sample</c> projections. Null means the source
+    /// artifact predates the explicit contract and is legacy-unknown.
+    /// </summary>
+    public CpuSampling.CpuSampleEvidence? CpuEvidence { get; init; }
 }

@@ -165,6 +165,7 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
             var topRunningSelfTime = CpuSampleAnalytics.TopRunningSelfTime(stampedRoot, aggregate.Total);
             var summary = new CpuSample(processId, startedAt, duration, aggregate.Total, aggregate.Hotspots)
             {
+                Evidence = CpuSampleEvidence.LinuxPerfOnCpu,
                 SelfSamples = new SelfSampleBreakdown(aggregate.Total, 0),
                 SymbolSource = aggregate.SymbolSource,
                 TopSelfTime = topSelfTime,
@@ -179,6 +180,7 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
             var artifact = new CpuSampleTraceArtifact(
                 processId, startedAt, duration, aggregate.Total, stampedRoot, null, aggregate.Identities, aggregate.SymbolSource)
             {
+                Evidence = CpuSampleEvidence.LinuxPerfOnCpu,
                 SelfSamples = new SelfSampleBreakdown(aggregate.Total, 0),
             };
             return new CpuSampleResult(summary, artifact);

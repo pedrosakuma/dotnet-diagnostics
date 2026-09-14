@@ -179,6 +179,8 @@ public sealed class InvestigationSummaryExporter : IInvestigationSummaryExporter
             TopHotspots: hotspots,
             KeyMetrics: keyMetrics.Values.Count == 0 ? null : keyMetrics.Values)
         {
+            CpuEvidenceBackend = cpuArtifact?.Evidence?.Backend,
+            CpuEvidenceKind = cpuArtifact?.Evidence?.Kind,
             KeyMetricUnits = legacyCpuOnly || keyMetrics.Values.Count == 0
                 ? null
                 : keyMetrics.Units,
@@ -227,6 +229,7 @@ public sealed class InvestigationSummaryExporter : IInvestigationSummaryExporter
                 Inclusive = g.Max(n => n.InclusiveSamples),
                 Running = g.Sum(n => n.SelfSamples?.RunningSamples ?? 0),
                 Waiting = g.Sum(n => n.SelfSamples?.WaitingSamples ?? 0),
+                Unknown = g.Sum(n => n.SelfSamples?.UnknownSamples ?? 0),
                 HasSelfSampleClassification = g.Any(n => n.SelfSamples is not null),
             })
             .OrderByDescending(g => g.Exclusive)
@@ -246,7 +249,7 @@ public sealed class InvestigationSummaryExporter : IInvestigationSummaryExporter
                     Identity: id)
                 {
                     SelfSamples = g.HasSelfSampleClassification
-                        ? new SelfSampleBreakdown(g.Running, g.Waiting)
+                        ? new SelfSampleBreakdown(g.Running, g.Waiting, g.Unknown)
                         : null,
                 };
             })
@@ -674,7 +677,16 @@ public sealed class InvestigationSummaryExporter : IInvestigationSummaryExporter
         }
         if (f.TopHotspots.Count > 0)
         {
-            sb.AppendLine("| # | Method | Module | Incl % | Excl % | Self run/wait | Source | Handoff (mvid · token) |");
+            if (f.CpuEvidenceBackend is { } cpuBackend && f.CpuEvidenceKind is { } cpuKind)
+            {
+                sb.Append("- CPU evidence: `").Append(cpuBackend).Append("` / `")
+                    .Append(cpuKind).AppendLine("`.");
+            }
+            else
+            {
+                sb.AppendLine("- CPU evidence: legacy-unknown; do not interpret running/waiting fields as measured scheduler state.");
+            }
+            sb.AppendLine("| # | Method | Module | Incl % | Excl % | Self on-CPU/heuristic-wait/unknown | Source | Handoff (mvid · token) |");
             sb.AppendLine("|---|---|---|---:|---:|---:|---|---|");
             var i = 1;
             foreach (var h in f.TopHotspots)
@@ -685,7 +697,9 @@ public sealed class InvestigationSummaryExporter : IInvestigationSummaryExporter
                   .Append(h.ExclusivePercent).Append(" | ");
                 if (h.SelfSamples is { } selfSamples)
                 {
-                    sb.Append(selfSamples.RunningSamples).Append('/').Append(selfSamples.WaitingSamples);
+                    sb.Append(selfSamples.RunningSamples).Append('/')
+                        .Append(selfSamples.WaitingSamples).Append('/')
+                        .Append(selfSamples.UnknownSamples);
                 }
                 else
                 {

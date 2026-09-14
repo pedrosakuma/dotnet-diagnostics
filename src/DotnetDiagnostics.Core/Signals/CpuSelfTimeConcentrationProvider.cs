@@ -23,7 +23,8 @@ public sealed class CpuSelfTimeConcentrationProvider : ISignalProvider<CpuSignal
     public IEnumerable<SignalGroup> Detect(CpuSignalContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
-        if (context.TotalSamples <= 0)
+        if (context.TotalSamples <= 0
+            || context.Evidence?.Kind != CpuSampling.CpuSampleEvidenceKind.OsOnCpuSamples)
         {
             yield break;
         }

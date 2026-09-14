@@ -353,6 +353,7 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
 
         var summary = new CpuSample(processId, startedAt, duration, total, hotspots)
         {
+            Evidence = CpuSampleEvidence.WindowsEtwOnCpu,
             SelfSamples = new SelfSampleBreakdown(total, 0),
             TopSelfTime = CpuSampleAnalytics.TopSelfTime(root, total),
             TopRunningSelfTime = CpuSampleAnalytics.TopRunningSelfTime(root, total),
@@ -365,6 +366,7 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
         };
         var artifact = new CpuSampleTraceArtifact(processId, startedAt, duration, total, root, null, null, symbolSource)
         {
+            Evidence = CpuSampleEvidence.WindowsEtwOnCpu,
             SelfSamples = new SelfSampleBreakdown(total, 0),
         };
         return new CpuSampleResult(summary, artifact);

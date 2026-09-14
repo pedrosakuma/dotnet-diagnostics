@@ -75,7 +75,7 @@ public sealed class CollectSampleTool
         ILoggerFactory? loggerFactory = null,
         [Description(
             "Which sampler to run (default 'cpu'): " +
-            "'cpu' (on-CPU SampleProfiler / perf — top managed hotspots with MethodIdentity handoff), " +
+            "'cpu' (CoreCLR EventPipe stack-frequency observations with heuristic wait labels, or OS-backed on-CPU perf/ETW samples for NativeAOT; response evidence metadata identifies the semantics; includes MethodIdentity handoff), " +
             "'off_cpu' (where threads are blocked and for how long — Linux sched_switch via perf, Windows ContextSwitch via NT Kernel Logger), " +
             "'allocation' (managed GCAllocationTick rolled up by type — TypeName is empty on NativeAOT), " +
             "'native-alloc' (unmanaged allocations — Linux uprobes libc malloc/calloc/realloc via perf (needs CAP_SYS_ADMIN); Windows captures NT Kernel Logger VirtualAlloc via ETW (needs admin elevation); sampled call counts, not bytes), " +

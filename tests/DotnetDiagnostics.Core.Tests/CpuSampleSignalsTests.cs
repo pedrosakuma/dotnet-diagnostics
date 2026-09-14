@@ -26,6 +26,7 @@ public sealed class CpuSampleSignalsTests
             TotalSamples: 100,
             TopHotspots: new[] { new Hotspot(new SampledFrame("MyApp.dll", "MyApp.Handler()"), 100, 0) })
         {
+            Evidence = CpuSampleEvidence.LinuxPerfOnCpu,
             TopSelfTime = new Hotspot(new SampledFrame("System.Private.CoreLib.dll", IcuLeaf), 89, 89),
         };
 
@@ -50,6 +51,7 @@ public sealed class CpuSampleSignalsTests
             TotalSamples: 100,
             TopHotspots: new[] { new Hotspot(new SampledFrame("MyApp.dll", "MyApp.Handler()"), 100, 0) })
         {
+            Evidence = CpuSampleEvidence.LinuxPerfOnCpu,
             TopSelfTime = new Hotspot(new SampledFrame("MyApp.dll", "MyApp.Bits()"), 10, 10),
         };
 
@@ -69,6 +71,7 @@ public sealed class CpuSampleSignalsTests
                 SelfSamples = new SelfSampleBreakdown(0, 100),
             } })
         {
+            Evidence = CpuSampleEvidence.LinuxPerfOnCpu,
             SelfSamples = new SelfSampleBreakdown(0, 100),
             TopSelfTime = new Hotspot(new SampledFrame("System.Private.CoreLib.dll", "System.Threading.LowLevelLifoSemaphore.WaitForSignal"), 100, 100)
             {
@@ -99,6 +102,7 @@ public sealed class CpuSampleSignalsTests
                 },
             ])
         {
+            Evidence = CpuSampleEvidence.LinuxPerfOnCpu,
             SelfSamples = new SelfSampleBreakdown(55, 100),
             TopSelfTime = new Hotspot(new SampledFrame("System.Private.CoreLib.dll", "System.Threading.LowLevelLifoSemaphore.WaitForSignal"), 100, 100)
             {
@@ -128,6 +132,7 @@ public sealed class CpuSampleSignalsTests
                 },
             ])
         {
+            Evidence = CpuSampleEvidence.LinuxPerfOnCpu,
             SelfSamples = new SelfSampleBreakdown(40, 100),
             TopSelfTime = new Hotspot(new SampledFrame("System.Private.CoreLib.dll", "System.Threading.LowLevelLifoSemaphore.WaitForSignal"), 100, 100)
             {
@@ -212,7 +217,20 @@ public sealed class CpuSampleSignalsTests
             TotalSamples: total,
             Root: root)
         {
+            Evidence = CpuSampleEvidence.LinuxPerfOnCpu,
             SelfSamples = new SelfSampleBreakdown(total, 0),
         };
+    }
+
+    [Fact]
+    public void EventPipeStackFrequency_DoesNotEmitCpuPerformanceSignals()
+    {
+        var artifact = ArtifactWithLeaves(total: 100, ("MyApp.dll", "MyApp.Worker()", 100)) with
+        {
+            Evidence = CpuSampleEvidence.EventPipeSampleProfiler,
+            SelfSamples = new SelfSampleBreakdown(0, 0, 100),
+        };
+
+        CpuSampleSignals.Detect(artifact, "h").Should().BeEmpty();
     }
 }

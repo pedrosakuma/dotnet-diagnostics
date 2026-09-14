@@ -64,6 +64,29 @@ app.MapGet("/cpu-burn", (int? ms) =>
 })
 .WithName("CpuBurn");
 
+app.MapGet("/cpu-evidence/workers", (int? ms) =>
+{
+    var runMs = Math.Clamp(ms ?? 6_000, 1_000, 15_000);
+    var busy = new Thread(() => BurnCpu(runMs))
+    {
+        IsBackground = true,
+        Name = "evid-busy",
+    };
+    var blocked = new Thread(() =>
+    {
+        using var signal = new ManualResetEventSlim(false);
+        signal.Wait(runMs);
+    })
+    {
+        IsBackground = true,
+        Name = "evid-block",
+    };
+    busy.Start();
+    blocked.Start();
+    return Results.Accepted(value: new { runMs });
+})
+.WithName("CpuEvidenceWorkers");
+
 // Slow regex on user input — classic backtracking blowup.
 app.MapGet("/validate", (string? email) =>
 {

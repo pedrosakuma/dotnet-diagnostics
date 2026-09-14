@@ -75,7 +75,7 @@ public sealed class CliInvestigationDigestTests
         var lines = CliInvestigationDigestFormatter.Render(digest!);
 
         lines.Should().Contain(l => l.Contains("investigation digest", StringComparison.Ordinal));
-        lines.Should().Contain(l => l.Contains("top cpu self-time", StringComparison.Ordinal));
+        lines.Should().Contain(l => l.Contains("top measured on-CPU self samples", StringComparison.Ordinal));
         lines.Should().Contain(l => l.Contains("top allocation types", StringComparison.Ordinal));
     }
 
@@ -123,7 +123,11 @@ public sealed class CliInvestigationDigestTests
         var leafA = new CallTreeNode(new SampledFrame("App.dll", "LeafA"), 40, 40, Array.Empty<CallTreeNode>());
         var leafB = new CallTreeNode(new SampledFrame("App.dll", "LeafB"), 60, 60, Array.Empty<CallTreeNode>());
         var root = new CallTreeNode(new SampledFrame("App.dll", "Root"), 100, 0, new[] { leafA, leafB });
-        return new CpuSampleTraceArtifact(Pid, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(5), 100, root);
+        return new CpuSampleTraceArtifact(Pid, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(5), 100, root)
+        {
+            Evidence = CpuSampleEvidence.LinuxPerfOnCpu,
+            SelfSamples = new SelfSampleBreakdown(100, 0),
+        };
     }
 
     private static AllocationSampleArtifact AllocationArtifact()

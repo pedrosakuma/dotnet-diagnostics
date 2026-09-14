@@ -2,16 +2,78 @@ using System.Text.Json.Serialization;
 
 namespace DotnetDiagnostics.Core.CpuSampling;
 
+/// <summary>The mechanism that produced CPU stack observations.</summary>
+[JsonConverter(typeof(JsonStringEnumConverter<CpuSampleBackend>))]
+public enum CpuSampleBackend
+{
+    LegacyUnknown,
+    EventPipeSampleProfiler,
+    LinuxPerf,
+    WindowsEtw,
+}
+
+/// <summary>The strongest scheduler-state conclusion supported by a CPU sample.</summary>
+[JsonConverter(typeof(JsonStringEnumConverter<CpuSampleEvidenceKind>))]
+public enum CpuSampleEvidenceKind
+{
+    LegacyUnknown,
+    StackFrequencyWithHeuristicWaits,
+    OsOnCpuSamples,
+}
+
+/// <summary>
+/// Capture-wide provenance and scheduler-state semantics for CPU stack observations.
+/// A null value on a deserialized artifact means legacy-unknown and must not be interpreted
+/// as measured on-CPU evidence.
+/// </summary>
+public sealed record CpuSampleEvidence(
+    string Schema,
+    CpuSampleBackend Backend,
+    CpuSampleEvidenceKind Kind,
+    string Observation,
+    IReadOnlyList<string> Limitations)
+{
+    public const string SchemaV1 = "dotnet-diagnostics/cpu-sample-evidence/v1";
+
+    public static CpuSampleEvidence EventPipeSampleProfiler { get; } = new(
+        SchemaV1,
+        CpuSampleBackend.EventPipeSampleProfiler,
+        CpuSampleEvidenceKind.StackFrequencyWithHeuristicWaits,
+        "Periodic EventPipe managed stack observations; sample frequency is not measured CPU time or OS scheduler state.",
+        [
+            "Known wait-frame matches are name-based heuristic indications, not scheduler-confirmed off-CPU observations.",
+            "Unmatched, unresolved, and native leaf frames have unknown scheduler state.",
+        ]);
+
+    public static CpuSampleEvidence LinuxPerfOnCpu { get; } = new(
+        SchemaV1,
+        CpuSampleBackend.LinuxPerf,
+        CpuSampleEvidenceKind.OsOnCpuSamples,
+        "Linux perf on-CPU sampling observations.",
+        ["Sample counts estimate where on-CPU observations occurred; they are not elapsed CPU time."]);
+
+    public static CpuSampleEvidence WindowsEtwOnCpu { get; } = new(
+        SchemaV1,
+        CpuSampleBackend.WindowsEtw,
+        CpuSampleEvidenceKind.OsOnCpuSamples,
+        "Windows kernel ETW profile-interrupt on-CPU observations.",
+        ["Sample counts estimate where on-CPU observations occurred; they are not elapsed CPU time."]);
+}
+
 /// <summary>A single resolved frame within a CPU sample stack.</summary>
 public sealed record SampledFrame(string Module, string Method);
 
 /// <summary>
-/// Split of a method's <em>self/exclusive</em> samples into actively-running vs waiting/blocking
-/// observations. For CoreCLR EventPipe CPU sampling this is a best-effort leaf-frame
-/// classification over managed SampleProfiler stacks; for NativeAOT CPU samplers it reflects
-/// true on-core samples and therefore typically lands entirely in <see cref="RunningSamples"/>.
+/// Split of a method's <em>self/exclusive</em> samples by scheduler-state evidence.
+/// <see cref="RunningSamples"/> is reserved for OS-backed on-CPU observations,
+/// <see cref="WaitingSamples"/> contains name-based wait heuristics, and
+/// <see cref="UnknownSamples"/> preserves observations whose scheduler state is not established.
+/// Use the enclosing capture's <see cref="CpuSampleEvidence"/> before interpreting legacy data.
 /// </summary>
-public sealed record SelfSampleBreakdown(long RunningSamples, long WaitingSamples);
+public sealed record SelfSampleBreakdown(
+    long RunningSamples,
+    long WaitingSamples,
+    long UnknownSamples = 0);
 
 /// <summary>A hotspot is a frame ranked by how often it appeared in CPU samples.</summary>
 public sealed record Hotspot(
@@ -21,9 +83,9 @@ public sealed record Hotspot(
     DotnetDiagnostics.Core.Memory.MethodIdentity? Identity = null)
 {
     /// <summary>
-    /// Optional split of this hotspot's <see cref="ExclusiveSamples"/> into running vs waiting
-    /// observations. Populated for CPU-sample backends; omitted for non-CPU call-tree consumers
-    /// such as allocation/native-alloc drilldowns.
+    /// Optional evidence split of this hotspot's <see cref="ExclusiveSamples"/> into on-CPU,
+    /// heuristic-wait, and unknown observations. Populated for CPU-sample backends; omitted for
+    /// non-CPU call-tree consumers such as allocation/native-alloc drilldowns.
     /// </summary>
     public SelfSampleBreakdown? SelfSamples { get; init; }
 }
@@ -70,10 +132,14 @@ public sealed record CpuSample(
     IReadOnlyList<Hotspot> TopHotspots)
 {
     /// <summary>
-    /// Overall split of sampled leaf/self observations into running vs waiting samples. On CoreCLR
-    /// this reflects well-known wait-frame classification over EventPipe SampleProfiler leaf
-    /// frames; on NativeAOT CPU backends these are true on-core samples and therefore typically
-    /// all running.
+    /// Capture-wide backend and scheduler-state evidence semantics. Null means a legacy artifact
+    /// whose running/waiting fields cannot be assigned stronger semantics safely.
+    /// </summary>
+    public CpuSampleEvidence? Evidence { get; init; }
+
+    /// <summary>
+    /// Overall split of sampled leaf/self observations. Interpret it together with
+    /// <see cref="Evidence"/>; counts always preserve unknown observations.
     /// </summary>
     public SelfSampleBreakdown? SelfSamples { get; init; }
 
@@ -88,22 +154,16 @@ public sealed record CpuSample(
 
     /// <summary>
     /// The single hottest method by <b>self-time</b> (exclusive samples) across the whole merged call
-    /// tree — computed before <see cref="TopHotspots"/> is capped by inclusive rank, so it is the true
-    /// global self-time leader even when it falls outside the inclusive top-N. This is what a CPU
-    /// investigation should lead with: in most server workloads the inclusive top is the invariant
-    /// ThreadPool/dispatch roots, while self-time points at where cycles are actually burned. See
-    /// <see cref="Hotspot.SelfSamples"/> for the running vs waiting split of that self-time on
-    /// CoreCLR EventPipe captures. <c>null</c> when no dominant self-time leaf exists
-    /// (wait-bound / unresolved capture) or the sampler does not compute it (the consumer then
-    /// falls back to the inclusive-ranked hotspots).
+    /// tree — computed before <see cref="TopHotspots"/> is capped by inclusive rank. It identifies
+    /// the most frequent exclusive leaf observation, not necessarily consumed CPU. Interpret it
+    /// with <see cref="Evidence"/> and <see cref="Hotspot.SelfSamples"/>. <c>null</c> when no
+    /// attributable exclusive leaf exists or the sampler does not compute it.
     /// </summary>
     public Hotspot? TopSelfTime { get; init; }
 
     /// <summary>
-    /// Internal-only running-self leader used by CPU signal generation so wait-dominated EventPipe
-    /// captures do not hide the actual running hotspot on the inline path. Kept out of the public
-    /// wire contract because the surfaced per-frame <see cref="Hotspot.SelfSamples"/> already carries
-    /// the user-facing distinction.
+    /// Internal-only measured on-CPU self leader used by CPU signal generation. It is populated
+    /// only when <see cref="Evidence"/> establishes OS-backed on-CPU sampling.
     /// </summary>
     [JsonIgnore]
     public Hotspot? TopRunningSelfTime { get; init; }

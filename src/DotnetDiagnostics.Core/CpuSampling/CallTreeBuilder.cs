@@ -48,6 +48,7 @@ internal sealed class CallTreeBuilder
                 {
                     child.RunningSelf += leafSelfSamples.RunningSamples;
                     child.WaitingSelf += leafSelfSamples.WaitingSamples;
+                    child.UnknownSelf += leafSelfSamples.UnknownSamples;
                 }
             }
             current = child;
@@ -65,8 +66,8 @@ internal sealed class CallTreeBuilder
         return new CallTreeNode(n.Frame, n.Inclusive, n.Exclusive, children)
         {
             Identity = n.Identity,
-            SelfSamples = n.RunningSelf > 0 || n.WaitingSelf > 0
-                ? new SelfSampleBreakdown(n.RunningSelf, n.WaitingSelf)
+            SelfSamples = n.RunningSelf > 0 || n.WaitingSelf > 0 || n.UnknownSelf > 0
+                ? new SelfSampleBreakdown(n.RunningSelf, n.WaitingSelf, n.UnknownSelf)
                 : null,
         };
     }
@@ -85,6 +86,7 @@ internal sealed class CallTreeBuilder
         public long Exclusive;
         public long RunningSelf;
         public long WaitingSelf;
+        public long UnknownSelf;
         public Dictionary<string, Node> Children { get; } = new(StringComparer.Ordinal);
     }
 }

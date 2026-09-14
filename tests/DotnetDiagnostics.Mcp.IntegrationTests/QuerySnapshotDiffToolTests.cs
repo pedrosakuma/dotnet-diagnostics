@@ -105,7 +105,8 @@ public sealed class QuerySnapshotDiffToolTests
 
         result.Error.Should().BeNull();
         result.Summary.Should().Contain("Top hotspot share grew: MyApp.Worker.DoWork");
-        result.Summary.Should().Contain("Waiting/noise share grew");
+        result.Summary.Should().NotContain("Waiting/noise share",
+            "portable CPU comparisons no longer project heuristic wait frequency as a performance metric");
     }
 
     [Fact]
@@ -120,7 +121,7 @@ public sealed class QuerySnapshotDiffToolTests
 
         result.Error.Should().BeNull();
         result.Summary.Should().Contain("Top hotspot share grew: MyApp.Worker.DoWork");
-        result.Summary.Should().Contain("Waiting/noise share grew");
+        result.Summary.Should().NotContain("Waiting/noise share");
     }
 
     [Fact]
@@ -621,7 +622,17 @@ public sealed class QuerySnapshotDiffToolTests
             rows.Select(row => new ComparableRow(
                 new ComparableKey("cpu-sample", row.id),
                 row.id,
-                [new MetricValue(new MetricDefinition("exclusivePercent", MetricRole.Primary, BetterDirection.Lower, MetricAggregation.Point, MetricNormalization.None, "%"), row.value)])).ToArray());
+                [new MetricValue(new MetricDefinition("exclusivePercent", MetricRole.Primary, BetterDirection.Lower, MetricAggregation.Point, MetricNormalization.None, "%"), row.value)])).ToArray(),
+            Quality: new EvidenceQuality(
+                EvidenceQuality.SchemaV1,
+                [],
+                new EvidenceConclusionPolicy(
+                    EvidenceConclusionSupport.Supported,
+                    EvidenceConclusionSupport.Supported,
+                    EvidenceConclusionSupport.Supported)))
+        {
+            CpuEvidence = CpuSampleEvidence.LinuxPerfOnCpu,
+        };
 
     private static CpuSampleTraceArtifact CpuArtifact(long exclusiveSamples, long? runningSamples = null, long? waitingSamples = null)
         => new(
@@ -635,6 +646,7 @@ public sealed class QuerySnapshotDiffToolTests
                 0,
                 [new CallTreeNode(new SampledFrame("MyApp.dll", "MyApp.Worker.DoWork"), exclusiveSamples, exclusiveSamples, Array.Empty<CallTreeNode>())]))
         {
+            Evidence = CpuSampleEvidence.LinuxPerfOnCpu,
             SelfSamples = runningSamples is null && waitingSamples is null
                 ? null
                 : new SelfSampleBreakdown(runningSamples ?? 0, waitingSamples ?? 0),
@@ -654,7 +666,11 @@ public sealed class QuerySnapshotDiffToolTests
                 0,
                 methods
                     .Select(m => (CallTreeNode)new CallTreeNode(new SampledFrame("MyApp.dll", m.method), m.exclusiveSamples, m.exclusiveSamples, Array.Empty<CallTreeNode>()))
-                    .ToArray()));
+                    .ToArray()))
+        {
+            Evidence = CpuSampleEvidence.LinuxPerfOnCpu,
+            SelfSamples = new SelfSampleBreakdown(methods.Sum(static method => method.exclusiveSamples), 0),
+        };
 
     private static HeapSnapshotArtifact HeapSnapshot(params (string typeName, long bytes, long instances)[] rows)
     {

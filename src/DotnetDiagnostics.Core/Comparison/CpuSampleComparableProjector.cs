@@ -64,7 +64,11 @@ public static class CpuSampleComparableProjection
             CapturedAt: snapshot.StartedAt,
             ProcessId: snapshot.ProcessId,
             Metrics: metrics,
-            Rows: rows);
+            Rows: rows,
+            Quality: CpuEvidenceQuality(snapshot.Evidence))
+        {
+            CpuEvidence = snapshot.Evidence,
+        };
     }
 
     private static MetricValue[] ProjectSelfSampleMetrics(CpuSampleTraceArtifact artifact)
@@ -75,41 +79,30 @@ public static class CpuSampleComparableProjection
         }
 
         var totalSamples = artifact.TotalSamples == 0 ? 1 : artifact.TotalSamples;
-        return
-        [
-            Metric(
-                "waitingSelfPercent",
-                MetricRole.Primary,
-                BetterDirection.Lower,
-                MetricAggregation.Percent,
-                MetricNormalization.SampleCount,
-                "%",
-                100.0 * selfSamples.WaitingSamples / totalSamples),
-            Metric(
-                "runningSelfPercent",
-                MetricRole.Context,
-                BetterDirection.Neutral,
-                MetricAggregation.Percent,
-                MetricNormalization.SampleCount,
-                "%",
-                100.0 * selfSamples.RunningSamples / totalSamples),
-            Metric(
-                "waitingSelfSamples",
-                MetricRole.Context,
-                BetterDirection.Neutral,
-                MetricAggregation.Total,
-                MetricNormalization.None,
-                "samples",
-                selfSamples.WaitingSamples),
-            Metric(
-                "runningSelfSamples",
-                MetricRole.Context,
-                BetterDirection.Neutral,
-                MetricAggregation.Total,
-                MetricNormalization.None,
-                "samples",
-                selfSamples.RunningSamples),
-        ];
+        var metrics = new List<MetricValue>();
+        if (artifact.Evidence?.Kind == CpuSampleEvidenceKind.OsOnCpuSamples)
+        {
+            metrics.Add(Metric("onCpuSelfPercent", MetricRole.Primary, BetterDirection.Lower,
+                MetricAggregation.Percent, MetricNormalization.SampleCount, "%",
+                100.0 * selfSamples.RunningSamples / totalSamples));
+            metrics.Add(Metric("onCpuSelfSamples", MetricRole.Context, BetterDirection.Neutral,
+                MetricAggregation.Total, MetricNormalization.None, "samples", selfSamples.RunningSamples));
+        }
+        else
+        {
+            metrics.Add(Metric("heuristicWaitSelfPercent", MetricRole.Context, BetterDirection.Neutral,
+                MetricAggregation.Percent, MetricNormalization.SampleCount, "%",
+                100.0 * selfSamples.WaitingSamples / totalSamples));
+            metrics.Add(Metric("heuristicWaitSelfSamples", MetricRole.Context, BetterDirection.Neutral,
+                MetricAggregation.Total, MetricNormalization.None, "samples", selfSamples.WaitingSamples));
+        }
+
+        metrics.Add(Metric("unknownStateSelfPercent", MetricRole.Context, BetterDirection.Neutral,
+            MetricAggregation.Percent, MetricNormalization.SampleCount, "%",
+            100.0 * selfSamples.UnknownSamples / totalSamples));
+        metrics.Add(Metric("unknownStateSelfSamples", MetricRole.Context, BetterDirection.Neutral,
+            MetricAggregation.Total, MetricNormalization.None, "samples", selfSamples.UnknownSamples));
+        return metrics.ToArray();
     }
 
     private static ComparableRow[] ProjectRows(CpuSampleTraceArtifact artifact, string kind)
@@ -124,14 +117,17 @@ public static class CpuSampleComparableProjection
                 var exclusivePercent = 100.0 * row.ExclusiveSamples / totalSamples;
                 var metrics = new List<MetricValue>
                 {
-                    Metric("exclusivePercent", MetricRole.Primary, BetterDirection.Lower, MetricAggregation.Percent, MetricNormalization.SampleCount, "%", exclusivePercent),
-                    Metric("exclusiveSamples", MetricRole.Secondary, BetterDirection.Lower, MetricAggregation.Total, MetricNormalization.None, "samples", row.ExclusiveSamples),
+                    Metric("exclusivePercent",
+                        artifact.Evidence?.Kind == CpuSampleEvidenceKind.OsOnCpuSamples ? MetricRole.Primary : MetricRole.Context,
+                        artifact.Evidence?.Kind == CpuSampleEvidenceKind.OsOnCpuSamples ? BetterDirection.Lower : BetterDirection.Neutral,
+                        MetricAggregation.Percent, MetricNormalization.SampleCount, "%", exclusivePercent),
+                    Metric("exclusiveSamples", MetricRole.Context, BetterDirection.Neutral, MetricAggregation.Total, MetricNormalization.None, "samples", row.ExclusiveSamples),
                     Metric("inclusiveSamples", MetricRole.Context, BetterDirection.Neutral, MetricAggregation.Total, MetricNormalization.None, "samples", row.InclusiveSamples),
                 };
                 if (row.HasSelfSampleClassification)
                 {
                     metrics.Add(Metric(
-                        "runningExclusiveSamples",
+                        "onCpuExclusiveSamples",
                         MetricRole.Context,
                         BetterDirection.Neutral,
                         MetricAggregation.Total,
@@ -139,13 +135,21 @@ public static class CpuSampleComparableProjection
                         "samples",
                         row.RunningExclusiveSamples));
                     metrics.Add(Metric(
-                        "waitingExclusiveSamples",
-                        MetricRole.Secondary,
-                        BetterDirection.Lower,
+                        "heuristicWaitExclusiveSamples",
+                        MetricRole.Context,
+                        BetterDirection.Neutral,
                         MetricAggregation.Total,
                         MetricNormalization.None,
                         "samples",
                         row.WaitingExclusiveSamples));
+                    metrics.Add(Metric(
+                        "unknownStateExclusiveSamples",
+                        MetricRole.Context,
+                        BetterDirection.Neutral,
+                        MetricAggregation.Total,
+                        MetricNormalization.None,
+                        "samples",
+                        row.UnknownExclusiveSamples));
                 }
 
                 return new ComparableRow(row.Key, row.DisplayName, metrics);
@@ -201,6 +205,7 @@ public static class CpuSampleComparableProjection
                     InclusiveSamples = Math.Max(existing.InclusiveSamples, node.InclusiveSamples),
                     RunningExclusiveSamples = existing.RunningExclusiveSamples + (selfSamples?.RunningSamples ?? 0),
                     WaitingExclusiveSamples = existing.WaitingExclusiveSamples + (selfSamples?.WaitingSamples ?? 0),
+                    UnknownExclusiveSamples = existing.UnknownExclusiveSamples + (selfSamples?.UnknownSamples ?? 0),
                     HasSelfSampleClassification = existing.HasSelfSampleClassification || selfSamples is not null,
                 };
                 continue;
@@ -215,6 +220,7 @@ public static class CpuSampleComparableProjection
                 node.InclusiveSamples,
                 selfSamples?.RunningSamples ?? 0,
                 selfSamples?.WaitingSamples ?? 0,
+                selfSamples?.UnknownSamples ?? 0,
                 selfSamples is not null);
         }
 
@@ -255,5 +261,29 @@ public static class CpuSampleComparableProjection
         long InclusiveSamples,
         long RunningExclusiveSamples,
         long WaitingExclusiveSamples,
+        long UnknownExclusiveSamples,
         bool HasSelfSampleClassification);
+
+    private static Evidence.EvidenceQuality CpuEvidenceQuality(CpuSampleEvidence? evidence)
+    {
+        var support = evidence?.Kind == CpuSampleEvidenceKind.OsOnCpuSamples
+            ? Evidence.EvidenceConclusionSupport.Supported
+            : Evidence.EvidenceConclusionSupport.NotEstablished;
+        var limitations = evidence is null
+            ? Evidence.EvidenceQuality.LegacyUnknown.Limitations
+            : evidence.Limitations.Select(detail => new Evidence.EvidenceLimitation(
+                Evidence.EvidenceLimitationCategory.Inference,
+                "cpu-scheduler-state",
+                null,
+                detail)).ToArray();
+        return new Evidence.EvidenceQuality(
+            Evidence.EvidenceQuality.SchemaV1,
+            limitations,
+            new Evidence.EvidenceConclusionPolicy(
+                evidence?.Kind == CpuSampleEvidenceKind.OsOnCpuSamples
+                    ? Evidence.EvidenceConclusionSupport.Supported
+                    : Evidence.EvidenceConclusionSupport.NotEstablished,
+                Evidence.EvidenceConclusionSupport.Inconclusive,
+                support));
+    }
 }

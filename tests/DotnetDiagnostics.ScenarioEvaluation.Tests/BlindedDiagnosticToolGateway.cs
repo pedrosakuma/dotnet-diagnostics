@@ -248,6 +248,7 @@ internal sealed class BlindedDiagnosticToolGateway(
             ["exclusiveSamples"] = hotspot.ExclusiveSamples,
             ["runningSelfSamples"] = hotspot.SelfSamples?.RunningSamples,
             ["waitingSelfSamples"] = hotspot.SelfSamples?.WaitingSamples,
+            ["unknownSelfSamples"] = hotspot.SelfSamples?.UnknownSamples,
         }).ToArray();
         return EvidenceEnvelope(
             "collect_sample/cpu",
@@ -265,7 +266,10 @@ internal sealed class BlindedDiagnosticToolGateway(
                         ["exclusiveSamples"] = sample.Summary.TopSelfTime.ExclusiveSamples,
                         ["runningSelfSamples"] = sample.Summary.TopSelfTime.SelfSamples?.RunningSamples,
                         ["waitingSelfSamples"] = sample.Summary.TopSelfTime.SelfSamples?.WaitingSamples,
+                        ["unknownSelfSamples"] = sample.Summary.TopSelfTime.SelfSamples?.UnknownSamples,
                     },
+                ["evidenceBackend"] = sample.Summary.Evidence?.Backend.ToString(),
+                ["evidenceKind"] = sample.Summary.Evidence?.Kind.ToString(),
                 ["hotspots"] = new JsonArray(hotspots),
                 ["signals"] = new JsonArray(CpuSampleSignals.Detect(sample.Artifact, "live").Select(SignalNode).ToArray()),
                 ["omittedHotspotCount"] = 0,

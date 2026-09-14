@@ -56,12 +56,15 @@ internal static class CliInvestigationDigestFormatter
 
         if (digest.TopCpuSelfTime is { Count: > 0 } topCpu)
         {
-            lines.Add("    top cpu self-time: " + string.Join(", ", topCpu.Select(FormatMethodStat)));
+            var label = digest.CpuEvidence?.Kind == CpuSampleEvidenceKind.OsOnCpuSamples
+                ? "top measured on-CPU self samples"
+                : "top stack-frequency candidates (CPU state unknown)";
+            lines.Add($"    {label}: " + string.Join(", ", topCpu.Select(FormatMethodStat)));
         }
 
         if (digest.TopCpuWaitCategories is { Count: > 0 } topWait)
         {
-            lines.Add("    top wait categories: " + string.Join(", ", topWait.Select(FormatWaitStat)));
+            lines.Add("    top heuristic wait categories: " + string.Join(", ", topWait.Select(FormatWaitStat)));
         }
 
         if (digest.HotPathLeaf is { } leaf)
