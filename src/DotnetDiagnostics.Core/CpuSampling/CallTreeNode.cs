@@ -114,6 +114,9 @@ public sealed record CpuSampleTraceArtifact(
     /// </summary>
     public SelfSampleBreakdown? SelfSamples { get; init; }
 
+    /// <summary>Bounded capture and symbol-resolution degradation notes.</summary>
+    public IReadOnlyList<string> Notes { get; init; } = [];
+
     private static readonly IReadOnlyDictionary<SymbolRef, SourceLocation> EmptyResolved
         = new Dictionary<SymbolRef, SourceLocation>();
 

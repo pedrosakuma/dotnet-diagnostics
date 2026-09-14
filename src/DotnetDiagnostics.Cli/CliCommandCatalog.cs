@@ -29,7 +29,7 @@ internal static class CliCommandCatalog
     [
         "-p", "--pid", "--kind", "-d", "--duration", "--depth", "--max-events", "--interval",
         "--provider", "--meter", "--source", "--category", "--min-level", "--save", "--dump-file",
-        "--top-types", "--retention-path-limit", "--symbol-path", "--native-aot-map", "--dump-type", "--out", "--mvid",
+        "--top-types", "--retention-path-limit", "--symbol-path", "--native-aot-map", "--cpu-backend", "--dump-type", "--out", "--mvid",
         "--asset", "--handle", "--latest-of-kind", "--view", "--trace-id", "--provider-filter", "--root-method-filter", "--rank-by",
         "--type-filter", "--address", "--offset", "--cursor", "--max-depth", "--max-nodes", "--thread-id",
         "--native-alloc-sample-period", "--native-lock-contention-sample-period", "--max-frames-per-thread", "--watch",
@@ -42,6 +42,7 @@ internal static class CliCommandCatalog
     ];
 
     public static readonly IReadOnlyList<string> DepthValues = ["summary", "detail", "raw"];
+    public static readonly IReadOnlyList<string> CpuBackendValues = ["automatic", "eventpipe", "os"];
     public static readonly IReadOnlyList<string> CompareModes = ["trend", "dispersion"];
     public static readonly IReadOnlyList<string> AcknowledgementValues = ["high", "critical"];
 
@@ -193,6 +194,8 @@ collect options:
       --no-resolve-source-lines cpu: disable source file:line resolution.
       --resolve-method-instantiations
                                 cpu: opt in to ClrMD generic-instantiation enrichment.
+      --cpu-backend <backend>   cpu: automatic (default), eventpipe, or os. The os backend requires
+                                perf on Linux or elevated ETW profiling on Windows.
       --native-alloc-sample-period <int>
                                 native-alloc: perf sample period (default 1000).
       --native-lock-contention-sample-period <int>
@@ -258,6 +261,7 @@ collect options:
                 "--resolve-source-lines",
                 "--no-resolve-source-lines",
                 "--resolve-method-instantiations",
+                "--cpu-backend",
                 "--native-alloc-sample-period",
                 "--native-lock-contention-sample-period",
                 "--dump-file",

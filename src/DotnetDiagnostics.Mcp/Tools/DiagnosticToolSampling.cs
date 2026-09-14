@@ -41,6 +41,8 @@ internal static class DiagnosticToolSampling
         [Description("If true, performs an opt-in ClrMD attach after sampling to recover closed generic instantiations for the hottest managed frames (displayed on MethodIdentity as ClosedSignature + GenericTypeArguments.Method). CoreCLR only. On Linux this requires CAP_SYS_PTRACE (or ptrace_scope=0) and briefly suspends the target during the attach. Defaults to false to keep the EventPipe-only path lightweight.")] bool resolveMethodInstantiations = false,
         [Description("Cap on how many top hotspots get ClrMD generic-instantiation enrichment. Must be >= 1. Defaults to the requested topN so the enrichment work stays bounded to the hottest frames.")] int? maxResolvedMethodInstantiations = null,
         [Description("NativeAOT only. Filesystem path to the ILC '*.map.xml' map file produced by publishing with <IlcGenerateMapFile>true</IlcGenerateMapFile> (ilc --map). When supplied, the perf-based AOT sampler emits a name-based MethodIdentity (TypeFullName + MethodName; MVID/metadata token stay null) for hot managed methods so the dotnet-native-mcp 'disassemble this hot AOT function' handoff works. Ignored on CoreCLR. The path is a hint only — the consumer must verify the artifact before loading it.")] string? nativeAotMapFile = null,
+        [Description("Automatic (default): EventPipe for CoreCLR, OS for NativeAOT. EventPipe requires CoreCLR; Os requires Linux perf or Windows ETW. Explicit modes never fall back; response evidence identifies scheduler semantics.")]
+        CpuSamplingMode cpuBackend = CpuSamplingMode.Automatic,
         [Description("Verbosity (summary|detail|raw). Default 'summary' returns the top-3 hotspots inline. 'detail' returns the requested topN (default 25). 'raw' is equivalent to detail. The full sample is always retained behind the issued handle — drill in with query_snapshot(view='call-tree').")]
         SamplingDepth depth = SamplingDepth.Summary,
         [Description("If true, persists the raw .nettrace under the artifact root and returns its relative path so it can be fetched with get_bytes(kind='trace') for offline PerfView/Speedscope/Perfetto analysis. Defaults to false (the trace is parsed then deleted).")] bool exportTrace = false,
@@ -50,6 +52,16 @@ internal static class DiagnosticToolSampling
     {
         if (durationSeconds < 1) return InvalidArg<CpuSample>(nameof(durationSeconds), "must be >= 1");
         if (topN < 1) return InvalidArg<CpuSample>(nameof(topN), "must be >= 1");
+        if (cpuBackend == CpuSamplingMode.Os && exportTrace)
+        {
+            return InvalidArg<CpuSample>(nameof(exportTrace), "is supported only by the EventPipe CPU backend");
+        }
+        if (cpuBackend == CpuSamplingMode.Os && resolveMethodInstantiations)
+        {
+            return InvalidArg<CpuSample>(
+                nameof(resolveMethodInstantiations),
+                "is supported only by the EventPipe CPU backend");
+        }
         var effectiveMaxResolved = maxResolvedSources ?? topN;
         if (effectiveMaxResolved < 1) return InvalidArg<CpuSample>(nameof(maxResolvedSources), "must be >= 1");
         var effectiveMaxResolvedInstantiations = maxResolvedMethodInstantiations ?? topN;
@@ -84,7 +96,7 @@ internal static class DiagnosticToolSampling
                 "collect_sample(kind=\"cpu\")",
                 TimeSpan.FromSeconds(durationSeconds),
                 TimeSpan.FromSeconds(1),
-                ct => sampler.SampleAsync(pid, TimeSpan.FromSeconds(durationSeconds), topN, srcOpts, instantiationOpts, nativeAotOpts, exportTrace, ct),
+                ct => sampler.SampleAsync(pid, TimeSpan.FromSeconds(durationSeconds), topN, srcOpts, instantiationOpts, nativeAotOpts, exportTrace, cpuBackend, ct),
                 cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -98,6 +110,14 @@ internal static class DiagnosticToolSampling
                     Cancelled = true,
                 },
                 ctx);
+        }
+        catch (CpuSamplingUnavailableException ex)
+        {
+            return DiagnosticResult.Fail<CpuSample>(
+                ex.Message,
+                new DiagnosticError(ex.ErrorKind, ex.Message, ex.GetType().FullName),
+                new NextActionHint("inspect_process", "Check capability matrix to confirm what's available for this process.",
+                    new Dictionary<string, object?> { ["processId"] = pid }));
         }
         catch (InvalidOperationException ex) when (ex.Message.Contains("elevation", StringComparison.OrdinalIgnoreCase) ||
                                                     ex.Message.Contains("privilege", StringComparison.OrdinalIgnoreCase) ||

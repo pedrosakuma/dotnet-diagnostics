@@ -1626,6 +1626,99 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         }
     }
 
+    [Fact]
+    public async Task JitMapEmitter_TracksMethodsLoadedDuringCaptureWindow()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+        EnsureSampleRunning();
+        var baseUrl = await EnsureListeningUrlAsync(TimeSpan.FromSeconds(30));
+
+        using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
+        var emitter = new DotnetDiagnostics.Core.OffCpu.JitMapEmitter();
+        var result = await emitter.CaptureAsync(
+            Pid,
+            async cancellationToken =>
+            {
+                using var response = await http.GetAsync(
+                    "/generics?iterations=200000",
+                    cancellationToken);
+                response.EnsureSuccessStatusCode();
+            },
+            rundownTimeout: TimeSpan.FromSeconds(5));
+
+        result.Should().NotBeNull();
+        try
+        {
+            result!.DroppedMethodCount.Should().Be(0);
+            result.Methods.Should().Contain(
+                method => method.DisplayName.Contains("GenericFixture", StringComparison.Ordinal)
+                          || method.DisplayName.Contains("Box", StringComparison.Ordinal),
+                "live MethodLoad events and final rundown must cover methods JITted during the capture callback");
+        }
+        finally
+        {
+            if (result is not null)
+            {
+                try { File.Delete(result.MapPath); } catch { /* best effort */ }
+            }
+        }
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task RoutingCpuSampler_OsMode_CapturesManagedBusyWorker_WhenPerfIsAvailable()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+        EnsureSampleRunning();
+        var baseUrl = await EnsureListeningUrlAsync(TimeSpan.FromSeconds(30));
+
+        var perf = new PerfNativeAotCpuSampler();
+        var capabilities = new CapabilityDetector(perfSampler: perf);
+        var detected = await capabilities.DetectAsync(Pid);
+        if (!detected.CanSampleOsCpu)
+        {
+            return;
+        }
+
+        using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
+        using var response = await http.GetAsync("/cpu-evidence/workers?ms=10000");
+        response.EnsureSuccessStatusCode();
+
+        var sampler = new RoutingCpuSampler(
+            capabilities,
+            new EventPipeCpuSampler(),
+            perf,
+            new EtwNativeAotCpuSampler());
+        var result = await sampler.SampleAsync(
+            Pid,
+            TimeSpan.FromSeconds(6),
+            topN: 25,
+            sourceResolution: null,
+            methodInstantiationResolution: null,
+            nativeAotSymbols: null,
+            exportTrace: false,
+            CpuSamplingMode.Os);
+
+        result.Summary.Evidence.Should().Be(CpuSampleEvidence.LinuxPerfOnCpu);
+        result.Summary.TotalSamples.Should().BeGreaterThan(0);
+        result.Summary.SelfSamples.Should().Be(
+            new SelfSampleBreakdown(result.Summary.TotalSamples, 0, 0));
+        var resolvedManagedFrame = result.Summary.TopHotspots.Any(hotspot => hotspot.Identity != null);
+        var reportedDegradation = result.Summary.Notes.Any(
+            note => note.Contains("JIT frame symbolization", StringComparison.Ordinal));
+        (resolvedManagedFrame || reportedDegradation).Should().BeTrue(
+            "CoreCLR perf symbol coverage must either resolve a managed frame or report degraded coverage explicitly");
+        result.Summary.TopHotspots.Should().NotContain(
+            hotspot => hotspot.Frame.Method.Contains("Wait", StringComparison.Ordinal)
+                       && hotspot.ExclusiveSamples > 0,
+            "the blocked managed worker must not be relabelled as on-CPU evidence");
+    }
+
     [Fact(Timeout = 60_000)]
     public async Task JitCapture_DumpsHotspotBytesToDisk()
     {

@@ -75,7 +75,7 @@ public sealed class CollectSampleTool
         ILoggerFactory? loggerFactory = null,
         [Description(
             "Which sampler to run (default 'cpu'): " +
-            "'cpu' (CoreCLR EventPipe stack-frequency observations with heuristic wait labels, or OS-backed on-CPU perf/ETW samples for NativeAOT; response evidence metadata identifies the semantics; includes MethodIdentity handoff), " +
+            "'cpu' (CPU stack observations; evidence metadata identifies scheduler semantics), " +
             "'off_cpu' (where threads are blocked and for how long — Linux sched_switch via perf, Windows ContextSwitch via NT Kernel Logger), " +
             "'allocation' (managed GCAllocationTick rolled up by type — TypeName is empty on NativeAOT), " +
             "'native-alloc' (unmanaged allocations — Linux uprobes libc malloc/calloc/realloc via perf (needs CAP_SYS_ADMIN); Windows captures NT Kernel Logger VirtualAlloc via ETW (needs admin elevation); sampled call counts, not bytes), " +
@@ -109,12 +109,14 @@ public sealed class CollectSampleTool
         bool resolveSourceLines = true,
         [Description("kind='cpu' only. Cap on how many top hotspots get source-resolved. Must be >= 1. Defaults to the requested topN so every emitted MethodIdentity carries its resolved SourceLocation when available.")]
         int? maxResolvedSources = null,
-        [Description("kind='cpu' only. If true, performs an opt-in ClrMD attach after sampling to recover closed generic instantiations for the hottest managed frames. CoreCLR only. On Linux requires CAP_SYS_PTRACE (or ptrace_scope=0) and briefly suspends the target. Defaults to false.")]
+        [Description("kind='cpu' only. Resolve hot closed generics through a post-sample ClrMD attach. CoreCLR only; Linux requires ptrace permission. Default false.")]
         bool resolveMethodInstantiations = false,
         [Description("kind='cpu' only. Cap on how many top hotspots get ClrMD generic-instantiation enrichment. Must be >= 1. Defaults to the requested topN.")]
         int? maxResolvedMethodInstantiations = null,
-        [Description("kind='cpu' on NativeAOT only. Filesystem path to the ILC '*.map.xml' map file (publish with <IlcGenerateMapFile>true</IlcGenerateMapFile>). Enables a name-based MethodIdentity (TypeFullName + MethodName; MVID/token null) for hot managed AOT methods so the dotnet-native-mcp disassembly handoff works. Ignored on CoreCLR and by other kinds. Path is a hint only.")]
+        [Description("kind='cpu' NativeAOT only. Optional ILC '*.map.xml' path for name-based managed MethodIdentity handoff.")]
         string? nativeAotMapFile = null,
+        [Description("kind='cpu' only. Automatic (default), EventPipe, or Os (perf/ETW). Explicit modes never fall back.")]
+        CpuSamplingMode cpuBackend = CpuSamplingMode.Automatic,
         [Description("kind='cpu' only. If true, persists the raw .nettrace under the artifact root and returns its relative path so it can be fetched with get_bytes(kind='trace') for offline PerfView/Speedscope/Perfetto analysis. Defaults to false.")]
         bool exportTrace = false,
         [Description("kind='native-alloc' on Linux only. perf sample period — record one callchain per this many allocator hits. Must be >= 1. Defaults to 1000. Higher reduces overhead and resolution; throttles recorded samples but not the per-call uprobe trap cost. Ignored by the Windows ETW VirtualAlloc backend, which records every allocation.")]
@@ -151,6 +153,7 @@ public sealed class CollectSampleTool
                     resolveMethodInstantiations,
                     maxResolvedMethodInstantiations,
                     nativeAotMapFile,
+                    cpuBackend,
                     depth,
                     exportTrace,
                     deprecation,

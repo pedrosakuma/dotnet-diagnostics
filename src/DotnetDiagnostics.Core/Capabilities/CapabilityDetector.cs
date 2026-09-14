@@ -64,6 +64,15 @@ public sealed class CapabilityDetector : ICapabilityDetector
         var perfHost = PerfHostProbe.Detect();
         var perfAvailable = _perfSampler is not null && _perfSampler.IsAvailable();
         var etwAvailable = _etwSampler is not null && _etwSampler.IsAvailable();
+        var canSampleOsCpu = OperatingSystem.IsLinux()
+            ? perfAvailable
+              && (perfHost.HasCapPerfmon
+                  || perfHost.HasCapSysAdmin
+                  || perfHost.PerfEventParanoid is null or <= 2)
+            : etwAvailable;
+        var osCpuSource = canSampleOsCpu
+            ? (OperatingSystem.IsLinux() ? "linux-perf" : OperatingSystem.IsWindows() ? "windows-etw" : null)
+            : null;
         var canSampleOffCpu = OperatingSystem.IsLinux()
             ? _offCpuSampler is not null && _offCpuSampler.IsAvailable() && perfHost.CanTraceSchedSwitch
             : _offCpuSampler is not null && _offCpuSampler.IsAvailable();
@@ -104,7 +113,7 @@ public sealed class CapabilityDetector : ICapabilityDetector
         // otherwise from the SampleProfiler probe itself) we can sample CPU. NativeAOT
         // relies on an out-of-process sampler (perf on Linux, ETW on Windows).
         var canSampleCpu = (runtime == RuntimeFlavor.CoreClr) ||
-                           (runtime == RuntimeFlavor.NativeAot && (perfAvailable || etwAvailable));
+                           (runtime == RuntimeFlavor.NativeAot && canSampleOsCpu);
         // gcdump (the EventPipe GCHeapSnapshot dump) is CoreCLR-only. On NativeAOT .NET 10, requesting
         // the GCHeapSnapshot keyword crashes the target (the runtime segfaults mid-handshake and the
         // process exits — reproduced on SDK 10.0.201), so the capability is deliberately withheld rather
@@ -167,6 +176,8 @@ public sealed class CapabilityDetector : ICapabilityDetector
             EtwKernelOk = etwAvailable,
             CanSampleCpuEfficiency = canSampleCpuEfficiency,
             CpuEfficiencySource = cpuEfficiencySource,
+            CanSampleOsCpu = canSampleOsCpu,
+            OsCpuSource = osCpuSource,
         };
     }
 

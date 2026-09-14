@@ -836,6 +836,9 @@ whether it's worth attempting the collection first: `InContainer`, `CgroupV2`,
 `CanSeeThrottle` (true iff a quota is configured → throttling is observable),
 `PsiAvailable`, `PerfInstalled`, `HasCapPerfmon`, `PerfEventParanoid`,
 `HasCapSysPtrace`, `PtraceScope` and `EtwKernelOk`. It also exposes
+`CanSampleOsCpu` plus `OsCpuSource` (`linux-perf` or `windows-etw`) for the
+explicit OS-backed CPU mode, independently of the accessible CoreCLR EventPipe
+path. It also exposes
 **`CanSampleOffCpu`** — true when the sidecar already meets the backend's
 prerequisites (Linux: perf + sufficient privilege for `sched_switch`; Windows:
 elevated process). When false, `Notes` carries the concrete hint for the reason before
@@ -1982,16 +1985,31 @@ and also includes `http.server.request.duration` p95 when available.
 Captures a CPU sample and aggregates the top-N hotspots by inclusive and exclusive
 sample counts. The backend is runtime-specific:
 
-- **CoreCLR (Linux + Windows)** — EventPipe `Microsoft-DotNETCore-SampleProfiler`.
+- **CoreCLR (Linux + Windows, default)** — EventPipe
+  `Microsoft-DotNETCore-SampleProfiler`.
   This periodically samples **managed thread stacks** at a fixed interval; it does
   **not** distinguish whether that managed thread was actually scheduled on a CPU
   core at the instant it was sampled. Wait/blocking primitives can therefore
   dominate the self-time ranking. The result records recognized wait names as
   heuristic `waitingSamples` and all other leaves as `unknownSamples`;
   `runningSamples` remains zero.
+- **CoreCLR (`cpuBackend=Os`, explicit)** — Linux `perf` or Windows ETW kernel
+  sampled-profile backends. These are true on-core profilers. Linux keeps a
+  bounded EventPipe JIT/loader session active around the perf window and requests
+  final rundown so pre-existing, late-loaded, and tier-recompiled methods can be
+  resolved. Reused/overlapping code ranges are omitted rather than assigned an
+  unsafe identity. Windows records CLR JIT/loader/rundown events in the same ETL
+  clock domain as profile interrupts. Unresolved frames remain valid on-CPU
+  observations and are reported in `notes`.
 - **NativeAOT** — Linux `perf` or Windows ETW sampled-profile backends. These are
   true on-core profilers; their `selfSamples` usually land entirely in
   `runningSamples`.
+
+`Automatic` is the default: EventPipe for CoreCLR and the OS backend required by
+NativeAOT. Explicit `EventPipe` or `Os` selection never falls back to another
+evidence source. Missing runtime support, tooling, or privilege is returned as a
+structured `UnsupportedRuntime`, `UnsupportedPrerequisite`, `UnsupportedPlatform`,
+or `PermissionDenied` failure.
 
 When a CoreCLR capture is wait-heavy, follow up with `collect_sample(kind="off_cpu")`
 or `collect_thread_snapshot` for direct blocking analysis rather than treating the
@@ -2009,7 +2027,12 @@ wait frame itself as the CPU bottleneck.
 | `maxResolvedSources` | `int?` | `topN` | Cap on how many hotspots get source resolution. |
 | `resolveMethodInstantiations` | `bool` | `false` | Opt-in ClrMD attach after sampling to recover closed generic method signatures for the hottest managed frames. CoreCLR only; on Linux requires kernel ptrace permission (prefer sidecar `CAP_SYS_PTRACE`; see [Linux runtime requirements](#linux-runtime-requirements)) and briefly suspends the target. |
 | `maxResolvedMethodInstantiations` | `int?` | `topN` | Cap on how many hotspots get ClrMD generic-instantiation enrichment. |
+| `cpuBackend` | `CpuSamplingMode` | `Automatic` | `Automatic`, `EventPipe`, or `Os`. `Os` requires perf on Linux or elevated kernel ETW profiling on Windows and never falls back to EventPipe. |
 | `depth` | `SamplingDepth` | `Summary` | `Summary` returns the top 3 hotspots inline; `Detail` / `Raw` return the requested `topN`. |
+
+`exportTrace=true` and `resolveMethodInstantiations=true` are EventPipe-only and
+are rejected with `InvalidArgument` when `cpuBackend=Os`; the OS backends never
+silently ignore them.
 
 **Returns:** `CpuSample`:
 
@@ -2019,9 +2042,14 @@ wait frame itself as the CPU bottleneck.
   "startedAt": "2026-05-18T20:00:00Z",
   "duration": "00:00:10",
   "totalSamples": 4218,
+  "evidence": {
+    "backend": "EventPipeSampleProfiler",
+    "kind": "StackFrequencyWithHeuristicWaits"
+  },
   "selfSamples": {
-    "runningSamples": 2974,
-    "waitingSamples": 1244
+    "runningSamples": 0,
+    "waitingSamples": 1244,
+    "unknownSamples": 2974
   },
   "timings": {
     "captureDuration": "00:00:10.8420000",
@@ -2039,8 +2067,9 @@ wait frame itself as the CPU bottleneck.
       "inclusiveSamples": 1820,
       "exclusiveSamples": 320,
       "selfSamples": {
-        "runningSamples": 301,
-        "waitingSamples": 19
+        "runningSamples": 0,
+        "waitingSamples": 19,
+        "unknownSamples": 301
       }
     }
   ],
@@ -2067,17 +2096,19 @@ wait frame itself as the CPU bottleneck.
 
 `selfSamples` is the **self/exclusive-time** split, not a second inclusive ranking:
 
-- `runningSamples` — self samples whose leaf frame did **not** match a known
-  wait/blocking primitive.
+- `runningSamples` — self samples established by perf/ETW profile interrupts as
+  OS-backed on-CPU observations. This remains zero for EventPipe captures.
 - `waitingSamples` — self samples whose leaf frame matched a known wait/blocking
   primitive such as `Monitor.Wait`, `WaitHandle.Wait*`, `LowLevelLifoSemaphore.*`,
   `SemaphoreSlim.Wait*`, `Task.Wait`, or ThreadPool idle-wait frames.
+- `unknownSamples` — EventPipe leaf observations whose scheduler state is not
+  established, including unmatched, native, and unresolved leaves.
 
-On CoreCLR this is a best-effort interpretation of SampleProfiler leaf frames; on
-NativeAOT CPU backends it reflects genuine on-core samples and therefore usually
-lands entirely in `runningSamples`.
+On the default CoreCLR backend, wait matches are heuristic and all other leaves
+remain unknown. On OS-backed CPU backends the profile interrupt establishes
+on-core state independently of whether managed/native symbols resolve.
 
-`symbolSource` is populated for **NativeAOT** samples only (see #35) and
+`symbolSource` is populated for **OS-backed perf/ETW** samples (see #35) and
 reports the aggregate symbol-resolution quality of `topHotspots`:
 
 - `ElfDemangled` — every managed frame went through the demangler. Trust the
@@ -2089,8 +2120,9 @@ reports the aggregate symbol-resolution quality of `topHotspots`:
 - `Stripped` — perf returned `[unknown]` or raw addresses; names are not
   actionable. Likely missing build-id / PDB on the host.
 - `Mixed` — quality varies across `topHotspots`. Inspect per-frame.
-- `Unknown` / omitted — CoreCLR sample (the EventPipe path resolves managed
-  names directly; this field does not apply).
+- `Unknown` / omitted — commonly a CoreCLR EventPipe sample (that path resolves
+  managed names directly; this field does not apply), or an OS-backed capture
+  with no classifiable frames.
 
 **Signals.** CPU samples are reduced into ranked, diagnosis-agnostic
 [signal groupings](#signal-grouping-layer) surfaced in the envelope's `signals[]`:

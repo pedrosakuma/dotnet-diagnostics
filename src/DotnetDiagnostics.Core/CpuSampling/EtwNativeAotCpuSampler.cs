@@ -4,6 +4,7 @@ using Microsoft.Diagnostics.Symbols;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
 using Microsoft.Diagnostics.Tracing.Parsers;
+using Microsoft.Diagnostics.Tracing.Parsers.Clr;
 using Microsoft.Diagnostics.Tracing.Parsers.Kernel;
 using Microsoft.Diagnostics.Tracing.Session;
 using DotnetDiagnostics.Core.Etw;
@@ -37,6 +38,8 @@ namespace DotnetDiagnostics.Core.CpuSampling;
 /// </remarks>
 public sealed class EtwNativeAotCpuSampler : ICpuSampler
 {
+    private const ulong ClrJitAndLoaderKeywords = 0x10 | 0x8;
+    private const ulong ClrRundownJitLoaderAndStartKeywords = 0x10 | 0x8 | 0x40;
     private static readonly SemaphoreSlim s_etwGate = new(1, 1);
     private readonly ILogger<EtwNativeAotCpuSampler> _logger;
     private readonly SymbolPathBuilder _symbolPathBuilder;
@@ -174,6 +177,18 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
             var stackKeywords = KernelTraceEventParser.Keywords.Profile;
 
             session.EnableKernelProvider(keywords, stackKeywords);
+            // Kernel profile interrupts establish on-CPU state. CLR method load plus rundown
+            // events only enrich addresses with managed names; they do not change that evidence.
+            // Keeping both providers in the same ETL gives TraceLog one clock/domain for methods
+            // loaded or tier-recompiled before and during the capture.
+            session.EnableProvider(
+                ClrTraceEventParser.ProviderGuid,
+                TraceEventLevel.Verbose,
+                ClrJitAndLoaderKeywords);
+            session.EnableProvider(
+                ClrRundownTraceEventParser.ProviderGuid,
+                TraceEventLevel.Verbose,
+                ClrRundownJitLoaderAndStartKeywords);
             _logger.LogDebug("ETW session '{Session}' started for pid {Pid}, capturing for {Duration}s.",
                 sessionName, 0, duration.TotalSeconds);
 
@@ -256,6 +271,8 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
         var modules = new Dictionary<string, string>(StringComparer.Ordinal);
         var builder = new CallTreeBuilder();
         long total = 0;
+        long resolvedFrames = 0;
+        long unresolvedFrames = 0;
 
         // Resolve symbols for modules loaded in our target process.
         if (symbolPath is not null)
@@ -287,6 +304,14 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
             {
                 var moduleName = current.CodeAddress?.ModuleFile?.Name ?? string.Empty;
                 var methodName = ResolveMethodName(current);
+                if (IsResolvedMethodName(methodName))
+                {
+                    resolvedFrames++;
+                }
+                else
+                {
+                    unresolvedFrames++;
+                }
                 var key = string.IsNullOrEmpty(moduleName) ? methodName : moduleName + "!" + methodName;
                 frames.Add((key, moduleName, methodName));
                 modules.TryAdd(key, moduleName);
@@ -350,6 +375,13 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
             : hasResolved
                 ? NativeAotSymbolDemangler.SymbolSource.PdbResolved
                 : NativeAotSymbolDemangler.SymbolSource.Stripped;
+        var notes = new List<string>();
+        if (unresolvedFrames > 0)
+        {
+            notes.Add(
+                $"Windows ETW resolved {resolvedFrames:N0} sampled frame(s); {unresolvedFrames:N0} frame(s) remained raw addresses or unknown. " +
+                "Unresolved symbol state does not weaken the kernel on-CPU evidence.");
+        }
 
         var summary = new CpuSample(processId, startedAt, duration, total, hotspots)
         {
@@ -357,6 +389,7 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
             SelfSamples = new SelfSampleBreakdown(total, 0),
             TopSelfTime = CpuSampleAnalytics.TopSelfTime(root, total),
             TopRunningSelfTime = CpuSampleAnalytics.TopRunningSelfTime(root, total),
+            Notes = notes,
             Timings = new CpuSampleTimings(
                 CaptureDuration: TimeSpan.Zero,
                 SymbolicationDuration: TimeSpan.Zero,
@@ -368,6 +401,7 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
         {
             Evidence = CpuSampleEvidence.WindowsEtwOnCpu,
             SelfSamples = new SelfSampleBreakdown(total, 0),
+            Notes = notes,
         };
         return new CpuSampleResult(summary, artifact);
     }
@@ -398,6 +432,11 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
 
         return $"[0x{codeAddress.Address:X}]";
     }
+
+    private static bool IsResolvedMethodName(string methodName)
+        => !methodName.StartsWith("0x", StringComparison.Ordinal)
+           && !methodName.StartsWith("[0x", StringComparison.Ordinal)
+           && !string.Equals(methodName, "[unknown]", StringComparison.Ordinal);
 
     private static void TryDelete(string path)
     {

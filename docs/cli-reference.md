@@ -419,7 +419,7 @@ The standalone CLI now exposes the same **Core-only** sampler families the MCP s
 
 | Kind | What it captures | Key flags | Summary shape |
 |---|---|---|---|
-| `cpu` | CPU stack observations via EventPipe SampleProfiler (CoreCLR) or OS-backed on-CPU perf/ETW sampling (NativeAOT/native). CoreCLR's SampleProfiler can include blocked/waiting threads and does not establish scheduler state. | `--top`, `--symbol-path`, `--export-trace`, `--resolve-source-lines`, `--resolve-method-instantiations`, `--native-aot-map` | evidence metadata; top inclusive/exclusive stack frequencies; `selfSamples.runningSamples` (OS-backed only), `waitingSamples` (heuristic), and `unknownSamples`; timings; and `cpu.self-time.*` signals only for OS-backed evidence |
+| `cpu` | CPU stack observations via EventPipe SampleProfiler (CoreCLR default) or explicit OS-backed on-CPU perf/ETW sampling (`--cpu-backend os`; required automatically for NativeAOT). Explicit backend selection never falls back. CoreCLR's SampleProfiler can include blocked/waiting threads and does not establish scheduler state. | `--top`, `--cpu-backend`, `--symbol-path`, `--export-trace`, `--resolve-source-lines`, `--resolve-method-instantiations`, `--native-aot-map` | evidence metadata; top inclusive/exclusive stack frequencies; `selfSamples.runningSamples` (OS-backed only), `waitingSamples` (heuristic), and `unknownSamples`; symbol-degradation notes; timings; and `cpu.self-time.*` signals only for OS-backed evidence |
 | `allocation` | Managed allocation samples (`GCAllocationTick`) with top types by bytes/count and call-tree drilldown. | `--top` | top types by bytes/count, plus `signals[]` such as `allocations.by-type` / `allocations.by-site` |
 | `off_cpu` / `off-cpu` | Off-CPU stacks (where threads wait / block) via perf or ETW backend. Linux keeps system-wide sched_switch DWARF stacks and records target-scoped stackless raw syscalls separately for labels; if the syscall companion fails, stacks still return with an explicit note and no syscall breakdown. `nativeContentionEvidence` reports `confirmed-blocking` only for closed futex/native-sync waits, `probable-blocking` for censored/degraded native-sync evidence, and `none` for ambiguous frames without syscall correlation. | `--top`, `--symbol-path` | top blocking stacks ranked by off-CPU time + native sync evidence classification |
 | `native-alloc` | Native allocator-call hotspots (`malloc` / `calloc` / `realloc`) via perf/ETW backend. Counts are sampled **calls**, not bytes. | `--top`, `--native-alloc-sample-period` | top allocator stacks + shared call-tree handle |
@@ -432,6 +432,9 @@ Examples:
 ```bash
 # CPU hotspots + raw trace for offline PerfView / Speedscope:
 dotnet-diagnostics-cli collect --kind cpu --pid 1234 --top 20 --export-trace
+
+# Genuine on-CPU CoreCLR evidence (requires perf access on Linux or elevated ETW on Windows):
+dotnet-diagnostics-cli collect --kind cpu --pid 1234 --cpu-backend os --top 20
 
 # Managed allocation pressure:
 dotnet-diagnostics-cli collect --kind allocation --pid 1234 --top 15 --json
@@ -449,6 +452,9 @@ dotnet-diagnostics-cli collect --kind native-lock-contention --pid 1234 --native
 dotnet-diagnostics-cli collect --kind thread-snapshot --pid 1234 --max-frames-per-thread 128 --acknowledge-risk high
 dotnet-diagnostics-cli collect --kind thread-snapshot --dump-file ./app.dmp --include-runtime-frames
 ```
+
+`--export-trace` and `--resolve-method-instantiations` are EventPipe-only. The CLI
+rejects either option with `--cpu-backend os` rather than silently ignoring it.
 
 > **Cold-start capture (`--suspend-startup`).** `collect --kind startup` attaching to an
 > already-running pid only sees loader/DI activity emitted *after* attach — the initial cold start

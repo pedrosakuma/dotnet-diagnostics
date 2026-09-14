@@ -100,6 +100,10 @@ internal static class CliCompletionScripts
                     COMPREPLY=( $(compgen -W "{{BashWords(CliCommandCatalog.DepthValues)}}" -- "$cur") )
                     return 0
                     ;;
+                --cpu-backend)
+                    COMPREPLY=( $(compgen -W "{{BashWords(CliCommandCatalog.CpuBackendValues)}}" -- "$cur") )
+                    return 0
+                    ;;
                 --mode)
                     COMPREPLY=( $(compgen -W "{{BashWords(CliCommandCatalog.CompareModes)}}" -- "$cur") )
                     return 0
@@ -183,6 +187,10 @@ internal static class CliCompletionScripts
                     ;;
                 --depth)
                     _describe -t depths 'depth' '({{string.Join(' ', CliCommandCatalog.DepthValues)}})'
+                    return
+                    ;;
+                --cpu-backend)
+                    _describe -t cpu-backends 'cpu backend' '({{string.Join(' ', CliCommandCatalog.CpuBackendValues)}})'
                     return
                     ;;
                 --mode)
@@ -278,6 +286,7 @@ internal static class CliCompletionScripts
                 '--dump-type' { $dumpTypes; break }
                 '--asset' { $byteAssets; break }
                 '--depth' { {{PwshArray(CliCommandCatalog.DepthValues)}}; break }
+                '--cpu-backend' { {{PwshArray(CliCommandCatalog.CpuBackendValues)}}; break }
                 '--mode' { {{PwshArray(CliCommandCatalog.CompareModes)}}; break }
                 default {
                     if ($valueFlags -contains $previous) {

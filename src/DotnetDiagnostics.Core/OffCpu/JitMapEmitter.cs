@@ -41,6 +41,8 @@ namespace DotnetDiagnostics.Core.OffCpu;
 /// </remarks>
 public sealed class JitMapEmitter
 {
+    internal const int MaxTrackedMethods = 200_000;
+    internal const int MaxTrackedModules = 4_096;
     private const string RuntimeProvider = "Microsoft-Windows-DotNETRuntime";
     // Jit (0x10) | Loader (0x8). NgenKeyword (0x4) would also surface AOT/R2R methods but
     // perf already resolves R2R native code via the assembly's own ELF symbols on Linux.
@@ -74,7 +76,25 @@ public sealed class JitMapEmitter
         int processId,
         TimeSpan? rundownTimeout = null,
         CancellationToken cancellationToken = default)
+        => await CaptureAsync(
+            processId,
+            static _ => Task.CompletedTask,
+            rundownTimeout,
+            cancellationToken).ConfigureAwait(false);
+
+    /// <summary>
+    /// Tracks live method loads while <paramref name="capture"/> runs, then requests rundown and
+    /// emits one bounded map containing both pre-existing and late-loaded/tiered method bodies.
+    /// Ambiguous reused/overlapping code ranges are omitted rather than assigned a potentially
+    /// false managed identity.
+    /// </summary>
+    public async Task<JitMapResult?> CaptureAsync(
+        int processId,
+        Func<CancellationToken, Task> capture,
+        TimeSpan? rundownTimeout = null,
+        CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(capture);
         var timeout = rundownTimeout ?? TimeSpan.FromSeconds(2);
         var providers = new[]
         {
@@ -89,9 +109,14 @@ public sealed class JitMapEmitter
                 .StartEventPipeSessionWithTimeoutAsync(providers, requestRundown: true, circularBufferMB: 64, TimeSpan.FromSeconds(30), cancellationToken)
                 .ConfigureAwait(false);
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             _logger.LogDebug(ex, "JitMapEmitter: could not open EventPipe session for pid {Pid}.", processId);
+            await capture(cancellationToken).ConfigureAwait(false);
             return null;
         }
 
@@ -99,6 +124,9 @@ public sealed class JitMapEmitter
         var modulePaths = new ConcurrentDictionary<long, string>();
         // Pending records held until ModuleDCStop arrives so we can resolve the module path.
         var pending = new ConcurrentBag<PendingJitMethod>();
+        var trackedMethodCount = 0;
+        var droppedMethodCount = 0;
+        var droppedModuleCount = 0;
 
         var processingTask = Task.Run(() =>
         {
@@ -109,11 +137,7 @@ public sealed class JitMapEmitter
                 source.Clr.MethodLoadVerbose += data => Record(data);
                 source.Clr.LoaderModuleLoad += data =>
                 {
-                    var path = data.ModuleILPath;
-                    if (!string.IsNullOrEmpty(path))
-                    {
-                        modulePaths[data.ModuleID] = path;
-                    }
+                    RecordModule(data.ModuleID, data.ModuleILPath);
                 };
 
                 // DC (data-collection / rundown) events fire on StopAsync for every method /
@@ -122,11 +146,7 @@ public sealed class JitMapEmitter
                 rundown.MethodDCStopVerbose += data => Record(data);
                 rundown.LoaderModuleDCStop += data =>
                 {
-                    var path = data.ModuleILPath;
-                    if (!string.IsNullOrEmpty(path))
-                    {
-                        modulePaths[data.ModuleID] = path;
-                    }
+                    RecordModule(data.ModuleID, data.ModuleILPath);
                 };
 
                 source.Process();
@@ -137,6 +157,12 @@ public sealed class JitMapEmitter
                     {
                         return;
                     }
+                    if (Interlocked.Increment(ref trackedMethodCount) > MaxTrackedMethods)
+                    {
+                        Interlocked.Increment(ref droppedMethodCount);
+                        return;
+                    }
+
                     pending.Add(new PendingJitMethod(
                         StartAddress: (ulong)data.MethodStartAddress,
                         Size: (uint)data.MethodSize,
@@ -144,6 +170,28 @@ public sealed class JitMapEmitter
                         Token: data.MethodToken,
                         TypeName: data.MethodNamespace ?? string.Empty,
                         MethodName: data.MethodName ?? string.Empty));
+                }
+
+                void RecordModule(long moduleId, string? path)
+                {
+                    if (string.IsNullOrEmpty(path))
+                    {
+                        return;
+                    }
+
+                    if (modulePaths.ContainsKey(moduleId))
+                    {
+                        modulePaths[moduleId] = path;
+                        return;
+                    }
+
+                    if (modulePaths.Count >= MaxTrackedModules)
+                    {
+                        droppedModuleCount++;
+                        return;
+                    }
+
+                    modulePaths[moduleId] = path;
                 }
             }
             catch (Exception ex)
@@ -154,23 +202,33 @@ public sealed class JitMapEmitter
 
         try
         {
-            // Rundown is synchronous on StopAsync — events drain into the pump above.
             try
             {
-                await EventPipeSessionShutdown.StopAndDrainAsync(
-                    session,
-                    processingTask,
-                    ex => _logger.LogDebug(ex, "JitMapEmitter: EventPipe shutdown failed for pid {Pid}.", processId),
-                    timeout).ConfigureAwait(false);
+                await capture(cancellationToken).ConfigureAwait(false);
             }
-            catch (TimeoutException)
+            finally
             {
-                // Internal guard timeout fired — the pump still has whatever rundown drained so far;
-                // emit a partial map rather than failing the whole off-CPU window.
-                _logger.LogDebug(
-                    "JitMapEmitter: rundown shutdown exceeded {TimeoutMs}ms for pid {Pid}; emitting partial map.",
-                    timeout.TotalMilliseconds, processId);
+                // Rundown is synchronous on StopAsync — events drain into the pump above.
+                try
+                {
+                    await EventPipeSessionShutdown.StopAndDrainAsync(
+                        session,
+                        processingTask,
+                        ex => _logger.LogDebug(ex, "JitMapEmitter: EventPipe shutdown failed for pid {Pid}.", processId),
+                        timeout).ConfigureAwait(false);
+                }
+                catch (TimeoutException)
+                {
+                    _logger.LogDebug(
+                        "JitMapEmitter: rundown shutdown exceeded {TimeoutMs}ms for pid {Pid}; emitting partial map.",
+                        timeout.TotalMilliseconds, processId);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "JitMapEmitter: shutdown failed for pid {Pid}; emitting the methods captured so far.", processId);
+                }
             }
+
             cancellationToken.ThrowIfCancellationRequested();
         }
         finally
@@ -179,16 +237,32 @@ public sealed class JitMapEmitter
         }
 
         var mapPath = Path.Combine(Path.GetTempPath(), $"perf-{processId}.map");
-        var methods = WriteMap(mapPath, pending, modulePaths);
+        List<JitMapRange> methods;
+        int ambiguousMethodCount;
+        try
+        {
+            (methods, ambiguousMethodCount) = WriteMap(mapPath, pending, modulePaths);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "JitMapEmitter: could not write the captured JIT map for pid {Pid}.", processId);
+            return null;
+        }
         if (methods.Count == 0)
         {
             _logger.LogDebug("JitMapEmitter: rundown returned no methods for pid {Pid}.", processId);
         }
 
-        return new JitMapResult(mapPath, methods, methods.Count);
+        return new JitMapResult(
+            mapPath,
+            methods,
+            methods.Count,
+            DroppedMethodCount: droppedMethodCount,
+            AmbiguousMethodCount: ambiguousMethodCount,
+            DroppedModuleCount: droppedModuleCount);
     }
 
-    private List<JitMapRange> WriteMap(
+    private (List<JitMapRange> Methods, int AmbiguousMethodCount) WriteMap(
         string mapPath,
         IEnumerable<PendingJitMethod> methods,
         ConcurrentDictionary<long, string> modulePaths)
@@ -199,14 +273,22 @@ public sealed class JitMapEmitter
             .Where(m => m.StartAddress != 0 && m.Size > 0)
             .OrderBy(m => m.StartAddress)
             .ThenBy(m => m.Size)
+            .Distinct()
             .ToList();
 
+        var ambiguous = FindAmbiguousRanges(ordered);
         var ranges = new List<JitMapRange>(ordered.Count);
         using var stream = OpenMapFileSecure(mapPath);
         using var writer = new StreamWriter(stream, Encoding.UTF8);
 
-        foreach (var m in ordered)
+        for (var index = 0; index < ordered.Count; index++)
         {
+            if (ambiguous.Contains(index))
+            {
+                continue;
+            }
+
+            var m = ordered[index];
             var symbol = FormatSymbol(m.TypeName, m.MethodName);
             writer.Write(m.StartAddress.ToString("x", CultureInfo.InvariantCulture));
             writer.Write(' ');
@@ -236,7 +318,35 @@ public sealed class JitMapEmitter
             ranges.Add(new JitMapRange(m.StartAddress, (uint)m.Size, identity, symbol));
         }
 
-        return ranges;
+        return (ranges, ambiguous.Count);
+    }
+
+    private static HashSet<int> FindAmbiguousRanges(IReadOnlyList<PendingJitMethod> methods)
+    {
+        var ambiguous = new HashSet<int>();
+        var clusterStart = 0;
+        while (clusterStart < methods.Count)
+        {
+            var clusterEnd = clusterStart + 1;
+            var maxEnd = methods[clusterStart].EndExclusive;
+            while (clusterEnd < methods.Count && methods[clusterEnd].StartAddress < maxEnd)
+            {
+                maxEnd = Math.Max(maxEnd, methods[clusterEnd].EndExclusive);
+                clusterEnd++;
+            }
+
+            if (clusterEnd - clusterStart > 1)
+            {
+                for (var index = clusterStart; index < clusterEnd; index++)
+                {
+                    ambiguous.Add(index);
+                }
+            }
+
+            clusterStart = clusterEnd;
+        }
+
+        return ambiguous;
     }
 
     private static string FormatSymbol(string typeName, string methodName)
@@ -301,7 +411,13 @@ public sealed class JitMapEmitter
         long ModuleId,
         long Token,
         string TypeName,
-        string MethodName);
+        string MethodName)
+    {
+        public ulong EndExclusive =>
+            ulong.MaxValue - StartAddress < Size
+                ? ulong.MaxValue
+                : StartAddress + Size;
+    }
 }
 
 /// <summary>
@@ -315,7 +431,10 @@ public sealed class JitMapEmitter
 public sealed record JitMapResult(
     string MapPath,
     IReadOnlyList<JitMapRange> Methods,
-    int MethodCount)
+    int MethodCount,
+    int DroppedMethodCount = 0,
+    int AmbiguousMethodCount = 0,
+    int DroppedModuleCount = 0)
 {
     private ulong[]? _prefixMaxEndExclusive;
 
