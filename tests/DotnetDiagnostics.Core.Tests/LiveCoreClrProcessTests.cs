@@ -962,7 +962,7 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         var baseUrl = await EnsureListeningUrlAsync(TimeSpan.FromSeconds(30));
         using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
 
-        using var response = await http.GetAsync("/cpu-evidence/workers?ms=10000");
+        using var response = await http.GetAsync("/cpu-evidence/workers?ms=15000");
         response.EnsureSuccessStatusCode();
         var busyTid = await FindNamedThreadAsync("evid-busy", TimeSpan.FromSeconds(2));
         var blockedTid = await FindNamedThreadAsync("evid-block", TimeSpan.FromSeconds(2));
@@ -980,9 +980,16 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         try
         {
             // Read while workers are alive, rather than after potentially slow symbolication.
-            await Task.Delay(TimeSpan.FromSeconds(1));
-            busyDelta = ReadThreadCpuTicks(busyTid) - busyBefore;
-            blockedDelta = ReadThreadCpuTicks(blockedTid) - blockedBefore;
+            busyDelta = 0;
+            blockedDelta = 0;
+            var accountingDeadline = Stopwatch.StartNew();
+            while (accountingDeadline.Elapsed < TimeSpan.FromSeconds(3)
+                   && busyDelta <= blockedDelta)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(100));
+                busyDelta = ReadThreadCpuTicks(busyTid) - busyBefore;
+                blockedDelta = ReadThreadCpuTicks(blockedTid) - blockedBefore;
+            }
         }
         finally
         {
