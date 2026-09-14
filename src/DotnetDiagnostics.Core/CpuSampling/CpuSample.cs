@@ -143,11 +143,14 @@ public sealed record CpuSample(
     /// </summary>
     public SelfSampleBreakdown? SelfSamples { get; init; }
 
+    /// <summary>Bounded capture and symbol-resolution degradation notes.</summary>
+    public IReadOnlyList<string> Notes { get; init; } = [];
+
     /// <summary>
     /// Aggregate symbol-resolution quality of <see cref="TopHotspots"/>. Always populated for
-    /// NativeAOT samples by <c>PerfNativeAotCpuSampler</c>; <c>null</c> for CoreCLR samples
-    /// since the EventPipe path resolves managed methods via TraceEvent and the concept does
-    /// not apply uniformly. See #29 / #35 — surfacing this avoids forcing the consumer to
+    /// OS-backed samples by the perf/ETW samplers; <c>null</c> for CoreCLR EventPipe samples
+    /// since that path resolves managed methods via TraceEvent and the concept does not apply
+    /// uniformly. See #29 / #35 — surfacing this avoids forcing the consumer to
     /// drill into the trace artifact just to know whether demangling succeeded.
     /// </summary>
     public NativeAotSymbolDemangler.SymbolSource? SymbolSource { get; init; }

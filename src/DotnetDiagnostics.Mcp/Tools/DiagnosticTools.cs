@@ -226,7 +226,7 @@ public sealed class DiagnosticTools
     [RequireScope("eventpipe")]
     [Description(
         "Captures a CPU sample from the target process and returns the top-N hotspots aggregated by method. " +
-        "On CoreCLR uses EventPipe SampleProfiler (managed frames with mvid+token handoff). " +
+        "On CoreCLR the default uses EventPipe SampleProfiler (managed frames with mvid+token handoff); cpuBackend=Os explicitly selects genuine on-CPU perf/ETW evidence when host prerequisites are met. " +
         "Optionally, resolveMethodInstantiations=true performs a second ClrMD attach after sampling to recover closed generic method signatures for the hottest managed frames; on Linux that requires CAP_SYS_PTRACE (or ptrace_scope=0) and briefly suspends the target while the attach runs. " +
         "On NativeAOT (Linux) falls back to 'perf record' when available — frames are native symbols only, MethodIdentity is null. " +
         "Each hotspot reports both inclusive and exclusive sample counts. Run after collect_events(kind='counters') shows elevated cpu-usage. " +
@@ -247,6 +247,8 @@ public sealed class DiagnosticTools
         [Description("If true, performs an opt-in ClrMD attach after sampling to recover closed generic instantiations for the hottest managed frames (displayed on MethodIdentity as ClosedSignature + GenericTypeArguments.Method). CoreCLR only. On Linux this requires CAP_SYS_PTRACE (or ptrace_scope=0) and briefly suspends the target during the attach. Defaults to false to keep the EventPipe-only path lightweight.")] bool resolveMethodInstantiations = false,
         [Description("Cap on how many top hotspots get ClrMD generic-instantiation enrichment. Must be >= 1. Defaults to the requested topN so the enrichment work stays bounded to the hottest frames.")] int? maxResolvedMethodInstantiations = null,
         [Description("NativeAOT only. Filesystem path to the ILC '*.map.xml' map file produced by publishing with <IlcGenerateMapFile>true</IlcGenerateMapFile> (ilc --map). When supplied, the perf-based AOT sampler emits a name-based MethodIdentity (TypeFullName + MethodName; MVID/metadata token stay null) for hot managed methods so the dotnet-native-mcp 'disassemble this hot AOT function' handoff works. Ignored on CoreCLR. The path is a hint only — the consumer must verify the artifact before loading it.")] string? nativeAotMapFile = null,
+        [Description("Automatic (default): EventPipe for CoreCLR, OS for NativeAOT. EventPipe requires CoreCLR; Os requires perf/ETW. Explicit modes never fall back.")]
+        CpuSamplingMode cpuBackend = CpuSamplingMode.Automatic,
         [Description("Verbosity (summary|detail|raw). Default 'summary' returns the top-3 hotspots inline. 'detail' returns the requested topN (default 25). 'raw' is equivalent to detail. The full sample is always retained behind the issued handle — drill in with query_snapshot(view='call-tree').")]
         SamplingDepth depth = SamplingDepth.Summary,
         [Description("If true, persists the raw .nettrace under the artifact root and returns its relative path so it can be fetched with get_bytes(kind='trace') for offline PerfView/Speedscope/Perfetto analysis. Defaults to false (the trace is parsed then deleted).")] bool exportTrace = false,
@@ -268,6 +270,7 @@ public sealed class DiagnosticTools
             resolveMethodInstantiations,
             maxResolvedMethodInstantiations,
             nativeAotMapFile,
+            cpuBackend,
             depth,
             exportTrace,
             deprecation,

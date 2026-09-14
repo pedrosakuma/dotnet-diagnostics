@@ -117,6 +117,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             "additionalHandles", "previousInvestigationId", "fixCommitSha", "fixPullRequestUrl", "fixDescription", "notes",
             "resolveSourceLines", "symbolPath", "maxResolvedSources",
             "resolveMethodInstantiations", "maxResolvedMethodInstantiations",
+            "cpuBackend",
             "topTypes", "includeRetentionPaths", "retentionPathLimit",
             "view",
             "stackRank",

@@ -7,8 +7,8 @@ namespace DotnetDiagnostics.Core.CpuSampling;
 
 /// <summary>
 /// Selects an <see cref="ICpuSampler"/> implementation based on the detected runtime
-/// flavour of the target process. CoreCLR uses the managed EventPipe SampleProfiler;
-/// NativeAOT uses ETW kernel profiling on Windows or <c>perf</c> on Linux.
+/// flavour and requested evidence source. Automatic mode uses the managed EventPipe
+/// SampleProfiler for CoreCLR and ETW/perf for NativeAOT.
 /// </summary>
 public sealed class RoutingCpuSampler : ICpuSampler
 {
@@ -41,18 +41,76 @@ public sealed class RoutingCpuSampler : ICpuSampler
         NativeAotSymbolResolutionOptions? nativeAotSymbols = null,
         bool exportTrace = false,
         CancellationToken cancellationToken = default)
+        => await SampleAsync(
+            processId,
+            duration,
+            topN,
+            sourceResolution,
+            methodInstantiationResolution,
+            nativeAotSymbols,
+            exportTrace,
+            CpuSamplingMode.Automatic,
+            cancellationToken).ConfigureAwait(false);
+
+    public async Task<CpuSampleResult> SampleAsync(
+        int processId,
+        TimeSpan duration,
+        int topN,
+        SourceResolutionOptions? sourceResolution,
+        MethodInstantiationResolutionOptions? methodInstantiationResolution,
+        NativeAotSymbolResolutionOptions? nativeAotSymbols,
+        bool exportTrace,
+        CpuSamplingMode mode,
+        CancellationToken cancellationToken = default)
     {
-        var caps = await _capabilities.DetectAsync(processId, cancellationToken).ConfigureAwait(false);
-        if (caps.Runtime == RuntimeFlavor.NativeAot)
+        if (mode == CpuSamplingMode.Os && exportTrace)
         {
-            return await SampleNativeAotAsync(processId, duration, topN, sourceResolution, nativeAotSymbols, cancellationToken)
-                .ConfigureAwait(false);
+            throw new ArgumentException(
+                "Raw .nettrace export is available only with the EventPipe CPU backend.",
+                nameof(exportTrace));
         }
 
-        return await _managed.SampleAsync(processId, duration, topN, sourceResolution, methodInstantiationResolution, nativeAotSymbols: null, exportTrace, cancellationToken).ConfigureAwait(false);
+        if (mode == CpuSamplingMode.Os && methodInstantiationResolution?.Enabled == true)
+        {
+            throw new ArgumentException(
+                "Closed generic instantiation enrichment is available only with the EventPipe CPU backend.",
+                nameof(methodInstantiationResolution));
+        }
+
+        var caps = await _capabilities.DetectAsync(processId, cancellationToken).ConfigureAwait(false);
+        var route = SelectRoute(caps.Runtime, mode);
+        if (route == CpuSamplerRoute.EventPipe)
+        {
+            return await _managed.SampleAsync(
+                processId, duration, topN, sourceResolution, methodInstantiationResolution,
+                nativeAotSymbols: null, exportTrace, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (!caps.CanSampleOsCpu)
+        {
+            throw BuildOsUnavailableException(processId, caps);
+        }
+
+        return await SampleOsAsync(
+            processId, duration, topN, sourceResolution,
+            caps.Runtime == RuntimeFlavor.NativeAot ? nativeAotSymbols : null,
+            cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task<CpuSampleResult> SampleNativeAotAsync(
+    internal static CpuSamplerRoute SelectRoute(RuntimeFlavor runtime, CpuSamplingMode mode)
+        => mode switch
+        {
+            CpuSamplingMode.Automatic when runtime == RuntimeFlavor.NativeAot => CpuSamplerRoute.Os,
+            CpuSamplingMode.Automatic => CpuSamplerRoute.EventPipe,
+            CpuSamplingMode.EventPipe when runtime == RuntimeFlavor.NativeAot => throw new CpuSamplingUnavailableException(
+                "UnsupportedRuntime",
+                "The EventPipe CPU backend is unavailable for NativeAOT. Select the OS backend and satisfy its host prerequisites."),
+            CpuSamplingMode.EventPipe => CpuSamplerRoute.EventPipe,
+            CpuSamplingMode.Os => CpuSamplerRoute.Os,
+            _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unknown CPU sampling mode."),
+        };
+
+    private async Task<CpuSampleResult> SampleOsAsync(
         int processId,
         TimeSpan duration,
         int topN,
@@ -70,10 +128,10 @@ public sealed class RoutingCpuSampler : ICpuSampler
             }
 
             throw new InvalidOperationException(
-                $"Process {processId} is NativeAOT and the managed SampleProfiler is not implemented. " +
-                "On Windows, the ETW kernel profiling fallback requires administrative elevation " +
+                $"OS-backed CPU sampling for process {processId} is unavailable. " +
+                "On Windows, ETW kernel profiling requires administrative elevation " +
                 "(or SeSystemProfilePrivilege). Run the diagnostics process as Administrator to enable " +
-                "native CPU sampling for NativeAOT processes.");
+                "on-CPU sampling.");
         }
 
         if (_perf.IsAvailable())
@@ -83,9 +141,49 @@ public sealed class RoutingCpuSampler : ICpuSampler
         }
 
         throw new InvalidOperationException(
-            $"Process {processId} is NativeAOT and the managed SampleProfiler is not implemented. " +
-            "On Linux, the perf-based fallback requires the 'perf' binary in PATH, CAP_PERFMON (or CAP_SYS_ADMIN), " +
+            $"OS-backed CPU sampling for process {processId} is unavailable. " +
+            "On Linux, the perf backend requires the 'perf' binary in PATH, CAP_PERFMON (or CAP_SYS_ADMIN), " +
             "and perf_event_paranoid <= 2 on the host. Install linux-perf in the diagnostics image and add " +
-            "the capability to the container's securityContext to enable native CPU sampling.");
+            "the narrow capability to the container's securityContext.");
     }
+
+    private static CpuSamplingUnavailableException BuildOsUnavailableException(
+        int processId,
+        DiagnosticCapabilities capabilities)
+        => RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+            ? new CpuSamplingUnavailableException(
+                "PermissionDenied",
+                $"OS-backed CPU sampling for process {processId} is unavailable. Windows ETW profiling requires " +
+                "administrative elevation or SeSystemProfilePrivilege; no EventPipe fallback was attempted.")
+            : RuntimeInformation.IsOSPlatform(OSPlatform.Linux) && !capabilities.PerfInstalled
+                ? new CpuSamplingUnavailableException(
+                    "UnsupportedPrerequisite",
+                    $"OS-backed CPU sampling for process {processId} is unavailable because no working perf binary was found; " +
+                    "no EventPipe fallback was attempted.")
+                : RuntimeInformation.IsOSPlatform(OSPlatform.Linux)
+                    ? new CpuSamplingUnavailableException(
+                        "PermissionDenied",
+                        $"OS-backed CPU sampling for process {processId} is unavailable. Linux perf requires a working perf binary, " +
+                        "same-UID target access, and perf_event_paranoid <= 2 or CAP_PERFMON/CAP_SYS_ADMIN; no EventPipe fallback was attempted.")
+                    : new CpuSamplingUnavailableException(
+                        "UnsupportedPlatform",
+                        $"OS-backed CPU sampling for process {processId} is supported only on Linux and Windows; no EventPipe fallback was attempted.");
+}
+
+internal enum CpuSamplerRoute
+{
+    EventPipe,
+    Os,
+}
+
+/// <summary>An explicit CPU backend could not be selected because a prerequisite is absent.</summary>
+public sealed class CpuSamplingUnavailableException : InvalidOperationException
+{
+    public CpuSamplingUnavailableException(string errorKind, string message)
+        : base(message)
+    {
+        ErrorKind = errorKind;
+    }
+
+    public string ErrorKind { get; }
 }

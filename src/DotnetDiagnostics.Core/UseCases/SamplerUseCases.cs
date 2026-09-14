@@ -46,9 +46,54 @@ public static class SamplerUseCases
         SamplingDepth depth = SamplingDepth.Summary,
         bool exportTrace = false,
         CancellationToken cancellationToken = default)
+        => await CollectCpuSample(
+            sampler,
+            handles,
+            resolver,
+            symbolServerAllowlist,
+            principalAllowsSymbolsRemote,
+            processId,
+            durationSeconds,
+            topN,
+            resolveSourceLines,
+            symbolPath,
+            resolveMethodInstantiations,
+            nativeAotMapFile,
+            CpuSamplingMode.Automatic,
+            depth,
+            exportTrace,
+            cancellationToken).ConfigureAwait(false);
+
+    public static async Task<DiagnosticResult<CpuSample>> CollectCpuSample(
+        ICpuSampler sampler,
+        IDiagnosticHandleStore handles,
+        IProcessContextResolver resolver,
+        SymbolServerAllowlist symbolServerAllowlist,
+        bool principalAllowsSymbolsRemote,
+        int? processId,
+        int durationSeconds,
+        int topN,
+        bool resolveSourceLines,
+        string? symbolPath,
+        bool resolveMethodInstantiations,
+        string? nativeAotMapFile,
+        CpuSamplingMode cpuSamplingMode,
+        SamplingDepth depth = SamplingDepth.Summary,
+        bool exportTrace = false,
+        CancellationToken cancellationToken = default)
     {
         if (durationSeconds < 1) return InvalidArg<CpuSample>(nameof(durationSeconds), "must be >= 1");
         if (topN < 1) return InvalidArg<CpuSample>(nameof(topN), "must be >= 1");
+        if (cpuSamplingMode == CpuSamplingMode.Os && exportTrace)
+        {
+            return InvalidArg<CpuSample>(nameof(exportTrace), "is supported only by the EventPipe CPU backend");
+        }
+        if (cpuSamplingMode == CpuSamplingMode.Os && resolveMethodInstantiations)
+        {
+            return InvalidArg<CpuSample>(
+                nameof(resolveMethodInstantiations),
+                "is supported only by the EventPipe CPU backend");
+        }
 
         if (resolveSourceLines)
         {
@@ -83,7 +128,16 @@ public static class SamplerUseCases
                 instantiationOpts,
                 nativeAotOpts,
                 exportTrace,
+                cpuSamplingMode,
                 cancellationToken).ConfigureAwait(false);
+        }
+        catch (CpuSamplingUnavailableException ex)
+        {
+            return DiagnosticResult.Fail<CpuSample>(
+                ex.Message,
+                new DiagnosticError(ex.ErrorKind, ex.Message, ex.GetType().FullName),
+                new NextActionHint("inspect_process", "Check capability matrix to confirm what's available for this process.",
+                    new Dictionary<string, object?> { ["processId"] = pid }));
         }
         catch (InvalidOperationException ex) when (ex.Message.Contains("elevation", StringComparison.OrdinalIgnoreCase)
                                                     || ex.Message.Contains("privilege", StringComparison.OrdinalIgnoreCase)

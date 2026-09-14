@@ -193,9 +193,19 @@ internal static partial class CliCommands
             options.SymbolPath,
             options.ResolveMethodInstantiations,
             options.NativeAotMapFile,
+            ParseCpuSamplingMode(options.CpuBackend),
             ParseDepth(options.Depth),
             options.ExportTrace,
             cancellationToken).ConfigureAwait(false));
+
+    private static CpuSamplingMode ParseCpuSamplingMode(string? value)
+        => value?.ToLowerInvariant() switch
+        {
+            null or "automatic" => CpuSamplingMode.Automatic,
+            "eventpipe" => CpuSamplingMode.EventPipe,
+            "os" => CpuSamplingMode.Os,
+            _ => throw new ArgumentException($"Unknown CPU backend '{value}'.", nameof(value)),
+        };
 
     private static async Task<CliCommandResult> CollectAllocationSampleAsync(
         IServiceProvider services,

@@ -167,6 +167,55 @@ public sealed class CliCollectValidationTests
         error.Should().Contain("--native-lock-contention-sample-period must be >= 1");
     }
 
+    [Theory]
+    [InlineData("automatic")]
+    [InlineData("EventPipe")]
+    [InlineData("os")]
+    public void TryValidateCollect_CpuBackendValues_Succeed(string backend)
+    {
+        var options = CliOptions.Parse(
+            ["collect", "--kind", "cpu", "--cpu-backend", backend],
+            out _)!;
+
+        CliCommands.TryValidateCollect(options, out var error).Should().BeTrue();
+        error.Should().BeNull();
+    }
+
+    [Fact]
+    public void TryValidateCollect_CpuBackendOnOtherKind_Fails()
+    {
+        var options = CliOptions.Parse(
+            ["collect", "--kind", "gc", "--cpu-backend", "os"],
+            out _)!;
+
+        CliCommands.TryValidateCollect(options, out var error).Should().BeFalse();
+        error.Should().Contain("--cpu-backend requires");
+    }
+
+    [Fact]
+    public void TryValidateCollect_UnknownCpuBackend_Fails()
+    {
+        var options = CliOptions.Parse(
+            ["collect", "--kind", "cpu", "--cpu-backend", "hybrid"],
+            out _)!;
+
+        CliCommands.TryValidateCollect(options, out var error).Should().BeFalse();
+        error.Should().Contain("Valid values: automatic, eventpipe, os");
+    }
+
+    [Theory]
+    [InlineData("--export-trace")]
+    [InlineData("--resolve-method-instantiations")]
+    public void TryValidateCollect_OsBackendRejectsEventPipeOnlyOptions(string option)
+    {
+        var options = CliOptions.Parse(
+            ["collect", "--kind", "cpu", "--cpu-backend", "os", option],
+            out _)!;
+
+        CliCommands.TryValidateCollect(options, out var error).Should().BeFalse();
+        error.Should().Contain("only with --cpu-backend eventpipe/automatic");
+    }
+
     private static async Task<(int Exit, string Stdout, string Stderr)> RunAsync(params string[] args)
     {
         var stdout = new StringWriter(new StringBuilder());

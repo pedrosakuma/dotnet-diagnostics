@@ -135,6 +135,9 @@ internal sealed record CliOptions
     /// </summary>
     public bool ResolveMethodInstantiations { get; init; }
 
+    /// <summary>CPU evidence backend (<c>--cpu-backend automatic|eventpipe|os</c>).</summary>
+    public string? CpuBackend { get; init; }
+
     /// <summary>
     /// Native allocation sampler period (<c>--native-alloc-sample-period</c>). Null applies the
     /// default (1000).
@@ -534,6 +537,7 @@ internal sealed record CliOptions
             new FlagOptionDescriptor(state => state.ResolveSourceLines = true, "--resolve-source-lines"),
             new FlagOptionDescriptor(state => state.ResolveSourceLines = false, "--no-resolve-source-lines"),
             new FlagOptionDescriptor(state => state.ResolveMethodInstantiations = true, "--resolve-method-instantiations"),
+            new StringOptionDescriptor((state, value) => state.CpuBackend = value, "--cpu-backend"),
             new LongOptionDescriptor((state, value) => state.NativeAllocSamplePeriod = value, "--native-alloc-sample-period"),
             new LongOptionDescriptor((state, value) => state.NativeLockContentionSamplePeriod = value, "--native-lock-contention-sample-period"),
             new IntOptionDescriptor((state, value) => state.MaxFramesPerThread = value, "--max-frames-per-thread"),
@@ -650,6 +654,8 @@ internal sealed record CliOptions
         public bool? ResolveSourceLines { get; set; }
 
         public bool ResolveMethodInstantiations { get; set; }
+
+        public string? CpuBackend { get; set; }
 
         public long? NativeAllocSamplePeriod { get; set; }
 
@@ -801,6 +807,7 @@ internal sealed record CliOptions
                 NativeAotMapFile = NativeAotMapFile,
                 ResolveSourceLines = ResolveSourceLines,
                 ResolveMethodInstantiations = ResolveMethodInstantiations,
+                CpuBackend = CpuBackend,
                 NativeAllocSamplePeriod = NativeAllocSamplePeriod,
                 NativeLockContentionSamplePeriod = NativeLockContentionSamplePeriod,
                 MaxFramesPerThread = MaxFramesPerThread,

@@ -135,17 +135,11 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
 
         try
         {
-            try
-            {
-                jitMap = await _jitMapEmitter.EmitAsync(processId, cancellationToken: cancellationToken).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogDebug(ex, "JIT perf-map emission failed for pid {Pid} (continuing without managed JIT identities).", processId);
-            }
-
             var captureStopwatch = Stopwatch.StartNew();
-            await RecordAsync(processId, perfDataPath, duration, cancellationToken).ConfigureAwait(false);
+            jitMap = await _jitMapEmitter.CaptureAsync(
+                processId,
+                ct => RecordAsync(processId, perfDataPath, duration, ct),
+                cancellationToken: cancellationToken).ConfigureAwait(false);
             var captureDuration = captureStopwatch.Elapsed;
             var postProcessingStopwatch = Stopwatch.StartNew();
             var aggregate = await RunScriptAsync(
@@ -163,6 +157,29 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
             // stores, so the inline signals match the signals:// Resource path.
             var topSelfTime = CpuSampleAnalytics.TopSelfTime(stampedRoot, aggregate.Total);
             var topRunningSelfTime = CpuSampleAnalytics.TopRunningSelfTime(stampedRoot, aggregate.Total);
+            var notes = new List<string>();
+            PerfJitSymbolizationNotes.Add(
+                notes,
+                aggregate.JitCandidateFrames,
+                aggregate.ResolvedJitFrames,
+                aggregate.UnresolvedJitCandidateFrames);
+            if (jitMap?.DroppedMethodCount > 0)
+            {
+                notes.Add(
+                    $"CoreCLR JIT map retention reached JitMapEmitter.MaxTrackedMethods={JitMapEmitter.MaxTrackedMethods:N0}; " +
+                    $"{jitMap.DroppedMethodCount:N0} later method-load event(s) were dropped.");
+            }
+            if (jitMap?.AmbiguousMethodCount > 0)
+            {
+                notes.Add(
+                    $"{jitMap.AmbiguousMethodCount:N0} overlapping or reused CoreCLR JIT code range(s) were omitted from symbol resolution because address lifetime could not be assigned safely.");
+            }
+            if (jitMap?.DroppedModuleCount > 0)
+            {
+                notes.Add(
+                    $"CoreCLR JIT module-map retention reached JitMapEmitter.MaxTrackedModules={JitMapEmitter.MaxTrackedModules:N0}; " +
+                    $"{jitMap.DroppedModuleCount:N0} later module-load event(s) were dropped, so affected method identities omit module metadata.");
+            }
             var summary = new CpuSample(processId, startedAt, duration, aggregate.Total, aggregate.Hotspots)
             {
                 Evidence = CpuSampleEvidence.LinuxPerfOnCpu,
@@ -170,6 +187,7 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
                 SymbolSource = aggregate.SymbolSource,
                 TopSelfTime = topSelfTime,
                 TopRunningSelfTime = topRunningSelfTime,
+                Notes = notes,
                 Timings = new CpuSampleTimings(
                     CaptureDuration: captureDuration,
                     SymbolicationDuration: symbolicationDuration,
@@ -182,6 +200,7 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
             {
                 Evidence = CpuSampleEvidence.LinuxPerfOnCpu,
                 SelfSamples = new SelfSampleBreakdown(aggregate.Total, 0),
+                Notes = notes,
             };
             return new CpuSampleResult(summary, artifact);
         }

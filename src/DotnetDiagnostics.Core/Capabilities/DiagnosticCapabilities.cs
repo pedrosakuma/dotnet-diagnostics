@@ -178,4 +178,17 @@ public sealed record DiagnosticCapabilities(
     /// <c>collect_sample(kind="cpu-efficiency")</c> when <see cref="CanSampleCpuEfficiency"/> is
     /// true (<c>perf-stat</c> on Linux, <c>etw-pmc</c> on Windows). Null when unavailable.</summary>
     public string? CpuEfficiencySource { get; init; }
+
+    /// <summary>
+    /// True when the explicit OS-backed CPU mode is expected to run: per-process perf sampling
+    /// on Linux or kernel ETW profile sampling on Windows. This is independent of
+    /// <see cref="CanSampleCpu"/>, which remains true for accessible CoreCLR EventPipe sampling.
+    /// </summary>
+    public bool CanSampleOsCpu { get; init; }
+
+    /// <summary>
+    /// Backend identifier for explicit OS-backed CPU evidence (<c>linux-perf</c> or
+    /// <c>windows-etw</c>); null when its prerequisites are unavailable.
+    /// </summary>
+    public string? OsCpuSource { get; init; }
 }

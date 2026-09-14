@@ -1,7 +1,8 @@
 # Linux perf compatibility matrix
 
 Tracks the environments and `perf`/kernel capability combinations the perf-backed
-collectors — CPU sampling fallback for NativeAOT (`PerfNativeAotCpuSampler`), off-CPU
+collectors — explicit OS-backed CPU sampling for CoreCLR and NativeAOT
+(`PerfNativeAotCpuSampler`), off-CPU
 (`PerfSchedOffCpuSampler`), native allocation (`PerfNativeAllocSampler`), and native lock
 contention (`PerfNativeLockContentionSampler`) — are supported and tested against. See
 [issue #851](https://github.com/pedrosakuma/dotnet-diagnostics/issues/851) for the context that
@@ -72,9 +73,8 @@ dotnet test tests/DotnetDiagnostics.Core.Tests/ -c Release --no-build \
 3. Re-runs the non-privileged unit slice above.
 4. Publishes and starts both the `CoreClrSample` webapi and a NativeAOT-published
    `NativeAotSample`, then drives `dotnet-diagnostics-cli collect --kind cpu` against the
-   NativeAOT sample (CPU perf sampling only ever routes through `PerfNativeAotCpuSampler` for a
-   NativeAOT target — `RoutingCpuSampler` sends CoreCLR targets to the managed EventPipe
-   SampleProfiler instead) and `--kind {off_cpu, native-alloc, native-lock-contention}` against
+   NativeAOT sample (which automatically requires `PerfNativeAotCpuSampler`) and
+   `--kind {off_cpu, native-alloc,native-lock-contention}` against
    the CoreCLR sample (those attach at the OS/libc level and apply to any same-UID target),
    capturing stdout/stderr per kind.
 5. Uploads every collected JSON/log as a build artifact and writes a capability-gap summary to
@@ -97,6 +97,14 @@ a documented, human-verified walkthrough in
 [`docs/local-docker-sidecar.md`](./local-docker-sidecar.md); re-validate perf compatibility there
 manually when changing the perf-backed collectors, rather than duplicating that capability
 plumbing into a second automated job.
+
+CoreCLR users can select the same per-process perf backend explicitly with
+`collect_sample(kind="cpu", cpuBackend="Os")` or CLI `--cpu-backend os`. The default
+remains EventPipe. The perf path keeps bounded JIT/loader tracking active during the
+capture and performs final rundown before `perf script`; the emitted map omits
+overlapping/reused address ranges and reports unresolved, ambiguous, or capped symbol
+coverage in `notes`. This extends symbol support, not the environments claimed by this
+matrix: automated sidecar coverage remains owned by #934.
 
 ## WSL2: documented/manual environment
 

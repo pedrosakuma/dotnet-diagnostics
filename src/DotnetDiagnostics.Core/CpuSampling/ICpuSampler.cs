@@ -1,5 +1,18 @@
 namespace DotnetDiagnostics.Core.CpuSampling;
 
+/// <summary>Selects the evidence source for a CPU capture.</summary>
+public enum CpuSamplingMode
+{
+    /// <summary>Use EventPipe for CoreCLR and the OS profiler required by NativeAOT.</summary>
+    Automatic,
+
+    /// <summary>Require the CoreCLR EventPipe SampleProfiler.</summary>
+    EventPipe,
+
+    /// <summary>Require genuine OS-backed on-CPU sampling (perf on Linux, ETW on Windows).</summary>
+    Os,
+}
+
 /// <summary>
 /// Collects CPU samples from a target process via EventPipe and returns the top-N hotspots
 /// aggregated by frame plus an in-memory call-tree artifact suitable for follow-up drill-down.
@@ -21,6 +34,38 @@ public interface ICpuSampler
         NativeAotSymbolResolutionOptions? nativeAotSymbols = null,
         bool exportTrace = false,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Samples using an explicitly selected evidence source. Implementations that do not route
+    /// between backends support only <see cref="CpuSamplingMode.Automatic"/>.
+    /// </summary>
+    Task<CpuSampleResult> SampleAsync(
+        int processId,
+        TimeSpan duration,
+        int topN,
+        SourceResolutionOptions? sourceResolution,
+        MethodInstantiationResolutionOptions? methodInstantiationResolution,
+        NativeAotSymbolResolutionOptions? nativeAotSymbols,
+        bool exportTrace,
+        CpuSamplingMode mode,
+        CancellationToken cancellationToken = default)
+    {
+        if (mode != CpuSamplingMode.Automatic)
+        {
+            throw new InvalidOperationException(
+                $"CPU sampling mode '{mode}' requires a routing sampler that supports explicit backend selection.");
+        }
+
+        return SampleAsync(
+            processId,
+            duration,
+            topN,
+            sourceResolution,
+            methodInstantiationResolution,
+            nativeAotSymbols,
+            exportTrace,
+            cancellationToken);
+    }
 }
 
 /// <summary>

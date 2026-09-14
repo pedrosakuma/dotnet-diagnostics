@@ -297,6 +297,35 @@ internal static partial class CliCommands
         var isNativeLockContention = string.Equals(options.Kind, "native-lock-contention", StringComparison.Ordinal);
         var isThreadSnapshot = string.Equals(options.Kind, "thread-snapshot", StringComparison.Ordinal);
 
+        if (options.CpuBackend is not null)
+        {
+            if (!isCpu)
+            {
+                error = "--cpu-backend requires 'collect --kind cpu'.";
+                return false;
+            }
+
+            if (options.CpuBackend.ToLowerInvariant() is not ("automatic" or "eventpipe" or "os"))
+            {
+                error = $"Unknown --cpu-backend '{options.CpuBackend}'. Valid values: automatic, eventpipe, os.";
+                return false;
+            }
+
+            if (string.Equals(options.CpuBackend, "os", StringComparison.OrdinalIgnoreCase)
+                && options.ExportTrace)
+            {
+                error = "--export-trace is supported only with --cpu-backend eventpipe/automatic.";
+                return false;
+            }
+
+            if (string.Equals(options.CpuBackend, "os", StringComparison.OrdinalIgnoreCase)
+                && options.ResolveMethodInstantiations)
+            {
+                error = "--resolve-method-instantiations is supported only with --cpu-backend eventpipe/automatic.";
+                return false;
+            }
+        }
+
         if ((isCpu || isOffCpu || isAllocation || isNativeAlloc || isNativeLockContention) && options.Top is < 1)
         {
             error = "--top must be >= 1.";

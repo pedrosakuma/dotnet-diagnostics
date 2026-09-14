@@ -259,6 +259,7 @@ public sealed class CliOptionsTests
             {
                 "collect", "--kind", "cpu", "--top", "15", "--symbol-path", "/symbols",
                 "--no-resolve-source-lines", "--resolve-method-instantiations", "--export-trace",
+                "--cpu-backend", "os",
                 "--native-aot-map", "/maps/app.map.xml", "--native-alloc-sample-period", "500",
                 "--dump-file", "./app.dmp", "--max-frames-per-thread", "128",
                 "--include-runtime-frames", "--include-native-frames",
@@ -270,6 +271,7 @@ public sealed class CliOptionsTests
         options.SymbolPath.Should().Be("/symbols");
         options.ResolveSourceLines.Should().BeFalse();
         options.ResolveMethodInstantiations.Should().BeTrue();
+        options.CpuBackend.Should().Be("os");
         options.ExportTrace.Should().BeTrue();
         options.NativeAotMapFile.Should().Be("/maps/app.map.xml");
         options.NativeAllocSamplePeriod.Should().Be(500);
