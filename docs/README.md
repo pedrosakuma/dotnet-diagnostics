@@ -55,6 +55,7 @@ you're using, then reach for the cross-cutting references.
 | [`investigation-playbooks.md`](./investigation-playbooks.md) | Step-by-step recipes for common symptoms (slow, leaking, 5xx, slow HTTP, NativeAOT) |
 | [`bad-code-scenarios.md`](./bad-code-scenarios.md) | The anti-patterns in `samples/BadCodeSample/` and the investigation flow each one exercises |
 | [`blinded-agent-evaluation-harness.md`](./blinded-agent-evaluation-harness.md) | Advisory symptom-driven model harness: blinding boundary, approved diagnostic tools, budgets, provenance, real-smoke configuration, and artifact retention |
+| [`advisory-agent-calibration.md`](./advisory-agent-calibration.md) | Draft #921 human-review packet workflow, semantic rubric, honest denominators, and proposed development/heldout pilot matrix |
 | [`case-studies/`](./case-studies/) | **Narrated end-to-end investigations** — each tells the story of one non-obvious failure from misleading symptom → refuted wrong hypothesis → real cause → fix → verification, with the real captures at every step |
 | [`resource-boundedness.md`](./resource-boundedness.md) | Per-collector memory/retention caps for long or high-volume captures — what's bounded, the eviction strategy, and how a cap hit is surfaced in `notes[]` |
 | [`runtime-version-compat-matrix.md`](./runtime-version-compat-matrix.md) | Which **target-process** .NET runtimes (6/7/8/9/10) are officially supported vs. CI-validated vs. untested, and the `CrossVersionTargetTests` suite backing it |
