@@ -550,63 +550,17 @@ public static class BlindedAgentHarness
         AgentDiagnosis diagnosis,
         IReadOnlyList<AgentTranscriptTurn> transcript)
     {
-        var results = transcript.SelectMany(turn => turn.ToolResults)
-            .ToDictionary(result => result.ToolCallId, StringComparer.Ordinal);
+        var results = transcript.SelectMany(turn => turn.ToolResults).ToArray();
         var invalid = new List<string>();
         foreach (var location in diagnosis.Claims.SelectMany(claim => claim.EvidenceLocations).Distinct(StringComparer.Ordinal))
         {
-            const string prefix = "tool-result://";
-            var hashIndex = location.IndexOf('#', StringComparison.Ordinal);
-            if (!location.StartsWith(prefix, StringComparison.Ordinal)
-                || hashIndex <= prefix.Length
-                || !results.TryGetValue(location[prefix.Length..hashIndex], out var result)
-                || !PointerResolves(result.ContentJson, location[(hashIndex + 1)..]))
+            if (!AgentEvidenceResolver.Resolve(location, results).Exists)
             {
                 invalid.Add(location);
             }
         }
 
         return invalid;
-    }
-
-    private static bool PointerResolves(string json, string pointer)
-    {
-        if (pointer.Length == 0)
-        {
-            return true;
-        }
-
-        if (pointer[0] != '/')
-        {
-            return false;
-        }
-
-        using var document = JsonDocument.Parse(json);
-        var current = document.RootElement;
-        foreach (var encodedSegment in pointer[1..].Split('/'))
-        {
-            var segment = encodedSegment.Replace("~1", "/", StringComparison.Ordinal).Replace("~0", "~", StringComparison.Ordinal);
-            if (current.ValueKind == JsonValueKind.Object)
-            {
-                if (!current.TryGetProperty(segment, out current))
-                {
-                    return false;
-                }
-            }
-            else if (current.ValueKind == JsonValueKind.Array
-                     && int.TryParse(segment, out var index)
-                     && index >= 0
-                     && index < current.GetArrayLength())
-            {
-                current = current[index];
-            }
-            else
-            {
-                return false;
-            }
-        }
-
-        return true;
     }
 
     private static AgentHarnessProvenance Provenance(AgentHarnessRequest request)
