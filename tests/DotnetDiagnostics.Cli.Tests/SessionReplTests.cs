@@ -650,7 +650,7 @@ public sealed class SessionReplTests
             $"query --handle {handle.Id} --view triage\nexit\n", services);
 
         exit.Should().Be(0);
-        stdout.Should().Contain("\"verdict\": \"wait-bound\""); // CpuTrace() is 40 running / 60 waiting overall
+        stdout.Should().Contain("\"verdict\": \"on-cpu-observed\"");
         stdout.Should().Contain("LeafA"); // rankBy=running promotes the all-running leaf
     }
 
@@ -1825,6 +1825,7 @@ public sealed class SessionReplTests
         var root = new CallTreeNode(new SampledFrame("App.dll", "Root"), 100, 0, new[] { leafA, leafB });
         return new CpuSampleTraceArtifact(Environment.ProcessId, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(5), 100, root)
         {
+            Evidence = CpuSampleEvidence.LinuxPerfOnCpu,
             SelfSamples = new SelfSampleBreakdown(40, 60),
         };
     }

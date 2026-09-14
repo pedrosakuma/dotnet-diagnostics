@@ -1,4 +1,6 @@
 using DotnetDiagnostics.Core.Comparison;
+using DotnetDiagnostics.Core.CpuSampling;
+using DotnetDiagnostics.Core.Evidence;
 using FluentAssertions;
 
 namespace DotnetDiagnostics.Core.Tests;
@@ -18,7 +20,20 @@ public sealed class SnapshotDifferTests
             rows.Select(r => new ComparableRow(
                 new ComparableKey("cpu-sample", r.id),
                 r.id,
-                new[] { Metric("exclusivePercent", r.value) })).ToArray());
+                new[] { Metric("exclusivePercent", r.value) })).ToArray(),
+            Quality: SupportedQuality())
+        {
+            CpuEvidence = CpuSampleEvidence.LinuxPerfOnCpu,
+        };
+
+    private static EvidenceQuality SupportedQuality()
+        => new(
+            EvidenceQuality.SchemaV1,
+            [],
+            new EvidenceConclusionPolicy(
+                EvidenceConclusionSupport.Supported,
+                EvidenceConclusionSupport.Supported,
+                EvidenceConclusionSupport.Supported));
 
     // ---- Guard / validation -----------------------------------------------------------------
 
@@ -178,7 +193,11 @@ public sealed class SnapshotDifferTests
                     new ComparableKey("cpu-sample", $"App.dll!{hotspot}"),
                     hotspot,
                     [Metric("exclusivePercent", 80)]),
-            ]);
+            ],
+            Quality: SupportedQuality())
+        {
+            CpuEvidence = CpuSampleEvidence.LinuxPerfOnCpu,
+        };
 
         var diff = SnapshotDiffer.Compare(
         [
@@ -310,7 +329,11 @@ public sealed class SnapshotDifferTests
             {
                 new ComparableRow(new ComparableKey("cpu-sample", "A"), "A", new[] { Metric("p", 10) }),
                 new ComparableRow(new ComparableKey("cpu-sample", "A"), "A", new[] { Metric("p", 99) }),
-            });
+            },
+            Quality: SupportedQuality())
+        {
+            CpuEvidence = CpuSampleEvidence.LinuxPerfOnCpu,
+        };
         var after = KeySnap("after", ("A", 5));
 
         var diff = SnapshotDiffer.Compare(new[] { snapshot, after });

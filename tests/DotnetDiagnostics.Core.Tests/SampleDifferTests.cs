@@ -177,7 +177,11 @@ public sealed class SampleDifferTests
             MethodIdentities: new Dictionary<SymbolRef, MethodIdentity>
             {
                 [symbol] = identity,
-            });
+            })
+        {
+            Evidence = CpuSampleEvidence.LinuxPerfOnCpu,
+            SelfSamples = new SelfSampleBreakdown(totalSamples, 0),
+        };
 
     private static HeapSnapshotArtifact HeapSnapshot(params (string typeName, long bytes, long instances)[] rows)
     {

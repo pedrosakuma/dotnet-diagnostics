@@ -69,6 +69,13 @@ public sealed record InvestigationFindings(
     IReadOnlyList<HotspotSummary> TopHotspots,
     IReadOnlyDictionary<string, double>? KeyMetrics = null)
 {
+    /// <summary>
+    /// CPU backend and scheduler-state semantics for <see cref="TopHotspots"/>. Null means the
+    /// source CPU artifact is legacy-unknown or no CPU artifact was included.
+    /// </summary>
+    public CpuSampling.CpuSampleBackend? CpuEvidenceBackend { get; init; }
+    public CpuSampling.CpuSampleEvidenceKind? CpuEvidenceKind { get; init; }
+
     /// <summary>Units keyed by the same stable identities as <see cref="KeyMetrics"/>.</summary>
     public IReadOnlyDictionary<string, string?>? KeyMetricUnits { get; init; }
 
@@ -174,9 +181,8 @@ public sealed record HotspotSummary(
     MethodIdentity? Identity = null)
 {
     /// <summary>
-    /// Optional split of this hotspot's exclusive samples into actively-running versus
-    /// waiting/blocking observations. Null for legacy summaries and sampling backends that do not
-    /// classify self samples.
+    /// Optional scheduler-state evidence split of this hotspot's exclusive observations.
+    /// Interpret with <see cref="InvestigationFindings.CpuEvidenceKind"/>.
     /// </summary>
     public CpuSampling.SelfSampleBreakdown? SelfSamples { get; init; }
 }

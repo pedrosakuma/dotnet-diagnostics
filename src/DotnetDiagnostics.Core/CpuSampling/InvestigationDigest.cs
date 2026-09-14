@@ -1,8 +1,8 @@
 namespace DotnetDiagnostics.Core.CpuSampling;
 
 /// <summary>
-/// A "first page" cross-collector summary bundling the top CPU self-time hotspots, top CPU
-/// wait/noise categories, dominant hot-path leaf, and top allocation types/call sites — the same
+/// A "first page" cross-collector summary bundling CPU evidence-aware method candidates, heuristic
+/// wait categories, the dominant hot-path leaf, and top allocation types/call sites — the same
 /// evidence an operator would otherwise gather from two or more separate drill-down round trips
 /// against a <c>cpu-sample</c> and/or <c>allocation-sample</c> artifact, bundled into one. Each
 /// half is populated independently by <see cref="InvestigationDigestBuilder.Build"/> — supplying
@@ -21,7 +21,10 @@ public sealed record InvestigationDigest(
     HotPathFrame? HotPathLeaf,
     int? HotPathDepth,
     IReadOnlyList<AllocatedType>? TopAllocationTypes,
-    IReadOnlyList<AllocationSite>? TopAllocationCallsites);
+    IReadOnlyList<AllocationSite>? TopAllocationCallsites)
+{
+    public CpuSampleEvidence? CpuEvidence { get; init; }
+}
 
 /// <summary>
 /// Builds <see cref="InvestigationDigest"/> from an already-collected CPU trace and/or allocation
@@ -95,6 +98,9 @@ public static class InvestigationDigestBuilder
             hotPathLeaf,
             hotPathDepth,
             topAllocationTypes,
-            topAllocationCallsites);
+            topAllocationCallsites)
+        {
+            CpuEvidence = cpuTrace?.Evidence,
+        };
     }
 }

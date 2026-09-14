@@ -5,10 +5,10 @@ namespace DotnetDiagnostics.Core.CpuSampling;
 /// <summary>
 /// Best-effort recognizer that folds a compiler-generated async state-machine's <c>MoveNext</c>
 /// leaf frame back into its declaring async method name (issue #811, part 3). A CPU-sample leaf
-/// like <c>FixTcpClientSession+&lt;WriteLoopAsync&gt;d__22.MoveNext()</c> — the actual on-CPU work
-/// happening directly inside the async method's own synchronous body, between awaits — reads as
+/// like <c>FixTcpClientSession+&lt;WriteLoopAsync&gt;d__22.MoveNext()</c> — sampled work inside
+/// the async method's own synchronous body, between awaits — reads as
 /// unfamiliar runtime plumbing to an operator scanning <c>top-methods</c>. Folded, it reads as
-/// <c>FixTcpClientSession.WriteLoopAsync() [async]</c>: immediately recognizable as busy user code.
+/// <c>FixTcpClientSession.WriteLoopAsync() [async]</c>: immediately recognizable as user code.
 /// </summary>
 /// <remarks>
 /// This only renames the state machine's own <c>MoveNext</c> leaf; it does not merge separate

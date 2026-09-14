@@ -131,6 +131,8 @@ public static class CpuSampleQueryDispatcher
         var stamped = CallTreeIdentityProjector.Stamp(pruned, artifact.MethodIdentities);
         var view = new CallTreeView(artifact.ProcessId, artifact.TotalSamples, nodeCount, truncated, stamped)
         {
+            EvidenceBackend = artifact.Evidence?.Backend,
+            EvidenceKind = artifact.Evidence?.Kind,
             SelfSamples = artifact.SelfSamples ?? traversal.TotalSelfSamples,
             NodeLimit = effectiveNodes,
             DepthLimit = effectiveDepth,
@@ -143,7 +145,7 @@ public static class CpuSampleQueryDispatcher
             : $"Showing the full sub-tree rooted at {root.Frame.Method} ({nodeCount} nodes, {root.InclusiveSamples} inclusive samples).";
         if (view.SelfSamples is { } self)
         {
-            summary += $" Self split: {self.RunningSamples} running / {self.WaitingSamples} waiting.";
+            summary += $" Self evidence: {self.RunningSamples} on-CPU / {self.WaitingSamples} heuristic-wait / {self.UnknownSamples} unknown.";
         }
         if (traversal.LimitReached)
         {
@@ -173,10 +175,8 @@ public static class CpuSampleQueryDispatcher
         }
 
         var root = CallTreeIdentityProjector.Stamp(artifact.Root, artifact.MethodIdentities);
-        // "running" (issue #811) ranks "busy user code" ahead of wait-dominated exclusive leaders: it
-        // re-orders the exclusive-ranked list by on-CPU (running) self-time instead of raw exclusive
-        // samples, so a hot wait frame (e.g. LowLevelLifoSemaphore.WaitForSignal) no longer buries the
-        // actual busy hotspot underneath it.
+        // "running" uses measured on-CPU self samples when the backend provides them. EventPipe has
+        // no such observations, so its ordering remains conservative exclusive stack frequency.
         // "foldAsync" (issue #811 part 3) renames compiler-generated async state-machine MoveNext
         // leaves back to their declaring async method name, so `Owner+<Method>d__22.MoveNext()`
         // reads as `Owner.Method() [async]` instead of unfamiliar runtime-plumbing-looking text.
@@ -189,13 +189,15 @@ public static class CpuSampleQueryDispatcher
         var top = ranked.Take(topN).ToList();
         var view = new TopMethodsView(artifact.ProcessId, artifact.TotalSamples, normalizedSort, top.Count, top)
         {
+            EvidenceBackend = artifact.Evidence?.Backend,
+            EvidenceKind = artifact.Evidence?.Kind,
             SelfSamples = artifact.SelfSamples ?? CpuSampleAnalytics.TotalSelfSamples(root),
         };
 
         var summary = top.Count == 0
             ? "No methods aggregated — the trace captured no attributable frames."
             : normalizedSort == "running"
-                ? $"Top {top.Count} method(s) by running (busy) self-time (of {ranked.Count} total). Busiest: {top[0].Method} ({top[0].SelfSamples?.RunningSamples ?? top[0].ExclusiveSamples} running / {top[0].ExclusiveSamples} exclusive){FormatSelfSamples(top[0].SelfSamples)}{FormatWaitReason(top[0].WaitReason)}."
+                ? BuildRunningRankSummary(artifact.Evidence, top, ranked.Count)
                 : $"Top {top.Count} method(s) by {normalizedSort} samples (of {ranked.Count} total). Hottest: {top[0].Method} ({top[0].ExclusiveSamples} exclusive / {top[0].InclusiveSamples} inclusive){FormatSelfSamples(top[0].SelfSamples)}{FormatWaitReason(top[0].WaitReason)}.";
 
         return top.Count == 0
@@ -224,6 +226,8 @@ public static class CpuSampleQueryDispatcher
         var top = ranked.Take(topN).ToList();
         var view = new GroupedSamplesView(artifact.ProcessId, artifact.TotalSamples, groupBy, top.Count, top)
         {
+            EvidenceBackend = artifact.Evidence?.Backend,
+            EvidenceKind = artifact.Evidence?.Kind,
             SelfSamples = artifact.SelfSamples ?? CpuSampleAnalytics.TotalSelfSamples(root),
         };
 
@@ -249,6 +253,8 @@ public static class CpuSampleQueryDispatcher
         var (frames, depth) = CpuSampleAnalytics.BuildHotPath(root, artifact.TotalSamples, thresholdPercent / 100d);
         var view = new HotPathView(artifact.ProcessId, artifact.TotalSamples, thresholdPercent, depth, frames)
         {
+            EvidenceBackend = artifact.Evidence?.Backend,
+            EvidenceKind = artifact.Evidence?.Kind,
             SelfSamples = artifact.SelfSamples ?? CpuSampleAnalytics.TotalSelfSamples(root),
         };
 
@@ -271,8 +277,8 @@ public static class CpuSampleQueryDispatcher
     }
 
     /// <summary>
-    /// Renders the <c>triage</c> view (issue #812): the top "busy user code" hotspots (<c>rankBy=
-    /// "running"</c> order), the top wait/noise categories (grouped by <see cref="MethodSampleStat.WaitReason"/>,
+    /// Renders the <c>triage</c> view: measured on-CPU leaders or conservative frequency candidates,
+    /// plus heuristic wait categories (grouped by <see cref="MethodSampleStat.WaitReason"/>,
     /// summed by exclusive samples), and the dominant hot-path leaf — the same evidence an operator
     /// would otherwise gather across <see cref="TopMethodsView"/> and <see cref="HotPathView"/> in two
     /// separate round trips, bundled into one.
@@ -310,14 +316,16 @@ public static class CpuSampleQueryDispatcher
         var (hotPathFrames, hotPathDepth) = CpuSampleAnalytics.BuildHotPath(root, artifact.TotalSamples, hotPathThresholdPercent / 100d);
         var hotPathLeaf = hotPathFrames.Count > 0 ? hotPathFrames[^1] : null;
         var selfSamples = artifact.SelfSamples ?? CpuSampleAnalytics.TotalSelfSamples(root);
-        var verdict = ClassifyTriageVerdict(selfSamples);
+        var verdict = ClassifyTriageVerdict(selfSamples, artifact.Evidence);
 
         var view = new TriageView(artifact.ProcessId, artifact.TotalSamples, verdict, topBusy, topWaitCategories, hotPathLeaf, hotPathDepth)
         {
+            EvidenceBackend = artifact.Evidence?.Backend,
+            EvidenceKind = artifact.Evidence?.Kind,
             SelfSamples = selfSamples,
         };
 
-        var summary = BuildTriageSummary(verdict, topBusy, topWaitCategories, hotPathLeaf);
+        var summary = BuildTriageSummary(verdict, topBusy, topWaitCategories, hotPathLeaf, artifact.Evidence);
         var hint = topBusy.Count > 0
             ? new NextActionHint("query_snapshot", "Drill into the top busy method's callers/callees.",
                 new Dictionary<string, object?> { ["handle"] = handle, ["view"] = CallerCalleeView, ["rootMethodFilter"] = topBusy[0].Method })
@@ -333,33 +341,28 @@ public static class CpuSampleQueryDispatcher
     /// when it dominates, <c>"mixed"</c> otherwise, and <c>"unclassified"</c> when the capture carries
     /// no running/waiting classification at all (e.g. an older trace or a non-CPU sample kind).
     /// </summary>
-    private static string ClassifyTriageVerdict(SelfSampleBreakdown? selfSamples)
+    private static string ClassifyTriageVerdict(SelfSampleBreakdown? selfSamples, CpuSampleEvidence? evidence)
     {
-        if (selfSamples is null)
+        if (selfSamples is null || evidence?.Kind != CpuSampleEvidenceKind.OsOnCpuSamples)
         {
             return "unclassified";
         }
 
-        var total = selfSamples.RunningSamples + selfSamples.WaitingSamples;
+        var total = selfSamples.RunningSamples;
         if (total <= 0)
         {
             return "unclassified";
         }
 
-        var waitingPercent = 100.0 * selfSamples.WaitingSamples / total;
-        return waitingPercent switch
-        {
-            >= 50d => "wait-bound",
-            < 20d => "cpu-bound",
-            _ => "mixed",
-        };
+        return "on-cpu-observed";
     }
 
     private static string BuildTriageSummary(
         string verdict,
         List<MethodSampleStat> topBusy,
         List<CpuWaitCategoryStat> topWaitCategories,
-        HotPathFrame? hotPathLeaf)
+        HotPathFrame? hotPathLeaf,
+        CpuSampleEvidence? evidence)
     {
         if (topBusy.Count == 0)
         {
@@ -367,11 +370,13 @@ public static class CpuSampleQueryDispatcher
         }
 
         var busy = topBusy[0];
-        var summary = $"Verdict: {verdict}. Busiest user code: {busy.Method} ({busy.SelfSamples?.RunningSamples ?? busy.ExclusiveSamples} running / {busy.ExclusiveSamples} exclusive samples).";
+        var summary = evidence?.Kind == CpuSampleEvidenceKind.OsOnCpuSamples
+            ? $"Verdict: {verdict}. Top measured on-CPU method: {busy.Method} ({busy.SelfSamples?.RunningSamples ?? 0} on-CPU / {busy.ExclusiveSamples} exclusive samples)."
+            : $"Verdict: {verdict}. Top stack-frequency candidate: {busy.Method} ({busy.ExclusiveSamples} exclusive observations; scheduler state is not established).";
         if (topWaitCategories.Count > 0)
         {
             var wait = topWaitCategories[0];
-            summary += $" Top wait/noise category: {wait.WaitReason} ({wait.ExclusivePercent:0.#}% of samples across {wait.MethodCount} method(s)).";
+            summary += $" Top heuristic wait category: {wait.WaitReason} ({wait.ExclusivePercent:0.#}% of observations across {wait.MethodCount} method(s)).";
         }
 
         if (hotPathLeaf is not null)
@@ -420,6 +425,8 @@ public static class CpuSampleQueryDispatcher
         var view = built with
         {
             ProcessId = artifact.ProcessId,
+            EvidenceBackend = artifact.Evidence?.Backend,
+            EvidenceKind = artifact.Evidence?.Kind,
         };
 
         var summary =
@@ -569,13 +576,15 @@ public static class CpuSampleQueryDispatcher
 
             var runningSamples = frame.RunningDescendantSamples + (frame.Node.SelfSamples?.RunningSamples ?? 0);
             var waitingSamples = frame.WaitingDescendantSamples + (frame.Node.SelfSamples?.WaitingSamples ?? 0);
-            var total = new SelfSampleBreakdown(runningSamples, waitingSamples);
+            var unknownSamples = frame.UnknownDescendantSamples + (frame.Node.SelfSamples?.UnknownSamples ?? 0);
+            var total = new SelfSampleBreakdown(runningSamples, waitingSamples, unknownSamples);
             metrics[frame.Node] = new SubtreeNodeMetric(total, frame.Complete);
             stack.Pop();
             if (stack.Count > 0)
             {
                 stack.Peek().RunningDescendantSamples += runningSamples;
                 stack.Peek().WaitingDescendantSamples += waitingSamples;
+                stack.Peek().UnknownDescendantSamples += unknownSamples;
                 stack.Peek().Complete &= frame.Complete;
             }
         }
@@ -631,6 +640,7 @@ public static class CpuSampleQueryDispatcher
         public int NextChildIndex { get; set; }
         public long RunningDescendantSamples { get; set; }
         public long WaitingDescendantSamples { get; set; }
+        public long UnknownDescendantSamples { get; set; }
         public bool Complete { get; set; } = true;
     }
 
@@ -652,7 +662,18 @@ public static class CpuSampleQueryDispatcher
     private static string FormatSelfSamples(SelfSampleBreakdown? selfSamples)
         => selfSamples is null
             ? string.Empty
-            : $", self split {selfSamples.RunningSamples} running / {selfSamples.WaitingSamples} waiting";
+            : $", self evidence {selfSamples.RunningSamples} on-CPU / {selfSamples.WaitingSamples} heuristic-wait / {selfSamples.UnknownSamples} unknown";
+
+    private static string BuildRunningRankSummary(
+        CpuSampleEvidence? evidence,
+        List<MethodSampleStat> top,
+        int totalCount)
+    {
+        var leader = top[0];
+        return evidence?.Kind == CpuSampleEvidenceKind.OsOnCpuSamples
+            ? $"Top {top.Count} method(s) by measured on-CPU self samples (of {totalCount} total). Leader: {leader.Method} ({leader.SelfSamples?.RunningSamples ?? 0} on-CPU / {leader.ExclusiveSamples} exclusive){FormatSelfSamples(leader.SelfSamples)}{FormatWaitReason(leader.WaitReason)}."
+            : $"Top {top.Count} method candidate(s) by exclusive stack-observation frequency (of {totalCount} total); this backend does not establish on-CPU state. Leader: {leader.Method} ({leader.ExclusiveSamples} exclusive observations){FormatSelfSamples(leader.SelfSamples)}{FormatWaitReason(leader.WaitReason)}.";
+    }
 
     /// <summary>
     /// Renders the leader's <see cref="MethodSampleStat.WaitReason"/> (issue #811) as a trailing

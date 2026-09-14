@@ -23,7 +23,7 @@ public static class CpuSampleSignals
     public static IReadOnlyList<SignalGroup> Detect(CpuSample sample, string handleId)
     {
         ArgumentNullException.ThrowIfNull(sample);
-        return Detect(new CpuSignalContext(sample.TotalSamples, sample.TopHotspots, handleId, sample.TopSelfTime, null, sample.SelfSamples, sample.TopRunningSelfTime));
+        return Detect(new CpuSignalContext(sample.TotalSamples, sample.TopHotspots, handleId, sample.TopSelfTime, null, sample.SelfSamples, sample.TopRunningSelfTime, sample.Evidence));
     }
 
     /// <summary>
@@ -54,7 +54,10 @@ public static class CpuSampleSignals
             topSelfTime,
             selfRanked,
             artifact.SelfSamples,
-            CpuSampleAnalytics.TopRunningSelfTime(artifact.Root, artifact.TotalSamples)));
+            artifact.Evidence?.Kind == CpuSampleEvidenceKind.OsOnCpuSamples
+                ? CpuSampleAnalytics.TopRunningSelfTime(artifact.Root, artifact.TotalSamples)
+                : null,
+            artifact.Evidence));
     }
 
     /// <summary>Runs every registered provider over the context and ranks the union by salience.</summary>

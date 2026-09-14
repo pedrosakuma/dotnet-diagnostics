@@ -50,6 +50,25 @@ public static class SnapshotDiffer
                 $"Snapshots are of mixed kinds ({string.Join(", ", snapshots.Select(s => s.Kind).Distinct())}); only same-kind comparison is supported.");
         }
 
+        if (string.Equals(kind, "cpu-sample", StringComparison.Ordinal))
+        {
+            var evidenceKinds = snapshots
+                .Select(static snapshot => snapshot.CpuEvidence?.Kind ?? CpuSampling.CpuSampleEvidenceKind.LegacyUnknown)
+                .Distinct()
+                .ToArray();
+            if (evidenceKinds.Length > 1)
+            {
+                return Empty(kind, mode, labels, Incomparable,
+                    $"CPU snapshots use incompatible evidence semantics ({string.Join(", ", evidenceKinds)}); stack-frequency, OS on-CPU, and legacy-unknown captures cannot be compared as one performance series.");
+            }
+
+            if (evidenceKinds[0] == CpuSampling.CpuSampleEvidenceKind.LegacyUnknown)
+            {
+                return Empty(kind, mode, labels, Incomparable,
+                    "CPU snapshots lack evidence metadata; legacy counts are preserved but cannot establish compatible measured on-CPU semantics.");
+            }
+        }
+
         var notes = new List<string>();
         if (snapshots.Select(s => s.ProcessId).Distinct().Count() > 1)
         {
@@ -133,6 +152,11 @@ public static class SnapshotDiffer
             snapshot.Kind,
             Collection.CollectionHandleKinds.ThreadPoolSnapshot,
             StringComparison.Ordinal))
+        {
+            return SupportsRegression(snapshot.Quality);
+        }
+
+        if (string.Equals(snapshot.Kind, "cpu-sample", StringComparison.Ordinal))
         {
             return SupportsRegression(snapshot.Quality);
         }
@@ -383,133 +407,8 @@ public static class SnapshotDiffer
             return MetricVerdict(from, to, minDeltaPct);
         }
 
-        var rowVerdict = KeySetVerdict(from, to, keySetDir ?? BetterDirection.Lower, minDeltaPct);
-        return string.Equals(from.Kind, "cpu-sample", StringComparison.Ordinal)
-            ? CpuSampleVerdict(from, to, rowVerdict, keySetDir ?? BetterDirection.Lower, minDeltaPct)
-            : rowVerdict;
+        return KeySetVerdict(from, to, keySetDir ?? BetterDirection.Lower, minDeltaPct);
     }
-
-    private static string CpuSampleVerdict(
-        ComparableSnapshot from,
-        ComparableSnapshot to,
-        string rowVerdict,
-        BetterDirection rowDirection,
-        double minDeltaPct)
-    {
-        var fromMetrics = MetricLookup(from);
-        var toMetrics = MetricLookup(to);
-        if (!fromMetrics.TryGetValue("waitingSelfPercent", out var fromWaiting)
-            || !toMetrics.TryGetValue("waitingSelfPercent", out var toWaiting))
-        {
-            return rowVerdict;
-        }
-
-        var waitingDirection = Direction(
-            BetterDirection.Lower,
-            fromWaiting.Value,
-            toWaiting.Value,
-            PercentDelta(fromWaiting.Value, toWaiting.Value),
-            minDeltaPct);
-        var fromRows = RowLookup(from);
-        var toRows = RowLookup(to);
-        var addedIds = toRows.Keys.Except(fromRows.Keys, StringComparer.Ordinal).ToArray();
-        var removedIds = fromRows.Keys.Except(toRows.Keys, StringComparer.Ordinal).ToArray();
-        var removedWaiting = removedIds.Any(id => IsWaitingDominated(fromRows[id]));
-        var removedRunning = removedIds.Any(id => IsRunningDominated(fromRows[id]));
-        var addedRunning = addedIds.Any(id => IsRunningDominated(toRows[id]));
-        var addedWaiting = addedIds.Any(id => IsWaitingDominated(toRows[id]));
-
-        // Only a real reduction in waiting, paired with removal of a waiting row and emergence of
-        // a running row, can suppress hotspot turnover. Shared-row regressions still surface.
-        if (waitingDirection == Improved && removedWaiting && addedRunning && !addedWaiting)
-        {
-            var sharedVerdict = SharedKeyVerdict(from, to, rowDirection, minDeltaPct);
-            return sharedVerdict is Regression or Mixed ? Mixed : Improvement;
-        }
-
-        // With no supporting waiting reduction, an unrelated replacement running hotspot remains
-        // regression evidence rather than becoming no_change/no_overlap because both waits are 0.
-        if (waitingDirection == Flat && removedRunning && addedRunning)
-        {
-            var sharedVerdict = SharedKeyVerdict(from, to, rowDirection, minDeltaPct);
-            return sharedVerdict is Improvement or Mixed ? Mixed : Regression;
-        }
-
-        return CombineSymptomAndRows(waitingDirection, rowVerdict);
-    }
-
-    private static string CombineSymptomAndRows(string symptomDirection, string rowVerdict)
-        => symptomDirection switch
-        {
-            Improved => rowVerdict switch
-            {
-                Regression or Mixed or NoOverlap => Mixed,
-                _ => Improvement,
-            },
-            Regressed => rowVerdict switch
-            {
-                Improvement or Mixed => Mixed,
-                _ => Regression,
-            },
-            _ => rowVerdict,
-        };
-
-    private static string SharedKeyVerdict(
-        ComparableSnapshot from,
-        ComparableSnapshot to,
-        BetterDirection direction,
-        double minDeltaPct)
-    {
-        var notesSink = new List<string>();
-        var fromMap = KeyLookup(from, notesSink);
-        var toMap = KeyLookup(to, notesSink);
-        var improved = false;
-        var regressed = false;
-        foreach (var id in fromMap.Keys.Intersect(toMap.Keys, StringComparer.Ordinal))
-        {
-            switch (Direction(
-                direction,
-                fromMap[id].Value,
-                toMap[id].Value,
-                PercentDelta(fromMap[id].Value, toMap[id].Value),
-                minDeltaPct))
-            {
-                case Improved: improved = true; break;
-                case Regressed: regressed = true; break;
-                default: break;
-            }
-        }
-
-        return Collapse(improved, regressed);
-    }
-
-    private static Dictionary<string, ComparableRow> RowLookup(ComparableSnapshot snapshot)
-    {
-        var rows = new Dictionary<string, ComparableRow>(StringComparer.Ordinal);
-        foreach (var row in snapshot.Rows)
-        {
-            rows.TryAdd(KeyMatchId(row.Key), row);
-        }
-
-        return rows;
-    }
-
-    private static bool IsWaitingDominated(ComparableRow row)
-    {
-        var running = RowMetric(row, "runningExclusiveSamples");
-        var waiting = RowMetric(row, "waitingExclusiveSamples");
-        return waiting is > 0 && waiting > (running ?? 0);
-    }
-
-    private static bool IsRunningDominated(ComparableRow row)
-    {
-        var running = RowMetric(row, "runningExclusiveSamples");
-        var waiting = RowMetric(row, "waitingExclusiveSamples");
-        return running is > 0 && running > (waiting ?? 0);
-    }
-
-    private static double? RowMetric(ComparableRow row, string name)
-        => row.Metrics.FirstOrDefault(metric => string.Equals(metric.Definition.Name, name, StringComparison.Ordinal))?.Value;
 
     private static string MetricVerdict(ComparableSnapshot from, ComparableSnapshot to, double minDeltaPct)
     {

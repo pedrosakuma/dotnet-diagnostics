@@ -33,7 +33,9 @@ public static class ComparablePairwiseSampleDiff
             notes.Add($"Comparison spans different runs/processes: baseline pid {baseline.ProcessId}, current pid {current.ProcessId}.");
         }
 
-        return BuildDiff(
+        var baselineKind = baseline.Evidence?.Kind ?? CpuSampleEvidenceKind.LegacyUnknown;
+        var currentKind = current.Evidence?.Kind ?? CpuSampleEvidenceKind.LegacyUnknown;
+        var diff = BuildDiff(
             kind: "cpu-sample",
             baselineHandle,
             currentHandle,
@@ -43,6 +45,25 @@ public static class ComparablePairwiseSampleDiff
             current: CpuSampleComparableProjection.ProjectTyped(current, "cpu-sample"),
             primaryMetric: static metric => metric.ExclusivePercent,
             notes);
+        if (baselineKind != currentKind)
+        {
+            notes.Add($"CPU evidence semantics are incompatible ({baselineKind} vs {currentKind}); no performance verdict is supported.");
+            return diff with { Verdict = "incomparable", Notes = notes };
+        }
+
+        if (baselineKind == CpuSampleEvidenceKind.LegacyUnknown)
+        {
+            notes.Add("CPU evidence metadata is missing; legacy counts are preserved but do not establish compatible measured on-CPU semantics.");
+            return diff with { Verdict = "incomparable", Notes = notes };
+        }
+
+        if (baselineKind != CpuSampleEvidenceKind.OsOnCpuSamples)
+        {
+            notes.Add("CPU stack-frequency evidence does not establish measured on-CPU method regressions.");
+            return diff with { Verdict = "inconclusive", Notes = notes };
+        }
+
+        return diff;
     }
 
     public static SampleDiff<TypeIdentity, HeapDiffMetric> Compare(

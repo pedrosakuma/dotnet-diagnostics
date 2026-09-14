@@ -20,14 +20,15 @@ namespace DotnetDiagnostics.Core.Signals;
 /// </param>
 /// <param name="OverallSelfSamples">
 /// Optional overall self/exclusive-time split. When present, CPU-self-time signals use
-/// <see cref="CpuSampling.SelfSampleBreakdown.RunningSamples"/> as their denominator so wait-heavy
-/// EventPipe captures do not masquerade as consumed CPU.
+/// <see cref="CpuSampling.SelfSampleBreakdown.RunningSamples"/> as their denominator. Signal
+/// providers require OS-backed on-CPU evidence.
 /// </param>
 /// <param name="TopRunningSelfTime">
 /// Optional uncapped running-self leader. When available, inline CPU signals prefer this over
 /// <see cref="TopSelfTime"/> so a wait-dominated exclusive leader does not hide the actual
 /// running hotspot.
 /// </param>
+/// <param name="Evidence">Capture-wide backend and scheduler-state semantics.</param>
 public sealed record CpuSignalContext(
     long TotalSamples,
     IReadOnlyList<Hotspot> Hotspots,
@@ -35,4 +36,5 @@ public sealed record CpuSignalContext(
     Hotspot? TopSelfTime = null,
     IReadOnlyList<MethodSampleStat>? SelfTimeRanked = null,
     SelfSampleBreakdown? OverallSelfSamples = null,
-    Hotspot? TopRunningSelfTime = null);
+    Hotspot? TopRunningSelfTime = null,
+    CpuSampleEvidence? Evidence = null);

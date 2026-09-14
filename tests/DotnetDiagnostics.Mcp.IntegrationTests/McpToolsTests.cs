@@ -2521,8 +2521,10 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         result.IsError.Should().NotBe(true);
         var diff = DeserializeStructured<SummaryDiff>(result);
         diff.Should().NotBeNull();
-        diff!.Verdict.Should().Be("regression_increased_hotspot");
+        diff!.Verdict.Should().Be("incomparable");
         diff.ChangedHotspots.Should().ContainSingle();
+        diff.Notes.Should().Contain(note =>
+            note.Contains("legacy summary", StringComparison.Ordinal));
     }
 
     [Fact]

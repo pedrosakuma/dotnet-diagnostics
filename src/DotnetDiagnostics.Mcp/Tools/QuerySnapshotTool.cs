@@ -140,10 +140,10 @@ public sealed partial class QuerySnapshotTool
         IPrincipalAccessor principalAccessor,
         INativeAddressResolver addressResolver,
         IFrameVariableResolver frameVariableResolver,
-        [Description("Drilldown handle returned by a prior collector (inspect_heap, collect_thread_snapshot, collect_sample(kind=\"cpu\"|\"off_cpu\"|\"allocation\"|\"native-alloc\"|\"native-lock-contention\"|\"method-params\"), or collect_events(kind=\"counters\"|\"exceptions\"|\"crash-guard\"|\"gc\"|\"datas\"|\"catalog\"|\"event_source\"|\"activities\"|\"logs\"|\"jit\"|\"threadpool\"|\"contention\"|\"db\"|\"kestrel\"|\"networking\"|\"requests\"|\"startup\")). Required unless `latestOfKind` is supplied instead.")] string? handle = null,
-        [Description("Kind-specific view. Heap: top-types|retention-paths|roots-by-kind|finalizer-queue|fragmentation|static-fields|delegate-targets|duplicate-strings|gchandles|timers|alc|object|gcroot|objsize|async|diff|growth. Thread: threads-summary|stack|lock-graph|deadlocks|top-blocked|unique-stacks|async-stalls|wait-chains|threadpool|resolve-address|frame-vars. Thread wait-chains includes CoreCLR monitor waiter→owner edges, async continuations, ThreadPool starvation, and inferred cycle candidates with per-edge source/confidence; deadlocks exposes the same inference metadata. Off-CPU: topStacks|byThread|stack. Collection: summary|byProvider|byType|recent|exceptions|stack|events|catalog|pauseHistogram|longestPauses|byGeneration|heap-stats|byEventName|bySource|byOperation|activities|trace|byCategory|byLevel|errors|timeline|hillClimbing|workItemOrigins|byCallSite|byOwner|byCommand|n+1|connectionPool|queues|queue|tls|config|dns|requests|longRunning. Activities view='trace' requires traceId and returns a completed-only, capture-window-limited parent/child projection. cpu-sample/allocation-sample/native-alloc-sample/native-lock-contention-sample: call-tree|top-methods|by-module|by-namespace|hot-path|caller-callee|triage|diff. `triage` (issue #812) bundles top busy hotspots (rankBy='running' order) + top wait/noise categories + the dominant hot-path leaf in one round trip, defaulting topN to 5 unless overridden. Omit to use the kind's default view.")] string? view = null,
+        [Description("Drilldown handle; required unless latestOfKind is supplied.")] string? handle = null,
+        [Description("Kind-specific view; omit for the default. CPU/allocation call trees: call-tree|top-methods|by-module|by-namespace|hot-path|caller-callee|triage|diff. Heap: top-types|retention-paths|roots-by-kind|finalizer-queue|fragmentation|static-fields|delegate-targets|duplicate-strings|gchandles|timers|alc|object|gcroot|objsize|async|diff|growth. Thread: threads-summary|stack|lock-graph|deadlocks|top-blocked|unique-stacks|async-stalls|wait-chains|threadpool|resolve-address|frame-vars. Off-CPU: topStacks|byThread|stack. Collection handles expose their documented summary, grouping, event, timeline, and detail views; see tool-reference.md for kind-specific parameters.")] string? view = null,
         [Description("Requested entries for ranked-list views. Omit for per-kind defaults (50 heap/thread/collection, 25 off-CPU). LLM projections remain hard-bounded: thread lists 8 rows, lock graph 12, retention paths 10; full evidence stays behind the handle. For view=diff, defaults to 25 rows per bucket.")] int? topN = null,
-        [Description("Ranking for ranked views. Heap view='top-types'/'growth': 'bytes' (default) or 'instances'. CPU-sample view='top-methods': 'exclusive' (self-time, default), 'inclusive', or 'running' (busy/on-CPU user code first, demoting wait-dominated exclusive leaders — issue #811).")] string rankBy = "bytes",
+        [Description("Ranking for ranked views. Heap view='top-types'/'growth': 'bytes' (default) or 'instances'. CPU-sample view='top-methods': 'exclusive' (leaf observation frequency, default), 'inclusive', or 'running' (measured on-CPU self samples when the evidence backend is OS-backed; otherwise a conservative exclusive-frequency candidate ranking that does not establish scheduler state).")] string rankBy = "bytes",
         [Description("Heap view='retention-paths' only: case-insensitive substring matched against TypeFullName.")] string? typeFullName = null,
         [Description("Heap view='object'/'gcroot'/'objsize': managed object address. Thread view='lock-graph': exact lock object address whose retained waiter IDs should be paged; thread view='resolve-address': one or more native/instruction addresses (comma-separated) to classify into (module, rva, build-id) or an unmapped verdict. Decimal or 0x-prefixed hex.")] string? address = null,
         [Description("Heap views 'duplicate-strings' / 'object' only: opt-in to raw string content / field-value previews (gated by `Diagnostics:AllowSensitiveHeapValues` AND `sensitive-heap-read` scope per docs/authorization.md#modifier-scopes).")] bool includeSensitiveValues = false,
@@ -168,7 +168,7 @@ public sealed partial class QuerySnapshotTool
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
         [Description("Zero-based compatibility offset for paged thread-list and lock-graph views. Values above 256 are rejected because ranked random access is quadratic. Prefer cursor continuation. Defaults to 0.")] int offset = 0,
         [Description("Opaque continuation returned by a thread page as nextThreadCursor, nextLockCursor, or nextWaiterCursor. Bound to the handle/view (and lock address for waiter pages); malformed or cross-handle cursors are rejected. Do not combine with a non-zero offset.")] string? cursor = null,
-        [Description("cpu-sample/allocation-sample/native-alloc-sample/native-lock-contention-sample view='top-methods' only: when true, renames compiler-generated async state-machine MoveNext leaves (e.g. `Owner+<Method>d__22.MoveNext()`) to their declaring async method name (e.g. `Owner.Method() [async]`), so on-CPU work inside an async method's own body reads as recognizable user code instead of runtime plumbing. Does not merge separate call-tree frames; a row's `asyncFolded` flag reports whether it matched. Defaults to false.")] bool foldAsync = false,
+        [Description("cpu-sample/allocation-sample/native-alloc-sample/native-lock-contention-sample view='top-methods' only: when true, renames compiler-generated async state-machine MoveNext leaves (e.g. `Owner+<Method>d__22.MoveNext()`) to their declaring async method name (e.g. `Owner.Method() [async]`). This is only a display rewrite and does not strengthen the capture's CPU evidence semantics. A row's `asyncFolded` flag reports whether it matched. Defaults to false.")] bool foldAsync = false,
         [Description("Alias for `handle` (issue #812): resolves to the most recently registered non-expired handle of this kind (e.g. \"cpu-sample\") instead of requiring the caller to copy a handle id from a prior collector — useful for iterative tuning loops that repeatedly collect + query the same kind. Exactly one of `handle`/`latestOfKind` must be supplied. Narrow with `latestOfKindProcessId` when more than one process may hold handles of this kind.")] string? latestOfKind = null,
         [Description("`latestOfKind` only: restrict resolution to handles registered for this OS process id. Omit to resolve the latest handle of the kind across all processes visible to this server.")] int? latestOfKindProcessId = null,
         CancellationToken cancellationToken = default)
@@ -1047,7 +1047,12 @@ public sealed partial class QuerySnapshotTool
         SampleDiff<MethodDiffKey, CpuDiffMetric> diff)
     {
         var baseSummary = BuildDiffSummary("cpu-sample", baselineHandle, currentHandle, diff);
-        var narrative = BuildCpuHotspotNarrative(baseline, current, baseline.SelfSamples, current.SelfSamples);
+        if (baseline.Evidence?.Kind != CpuSampleEvidenceKind.OsOnCpuSamples
+            || current.Evidence?.Kind != CpuSampleEvidenceKind.OsOnCpuSamples)
+        {
+            return $"{baseSummary} Stack-frequency, mixed, or legacy evidence does not support a measured per-method CPU regression claim.";
+        }
+        var narrative = BuildCpuHotspotNarrative(baseline, current);
         return narrative is null ? baseSummary : $"{baseSummary} {narrative}";
     }
 
@@ -1062,9 +1067,7 @@ public sealed partial class QuerySnapshotTool
     /// </summary>
     private static string? BuildCpuHotspotNarrative(
         CpuSampleTraceArtifact baseline,
-        CpuSampleTraceArtifact current,
-        SelfSampleBreakdown? baselineSelf,
-        SelfSampleBreakdown? currentSelf)
+        CpuSampleTraceArtifact current)
     {
         var parts = new List<string>(2);
 
@@ -1084,43 +1087,7 @@ public sealed partial class QuerySnapshotTool
                 $"Top hotspot share {direction}: {topMover.Key.Symbol.MethodFullName} {topMover.Baseline.ExclusivePercent:F1}% \u2192 {topMover.Current.ExclusivePercent:F1}% ({(deltaAbs >= 0 ? "+" : string.Empty)}{deltaAbs:F1}pp)."));
         }
 
-        if (TryDescribeWaitingTrend(baselineSelf, currentSelf, out var waitingNarrative))
-        {
-            parts.Add(waitingNarrative);
-        }
-
         return parts.Count == 0 ? null : string.Join(" ", parts);
-    }
-
-    private static bool TryDescribeWaitingTrend(SelfSampleBreakdown? baselineSelf, SelfSampleBreakdown? currentSelf, out string narrative)
-    {
-        narrative = string.Empty;
-        if (baselineSelf is null || currentSelf is null)
-        {
-            return false;
-        }
-
-        var baselineTotal = baselineSelf.RunningSamples + baselineSelf.WaitingSamples;
-        var currentTotal = currentSelf.RunningSamples + currentSelf.WaitingSamples;
-        if (baselineTotal <= 0 || currentTotal <= 0)
-        {
-            return false;
-        }
-
-        var baselineWaitingPct = 100.0 * baselineSelf.WaitingSamples / baselineTotal;
-        var currentWaitingPct = 100.0 * currentSelf.WaitingSamples / currentTotal;
-        var deltaAbs = currentWaitingPct - baselineWaitingPct;
-        // Suppress the call-out below a 1 percentage-point shift — noise, not signal.
-        if (Math.Abs(deltaAbs) < 1.0)
-        {
-            return false;
-        }
-
-        var direction = deltaAbs >= 0 ? "grew" : "shrank";
-        narrative = string.Create(
-            CultureInfo.InvariantCulture,
-            $"Waiting/noise share {direction}: {baselineWaitingPct:F1}% \u2192 {currentWaitingPct:F1}% of self samples.");
-        return true;
     }
 
     private static string BuildJourneyDiffSummary(SnapshotJourneyDiff diff, string currentHandle, string[] comparisonHandles)
@@ -1160,18 +1127,6 @@ public sealed partial class QuerySnapshotTool
             parts.Add(string.Create(
                 CultureInfo.InvariantCulture,
                 $"Top hotspot share {direction}: {topRow.DisplayName} {first:F1}% \u2192 {last:F1}% ({(topRow.DeltaAbs >= 0 ? "+" : string.Empty)}{topRow.DeltaAbs:F1}pp)."));
-        }
-
-        var waitingSeries = diff.MetricSeries.FirstOrDefault(series => string.Equals(series.Definition.Name, "waitingSelfPercent", StringComparison.Ordinal));
-        if (waitingSeries is { Values.Count: > 0 }
-            && waitingSeries.Values[0] is { } waitingFirst
-            && waitingSeries.Values[^1] is { } waitingLast
-            && Math.Abs(waitingLast - waitingFirst) >= 1.0)
-        {
-            var direction = waitingLast >= waitingFirst ? "grew" : "shrank";
-            parts.Add(string.Create(
-                CultureInfo.InvariantCulture,
-                $"Waiting/noise share {direction}: {waitingFirst:F1}% \u2192 {waitingLast:F1}% across the capture set."));
         }
 
         return parts.Count == 0 ? null : string.Join(" ", parts);

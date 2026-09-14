@@ -539,21 +539,13 @@ Pairwise sample diffs remain
 inline and accepted pairs are `cpu-sample × cpu-sample`, `heap-snapshot × heap-snapshot` and
 `allocation-sample × allocation-sample`. Allocation diffs normalize totals to per-second rates.
 
-For classified CPU samples, `waitingSelfPercent` is the primary comparison symptom:
-`runningSelfSamples` and `waitingSelfSamples` remain distinct overall and per frame. A removed
-waiting hotspot plus a different running leader is therefore an improvement when waiting
-meaningfully collapses. Scalar and row evidence are otherwise combined: two unrelated all-running
-hotspots remain regression evidence when waiting is unchanged at zero.
-
 For `cpu-sample × cpu-sample` diffs (both the `baselineHandle` pairwise path and the
 `comparisonHandles` journey path), the `Summary` line adds an explicit narrative on top of the
 raw added/removed/changed counts (issue #812): a "Top hotspot share grew/shrank: `Method` X% →
-Y% (±Z pp)" call-out for whichever method moved the most in absolute percentage points, plus a
-"Waiting/noise share grew/shrank: X% → Y% of self samples" call-out when the waiting/running self-
-sample split shifted by at least 1 percentage point. Both call-outs are omitted (falling back to
-the plain counts summary) when there is no qualifying overlap or movement is below the noise
-threshold — this lets a tuning-loop operator read the verdict from the one-line summary instead of
-scanning per-method deltas after every iteration.
+Y% (±Z pp)" call-out for whichever method moved the most in absolute percentage points. This
+narrative is emitted only for compatible OS-backed on-CPU evidence. EventPipe frequency
+comparisons are inconclusive, mixed/legacy evidence is incomparable, and heuristic wait shares
+never drive a performance verdict or tuning narrative.
 
 `heap-snapshot` `view="growth"` is the retention-aware **live heap leak hunt** (issue #463).
 Capture two live heap snapshots N seconds apart — `inspect_heap(source="live", includeRetentionPaths=true)` —
@@ -643,49 +635,54 @@ caller named `<root>` to mark a top-level entry point (matching PerfView's ROOT 
 A `caller-callee` filter that matches zero methods returns `NotFound`; one that matches more
 than one distinct method returns `InvalidArgument` with the candidate list.
 
-`top-methods` also accepts `rankBy="running"` (issue #811): it re-orders the exclusive-ranked
-list by on-CPU ("running") self-time — using the same running/waiting split
-`WellKnownWaitFrameClassifier` already attaches per frame — instead of raw exclusive samples, so
-a known wait/park leaf (e.g. `LowLevelLifoSemaphore.WaitForSignal`, `Monitor.Wait`,
-`ThreadPool worker idle wait`) no longer outranks the actual busy user-code hotspot underneath
-it. Rows with no wait classification keep their exclusive count as the running score, so a trace
-with no classified leaves at all degrades to the same order as `rankBy="exclusive"`.
+Every CPU response carries capture-wide `evidence` metadata. NativeAOT perf/ETW captures use
+`kind="OsOnCpuSamples"` and put OS-backed profile observations in
+`selfSamples.runningSamples`. CoreCLR EventPipe uses
+`kind="StackFrequencyWithHeuristicWaits"`: known wait-name matches go to
+`waitingSamples`, while every unmatched, unresolved, wrapper, and native leaf goes to
+`unknownSamples`. EventPipe therefore preserves all observations without claiming that an
+unrecognized frame was scheduled on a CPU.
+
+`top-methods` also accepts `rankBy="running"`. For OS-backed evidence it ranks measured on-CPU
+self samples. For EventPipe it keeps useful candidates discoverable by exclusive stack-observation
+frequency, but the response and summary explicitly state that scheduler state is not established.
 
 Every `top-methods` row also carries an optional `waitReason` string (issue #811) naming the known
 wait/park primitive its leaf frame represents (e.g. `"Monitor.Wait"`, `"ThreadPool worker idle
 wait"`, `"Socket I/O"`), or `null` when the frame is not a recognized wait pattern. This labels a
-wait-dominated row as noise instead of removing it, so `rankBy="exclusive"` still surfaces it (with
-its reason) while `rankBy="running"` demotes it. The leader's `waitReason` (when present) is also
+wait-like row as a heuristic instead of removing it, so `rankBy="exclusive"` still surfaces it (with
+its reason). The leader's `waitReason` (when present) is also
 appended to the `top-methods` summary string.
 
 `top-methods` additionally accepts the opt-in `foldAsync=true` parameter (issue #811 part 3): it
 renames a compiler-generated async state-machine `MoveNext` leaf (e.g.
 `Owner+<WriteLoopAsync>d__22.MoveNext()`) to its declaring async method name (`Owner.WriteLoopAsync()
-[async]`), so on-CPU work happening directly inside an async method's own body — between its
-`await`s — reads as recognizable user code instead of unfamiliar compiler-generated plumbing.
+[async]`), so sampled work inside an async method's own body — between its `await`s — reads as
+recognizable user code instead of unfamiliar compiler-generated plumbing.
 Folding is purely a display-name rewrite: it does not change how rows are aggregated (a given async
 method's `MoveNext` already aggregates under its own identity-derived key regardless of `foldAsync`),
 and it does not merge separate call-tree frames (e.g. `AsyncTaskMethodBuilder.Start`,
 `TaskAwaiter.GetResult`) into the folded row — that is tracked as further follow-up work. Each row
 carries a `asyncFolded` boolean reporting whether its leaf matched the recognized shape. Defaults to
-`false` so existing callers see no change; combine with `rankBy="running"` to both promote and label
-busy user code in one pass. Async **lambdas** and async **local functions** compile to a bare `d`
+`false` so existing callers see no change. Async **lambdas** and async **local functions** compile to a bare `d`
 state-machine suffix instead of `d__NN` (e.g. `Program+<>c+<<Main>b__0_3>d.MoveNext()`) and are
 deliberately not recognized by this pass — they are left unfolded rather than risk a false match.
 
-`triage` (issue #812) bundles the same running/waiting evidence into one round trip instead of
-separate `top-methods` + `hot-path` calls: the top busy user-code hotspots (`rankBy="running"`
-order), the top wait/noise categories (grouped by `waitReason`, summed by exclusive samples and
+`triage` bundles the same evidence into one round trip instead of separate `top-methods` +
+`hot-path` calls: measured on-CPU leaders for OS-backed captures or conservative stack-frequency
+candidates for EventPipe, heuristic wait categories (grouped by `waitReason`, summed by exclusive samples and
 ranked by exclusive samples descending), and the dominant `hot-path` leaf. It reuses `topN` (default
 `5` instead of the usual `20` — triage is meant to stay a small "first look" summary — and
 `hotPathThresholdPercent` for the hot-path portion). The response also carries a top-level
-`verdict` derived from the whole-capture running/waiting self-sample split: `"cpu-bound"` when
-waiting is under 20% of self time, `"wait-bound"` when it is 50% or more, `"mixed"` otherwise, and
-`"unclassified"` when the capture carries no running/waiting classification at all (e.g. an older
-trace or a non-CPU sample kind). The summary string states the verdict, the busiest method with its
-running/exclusive sample counts, the top wait category (if any) with its percentage, and the
+`verdict`: `"on-cpu-observed"` only for OS-backed captures with observations, otherwise
+`"unclassified"`. The summary string states the evidence-safe leader, the top heuristic wait
+category (if any) with its observation percentage, and the
 hot-path leaf. The `NextActionHint` points at `caller-callee` anchored on the top busy method (or at
 `call-tree` when no attributable method was found).
+
+CPU comparisons also carry this evidence contract. OS-backed captures can produce performance
+verdicts only against compatible OS-backed evidence. EventPipe-to-EventPipe comparisons remain
+frequency evidence and are `inconclusive`; mixed or legacy-unknown semantics are `incomparable`.
 
 The GC drilldown views (`timeline`, `longestPauses`, `byGeneration`, issue #314) re-aggregate the
 GC events already retained behind a `gc-events` handle — no new collection. `timeline` orders the
@@ -856,9 +853,11 @@ periodically snapshots managed thread stacks and therefore can include threads
 parked in wait primitives; it is **not** a true OS scheduler "only when running
 on-core" profiler there. For **NativeAOT** targets, the Linux `perf` and Windows
 ETW backends *are* true on-core profilers. The CPU sample result now exposes a
-`selfSamples.runningSamples` vs `selfSamples.waitingSamples` split so callers can
-see when a hot self-time frame is wait-dominated, but use `collect_sample(kind="off_cpu")`
-or `collect_thread_snapshot` for genuine wait-chain / blocking analysis.
+three-way self-sample split: `runningSamples` is reserved for OS-backed on-CPU
+observations, `waitingSamples` is a name-based wait heuristic, and `unknownSamples`
+preserves every EventPipe leaf whose scheduler state is not established. Use
+`collect_sample(kind="off_cpu")` or `collect_thread_snapshot` for genuine wait-chain /
+blocking analysis.
 
 - **Linux:** uses a split perf capture: `sched:sched_switch` remains
   system-wide with DWARF callchains (the tracepoint only fires on the thread leaving
@@ -1828,7 +1827,7 @@ a "first page" summary that otherwise costs two or more separate `query_snapshot
 
 | Field | Populated when | Source |
 |---|---|---|
-| `topCpuSelfTime` | `cpu` present | Top self-time (exclusive) "busy user code" hotspots — the same ranking `query_snapshot(view="triage")` returns, capped at `CpuSampleQueryDispatcher.CompactTopN` (5). |
+| `topCpuSelfTime` | `cpu` present | Evidence-aware exclusive method candidates — measured on-CPU for OS-backed captures, stack-frequency candidates for EventPipe — capped at `CpuSampleQueryDispatcher.CompactTopN` (5). |
 | `topCpuWaitCategories` | `cpu` present | Top wait/noise categories grouped by `WaitReason`, summed by exclusive samples. |
 | `hotPathLeaf` / `hotPathDepth` | `cpu` present | The dominant hot-path leaf frame and its depth (same `hot-path` view logic, default 50% threshold). |
 | `topAllocationTypes` | `allocation` present | Top allocated types by bytes (`AllocationSample.TopByBytes`), capped at 5. |
@@ -1987,9 +1986,9 @@ sample counts. The backend is runtime-specific:
   This periodically samples **managed thread stacks** at a fixed interval; it does
   **not** distinguish whether that managed thread was actually scheduled on a CPU
   core at the instant it was sampled. Wait/blocking primitives can therefore
-  dominate the self-time ranking. To make that visible, the result now emits
-  `selfSamples.runningSamples` vs `selfSamples.waitingSamples` overall and on each
-  hotspot / drilldown method entry.
+  dominate the self-time ranking. The result records recognized wait names as
+  heuristic `waitingSamples` and all other leaves as `unknownSamples`;
+  `runningSamples` remains zero.
 - **NativeAOT** — Linux `perf` or Windows ETW sampled-profile backends. These are
   true on-core profilers; their `selfSamples` usually land entirely in
   `runningSamples`.
@@ -3726,11 +3725,13 @@ dynamic pod Resources are not forwarded.
 [investigation-playbooks.md](./investigation-playbooks.md).
 
 Investigation-summary comparison does not treat every newly ranked frame as a regression.
-Comparable `Findings.KeyMetrics` use registered direction semantics for ThreadPool queue/thread
-counts and request completion/throughput/p95 signals. Those symptom deltas are considered before
-hotspot rank turnover. When the original waiting-dominated hotspot disappears, queue pressure
-falls, and completion/throughput improves, a newly hottest **running** frame is reported as part
-of an `improvement`, not `regression_new_hotspot`.
+`Findings.CpuEvidenceKind` gates what hotspot percentages can support. Matching OS-backed
+on-CPU summaries may use hotspot movement in the verdict. Matching EventPipe summaries retain
+and report stack-frequency deltas, but those deltas do not drive a performance verdict; without
+directional metric evidence the result is `inconclusive`. Legacy summaries with no CPU evidence
+metadata remain readable, but their hotspot counts do not establish measured CPU and produce
+`incomparable` without directional metric evidence. Mixed OS-backed, EventPipe, and legacy CPU
+semantics are `incomparable`.
 
 Registered lower-is-better names are `threadpool-queue-length`,
 `threadpool-pending-work-items`, `threadpool-thread-count`, `request-p95-milliseconds`,
@@ -3744,10 +3745,9 @@ provider/meter/tag identity for series equality and extracts only the encoded
 counter or instrument/statistic name when applying these legacy direction
 rules.
 
-`HotspotSummary.SelfSamples` preserves the running/waiting split used by this decision. Legacy
-summaries without that split remain readable, but a simultaneous added+removed hotspot with no
-comparable directional metrics is `incomparable`, not a confident regression. Conflicting
-directional symptoms return `mixed`; unrecognized or one-sided key metrics appear in
+`HotspotSummary.SelfSamples` preserves the on-CPU/heuristic-wait/unknown split and must be
+interpreted with `Findings.CpuEvidenceKind`. Conflicting directional symptoms return `mixed`;
+unrecognized or one-sided key metrics appear in
 `KeyMetricDeltas`/`Notes` but do not silently drive the verdict. An unchanged comparable metric
 does not erase an incomparable verdict-relevant metric.
 

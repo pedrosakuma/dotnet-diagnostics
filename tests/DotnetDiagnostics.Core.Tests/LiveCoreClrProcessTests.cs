@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.Diagnostics;
+using System.Globalization;
 using System.Text.Json;
 using DotnetDiagnostics.Core.Activities;
 using DotnetDiagnostics.Core.Artifacts;
@@ -952,6 +953,55 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         result.Summary.TotalSamples.Should().BeGreaterThan(0);
         result.Summary.TopHotspots.Should().NotBeEmpty();
         result.Artifact.Root.Children.Should().NotBeEmpty("the call-tree artifact must capture at least one stack");
+    }
+
+    [LinuxOnlyFact(Timeout = 60_000)]
+    public async Task CpuSampler_EventPipeDoesNotConvertBlockedOrUnmatchedLeavesIntoOnCpuEvidence()
+    {
+        EnsureSampleRunning();
+        var baseUrl = await EnsureListeningUrlAsync(TimeSpan.FromSeconds(30));
+        using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
+
+        using var response = await http.GetAsync("/cpu-evidence/workers?ms=10000");
+        response.EnsureSuccessStatusCode();
+        var busyTid = await FindNamedThreadAsync("evid-busy", TimeSpan.FromSeconds(2));
+        var blockedTid = await FindNamedThreadAsync("evid-block", TimeSpan.FromSeconds(2));
+        var busyBefore = ReadThreadCpuTicks(busyTid);
+        var blockedBefore = ReadThreadCpuTicks(blockedTid);
+
+        var capture = new EventPipeCpuSampler().SampleAsync(
+            Pid,
+            TimeSpan.FromSeconds(4),
+            topN: 25,
+            cancellationToken: CancellationToken.None);
+
+        long busyDelta;
+        long blockedDelta;
+        try
+        {
+            // Read while workers are alive, rather than after potentially slow symbolication.
+            await Task.Delay(TimeSpan.FromSeconds(1));
+            busyDelta = ReadThreadCpuTicks(busyTid) - busyBefore;
+            blockedDelta = ReadThreadCpuTicks(blockedTid) - blockedBefore;
+        }
+        finally
+        {
+            await capture;
+        }
+        var result = await capture;
+        output.WriteLine($"evid-busy ticks={busyDelta}; evid-block ticks={blockedDelta}; samples={result.Summary.TotalSamples}");
+
+        busyDelta.Should().BeGreaterThan(blockedDelta,
+            "the bounded fixture has an actual CPU worker and a blocked worker, while tick accounting remains coarse");
+        result.Summary.Evidence.Should().Be(CpuSampleEvidence.EventPipeSampleProfiler);
+        result.Summary.SelfSamples!.RunningSamples.Should().Be(0,
+            "EventPipe SampleProfiler does not observe OS scheduler state");
+        (result.Summary.SelfSamples.WaitingSamples + result.Summary.SelfSamples.UnknownSamples)
+            .Should().Be(result.Summary.TotalSamples, "every retained leaf observation must remain accounted for");
+        result.Summary.TopHotspots.Should().OnlyContain(hotspot =>
+            hotspot.SelfSamples == null || hotspot.SelfSamples.RunningSamples == 0);
+        CpuSampleAnalytics.TotalSelfSamples(result.Artifact.Root).Should().Be(result.Summary.SelfSamples,
+            "the drilldown tree must preserve the same evidence counts as the inline summary");
     }
 
     [Fact]
@@ -1963,7 +2013,7 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         output.WriteLine(JsonSerializer.Serialize(diff));
         baseline.Artifact.TotalSamples.Should().BeGreaterThan(0);
         current.Artifact.TotalSamples.Should().BeGreaterThan(0);
-        diff.Verdict.Should().BeOneOf("regression", "mixed");
+        diff.Verdict.Should().Be("inconclusive");
         diff.Added.Should().Contain(row =>
             row.Key.Symbol.Module.Contains("CoreClrSample", StringComparison.Ordinal)
             && row.Direction == "added"
@@ -2124,6 +2174,36 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
             try { await driver; }
             catch (OperationCanceledException) when (cts.IsCancellationRequested) { }
         }
+    }
+
+    private async Task<int> FindNamedThreadAsync(string name, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            foreach (var taskDirectory in Directory.EnumerateDirectories($"/proc/{Pid}/task"))
+            {
+                var comm = await File.ReadAllTextAsync(Path.Combine(taskDirectory, "comm"));
+                if (string.Equals(comm.Trim(), name, StringComparison.Ordinal))
+                {
+                    return int.Parse(Path.GetFileName(taskDirectory), CultureInfo.InvariantCulture);
+                }
+            }
+
+            await Task.Delay(25);
+        }
+
+        throw new InvalidOperationException($"Thread '{name}' did not appear under /proc/{Pid}/task.");
+    }
+
+    private long ReadThreadCpuTicks(int tid)
+    {
+        var stat = File.ReadAllText($"/proc/{Pid}/task/{tid}/stat");
+        var afterName = stat[(stat.LastIndexOf(')') + 2)..];
+        var fields = afterName.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var userTicks = long.Parse(fields[11], CultureInfo.InvariantCulture);
+        var systemTicks = long.Parse(fields[12], CultureInfo.InvariantCulture);
+        return userTicks + systemTicks;
     }
 
     [Fact(Timeout = 90_000)]

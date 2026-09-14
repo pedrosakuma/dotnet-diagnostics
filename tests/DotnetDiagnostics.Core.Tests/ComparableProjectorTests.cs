@@ -406,13 +406,13 @@ public sealed class ComparableProjectorTests
 
         var diff = SnapshotDiffer.Compare(new[] { baseline, current });
 
-        diff.Verdict.Should().Be("improvement");
-        diff.MetricSeries.Single(series => series.Definition.Name == "waitingSelfPercent")
-            .Direction.Should().Be("improved");
+        diff.Verdict.Should().Be("no_overlap");
+        diff.MetricSeries.Single(series => series.Definition.Name == "onCpuSelfPercent")
+            .Direction.Should().Be("regressed");
         baseline.Rows.Single().Metrics.Should().Contain(metric =>
-            metric.Definition.Name == "waitingExclusiveSamples" && metric.Value == 60);
+            metric.Definition.Name == "heuristicWaitExclusiveSamples" && metric.Value == 60);
         current.Rows.Single().Metrics.Should().Contain(metric =>
-            metric.Definition.Name == "runningExclusiveSamples" && metric.Value == 40);
+            metric.Definition.Name == "onCpuExclusiveSamples" && metric.Value == 40);
     }
 
     [Fact]
@@ -440,9 +440,9 @@ public sealed class ComparableProjectorTests
 
         var diff = SnapshotDiffer.Compare(new[] { baseline, current });
 
-        diff.Verdict.Should().Be("regression");
-        diff.MetricSeries.Single(series => series.Definition.Name == "waitingSelfPercent")
-            .Direction.Should().Be("flat");
+        diff.Verdict.Should().Be("no_overlap");
+        diff.MetricSeries.Single(series => series.Definition.Name == "onCpuSelfPercent")
+            .Direction.Should().Be("improved");
     }
 
     [Fact]
@@ -717,7 +717,11 @@ public sealed class ComparableProjectorTests
                 totalSamples,
                 0,
                 [new CallTreeNode(new SampledFrame(module, method), exclusiveSamples, exclusiveSamples, Array.Empty<CallTreeNode>())]),
-            MethodIdentities: identities);
+            MethodIdentities: identities)
+        {
+            Evidence = CpuSampleEvidence.LinuxPerfOnCpu,
+            SelfSamples = new SelfSampleBreakdown(exclusiveSamples, 0),
+        };
     }
 
     private static CpuSampleTraceArtifact ClassifiedCpuTraceForProjector(
@@ -747,6 +751,7 @@ public sealed class ComparableProjectorTests
                 0,
                 [child]))
         {
+            Evidence = CpuSampleEvidence.LinuxPerfOnCpu,
             SelfSamples = new SelfSampleBreakdown(runningSamples, waitingSamples),
         };
     }

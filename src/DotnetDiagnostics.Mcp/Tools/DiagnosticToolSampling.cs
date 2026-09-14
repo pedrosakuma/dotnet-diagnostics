@@ -709,8 +709,11 @@ internal static class DiagnosticToolSampling
                 ? sample.TopHotspots.Aggregate((a, b) => b.ExclusiveSamples > a.ExclusiveSamples ? b : a)
                 : null);
         var overallSelfSplit = sample.SelfSamples is { } overall
-            ? $" Self split: {overall.RunningSamples} running / {overall.WaitingSamples} waiting."
+            ? $" Self evidence: {overall.RunningSamples} on-CPU / {overall.WaitingSamples} heuristic-wait / {overall.UnknownSamples} unknown."
             : string.Empty;
+        var evidenceSummary = sample.Evidence is { } evidence
+            ? $" Evidence: {evidence.Backend}/{evidence.Kind}. {evidence.Observation}"
+            : " Evidence: legacy-unknown; scheduler-state semantics are not established.";
         var inlineSample = sample;
         var droppedHotspots = 0;
         if (depth == SamplingDepth.Summary && sample.TopHotspots.Count > 3)
@@ -724,16 +727,16 @@ internal static class DiagnosticToolSampling
         {
             var selfPercent = sample.TotalSamples > 0 ? topSelfTime.ExclusiveSamples * 100.0 / sample.TotalSamples : 0;
             var splitSuffix = topSelfTime.SelfSamples is { } self
-                ? $" Self split: {self.RunningSamples} running / {self.WaitingSamples} waiting."
+                ? $" Self evidence: {self.RunningSamples} on-CPU / {self.WaitingSamples} heuristic-wait / {self.UnknownSamples} unknown."
                 : string.Empty;
             leadPhrase =
-                $"Hottest self-time method: {topSelfTime.Frame.Method} ({topSelfTime.ExclusiveSamples} exclusive, {selfPercent:0.#}% of samples).{splitSuffix} " +
+                $"Most frequent exclusive stack leaf: {topSelfTime.Frame.Method} ({topSelfTime.ExclusiveSamples} observations, {selfPercent:0.#}% of stack samples).{splitSuffix} " +
                 $"Rank self-time with query_snapshot(handle=\"{handleId}\", view=\"top-methods\") or walk the call path with view=\"call-tree\".";
         }
         else if (top is not null)
         {
             var splitSuffix = top.SelfSamples is { } self
-                ? $" Self split: {self.RunningSamples} running / {self.WaitingSamples} waiting."
+                ? $" Self evidence: {self.RunningSamples} on-CPU / {self.WaitingSamples} heuristic-wait / {self.UnknownSamples} unknown."
                 : string.Empty;
             leadPhrase =
                 $"Top inclusive method: {top.Frame.Method} ({top.InclusiveSamples} inclusive / {top.ExclusiveSamples} exclusive).{splitSuffix} " +
@@ -748,8 +751,8 @@ internal static class DiagnosticToolSampling
 
         var summary = top is not null
             ? (depth == SamplingDepth.Summary && droppedHotspots > 0
-                ? $"Captured {sample.TotalSamples} samples over {durationSeconds}s — showing top {inlineSample.TopHotspots.Count} of {sample.TopHotspots.Count} hotspot(s) (dropped {droppedHotspots}; handle has all).{overallSelfSplit} {leadPhrase}"
-                : $"Captured {sample.TotalSamples} samples over {durationSeconds}s.{overallSelfSplit} {leadPhrase}")
+                ? $"Captured {sample.TotalSamples} samples over {durationSeconds}s — showing top {inlineSample.TopHotspots.Count} of {sample.TopHotspots.Count} hotspot(s) (dropped {droppedHotspots}; handle has all).{overallSelfSplit}{evidenceSummary} {leadPhrase}"
+                : $"Captured {sample.TotalSamples} samples over {durationSeconds}s.{overallSelfSplit}{evidenceSummary} {leadPhrase}")
             : $"Captured {sample.TotalSamples} samples but no method aggregation surfaced — increase durationSeconds or verify the target is under load.";
         if (!string.IsNullOrEmpty(tracePath))
         {

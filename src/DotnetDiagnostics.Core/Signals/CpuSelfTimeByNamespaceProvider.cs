@@ -23,7 +23,9 @@ public sealed class CpuSelfTimeByNamespaceProvider : ISignalProvider<CpuSignalCo
     public IEnumerable<SignalGroup> Detect(CpuSignalContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
-        if (context.TotalSamples <= 0 || context.SelfTimeRanked is not { Count: > 0 } ranked)
+        if (context.TotalSamples <= 0
+            || context.Evidence?.Kind != CpuSampling.CpuSampleEvidenceKind.OsOnCpuSamples
+            || context.SelfTimeRanked is not { Count: > 0 } ranked)
         {
             yield break;
         }

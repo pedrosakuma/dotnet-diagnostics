@@ -73,6 +73,7 @@ public sealed class SummaryComparer : ISummaryComparer
     private const string Regressed = "regressed";
     private const string Unchanged = "unchanged";
     private const string Incomparable = "incomparable";
+    private const string Inconclusive = "inconclusive";
 
     private static readonly Dictionary<string, MetricDirection> MetricDirections =
         new Dictionary<string, MetricDirection>(StringComparer.Ordinal)
@@ -153,7 +154,27 @@ public sealed class SummaryComparer : ISummaryComparer
             current.Findings.KeyMetrics,
             current.Findings.KeyMetricUnits,
             notes);
-        var verdict = Verdict(provenance, added, removed, changed, metricDeltas);
+        var cpuSemantics = CompareCpuSemantics(baseline.Findings, current.Findings);
+        var verdict = cpuSemantics switch
+        {
+            CpuComparisonSemantics.Incompatible => Incomparable,
+            CpuComparisonSemantics.StackFrequency => MetricOnlyVerdict(metricDeltas, Inconclusive),
+            CpuComparisonSemantics.LegacyUnknown => MetricOnlyVerdict(metricDeltas, Incomparable),
+            _ => Verdict(provenance, added, removed, changed, metricDeltas),
+        };
+        if (cpuSemantics == CpuComparisonSemantics.Incompatible)
+        {
+            notes.Add("CPU findings use incompatible evidence semantics; stack-frequency, OS on-CPU, and legacy-unknown summaries cannot be compared as one performance series.");
+        }
+        else if (cpuSemantics == CpuComparisonSemantics.StackFrequency)
+        {
+            notes.Add("CPU hotspot percentages are EventPipe stack-observation frequencies, not measured on-CPU time; they do not drive the performance verdict.");
+        }
+        else if (cpuSemantics == CpuComparisonSemantics.LegacyUnknown)
+        {
+            notes.Add("CPU hotspot evidence is missing from a legacy summary; preserved counts do not establish measured on-CPU time and do not drive the performance verdict.");
+        }
+
         return new SummaryDiff(verdict, provenance, added, removed, changed)
         {
             KeyMetricDeltas = metricDeltas,
@@ -263,6 +284,46 @@ public sealed class SummaryComparer : ISummaryComparer
         if (added.Length > 0) return "regression_new_hotspot";
         if (changed.Length > 0 && changed[0].InclusiveDeltaPoints > 0) return "regression_increased_hotspot";
         return "improvement";
+    }
+
+    private static string MetricOnlyVerdict(
+        IReadOnlyList<KeyMetricDelta> metricDeltas,
+        string fallback)
+        => MetricEvidence(metricDeltas) switch
+        {
+            Evidence.Improved => "improvement",
+            Evidence.Regressed => "regression_metrics",
+            Evidence.Mixed => "mixed",
+            Evidence.Incomparable => Incomparable,
+            _ => fallback,
+        };
+
+    private static CpuComparisonSemantics CompareCpuSemantics(
+        InvestigationFindings baseline,
+        InvestigationFindings current)
+    {
+        var hasCpuFindings = baseline.TopHotspots.Count > 0
+            || current.TopHotspots.Count > 0
+            || baseline.CpuEvidenceKind is not null
+            || current.CpuEvidenceKind is not null;
+        if (!hasCpuFindings)
+        {
+            return CpuComparisonSemantics.NotApplicable;
+        }
+
+        var baselineKind = baseline.CpuEvidenceKind ?? CpuSampleEvidenceKind.LegacyUnknown;
+        var currentKind = current.CpuEvidenceKind ?? CpuSampleEvidenceKind.LegacyUnknown;
+        if (baselineKind != currentKind)
+        {
+            return CpuComparisonSemantics.Incompatible;
+        }
+
+        return baselineKind switch
+        {
+            CpuSampleEvidenceKind.OsOnCpuSamples => CpuComparisonSemantics.OsOnCpu,
+            CpuSampleEvidenceKind.StackFrequencyWithHeuristicWaits => CpuComparisonSemantics.StackFrequency,
+            _ => CpuComparisonSemantics.LegacyUnknown,
+        };
     }
 
     private static KeyMetricDelta[] CompareKeyMetrics(
@@ -601,5 +662,14 @@ public sealed class SummaryComparer : ISummaryComparer
         Regressed,
         Mixed,
         Incomparable,
+    }
+
+    private enum CpuComparisonSemantics
+    {
+        NotApplicable,
+        OsOnCpu,
+        StackFrequency,
+        LegacyUnknown,
+        Incompatible,
     }
 }

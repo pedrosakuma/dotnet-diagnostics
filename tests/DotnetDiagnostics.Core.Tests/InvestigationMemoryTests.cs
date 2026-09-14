@@ -62,6 +62,16 @@ public class InvestigationMemoryTests
         };
     }
 
+    private static CpuSampleTraceArtifact MeasuredArtifactFor(
+        params (string module, string method, long incl, long excl)[] frames)
+    {
+        var artifact = ClassifiedArtifactFor(
+            1000,
+            frames.Select(static frame =>
+                (frame.module, frame.method, frame.incl, frame.excl, frame.excl, 0L)).ToArray());
+        return artifact with { Evidence = CpuSampleEvidence.LinuxPerfOnCpu };
+    }
+
     [Fact]
     public void Export_ProducesV1Schema_AndStableSymbolRefs()
     {
@@ -1129,7 +1139,7 @@ public class InvestigationMemoryTests
     [Fact]
     public void Compare_NoChange_ReturnsNoRegressionVerdict()
     {
-        var artifact = ArtifactFor(("M.dll", "M.A", 100, 80));
+        var artifact = MeasuredArtifactFor(("M.dll", "M.A", 100, 80));
         var exporter = NewExporter();
         var s1 = exporter.Export(new ExportRequest("h", artifact)).Summary;
         var s2 = exporter.Export(new ExportRequest("h", artifact)).Summary;
@@ -1146,8 +1156,8 @@ public class InvestigationMemoryTests
     public void Compare_NewHotspot_FlagsRegression()
     {
         var exporter = NewExporter();
-        var baseline = exporter.Export(new ExportRequest("h", ArtifactFor(("M.dll", "M.A", 100, 80)))).Summary;
-        var current = exporter.Export(new ExportRequest("h", ArtifactFor(
+        var baseline = exporter.Export(new ExportRequest("h", MeasuredArtifactFor(("M.dll", "M.A", 100, 80)))).Summary;
+        var current = exporter.Export(new ExportRequest("h", MeasuredArtifactFor(
             ("M.dll", "M.A", 100, 80),
             ("M.dll", "M.NewlyHot", 60, 60)))).Summary;
 
@@ -1162,16 +1172,60 @@ public class InvestigationMemoryTests
     public void Compare_RemovedHotspotOnly_IsImprovement()
     {
         var exporter = NewExporter();
-        var baseline = exporter.Export(new ExportRequest("h", ArtifactFor(
+        var baseline = exporter.Export(new ExportRequest("h", MeasuredArtifactFor(
             ("M.dll", "M.A", 100, 80),
             ("M.dll", "M.GoneSoon", 60, 60)))).Summary;
-        var current = exporter.Export(new ExportRequest("h", ArtifactFor(("M.dll", "M.A", 100, 80)))).Summary;
+        var current = exporter.Export(new ExportRequest("h", MeasuredArtifactFor(("M.dll", "M.A", 100, 80)))).Summary;
 
         var diff = new SummaryComparer().Compare(baseline, current);
 
         diff.Verdict.Should().Be("improvement");
         diff.RemovedHotspots.Should().ContainSingle()
             .Which.Symbol.MethodFullName.Should().Be("M.GoneSoon");
+    }
+
+    [Fact]
+    public void Compare_EventPipeHotspotChange_IsInconclusive()
+    {
+        var exporter = NewExporter();
+        var baselineArtifact = ArtifactFor(("M.dll", "M.A", 100, 80)) with
+        {
+            Evidence = CpuSampleEvidence.EventPipeSampleProfiler,
+        };
+        var currentArtifact = ArtifactFor(
+            ("M.dll", "M.A", 100, 80),
+            ("M.dll", "M.FrequentLeaf", 60, 60)) with
+        {
+            Evidence = CpuSampleEvidence.EventPipeSampleProfiler,
+        };
+
+        var diff = new SummaryComparer().Compare(
+            exporter.Export(new ExportRequest("before", baselineArtifact)).Summary,
+            exporter.Export(new ExportRequest("after", currentArtifact)).Summary);
+
+        diff.Verdict.Should().Be("inconclusive");
+        diff.NewHotspots.Should().ContainSingle();
+        diff.Notes.Should().Contain(note =>
+            note.Contains("not measured on-CPU time", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Compare_MixedCpuEvidence_IsIncomparable()
+    {
+        var exporter = NewExporter();
+        var eventPipe = ArtifactFor(("M.dll", "M.A", 100, 80)) with
+        {
+            Evidence = CpuSampleEvidence.EventPipeSampleProfiler,
+        };
+        var perf = MeasuredArtifactFor(("M.dll", "M.A", 100, 80));
+
+        var diff = new SummaryComparer().Compare(
+            exporter.Export(new ExportRequest("before", eventPipe)).Summary,
+            exporter.Export(new ExportRequest("after", perf)).Summary);
+
+        diff.Verdict.Should().Be("incomparable");
+        diff.Notes.Should().Contain(note =>
+            note.Contains("incompatible evidence semantics", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -1393,7 +1447,7 @@ public class InvestigationMemoryTests
     [Fact]
     public void Compare_DetectsImageJumpInProvenance()
     {
-        var artifact = ArtifactFor(("M.dll", "M.A", 100, 80));
+        var artifact = MeasuredArtifactFor(("M.dll", "M.A", 100, 80));
         var oldProv = new FixedProvenance(container: new ContainerProvenance("ghcr.io/me/app:v1", "prod", "p1", "n1"));
         var newProv = new FixedProvenance(container: new ContainerProvenance("ghcr.io/me/app:v2", "prod", "p2", "n1"));
         var baseline = NewExporter(oldProv, seed: 1).Export(new ExportRequest("h", artifact)).Summary;
