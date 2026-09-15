@@ -188,9 +188,15 @@ public static class CalibrationProtocols
         }
 
         ArgumentException.ThrowIfNullOrWhiteSpace(privateDefinitionPath);
+        var length = new FileInfo(privateDefinitionPath).Length;
+        if (length is < 1 or > MaximumProtocolBytes)
+        {
+            throw new InvalidDataException(
+                $"Private heldout definition must be between 1 and {MaximumProtocolBytes} bytes.");
+        }
+
         var bytes = File.ReadAllBytes(privateDefinitionPath);
-        if (bytes.Length is < 1 or > MaximumProtocolBytes
-            || !FixedEquals(
+        if (!FixedEquals(
                 Convert.ToHexStringLower(SHA256.HashData(bytes)),
                 protocol.Holdout.PrivateDefinitionSha256))
         {

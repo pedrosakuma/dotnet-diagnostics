@@ -256,7 +256,7 @@ public static class CalibrationPackets
             && currentJudgments.Any(review => review.Role == CalibrationReviewerRole.Independent);
         var explicitAdjudication = currentReviews.Any(review =>
             review.Role == CalibrationReviewerRole.Adjudicator
-            && currentJudgments.Length >= 2
+            && currentJudgments.Length >= requiredDistinctReviewers
             && review.AdjudicatesReviewIds.ToHashSet(StringComparer.Ordinal)
                 .SetEquals(currentJudgments.Select(judgment => judgment.ReviewId))
             && currentJudgments.All(judgment => judgment.ReviewedAtUtc <= review.ReviewedAtUtc));
