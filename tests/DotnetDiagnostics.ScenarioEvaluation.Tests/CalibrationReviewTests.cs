@@ -257,6 +257,35 @@ public sealed class CalibrationReviewTests
     }
 
     [Fact]
+    public void ProtocolSummary_RequiresIndependentReviewOnlyForFrozenSubset()
+    {
+        using var files = new CalibrationTestFiles();
+        var protocol = CalibrationProtocolTests.CreateProtocolForPacketTests();
+        var slot = protocol.Slots.Single(value => value.Id == "dev-replay-loss");
+        var descriptor = new CalibrationCaseDescriptor(
+            protocol.ProtocolId,
+            protocol.RubricFingerprint,
+            slot.Id,
+            slot.Partition,
+            slot.ProvenanceKind,
+            "capture-1",
+            new string('f', 64),
+            "SYNTHETIC TEST packet.",
+            protocol.ProtocolFingerprint);
+        var packet = CreatePacket(
+            files,
+            CreateReport() with { EvidenceKind = "authored-edited-replay" },
+            descriptor: descriptor);
+        var review = FinalReview(packet, "review-1", "reviewer-a");
+
+        var summary = CalibrationPackets.Summarize(packet, [review], protocol);
+
+        summary.HasIndependentReview.Should().BeFalse();
+        summary.MissingReviews.Should().NotContain(value =>
+            value.Contains("independent review", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void DamagedEvidenceCanReceiveHumanNotAssessableLabels()
     {
         using var files = new CalibrationTestFiles();
@@ -385,13 +414,14 @@ public sealed class CalibrationReviewTests
     private static CalibrationPacket CreatePacket(
         CalibrationTestFiles files,
         AgentHarnessReport report,
-        CalibrationPartition partition = CalibrationPartition.Development)
+        CalibrationPartition partition = CalibrationPartition.Development,
+        CalibrationCaseDescriptor? descriptor = null)
     {
         var source = files.Path($"source-{Guid.NewGuid():n}.json");
         BlindedAgentHarness.WriteReport(source, report);
         return CalibrationPackets.CreatePacket(
             source,
-            new CalibrationCaseDescriptor(
+            descriptor ?? new CalibrationCaseDescriptor(
                 "draft-protocol-v1",
                 RubricFingerprint,
                 "synthetic-test-case",

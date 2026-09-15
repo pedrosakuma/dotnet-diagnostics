@@ -211,6 +211,11 @@ public sealed class BlindedAgentHarnessTests
             preflight.UseShellExecute.Should().BeFalse();
             preflight.WorkingDirectory.Should().Be(invocationDirectory);
             preflight.Environment["COPILOT_HOME"].Should().Be(home);
+
+            var version = transport.CreateVersionStartInfo();
+            version.ArgumentList.Should().Equal("--no-auto-update", "--version");
+            version.UseShellExecute.Should().BeFalse();
+            version.Environment["COPILOT_HOME"].Should().Be(home);
             preflight.Environment.Should().NotContainKey("GITHUB_TOKEN");
             preflight.Environment.Should().NotContainKey("GH_TOKEN");
             preflight.Environment.Should().NotContainKey("COPILOT_GITHUB_TOKEN");

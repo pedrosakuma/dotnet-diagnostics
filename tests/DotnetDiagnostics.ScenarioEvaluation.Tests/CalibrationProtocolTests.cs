@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using FluentAssertions;
 
 namespace DotnetDiagnostics.ScenarioEvaluation.Tests;
@@ -22,6 +24,38 @@ public sealed class CalibrationProtocolTests
     }
 
     [Fact]
+    public void FrozenProtocol_LoadsAndMatchesThePublishedMatrix()
+    {
+        var path = CalibrationProtocols.ProtocolPath(
+            "Calibration",
+            "advisory-calibration-v1.protocol.json");
+
+        var protocol = CalibrationProtocols.Load(path);
+
+        protocol.ProtocolId.Should().Be("advisory-calibration-v1");
+        protocol.Slots.Should().HaveCount(15);
+        protocol.Slots.Where(slot => slot.Partition == CalibrationPartition.Heldout)
+            .Should().OnlyContain(slot =>
+                slot.DefinitionVisibility == CalibrationDefinitionVisibility.PrivateCommitted
+                && slot.WorkloadFamily == null
+                && slot.PublicWorkloadParameters == null
+                && slot.EvidenceQualityMarkers.Count == 0);
+        var rubricPath = Path.GetFullPath(
+            "../../../../../docs/advisory-agent-calibration.md",
+            AppContext.BaseDirectory);
+        Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(rubricPath)))
+            .Should().Be(protocol.RubricFingerprint);
+        var manifest = CalibrationProtocols.ResolveWorkload(
+            protocol,
+            "dev-live-healthy-01");
+
+        manifest.Id.Should().Be("healthy-sync-over-async");
+        manifest.Workload.Parameters.Should().Equal(
+            protocol.Slots.Single(slot => slot.Id == "dev-live-healthy-01")
+                .PublicWorkloadParameters!);
+    }
+
+    [Fact]
     public void Validate_RejectsStaleProtocolFingerprint()
     {
         var protocol = CreateProtocol() with { RubricId = "changed-after-freeze" };
@@ -29,6 +63,25 @@ public sealed class CalibrationProtocolTests
         var action = () => CalibrationProtocols.Validate(protocol);
 
         action.Should().Throw<InvalidDataException>().WithMessage("*fingerprint*");
+    }
+
+    [EnvironmentRequiredFact(
+        "DOTNET_DIAGNOSTICS_CALIBRATION_PRIVATE_DEFINITION",
+        "The evaluator-private heldout definition is intentionally unavailable in CI.")]
+    [Trait("Category", "ScenarioCalibrationPrivate")]
+    public void ResolveWorkload_VerifiesPrivateDefinitionCommitment()
+    {
+        var protocol = CalibrationProtocols.Load(CalibrationProtocols.ProtocolPath(
+            "Calibration",
+            "advisory-calibration-v1.protocol.json"));
+
+        var manifest = CalibrationProtocols.ResolveWorkload(
+            protocol,
+            "h-01",
+            Environment.GetEnvironmentVariable("DOTNET_DIAGNOSTICS_CALIBRATION_PRIVATE_DEFINITION"));
+
+        manifest.Workload.Parameters.Should().NotBeEmpty();
+        manifest.Version.Should().Contain("heldout");
     }
 
     [Fact]
@@ -41,6 +94,7 @@ public sealed class CalibrationProtocolTests
             DefinitionVisibility = CalibrationDefinitionVisibility.Public,
             WorkloadFamily = "leaked-family",
             PublicWorkloadParameters = new Dictionary<string, string> { ["endpoint"] = "/leaked" },
+            EvidenceQualityMarkers = [CalibrationEvidenceQualityMarker.CompetingExplanation],
         };
         protocol = Rehash(protocol with { Slots = slots });
 
@@ -85,6 +139,117 @@ public sealed class CalibrationProtocolTests
         };
         var action = () => CalibrationProtocols.ValidatePacket(protocol, stale);
         action.Should().Throw<InvalidDataException>().WithMessage("*fingerprints*");
+
+        var wrongTransport = packet with
+        {
+            Generation = packet.Generation with { TransportVersion = "different" },
+        };
+        action = () => CalibrationProtocols.ValidatePacket(protocol, wrongTransport);
+        action.Should().Throw<InvalidDataException>().WithMessage("*baseline*");
+
+        var relabeled = packet with
+        {
+            Generation = packet.Generation with { EvidenceKind = "scripted" },
+        };
+        action = () => CalibrationProtocols.ValidatePacket(protocol, relabeled);
+        action.Should().Throw<InvalidDataException>().WithMessage("*evidence kind*");
+    }
+
+    [Fact]
+    public void ValidateSourceReport_AllowsProtocolBoundAuthoredReplay()
+    {
+        var protocol = CreateProtocol();
+        var slot = protocol.Slots.First(value =>
+            value.Kind == CalibrationProtocolSlotKind.AuthoredEditedReplay);
+        var descriptor = new CalibrationCaseDescriptor(
+            protocol.ProtocolId,
+            protocol.RubricFingerprint,
+            slot.Id,
+            slot.Partition,
+            slot.ProvenanceKind,
+            "edited-replay-1",
+            new string('d', 64),
+            "SYNTHETIC TEST replay.",
+            protocol.ProtocolFingerprint);
+        var report = new AgentHarnessReport(
+            BlindedAgentHarness.CurrentReportSchemaVersion,
+            "edited-replay-run",
+            "authored-edited-replay",
+            DateTimeOffset.UnixEpoch,
+            DateTimeOffset.UnixEpoch,
+            new AgentHarnessBudget(),
+            null!,
+            null!,
+            null!,
+            null!,
+            null!,
+            null!,
+            null!,
+            [],
+            [],
+            null,
+            0,
+            null,
+            null,
+            null,
+            0,
+            []);
+
+        var action = () => CalibrationProtocols.ValidateSourceReport(protocol, descriptor, report);
+
+        action.Should().NotThrow();
+
+        action = () => CalibrationProtocols.ValidateSourceReport(
+            protocol,
+            descriptor,
+            report with { EvidenceKind = "scripted" });
+        action.Should().Throw<InvalidDataException>().WithMessage("*evidence kind*");
+    }
+
+    [Fact]
+    public void ValidateCompletePacketSet_RequiresOneFreshCapturePerSlot()
+    {
+        var protocol = CreateProtocol();
+        var packets = protocol.Slots.Select((slot, index) =>
+            Packet(protocol, slot, index)).ToArray();
+
+        CalibrationProtocols.ValidateCompletePacketSet(protocol, packets);
+
+        packets[1] = packets[1] with
+        {
+            Descriptor = packets[1].Descriptor with
+            {
+                CaptureId = packets[0].Descriptor.CaptureId,
+            },
+        };
+        var action = () => CalibrationProtocols.ValidateCompletePacketSet(protocol, packets);
+        action.Should().Throw<InvalidDataException>().WithMessage("*capture id*");
+    }
+
+    [Fact]
+    public void ValidateCompletePacketSet_RejectsMissingDenominator()
+    {
+        var protocol = CreateProtocol();
+        var packets = protocol.Slots.Skip(1).Select((slot, index) =>
+            Packet(protocol, slot, index)).ToArray();
+
+        var action = () => CalibrationProtocols.ValidateCompletePacketSet(protocol, packets);
+
+        action.Should().Throw<InvalidDataException>().WithMessage("*exactly one packet*");
+    }
+
+    [Fact]
+    public void ValidatePacket_RequiresCaptureHashForEveryFrozenSlot()
+    {
+        var protocol = CreateProtocol();
+        var packet = Packet(protocol, protocol.Slots[0]) with
+        {
+            Descriptor = Packet(protocol, protocol.Slots[0]).Descriptor with { CaptureHash = null },
+        };
+
+        var action = () => CalibrationProtocols.ValidatePacket(protocol, packet);
+
+        action.Should().Throw<InvalidDataException>().WithMessage("*capture hash*");
     }
 
     [Fact]
@@ -108,6 +273,9 @@ public sealed class CalibrationProtocolTests
 
         action.Should().Throw<InvalidDataException>().WithMessage("*Independent-review slots*");
     }
+
+    internal static CalibrationProtocol CreateProtocolForPacketTests()
+        => CreateProtocol();
 
     private static CalibrationProtocol CreateProtocol()
     {
@@ -135,10 +303,10 @@ public sealed class CalibrationProtocolTests
                 CalibrationEvidenceQualityMarker.HealthyControl),
             Heldout("h-01", 1, budget, independent: true),
             Heldout("h-02", 1, budget),
-            Heldout("h-03", 1, budget, CalibrationEvidenceQualityMarker.CompetingExplanation),
-            Heldout("h-04", 1, budget, CalibrationEvidenceQualityMarker.UnknownThreadPoolReason),
-            Heldout("h-05", 1, budget, CalibrationEvidenceQualityMarker.HealthyControl),
-            Heldout("h-06", 2, budget, CalibrationEvidenceQualityMarker.CaptureWindowLimited),
+            Heldout("h-03", 1, budget),
+            Heldout("h-04", 1, budget),
+            Heldout("h-05", 1, budget),
+            Heldout("h-06", 1, budget),
             Replay(
                 "dev-replay-threadpool-unknown",
                 "unknown ThreadPool reason",
@@ -165,12 +333,12 @@ public sealed class CalibrationProtocolTests
                 "gpt-5.4-mini",
                 "unavailable",
                 "The provider does not expose an immutable model build identifier.",
-                "GitHub Copilot CLI",
-                "1.0.83"),
+                "github-copilot-cli",
+                "GitHub Copilot CLI 1.0.83"),
             new CalibrationProductBaseline(
                 "dotnet-diagnostics-mcp",
                 "0.25.0",
-                new string('b', 64)),
+                new string('b', 40)),
             new CalibrationProtocolLimits(12, 3, 60),
             new CalibrationReviewPlan(
                 2,
@@ -205,7 +373,6 @@ public sealed class CalibrationProtocolTests
         string id,
         int repetition,
         AgentHarnessBudget budget,
-        CalibrationEvidenceQualityMarker marker = CalibrationEvidenceQualityMarker.CompetingExplanation,
         bool independent = false)
         => new(
             id,
@@ -218,7 +385,7 @@ public sealed class CalibrationProtocolTests
             null,
             repetition,
             budget,
-            [marker],
+            [],
             independent);
 
     private static CalibrationProtocolSlot Replay(
@@ -245,12 +412,13 @@ public sealed class CalibrationProtocolTests
 
     private static CalibrationPacket Packet(
         CalibrationProtocol protocol,
-        CalibrationProtocolSlot slot)
+        CalibrationProtocolSlot slot,
+        int index = 0)
         => new(
             CalibrationPackets.CurrentPacketSchemaVersion,
             new string('1', 64),
             new string('2', 64),
-            "run-1",
+            $"run-{index}",
             new string('3', 64),
             new CalibrationCaseDescriptor(
                 protocol.ProtocolId,
@@ -258,17 +426,22 @@ public sealed class CalibrationProtocolTests
                 slot.Id,
                 slot.Partition,
                 slot.ProvenanceKind,
-                "capture-1",
-                new string('4', 64),
+                $"capture-{index}",
+                Convert.ToHexStringLower(SHA256.HashData(
+                    Encoding.UTF8.GetBytes(index.ToString(CultureInfo.InvariantCulture)))),
                 "SYNTHETIC TEST packet.",
                 protocol.ProtocolFingerprint),
             new CalibrationGenerationProvenance(
                 slot.ProvenanceKind,
-                "real-model",
+                slot.Kind == CalibrationProtocolSlotKind.Live
+                    ? "real-model"
+                    : "authored-edited-replay",
                 protocol.Model.Provider,
                 protocol.Model.Model,
                 protocol.Model.ModelVersion,
-                protocol.Product.Commit),
+                protocol.Product.Commit,
+                protocol.Model.Transport,
+                protocol.Model.TransportVersion),
             DateTimeOffset.Parse("2026-09-15T00:00:00Z", CultureInfo.InvariantCulture),
             CalibrationReviewability.Reviewable,
             "SYNTHETIC TEST packet.",

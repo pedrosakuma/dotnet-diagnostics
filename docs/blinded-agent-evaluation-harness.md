@@ -27,8 +27,9 @@ all three explicitly configured values:
 - `DOTNET_DIAGNOSTICS_AGENT_API_KEY`
 - `DOTNET_DIAGNOSTICS_AGENT_MODEL`
 
-Optional provenance fields are `DOTNET_DIAGNOSTICS_AGENT_PROVIDER` and
-`DOTNET_DIAGNOSTICS_AGENT_MODEL_VERSION`. The endpoint must be HTTPS and may not contain user
+Optional provenance fields are `DOTNET_DIAGNOSTICS_AGENT_PROVIDER`,
+`DOTNET_DIAGNOSTICS_AGENT_MODEL_VERSION`, and (for the generic HTTP transport)
+`DOTNET_DIAGNOSTICS_AGENT_TRANSPORT_VERSION`. The endpoint must be HTTPS and may not contain user
 information. No repository, GitHub, or unrelated credential is discovered or reused.
 
 Alternatively, `CopilotCliAgentTransport` invokes an installed GitHub Copilot CLI as a local process.
@@ -119,7 +120,9 @@ dotnet test tests/DotnetDiagnostics.ScenarioEvaluation.Tests/ -c Release --no-bu
 
 `DOTNET_DIAGNOSTICS_AGENT_REPORT_PATH` optionally selects the evaluator-private report path.
 `DOTNET_DIAGNOSTICS_AGENT_PROVIDER` and `DOTNET_DIAGNOSTICS_AGENT_MODEL_VERSION` optionally improve
-provenance. The predeclared smoke uses temperature `0`, at most 4 provider calls/turns, 3 diagnostic
+provenance. The Copilot transport obtains its version directly from the configured executable with
+`--no-auto-update --version`; a caller-supplied version cannot override it. The predeclared smoke
+uses temperature `0`, at most 4 provider calls/turns, 3 diagnostic
 tool calls, 45 seconds of harness wall time, 10 seconds of aggregate capture, 10,000 input tokens,
 1,200 output tokens, USD 0.25 of provider-reported spend, 128 KiB per model response, and 384 KiB of
 retained tool results. Its outer test timeout is 180 seconds. If the provider omits token or cost
