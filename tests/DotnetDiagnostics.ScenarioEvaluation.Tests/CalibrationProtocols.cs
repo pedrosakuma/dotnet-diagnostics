@@ -229,7 +229,30 @@ public static class CalibrationProtocols
         var bytes = JsonSerializer.SerializeToUtf8Bytes(
             protocol with { ProtocolFingerprint = string.Empty },
             JsonOptions);
-        return Convert.ToHexStringLower(SHA256.HashData(bytes));
+        return ComputeCanonicalJsonFingerprint(bytes);
+    }
+
+    internal static string ComputeCanonicalJsonFingerprint(ReadOnlySpan<byte> json)
+    {
+        // Indented System.Text.Json output uses the platform newline. Raw carriage
+        // returns cannot occur inside JSON strings, where they are escaped.
+        var carriageReturnCount = json.Count((byte)'\r');
+        if (carriageReturnCount == 0)
+        {
+            return Convert.ToHexStringLower(SHA256.HashData(json));
+        }
+
+        var normalized = new byte[json.Length - carriageReturnCount];
+        var destination = 0;
+        foreach (var value in json)
+        {
+            if (value != '\r')
+            {
+                normalized[destination++] = value;
+            }
+        }
+
+        return Convert.ToHexStringLower(SHA256.HashData(normalized));
     }
 
     public static string ProtocolPath(params string[] segments)
