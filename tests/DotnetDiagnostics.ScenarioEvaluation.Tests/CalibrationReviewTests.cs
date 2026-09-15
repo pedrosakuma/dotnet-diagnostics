@@ -328,6 +328,10 @@ public sealed class CalibrationReviewTests
         CalibrationPacket packet;
         if (operation == "export")
         {
+            var protocolPath = Environment.GetEnvironmentVariable("DOTNET_DIAGNOSTICS_CALIBRATION_PROTOCOL");
+            var protocol = string.IsNullOrWhiteSpace(protocolPath)
+                ? null
+                : CalibrationProtocols.Load(protocolPath);
             packet = CalibrationPackets.CreatePacket(
                 RequiredEnvironment("DOTNET_DIAGNOSTICS_CALIBRATION_SOURCE_REPORT"),
                 new CalibrationCaseDescriptor(
@@ -342,7 +346,9 @@ public sealed class CalibrationReviewTests
                         ignoreCase: true),
                     RequiredEnvironment("DOTNET_DIAGNOSTICS_CALIBRATION_CAPTURE_ID"),
                     Environment.GetEnvironmentVariable("DOTNET_DIAGNOSTICS_CALIBRATION_CAPTURE_HASH"),
-                    Environment.GetEnvironmentVariable("DOTNET_DIAGNOSTICS_CALIBRATION_NOTES") ?? string.Empty));
+                    Environment.GetEnvironmentVariable("DOTNET_DIAGNOSTICS_CALIBRATION_NOTES") ?? string.Empty,
+                    protocol?.ProtocolFingerprint),
+                protocol);
             CalibrationPackets.WritePacket(Path.Combine(outputDirectory, "packet.json"), packet);
             CalibrationPackets.WriteReview(
                 Path.Combine(outputDirectory, "review-template.json"),
@@ -352,6 +358,11 @@ public sealed class CalibrationReviewTests
         else if (operation == "summarize")
         {
             packet = CalibrationPackets.ReadPacket(RequiredEnvironment("DOTNET_DIAGNOSTICS_CALIBRATION_PACKET"));
+            var protocolPath = Environment.GetEnvironmentVariable("DOTNET_DIAGNOSTICS_CALIBRATION_PROTOCOL");
+            if (!string.IsNullOrWhiteSpace(protocolPath))
+            {
+                CalibrationProtocols.ValidatePacket(CalibrationProtocols.Load(protocolPath), packet);
+            }
         }
         else
         {
@@ -503,7 +514,8 @@ public sealed class CalibrationReviewTests
                 ApprovalComplianceRating.Compliant,
                 null,
                 QualityRating.NotAssessable,
-                "SYNTHETIC TEST response judgment; no empirical human result."));
+                "SYNTHETIC TEST response judgment; no empirical human result."),
+            packet.Descriptor.ProtocolFingerprint);
 
     private static string RequiredEnvironment(string name)
         => Environment.GetEnvironmentVariable(name)

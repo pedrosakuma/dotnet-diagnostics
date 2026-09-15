@@ -23,12 +23,22 @@ public static class CalibrationPackets
     public static CalibrationPacket CreatePacket(
         string sourceReportPath,
         CalibrationCaseDescriptor descriptor)
+        => CreatePacket(sourceReportPath, descriptor, protocol: null);
+
+    public static CalibrationPacket CreatePacket(
+        string sourceReportPath,
+        CalibrationCaseDescriptor descriptor,
+        CalibrationProtocol? protocol)
     {
         ValidateDescriptor(descriptor);
         var sourceBytes = ReadBounded(sourceReportPath, MaximumSourceBytes);
         RejectDuplicateProperties(sourceBytes);
         var report = Deserialize<AgentHarnessReport>(sourceBytes, "source report");
         ValidateSourceReport(report);
+        if (protocol is not null)
+        {
+            CalibrationProtocols.ValidateSourceReport(protocol, descriptor, report);
+        }
         var sourceDigest = Sha256(sourceBytes);
         var caseFingerprint = Sha256(Encoding.UTF8.GetBytes(
             $"{descriptor.ProtocolId}\n{descriptor.RubricFingerprint}\n{descriptor.CaseId}\n{descriptor.Partition}\n{descriptor.CaptureId}\n{descriptor.CaptureHash}\n{report.RunId}\n{sourceDigest}"));
@@ -135,7 +145,8 @@ public static class CalibrationPackets
             false,
             [],
             packet.Claims.Select(claim => new CalibrationClaimJudgment(claim.ClaimId, null, null, null)).ToArray(),
-            new CalibrationResponseJudgment(null, null, null, null, null, null, null));
+            new CalibrationResponseJudgment(null, null, null, null, null, null, null),
+            packet.Descriptor.ProtocolFingerprint);
     }
 
     public static CalibrationPacket ReadPacket(string path)
@@ -498,6 +509,10 @@ public static class CalibrationPackets
         {
             throw new InvalidDataException("The calibration partition or provenance kind is invalid.");
         }
+        if (descriptor.ProtocolFingerprint is not null && !IsSha256(descriptor.ProtocolFingerprint))
+        {
+            throw new InvalidDataException("An optional protocol fingerprint must be a 64-character SHA-256 value.");
+        }
     }
 
     private static void ValidatePacket(CalibrationPacket packet)
@@ -583,6 +598,7 @@ public static class CalibrationPackets
         if (!FixedEquals(review.PacketFingerprint, packet.Fingerprint)
             || !FixedEquals(review.CaseFingerprint, packet.CaseFingerprint)
             || review.ProtocolId != packet.Descriptor.ProtocolId
+            || review.ProtocolFingerprint != packet.Descriptor.ProtocolFingerprint
             || review.RubricFingerprint != packet.Descriptor.RubricFingerprint)
         {
             throw new InvalidDataException("The review is stale or belongs to a different packet, case, protocol, or rubric.");

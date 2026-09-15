@@ -26,6 +26,7 @@
   <ItemGroup>
     <None Update="Scenarios\**\*.json" CopyToOutputDirectory="PreserveNewest" />
     <None Update="Fixtures\**\*.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Calibration\**\*.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
