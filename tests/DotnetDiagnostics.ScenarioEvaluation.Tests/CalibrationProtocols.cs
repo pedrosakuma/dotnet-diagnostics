@@ -42,9 +42,11 @@ public static class CalibrationProtocols
         RequireSha256(protocol.ProtocolFingerprint, nameof(protocol.ProtocolFingerprint));
         RequireSha256(protocol.RubricFingerprint, nameof(protocol.RubricFingerprint));
         RequireSha256(protocol.Holdout.PrivateDefinitionSha256, nameof(protocol.Holdout.PrivateDefinitionSha256));
-        if (!FixedEquals(protocol.ProtocolFingerprint, ComputeFingerprint(protocol)))
+        var computedFingerprint = ComputeFingerprint(protocol);
+        if (!FixedEquals(protocol.ProtocolFingerprint, computedFingerprint))
         {
-            throw new InvalidDataException("The calibration protocol fingerprint is stale or invalid.");
+            throw new InvalidDataException(
+                $"The calibration protocol fingerprint is stale or invalid; computed {computedFingerprint}.");
         }
 
         ValidateBaseline(protocol);
@@ -60,10 +62,9 @@ public static class CalibrationProtocols
         ArgumentNullException.ThrowIfNull(descriptor);
         ArgumentNullException.ThrowIfNull(report);
         var slot = ValidateBinding(protocol, descriptor);
-        if (slot.Kind != CalibrationProtocolSlotKind.Live)
+        if (slot.Kind == CalibrationProtocolSlotKind.AuthoredEditedReplay)
         {
-            throw new InvalidDataException(
-                $"Protocol slot '{slot.Id}' is an authored replay and cannot accept a live harness report.");
+            return;
         }
 
         if (slot.Budget != report.Budget)
@@ -115,6 +116,36 @@ public static class CalibrationProtocols
         }
     }
 
+    public static void ValidateCompletePacketSet(
+        CalibrationProtocol protocol,
+        IReadOnlyList<CalibrationPacket> packets)
+    {
+        Validate(protocol);
+        ArgumentNullException.ThrowIfNull(packets);
+        foreach (var packet in packets)
+        {
+            ValidatePacket(protocol, packet);
+        }
+
+        EnsureUnique(packets.Select(packet => packet.Descriptor.CaseId), "packet slot id");
+        EnsureUnique(packets.Select(packet => packet.SourceRunId), "source run id");
+        EnsureUnique(packets.Select(packet => packet.Descriptor.CaptureId), "capture id");
+        var captureHashes = packets
+            .Select(packet => packet.Descriptor.CaptureHash)
+            .Where(hash => !string.IsNullOrWhiteSpace(hash))
+            .Cast<string>()
+            .ToArray();
+        EnsureUnique(captureHashes, "capture hash");
+
+        var expectedSlots = protocol.Slots.Select(slot => slot.Id).Order(StringComparer.Ordinal);
+        var actualSlots = packets.Select(packet => packet.Descriptor.CaseId).Order(StringComparer.Ordinal);
+        if (!actualSlots.SequenceEqual(expectedSlots, StringComparer.Ordinal))
+        {
+            throw new InvalidDataException(
+                "The packet set does not contain exactly one packet for every frozen protocol slot.");
+        }
+    }
+
     public static string ComputeFingerprint(CalibrationProtocol protocol)
     {
         ArgumentNullException.ThrowIfNull(protocol);
@@ -148,6 +179,12 @@ public static class CalibrationProtocols
             throw new InvalidDataException(
                 $"Case descriptor partition or provenance does not match frozen slot '{slot.Id}'.");
         }
+        if (slot.Partition == CalibrationPartition.Heldout
+            && string.IsNullOrWhiteSpace(descriptor.CaptureHash))
+        {
+            throw new InvalidDataException(
+                $"Heldout slot '{slot.Id}' requires a committed capture hash.");
+        }
 
         return slot;
     }
@@ -162,7 +199,7 @@ public static class CalibrationProtocols
         Require(protocol.Model.TransportVersion, nameof(protocol.Model.TransportVersion));
         Require(protocol.Product.Product, nameof(protocol.Product.Product));
         Require(protocol.Product.Version, nameof(protocol.Product.Version));
-        RequireSha256(protocol.Product.Commit, nameof(protocol.Product.Commit));
+        RequireGitCommit(protocol.Product.Commit);
         if (protocol.FrozenAtUtc == DateTimeOffset.UnixEpoch)
         {
             throw new InvalidDataException("The protocol freeze timestamp is required.");
@@ -344,6 +381,15 @@ public static class CalibrationProtocols
         if (value.Length != 64 || value.Any(character => !Uri.IsHexDigit(character) || char.IsUpper(character)))
         {
             throw new InvalidDataException($"{description} must be a lowercase SHA-256 value.");
+        }
+    }
+
+    private static void RequireGitCommit(string value)
+    {
+        Require(value, "Product commit");
+        if (value.Length != 40 || value.Any(character => !Uri.IsHexDigit(character) || char.IsUpper(character)))
+        {
+            throw new InvalidDataException("Product commit must be a full lowercase Git commit SHA.");
         }
     }
 
