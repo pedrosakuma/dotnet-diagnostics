@@ -622,7 +622,11 @@ public static class BlindedAgentHarness
     private static string ProductCommit()
     {
         var value = Environment.GetEnvironmentVariable("GITHUB_SHA");
-        if (!string.IsNullOrWhiteSpace(value))
+        if (string.Equals(
+                Environment.GetEnvironmentVariable("GITHUB_ACTIONS"),
+                "true",
+                StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(value))
         {
             return value;
         }

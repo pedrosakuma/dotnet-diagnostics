@@ -325,15 +325,6 @@ public static class CalibrationProtocols
                 "Heldout slots must be opaque, privately committed live-model cases.");
         }
 
-        var developmentDefinitions = protocol.Slots
-            .Where(slot => slot.Partition == CalibrationPartition.Development)
-            .Select(slot => slot.WorkloadDefinition)
-            .ToHashSet(StringComparer.Ordinal);
-        if (heldout.Any(slot => developmentDefinitions.Contains(slot.WorkloadDefinition)))
-        {
-            throw new InvalidDataException("Development and heldout workload definitions must be distinct.");
-        }
-
         var requiredMarkers = Enum.GetValues<CalibrationEvidenceQualityMarker>();
         var observedMarkers = protocol.Slots
             .Where(slot => slot.DefinitionVisibility == CalibrationDefinitionVisibility.Public)
@@ -453,6 +444,20 @@ public static class CalibrationProtocols
             {
                 throw new InvalidDataException(
                     $"Private heldout slot '{slot.Id}' is incomplete or invalid.");
+            }
+
+            var duplicatesDevelopment = protocol.Slots
+                .Where(candidate =>
+                    candidate.Partition == CalibrationPartition.Development
+                    && candidate.Kind == CalibrationProtocolSlotKind.Live)
+                .Any(candidate =>
+                    candidate.WorkloadFamily == slot.WorkloadFamily
+                    && candidate.PublicWorkloadParameters is not null
+                    && SameParameters(candidate.PublicWorkloadParameters, slot.Parameters));
+            if (duplicatesDevelopment)
+            {
+                throw new InvalidDataException(
+                    $"Private heldout slot '{slot.Id}' duplicates a development workload and parameter set.");
             }
         }
     }
