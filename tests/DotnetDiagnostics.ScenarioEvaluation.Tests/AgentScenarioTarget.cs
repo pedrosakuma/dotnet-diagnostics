@@ -252,6 +252,9 @@ internal sealed class AgentScenarioTarget : IAsyncDisposable
             "sync-over-async" => (
                 $"{Parameter(manifest, "endpoint")}?n={PositiveInt(manifest, "n")}&delaySeconds={PositiveInt(manifest, "delaySeconds")}",
                 PositiveInt(manifest, "concurrentRequests")),
+            "healthy-sync-over-async" => (
+                $"{Parameter(manifest, "endpoint")}?n={PositiveInt(manifest, "n")}&delaySeconds={PositiveInt(manifest, "delaySeconds")}",
+                PositiveInt(manifest, "concurrentRequests")),
             "lock-storm" => (
                 $"{Parameter(manifest, "endpoint")}?seconds={PositiveInt(manifest, "seconds")}&blockers={PositiveInt(manifest, "blockers")}",
                 1),

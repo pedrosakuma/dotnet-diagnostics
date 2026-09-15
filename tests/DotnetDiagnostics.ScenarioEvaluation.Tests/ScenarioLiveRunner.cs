@@ -33,6 +33,7 @@ public sealed class ScenarioLiveRunner
             {
                 "culture-lookup" => await CaptureCultureLookupAsync(manifest, trial, runtimeCts.Token).ConfigureAwait(false),
                 "sync-over-async" => await CaptureSyncOverAsyncAsync(manifest, trial, runtimeCts.Token).ConfigureAwait(false),
+                "healthy-sync-over-async" => await CaptureSyncOverAsyncAsync(manifest, trial, runtimeCts.Token).ConfigureAwait(false),
                 "lock-storm" => await CaptureLockStormAsync(manifest, trial, runtimeCts.Token).ConfigureAwait(false),
                 "gc-storm" => await CaptureGcStormAsync(manifest, trial, runtimeCts.Token).ConfigureAwait(false),
                 _ => throw new InvalidDataException($"No live driver is registered for scenario '{manifest.Id}'."),
