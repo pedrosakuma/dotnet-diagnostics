@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "protocolId": "advisory-calibration-v1",
-  "protocolFingerprint": "54b8c1dafb3202d9eecf1de25aefe1c3182ff72dae9dba45cde62a01d4e83ca5",
+  "protocolFingerprint": "83736e129e944f6e0481c5eff27b8e9a879669d73c700402c8c868596de923ad",
   "rubricId": "advisory-calibration-rubric-v1",
   "rubricFingerprint": "3b67a0737764cffefb58b0e1708a3e04428d8b75d1ede4d6c6cb42c0bc8dff35",
   "frozenAtUtc": "2026-09-15T00:00:00+00:00",
@@ -11,7 +11,7 @@
     "modelVersion": "unavailable",
     "modelVersionEvidence": "GitHub Copilot CLI 1.0.83 did not expose an immutable provider model-build identifier.",
     "transport": "github-copilot-cli",
-    "transportVersion": "GitHub Copilot CLI 1.0.83"
+    "transportVersion": "GitHub Copilot CLI 1.0.83."
   },
   "product": {
     "product": "dotnet-diagnostics-mcp",

@@ -33,6 +33,7 @@ public sealed class CalibrationProtocolTests
         var protocol = CalibrationProtocols.Load(path);
 
         protocol.ProtocolId.Should().Be("advisory-calibration-v1");
+        protocol.Model.TransportVersion.Should().Be("GitHub Copilot CLI 1.0.83.");
         protocol.Slots.Should().HaveCount(15);
         protocol.Slots.Where(slot => slot.Partition == CalibrationPartition.Heldout)
             .Should().OnlyContain(slot =>
