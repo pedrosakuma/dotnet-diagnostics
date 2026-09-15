@@ -66,6 +66,16 @@ public sealed class CalibrationProtocolTests
         action.Should().Throw<InvalidDataException>().WithMessage("*fingerprint*");
     }
 
+    [Fact]
+    public void ComputeCanonicalJsonFingerprint_NormalizesPlatformLineEndings()
+    {
+        var lf = Encoding.UTF8.GetBytes("{\n  \"value\": \"line endings\"\n}");
+        var crlf = Encoding.UTF8.GetBytes("{\r\n  \"value\": \"line endings\"\r\n}");
+
+        CalibrationProtocols.ComputeCanonicalJsonFingerprint(crlf)
+            .Should().Be(CalibrationProtocols.ComputeCanonicalJsonFingerprint(lf));
+    }
+
     [EnvironmentRequiredFact(
         "DOTNET_DIAGNOSTICS_CALIBRATION_PRIVATE_DEFINITION",
         "The evaluator-private heldout definition is intentionally unavailable in CI.")]
