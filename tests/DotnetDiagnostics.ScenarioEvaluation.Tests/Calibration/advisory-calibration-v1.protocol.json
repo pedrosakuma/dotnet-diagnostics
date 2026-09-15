@@ -1,0 +1,409 @@
+{
+  "schemaVersion": 1,
+  "protocolId": "advisory-calibration-v1",
+  "protocolFingerprint": "54b8c1dafb3202d9eecf1de25aefe1c3182ff72dae9dba45cde62a01d4e83ca5",
+  "rubricId": "advisory-calibration-rubric-v1",
+  "rubricFingerprint": "3b67a0737764cffefb58b0e1708a3e04428d8b75d1ede4d6c6cb42c0bc8dff35",
+  "frozenAtUtc": "2026-09-15T00:00:00+00:00",
+  "model": {
+    "provider": "github-copilot-cli",
+    "model": "gpt-5.4-mini",
+    "modelVersion": "unavailable",
+    "modelVersionEvidence": "GitHub Copilot CLI 1.0.83 did not expose an immutable provider model-build identifier.",
+    "transport": "github-copilot-cli",
+    "transportVersion": "GitHub Copilot CLI 1.0.83"
+  },
+  "product": {
+    "product": "dotnet-diagnostics-mcp",
+    "version": "1.0.0+f9c2ef8e849155983ad2344ac9fc28d2b469d906",
+    "commit": "f9c2ef8e849155983ad2344ac9fc28d2b469d906"
+  },
+  "limits": {
+    "expectedLiveRuns": 12,
+    "expectedReplayRuns": 3,
+    "maximumProviderTurns": 60
+  },
+  "review": {
+    "requiredDistinctReviewersForIndependentSlots": 2,
+    "independentSlotIds": [
+      "dev-live-sync-01",
+      "dev-live-healthy-01",
+      "h-03",
+      "h-05",
+      "dev-replay-threadpool-unknown"
+    ],
+    "adjudicateEveryDisagreement": true
+  },
+  "holdout": {
+    "privateDefinitionSha256": "b060592e4929a8bb6ac65901db59386434c3d564b63317a758cc4e9f11c0eca1",
+    "keepLabelsUnavailableDuringDevelopment": true,
+    "requireFreshCaptureIds": true,
+    "requireDistinctRunIdsAndCaptureHashes": true
+  },
+  "slots": [
+    {
+      "id": "dev-live-culture-01",
+      "partition": "development",
+      "kind": "live",
+      "provenanceKind": "liveModel",
+      "definitionVisibility": "public",
+      "workloadFamily": "culture-lookup",
+      "workloadDefinition": "public://scenario/culture-lookup@1.0.0",
+      "publicWorkloadParameters": {
+        "endpoint": "/culture-lookup",
+        "iterations": "6000000",
+        "minimumWorkers": "4",
+        "maximumWorkers": "16"
+      },
+      "repetition": 1,
+      "budget": {
+        "maximumWallTimeSeconds": 45,
+        "maximumToolCalls": 3,
+        "maximumModelTurns": 4,
+        "maximumCaptureSeconds": 10,
+        "maximumInputTokens": 10000,
+        "maximumOutputTokens": 1200,
+        "maximumEstimatedCostUsd": 0.25,
+        "maximumResponseBytes": 131072,
+        "maximumArtifactBytes": 393216
+      },
+      "evidenceQualityMarkers": [ "competingExplanation" ],
+      "requiresIndependentReview": false
+    },
+    {
+      "id": "dev-live-gc-01",
+      "partition": "development",
+      "kind": "live",
+      "provenanceKind": "liveModel",
+      "definitionVisibility": "public",
+      "workloadFamily": "gc-storm",
+      "workloadDefinition": "public://scenario/gc-storm@1.0.0",
+      "publicWorkloadParameters": {
+        "endpoint": "/loh-alloc",
+        "count": "200",
+        "concurrentRequests": "4"
+      },
+      "repetition": 1,
+      "budget": {
+        "maximumWallTimeSeconds": 45,
+        "maximumToolCalls": 3,
+        "maximumModelTurns": 4,
+        "maximumCaptureSeconds": 10,
+        "maximumInputTokens": 10000,
+        "maximumOutputTokens": 1200,
+        "maximumEstimatedCostUsd": 0.25,
+        "maximumResponseBytes": 131072,
+        "maximumArtifactBytes": 393216
+      },
+      "evidenceQualityMarkers": [ "captureWindowLimited" ],
+      "requiresIndependentReview": false
+    },
+    {
+      "id": "dev-live-lock-01",
+      "partition": "development",
+      "kind": "live",
+      "provenanceKind": "liveModel",
+      "definitionVisibility": "public",
+      "workloadFamily": "lock-storm",
+      "workloadDefinition": "public://scenario/lock-storm@1.0.0",
+      "publicWorkloadParameters": {
+        "endpoint": "/lock-storm",
+        "seconds": "5",
+        "blockers": "20"
+      },
+      "repetition": 1,
+      "budget": {
+        "maximumWallTimeSeconds": 45,
+        "maximumToolCalls": 3,
+        "maximumModelTurns": 4,
+        "maximumCaptureSeconds": 10,
+        "maximumInputTokens": 10000,
+        "maximumOutputTokens": 1200,
+        "maximumEstimatedCostUsd": 0.25,
+        "maximumResponseBytes": 131072,
+        "maximumArtifactBytes": 393216
+      },
+      "evidenceQualityMarkers": [ "competingExplanation" ],
+      "requiresIndependentReview": false
+    },
+    {
+      "id": "dev-live-sync-01",
+      "partition": "development",
+      "kind": "live",
+      "provenanceKind": "liveModel",
+      "definitionVisibility": "public",
+      "workloadFamily": "sync-over-async",
+      "workloadDefinition": "public://scenario/sync-over-async@1.0.0",
+      "publicWorkloadParameters": {
+        "endpoint": "/sync-over-async",
+        "n": "40",
+        "delaySeconds": "3",
+        "concurrentRequests": "12"
+      },
+      "repetition": 1,
+      "budget": {
+        "maximumWallTimeSeconds": 45,
+        "maximumToolCalls": 3,
+        "maximumModelTurns": 4,
+        "maximumCaptureSeconds": 10,
+        "maximumInputTokens": 10000,
+        "maximumOutputTokens": 1200,
+        "maximumEstimatedCostUsd": 0.25,
+        "maximumResponseBytes": 131072,
+        "maximumArtifactBytes": 393216
+      },
+      "evidenceQualityMarkers": [ "unknownThreadPoolReason", "competingExplanation" ],
+      "requiresIndependentReview": true
+    },
+    {
+      "id": "dev-live-sync-02",
+      "partition": "development",
+      "kind": "live",
+      "provenanceKind": "liveModel",
+      "definitionVisibility": "public",
+      "workloadFamily": "sync-over-async",
+      "workloadDefinition": "public://scenario/sync-over-async@1.0.0",
+      "publicWorkloadParameters": {
+        "endpoint": "/sync-over-async",
+        "n": "40",
+        "delaySeconds": "3",
+        "concurrentRequests": "12"
+      },
+      "repetition": 2,
+      "budget": {
+        "maximumWallTimeSeconds": 45,
+        "maximumToolCalls": 3,
+        "maximumModelTurns": 4,
+        "maximumCaptureSeconds": 10,
+        "maximumInputTokens": 10000,
+        "maximumOutputTokens": 1200,
+        "maximumEstimatedCostUsd": 0.25,
+        "maximumResponseBytes": 131072,
+        "maximumArtifactBytes": 393216
+      },
+      "evidenceQualityMarkers": [ "captureWindowLimited" ],
+      "requiresIndependentReview": false
+    },
+    {
+      "id": "dev-live-healthy-01",
+      "partition": "development",
+      "kind": "live",
+      "provenanceKind": "liveModel",
+      "definitionVisibility": "public",
+      "workloadFamily": "healthy-sync-over-async",
+      "workloadDefinition": "public://control/healthy-sync-over-async@1.0.0",
+      "publicWorkloadParameters": {
+        "endpoint": "/sync-over-async-fixed",
+        "n": "40",
+        "delaySeconds": "3",
+        "concurrentRequests": "12"
+      },
+      "repetition": 1,
+      "budget": {
+        "maximumWallTimeSeconds": 45,
+        "maximumToolCalls": 3,
+        "maximumModelTurns": 4,
+        "maximumCaptureSeconds": 10,
+        "maximumInputTokens": 10000,
+        "maximumOutputTokens": 1200,
+        "maximumEstimatedCostUsd": 0.25,
+        "maximumResponseBytes": 131072,
+        "maximumArtifactBytes": 393216
+      },
+      "evidenceQualityMarkers": [ "healthyControl" ],
+      "requiresIndependentReview": true
+    },
+    {
+      "id": "h-01",
+      "partition": "heldout",
+      "kind": "live",
+      "provenanceKind": "liveModel",
+      "definitionVisibility": "privateCommitted",
+      "workloadFamily": null,
+      "workloadDefinition": "private://heldout/h-01",
+      "publicWorkloadParameters": null,
+      "repetition": 1,
+      "budget": {
+        "maximumWallTimeSeconds": 45,
+        "maximumToolCalls": 3,
+        "maximumModelTurns": 4,
+        "maximumCaptureSeconds": 10,
+        "maximumInputTokens": 10000,
+        "maximumOutputTokens": 1200,
+        "maximumEstimatedCostUsd": 0.25,
+        "maximumResponseBytes": 131072,
+        "maximumArtifactBytes": 393216
+      },
+      "evidenceQualityMarkers": [],
+      "requiresIndependentReview": false
+    },
+    {
+      "id": "h-02",
+      "partition": "heldout",
+      "kind": "live",
+      "provenanceKind": "liveModel",
+      "definitionVisibility": "privateCommitted",
+      "workloadFamily": null,
+      "workloadDefinition": "private://heldout/h-02",
+      "publicWorkloadParameters": null,
+      "repetition": 1,
+      "budget": {
+        "maximumWallTimeSeconds": 45,
+        "maximumToolCalls": 3,
+        "maximumModelTurns": 4,
+        "maximumCaptureSeconds": 10,
+        "maximumInputTokens": 10000,
+        "maximumOutputTokens": 1200,
+        "maximumEstimatedCostUsd": 0.25,
+        "maximumResponseBytes": 131072,
+        "maximumArtifactBytes": 393216
+      },
+      "evidenceQualityMarkers": [],
+      "requiresIndependentReview": false
+    },
+    {
+      "id": "h-03",
+      "partition": "heldout",
+      "kind": "live",
+      "provenanceKind": "liveModel",
+      "definitionVisibility": "privateCommitted",
+      "workloadFamily": null,
+      "workloadDefinition": "private://heldout/h-03",
+      "publicWorkloadParameters": null,
+      "repetition": 1,
+      "budget": {
+        "maximumWallTimeSeconds": 45,
+        "maximumToolCalls": 3,
+        "maximumModelTurns": 4,
+        "maximumCaptureSeconds": 10,
+        "maximumInputTokens": 10000,
+        "maximumOutputTokens": 1200,
+        "maximumEstimatedCostUsd": 0.25,
+        "maximumResponseBytes": 131072,
+        "maximumArtifactBytes": 393216
+      },
+      "evidenceQualityMarkers": [],
+      "requiresIndependentReview": true
+    },
+    {
+      "id": "h-04",
+      "partition": "heldout",
+      "kind": "live",
+      "provenanceKind": "liveModel",
+      "definitionVisibility": "privateCommitted",
+      "workloadFamily": null,
+      "workloadDefinition": "private://heldout/h-04",
+      "publicWorkloadParameters": null,
+      "repetition": 1,
+      "budget": {
+        "maximumWallTimeSeconds": 45,
+        "maximumToolCalls": 3,
+        "maximumModelTurns": 4,
+        "maximumCaptureSeconds": 10,
+        "maximumInputTokens": 10000,
+        "maximumOutputTokens": 1200,
+        "maximumEstimatedCostUsd": 0.25,
+        "maximumResponseBytes": 131072,
+        "maximumArtifactBytes": 393216
+      },
+      "evidenceQualityMarkers": [],
+      "requiresIndependentReview": false
+    },
+    {
+      "id": "h-05",
+      "partition": "heldout",
+      "kind": "live",
+      "provenanceKind": "liveModel",
+      "definitionVisibility": "privateCommitted",
+      "workloadFamily": null,
+      "workloadDefinition": "private://heldout/h-05",
+      "publicWorkloadParameters": null,
+      "repetition": 1,
+      "budget": {
+        "maximumWallTimeSeconds": 45,
+        "maximumToolCalls": 3,
+        "maximumModelTurns": 4,
+        "maximumCaptureSeconds": 10,
+        "maximumInputTokens": 10000,
+        "maximumOutputTokens": 1200,
+        "maximumEstimatedCostUsd": 0.25,
+        "maximumResponseBytes": 131072,
+        "maximumArtifactBytes": 393216
+      },
+      "evidenceQualityMarkers": [],
+      "requiresIndependentReview": true
+    },
+    {
+      "id": "h-06",
+      "partition": "heldout",
+      "kind": "live",
+      "provenanceKind": "liveModel",
+      "definitionVisibility": "privateCommitted",
+      "workloadFamily": null,
+      "workloadDefinition": "private://heldout/h-06",
+      "publicWorkloadParameters": null,
+      "repetition": 1,
+      "budget": {
+        "maximumWallTimeSeconds": 45,
+        "maximumToolCalls": 3,
+        "maximumModelTurns": 4,
+        "maximumCaptureSeconds": 10,
+        "maximumInputTokens": 10000,
+        "maximumOutputTokens": 1200,
+        "maximumEstimatedCostUsd": 0.25,
+        "maximumResponseBytes": 131072,
+        "maximumArtifactBytes": 393216
+      },
+      "evidenceQualityMarkers": [],
+      "requiresIndependentReview": false
+    },
+    {
+      "id": "dev-replay-threadpool-unknown",
+      "partition": "development",
+      "kind": "authoredEditedReplay",
+      "provenanceKind": "authoredEditedReplay",
+      "definitionVisibility": "public",
+      "workloadFamily": "edited-replay",
+      "workloadDefinition": "public://edited-replay/threadpool-unknown@1",
+      "publicWorkloadParameters": {
+        "perturbation": "Remove or replace the ThreadPool reason with unknown while retaining queue/worker growth."
+      },
+      "repetition": 1,
+      "budget": null,
+      "evidenceQualityMarkers": [ "unknownThreadPoolReason" ],
+      "requiresIndependentReview": true
+    },
+    {
+      "id": "dev-replay-loss",
+      "partition": "development",
+      "kind": "authoredEditedReplay",
+      "provenanceKind": "authoredEditedReplay",
+      "definitionVisibility": "public",
+      "workloadFamily": "edited-replay",
+      "workloadDefinition": "public://edited-replay/loss-truncation@1",
+      "publicWorkloadParameters": {
+        "perturbation": "Mark retained evidence as lost or truncated and remove the affected decisive values."
+      },
+      "repetition": 1,
+      "budget": null,
+      "evidenceQualityMarkers": [ "lossOrTruncation", "captureWindowLimited" ],
+      "requiresIndependentReview": false
+    },
+    {
+      "id": "dev-replay-contradictory",
+      "partition": "development",
+      "kind": "authoredEditedReplay",
+      "provenanceKind": "authoredEditedReplay",
+      "definitionVisibility": "public",
+      "workloadFamily": "edited-replay",
+      "workloadDefinition": "public://edited-replay/contradictory-insufficient@1",
+      "publicWorkloadParameters": {
+        "perturbation": "Retain competing measurements that contradict a confident attribution and are insufficient to select one cause."
+      },
+      "repetition": 1,
+      "budget": null,
+      "evidenceQualityMarkers": [ "contradictoryOrInsufficientEvidence", "competingExplanation" ],
+      "requiresIndependentReview": false
+    }
+  ]
+}

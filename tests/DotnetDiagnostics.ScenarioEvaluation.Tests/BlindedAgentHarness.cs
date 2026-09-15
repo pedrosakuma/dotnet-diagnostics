@@ -9,7 +9,7 @@ namespace DotnetDiagnostics.ScenarioEvaluation.Tests;
 
 public static class BlindedAgentHarness
 {
-    public const int CurrentReportSchemaVersion = 2;
+    public const int CurrentReportSchemaVersion = 3;
     private static readonly JsonSerializerOptions ReportJsonOptions = CreateReportJsonOptions();
     private const string SystemPrompt =
         """
@@ -26,6 +26,13 @@ public static class BlindedAgentHarness
         "uncertainty":"...","nextSteps":["..."]}
         Every observed or inferred claim must cite precise locations in returned tool evidence.
         """;
+
+    internal static string CurrentProductCommit => ProductCommit();
+
+    internal static string CurrentProductVersion =>
+        typeof(BlindedAgentHarness).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+        ?? "unavailable";
 
     public static bool TryCreateConfiguredTransport(
         out IAgentModelTransport? transport,
@@ -75,7 +82,8 @@ public static class BlindedAgentHarness
             Temperature: 0,
             MaximumOutputTokens: 1200,
             Version: Environment.GetEnvironmentVariable("DOTNET_DIAGNOSTICS_AGENT_MODEL_VERSION"),
-            MaximumResponseBytes: 131_072);
+            MaximumResponseBytes: 131_072,
+            TransportVersion: Environment.GetEnvironmentVariable("DOTNET_DIAGNOSTICS_AGENT_TRANSPORT_VERSION"));
         detail = "Configured.";
         return true;
     }
@@ -107,24 +115,32 @@ public static class BlindedAgentHarness
 
         try
         {
-            transport = new CopilotCliAgentTransport(executable, copilotHome, workRoot);
+            var cliTransport = new CopilotCliAgentTransport(executable, copilotHome, workRoot);
+            using var versionTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            var transportVersion = cliTransport.DetectVersionAsync(versionTimeout.Token)
+                .GetAwaiter()
+                .GetResult();
+            transport = cliTransport;
+            configuration = new AgentModelConfiguration(
+                Provider: "github-copilot-cli",
+                Model: model,
+                Endpoint: new Uri("copilot-cli://local-process"),
+                Temperature: 0,
+                MaximumOutputTokens: 1200,
+                Version: Environment.GetEnvironmentVariable("DOTNET_DIAGNOSTICS_AGENT_MODEL_VERSION"),
+                MaximumResponseBytes: 131_072,
+                TransportVersion: transportVersion);
         }
-        catch (ArgumentException exception)
+        catch (Exception exception) when (
+            exception is ArgumentException
+            or AgentTransportException
+            or OperationCanceledException)
         {
             transport = null;
             configuration = null;
             detail = $"Blocked: {exception.Message}";
             return false;
         }
-
-        configuration = new AgentModelConfiguration(
-            Provider: "github-copilot-cli",
-            Model: model,
-            Endpoint: new Uri("copilot-cli://local-process"),
-            Temperature: 0,
-            MaximumOutputTokens: 1200,
-            Version: Environment.GetEnvironmentVariable("DOTNET_DIAGNOSTICS_AGENT_MODEL_VERSION"),
-            MaximumResponseBytes: 131_072);
         detail =
             "Configured Copilot CLI transport. Inference uses GitHub Copilot cloud models through the CLI's own authentication; it is not offline.";
         return true;
@@ -565,7 +581,6 @@ public static class BlindedAgentHarness
 
     private static AgentHarnessProvenance Provenance(AgentHarnessRequest request)
     {
-        var assembly = typeof(BlindedAgentHarness).Assembly;
         return new AgentHarnessProvenance(
             request.Model.Provider,
             request.Model.Model,
@@ -578,8 +593,8 @@ public static class BlindedAgentHarness
                     ? SystemPrompt + "\n" + CopilotCliAgentTransport.ProtocolInstructions + CopilotCliAgentTransport.ProtocolReminder
                     : SystemPrompt),
             BlindedDiagnosticToolGateway.Sha256(JsonSerializer.Serialize(BlindedDiagnosticToolGateway.ToolDefinitions)),
-            ProductCommit(),
-            assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "unavailable",
+            CurrentProductCommit,
+            CurrentProductVersion,
             request.Manifest.Id,
             request.Manifest.Version,
             new SortedDictionary<string, string>(
@@ -592,7 +607,11 @@ public static class BlindedAgentHarness
             "local loopback; fresh evaluator-owned process; model receives neutral target identity only",
             $"toolCalls<={request.Budget.MaximumToolCalls}; captureSeconds<={request.Budget.MaximumCaptureSeconds}; artifactBytes<={request.Budget.MaximumArtifactBytes}; estimatedCostUsd<={request.Budget.MaximumEstimatedCostUsd?.ToString(CultureInfo.InvariantCulture) ?? "unavailable"}",
             "Evaluator-private report at the caller-selected path; CI artifacts should use 30-day retention. Workload configuration is retained for repeatability. No credentials are written.",
-            "Credentials, authorization headers, API keys, process arguments, source paths, and evaluator answers are never persisted or model-visible. Controller routes and private workload configuration are evaluator-private provenance and are excluded from model-visible messages and transcripts.");
+            "Credentials, authorization headers, API keys, process arguments, source paths, and evaluator answers are never persisted or model-visible. Controller routes and private workload configuration are evaluator-private provenance and are excluded from model-visible messages and transcripts.",
+            request.Model.Provider == "github-copilot-cli"
+                ? "github-copilot-cli"
+                : "openai-compatible-http",
+            request.Model.TransportVersion ?? "unavailable");
     }
 
     private static string EndpointOrigin(Uri endpoint)
@@ -603,7 +622,11 @@ public static class BlindedAgentHarness
     private static string ProductCommit()
     {
         var value = Environment.GetEnvironmentVariable("GITHUB_SHA");
-        if (!string.IsNullOrWhiteSpace(value))
+        if (string.Equals(
+                Environment.GetEnvironmentVariable("GITHUB_ACTIONS"),
+                "true",
+                StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(value))
         {
             return value;
         }

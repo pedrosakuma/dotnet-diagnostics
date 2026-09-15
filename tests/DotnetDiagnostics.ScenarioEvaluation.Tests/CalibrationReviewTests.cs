@@ -257,6 +257,35 @@ public sealed class CalibrationReviewTests
     }
 
     [Fact]
+    public void ProtocolSummary_RequiresIndependentReviewOnlyForFrozenSubset()
+    {
+        using var files = new CalibrationTestFiles();
+        var protocol = CalibrationProtocolTests.CreateProtocolForPacketTests();
+        var slot = protocol.Slots.Single(value => value.Id == "dev-replay-loss");
+        var descriptor = new CalibrationCaseDescriptor(
+            protocol.ProtocolId,
+            protocol.RubricFingerprint,
+            slot.Id,
+            slot.Partition,
+            slot.ProvenanceKind,
+            "capture-1",
+            new string('f', 64),
+            "SYNTHETIC TEST packet.",
+            protocol.ProtocolFingerprint);
+        var packet = CreatePacket(
+            files,
+            CreateReport() with { EvidenceKind = "authored-edited-replay" },
+            descriptor: descriptor);
+        var review = FinalReview(packet, "review-1", "reviewer-a");
+
+        var summary = CalibrationPackets.Summarize(packet, [review], protocol);
+
+        summary.HasIndependentReview.Should().BeFalse();
+        summary.MissingReviews.Should().NotContain(value =>
+            value.Contains("independent review", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void DamagedEvidenceCanReceiveHumanNotAssessableLabels()
     {
         using var files = new CalibrationTestFiles();
@@ -328,6 +357,10 @@ public sealed class CalibrationReviewTests
         CalibrationPacket packet;
         if (operation == "export")
         {
+            var protocolPath = Environment.GetEnvironmentVariable("DOTNET_DIAGNOSTICS_CALIBRATION_PROTOCOL");
+            var protocol = string.IsNullOrWhiteSpace(protocolPath)
+                ? null
+                : CalibrationProtocols.Load(protocolPath);
             packet = CalibrationPackets.CreatePacket(
                 RequiredEnvironment("DOTNET_DIAGNOSTICS_CALIBRATION_SOURCE_REPORT"),
                 new CalibrationCaseDescriptor(
@@ -342,7 +375,9 @@ public sealed class CalibrationReviewTests
                         ignoreCase: true),
                     RequiredEnvironment("DOTNET_DIAGNOSTICS_CALIBRATION_CAPTURE_ID"),
                     Environment.GetEnvironmentVariable("DOTNET_DIAGNOSTICS_CALIBRATION_CAPTURE_HASH"),
-                    Environment.GetEnvironmentVariable("DOTNET_DIAGNOSTICS_CALIBRATION_NOTES") ?? string.Empty));
+                    Environment.GetEnvironmentVariable("DOTNET_DIAGNOSTICS_CALIBRATION_NOTES") ?? string.Empty,
+                    protocol?.ProtocolFingerprint),
+                protocol);
             CalibrationPackets.WritePacket(Path.Combine(outputDirectory, "packet.json"), packet);
             CalibrationPackets.WriteReview(
                 Path.Combine(outputDirectory, "review-template.json"),
@@ -352,6 +387,11 @@ public sealed class CalibrationReviewTests
         else if (operation == "summarize")
         {
             packet = CalibrationPackets.ReadPacket(RequiredEnvironment("DOTNET_DIAGNOSTICS_CALIBRATION_PACKET"));
+            var protocolPath = Environment.GetEnvironmentVariable("DOTNET_DIAGNOSTICS_CALIBRATION_PROTOCOL");
+            if (!string.IsNullOrWhiteSpace(protocolPath))
+            {
+                CalibrationProtocols.ValidatePacket(CalibrationProtocols.Load(protocolPath), packet);
+            }
         }
         else
         {
@@ -363,19 +403,25 @@ public sealed class CalibrationReviewTests
         var reviews = reviewPaths.Select(path => CalibrationPackets.ReadReview(path, packet)).ToArray();
         CalibrationPackets.WriteSummary(
             Path.Combine(outputDirectory, "summary.json"),
-            CalibrationPackets.Summarize(packet, reviews));
+            string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DOTNET_DIAGNOSTICS_CALIBRATION_PROTOCOL"))
+                ? CalibrationPackets.Summarize(packet, reviews)
+                : CalibrationPackets.Summarize(
+                    packet,
+                    reviews,
+                    CalibrationProtocols.Load(RequiredEnvironment("DOTNET_DIAGNOSTICS_CALIBRATION_PROTOCOL"))));
     }
 
     private static CalibrationPacket CreatePacket(
         CalibrationTestFiles files,
         AgentHarnessReport report,
-        CalibrationPartition partition = CalibrationPartition.Development)
+        CalibrationPartition partition = CalibrationPartition.Development,
+        CalibrationCaseDescriptor? descriptor = null)
     {
         var source = files.Path($"source-{Guid.NewGuid():n}.json");
         BlindedAgentHarness.WriteReport(source, report);
         return CalibrationPackets.CreatePacket(
             source,
-            new CalibrationCaseDescriptor(
+            descriptor ?? new CalibrationCaseDescriptor(
                 "draft-protocol-v1",
                 RubricFingerprint,
                 "synthetic-test-case",
@@ -503,7 +549,8 @@ public sealed class CalibrationReviewTests
                 ApprovalComplianceRating.Compliant,
                 null,
                 QualityRating.NotAssessable,
-                "SYNTHETIC TEST response judgment; no empirical human result."));
+                "SYNTHETIC TEST response judgment; no empirical human result."),
+            packet.Descriptor.ProtocolFingerprint);
 
     private static string RequiredEnvironment(string name)
         => Environment.GetEnvironmentVariable(name)

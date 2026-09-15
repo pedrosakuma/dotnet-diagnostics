@@ -23,12 +23,22 @@ public static class CalibrationPackets
     public static CalibrationPacket CreatePacket(
         string sourceReportPath,
         CalibrationCaseDescriptor descriptor)
+        => CreatePacket(sourceReportPath, descriptor, protocol: null);
+
+    public static CalibrationPacket CreatePacket(
+        string sourceReportPath,
+        CalibrationCaseDescriptor descriptor,
+        CalibrationProtocol? protocol)
     {
         ValidateDescriptor(descriptor);
         var sourceBytes = ReadBounded(sourceReportPath, MaximumSourceBytes);
         RejectDuplicateProperties(sourceBytes);
         var report = Deserialize<AgentHarnessReport>(sourceBytes, "source report");
         ValidateSourceReport(report);
+        if (protocol is not null)
+        {
+            CalibrationProtocols.ValidateSourceReport(protocol, descriptor, report);
+        }
         var sourceDigest = Sha256(sourceBytes);
         var caseFingerprint = Sha256(Encoding.UTF8.GetBytes(
             $"{descriptor.ProtocolId}\n{descriptor.RubricFingerprint}\n{descriptor.CaseId}\n{descriptor.Partition}\n{descriptor.CaptureId}\n{descriptor.CaptureHash}\n{report.RunId}\n{sourceDigest}"));
@@ -86,7 +96,9 @@ public static class CalibrationPackets
                 report.Provenance.Provider,
                 report.Provenance.Model,
                 report.Provenance.ModelVersion,
-                report.Provenance.ProductCommit),
+                report.Provenance.ProductCommit,
+                report.Provenance.Transport,
+                report.Provenance.TransportVersion),
             report.CompletedAtUtc,
             reviewable ? CalibrationReviewability.Reviewable : CalibrationReviewability.NotAssessable,
             reviewable
@@ -135,7 +147,8 @@ public static class CalibrationPackets
             false,
             [],
             packet.Claims.Select(claim => new CalibrationClaimJudgment(claim.ClaimId, null, null, null)).ToArray(),
-            new CalibrationResponseJudgment(null, null, null, null, null, null, null));
+            new CalibrationResponseJudgment(null, null, null, null, null, null, null),
+            packet.Descriptor.ProtocolFingerprint);
     }
 
     public static CalibrationPacket ReadPacket(string path)
@@ -171,6 +184,27 @@ public static class CalibrationPackets
     public static CalibrationSummary Summarize(
         CalibrationPacket packet,
         IReadOnlyList<CalibrationReview> reviews)
+        => Summarize(packet, reviews, requireIndependentReview: true, requiredDistinctReviewers: 2);
+
+    public static CalibrationSummary Summarize(
+        CalibrationPacket packet,
+        IReadOnlyList<CalibrationReview> reviews,
+        CalibrationProtocol protocol)
+    {
+        CalibrationProtocols.ValidatePacket(protocol, packet);
+        var slot = protocol.Slots.Single(value => value.Id == packet.Descriptor.CaseId);
+        return Summarize(
+            packet,
+            reviews,
+            slot.RequiresIndependentReview,
+            protocol.Review.RequiredDistinctReviewersForIndependentSlots);
+    }
+
+    private static CalibrationSummary Summarize(
+        CalibrationPacket packet,
+        IReadOnlyList<CalibrationReview> reviews,
+        bool requireIndependentReview,
+        int requiredDistinctReviewers)
     {
         ValidatePacket(packet);
         foreach (var review in reviews)
@@ -217,11 +251,12 @@ public static class CalibrationPackets
             Dimension("cost-numeric-known", slots, finalizedReviews.Where(value => value.Response.ObservedCostUsd is not null)
                 .Select(value => $"{value.ReviewerId}/{value.ReviewId}:{value.Response.ObservedCostUsd!.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)}")),
         };
-        var independent = currentJudgments.Length >= 2
+        var independent = currentJudgments.Select(review => review.ReviewerId)
+                .Distinct(StringComparer.Ordinal).Count() >= requiredDistinctReviewers
             && currentJudgments.Any(review => review.Role == CalibrationReviewerRole.Independent);
         var explicitAdjudication = currentReviews.Any(review =>
             review.Role == CalibrationReviewerRole.Adjudicator
-            && currentJudgments.Length >= 2
+            && currentJudgments.Length >= requiredDistinctReviewers
             && review.AdjudicatesReviewIds.ToHashSet(StringComparer.Ordinal)
                 .SetEquals(currentJudgments.Select(judgment => judgment.ReviewId))
             && currentJudgments.All(judgment => judgment.ReviewedAtUtc <= review.ReviewedAtUtc));
@@ -235,9 +270,10 @@ public static class CalibrationPackets
         {
             missing.Add("No finalized human review has been imported; draft labels remain uncounted.");
         }
-        else if (!independent)
+        else if (requireIndependentReview && !independent)
         {
-            missing.Add("No independent review from a second reviewer identity has been imported.");
+            missing.Add(
+                $"No independent review from {requiredDistinctReviewers} distinct reviewer identities has been imported.");
         }
 
         if (disagreements.Count > 0 && !explicitAdjudication)
@@ -462,7 +498,7 @@ public static class CalibrationPackets
 
     private static void ValidateSourceReport(AgentHarnessReport report)
     {
-        if (report.SchemaVersion != BlindedAgentHarness.CurrentReportSchemaVersion)
+        if (report.SchemaVersion is < 2 or > BlindedAgentHarness.CurrentReportSchemaVersion)
         {
             throw new InvalidDataException($"Unsupported source report schema version {report.SchemaVersion}.");
         }
@@ -497,6 +533,10 @@ public static class CalibrationPackets
         if (!Enum.IsDefined(descriptor.Partition) || !Enum.IsDefined(descriptor.ProvenanceKind))
         {
             throw new InvalidDataException("The calibration partition or provenance kind is invalid.");
+        }
+        if (descriptor.ProtocolFingerprint is not null && !IsSha256(descriptor.ProtocolFingerprint))
+        {
+            throw new InvalidDataException("An optional protocol fingerprint must be a 64-character SHA-256 value.");
         }
     }
 
@@ -583,6 +623,7 @@ public static class CalibrationPackets
         if (!FixedEquals(review.PacketFingerprint, packet.Fingerprint)
             || !FixedEquals(review.CaseFingerprint, packet.CaseFingerprint)
             || review.ProtocolId != packet.Descriptor.ProtocolId
+            || review.ProtocolFingerprint != packet.Descriptor.ProtocolFingerprint
             || review.RubricFingerprint != packet.Descriptor.RubricFingerprint)
         {
             throw new InvalidDataException("The review is stale or belongs to a different packet, case, protocol, or rubric.");

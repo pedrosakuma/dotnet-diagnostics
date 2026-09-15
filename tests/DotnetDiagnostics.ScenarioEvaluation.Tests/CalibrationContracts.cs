@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace DotnetDiagnostics.ScenarioEvaluation.Tests;
 
@@ -71,6 +72,28 @@ public enum CalibrationReviewerRole
     Adjudicator,
 }
 
+public enum CalibrationProtocolSlotKind
+{
+    Live,
+    AuthoredEditedReplay,
+}
+
+public enum CalibrationDefinitionVisibility
+{
+    Public,
+    PrivateCommitted,
+}
+
+public enum CalibrationEvidenceQualityMarker
+{
+    HealthyControl,
+    CompetingExplanation,
+    UnknownThreadPoolReason,
+    LossOrTruncation,
+    ContradictoryOrInsufficientEvidence,
+    CaptureWindowLimited,
+}
+
 public sealed record CalibrationCaseDescriptor(
     string ProtocolId,
     string RubricFingerprint,
@@ -79,7 +102,81 @@ public sealed record CalibrationCaseDescriptor(
     CalibrationProvenanceKind ProvenanceKind,
     string CaptureId,
     string? CaptureHash,
-    string Notes);
+    string Notes,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ProtocolFingerprint = null);
+
+public sealed record CalibrationModelBaseline(
+    string Provider,
+    string Model,
+    string ModelVersion,
+    string ModelVersionEvidence,
+    string Transport,
+    string TransportVersion);
+
+public sealed record CalibrationProductBaseline(
+    string Product,
+    string Version,
+    string Commit);
+
+public sealed record CalibrationProtocolLimits(
+    int ExpectedLiveRuns,
+    int ExpectedReplayRuns,
+    int MaximumProviderTurns);
+
+public sealed record CalibrationReviewPlan(
+    int RequiredDistinctReviewersForIndependentSlots,
+    IReadOnlyList<string> IndependentSlotIds,
+    bool AdjudicateEveryDisagreement);
+
+public sealed record CalibrationHoldoutPlan(
+    string PrivateDefinitionSha256,
+    bool KeepLabelsUnavailableDuringDevelopment,
+    bool RequireFreshCaptureIds,
+    bool RequireDistinctRunIdsAndCaptureHashes);
+
+public sealed record CalibrationProtocolSlot(
+    string Id,
+    CalibrationPartition Partition,
+    CalibrationProtocolSlotKind Kind,
+    CalibrationProvenanceKind ProvenanceKind,
+    CalibrationDefinitionVisibility DefinitionVisibility,
+    string? WorkloadFamily,
+    string WorkloadDefinition,
+    IReadOnlyDictionary<string, string>? PublicWorkloadParameters,
+    int Repetition,
+    AgentHarnessBudget? Budget,
+    IReadOnlyList<CalibrationEvidenceQualityMarker> EvidenceQualityMarkers,
+    bool RequiresIndependentReview);
+
+public sealed record CalibrationProtocol(
+    int SchemaVersion,
+    string ProtocolId,
+    string ProtocolFingerprint,
+    string RubricId,
+    string RubricFingerprint,
+    DateTimeOffset FrozenAtUtc,
+    CalibrationModelBaseline Model,
+    CalibrationProductBaseline Product,
+    CalibrationProtocolLimits Limits,
+    CalibrationReviewPlan Review,
+    CalibrationHoldoutPlan Holdout,
+    IReadOnlyList<CalibrationProtocolSlot> Slots);
+
+public sealed record CalibrationPrivateDefinition(
+    int SchemaVersion,
+    string ProtocolId,
+    string Handling,
+    IReadOnlyList<CalibrationPrivateSlot> Slots);
+
+public sealed record CalibrationPrivateSlot(
+    string Id,
+    string WorkloadFamily,
+    string WorkloadVersion,
+    IReadOnlyDictionary<string, string> Parameters,
+    string CaptureSeed,
+    IReadOnlyList<CalibrationEvidenceQualityMarker> EvidenceQualityMarkers,
+    string WorkloadTruth);
 
 public sealed record CalibrationStageSnapshot(
     AgentHarnessStage Prerequisites,
@@ -123,7 +220,11 @@ public sealed record CalibrationGenerationProvenance(
     string Provider,
     string Model,
     string ModelVersion,
-    string ProductCommit);
+    string ProductCommit,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? Transport = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? TransportVersion = null);
 
 public sealed record CalibrationPacket(
     int SchemaVersion,
@@ -173,7 +274,9 @@ public sealed record CalibrationReview(
     bool Finalized,
     IReadOnlyList<string> AdjudicatesReviewIds,
     IReadOnlyList<CalibrationClaimJudgment> Claims,
-    CalibrationResponseJudgment Response);
+    CalibrationResponseJudgment Response,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ProtocolFingerprint = null);
 
 public sealed record CalibrationDimensionSummary(
     string Dimension,
