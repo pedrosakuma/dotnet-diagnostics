@@ -96,7 +96,9 @@ public static class CalibrationPackets
                 report.Provenance.Provider,
                 report.Provenance.Model,
                 report.Provenance.ModelVersion,
-                report.Provenance.ProductCommit),
+                report.Provenance.ProductCommit,
+                report.Provenance.Transport,
+                report.Provenance.TransportVersion),
             report.CompletedAtUtc,
             reviewable ? CalibrationReviewability.Reviewable : CalibrationReviewability.NotAssessable,
             reviewable
@@ -473,7 +475,7 @@ public static class CalibrationPackets
 
     private static void ValidateSourceReport(AgentHarnessReport report)
     {
-        if (report.SchemaVersion != BlindedAgentHarness.CurrentReportSchemaVersion)
+        if (report.SchemaVersion is < 2 or > BlindedAgentHarness.CurrentReportSchemaVersion)
         {
             throw new InvalidDataException($"Unsupported source report schema version {report.SchemaVersion}.");
         }

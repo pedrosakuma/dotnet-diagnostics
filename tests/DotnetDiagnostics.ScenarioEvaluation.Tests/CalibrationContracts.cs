@@ -205,7 +205,11 @@ public sealed record CalibrationGenerationProvenance(
     string Provider,
     string Model,
     string ModelVersion,
-    string ProductCommit);
+    string ProductCommit,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? Transport = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? TransportVersion = null);
 
 public sealed record CalibrationPacket(
     int SchemaVersion,

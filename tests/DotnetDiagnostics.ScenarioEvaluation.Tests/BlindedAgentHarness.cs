@@ -9,7 +9,7 @@ namespace DotnetDiagnostics.ScenarioEvaluation.Tests;
 
 public static class BlindedAgentHarness
 {
-    public const int CurrentReportSchemaVersion = 2;
+    public const int CurrentReportSchemaVersion = 3;
     private static readonly JsonSerializerOptions ReportJsonOptions = CreateReportJsonOptions();
     private const string SystemPrompt =
         """
@@ -75,7 +75,8 @@ public static class BlindedAgentHarness
             Temperature: 0,
             MaximumOutputTokens: 1200,
             Version: Environment.GetEnvironmentVariable("DOTNET_DIAGNOSTICS_AGENT_MODEL_VERSION"),
-            MaximumResponseBytes: 131_072);
+            MaximumResponseBytes: 131_072,
+            TransportVersion: Environment.GetEnvironmentVariable("DOTNET_DIAGNOSTICS_AGENT_TRANSPORT_VERSION"));
         detail = "Configured.";
         return true;
     }
@@ -124,7 +125,8 @@ public static class BlindedAgentHarness
             Temperature: 0,
             MaximumOutputTokens: 1200,
             Version: Environment.GetEnvironmentVariable("DOTNET_DIAGNOSTICS_AGENT_MODEL_VERSION"),
-            MaximumResponseBytes: 131_072);
+            MaximumResponseBytes: 131_072,
+            TransportVersion: Environment.GetEnvironmentVariable("DOTNET_DIAGNOSTICS_AGENT_TRANSPORT_VERSION"));
         detail =
             "Configured Copilot CLI transport. Inference uses GitHub Copilot cloud models through the CLI's own authentication; it is not offline.";
         return true;
@@ -592,7 +594,11 @@ public static class BlindedAgentHarness
             "local loopback; fresh evaluator-owned process; model receives neutral target identity only",
             $"toolCalls<={request.Budget.MaximumToolCalls}; captureSeconds<={request.Budget.MaximumCaptureSeconds}; artifactBytes<={request.Budget.MaximumArtifactBytes}; estimatedCostUsd<={request.Budget.MaximumEstimatedCostUsd?.ToString(CultureInfo.InvariantCulture) ?? "unavailable"}",
             "Evaluator-private report at the caller-selected path; CI artifacts should use 30-day retention. Workload configuration is retained for repeatability. No credentials are written.",
-            "Credentials, authorization headers, API keys, process arguments, source paths, and evaluator answers are never persisted or model-visible. Controller routes and private workload configuration are evaluator-private provenance and are excluded from model-visible messages and transcripts.");
+            "Credentials, authorization headers, API keys, process arguments, source paths, and evaluator answers are never persisted or model-visible. Controller routes and private workload configuration are evaluator-private provenance and are excluded from model-visible messages and transcripts.",
+            request.Model.Provider == "github-copilot-cli"
+                ? "github-copilot-cli"
+                : "openai-compatible-http",
+            request.Model.TransportVersion ?? "unavailable");
     }
 
     private static string EndpointOrigin(Uri endpoint)

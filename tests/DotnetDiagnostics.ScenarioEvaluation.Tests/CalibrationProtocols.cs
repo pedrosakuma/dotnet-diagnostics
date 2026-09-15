@@ -62,6 +62,13 @@ public static class CalibrationProtocols
         ArgumentNullException.ThrowIfNull(descriptor);
         ArgumentNullException.ThrowIfNull(report);
         var slot = ValidateBinding(protocol, descriptor);
+        var expectedEvidenceKind = EvidenceKind(slot);
+        if (report.EvidenceKind != expectedEvidenceKind)
+        {
+            throw new InvalidDataException(
+                $"Report evidence kind must be '{expectedEvidenceKind}' for frozen slot '{slot.Id}'.");
+        }
+
         if (slot.Kind == CalibrationProtocolSlotKind.AuthoredEditedReplay)
         {
             return;
@@ -78,7 +85,9 @@ public static class CalibrationProtocols
             || provenance.Model != expected.Model
             || provenance.ModelVersion != expected.ModelVersion
             || provenance.ProductCommit != protocol.Product.Commit
-            || provenance.ProductVersion != protocol.Product.Version)
+            || provenance.ProductVersion != protocol.Product.Version
+            || provenance.Transport != expected.Transport
+            || provenance.TransportVersion != expected.TransportVersion)
         {
             throw new InvalidDataException(
                 $"Run provenance does not match the frozen model/product baseline for slot '{slot.Id}'.");
@@ -104,12 +113,19 @@ public static class CalibrationProtocols
             throw new InvalidDataException(
                 $"Packet provenance does not match frozen slot '{slot.Id}'.");
         }
+        if (packet.Generation.EvidenceKind != EvidenceKind(slot))
+        {
+            throw new InvalidDataException(
+                $"Packet evidence kind does not match frozen slot '{slot.Id}'.");
+        }
 
         if (slot.Kind == CalibrationProtocolSlotKind.Live
             && (packet.Generation.Provider != protocol.Model.Provider
                 || packet.Generation.Model != protocol.Model.Model
                 || packet.Generation.ModelVersion != protocol.Model.ModelVersion
-                || packet.Generation.ProductCommit != protocol.Product.Commit))
+                || packet.Generation.ProductCommit != protocol.Product.Commit
+                || packet.Generation.Transport != protocol.Model.Transport
+                || packet.Generation.TransportVersion != protocol.Model.TransportVersion))
         {
             throw new InvalidDataException(
                 $"Packet generation does not match the frozen baseline for slot '{slot.Id}'.");
@@ -130,11 +146,7 @@ public static class CalibrationProtocols
         EnsureUnique(packets.Select(packet => packet.Descriptor.CaseId), "packet slot id");
         EnsureUnique(packets.Select(packet => packet.SourceRunId), "source run id");
         EnsureUnique(packets.Select(packet => packet.Descriptor.CaptureId), "capture id");
-        var captureHashes = packets
-            .Select(packet => packet.Descriptor.CaptureHash)
-            .Where(hash => !string.IsNullOrWhiteSpace(hash))
-            .Cast<string>()
-            .ToArray();
+        var captureHashes = packets.Select(packet => packet.Descriptor.CaptureHash!).ToArray();
         EnsureUnique(captureHashes, "capture hash");
 
         var expectedSlots = protocol.Slots.Select(slot => slot.Id).Order(StringComparer.Ordinal);
@@ -179,11 +191,11 @@ public static class CalibrationProtocols
             throw new InvalidDataException(
                 $"Case descriptor partition or provenance does not match frozen slot '{slot.Id}'.");
         }
-        if (slot.Partition == CalibrationPartition.Heldout
+        if (protocol.Holdout.RequireDistinctRunIdsAndCaptureHashes
             && string.IsNullOrWhiteSpace(descriptor.CaptureHash))
         {
             throw new InvalidDataException(
-                $"Heldout slot '{slot.Id}' requires a committed capture hash.");
+                $"Frozen slot '{slot.Id}' requires a committed capture hash.");
         }
 
         return slot;
@@ -241,7 +253,8 @@ public static class CalibrationProtocols
                 || slot.ProvenanceKind != CalibrationProvenanceKind.LiveModel
                 || slot.DefinitionVisibility != CalibrationDefinitionVisibility.PrivateCommitted
                 || slot.WorkloadFamily is not null
-                || slot.PublicWorkloadParameters is not null))
+                || slot.PublicWorkloadParameters is not null
+                || slot.EvidenceQualityMarkers.Count != 0))
         {
             throw new InvalidDataException(
                 "Heldout slots must be opaque, privately committed live-model cases.");
@@ -258,6 +271,7 @@ public static class CalibrationProtocols
 
         var requiredMarkers = Enum.GetValues<CalibrationEvidenceQualityMarker>();
         var observedMarkers = protocol.Slots
+            .Where(slot => slot.DefinitionVisibility == CalibrationDefinitionVisibility.Public)
             .SelectMany(slot => slot.EvidenceQualityMarkers)
             .ToHashSet();
         if (requiredMarkers.Any(marker => !observedMarkers.Contains(marker)))
@@ -300,7 +314,6 @@ public static class CalibrationProtocols
             || !Enum.IsDefined(slot.Kind)
             || !Enum.IsDefined(slot.ProvenanceKind)
             || !Enum.IsDefined(slot.DefinitionVisibility)
-            || slot.EvidenceQualityMarkers.Count == 0
             || slot.EvidenceQualityMarkers.Any(marker => !Enum.IsDefined(marker))
             || slot.EvidenceQualityMarkers.Distinct().Count() != slot.EvidenceQualityMarkers.Count)
         {
@@ -328,7 +341,8 @@ public static class CalibrationProtocols
 
         if (slot.DefinitionVisibility == CalibrationDefinitionVisibility.Public
             && (string.IsNullOrWhiteSpace(slot.WorkloadFamily)
-                || slot.PublicWorkloadParameters is not { Count: > 0 }))
+                || slot.PublicWorkloadParameters is not { Count: > 0 }
+                || slot.EvidenceQualityMarkers.Count == 0))
         {
             throw new InvalidDataException(
                 $"Public slot '{slot.Id}' requires a workload family and parameters.");
@@ -356,6 +370,11 @@ public static class CalibrationProtocols
         IReadOnlyDictionary<string, string> right)
         => left.Count == right.Count
            && left.All(pair => right.TryGetValue(pair.Key, out var value) && value == pair.Value);
+
+    private static string EvidenceKind(CalibrationProtocolSlot slot)
+        => slot.Kind == CalibrationProtocolSlotKind.Live
+            ? "real-model"
+            : "authored-edited-replay";
 
     private static void EnsureUnique(IEnumerable<string> values, string description)
     {

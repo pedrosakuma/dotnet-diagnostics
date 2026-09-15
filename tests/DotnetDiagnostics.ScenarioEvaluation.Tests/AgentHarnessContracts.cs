@@ -50,7 +50,8 @@ public sealed record AgentModelConfiguration(
     double Temperature,
     int MaximumOutputTokens,
     string? Version = null,
-    int MaximumResponseBytes = 131_072);
+    int MaximumResponseBytes = 131_072,
+    string? TransportVersion = null);
 
 public sealed record AgentHarnessStage(
     AgentHarnessStageStatus Status,
@@ -139,7 +140,9 @@ public sealed record AgentHarnessProvenance(
     string Topology,
     string CapturePolicy,
     string RetentionPolicy,
-    string RedactionPolicy);
+    string RedactionPolicy,
+    string Transport = "unavailable",
+    string TransportVersion = "unavailable");
 
 public sealed record AgentHarnessAssessment(
     AgentHarnessStage Stage,
