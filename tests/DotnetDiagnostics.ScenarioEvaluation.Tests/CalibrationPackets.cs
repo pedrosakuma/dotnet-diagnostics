@@ -184,6 +184,27 @@ public static class CalibrationPackets
     public static CalibrationSummary Summarize(
         CalibrationPacket packet,
         IReadOnlyList<CalibrationReview> reviews)
+        => Summarize(packet, reviews, requireIndependentReview: true, requiredDistinctReviewers: 2);
+
+    public static CalibrationSummary Summarize(
+        CalibrationPacket packet,
+        IReadOnlyList<CalibrationReview> reviews,
+        CalibrationProtocol protocol)
+    {
+        CalibrationProtocols.ValidatePacket(protocol, packet);
+        var slot = protocol.Slots.Single(value => value.Id == packet.Descriptor.CaseId);
+        return Summarize(
+            packet,
+            reviews,
+            slot.RequiresIndependentReview,
+            protocol.Review.RequiredDistinctReviewersForIndependentSlots);
+    }
+
+    private static CalibrationSummary Summarize(
+        CalibrationPacket packet,
+        IReadOnlyList<CalibrationReview> reviews,
+        bool requireIndependentReview,
+        int requiredDistinctReviewers)
     {
         ValidatePacket(packet);
         foreach (var review in reviews)
@@ -230,7 +251,8 @@ public static class CalibrationPackets
             Dimension("cost-numeric-known", slots, finalizedReviews.Where(value => value.Response.ObservedCostUsd is not null)
                 .Select(value => $"{value.ReviewerId}/{value.ReviewId}:{value.Response.ObservedCostUsd!.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)}")),
         };
-        var independent = currentJudgments.Length >= 2
+        var independent = currentJudgments.Select(review => review.ReviewerId)
+                .Distinct(StringComparer.Ordinal).Count() >= requiredDistinctReviewers
             && currentJudgments.Any(review => review.Role == CalibrationReviewerRole.Independent);
         var explicitAdjudication = currentReviews.Any(review =>
             review.Role == CalibrationReviewerRole.Adjudicator
@@ -248,9 +270,10 @@ public static class CalibrationPackets
         {
             missing.Add("No finalized human review has been imported; draft labels remain uncounted.");
         }
-        else if (!independent)
+        else if (requireIndependentReview && !independent)
         {
-            missing.Add("No independent review from a second reviewer identity has been imported.");
+            missing.Add(
+                $"No independent review from {requiredDistinctReviewers} distinct reviewer identities has been imported.");
         }
 
         if (disagreements.Count > 0 && !explicitAdjudication)

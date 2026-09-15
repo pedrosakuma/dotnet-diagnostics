@@ -374,7 +374,12 @@ public sealed class CalibrationReviewTests
         var reviews = reviewPaths.Select(path => CalibrationPackets.ReadReview(path, packet)).ToArray();
         CalibrationPackets.WriteSummary(
             Path.Combine(outputDirectory, "summary.json"),
-            CalibrationPackets.Summarize(packet, reviews));
+            string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DOTNET_DIAGNOSTICS_CALIBRATION_PROTOCOL"))
+                ? CalibrationPackets.Summarize(packet, reviews)
+                : CalibrationPackets.Summarize(
+                    packet,
+                    reviews,
+                    CalibrationProtocols.Load(RequiredEnvironment("DOTNET_DIAGNOSTICS_CALIBRATION_PROTOCOL"))));
     }
 
     private static CalibrationPacket CreatePacket(

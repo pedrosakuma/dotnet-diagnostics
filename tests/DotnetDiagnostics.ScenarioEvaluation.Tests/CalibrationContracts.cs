@@ -163,6 +163,21 @@ public sealed record CalibrationProtocol(
     CalibrationHoldoutPlan Holdout,
     IReadOnlyList<CalibrationProtocolSlot> Slots);
 
+public sealed record CalibrationPrivateDefinition(
+    int SchemaVersion,
+    string ProtocolId,
+    string Handling,
+    IReadOnlyList<CalibrationPrivateSlot> Slots);
+
+public sealed record CalibrationPrivateSlot(
+    string Id,
+    string WorkloadFamily,
+    string WorkloadVersion,
+    IReadOnlyDictionary<string, string> Parameters,
+    string CaptureSeed,
+    IReadOnlyList<CalibrationEvidenceQualityMarker> EvidenceQualityMarkers,
+    string WorkloadTruth);
+
 public sealed record CalibrationStageSnapshot(
     AgentHarnessStage Prerequisites,
     AgentHarnessStage Activation,

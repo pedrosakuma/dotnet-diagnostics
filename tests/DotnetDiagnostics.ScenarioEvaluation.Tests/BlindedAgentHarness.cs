@@ -27,6 +27,13 @@ public static class BlindedAgentHarness
         Every observed or inferred claim must cite precise locations in returned tool evidence.
         """;
 
+    internal static string CurrentProductCommit => ProductCommit();
+
+    internal static string CurrentProductVersion =>
+        typeof(BlindedAgentHarness).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+        ?? "unavailable";
+
     public static bool TryCreateConfiguredTransport(
         out IAgentModelTransport? transport,
         out AgentModelConfiguration? configuration,
@@ -108,25 +115,32 @@ public static class BlindedAgentHarness
 
         try
         {
-            transport = new CopilotCliAgentTransport(executable, copilotHome, workRoot);
+            var cliTransport = new CopilotCliAgentTransport(executable, copilotHome, workRoot);
+            using var versionTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            var transportVersion = cliTransport.DetectVersionAsync(versionTimeout.Token)
+                .GetAwaiter()
+                .GetResult();
+            transport = cliTransport;
+            configuration = new AgentModelConfiguration(
+                Provider: "github-copilot-cli",
+                Model: model,
+                Endpoint: new Uri("copilot-cli://local-process"),
+                Temperature: 0,
+                MaximumOutputTokens: 1200,
+                Version: Environment.GetEnvironmentVariable("DOTNET_DIAGNOSTICS_AGENT_MODEL_VERSION"),
+                MaximumResponseBytes: 131_072,
+                TransportVersion: transportVersion);
         }
-        catch (ArgumentException exception)
+        catch (Exception exception) when (
+            exception is ArgumentException
+            or AgentTransportException
+            or OperationCanceledException)
         {
             transport = null;
             configuration = null;
             detail = $"Blocked: {exception.Message}";
             return false;
         }
-
-        configuration = new AgentModelConfiguration(
-            Provider: "github-copilot-cli",
-            Model: model,
-            Endpoint: new Uri("copilot-cli://local-process"),
-            Temperature: 0,
-            MaximumOutputTokens: 1200,
-            Version: Environment.GetEnvironmentVariable("DOTNET_DIAGNOSTICS_AGENT_MODEL_VERSION"),
-            MaximumResponseBytes: 131_072,
-            TransportVersion: Environment.GetEnvironmentVariable("DOTNET_DIAGNOSTICS_AGENT_TRANSPORT_VERSION"));
         detail =
             "Configured Copilot CLI transport. Inference uses GitHub Copilot cloud models through the CLI's own authentication; it is not offline.";
         return true;
@@ -567,7 +581,6 @@ public static class BlindedAgentHarness
 
     private static AgentHarnessProvenance Provenance(AgentHarnessRequest request)
     {
-        var assembly = typeof(BlindedAgentHarness).Assembly;
         return new AgentHarnessProvenance(
             request.Model.Provider,
             request.Model.Model,
@@ -580,8 +593,8 @@ public static class BlindedAgentHarness
                     ? SystemPrompt + "\n" + CopilotCliAgentTransport.ProtocolInstructions + CopilotCliAgentTransport.ProtocolReminder
                     : SystemPrompt),
             BlindedDiagnosticToolGateway.Sha256(JsonSerializer.Serialize(BlindedDiagnosticToolGateway.ToolDefinitions)),
-            ProductCommit(),
-            assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "unavailable",
+            CurrentProductCommit,
+            CurrentProductVersion,
             request.Manifest.Id,
             request.Manifest.Version,
             new SortedDictionary<string, string>(

@@ -242,6 +242,69 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
         return info;
     }
 
+    internal async Task<string> DetectVersionAsync(CancellationToken cancellationToken)
+    {
+        var info = CreateVersionStartInfo();
+        using var process = new Process { StartInfo = info };
+        if (!process.Start())
+        {
+            throw new AgentTransportException("Copilot CLI version probe did not start.");
+        }
+
+        process.StandardInput.Close();
+        var stdoutTask = ReadBoundedAsync(process.StandardOutput, 4_096, cancellationToken);
+        var stderrTask = ReadBoundedAsync(process.StandardError, 4_096, cancellationToken);
+        try
+        {
+            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+            await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false);
+        }
+        catch
+        {
+            await KillOwnedProcessTreeAsync(process).ConfigureAwait(false);
+            throw;
+        }
+
+        if (process.ExitCode != 0)
+        {
+            throw new AgentTransportException(DescribeFailure(
+                "version probe",
+                process.ExitCode,
+                await stderrTask.ConfigureAwait(false)));
+        }
+
+        var version = (await stdoutTask.ConfigureAwait(false))
+            .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(version)
+            || !version.StartsWith("GitHub Copilot CLI ", StringComparison.Ordinal))
+        {
+            throw new AgentTransportException(
+                "Copilot CLI version probe did not return the expected product/version line.");
+        }
+
+        return version;
+    }
+
+    internal ProcessStartInfo CreateVersionStartInfo()
+    {
+        var info = new ProcessStartInfo
+        {
+            FileName = _executable,
+            WorkingDirectory = _workRoot,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            RedirectStandardInput = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        info.ArgumentList.Add("--no-auto-update");
+        info.ArgumentList.Add("--version");
+        info.Environment["COPILOT_HOME"] = _copilotHome;
+        RemoveSensitiveOrAmbientEnvironment(info.Environment);
+        return info;
+    }
+
     private async Task EnsureIsolatedConfigurationAsync(
         string workingDirectory,
         int maximumResponseBytes,

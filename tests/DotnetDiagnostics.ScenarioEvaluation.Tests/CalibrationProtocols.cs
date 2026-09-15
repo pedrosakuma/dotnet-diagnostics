@@ -158,6 +158,65 @@ public static class CalibrationProtocols
         }
     }
 
+    public static ScenarioManifest ResolveWorkload(
+        CalibrationProtocol protocol,
+        string slotId,
+        string? privateDefinitionPath = null)
+    {
+        Validate(protocol);
+        var slot = protocol.Slots.SingleOrDefault(value => value.Id == slotId)
+            ?? throw new InvalidDataException($"Case '{slotId}' is not a frozen protocol slot.");
+        if (slot.Kind != CalibrationProtocolSlotKind.Live)
+        {
+            throw new InvalidDataException($"Protocol slot '{slotId}' is not a live run.");
+        }
+
+        if (slot.DefinitionVisibility == CalibrationDefinitionVisibility.Public)
+        {
+            var manifest = ScenarioManifestLoader.LoadAll().SingleOrDefault(value =>
+                value.Id == slot.WorkloadFamily)
+                ?? throw new InvalidDataException(
+                    $"Public workload '{slot.WorkloadFamily}' is not registered.");
+            if (slot.PublicWorkloadParameters is null
+                || !SameParameters(manifest.Workload.Parameters, slot.PublicWorkloadParameters))
+            {
+                throw new InvalidDataException(
+                    $"Public workload parameters do not match frozen slot '{slot.Id}'.");
+            }
+
+            return manifest;
+        }
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(privateDefinitionPath);
+        var bytes = File.ReadAllBytes(privateDefinitionPath);
+        if (bytes.Length is < 1 or > MaximumProtocolBytes
+            || !FixedEquals(
+                Convert.ToHexStringLower(SHA256.HashData(bytes)),
+                protocol.Holdout.PrivateDefinitionSha256))
+        {
+            throw new InvalidDataException(
+                "The private heldout definition does not match its frozen SHA-256 commitment.");
+        }
+
+        RejectDuplicateProperties(bytes);
+        var definition = JsonSerializer.Deserialize<CalibrationPrivateDefinition>(bytes, JsonOptions)
+            ?? throw new InvalidDataException("The private heldout definition was empty.");
+        ValidatePrivateDefinition(protocol, definition);
+        var privateSlot = definition.Slots.Single(value => value.Id == slot.Id);
+        var baseManifest = ScenarioManifestLoader.LoadAll().SingleOrDefault(value =>
+            value.Id == privateSlot.WorkloadFamily)
+            ?? throw new InvalidDataException(
+                $"Private workload family '{privateSlot.WorkloadFamily}' is not registered.");
+        var resolved = baseManifest with
+        {
+            Version = privateSlot.WorkloadVersion,
+            GroundTruth = privateSlot.WorkloadTruth,
+            Workload = baseManifest.Workload with { Parameters = privateSlot.Parameters },
+        };
+        ScenarioManifestValidator.Validate(resolved);
+        return resolved;
+    }
+
     public static string ComputeFingerprint(CalibrationProtocol protocol)
     {
         ArgumentNullException.ThrowIfNull(protocol);
@@ -346,6 +405,49 @@ public static class CalibrationProtocols
         {
             throw new InvalidDataException(
                 $"Public slot '{slot.Id}' requires a workload family and parameters.");
+        }
+    }
+
+    private static void ValidatePrivateDefinition(
+        CalibrationProtocol protocol,
+        CalibrationPrivateDefinition definition)
+    {
+        if (definition.SchemaVersion != 1
+            || definition.ProtocolId != protocol.ProtocolId
+            || string.IsNullOrWhiteSpace(definition.Handling))
+        {
+            throw new InvalidDataException("The private heldout definition header is invalid.");
+        }
+
+        EnsureUnique(definition.Slots.Select(slot => slot.Id), "private heldout slot id");
+        EnsureUnique(definition.Slots.Select(slot => slot.CaptureSeed), "private capture seed");
+        var expected = protocol.Slots
+            .Where(slot => slot.Partition == CalibrationPartition.Heldout)
+            .Select(slot => slot.Id)
+            .Order(StringComparer.Ordinal);
+        var actual = definition.Slots.Select(slot => slot.Id).Order(StringComparer.Ordinal);
+        if (!actual.SequenceEqual(expected, StringComparer.Ordinal))
+        {
+            throw new InvalidDataException(
+                "The private heldout definition does not contain exactly the frozen heldout slots.");
+        }
+
+        foreach (var slot in definition.Slots)
+        {
+            Require(slot.WorkloadFamily, nameof(slot.WorkloadFamily));
+            Require(slot.WorkloadVersion, nameof(slot.WorkloadVersion));
+            Require(slot.CaptureSeed, nameof(slot.CaptureSeed));
+            Require(slot.WorkloadTruth, nameof(slot.WorkloadTruth));
+            if (slot.Parameters.Count == 0
+                || slot.Parameters.Any(pair =>
+                    string.IsNullOrWhiteSpace(pair.Key) || string.IsNullOrWhiteSpace(pair.Value))
+                || slot.EvidenceQualityMarkers.Count == 0
+                || slot.EvidenceQualityMarkers.Any(marker => !Enum.IsDefined(marker))
+                || slot.EvidenceQualityMarkers.Distinct().Count() != slot.EvidenceQualityMarkers.Count)
+            {
+                throw new InvalidDataException(
+                    $"Private heldout slot '{slot.Id}' is incomplete or invalid.");
+            }
         }
     }
 
