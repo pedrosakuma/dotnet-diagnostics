@@ -416,7 +416,7 @@ public static class CollectionQueryDispatcher
     private static CollectionQueryResult Render(ActivityCapture capture, string view, int topN)
     {
         var capturedCount = capture.Activities.Count;
-        var truncated = capture.TotalActivities > capturedCount;
+        var truncated = capture.Retention?.RetentionLimited;
 
         object payload = view.ToLowerInvariant() switch
         {
@@ -425,18 +425,18 @@ public static class CollectionQueryDispatcher
                 capture.TotalActivities,
                 capturedCount,
                 truncated,
-                capture.BySource.Take(topN).ToList()),
+                capture.BySource.Take(topN).ToList(), capture.Retention),
             "byoperation" => new ActivitiesByOperationView(
                 capture.SourceFilters,
                 capture.TotalActivities,
                 capturedCount,
                 truncated,
-                capture.ByOperation.Take(topN).ToList()),
+                capture.ByOperation.Take(topN).ToList(), capture.Retention),
             "activities" => new ActivitiesListView(
                 capture.SourceFilters,
                 capture.TotalActivities,
                 Math.Min(topN, capture.Activities.Count),
-                capture.Activities.Take(topN).ToList()),
+                capture.Activities.Take(topN).ToList(), capture.Retention),
             _ /* summary */ => new ActivitiesSummaryView(
                 capture.SourceFilters,
                 capture.TotalActivities,
@@ -444,7 +444,7 @@ public static class CollectionQueryDispatcher
                 capturedCount,
                 truncated,
                 capture.BySource.Take(topN).ToList(),
-                capture.ByOperation.Take(topN).ToList()),
+                capture.ByOperation.Take(topN).ToList(), capture.Retention),
         };
 
         return new CollectionQueryResult(

@@ -861,6 +861,71 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
             activity.ParentId == outer.Id);
     }
 
+    [Theory(Timeout = 30_000)]
+    [InlineData(2, 0)]
+    [InlineData(1, 1)]
+    public async Task CollectActivities_TargetTraceSurvivesObservedNoisyPrefix(int matchingCap, int expectedDropped)
+    {
+        EnsureSampleRunning();
+        var baseUrl = await EnsureListeningUrlAsync(TimeSpan.FromSeconds(30));
+        using var http = new HttpClient { BaseAddress = new Uri(baseUrl), Timeout = TimeSpan.FromSeconds(3) };
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        const string traceId = "abcdef0123456789abcdef0123456789";
+        var observed = 0;
+        var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var collector = new EventPipeActivityCollector
+        {
+            ActivityObserved = () =>
+            {
+                if (Interlocked.Increment(ref observed) >= 12) ready.TrySetResult();
+            },
+        };
+        var collection = collector.CollectAsync(Pid, TimeSpan.FromSeconds(10),
+            ["CoreClrSample.Activities"], 2, traceId, matchingCap, cancellation.Token);
+        try
+        {
+            for (var attempt = 0; attempt < 60 && !ready.Task.IsCompleted; attempt++)
+            {
+                using var noise = await http.GetAsync("/activity?delayMs=1", cancellation.Token);
+                noise.EnsureSuccessStatusCode();
+                await Task.Delay(50, cancellation.Token);
+            }
+            ready.Task.IsCompletedSuccessfully.Should().BeTrue(
+                "the collector must receive at least twelve unrelated stop events BEFORE the target request");
+            Volatile.Read(ref observed).Should().BeGreaterThan(2);
+            using var request = new HttpRequestMessage(HttpMethod.Get, "/activity?delayMs=20");
+            request.Headers.TryAddWithoutValidation("traceparent", $"00-{traceId}-9999999999999999-01");
+            using var response = await http.SendAsync(request, cancellation.Token);
+            response.EnsureSuccessStatusCode();
+            using var json = System.Text.Json.JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellation.Token));
+            json.RootElement.GetProperty("traceId").GetString().Should().Be(traceId);
+            var outerSpanId = json.RootElement.GetProperty("spanId").GetString();
+
+            var capture = await collection;
+            capture.Activities.Should().HaveCount(matchingCap).And.OnlyContain(a => a.TraceId == traceId);
+            var inner = capture.Activities.Should().ContainSingle(a => a.OperationName == "CoreClrSample.Inner").Subject;
+            inner.ParentSpanId.Should().Be(outerSpanId);
+            if (matchingCap == 2)
+            {
+                capture.Activities.Should().ContainSingle(a =>
+                    a.OperationName == "CoreClrSample.Outer" && a.SpanId == outerSpanId);
+            }
+            capture.Retention!.AppliedTraceId.Should().Be(traceId);
+            capture.Retention.EffectiveCap.Should().Be(matchingCap);
+            capture.Retention.MatchingActivities.Should().Be(2);
+            capture.Retention.RetainedMatchingActivities.Should().Be(matchingCap);
+            capture.Retention.DroppedMatchingActivities.Should().Be(expectedDropped);
+            capture.Retention.NonMatchingActivities.Should().BeGreaterThanOrEqualTo(12);
+            capture.TotalActivities.Should().Be(capture.Retention.MatchingActivities + capture.Retention.NonMatchingActivities);
+        }
+        finally
+        {
+            await cancellation.CancelAsync();
+            try { await collection; }
+            catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
+        }
+    }
+
     [Fact(Timeout = 60_000)]
     public async Task CollectActivities_ReconstructsSingleProcessHttpAndDatabaseTrace()
     {

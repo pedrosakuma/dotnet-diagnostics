@@ -254,32 +254,36 @@ public sealed record ActivitiesSummaryView(
     int TotalActivities,
     int CompletedActivities,
     int CapturedCount,
-    bool Truncated,
+    bool? Truncated,
     IReadOnlyList<Activities.ActivitySourceSummary> BySource,
-    IReadOnlyList<Activities.ActivityOperationSummary> ByOperation);
+    IReadOnlyList<Activities.ActivityOperationSummary> ByOperation,
+    Activities.ActivityRetention? Retention = null);
 
 /// <summary>Activities grouped by source name.</summary>
 public sealed record ActivitiesBySourceView(
     IReadOnlyList<string>? SourceFilters,
     int TotalActivities,
     int CapturedCount,
-    bool Truncated,
-    IReadOnlyList<Activities.ActivitySourceSummary> Sources);
+    bool? Truncated,
+    IReadOnlyList<Activities.ActivitySourceSummary> Sources,
+    Activities.ActivityRetention? Retention = null);
 
 /// <summary>Activities grouped by source+operation.</summary>
 public sealed record ActivitiesByOperationView(
     IReadOnlyList<string>? SourceFilters,
     int TotalActivities,
     int CapturedCount,
-    bool Truncated,
-    IReadOnlyList<Activities.ActivityOperationSummary> Operations);
+    bool? Truncated,
+    IReadOnlyList<Activities.ActivityOperationSummary> Operations,
+    Activities.ActivityRetention? Retention = null);
 
 /// <summary>Raw captured activities (capped by <c>topN</c>).</summary>
 public sealed record ActivitiesListView(
     IReadOnlyList<string>? SourceFilters,
     int TotalActivities,
     int Returned,
-    IReadOnlyList<Activities.CapturedActivity> Activities);
+    IReadOnlyList<Activities.CapturedActivity> Activities,
+    Activities.ActivityRetention? Retention = null);
 
 
 // --- Log snapshot views ------------------------------------------------------------------------

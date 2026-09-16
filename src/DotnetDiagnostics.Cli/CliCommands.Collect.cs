@@ -141,6 +141,7 @@ internal static partial class CliCommands
 
             "activities" => Wrap(options, await EventCollectionUseCases.CollectActivities(
                 services.GetRequiredService<IActivityCollector>(), resolver, handles,
+                options.TraceId, options.MaxMatchedActivities ?? 200,
                 pid, NullIfEmptyList(options.Sources), duration, options.MaxEvents ?? 200,
                 cancellationToken).ConfigureAwait(false)),
 

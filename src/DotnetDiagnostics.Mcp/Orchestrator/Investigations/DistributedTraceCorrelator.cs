@@ -35,7 +35,7 @@ internal static class DistributedTraceCorrelator
         int AttachedActivePods,
         IReadOnlyList<string> PodErrors);
 
-    internal static async Task<FanoutResult> CorrelateAsync(
+    internal static Task<FanoutResult> CorrelateAsync(
         IInvestigationStore store,
         IInvestigationProxyClient proxy,
         BearerPrincipal? callerPrincipal,
@@ -45,15 +45,34 @@ internal static class DistributedTraceCorrelator
         int maxActivities,
         IReadOnlyList<string>? sources,
         CancellationToken cancellationToken)
+        => CorrelateAsync(store, proxy, callerPrincipal, investigationHandleIds, traceId,
+            durationSeconds, maxActivities, sources, 200, cancellationToken);
+
+    internal static async Task<FanoutResult> CorrelateAsync(
+        IInvestigationStore store,
+        IInvestigationProxyClient proxy,
+        BearerPrincipal? callerPrincipal,
+        IReadOnlyList<string>? investigationHandleIds,
+        string traceId,
+        int durationSeconds,
+        int maxActivities,
+        IReadOnlyList<string>? sources,
+        int maxMatchedActivities,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(proxy);
+        if (!ActivityTraceProjector.TryNormalizeTraceId(traceId, out var normalizedTraceId))
+        {
+            throw new ArgumentException("traceId must be a non-zero 32-hex W3C trace-id.", nameof(traceId));
+        }
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxMatchedActivities, 1);
 
         var errors = new List<string>();
         var handles = ResolveHandles(store, callerPrincipal, investigationHandleIds, errors);
         var captures = new List<(string PodName, ActivityCapture Capture)>(handles.Length);
 
-        var arguments = BuildActivitiesArguments(durationSeconds, maxActivities, sources);
+        var arguments = BuildActivitiesArguments(durationSeconds, maxActivities, sources, normalizedTraceId, maxMatchedActivities);
 
         var tasks = handles.Select(handle => CollectAsync(proxy, handle, arguments, cancellationToken)).ToArray();
         var results = await Task.WhenAll(tasks).ConfigureAwait(false);
@@ -81,13 +100,17 @@ internal static class DistributedTraceCorrelator
     private static Dictionary<string, JsonElement> BuildActivitiesArguments(
         int durationSeconds,
         int maxActivities,
-        IReadOnlyList<string>? sources)
+        IReadOnlyList<string>? sources,
+        string traceId,
+        int maxMatchedActivities)
     {
         var args = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
         {
             ["kind"] = JsonSerializer.SerializeToElement("activities"),
             ["durationSeconds"] = JsonSerializer.SerializeToElement(durationSeconds),
             ["maxActivities"] = JsonSerializer.SerializeToElement(maxActivities),
+            ["traceId"] = JsonSerializer.SerializeToElement(traceId),
+            ["maxMatchedActivities"] = JsonSerializer.SerializeToElement(maxMatchedActivities),
         };
 
         if (sources is { Count: > 0 })
