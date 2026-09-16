@@ -107,7 +107,10 @@ public sealed class ActivityTraceProjectorTests
         };
         var retained = Span("root", ParentId, null, 0, 100, tags);
         var child = Span("child", "2222222222222222", ParentId, 10, 50);
-        var capture = Capture(totalActivities: 9, retained, child);
+        var capture = Capture(totalActivities: 9, retained, child) with
+        {
+            Retention = new ActivityRetention(null, 2, 9, 9, 2, 7, 0),
+        };
 
         var projection = ActivityTraceProjector.Project(capture, TraceId.ToUpperInvariant(), 1, Redactor);
 

@@ -191,11 +191,21 @@ public static class ActivityTraceProjector
             static span => span.ResidualTicks);
 
         var retainedActivities = capture.Activities.Count;
-        if (capture.TotalActivities > retainedActivities)
+        if (capture.Retention?.RetentionLimited == true)
         {
             warnings.Add(
-                $"Retention truncation: the collector observed {capture.TotalActivities} activities but retained only {retainedActivities}; trace membership, roots, timing, and critical-path results are incomplete lower-bound evidence.");
+                $"Retention truncation: dropped {capture.Retention.DroppedMatchingActivities} matching activities at effective cap={capture.Retention.EffectiveCap}. Retained counts are lower bounds; missing children can inflate residuals and change rankings.");
         }
+        else if (capture.Retention?.RetentionLimited is null)
+        {
+            warnings.Add("Retention provenance is unknown (legacy capture); observed-minus-retained may include filtering, not just truncation.");
+        }
+        if (capture.Retention?.AppliedTraceId is { } applied &&
+            !string.Equals(applied, normalizedTraceId, StringComparison.OrdinalIgnoreCase))
+        {
+            warnings.Add($"The capture targeted trace {applied}, not {normalizedTraceId}; this artifact cannot establish absence of the requested trace.");
+        }
+        warnings.Add("Residuals and critical-path rankings describe retained intervals only, are not lower bounds, and may be inflated by missing children.");
 
         if (matchedActivities == 0)
         {
@@ -308,7 +318,8 @@ public static class ActivityTraceProjector
             CriticalPathNodeIndexes: visibleCriticalPath,
             CriticalPathTruncated: criticalPathTruncated,
             Spans: projectedSpans,
-            Warnings: warnings);
+            Warnings: warnings,
+            Retention: capture.Retention);
     }
 
     /// <summary>Validates and lower-cases a non-zero W3C trace-id.</summary>
@@ -356,7 +367,9 @@ public static class ActivityTraceProjector
     private static int BreakCycles(IReadOnlyList<WorkingSpan> spans)
     {
         var complete = new HashSet<WorkingSpan>();
-        var cycleMembers = new HashSet<WorkingSpan>();
+        // A duplicate's self-id still denotes an invalid self-edge, even when lookup resolves another row.
+        var cycleMembers = spans.Where(span => span.Parent is not null &&
+            string.Equals(span.SpanId, span.ParentSpanId, StringComparison.OrdinalIgnoreCase)).ToHashSet();
 
         foreach (var start in spans)
         {
@@ -429,58 +442,11 @@ public static class ActivityTraceProjector
         ref int clippedChildIntervals,
         ref int disjointChildIntervals)
     {
-        var parentStart = parent.StartedAt.UtcTicks;
-        var parentStop = parent.StoppedAt.UtcTicks;
-        var intervals = new List<(long Start, long Stop)>(parent.Children.Count);
-        foreach (var child in parent.Children)
-        {
-            var childStart = child.StartedAt.UtcTicks;
-            var childStop = child.StoppedAt.UtcTicks;
-            var clippedStart = Math.Max(parentStart, childStart);
-            var clippedStop = Math.Min(parentStop, childStop);
-            if (clippedStop <= clippedStart)
-            {
-                disjointChildIntervals++;
-                continue;
-            }
-
-            if (clippedStart != childStart || clippedStop != childStop)
-            {
-                clippedChildIntervals++;
-            }
-
-            intervals.Add((clippedStart, clippedStop));
-        }
-
-        intervals.Sort(static (left, right) =>
-        {
-            var byStart = left.Start.CompareTo(right.Start);
-            return byStart != 0 ? byStart : left.Stop.CompareTo(right.Stop);
-        });
-
-        long coveredTicks = 0;
-        if (intervals.Count > 0)
-        {
-            var mergedStart = intervals[0].Start;
-            var mergedStop = intervals[0].Stop;
-            for (var index = 1; index < intervals.Count; index++)
-            {
-                var interval = intervals[index];
-                if (interval.Start <= mergedStop)
-                {
-                    mergedStop = Math.Max(mergedStop, interval.Stop);
-                    continue;
-                }
-
-                coveredTicks += mergedStop - mergedStart;
-                mergedStart = interval.Start;
-                mergedStop = interval.Stop;
-            }
-
-            coveredTicks += mergedStop - mergedStart;
-        }
-
-        parent.ResidualTicks = Math.Max(0, parentStop - parentStart - coveredTicks);
+        var coverage = UtcIntervalUnion.Measure(parent.StartedAt, parent.StoppedAt,
+            parent.Children.Select(child => (child.StartedAt, child.StoppedAt)));
+        clippedChildIntervals += coverage.Clipped;
+        disjointChildIntervals += coverage.Disjoint;
+        parent.ResidualTicks = Math.Max(0, (parent.StoppedAt - parent.StartedAt).Ticks - coverage.CoveredTicks);
     }
 
     private static void ComputeCriticalPaths(IReadOnlyList<WorkingSpan> ordered)
@@ -680,7 +646,8 @@ public sealed record ActivityTraceProjection(
     IReadOnlyList<int> CriticalPathNodeIndexes,
     bool CriticalPathTruncated,
     IReadOnlyList<ActivityTraceSpan> Spans,
-    IReadOnlyList<string> Warnings);
+    IReadOnlyList<string> Warnings,
+    ActivityRetention? Retention = null);
 
 /// <summary>One completed span in deterministic parent-before-child order.</summary>
 public sealed record ActivityTraceSpan(

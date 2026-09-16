@@ -383,7 +383,8 @@ public class CollectionQueryDispatcherTests
             [
                 new ActivityOperationSummary("Demo.Service", "GET /a", 2, 2, 16, 20),
                 new ActivityOperationSummary("Demo.Service", "GET /b", 1, 1, 30, 30),
-            ]);
+            ],
+            Retention: new ActivityRetention(null, 3, 5, 5, 3, 2, 0));
 
         var outcome = CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.Activities, "summary", capture, 1);
 
@@ -394,6 +395,10 @@ public class CollectionQueryDispatcherTests
         payload.BySource.Should().ContainSingle();
         payload.ByOperation.Should().ContainSingle();
         payload.ByOperation[0].OperationName.Should().Be("GET /a");
+        payload.Retention.Should().Be(capture.Retention);
+        var legacy = CollectionQueryDispatcher.Dispatch(
+            CollectionHandleKinds.Activities, "summary", capture with { Retention = null }, 1);
+        legacy.Result!.Payload.Should().BeOfType<ActivitiesSummaryView>().Subject.Truncated.Should().BeNull();
     }
 
     [Fact]

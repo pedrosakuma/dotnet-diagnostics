@@ -11,6 +11,16 @@ internal static partial class CliCommands
     {
         ArgumentNullException.ThrowIfNull(options);
         error = null;
+        if (options.TraceId is not null && options.Command is not ("collect" or "query"))
+        {
+            error = "--trace-id requires 'collect --kind activities' or an activities trace query.";
+            return false;
+        }
+        if (options.MaxMatchedActivities is not null && options.Command != "collect")
+        {
+            error = "--max-matched-activities requires 'collect --kind activities --trace-id <32-hex>'.";
+            return false;
+        }
         if (!TryValidateWatch(options, out error))
         {
             return false;
@@ -218,6 +228,18 @@ internal static partial class CliCommands
         if (!CollectKindSet.Contains(options.Kind))
         {
             error = $"Unknown collect kind '{options.Kind}'. Valid kinds: {string.Join(", ", CollectKinds)}.";
+            return false;
+        }
+
+        if (options.TraceId is not null && options.Kind != "activities")
+        {
+            error = "--trace-id is supported only for 'collect --kind activities' or an activities trace query.";
+            return false;
+        }
+
+        if (options.MaxMatchedActivities is not null && (options.Kind != "activities" || options.TraceId is null))
+        {
+            error = "--max-matched-activities requires 'collect --kind activities --trace-id <32-hex>'.";
             return false;
         }
 

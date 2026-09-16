@@ -27,7 +27,7 @@ internal static class CliCommandCatalog
 
     public static readonly IReadOnlyList<string> ValueFlags =
     [
-        "-p", "--pid", "--kind", "-d", "--duration", "--depth", "--max-events", "--interval",
+        "-p", "--pid", "--kind", "-d", "--duration", "--depth", "--max-events", "--max-matched-activities", "--interval",
         "--provider", "--meter", "--source", "--category", "--min-level", "--save", "--dump-file",
         "--top-types", "--retention-path-limit", "--symbol-path", "--native-aot-map", "--cpu-backend", "--dump-type", "--out", "--mvid",
         "--asset", "--handle", "--latest-of-kind", "--view", "--trace-id", "--provider-filter", "--root-method-filter", "--rank-by",
@@ -185,7 +185,11 @@ collect options:
       --depth <level>           Verbosity: summary, detail (default), raw.
       --top <int>               Top-N rows / hotspots for cpu, allocation, off_cpu, native-alloc,
                                 native-lock-contention.
-      --max-events <int>        Per-kind cap (events / exceptions / activities).
+      --max-events <int>        Per-kind cap; activities: exploratory first-N cap (default 200).
+      --trace-id <32-hex>       activities: target one non-zero W3C trace before retaining spans.
+      --max-matched-activities <int>
+                                activities with --trace-id: independent matching cap (default 200, >= 1).
+                                Unrelated traffic is counted, never retained; --max-events is not the matching cap.
       --interval <int>          Refresh interval in seconds (counters, db, kestrel, networking). Default 1.
       --symbol-path <path>      NT_SYMBOL_PATH-style search path for cpu, off_cpu and
                                 thread-snapshot symbol resolution.
@@ -255,6 +259,8 @@ collect options:
                 "--depth",
                 "--top",
                 "--max-events",
+                "--trace-id",
+                "--max-matched-activities",
                 "--interval",
                 "--symbol-path",
                 "--export-trace",

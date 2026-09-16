@@ -992,6 +992,20 @@ public sealed class DiagnosticTools
             cancellationToken).ConfigureAwait(false);
     }
 
+    public static Task<DiagnosticResult<ActivityCapture>> CollectActivities(
+        IActivityCollector collector,
+        IProcessContextResolver resolver,
+        IDiagnosticHandleStore handles,
+        string? traceId,
+        int maxMatchedActivities,
+        int? processId,
+        IReadOnlyList<string>? sources,
+        int durationSeconds,
+        int maxActivities,
+        CancellationToken cancellationToken = default)
+        => EventCollectionUseCases.CollectActivities(collector, resolver, handles,
+            traceId, maxMatchedActivities, processId, sources, durationSeconds, maxActivities, cancellationToken);
+
     [RequireScope("eventpipe")]
     [Description(
         "Generic EventSource passthrough: opens an EventPipe session for a single EventSource " +

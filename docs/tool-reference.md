@@ -252,7 +252,7 @@ Explicit `topN` always wins over the depth default — if you pass
 it asked for).
 
 `collect_events(kind="activities")` does **not** currently expose `depth`; it always returns the
-retained `Activities[]` inline (bounded by `maxActivities`) and relies on
+retained `Activities[]` inline (bounded by `maxActivities`, or `maxMatchedActivities` when targeted) and relies on
 `query_snapshot(handle, view=...)` for narrower drilldown views.
 
 ### Parallel initial triage (`collect_events(kind="sweep")`)
@@ -277,15 +277,16 @@ When you are attached to several replicas of the same service (orchestrator mode
 `attach_to_pod` per Pod), `collect_events(kind="distributed_trace")` follows **one** W3C trace
 across all of them and stitches the per-Pod spans into a single timeline. It is the distributed
 counterpart of `kind="activities"`: instead of capturing activities on one process it **fans out** a
-bounded `collect_events(kind="activities")` to every attached Pod, matches the spans whose
+bounded `collect_events(kind="activities", traceId=..., maxMatchedActivities=...)` to every attached Pod, filters before retention for spans whose
 `trace-id` equals the supplied `traceId`, and joins parent→child spans **by span link, never by
 wall-clock** (so clock skew between nodes cannot scramble the order).
 
 | Parameter | Meaning |
 | --- | --- |
-| `traceId` | **Required.** The 32-hex W3C trace-id to correlate (the `trace-id` field of the slow request's `traceparent` header). |
+| `traceId` | **Required.** Non-zero 32-hex W3C trace-id; surrounding whitespace is trimmed and casing normalized to lowercase. |
 | `durationSeconds` | Capture window applied to each Pod's fan-out collection (default 10). Correlation targets **in-flight** traces — run it while the trace is live. |
-| `maxActivities` | Per-Pod cap on retained activities (the same bound as `kind="activities"`). |
+| `maxMatchedActivities` | Independent per-Pod matching-stop-event cap, default 200, minimum 1. Unrelated traffic never consumes this budget. |
+| `maxActivities` | Unfiltered exploratory cap, default 200, minimum 1. Does not control targeted retention on updated destinations. |
 | `sources` | Optional ActivitySource name filter forwarded to each Pod. |
 
 Requirements: orchestrator mode (`Orchestrator:Enabled=true`), the `eventpipe` **and**
@@ -296,10 +297,22 @@ The call always runs **locally on the orchestrator** even
 when your session is bound to a single Pod — it never proxies the whole fan-out into one replica.
 
 The result envelope carries a `DistributedTrace` timeline: the stitched `Spans[]` (each tagged with
-its `PodName`, `Depth`, `ParentResolved`, and **self-time** = own duration minus the time attributed
-to its direct children), the flagged `SlowestHop` (the span with the largest self-time — the hop
-that is actually slow, not merely *waiting* on a slow downstream child), per-Pod `Coverage`, and
-`Warnings` for orphan parents, zero-match Pods, or clock skew. Per-Pod failures are isolated: one
+its `PodName`, `Depth`, `ParentResolved`, and **self-time** = own interval minus the **union**
+of valid direct-child intervals clipped to the parent, measured in UTC), a `SlowestHop`
+**candidate** based only on retained intervals, per-Pod `Coverage` including the complete
+`retention` provenance below, and `Warnings`. Equivalent instants with different offsets give
+the same residual. Duplicate IDs retain distinct rows, but only the first deterministic occurrence
+owns children. Invalid IDs and missing parents become roots; cycle edges are removed before attribution.
+Children extending before or after their parent (including entirely disjoint children) produce
+clock-skew/temporal warnings. Invalid/incomplete intervals have unknown residuals.
+Temporal anomalies or cycles suppress `SlowestHop`; no clock offsets are invented.
+
+These are completed-stop-only, bounded-window captures, **never proof of a complete trace**.
+Missing children can inflate parent residuals: retained counts may be lower bounds, but
+residuals and rankings are **not** lower bounds or reliable culprit identification.
+Older destinations that omit retention or applied-filter metadata remain unknown/unconfirmed,
+not verified zero loss, successful targeted filtering, or proof of trace absence.
+Per-Pod failures are isolated: one
 unreachable replica is reported in `data.podErrors` (and the summary) and does not sink the rest of
 the correlation; if **every** attached Pod fails to collect, the call returns a
 `DistributedTraceFanoutFailed` error carrying those per-Pod messages.
@@ -2428,7 +2441,9 @@ EventPipe bridge, keeping completed span records inline and grouped rollups behi
 | `processId` | `int` | — | Target process id |
 | `sources` | `string[]?` | `null` | Optional `ActivitySource` filters (`*` / `?` wildcards supported) |
 | `durationSeconds` | `int` | `10` | Window length |
-| `maxActivities` | `int` | `200` | Cap on captured span records retained inline + in the handle artifact |
+| `maxActivities` | `int` | `200` | First-N exploratory stop-event cap when no `traceId` is supplied; minimum 1 |
+| `traceId` | `string?` | `null` | Optional non-zero 32-hex W3C ID; trimmed and lowercased, matched before retention |
+| `maxMatchedActivities` | `int` | `200` | Independent first-N matching stop-event cap with `traceId`; minimum 1 |
 
 **Returns:** `ActivityCapture`:
 
@@ -2477,6 +2492,18 @@ EventPipe bridge, keeping completed span records inline and grouped rollups behi
 }
 ```
 
+New captures also carry canonical `retention` provenance:
+`appliedTraceId` (null for exploratory), `effectiveCap`, `observedActivities`,
+`matchingActivities`, `retainedMatchingActivities`, `droppedMatchingActivities`,
+`nonMatchingActivities`, and derived `retentionLimited`.
+After source filtering, `observed = matching + nonMatching` and
+`matching = retainedMatching + droppedMatching`. Without a trace filter every event matches.
+Unrelated traffic is never stored by targeted capture and never produces a matching-loss warning.
+Null/missing retention fields in older JSON mean **unknown**, not measured zero.
+Source/trace filtering is distinct from cap loss and from EventPipe delivery/window limitations.
+Summary and grouped drilldown `truncated` is nullable for legacy captures; trace-view `truncated`
+continues to mean wire `topN` truncation, separately from `retention.retentionLimited`.
+
 **Drilldown:** `query_snapshot(handle, view="bySource" | "byOperation" | "activities")`
 re-projects the same capture window without reopening EventPipe.
 `query_snapshot(handle, view="trace", traceId="<32-hex W3C trace-id>")` filters
@@ -2495,9 +2522,10 @@ The trace view is deliberately honest about evidence boundaries:
 - It is **capture-window-limited**: spans that stopped before the window opened
   or after it closed are invisible. `canClaimComplete` is therefore always
   `false`, even when every retained span links cleanly.
-- `totalActivities > retainedActivities` means the collector hit
-  `maxActivities`; an explicit retention warning says that membership,
-  hierarchy, timing, and critical-path evidence are incomplete.
+- `retention.droppedMatchingActivities > 0` means the effective cap was hit.
+  `totalActivities > retainedActivities` alone cannot distinguish filtering from loss.
+  All activity drilldown views preserve retention metadata. Missing children can inflate
+  residuals and change critical-path rankings; these timings are not lower bounds.
 - Missing/malformed span IDs, malformed parent IDs, duplicate IDs, absent
   parents, and cycles are reported explicitly. No edge is inferred from
   timestamps or operation names. Orphans and invalid/cyclic links become

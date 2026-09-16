@@ -375,10 +375,37 @@ Open an EventPipe session and collect a window of events. `--kind` is required.
 | `--provider <name>` | `counters`: EventCounter provider (repeatable); `catalog`: EventPipe provider (repeatable; replaces broad defaults); `event_source`: required provider name. |
 | `--meter <name>` | `counters`: Meter name (repeatable). |
 | `--source <name>` | `activities`: ActivitySource filter (repeatable, `*` / `?` globs). |
+| `--trace-id <32-hex>` | `activities`: optional non-zero W3C trace ID. Core trims surrounding whitespace and normalizes casing before targeted retention. Also retains its existing session `query --view trace` meaning. |
+| `--max-matched-activities <int>` | `activities` with `--trace-id`: independent matching stop-event cap (default 200, minimum 1). Requires targeted collection; rejected for other commands/kinds or without `--trace-id`. |
 | `--category <glob>` | `logs`: ILogger category filter (repeatable). |
 | `--min-level <level>` | `logs`: minimum level (default `Information`). |
 | `--unsafe-provider` | `event_source`: opt in to a non-allowlisted provider. |
 | `--save <file>` | Save a comparable snapshot JSON. Supported collect kinds: `counters`, `datas` (`gc-datas`), `gc` (`gc-events`), `contention`, `threadpool`. |
+
+CLI activity collection is exploratory by default: `--max-events` retains the first N
+completed stop events after source filtering (default 200). With `--trace-id`, it instead
+retains only matching spans up to the independent `--max-matched-activities` budget;
+unrelated traffic never spends that budget. `--max-events` keeps its exploratory meaning,
+and does not reduce the targeted budget. Invalid IDs and nonpositive budgets return the
+normal Core `InvalidArgument` CLI error envelope; unsupported option combinations are
+explicit usage errors. Collection-time `--trace-id` is rejected on other collect kinds.
+
+Both one-shot commands and `session` REPL collection use the same Core-only pipeline;
+the CLI does not provide distributed/Pod orchestration. JSON capture and activity drilldown
+preserve `retention` provenance, including the effective cap and matching/drop counts.
+Missing fields in older captures mean unknown, not verified zero loss. Completed-window
+captures cannot establish trace completeness; missing children can inflate residual timings
+and change trace rankings. Query's `--trace-id` only projects an existing artifact; it cannot
+recover spans discarded during exploratory collection.
+
+```bash
+dotnet-diagnostics-cli collect --kind activities --pid 1234 \
+  --trace-id abcdef0123456789abcdef0123456789 --max-matched-activities 1000 --json
+```
+
+Inside a session, use the same collect options, then
+`query --latest-of-kind activities --view trace --trace-id abcdef0123456789abcdef0123456789`
+without recollecting.
 
 ```bash
 dotnet-diagnostics-cli collect --kind counters --pid 1234 --duration 5

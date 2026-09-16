@@ -79,6 +79,9 @@ internal sealed record CliOptions
     /// <summary>Maximum events/records (<c>--max-events</c>) — maps to the per-kind cap (maxEvents/maxRecent/maxActivities). Null applies the per-kind default.</summary>
     public int? MaxEvents { get; init; }
 
+    /// <summary>Independent matching-stop-event cap for targeted activities (<c>--max-matched-activities</c>). Null uses Core's default of 200.</summary>
+    public int? MaxMatchedActivities { get; init; }
+
     /// <summary>Minimum log level (<c>--min-level</c>) for <c>kind=logs</c>. Null applies the default (Information).</summary>
     public string? MinLevel { get; init; }
 
@@ -198,7 +201,7 @@ internal sealed record CliOptions
     /// <summary>Drill-down view name (<c>--view</c>) for the <c>query</c> command (parsed for forward-compat; the one-shot CLI cannot honour it — see #286).</summary>
     public string? View { get; init; }
 
-    /// <summary>W3C trace-id for the Activities <c>trace</c> query view (<c>--trace-id</c>).</summary>
+    /// <summary>W3C trace-id for targeted activity collection or the Activities <c>trace</c> query view (<c>--trace-id</c>).</summary>
     public string? TraceId { get; init; }
 
     /// <summary>Ranking for the heap <c>top-types</c> view (<c>--rank-by</c>): <c>bytes</c> (default) or <c>instances</c>. Honoured only by the stateful <c>session</c> <c>query</c> path.</summary>
@@ -500,6 +503,7 @@ internal sealed record CliOptions
             new IntOptionDescriptor((state, value) => state.DurationSeconds = value, "--duration", "-d"),
             new IntOptionDescriptor((state, value) => state.IntervalSeconds = value, "--interval"),
             new IntOptionDescriptor((state, value) => state.MaxEvents = value, "--max-events"),
+            new IntOptionDescriptor((state, value) => state.MaxMatchedActivities = value, "--max-matched-activities"),
             new IntOptionDescriptor((state, value) => state.WatchIntervalSeconds = value, "--watch"),
             new StringOptionDescriptor((state, value) => state.CaptureWhen = value, "--capture-when"),
             new StringOptionDescriptor((state, value) => state.CaptureKind = value, "--capture"),
@@ -624,6 +628,7 @@ internal sealed record CliOptions
         public int? WatchIntervalSeconds { get; set; }
 
         public int? MaxEvents { get; set; }
+        public int? MaxMatchedActivities { get; set; }
 
         public string? MinLevel { get; set; }
 
@@ -792,6 +797,7 @@ internal sealed record CliOptions
                 IntervalSeconds = IntervalSeconds,
                 WatchIntervalSeconds = WatchIntervalSeconds,
                 MaxEvents = MaxEvents,
+                MaxMatchedActivities = MaxMatchedActivities,
                 MinLevel = MinLevel,
                 Depth = Depth,
                 UnsafeProvider = UnsafeProvider,

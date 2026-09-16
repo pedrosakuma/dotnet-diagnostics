@@ -15,6 +15,115 @@ public sealed class DistributedTraceStitcherTests
     private static readonly DateTimeOffset T0 = new(2026, 6, 1, 12, 0, 0, TimeSpan.Zero);
 
     [Fact]
+    public void Stitch_EquivalentOffsets_DoNotChangeResidual()
+    {
+        var capture = Capture(
+            Activity("api", "parent", "1111111111111111", null, T0, 100),
+            Activity("api", "child", "2222222222222222", "1111111111111111",
+                T0.AddMilliseconds(10).ToOffset(TimeSpan.FromHours(2)), 80));
+        DistributedTraceStitcher.Stitch(Trace, [("api", capture)])
+            .Spans[0].SelfDurationMs.Should().Be(20);
+    }
+
+    [Fact]
+    public void Stitch_SelfParent_DoesNotSubtractItself()
+    {
+        var capture = Capture(Activity("api", "self", "1111111111111111", "1111111111111111", T0, 100));
+        var result = DistributedTraceStitcher.Stitch(Trace, [("api", capture)]);
+        result.Spans.Single().SelfDurationMs.Should().Be(100);
+        result.Spans.Single().ParentResolved.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Stitch_DuplicateWithSelfParentId_DoesNotSubtractFromCanonicalOccurrence()
+    {
+        var capture = Capture(
+            Activity("api", "canonical", "1111111111111111", null, T0, 100),
+            Activity("api", "duplicate", "1111111111111111", "1111111111111111", T0, 80));
+        var result = DistributedTraceStitcher.Stitch(Trace, [("api", capture)]);
+        result.Spans.Single(s => s.OperationName == "canonical").SelfDurationMs.Should().Be(100);
+        result.Spans.Single(s => s.OperationName == "duplicate").ParentResolved.Should().BeFalse();
+        result.SlowestHop.Should().BeNull();
+        var local = ActivityTraceProjector.Project(capture, Trace, 10, new DotnetDiagnostics.Core.Security.SensitiveDataRedactor());
+        local.Spans.Single(s => s.OperationName == "canonical").ResidualDurationMs.Should().Be(100);
+        local.CycleSpanCount.Should().Be(1);
+    }
+
+    [Fact]
+    public void Stitch_ChildEntirelyLater_WarnsAboutTiming()
+    {
+        var capture = Capture(
+            Activity("api", "parent", "1111111111111111", null, T0, 100),
+            Activity("api", "child", "2222222222222222", "1111111111111111", T0.AddMilliseconds(150), 80));
+        var result = DistributedTraceStitcher.Stitch(Trace, [("api", capture)]);
+        result.Warnings.Should().Contain(w => w.Contains("Clock skew", StringComparison.Ordinal));
+        result.SlowestHop.Should().BeNull();
+    }
+
+    [Fact]
+    public void Stitch_LegacyCapture_ReportsUnknownRetention()
+    {
+        var result = DistributedTraceStitcher.Stitch(Trace, [("api", Capture())]);
+        result.Warnings.Should().Contain(w => w.Contains("unknown", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Stitch_CycleEdgesAreRemovedBeforeAttributionWithoutDroppingRows()
+    {
+        var capture = Capture(
+            Activity("api", "a", "1111111111111111", "2222222222222222", T0, 100),
+            Activity("api", "b", "2222222222222222", "1111111111111111", T0, 100));
+        var result = DistributedTraceStitcher.Stitch(Trace, [("api", capture)]);
+        result.Spans.Should().HaveCount(2).And.OnlyContain(s => !s.ParentResolved && s.SelfDurationMs == 100);
+        result.Warnings.Should().Contain(w => w.Contains("cycle", StringComparison.Ordinal));
+        result.SlowestHop.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("bad")]
+    [InlineData("0000000000000000")]
+    public void Stitch_InvalidChildIdentityCannotContributeAnEdge(string? childId)
+    {
+        var capture = Capture(
+            Activity("api", "parent", "1111111111111111", null, T0, 100),
+            Activity("api", "invalid", childId, "1111111111111111", T0, 100));
+        var result = DistributedTraceStitcher.Stitch(Trace, [("api", capture)]);
+        result.Spans.Should().HaveCount(2).And.OnlyContain(s => !s.ParentResolved && s.SelfDurationMs == 100);
+    }
+
+    [Theory]
+    [InlineData(-1, 20)]
+    [InlineData(20, -1)]
+    [InlineData(20, 25)]
+    public void Stitch_InvalidCompletedIntervalsAreRetainedButExcludedFromAttribution(int duration, int stop)
+    {
+        var child = Activity("api", "invalid", "2222222222222222", "1111111111111111", T0, duration) with
+        {
+            StoppedAt = T0.AddMilliseconds(stop),
+        };
+        var result = DistributedTraceStitcher.Stitch(Trace,
+            [("api", Capture(Activity("api", "parent", "1111111111111111", null, T0, 100), child))]);
+        result.Spans.Should().HaveCount(2);
+        result.Spans.Single(s => s.OperationName == "parent").SelfDurationMs.Should().Be(100);
+        result.Spans.Single(s => s.OperationName == "invalid").SelfDurationMs.Should().BeNull();
+        result.SlowestHop.Should().BeNull();
+    }
+
+    [Fact]
+    public void Stitch_DuplicateOwnershipIsDeterministicAcrossInputPermutations()
+    {
+        var a = ("pod-a", Capture(Activity("api", "a", "1111111111111111", null, T0, 100)));
+        var b = ("pod-b", Capture(Activity("api", "b", "1111111111111111", null, T0, 100)));
+        var child = ("pod-c", Capture(Activity("api", "child", "2222222222222222", "1111111111111111", T0, 80)));
+        var first = DistributedTraceStitcher.Stitch(Trace, [a, b, child]);
+        var second = DistributedTraceStitcher.Stitch(Trace, [child, b, a]);
+        first.Spans.Should().Equal(second.Spans);
+        first.Spans.Single(s => s.PodName == "pod-a").SelfDurationMs.Should().Be(20);
+        first.Spans.Single(s => s.PodName == "pod-b").SelfDurationMs.Should().Be(100);
+    }
+
+    [Fact]
     public void Stitch_TwoPods_LinksParentChildAndFlagsSlowestHopBySelfTime()
     {
         // frontend span (200ms total) wraps a backend span (180ms total). The frontend mostly
@@ -107,7 +216,7 @@ public sealed class DistributedTraceStitcherTests
         });
 
         timeline.Coverage.Should().ContainSingle(c => c.PodName == "pod-miss" && c.MatchedSpans == 0);
-        timeline.Warnings.Should().Contain(w => w.Contains("pod-miss", StringComparison.Ordinal) && w.Contains("observed none", StringComparison.Ordinal));
+        timeline.Warnings.Should().Contain(w => w.Contains("pod-miss", StringComparison.Ordinal) && w.Contains("retained none", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -175,6 +284,30 @@ public sealed class DistributedTraceStitcherTests
         // Canonical parent owns the child: self-time = 100 - 40 = 60.
         var canonical = timeline.Spans.Single(s => s.OperationName == "parent-A");
         canonical.SelfDurationMs.Should().BeApproximately(60, 0.01);
+    }
+
+    [Fact]
+    public void Stitch_DirectChildrenOverlap_UsesUnionOfIntervalsForSelfTime()
+    {
+        // The parent waits on two direct child spans that overlap in time: subtracting the summed
+        // durations would double-count the shared window and incorrectly leave 0ms self-time.
+        var parent = Capture(
+            Activity("frontend", "parent", spanId: "1111111111111111", parentSpanId: null,
+                start: T0, durationMs: 200));
+        var childA = Capture(
+            Activity("backend", "child-a", spanId: "2222222222222222", parentSpanId: "1111111111111111",
+                start: T0.AddMilliseconds(10), durationMs: 110),
+            Activity("backend", "child-b", spanId: "3333333333333333", parentSpanId: "1111111111111111",
+                start: T0.AddMilliseconds(100), durationMs: 90));
+
+        var timeline = DistributedTraceStitcher.Stitch(Trace, new[]
+        {
+            ("frontend-1", parent),
+            ("backend-1", childA),
+        });
+
+        var parentSpan = timeline.Spans.Single(s => s.OperationName == "parent");
+        parentSpan.SelfDurationMs.Should().BeApproximately(20, 0.01);
     }
 
     [Fact]

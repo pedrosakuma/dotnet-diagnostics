@@ -113,23 +113,19 @@ public sealed partial class CollectEventsTool
         SecurityOptions securityOptions,
         ILoggerFactory? loggerFactory = null,
         [Description(
-            "Which EventPipe family to collect (default 'counters'): " +
-            "'counters' (EventCounter snapshot — cheap first signal; uses the 'read-counters' scope), " +
-            "'exceptions' (managed exception stream), 'crash-guard' (fatal/unhandled-exception postmortem guard), 'gc' (GC start/stop pairs + pause durations), " +
-            "'datas' (DATAS Server-GC heap-count tuning), 'catalog' (metadata-only provider/event-name catalog), " +
-            "'event_source' (generic provider passthrough — requires providerName), 'activities' (ActivitySource spans), " +
-            "'logs' (curated ILogger view), 'jit' (tiered compilation / ReadyToRun activity), " +
-            "'threadpool' (ThreadPool evidence: provenance-aware worker/IOCP timelines, hill-climbing, work-item origins), " +
-            "'contention' (lock contention by call site + owner thread), 'db' (curated EF Core / SqlClient view), " +
-            "'kestrel' (Kestrel HTTP server: connection/request/TLS latency, queue lengths, live KestrelServerOptions config), " +
-            "'networking' (curated outbound HTTP / DNS / TLS / socket view: latency percentiles + HttpClient time-in-queue), " +
-            "'requests' (in-flight ASP.NET Core requests — which requests started but have not stopped, with path/verb/elapsed/trace-id, oldest-first, long-runners flagged; pure EventPipe / no ptrace — the first move for 'the app is hung, what's it doing?'). " +
-            "'startup' (loader + DependencyInjection events emitted during the window; pre-attach cold-start events are missed). " +
-            "'replica_counters' (orchestrator fan-out: simultaneous live counter capture across ALL attached Pods to find the replica skew outlier on cpu/gc-heap-size/threadpool-queue — requires attach_to_pod first). " +
-            "'sweep' (parallel initial triage — fans out counters+gc+exceptions+threadpool+resource concurrently in ONE round-trip, returns observed signals + evidence-backed hypotheses + per-collector drill-down handles; cuts cold-start from 5–7 calls to 1–2). " +
-            "All kinds except 'counters' and 'replica_counters' use the 'eventpipe' scope; those two use 'read-counters'. " +
-            "IMPORTANT: for 'exceptions', 'crash-guard', and 'gc', start collection BEFORE the workload — EventPipe sessions " +
-            "take ~500 ms–1 s to fully start and earlier events are missed. For 'startup', attaching to an already-running process misses the initial cold-start; true cold-start capture requires enabling EventPipe before/at process launch (reverse-connect or CLI --launch/DOTNET_ startup session).")]
+            "Family (default counters): counters=cheap EventCounter snapshot; exceptions=managed throws; " +
+            "crash-guard=fatal/unhandled exceptions; gc=GC events; datas=DATAS heap-count tuning; " +
+            "catalog=provider/event metadata; event_source=provider passthrough (requires providerName); " +
+            "activities=completed ActivitySource spans; logs=ILogger; jit=tiering/ReadyToRun; " +
+            "threadpool=worker/IOCP, hill-climbing and work-item evidence; contention=lock sites/owners; " +
+            "db=EF Core/SqlClient; kestrel=server connections/requests/TLS/queues/config; " +
+            "networking=outbound HTTP/DNS/TLS/sockets; requests=in-flight ASP.NET requests, oldest first " +
+            "(use for hangs, no ptrace); startup=loader/DI; sweep=parallel counters+gc+exceptions+threadpool+resources triage. " +
+            "Orchestrator kinds require attached Pods: distributed_trace=targeted trace correlation; " +
+            "replica_counters=simultaneous counter skew comparison. " +
+            "Scopes: counters/replica_counters use read-counters; all others use eventpipe. " +
+            "Start collection BEFORE load: EventPipe startup takes ~0.5–1s. " +
+            "Pre-attach events are missed; true cold-start capture requires launch suspension/reverse-connect or startup tracing.")]
         string kind = "counters",
         // Shared options.
         [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")]
@@ -163,7 +159,7 @@ public sealed partial class CollectEventsTool
         [Description("kind=event_source only. Opt-in switch for non-allowlisted EventSource providers (issue #165 / M2). Only honoured when the server has 'Diagnostics:AllowSensitiveHeapValues=true' or the principal holds the 'eventsource-any' scope.")]
         bool unsafeProvider = false,
         // kind=activities
-        [Description("kind=activities only. Optional ActivitySource name filters. Supports '*' and '?' wildcards. Null/empty captures all sources.")]
+        [Description("activities/distributed_trace: optional ActivitySource name filters ('*'/'?' wildcards). Null/empty captures all sources.")]
         IReadOnlyList<string>? sources = null,
         [Description("kind=activities only. Maximum number of captured activities to retain. Must be >= 1. Defaults to 200.")]
         int maxActivities = 200,
@@ -173,7 +169,7 @@ public sealed partial class CollectEventsTool
         [Description("kind=requests only. Maximum number of in-flight requests to return inline (oldest-first). Must be >= 1. Defaults to 100; the full set stays behind the handle.")]
         int maxRequests = 100,
         // kind=distributed_trace
-        [Description("kind=distributed_trace only (REQUIRED). The W3C trace-id (32-hex, e.g. the 'trace-id' field of a 'traceparent' header) to correlate across every attached Pod. Orchestrator mode must be enabled and you must have attached to the replicas first (attach_to_pod). Fans out a bounded collect_events(kind=activities) to each attached Pod, then stitches the per-Pod spans into one timeline ordered by parent/child span links with the slowest hop flagged.")]
+        [Description("kind=activities optional; kind=distributed_trace REQUIRED. Non-zero 32-hex W3C trace-id, normalized to lowercase. Filters before retention with independent maxMatchedActivities cap. Distributed correlation requires attached Pods and returns completed-window evidence, not a complete trace or reliable culprit ranking.")]
         string? traceId = null,
         [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied on non-fan-out kinds, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
         string? investigationHandleId = null,
@@ -208,6 +204,8 @@ public sealed partial class CollectEventsTool
         LaunchSpec? launch = null,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
         RequestContext<CallToolRequestParams>? requestContext = null,
+        [Description("kind=activities with traceId or kind=distributed_trace. Independent per-process matching stop-event cap; unrelated traffic is counted but never retained. Must be >= 1. Defaults to 200; maxActivities remains the unfiltered exploratory cap.")]
+        int maxMatchedActivities = 200,
         CancellationToken cancellationToken = default)
     {
         if (!ToolDispatchGuards.TryValidateDiscriminator<CollectEventsEnvelope>(
@@ -300,6 +298,7 @@ public sealed partial class CollectEventsTool
             UnsafeProvider = unsafeProvider,
             Sources = sources,
             MaxActivities = maxActivities,
+            MaxMatchedActivities = maxMatchedActivities,
             LongRunningThresholdMs = longRunningThresholdMs,
             MaxRequests = maxRequests,
             TraceId = traceId,
@@ -452,9 +451,10 @@ public sealed partial class CollectEventsTool
         int? durationSeconds,
         int maxActivities,
         IReadOnlyList<string>? sources,
+        int maxMatchedActivities,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(traceId))
+        if (!ActivityTraceProjector.TryNormalizeTraceId(traceId, out var normalizedTraceId))
         {
             const string message = "kind='distributed_trace' requires a 'traceId' (the 32-hex W3C trace-id to correlate across attached Pods).";
             return DiagnosticResult.Fail<CollectEventsEnvelope>(
@@ -468,6 +468,13 @@ public sealed partial class CollectEventsTool
             const string message = "maxActivities must be >= 1.";
             return DiagnosticResult.Fail<CollectEventsEnvelope>(
                 message, new DiagnosticError("InvalidArgument", message, "maxActivities"));
+        }
+
+        if (maxMatchedActivities < 1)
+        {
+            const string message = "maxMatchedActivities must be >= 1.";
+            return DiagnosticResult.Fail<CollectEventsEnvelope>(
+                message, new DiagnosticError("InvalidArgument", message, "maxMatchedActivities"));
         }
 
         var effectiveDuration = durationSeconds ?? 10;
@@ -509,10 +516,11 @@ public sealed partial class CollectEventsTool
             proxy,
             principal,
             ResolveInvestigationHandleIds(investigationHandleIds, requestContext, sessionBinder),
-            traceId.Trim(),
+            normalizedTraceId,
             effectiveDuration,
             maxActivities,
             sources,
+            maxMatchedActivities,
             cancellationToken)
             .ConfigureAwait(false);
 
@@ -559,12 +567,12 @@ public sealed partial class CollectEventsTool
             var slow = timeline.SlowestHop;
             summary = $"distributed_trace {timeline.TraceId}: stitched {timeline.SpanCount} span(s) across {timeline.Coverage.Count(c => c.MatchedSpans > 0)}/{fanout.AttachedActivePods} attached Pod(s)." +
                 (slow is not null
-                    ? $" Slowest hop: {slow.PodName} {slow.SourceName}/{slow.OperationName} (self {slow.SelfDurationMs:F1} ms)."
+                    ? $" Retained-interval slowest-hop candidate: {slow.PodName} {slow.SourceName}/{slow.OperationName} (self {slow.SelfDurationMs:F1} ms)."
                     : string.Empty);
             if (slow is not null)
             {
                 hints.Add(new NextActionHint("collect_sample",
-                    $"Drill into the slowest hop on Pod '{slow.PodName}' to see what its CPU is doing.",
+                    $"Investigate the retained-interval candidate on Pod '{slow.PodName}'; missing children can change this ranking.",
                     new Dictionary<string, object?> { ["kind"] = "cpu", ["durationSeconds"] = 10 }));
             }
         }
@@ -574,6 +582,11 @@ public sealed partial class CollectEventsTool
             summary += $" {fanout.PodErrors.Count} Pod(s) could not be collected (see data.podErrors).";
         }
 
+        summary += " Completed-window evidence only; missing children can inflate residuals and change rankings. See coverage.retention and warnings.";
+        foreach (var pod in timeline.Coverage)
+        {
+            summary += $" {pod.PodName}: matching={pod.Retention?.MatchingActivities?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "unknown"}, dropped matching={pod.Retention?.DroppedMatchingActivities?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "unknown"}.";
+        }
         var envelope = new CollectEventsEnvelope("distributed_trace", DistributedTrace: timeline, PodErrors: fanout.PodErrors);
         return DiagnosticResult.Ok(envelope, summary, hints.ToArray());
     }

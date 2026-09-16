@@ -6,7 +6,8 @@ namespace DotnetDiagnostics.Core.DistributedTrace;
 /// once it has been matched to the requested W3C trace-id and stitched into the cross-Pod
 /// timeline. <see cref="SelfDurationMs"/> is the span's own time minus the time attributed
 /// to its direct children — this is what makes "which hop is slow?" answerable, because a
-/// parent span that merely *waits* on a slow child should not itself be flagged.
+/// parent span that merely *waits* on a slow child should not itself be flagged. This is only
+/// a retained-interval estimate: missing children can inflate residuals and alter rankings.
 /// </summary>
 public sealed record DistributedTraceSpan(
     string PodName,
@@ -47,4 +48,5 @@ public sealed record DistributedTraceTimeline(
 public sealed record DistributedTracePodCoverage(
     string PodName,
     int MatchedSpans,
-    int TotalCapturedActivities);
+    int TotalCapturedActivities,
+    DotnetDiagnostics.Core.Activities.ActivityRetention? Retention = null);

@@ -34,6 +34,19 @@ part of both surfaces.
 
 ## Reproduce
 
+### Issue #949 validation (2026-09-16)
+
+The local #949 trace-retention change, based on
+`6ecfe8bd34503500d947a70d39099d4fb3605faf`, was measured on Linux with SDK
+10.0.401. The new matching-budget parameter and canonical retention provenance
+initially exceeded the existing 280,000-byte test ceiling (281,234 bytes).
+Condensing the redundant `collect_events.kind` description brought the maximal
+catalog to **279,638 bytes** and the default subset to **246,698 bytes**.
+`collect_events` contributes 72,800 bytes (10,900 input schema, 58,689 output
+schema). The **17/13 tool counts and 280,000-byte ceiling are unchanged**; only
+362 bytes of ceiling headroom remain. These are updated measurements, not a
+claim that the much older baseline table below still describes the current catalog.
+
 Run from the repository root:
 
 ```bash

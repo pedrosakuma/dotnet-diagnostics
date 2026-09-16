@@ -28,6 +28,18 @@ public sealed class DistributedTraceCorrelatorTests
     private const string TraceId = "0af7651916cd43dd8448eb211c80319c";
 
     [Fact]
+    public async Task CorrelateAsync_ForwardsTargetTraceInActualArguments()
+    {
+        var store = new MemoryInvestigationStore();
+        store.Add(ActiveHandle("inv-api", "api"));
+        var proxy = new StubProxyClient { ["api"] = ActivitiesResult(CaptureWith(), "api") };
+        await DistributedTraceCorrelator.CorrelateAsync(
+            store, proxy, null, null, TraceId, 5, 1, null, CancellationToken.None);
+        proxy.Requests.Single().Arguments.Should().ContainKey("traceId")
+            .WhoseValue.GetString().Should().Be(TraceId);
+    }
+
+    [Fact]
     public async Task CorrelateAsync_StitchesSpansAcrossTwoAttachedPods()
     {
         var store = new MemoryInvestigationStore();
@@ -298,6 +310,7 @@ public sealed class DistributedTraceCorrelatorTests
 
         public Dictionary<string, Exception> Throw { get; } = new(StringComparer.Ordinal);
         public List<string> Calls { get; } = new();
+        public List<CallToolRequestParams> Requests { get; } = new();
         public Func<CancellationToken, Task>? Gate { get; init; }
 
         public CallToolResult this[string podName]
@@ -308,6 +321,7 @@ public sealed class DistributedTraceCorrelatorTests
         public async Task<CallToolResult> CallToolAsync(InvestigationHandle handle, CallToolRequestParams request, CancellationToken cancellationToken)
         {
             Calls.Add(handle.PodName);
+            Requests.Add(request);
             if (Gate is not null)
             {
                 await Gate(cancellationToken);

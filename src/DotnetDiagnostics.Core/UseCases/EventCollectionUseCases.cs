@@ -1217,7 +1217,7 @@ public static class EventCollectionUseCases
     }
 
     /// <summary>Captures completed ActivitySource spans via the DiagnosticSource EventPipe bridge.</summary>
-    public static async Task<DiagnosticResult<ActivityCapture>> CollectActivities(
+    public static Task<DiagnosticResult<ActivityCapture>> CollectActivities(
         IActivityCollector collector,
         IProcessContextResolver resolver,
         IDiagnosticHandleStore handles,
@@ -1226,26 +1226,51 @@ public static class EventCollectionUseCases
         int durationSeconds = 10,
         int maxActivities = 200,
         CancellationToken cancellationToken = default)
+        => CollectActivities(collector, resolver, handles, null, 200, processId, sources,
+            durationSeconds, maxActivities, cancellationToken);
+
+    public static async Task<DiagnosticResult<ActivityCapture>> CollectActivities(
+        IActivityCollector collector,
+        IProcessContextResolver resolver,
+        IDiagnosticHandleStore handles,
+        string? traceId,
+        int maxMatchedActivities,
+        int? processId = null,
+        IReadOnlyList<string>? sources = null,
+        int durationSeconds = 10,
+        int maxActivities = 200,
+        CancellationToken cancellationToken = default)
     {
         if (durationSeconds < 1) return InvalidArg<ActivityCapture>(nameof(durationSeconds), "must be >= 1");
         if (maxActivities < 1) return InvalidArg<ActivityCapture>(nameof(maxActivities), "must be >= 1");
+        if (maxMatchedActivities < 1) return InvalidArg<ActivityCapture>(nameof(maxMatchedActivities), "must be >= 1");
+        if (traceId is not null && !ActivityTraceProjector.TryNormalizeTraceId(traceId, out _))
+        {
+            return InvalidArg<ActivityCapture>(nameof(traceId), "must be a non-zero 32-hex W3C trace-id");
+        }
 
         var resolved = await ResolveContextAsync<ActivityCapture>(resolver, processId, cancellationToken).ConfigureAwait(false);
         if (resolved.Failure is not null) return resolved.Failure;
         var pid = resolved.ProcessId;
 
         var capture = await collector
-            .CollectAsync(pid, TimeSpan.FromSeconds(durationSeconds), sources, maxActivities, cancellationToken)
+            .CollectAsync(pid, TimeSpan.FromSeconds(durationSeconds), sources, maxActivities, traceId, maxMatchedActivities, cancellationToken)
             .ConfigureAwait(false);
 
-        var truncated = capture.TotalActivities > capture.Activities.Count;
+        var retention = capture.Retention;
         var topSource = capture.BySource.Count > 0 ? capture.BySource[0] : null;
         var topOperation = capture.ByOperation.Count > 0 ? capture.ByOperation[0] : null;
         var summary = capture.TotalActivities == 0
             ? $"No ActivitySource spans in {durationSeconds}s. Verify the target emits ActivitySource instrumentation or widen the 'sources' filter."
             : $"Captured {capture.Activities.Count} activity record(s) out of {capture.TotalActivities} observed over {durationSeconds}s across {capture.BySource.Count} source(s). " +
               $"Top source: {topSource?.SourceName} ({topSource?.Count}). Top operation: {topOperation?.SourceName}/{topOperation?.OperationName} ({topOperation?.Count})." +
-              (truncated ? $" Truncated by maxActivities={maxActivities}; summaries reflect the stored subset." : string.Empty);
+              (retention?.RetentionLimited == true
+                  ? $" Retention truncation: dropped {retention.DroppedMatchingActivities} matching stop events at effective cap={retention.EffectiveCap}; summaries reflect the stored subset."
+                  : string.Empty);
+        summary += retention is null || retention.RetentionLimited is null
+            ? " Retention provenance is unknown (legacy response)."
+            : $" Applied trace filter: {retention.AppliedTraceId ?? "none"}; matching={retention.MatchingActivities}, retained matching={retention.RetainedMatchingActivities}, dropped matching={retention.DroppedMatchingActivities}, non-matching={retention.NonMatchingActivities}.";
+        summary += " Completed-stop-only, bounded-window evidence cannot establish full trace completeness.";
 
         var primaryHint = topOperation is { MaxDurationMs: > 250 }
             ? new NextActionHint("collect_sample",

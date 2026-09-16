@@ -27,17 +27,28 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector
 
 
     private readonly ILogger<EventPipeActivityCollector> _logger;
+    internal Action? ActivityObserved { get; init; }
 
     public EventPipeActivityCollector(ILogger<EventPipeActivityCollector>? logger = null)
     {
         _logger = logger ?? NullLogger<EventPipeActivityCollector>.Instance;
     }
 
-    public async Task<ActivityCapture> CollectAsync(
+    public Task<ActivityCapture> CollectAsync(
         int processId,
         TimeSpan duration,
         IReadOnlyList<string>? sources = null,
         int maxActivities = 200,
+        CancellationToken cancellationToken = default)
+        => CollectAsync(processId, duration, sources, maxActivities, null, 200, cancellationToken);
+
+    public async Task<ActivityCapture> CollectAsync(
+        int processId,
+        TimeSpan duration,
+        IReadOnlyList<string>? sources,
+        int maxActivities,
+        string? traceId,
+        int maxMatchedActivities,
         CancellationToken cancellationToken = default)
     {
         if (duration <= TimeSpan.Zero)
@@ -52,6 +63,7 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector
 
         var normalizedSourceFilters = NormalizeSourceFilters(sources);
         var providerArguments = BuildProviderArguments(normalizedSourceFilters);
+        var retention = new ActivityRetentionState(maxActivities, traceId, maxMatchedActivities);
 
         var client = new DiagnosticsClient(processId);
         var session = await client
@@ -64,9 +76,6 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector
             .ConfigureAwait(false);
 
         var collectionStartedAt = DateTimeOffset.UtcNow;
-        var capturedActivities = new List<CapturedActivity>(Math.Min(maxActivities, 256));
-        var totalActivities = 0;
-        var completedActivities = 0;
 
         var processingTask = Task.Run(() =>
         {
@@ -82,12 +91,8 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector
                         return;
                     }
 
-                    totalActivities++;
-                    completedActivities++;
-                    if (capturedActivities.Count < maxActivities)
-                    {
-                        capturedActivities.Add(activity);
-                    }
+                    retention.Observe(activity);
+                    ActivityObserved?.Invoke();
                 };
 
                 source.Process();
@@ -111,7 +116,7 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector
                 .ConfigureAwait(false);
         }
 
-        capturedActivities = capturedActivities
+        var capturedActivities = retention.Activities
             .OrderBy(activity => activity.StartedAt)
             .ThenBy(activity => activity.SourceName, StringComparer.Ordinal)
             .ThenBy(activity => activity.OperationName, StringComparer.Ordinal)
@@ -122,11 +127,12 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector
             SourceFilters: normalizedSourceFilters,
             StartedAt: collectionStartedAt,
             Duration: duration,
-            TotalActivities: totalActivities,
-            CompletedActivities: completedActivities,
+            TotalActivities: retention.ObservedActivities,
+            CompletedActivities: retention.ObservedActivities,
             Activities: capturedActivities,
             BySource: BuildSourceSummary(capturedActivities),
-            ByOperation: BuildOperationSummary(capturedActivities));
+            ByOperation: BuildOperationSummary(capturedActivities),
+            Retention: retention.Retention);
     }
 
     private static bool TryCreateActivity(

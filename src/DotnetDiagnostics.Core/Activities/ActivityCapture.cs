@@ -33,8 +33,8 @@ public sealed record ActivityOperationSummary(
 
 /// <summary>
 /// ActivitySource capture window collected through <c>Microsoft-Diagnostics-DiagnosticSource</c>.
-/// When <see cref="TotalActivities"/> exceeds <see cref="Activities"/>' count the capture was truncated by
-/// <c>maxActivities</c>; summaries reflect only the stored subset.
+/// Counts describe stop events after source filtering; summaries describe only retained spans.
+/// Missing retention provenance denotes legacy/unknown evidence, not verified zero loss.
 /// </summary>
 public sealed record ActivityCapture(
     int ProcessId,
@@ -45,4 +45,21 @@ public sealed record ActivityCapture(
     int CompletedActivities,
     IReadOnlyList<CapturedActivity> Activities,
     IReadOnlyList<ActivitySourceSummary> BySource,
-    IReadOnlyList<ActivityOperationSummary> ByOperation);
+    IReadOnlyList<ActivityOperationSummary> ByOperation,
+    ActivityRetention? Retention = null);
+
+/// <summary>
+/// Insertion-time accounting after source filtering. With no applied trace filter, every observed
+/// event matches. Nullable fields distinguish missing legacy metadata from measured zero.
+/// </summary>
+public sealed record ActivityRetention(
+    string? AppliedTraceId,
+    int? EffectiveCap,
+    int? ObservedActivities,
+    int? MatchingActivities,
+    int? RetainedMatchingActivities,
+    int? DroppedMatchingActivities,
+    int? NonMatchingActivities)
+{
+    public bool? RetentionLimited => DroppedMatchingActivities is { } dropped ? dropped > 0 : null;
+}
