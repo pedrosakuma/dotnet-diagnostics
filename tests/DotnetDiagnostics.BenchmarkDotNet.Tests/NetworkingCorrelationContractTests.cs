@@ -25,6 +25,15 @@ public sealed class NetworkingCorrelationContractTests
         var expected = legacy ? "unknown" : "HTTP 1/3";
         Assert.Contains(expected, capture.Headline, StringComparison.Ordinal);
         using var json = JsonDocument.Parse(capture.Json);
+        var hasQuality = json.RootElement.GetProperty("Data").TryGetProperty("CaptureQuality", out var quality);
+        if (legacy) Assert.False(hasQuality);
+        else
+        {
+            Assert.True(hasQuality);
+            Assert.Equal("early", quality.GetProperty("Completion").GetString());
+            Assert.Equal(7, quality.GetProperty("EventsLost").GetInt64());
+            Assert.Equal(1, quality.GetProperty("ParseErrors").GetInt64());
+        }
         if (!legacy)
             Assert.Equal(2, json.RootElement.GetProperty("Data").GetProperty("Correlation").GetProperty("ByKind").GetProperty("http")
                 .GetProperty("Counts").GetProperty("ambiguousStarts").GetInt64());
@@ -32,5 +41,6 @@ public sealed class NetworkingCorrelationContractTests
             [new BenchmarkDiagnosticEntry("Loopback", "networking", capture.IsError, capture.Summary,
                 capture.Headline, "networking.json")]);
         Assert.Contains(expected, report, StringComparison.Ordinal);
+        Assert.Contains(legacy ? "transport loss are unknown" : "completion=early", report, StringComparison.Ordinal);
     }
 }

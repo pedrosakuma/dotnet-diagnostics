@@ -24,6 +24,7 @@ internal static class NetworkingCorrelationContractFixture
             TlsProtocols: [], Notes: ["Correlation fixture: overlapping identities excluded."])
         {
             Correlation = legacy ? null : new(counts, counts, counts),
+            CaptureQuality = legacy ? null : new("early", 7, TimeSpan.FromMilliseconds(250), 1),
         };
     }
 

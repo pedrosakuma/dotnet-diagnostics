@@ -351,7 +351,11 @@ Open an EventPipe session and collect a window of events. `--kind` is required.
 For `--kind networking`, latencies describe accepted observed pairs, not all
 requests. JSON and session queries retain `correlation.byKind` exclusion
 accounting; legacy artifacts without it have unknown coverage. TPL activity
-flow can remain enabled after capture. See [networking correlation](networking-correlation.md).
+flow can remain enabled after capture. `captureQuality` separately reports drain
+completion, transport loss (null when unknown), stream-read elapsed time and
+payload parsing errors. `duration` remains requested time, not proof of observed
+coverage; partial data and its qualifications survive every networking query.
+See [networking correlation and capture quality](networking-correlation.md).
 
 | Option | Meaning |
 |---|---|

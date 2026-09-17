@@ -52,6 +52,8 @@ public sealed record NetworkingSnapshot(
 {
     /// <summary>Observed correlation accounting. Null for legacy artifacts means unknown, not complete.</summary>
     public NetworkingCorrelation? Correlation { get; init; }
+
+    public NetworkingCaptureQuality? CaptureQuality { get; init; }
 }
 
 /// <summary>Latest value of a single networking EventCounter captured in the window.</summary>

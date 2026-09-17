@@ -709,7 +709,7 @@ public static class CollectionQueryDispatcher
             "byoperation" => new NetworkingByOperationView(
                 snapshot.ByOperation.Count,
                 Math.Min(topN, snapshot.ByOperation.Count),
-                snapshot.ByOperation.Take(topN).ToList()) { Correlation = snapshot.Correlation },
+                snapshot.ByOperation.Take(topN).ToList()) { Correlation = snapshot.Correlation, CaptureQuality = snapshot.CaptureQuality },
             "queue" => new NetworkingQueueView(
                 snapshot.HttpRequestsLeftQueue,
                 snapshot.TimeInQueueP50,
@@ -718,7 +718,7 @@ public static class CollectionQueryDispatcher
                 snapshot.HttpConnectionsEstablished,
                 snapshot.HttpConnectionsClosed,
                 snapshot.Counters.Where(c => c.Provider == "System.Net.Http").ToList(),
-                snapshot.Notes) { Correlation = snapshot.Correlation },
+                snapshot.Notes) { Correlation = snapshot.Correlation, CaptureQuality = snapshot.CaptureQuality },
             "tls" => new NetworkingTlsView(
                 snapshot.TlsHandshakesStarted,
                 snapshot.TlsHandshakesStopped,
@@ -726,14 +726,14 @@ public static class CollectionQueryDispatcher
                 snapshot.TlsP50,
                 snapshot.TlsP95,
                 snapshot.TlsMax,
-                snapshot.TlsProtocols) { Correlation = snapshot.Correlation },
+                snapshot.TlsProtocols) { Correlation = snapshot.Correlation, CaptureQuality = snapshot.CaptureQuality },
             "dns" => new NetworkingDnsView(
                 snapshot.DnsLookupsStarted,
                 snapshot.DnsLookupsStopped,
                 snapshot.DnsLookupsFailed,
                 snapshot.DnsP50,
                 snapshot.DnsP95,
-                snapshot.DnsMax) { Correlation = snapshot.Correlation },
+                snapshot.DnsMax) { Correlation = snapshot.Correlation, CaptureQuality = snapshot.CaptureQuality },
             _ => new NetworkingSummaryView(
                 snapshot.HttpRequestsStarted,
                 snapshot.HttpRequestsStopped,
@@ -750,7 +750,7 @@ public static class CollectionQueryDispatcher
                 snapshot.SocketConnectsStarted,
                 snapshot.SocketConnectsFailed,
                 snapshot.Counters,
-                snapshot.Notes) { Correlation = snapshot.Correlation },
+                snapshot.Notes) { Correlation = snapshot.Correlation, CaptureQuality = snapshot.CaptureQuality },
         };
 
         return new CollectionQueryResult(

@@ -33,6 +33,15 @@ public sealed class NetworkingCorrelationContractTests
         Assert.False(result.IsError);
         Assert.Contains(legacy ? "unknown" : "HTTP 1/3", result.Summary, StringComparison.Ordinal);
         var json = JsonSerializer.SerializeToElement(result, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        Assert.Contains(legacy ? "transport loss are unknown" : "completion=early", result.Summary, StringComparison.Ordinal);
+        var quality = json.GetProperty("data").GetProperty("networking").GetProperty("captureQuality");
+        if (legacy) Assert.Equal(JsonValueKind.Null, quality.ValueKind);
+        else
+        {
+            Assert.Equal("early", quality.GetProperty("completion").GetString());
+            Assert.Equal(7, quality.GetProperty("eventsLost").GetInt64());
+            Assert.Equal(1, quality.GetProperty("parseErrors").GetInt64());
+        }
         if (!legacy)
             Assert.Equal(2, json.GetProperty("data").GetProperty("networking").GetProperty("correlation")
                 .GetProperty("byKind").GetProperty("http").GetProperty("counts").GetProperty("ambiguousStarts").GetInt64());

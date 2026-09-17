@@ -131,19 +131,19 @@ public sealed partial class CollectEventsTool
         [Description("summary|detail|raw for all kinds. Summary trims inline lists; full data stays behind the handle.")]
         SamplingDepth depth = SamplingDepth.Summary,
         // kind=counters
-        [Description("kind=counters or kind=catalog. For counters: optional EventCounter provider names; null uses runtime/ASP.NET defaults and empty skips legacy EventCounters. For catalog: optional EventPipe provider names; null/empty uses a broad curated default set, and custom EventSources must be named explicitly because EventPipe has no wildcard.")]
+        [Description("counters: optional EventCounter providers; null=runtime/ASP.NET defaults, empty=skip legacy counters. catalog: EventPipe providers; null/empty=curated defaults. Name custom EventSources explicitly: EventPipe has no wildcard.")]
         string[]? providers = null,
-        [Description("kind=counters only. Optional list of Meter names to subscribe to through System.Diagnostics.Metrics. Null/empty disables Meter collection.")]
+        [Description("counters: optional System.Diagnostics.Metrics Meter names; null/empty disables Meters.")]
         string[]? meters = null,
         [Description("counters/db/kestrel/networking: EventCounter refresh interval in seconds (default 1).")]
         int intervalSeconds = 1,
-        [Description("kind=counters only. Maximum Meter time series (and histograms) retained before the collector caps results. Defaults to 1000.")]
+        [Description("counters: retained Meter time-series/histogram cap (default 1000).")]
         int maxInstrumentTimeSeries = 1000,
         // kind=exceptions / kind=crash-guard
-        [Description("kind=exceptions or kind=crash-guard only. Maximum number of individual exception details to return. Must be >= 1. Defaults to 100.")]
+        [Description("exceptions/crash-guard: returned detail cap, >=1 (default 100).")]
         int maxRecent = 100,
         // kind=gc / kind=catalog / kind=event_source / kind=logs
-        [Description("kind=gc, kind=catalog, kind=event_source, or kind=logs. Maximum number of events to return. Must be >= 1. Defaults to 200 for gc/catalog/event_source and 500 for logs when omitted through the kind-specific path. Catalog samples are metadata-only; payload values are never captured.")]
+        [Description("gc/catalog/event_source/logs: returned event cap, >=1. Default 200, or 500 for logs. Catalog captures metadata only, never payload values.")]
         int? maxEvents = null,
         // kind=event_source
         [Description("kind=event_source only. EventSource provider name (e.g. 'System.Net.Http' or 'Microsoft.AspNetCore.Hosting'). Required when kind='event_source'.")]

@@ -1087,11 +1087,11 @@ public static class EventCollectionUseCases
                     if (snapshot.HttpRequestsStarted == 0 && snapshot.DnsLookupsStarted == 0
                         && snapshot.SocketConnectsStarted == 0 && snapshot.Counters.Count == 0)
                     {
-                        summary = $"No networking activity captured in {context.DurationSeconds}s. Confirm the target makes outbound HTTP / DNS / socket calls during collection (start the session before the load).";
+                        summary = $"No networking activity captured (requested {snapshot.Duration.TotalSeconds:g}s). Confirm the target makes outbound HTTP / DNS / socket calls during collection (start the session before the load).";
                     }
                     else
                     {
-                        summary = $"Captured {snapshot.HttpRequestsStarted} HTTP request(s) ({snapshot.HttpRequestsFailed} failed) over {context.DurationSeconds}s. Request p95={snapshot.HttpRequestP95.TotalMilliseconds:F1}ms, time-in-queue p95={snapshot.TimeInQueueP95.TotalMilliseconds:F1}ms. DNS: {snapshot.DnsLookupsStarted} lookup(s), {snapshot.DnsLookupsFailed} failed. TLS: {snapshot.TlsHandshakesStarted} handshake(s), {snapshot.TlsHandshakesFailed} failed. Sockets: {snapshot.SocketConnectsStarted} connect(s), {snapshot.SocketConnectsFailed} failed.";
+                        summary = $"Captured {snapshot.HttpRequestsStarted} HTTP request(s) ({snapshot.HttpRequestsFailed} failed), requested {snapshot.Duration.TotalSeconds:g}s. Request p95={snapshot.HttpRequestP95.TotalMilliseconds:F1}ms, time-in-queue p95={snapshot.TimeInQueueP95.TotalMilliseconds:F1}ms. DNS: {snapshot.DnsLookupsStarted} lookup(s), {snapshot.DnsLookupsFailed} failed. TLS: {snapshot.TlsHandshakesStarted} handshake(s), {snapshot.TlsHandshakesFailed} failed. Sockets: {snapshot.SocketConnectsStarted} connect(s), {snapshot.SocketConnectsFailed} failed.";
                         if (snapshot.TimeInQueueP95 > TimeSpan.Zero || snapshot.HttpRequestsLeftQueue > 0)
                         {
                             hints.Add(new NextActionHint("query_snapshot",
@@ -1104,6 +1104,7 @@ public static class EventCollectionUseCases
                             new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "byOperation", ["topN"] = 25 }));
                     }
 
+                    summary += " " + (snapshot.CaptureQuality?.Describe() ?? "Capture completion and transport loss are unknown (legacy artifact).");
                     summary += snapshot.Correlation is { } correlation
                         ? $" Latencies cover accepted observed pairs only: HTTP {correlation.Http.Paired}/{correlation.Http.Started}, DNS {correlation.Dns.Paired}/{correlation.Dns.Started}, TLS {correlation.Tls.Paired}/{correlation.Tls.Started}. See correlation accounting for exclusions; this does not establish acquisition completeness."
                         : " Correlation coverage is unknown (legacy artifact without accounting).";

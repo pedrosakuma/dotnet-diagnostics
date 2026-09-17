@@ -27,6 +27,9 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
     private static readonly string[] Providers = { HttpProvider, DnsProvider, TlsProvider, SocketsProvider };
 
     private readonly ILogger<EventPipeNetworkingCollector> _logger;
+    internal Action<EventPipeEventSource>? ConfigureSource { get; init; }
+    internal Func<long?, long?>? TransformReportedLoss { get; init; }
+    internal Action<TraceEvent>? BeforeParse { get; init; }
 
     public EventPipeNetworkingCollector(ILogger<EventPipeNetworkingCollector>? logger = null)
     {
@@ -90,12 +93,14 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
         var unmatchedHttpFailures = 0;
         var unmatchedDnsFailures = 0;
         var unmatchedTlsFailures = 0;
+        long parseErrors = 0;
 
-        await EventPipeCollectionRunner.RunAsync(
+        var completion = await EventPipeCollectionRunner.RunAsync(
             session,
             duration,
             source =>
             {
+                ConfigureSource?.Invoke(source);
                 source.Dynamic.All += traceEvent =>
                 {
                     var provider = traceEvent.ProviderName;
@@ -106,6 +111,7 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
 
                     try
                     {
+                        BeforeParse?.Invoke(traceEvent);
                         var timestamp = ToUtcOffset(traceEvent.TimeStamp);
                         var name = traceEvent.EventName;
 
@@ -151,14 +157,19 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
                                 break;
                         }
                     }
-                    catch (Exception ex)
+                    catch (Exception)
                     {
-                        notes.Add($"Warning: failed to parse {traceEvent.ProviderName}/{traceEvent.EventName}: {ex.GetType().Name}.");
+                        parseErrors++;
                     }
                 };
             },
             ex => _logger.LogDebug(ex, "Networking EventPipe source ended for pid {Pid}.", processId),
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken, stopOnProcessingEnd: true).ConfigureAwait(false);
+
+        var quality = new NetworkingCaptureQuality(completion.Status,
+            TransformReportedLoss is null ? completion.EventsLost : TransformReportedLoss(completion.EventsLost),
+            completion.StreamReadDuration, parseErrors);
+        notes.Add(quality.Describe());
 
         var totalEvents = httpStarted + dnsStarted + tlsStarted + socketStarted;
         if (totalEvents == 0 && counters.Count == 0)
@@ -250,6 +261,7 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
             Notes: notes.OrderBy(static note => note, StringComparer.Ordinal).ToList())
         {
             Correlation = correlation,
+            CaptureQuality = quality,
         };
     }
 
