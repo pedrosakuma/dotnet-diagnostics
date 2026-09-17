@@ -91,7 +91,7 @@ Each `SignalGroup` carries:
 - `signal`: stable id of the **grouping dimension** — not a diagnosis (e.g.
   `cpu.self-time.concentration`, `cpu.self-time.by-namespace`, `exceptions.by-type`,
   `exceptions.by-throw-site`, `allocations.by-type`, `allocations.by-site`,
-  `gc.pause-time-share`, `gc.gen2-share`, `gc.loh-growth`, `threads.by-wait-state`,
+  `gc.fully-suspended-share.v2`, `gc.gen2-share`, `gc.loh-growth`, `threads.by-wait-state`,
   `threads.by-wait-target`, `counters.trend`, `correlation.co-occurrence`,
   `correlation.thread-overlap`).
 - `summary`: one-line description of what stands out.
@@ -131,11 +131,12 @@ bytes) and `allocations.by-site` (does one call-site — the leaf allocating fra
 dominate them). `allocations.by-type` skips the NativeAOT `<unknown>` placeholder (an
 attribution gap, not a real type concentrating). `allocations.by-site` simply produces
 nothing when no allocation stacks resolved. `collect_events(kind="gc")` surfaces three
-neutral trend/magnitude signals over the full (untrimmed) window: `gc.pause-time-share`
-(fraction of the window spent paused), `gc.gen2-share` (fraction of collections that
+neutral trend/magnitude signals over the untrimmed evidence: `gc.fully-suspended-share.v2`
+(validated fully-suspended phase share, excluding acquisition/restart tails), `gc.gen2-share` (fraction of collections that
 were gen2, elevated vs. the gen0-dominated norm) and `gc.loh-growth` (LOH size growth
 across the window, from the `GCHeapStats` time series) — each a magnitude the consumer
-interprets, never a verdict.
+interprets, never a verdict. Unavailable/legacy pause evidence suppresses the v2 suspension
+signal; detected collection pairing/transport loss suppresses the Gen2-share ratio.
 
 **Threads.** `collect_thread_snapshot` surfaces two thread-concentration groupings:
 `threads.by-wait-state` (do many threads share the same inferred wait state — e.g.
@@ -697,28 +698,55 @@ CPU comparisons also carry this evidence contract. OS-backed captures can produc
 verdicts only against compatible OS-backed evidence. EventPipe-to-EventPipe comparisons remain
 frequency evidence and are `inconclusive`; mixed or legacy-unknown semantics are `incomparable`.
 
-The GC drilldown views (`timeline`, `longestPauses`, `byGeneration`, issue #314) re-aggregate the
-GC events already retained behind a `gc-events` handle — no new collection. `timeline` orders the
-collections by start time and returns the earliest `topN` rows, each with a 0-based `Index`, the
-GC `Generation`/`Reason`/`Type`, the `PauseDuration` (GCStart→GCStop elapsed), and
-`GapSincePreviousStart` (start-to-start gap from the previous collection). `longestPauses` ranks
-the same rows by pause descending and returns the top `topN` (each keeps its timeline `Index` for
-cross-reference). `byGeneration` reports `Count` + total/mean/max pause per generation bucket
-(`gen0`/`gen1`/`gen2`/`background`); background GCs form their own mutually-exclusive bucket, so
-`gen2` counts non-background gen2 collections only. These pause-detail views describe only the
-raw events retained on the artifact (the collector caps at `maxEvents`) and expose
-`retained`/`dropped`. The summary's `totalCollections`, total/max pause, and `generations[]` counts
-continue aggregating after that cap and remain exact for the full collection window.
+**GC measurement v2 (issue #950).** Collection execution (`GCStart → GCStop`) and GC-related
+runtime suspension are independent evidence streams. The primary pause is the observed
+fully-suspended phase **`[GCSuspendEEStop, GCRestartEEStart)`**, for numeric reasons 1 (GC) and
+6 (GC preparation). It excludes suspension acquisition and restart tails, which are reported
+separately when observed. It differs from the broad PerfView suspension envelope and is **not
+exact per-thread lost execution time**. Background collection elapsed includes concurrent work.
 
-The activities `gc-overlay` view correlates activity spans only with the raw GC event rows retained
-behind the supplied `gcHandle`. Its `totalGcCollections` and `totalGcPauseMs` remain the exact
-full-window aggregates. Correlation-derived values (`impactedCount`, `totalGcOverlapMs`, and each
-impacted activity's `gcPauseMs` / `gcPausePercent`) are exact only when
-`correlationScope="full-window"`. If the GC collector exceeded `maxEvents`, the result reports
-`retainedGcEvents`, `droppedGcEvents`, `correlationTruncated=true`,
-`correlationScope="retained-prefix"`, and `correlationValuesAreLowerBounds=true`; each returned row
-also sets `gcPauseIsLowerBound=true`. This prevents prefix-only overlap evidence from being confused
-with the separate exact GC totals.
+GC query payloads now use `GcMeasurementView` (`measurementVersion=2`, `measurementStatus`,
+collection counts/elapsed, retained/dropped detail and `evidence`, plus view-specific `data`).
+`events`/`timeline` show completed **collection elapsed**, with chronological indices/gaps;
+`byGeneration` shows count and total/mean/max **elapsed** in gen0/gen1/gen2/background buckets.
+`longestPauses` and `pauseHistogram` use validated suspension intervals, not collection rows.
+Suspensions are not assigned a generation: the count at suspend is contextual, not a collection key.
+Collection detail loss alone does not degrade the independent suspension stream.
+
+Compatibility is intentionally explicit: existing `GcEvent.PauseDuration`,
+`GcSummary.TotalPauseTime` and `MaxPauseTime` retain their **legacy collection-elapsed** meaning
+for source compatibility; they must not be interpreted as v2 pause measurements.
+Use `suspension.totalSuspensionTime`/`maxSuspensionTime`. Missing legacy metadata, unsupported
+boundaries, transport loss or ambiguous pairing make authoritative pause values unavailable,
+not zero. Legacy pause query DTOs are no longer returned; the versioned query shape is a wire
+contract correction. Corrected portable metrics use `fullySuspendedTimeMs.v2`,
+`fullySuspendedPercent.v2`, and `maxFullySuspendedTimeMs.v2`, never the old elapsed metric identities.
+Signals, collection summaries, compact batches and investigation exports use the same contract.
+Existing constructor calls/property access remain valid for the additive capture metadata, but
+positional record deconstruction must account for appended fields. Two overlay fields intentionally
+become nullable: `GcOverlayResult.TotalGcPauseMs` and `TotalGcOverlapMs` (unavailable is not zero), and
+`GcOverlapEvent.Generation` (unassociated suspension is not generation zero).
+
+`query_snapshot(handle=<activities>, view="gc-overlay", gcHandle=<gc>)` uses the shared Core
+validator: matching PID, compatible known lifetime and handle origin, overlapping valid windows.
+Missing lifetime provenance remains `unknown`, not verified compatibility. Multi-CLR attribution
+and unlocalized transport loss are unreliable, not lower bounds. No end is invented at GCStop or
+capture end. `no-detected-loss` is not proof that EventPipe could observe every possible pause.
+
+For each valid span, attribution is a UTC interval **union**, clipped to the common observation
+window, divided by endpoint elapsed time. Invalid/inconsistent or zero-duration spans are counted
+separately, not given a healthy zero percentage. A pause may legitimately affect two activities:
+`totalGcOverlapMs` is cumulative **span-time**, not process pause time.
+Activity retention loss makes candidate selection incomplete but need not degrade a retained
+span's exact pause. Dropped validated pause intervals or window gaps can make that span's duration
+and percentage lower bounds; ambiguous pairing cannot. Filters are not cap loss. Rankings are
+never lower bounds. `topN`/100-detail-row omissions are output projections, separate from retention.
+Reusing a projected GC summary does not restore omitted intervals: `inputOmittedPauseIntervals`
+and `projected-pause-details` identify missing input details without calling them collector loss.
+Retained interval counts include raw unreliable rows; they do not imply those rows were used.
+Unavailable histogram measurements return no buckets, not a measured all-zero distribution.
+Always read `measurementStatus`, `candidateSelection`, `lifetimeCompatibility` and gap/omission
+counters alongside the legacy aggregate correlation flags.
 
 The `heap-stats` view (issue #384) re-projects the per-collection `GCHeapStats` samples retained
 behind the same `gc-events` handle — no new collection. Each sample carries the per-generation heap
@@ -2375,8 +2403,8 @@ process is still alive long enough for an explicit dump.
 
 ## `collect_events(kind="gc")`
 
-Subscribes to the runtime `GC` keyword, pairs `GCStart`/`GCStop` events and
-returns aggregate + per-collection details.
+Subscribes to the runtime `GC` keyword. Pairs `GCStart`/`GCStop` for collection elapsed,
+and independently pairs GC-related suspension phases for the v2 pause contract above.
 
 **Parameters:**
 
@@ -2384,11 +2412,12 @@ returns aggregate + per-collection details.
 |---|---|---|---|
 | `processId` | `int` | — | Target process id |
 | `durationSeconds` | `int` | `10` | Window length |
-| `maxEvents` | `int` | `200` | Cap on retained raw GC event rows and heap-stat samples. Exact totals, total/max pause, and generation counts continue updating after the cap. |
+| `maxEvents` | `int` | `200` | Independent caps on collection rows, heap-stat samples and suspension intervals; 1..100,000. Valid-pair aggregates continue after detail caps; loss/censoring quality still applies. |
 
 **Long-running pattern:** this tool can be promoted to MCP Tasks when the client opts into `io.modelcontextprotocol/tasks`. Spec clients should use task-augmented `tools/call` + `tasks/get`; terminal results arrive on the final `tasks/get` response. Clients that don't implement Tasks should use the in-request `notifications/progress` + `notifications/cancelled` flow.
 
-**Returns:** `GcSummary`:
+**Returns:** `GcSummary`, including `suspension` v2 measurement/quality and `requestedDuration`.
+The following illustrates the **legacy collection-elapsed fields only**, not measured pause:
 
 ```json
 {
@@ -2417,11 +2446,13 @@ returns aggregate + per-collection details.
 }
 ```
 
-`totalCollections`, `totalPauseTime`, `maxPauseTime`, and `generations[]` cover every paired
-GC start/stop observed in the window, even after `events` reaches `maxEvents`. `events` and
-`heapStats` retain only their first `maxEvents` rows; `droppedEvents` and `droppedHeapStats`
-explicitly report omitted detail. Drilldown pause-detail views expose retained/dropped counts so
-their prefix-only scope is unambiguous.
+`totalCollections` and `generations[]` cover observed valid collection pairs after the detail cap.
+Legacy `totalPauseTime`/`maxPauseTime` describe **collection elapsed**, not application pause.
+`suspension.totalSuspensionTime`/`maxSuspensionTime` are the corrected nullable measurements.
+The observation window uses the EventPipe header start (read only after parsing) and local
+parser-drain end; it is not an exact per-thread execution window. Requested duration is separate.
+`events`, `heapStats` and `suspension.intervals` have independent retained prefixes and drop counts.
+Summary-depth interval omission is `outputOmittedIntervals`, not collector loss.
 
 **Notes:** to capture a full gcdump (heap snapshot), use `collect_process_dump`
 with `dumpType = "WithHeap"` and analyze offline with `dotnet-dump`.

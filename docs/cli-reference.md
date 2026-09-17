@@ -905,14 +905,35 @@ GC handles (`collect --kind gc`) expose pause-analysis views over the events alr
 
 | View | What it shows | Relevant flags |
 | --- | --- | --- |
-| `summary` (default) | total/max pause + per-generation counts | — |
-| `events` | raw GC events | `--top` (`--top-types` compatibility alias) |
-| `pauseHistogram` | pause-duration buckets | — |
-| `timeline` | per-GC rows (index, gen, reason, type, pause, gap-since-previous-start) ordered by start time | `--top` (`--top-types` compatibility alias; earliest N) |
-| `longestPauses` | the N longest pauses, ranked descending | `--top` (`--top-types` compatibility alias) |
-| `byGeneration` | count + total/mean/max pause per gen0/gen1/gen2/background bucket | — |
+| `summary` (default) | v2 suspension status/totals and collection counts/elapsed | — |
+| `events` | completed collection elapsed rows | `--top` (`--top-types` compatibility alias) |
+| `pauseHistogram` | validated fully-suspended-phase duration buckets | — |
+| `timeline` | per-collection rows (index, gen, reason, type, elapsed, start gap), chronological | `--top` (`--top-types` compatibility alias; earliest N) |
+| `longestPauses` | N longest validated suspension intervals, not collections | `--top` (`--top-types` compatibility alias) |
+| `byGeneration` | count + total/mean/max collection elapsed per gen0/gen1/gen2/background bucket | — |
 
 `byGeneration` keeps background GCs in their own bucket, so `gen2` counts non-background gen2 collections only.
+
+GC measurement v2 uses **GCSuspendEEStop → GCRestartEEStart**, reasons 1 and 6:
+the fully-suspended GC-related phase, excluding acquisition/restart tails. Background collection
+elapsed is not pause. Legacy pause-named collection fields retain their old elapsed meaning for
+source compatibility; use nullable `suspension.totalSuspensionTime` and its explicit status.
+GC query payloads now return the versioned `GcMeasurementView` contract; unavailable/legacy
+evidence does not become zero or a healthy hint. Portable corrected pause metrics have `.v2`
+identities and are never compared to legacy elapsed values under an unchanged metric name.
+
+In the session REPL, correlate overlapping captures from the same process:
+
+```text
+query --handle <activities-handle> --view gc-overlay --gc-handle <gc-handle> --json
+```
+
+Both handles must already exist in that session with overlapping observation windows (sequential
+non-overlapping one-shot captures cannot establish overlap). The CLI and MCP use identical Core
+validation and UTC union attribution. Read candidate-retention, pause-retention, lifetime/window
+and measurement status independently; missing provenance remains unknown. A retained span can
+have exact attribution even when other activities were dropped. Rankings are not lower bounds.
+See [the measurement contract](tool-reference.md#query_snapshot) for compatibility and quality details.
 
 Catalog handles (`collect --kind catalog`) expose a metadata-only event inventory. The collector captures
 provider name, event name, level and timestamps only — no payload field values. By default it enables a

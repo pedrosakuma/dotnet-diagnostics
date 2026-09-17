@@ -14,10 +14,14 @@ namespace DotnetDiagnostics.Core.Signals;
 /// <param name="Generations">Per-generation collection counts.</param>
 /// <param name="HeapStats">GCHeapStats samples in ascending timestamp order (one per collection), or empty if none were captured.</param>
 /// <param name="HandleId">Drill-down handle the GC summary was registered under, referenced by every bucket.</param>
+/// <param name="FullySuspendedTime">Validated v2 suspension union; null means unavailable.</param>
+/// <param name="CollectionCountsReliable">Whether collection pairing has no detected loss.</param>
 public sealed record GcSignalContext(
     TimeSpan Duration,
     int TotalCollections,
     TimeSpan TotalPauseTime,
     IReadOnlyList<GenerationStats> Generations,
     IReadOnlyList<GcHeapStatsSample> HeapStats,
-    string HandleId);
+    string HandleId,
+    TimeSpan? FullySuspendedTime = null,
+    bool CollectionCountsReliable = false);

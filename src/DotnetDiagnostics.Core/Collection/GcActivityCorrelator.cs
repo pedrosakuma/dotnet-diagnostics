@@ -8,6 +8,23 @@ namespace DotnetDiagnostics.Core.Collection;
 /// </summary>
 public static class GcActivityCorrelator
 {
+    internal static string? Validate(ActivityCapture activity, GcSummary gc)
+    {
+        if (activity.ProcessId != gc.ProcessId) return "Activity and GC process IDs differ.";
+        if (activity.ProcessStartedAt is { } a && gc.Suspension?.ProcessStartedAt is { } g && a != g)
+            return "Activity and GC process lifetimes differ.";
+        if (activity.Duration <= TimeSpan.Zero || gc.Duration <= TimeSpan.Zero ||
+            activity.Duration > DateTimeOffset.MaxValue - activity.StartedAt ||
+            gc.Duration > DateTimeOffset.MaxValue - gc.StartedAt)
+            return "Invalid observation window.";
+        var start = gc.Suspension?.ObservationStart ?? gc.StartedAt;
+        var end = gc.Suspension?.ObservationEnd ?? gc.StartedAt + gc.Duration;
+        if (end <= start || activity.StartedAt >= end || start >= activity.StartedAt + activity.Duration)
+            return "Activity and GC observation windows do not overlap.";
+        if (gc.Suspension?.Intervals.Any(p => p.StoppedAt < p.StartedAt || p.Reason is not (1 or 6)) == true)
+            return "Invalid GC suspension interval evidence.";
+        return null;
+    }
     /// <summary>
     /// Correlates activities with GC events, returning spans that overlapped with GC pauses.
     /// </summary>
@@ -17,13 +34,28 @@ public static class GcActivityCorrelator
         ArgumentNullException.ThrowIfNull(gcSummary);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(topN);
 
-        var sortedGcEvents = gcSummary.Events
-            .OrderBy(static gc => gc.Timestamp)
+        if (Validate(activities, gcSummary) is { } invalid)
+            throw new ArgumentException(invalid, nameof(gcSummary));
+        var evidence = gcSummary.Suspension;
+        var sortedGcEvents = (evidence is { IsAuthoritative: true } ? evidence.Intervals : [])
+            .OrderBy(static gc => gc.StartedAt)
             .ToArray();
-        var maxPauseDuration = gcSummary.MaxPauseTime > TimeSpan.Zero
-            ? gcSummary.MaxPauseTime
-            : TimeSpan.Zero;
-        var correlationTruncated = gcSummary.DroppedEvents > 0;
+        var maxPauseDuration = sortedGcEvents.Length > 0 ? sortedGcEvents.Max(p => p.Duration) : TimeSpan.Zero;
+        var activityLoss = activities.Retention?.DroppedMatchingActivities;
+        var pauseLoss = evidence?.DroppedIntervals ?? 0;
+        var projectedPauseLoss = evidence is null ? 0 : Math.Max(evidence.OutputOmittedIntervals,
+            (int)Math.Min(int.MaxValue, Math.Max(0, evidence.ObservedIntervals - evidence.DroppedIntervals - evidence.Intervals.Count)));
+        var correlationTruncated = activityLoss > 0 || pauseLoss > 0;
+        var windowStart = evidence?.ObservationStart ?? gcSummary.StartedAt;
+        var windowEnd = evidence?.ObservationEnd ?? gcSummary.StartedAt + gcSummary.Duration;
+        var activityWindowEnd = activities.StartedAt + activities.Duration;
+        windowStart = windowStart > activities.StartedAt ? windowStart : activities.StartedAt;
+        windowEnd = windowEnd < activityWindowEnd ? windowEnd : activityWindowEnd;
+        var invalidSpans = 0;
+        var windowGaps = 0;
+        var status = evidence?.Status ?? "legacy-unknown";
+        if (windowEnd <= windowStart)
+            throw new ArgumentException("Activity and GC observation windows do not overlap.", nameof(gcSummary));
         var topImpacted = new PriorityQueue<ImpactedActivity, ImpactedActivity>(
             Comparer<ImpactedActivity>.Create(static (left, right) => CompareImpactedAscending(left, right)));
         var impactedCount = 0;
@@ -35,36 +67,44 @@ public static class GcActivityCorrelator
 
             var activityStart = activity.StartedAt;
             var activityEnd = activity.StoppedAt.Value;
+            if (activityEnd < activityStart || activity.Duration != activityEnd - activityStart)
+            {
+                invalidSpans++;
+                continue;
+            }
+            if (activityEnd == activityStart) { invalidSpans++; continue; }
+            var hasGap = activityStart < windowStart || activityEnd > windowEnd;
+            if (hasGap) windowGaps++;
+            var clipStart = activityStart > windowStart ? activityStart : windowStart;
+            var clipEnd = activityEnd < windowEnd ? activityEnd : windowEnd;
 
             var overlappingGcEvents = new List<GcOverlapEvent>();
-            var totalOverlapMs = 0.0;
-            var windowStart = activityStart - maxPauseDuration;
-            var lowerBound = LowerBound(sortedGcEvents, windowStart);
+            var intervals = new List<(DateTimeOffset Start, DateTimeOffset Stop)>();
+            var lowerBound = LowerBound(sortedGcEvents, activityStart > DateTimeOffset.MinValue + maxPauseDuration
+                ? activityStart - maxPauseDuration : DateTimeOffset.MinValue);
             var upperBound = LowerBound(sortedGcEvents, activityEnd);
 
             for (var gcIndex = lowerBound; gcIndex < upperBound; gcIndex++)
             {
                 var gc = sortedGcEvents[gcIndex];
-                var gcStart = gc.Timestamp;
-                var gcEnd = gc.Timestamp + gc.PauseDuration;
+                var gcStart = gc.StartedAt;
+                var gcEnd = gc.StoppedAt;
 
                 // Check for overlap: [activityStart, activityEnd] ∩ [gcStart, gcEnd]
                 if (gcStart < activityEnd && gcEnd > activityStart)
                 {
                     // Calculate overlap duration
-                    var overlapStart = gcStart > activityStart ? gcStart : activityStart;
-                    var overlapEnd = gcEnd < activityEnd ? gcEnd : activityEnd;
+                    var overlapStart = gcStart > clipStart ? gcStart : clipStart;
+                    var overlapEnd = gcEnd < clipEnd ? gcEnd : clipEnd;
                     var overlapMs = (overlapEnd - overlapStart).TotalMilliseconds;
 
                     if (overlapMs > 0)
                     {
-                        totalOverlapMs += overlapMs;
-                        overlappingGcEvents.Add(new GcOverlapEvent(
-                            gc.Generation,
-                            gc.Reason,
-                            gc.Type,
-                            gc.PauseDuration.TotalMilliseconds,
-                            overlapMs));
+                        intervals.Add((overlapStart, overlapEnd));
+                        if (overlappingGcEvents.Count < 100)
+                            overlappingGcEvents.Add(new GcOverlapEvent(
+                                null, gc.Reason.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                                "runtime-suspension", gc.Duration.TotalMilliseconds, overlapMs));
                     }
                 }
             }
@@ -72,7 +112,8 @@ public static class GcActivityCorrelator
             if (overlappingGcEvents.Count > 0 && activity.Duration.HasValue)
             {
                 var durationMs = activity.Duration.Value.TotalMilliseconds;
-                var gcPausePercent = durationMs > 0 ? (totalOverlapMs / durationMs) * 100 : 0;
+                var totalOverlapMs = TimeSpan.FromTicks(UtcIntervalUnion.Measure(clipStart, clipEnd, intervals).CoveredTicks).TotalMilliseconds;
+                var gcPausePercent = (totalOverlapMs / durationMs) * 100;
                 var impactedActivity = new ImpactedActivity(
                     activity.SourceName,
                     activity.OperationName,
@@ -83,7 +124,8 @@ public static class GcActivityCorrelator
                     totalOverlapMs,
                     gcPausePercent,
                     overlappingGcEvents,
-                    GcPauseIsLowerBound: correlationTruncated);
+                    GcPauseIsLowerBound: pauseLoss > 0 || projectedPauseLoss > 0 || hasGap,
+                    OutputOmittedPauseDetails: Math.Max(0, intervals.Count - overlappingGcEvents.Count));
                 impactedCount++;
                 totalGcOverlapMs += impactedActivity.GcPauseMs;
                 topImpacted.Enqueue(impactedActivity, impactedActivity);
@@ -108,25 +150,36 @@ public static class GcActivityCorrelator
             activities.CompletedActivities,
             impactedCount,
             orderedTopImpacted.Count,
-            totalGcOverlapMs,
+            evidence is { IsAuthoritative: true } ? totalGcOverlapMs : null,
             gcSummary.TotalCollections,
-            gcSummary.TotalPauseTime.TotalMilliseconds,
-            gcSummary.Events.Count,
-            gcSummary.DroppedEvents,
+            evidence is { IsAuthoritative: true } ? evidence.TotalSuspensionTime?.TotalMilliseconds : null,
+            evidence?.Intervals.Count ?? 0,
+            (int)Math.Min(int.MaxValue, pauseLoss),
             correlationTruncated,
-            correlationTruncated ? "retained-prefix" : "full-window",
-            correlationTruncated,
-            orderedTopImpacted);
+            status != "no-detected-loss" ? status
+                : activityLoss is null ? "unknown-activity-retention"
+                : projectedPauseLoss > 0 ? "projected-pause-details"
+                : correlationTruncated ? "retained-prefix"
+                : windowGaps > 0 ? "window-intersection" : "full-window",
+            (correlationTruncated || projectedPauseLoss > 0) && evidence is { IsAuthoritative: true },
+            orderedTopImpacted,
+            status,
+            activityLoss.HasValue ? activityLoss == 0 ? "complete-retained-selection" : "incomplete" : "unknown",
+            activities.ProcessStartedAt.HasValue && evidence?.ProcessStartedAt is not null ? "matched" : "unknown",
+            invalidSpans,
+            windowGaps,
+            Math.Max(0, impactedCount - orderedTopImpacted.Count),
+            projectedPauseLoss);
     }
 
-    private static int LowerBound(GcEvent[] events, DateTimeOffset timestamp)
+    private static int LowerBound(GcSuspensionInterval[] events, DateTimeOffset timestamp)
     {
         var low = 0;
         var high = events.Length;
         while (low < high)
         {
             var mid = low + ((high - low) / 2);
-            if (events[mid].Timestamp < timestamp)
+            if (events[mid].StartedAt < timestamp)
             {
                 low = mid + 1;
             }
@@ -171,7 +224,7 @@ public static class GcActivityCorrelator
 
 /// <summary>A GC event that overlapped with a span.</summary>
 public sealed record GcOverlapEvent(
-    int Generation,
+    int? Generation,
     string Reason,
     string Type,
     double PauseDurationMs,
@@ -188,23 +241,32 @@ public sealed record ImpactedActivity(
     double GcPauseMs,
     double GcPausePercent,
     IReadOnlyList<GcOverlapEvent> GcEvents,
-    bool GcPauseIsLowerBound);
+    bool GcPauseIsLowerBound,
+    int OutputOmittedPauseDetails = 0);
 
 /// <summary>
-/// Result of correlating retained GC event rows with activity spans. Exact full-window GC
-/// aggregates remain separate from prefix-scoped correlation values.
+/// Result of correlating authoritative retained suspension intervals with activity spans.
+/// Aggregate measurements remain separate from detail-scoped correlation values.
 /// </summary>
+/// <remarks>RetainedGcEvents counts raw suspension rows, including unreliable evidence; not the number used for correlation.</remarks>
 public sealed record GcOverlayResult(
     int TotalActivities,
     int CompletedActivities,
     int ImpactedCount,
     int ReturnedCount,
-    double TotalGcOverlapMs,
+    double? TotalGcOverlapMs,
     int TotalGcCollections,
-    double TotalGcPauseMs,
+    double? TotalGcPauseMs,
     int RetainedGcEvents,
     int DroppedGcEvents,
     bool CorrelationTruncated,
     string CorrelationScope,
     bool CorrelationValuesAreLowerBounds,
-    IReadOnlyList<ImpactedActivity> ImpactedActivities);
+    IReadOnlyList<ImpactedActivity> ImpactedActivities,
+    string MeasurementStatus = "legacy-unknown",
+    string CandidateSelection = "unknown",
+    string LifetimeCompatibility = "unknown",
+    int InvalidOrZeroDurationSpans = 0,
+    int WindowGapSpans = 0,
+    int OutputOmittedActivities = 0,
+    int InputOmittedPauseIntervals = 0);

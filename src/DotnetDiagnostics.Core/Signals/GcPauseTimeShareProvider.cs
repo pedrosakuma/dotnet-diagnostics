@@ -14,12 +14,12 @@ public sealed class GcPauseTimeShareProvider : ISignalProvider<GcSignalContext>
     public IEnumerable<SignalGroup> Detect(GcSignalContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
-        if (context.Duration <= TimeSpan.Zero || context.TotalCollections == 0)
+        if (context.Duration <= TimeSpan.Zero || context.FullySuspendedTime is not { } pause)
         {
             yield break;
         }
 
-        var share = context.TotalPauseTime.TotalSeconds / context.Duration.TotalSeconds;
+        var share = pause.TotalSeconds / context.Duration.TotalSeconds;
         if (share < MinShare)
         {
             yield break;
@@ -27,8 +27,8 @@ public sealed class GcPauseTimeShareProvider : ISignalProvider<GcSignalContext>
 
         var percent = Math.Round(share * 100.0, 1);
         yield return new SignalGroup(
-            Signal: "gc.pause-time-share",
-            Summary: $"GC pause time is {percent:0.#}% of the window ({context.TotalPauseTime.TotalMilliseconds:F0}ms of {context.Duration.TotalMilliseconds:F0}ms, {context.TotalCollections} collection(s)).",
+            Signal: "gc.fully-suspended-share.v2",
+            Summary: $"GC-related fully-suspended phase is {percent:0.#}% of the observation window ({pause.TotalMilliseconds:F0}ms of {context.Duration.TotalMilliseconds:F0}ms); excludes acquisition/restart tails.",
             Salience: Math.Min(1.0, share),
             Buckets: new[] { new SignalBucket("pause-time", percent, "%", context.HandleId) },
             NextAction: new NextActionHint(

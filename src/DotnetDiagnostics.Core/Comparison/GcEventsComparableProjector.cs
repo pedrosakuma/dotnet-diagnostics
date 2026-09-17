@@ -23,16 +23,16 @@ public sealed class GcEventsComparableProjector : IComparableProjector
 
         var metrics = new List<MetricValue>();
         var durationSeconds = summary.Duration.TotalSeconds;
-        var totalPauseMs = summary.TotalPauseTime.TotalMilliseconds;
 
         Add(metrics, "totalCollections", MetricRole.Primary, BetterDirection.Lower, MetricAggregation.Total, "count",
             summary.TotalCollections);
-        Add(metrics, "totalPauseTimeMs", MetricRole.Primary, BetterDirection.Lower, MetricAggregation.Duration, "ms",
-            totalPauseMs);
-        Add(metrics, "pauseTimePercent", MetricRole.Primary, BetterDirection.Lower, MetricAggregation.Percent, "%",
-            durationSeconds <= 0 ? 0 : 100.0 * summary.TotalPauseTime.TotalSeconds / durationSeconds);
-        Add(metrics, "maxPauseTimeMs", MetricRole.Secondary, BetterDirection.Lower, MetricAggregation.Duration, "ms",
-            summary.MaxPauseTime.TotalMilliseconds);
+        if (summary.Suspension is { IsAuthoritative: true, TotalSuspensionTime: { } total, MaxSuspensionTime: { } maximum })
+        {
+            Add(metrics, "fullySuspendedTimeMs.v2", MetricRole.Primary, BetterDirection.Lower, MetricAggregation.Duration, "ms", total.TotalMilliseconds);
+            if (durationSeconds > 0)
+                Add(metrics, "fullySuspendedPercent.v2", MetricRole.Primary, BetterDirection.Lower, MetricAggregation.Percent, "%", 100 * total.TotalSeconds / durationSeconds);
+            Add(metrics, "maxFullySuspendedTimeMs.v2", MetricRole.Secondary, BetterDirection.Lower, MetricAggregation.Duration, "ms", maximum.TotalMilliseconds);
+        }
         Add(metrics, "durationSeconds", MetricRole.Context, BetterDirection.Neutral, MetricAggregation.Duration, "s",
             durationSeconds);
         Add(metrics, "eventCount", MetricRole.Context, BetterDirection.Neutral, MetricAggregation.Total, "count",
@@ -59,7 +59,8 @@ public sealed class GcEventsComparableProjector : IComparableProjector
             CapturedAt: summary.StartedAt,
             ProcessId: summary.ProcessId,
             Metrics: metrics,
-            Rows: Array.Empty<ComparableRow>());
+            Rows: Array.Empty<ComparableRow>(),
+            Quality: summary.GetQuality());
     }
 
     private static void Add(

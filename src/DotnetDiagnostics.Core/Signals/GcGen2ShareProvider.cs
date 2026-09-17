@@ -18,7 +18,7 @@ public sealed class GcGen2ShareProvider : ISignalProvider<GcSignalContext>
     public IEnumerable<SignalGroup> Detect(GcSignalContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
-        if (context.TotalCollections < MinTotalCollections || context.Generations is not { Count: > 0 })
+        if (!context.CollectionCountsReliable || context.TotalCollections < MinTotalCollections || context.Generations is not { Count: > 0 })
         {
             yield break;
         }

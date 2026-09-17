@@ -10,12 +10,14 @@ internal static class EventPipeCollectionRunner
         TimeSpan duration,
         Action<EventPipeEventSource> configure,
         Action<Exception> onProcessingError,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action<long, bool, DateTimeOffset>? onDrained = null)
     {
         ArgumentNullException.ThrowIfNull(session);
         ArgumentNullException.ThrowIfNull(configure);
         ArgumentNullException.ThrowIfNull(onProcessingError);
 
+        var stopRequested = 0;
         var processingTask = Task.Run(() =>
         {
             try
@@ -23,6 +25,8 @@ internal static class EventPipeCollectionRunner
                 using var source = new EventPipeEventSource(session.EventStream);
                 configure(source);
                 source.Process();
+                onDrained?.Invoke(source.EventsLost, Volatile.Read(ref stopRequested) == 0,
+                    new DateTimeOffset(source.SessionStartTime.ToUniversalTime()));
             }
             catch (Exception ex)
             {
@@ -36,6 +40,7 @@ internal static class EventPipeCollectionRunner
         }
         finally
         {
+            Volatile.Write(ref stopRequested, 1);
             await EventPipeSessionShutdown
                 .StopAndDrainAsync(session, processingTask, onProcessingError)
                 .ConfigureAwait(false);

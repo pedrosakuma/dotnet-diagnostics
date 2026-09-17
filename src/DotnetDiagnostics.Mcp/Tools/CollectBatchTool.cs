@@ -555,7 +555,7 @@ public sealed record CollectBatchGen2Evidence(
     double? MeterRatePerSecond,
     double? MeterProcessCumulative,
     int GcCollectorWindowCount,
-    int GcCollectorWindowSeconds,
+    double GcCollectorWindowSeconds,
     string Explanation);
 
 /// <summary>

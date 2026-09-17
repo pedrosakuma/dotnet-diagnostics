@@ -6,6 +6,23 @@ namespace DotnetDiagnostics.Core.Tests;
 public sealed class EventPipeGcCollectorTests
 {
     [Fact]
+    public void Aggregation_SaturatesLegacyCountsAndElapsedWithoutOverflow()
+    {
+        var state = new GcCaptureState(1);
+        var aggregation = state.Collections;
+        typeof(GcEventAggregation).GetProperty(nameof(GcEventAggregation.ObservedCollections))!
+            .SetValue(aggregation, long.MaxValue - 1);
+        aggregation.Add(new(DateTimeOffset.UnixEpoch, 0, "test", "test", TimeSpan.MaxValue));
+        aggregation.Add(new(DateTimeOffset.UnixEpoch, 0, "test", "test", TimeSpan.FromTicks(1)));
+        aggregation.ObservedCollections.Should().Be(long.MaxValue);
+        aggregation.TotalCollections.Should().Be(int.MaxValue);
+        aggregation.DroppedEvents.Should().Be(int.MaxValue);
+        aggregation.TotalPauseTime.Should().Be(TimeSpan.MaxValue);
+        state.Finish(DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch.AddSeconds(1), null)
+            .Limitations.Should().ContainKey("legacy-collection-count-saturated");
+    }
+
+    [Fact]
     public void Aggregation_PreservesExactTotalsAfterRawEventCap()
     {
         var aggregation = new GcEventAggregation(maxEvents: 200);

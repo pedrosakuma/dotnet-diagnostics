@@ -29,7 +29,11 @@ public static class GcSignals
             summary.TotalPauseTime,
             summary.Generations,
             summary.HeapStats ?? Array.Empty<GcHeapStatsSample>(),
-            handleId));
+            handleId,
+            summary.Suspension is { IsAuthoritative: true } evidence ? evidence.TotalSuspensionTime : null,
+            summary.Suspension is { } quality && quality.Completion == "normal-stop"
+                && !quality.Limitations.Keys.Any(k => k.Contains("collection", StringComparison.Ordinal)
+                    || k.Contains("transport", StringComparison.Ordinal) || k.Contains("identity", StringComparison.Ordinal))));
     }
 
     /// <summary>Runs every registered provider over the context and ranks the union by salience.</summary>

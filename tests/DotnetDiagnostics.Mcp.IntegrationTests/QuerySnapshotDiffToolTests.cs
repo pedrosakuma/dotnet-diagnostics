@@ -436,8 +436,8 @@ public sealed class QuerySnapshotDiffToolTests
         result.Error.Should().BeNull();
         var diff = result.Data.Should().BeOfType<SnapshotJourneyDiff>().Subject;
         diff.Kind.Should().Be(CollectionHandleKinds.GcEvents);
-        diff.Verdict.Should().Be("regression");
-        diff.MetricSeries.Should().Contain(series => series.Definition.Name == "totalPauseTimeMs");
+        diff.Verdict.Should().Be("inconclusive");
+        diff.MetricSeries.Should().NotContain(series => series.Definition.Name == "totalPauseTimeMs");
     }
 
     [Fact]

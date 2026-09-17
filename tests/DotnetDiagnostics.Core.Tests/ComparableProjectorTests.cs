@@ -258,9 +258,10 @@ public sealed class ComparableProjectorTests
         var byName = snap.Metrics.ToDictionary(m => m.Definition.Name);
         byName["totalCollections"].Value.Should().Be(3);
         byName["totalCollections"].Definition.BetterDirection.Should().Be(BetterDirection.Lower);
-        byName["totalPauseTimeMs"].Value.Should().Be(25);
-        byName["pauseTimePercent"].Value.Should().Be(0.25);
-        byName["maxPauseTimeMs"].Definition.Role.Should().Be(MetricRole.Secondary);
+        byName.Should().NotContainKey("totalPauseTimeMs");
+        byName.Should().NotContainKey("pauseTimePercent");
+        byName.Should().NotContainKey("maxPauseTimeMs");
+        byName.Should().NotContainKey("fullySuspendedTimeMs.v2", "legacy artifacts have no measured suspension");
         byName["gen0Collections"].Value.Should().Be(2);
         byName["gen1Collections"].Value.Should().Be(0);
         byName["gen2Collections"].Value.Should().Be(1);
