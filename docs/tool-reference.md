@@ -2884,7 +2884,11 @@ session is enabled (TLS, limits, keep-alive, HTTP protocol versions).
 Latency covers accepted observed pairs only. `correlation.byKind` carries
 HTTP/DNS/TLS exclusions through every networking query view; missing metadata
 means unknown. TPL activity-flow enablement can remain active in the target
-after collection. See [identity, retention and target effects](networking-correlation.md).
+after collection. `captureQuality` independently reports completion, transport
+loss (null when unknown), stream-read elapsed and payload parsing errors on the
+snapshot and every networking query. `duration` is requested time, not observed
+coverage. Early exit or source failure may return useful, explicitly qualified
+partial data. See [identity, acquisition quality and target effects](networking-correlation.md).
 
 Collects a curated outbound-networking view by subscribing to the stable .NET
 networking EventSources: `System.Net.Http` (HttpClient request lifecycle,

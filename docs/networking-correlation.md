@@ -1,4 +1,4 @@
-# Networking identity correlation
+# Networking correlation and capture quality
 
 `collect_events(kind="networking")`, CLI `collect --kind networking`, and the
 BenchmarkDotNet `networking` kind use the same Core collector and accounting.
@@ -101,10 +101,55 @@ The bounded maps avoid repeating an entire schema per protocol in `tools/list`;
 Core also exposes typed accessors. The existing MCP catalog byte limit is not
 raised. No new tool is introduced.
 
-Failure-event population (#959), acquisition/drain lifecycle (#958), and broader
-availability semantics (#961) remain separate work. In particular, a failed
+Failure-event population (#959) and broader availability semantics (#961)
+remain separate work. In particular, a failed
 HTTP/TLS lifecycle is still excluded from percentiles; its removal is now
 counted, not silently presented as complete coverage.
+
+## Acquisition quality
+
+`NetworkingSnapshot.CaptureQuality` (JSON `captureQuality`, BDN `CaptureQuality`)
+is separate from `Correlation`. This nullable, init-only addition also appears
+on **every** networking drilldown: `summary`, `byOperation`, `queue`, `tls`, `dns`.
+Existing constructors/deconstruction and `Duration` retain their meanings.
+Missing/null metadata is **unknown**, not a successful zero-loss capture.
+
+| Field | Meaning |
+| --- | --- |
+| `completion` | `normal`: source drained after requested stop; `early`: source ended before requested stop; `source-failure`: source construction, configuration or processing threw; `unknown`: normal drain could not be established |
+| `eventsLost` | EventPipe-reported transport loss after drain; null when unavailable (including source failure). Zero is a known report, not proof of complete target activity coverage |
+| `streamReadDuration` | Local monotonic elapsed time spent constructing/reading the source, including buffering and drain. Not a replacement for requested `Duration`, target-observed coverage, or a last-event timestamp |
+| `parseErrors` | Count of events rejected by the collector's payload-parsing boundary; parsing continues and useful data is retained |
+| `hasLimitations` | True unless normal completion, known zero loss and no payload parsing errors were recorded |
+
+The requested `Duration` is never silently shortened. Summaries label it
+**requested**, report completion/loss/parsing quality, and qualify partial or
+uncertain observation. A target that exits early can still yield a successful
+diagnostic envelope with useful partial evidence; success is not a declaration
+of full-window coverage. Shared Core results and stored artifacts, CLI JSON and
+human summaries, MCP envelopes and BDN JSON/report headlines retain the quality.
+Identity accounting cannot detect unseen starts lost in transport; even normal,
+zero-loss drain does not prove every target operation was observable.
+
+Networking stops waiting when the processing task ends, rather than waiting out
+the requested window after target exit or source failure. Stop and drain retain
+their separate five-second budgets and session disposal/task-fault observation.
+Caller cancellation remains cancellation, not a partial successful result.
+If processing cannot drain safely within its budget, no mutable snapshot is
+returned. Other shared-runner collectors retain their existing wait-window
+behavior. Event parsing errors add a count and a single aggregate quality note,
+not an unbounded per-failure message list; capture, sampler and identity caps
+are unchanged.
+
+`NetworkingCaptureQualityLiveTests` uses fresh .NET 10 loopback targets on Linux
+and native Windows. It tests normal drain, **actual early target exit**, caller
+cancellation followed by another session, and explicitly labeled injections:
+a third-HTTP-start exception in the real `source.Process` callback, a payload
+parsing failure, and replacement of the real drained loss report with nonzero
+or unavailable loss. The source failure retains the first two completed
+requests; payload failure retains the other five. Loss injections exercise real
+session lifecycle/result wiring, **not naturally observed event-flood loss**.
+No actual nonzero transport-loss reproduction is claimed.
 
 ## Regression evidence and limits
 

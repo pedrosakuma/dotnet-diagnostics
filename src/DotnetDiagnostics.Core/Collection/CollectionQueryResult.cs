@@ -565,6 +565,7 @@ public sealed record NetworkingSummaryView(
     IReadOnlyList<string> Notes)
 {
     public Networking.NetworkingCorrelation? Correlation { get; init; }
+    public Networking.NetworkingCaptureQuality? CaptureQuality { get; init; }
 }
 
 /// <summary>Outbound HTTP request volume + latency grouped by host + path.</summary>
@@ -574,6 +575,7 @@ public sealed record NetworkingByOperationView(
     IReadOnlyList<Networking.NetworkingHttpGroup> ByOperation)
 {
     public Networking.NetworkingCorrelation? Correlation { get; init; }
+    public Networking.NetworkingCaptureQuality? CaptureQuality { get; init; }
 }
 
 /// <summary>HttpClient connection-pool time-in-queue (the #1 outbound-HTTP failure signal) and connection churn.</summary>
@@ -588,6 +590,7 @@ public sealed record NetworkingQueueView(
     IReadOnlyList<string> Notes)
 {
     public Networking.NetworkingCorrelation? Correlation { get; init; }
+    public Networking.NetworkingCaptureQuality? CaptureQuality { get; init; }
 }
 
 /// <summary>TLS handshake counts and latency percentiles plus the protocols observed.</summary>
@@ -601,6 +604,7 @@ public sealed record NetworkingTlsView(
     IReadOnlyList<string> Protocols)
 {
     public Networking.NetworkingCorrelation? Correlation { get; init; }
+    public Networking.NetworkingCaptureQuality? CaptureQuality { get; init; }
 }
 
 /// <summary>DNS resolution counts and latency percentiles.</summary>
@@ -613,6 +617,7 @@ public sealed record NetworkingDnsView(
     TimeSpan Max)
 {
     public Networking.NetworkingCorrelation? Correlation { get; init; }
+    public Networking.NetworkingCaptureQuality? CaptureQuality { get; init; }
 }
 
 // --- Startup snapshot views --------------------------------------------------------------------
