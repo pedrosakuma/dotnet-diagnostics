@@ -21,8 +21,6 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
     private const string TlsProvider = "System.Net.Security";
     private const string SocketsProvider = "System.Net.Sockets";
     internal const int MaxTrackedOperationGroups = 256;
-    private const int MaxPendingActivities = 4096;
-    private static readonly TimeSpan PendingActivityTtl = TimeSpan.FromMinutes(2);
     private const string OverflowHost = "(other)";
     private const string OverflowPath = "(overflow)";
 
@@ -59,6 +57,9 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
         var providers = Providers
             .Select(name => new EventPipeProvider(name, EventLevel.Verbose, (long)EventKeywords.All, counterArgs))
             .ToList();
+        // TasksFlowActivityIds enables runtime ActivityTracker; task scheduling events are not requested.
+        // ActivityTracker can remain enabled in the target after this session is stopped.
+        providers.Add(new EventPipeProvider("System.Threading.Tasks.TplEventSource", EventLevel.Informational, 0x80));
 
         var client = new DiagnosticsClient(processId);
         var session = await client
@@ -73,9 +74,9 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
         long tlsStarted = 0, tlsStopped = 0, tlsFailed = 0;
         long socketStarted = 0, socketStopped = 0, socketFailed = 0;
 
-        var pendingHttp = new Dictionary<Guid, PendingHttp>();
-        var pendingDns = new Dictionary<Guid, DateTimeOffset>();
-        var pendingTls = new Dictionary<Guid, DateTimeOffset>();
+        var pendingHttp = new NetworkingActivityCorrelator<PendingHttp>();
+        var pendingDns = new NetworkingActivityCorrelator<DateTimeOffset>();
+        var pendingTls = new NetworkingActivityCorrelator<DateTimeOffset>();
 
         var httpDurations = new BoundedDurationSampler();
         var queueTimes = new BoundedDurationSampler();
@@ -89,12 +90,6 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
         var unmatchedHttpFailures = 0;
         var unmatchedDnsFailures = 0;
         var unmatchedTlsFailures = 0;
-        var expiredHttpActivities = 0;
-        var expiredDnsActivities = 0;
-        var expiredTlsActivities = 0;
-        var evictedHttpActivities = 0;
-        var evictedDnsActivities = 0;
-        var evictedTlsActivities = 0;
 
         await EventPipeCollectionRunner.RunAsync(
             session,
@@ -126,23 +121,21 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
                                 HandleHttp(
                                     traceEvent, name, timestamp, pendingHttp, byOperation, overflowOperation, httpDurations, queueTimes,
                                     ref httpStarted, ref httpStopped, ref httpFailed, ref connEstablished, ref connClosed, ref leftQueue,
-                                    ref overflowedOperations, ref unmatchedHttpFailures, ref expiredHttpActivities, ref evictedHttpActivities);
+                                    ref overflowedOperations, ref unmatchedHttpFailures);
                                 break;
 
                             case DnsProvider:
                                 HandlePaired(
                                     name, "ResolutionStart", "Resolution/Start", "ResolutionStop", "Resolution/Stop",
                                     "ResolutionFailed", "Resolution/Failed", traceEvent.ActivityID, timestamp,
-                                    pendingDns, dnsDurations, ref dnsStarted, ref dnsStopped, ref dnsFailed, ref unmatchedDnsFailures,
-                                    ref expiredDnsActivities, ref evictedDnsActivities);
+                                    pendingDns, dnsDurations, ref dnsStarted, ref dnsStopped, ref dnsFailed, ref unmatchedDnsFailures);
                                 break;
 
                             case TlsProvider:
                                 if (HandlePaired(
                                     name, "HandshakeStart", "Handshake/Start", "HandshakeStop", "Handshake/Stop",
                                     "HandshakeFailed", "Handshake/Failed", traceEvent.ActivityID, timestamp,
-                                    pendingTls, tlsDurations, ref tlsStarted, ref tlsStopped, ref tlsFailed, ref unmatchedTlsFailures,
-                                    ref expiredTlsActivities, ref evictedTlsActivities))
+                                    pendingTls, tlsDurations, ref tlsStarted, ref tlsStopped, ref tlsFailed, ref unmatchedTlsFailures))
                                 {
                                     var protocol = PayloadString(traceEvent, "protocol");
                                     if (!string.IsNullOrWhiteSpace(protocol))
@@ -215,20 +208,10 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
             notes.Add($"Observed {unmatchedTlsFailures} TLS failure event(s) without a tracked HandshakeStart activity id.");
         }
 
-        if (expiredHttpActivities > 0 || evictedHttpActivities > 0)
-        {
-            notes.Add($"HTTP correlation expired {expiredHttpActivities} pending activit(ies) beyond {PendingActivityTtl.TotalMinutes:F0} minute(s) and evicted {evictedHttpActivities} oldest activit(ies) after reaching the cap of {MaxPendingActivities}.");
-        }
-
-        if (expiredDnsActivities > 0 || evictedDnsActivities > 0)
-        {
-            notes.Add($"DNS correlation expired {expiredDnsActivities} pending activit(ies) beyond {PendingActivityTtl.TotalMinutes:F0} minute(s) and evicted {evictedDnsActivities} oldest activit(ies) after reaching the cap of {MaxPendingActivities}.");
-        }
-
-        if (expiredTlsActivities > 0 || evictedTlsActivities > 0)
-        {
-            notes.Add($"TLS correlation expired {expiredTlsActivities} pending activit(ies) beyond {PendingActivityTtl.TotalMinutes:F0} minute(s) and evicted {evictedTlsActivities} oldest activit(ies) after reaching the cap of {MaxPendingActivities}.");
-        }
+        var correlation = new NetworkingCorrelation(pendingHttp.Snapshot(), pendingDns.Snapshot(), pendingTls.Snapshot());
+        AddCorrelationNote("HTTP", correlation.Http, notes);
+        AddCorrelationNote("DNS", correlation.Dns, notes);
+        AddCorrelationNote("TLS", correlation.Tls, notes);
 
         return new NetworkingSnapshot(
             ProcessId: processId,
@@ -264,14 +247,25 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
             Counters: counters.Values.OrderBy(static c => c.Provider, StringComparer.Ordinal).ThenBy(static c => c.Name, StringComparer.Ordinal).ToList(),
             ByOperation: operations,
             TlsProtocols: tlsProtocols.OrderBy(static p => p, StringComparer.Ordinal).ToList(),
-            Notes: notes.OrderBy(static note => note, StringComparer.Ordinal).ToList());
+            Notes: notes.OrderBy(static note => note, StringComparer.Ordinal).ToList())
+        {
+            Correlation = correlation,
+        };
+    }
+
+    private static void AddCorrelationNote(string kind, NetworkingCorrelationCounts counts, HashSet<string> notes)
+    {
+        if (counts.HasLimitations)
+        {
+            notes.Add($"{kind} correlation is limited: paired={counts.Paired}/{counts.Started} observed starts; empty={counts.EmptyStarts}, ambiguous={counts.AmbiguousStarts}, expired={counts.Expired}, evicted={counts.Evicted}, failure-discarded={counts.FailureDiscarded}, unfinished={counts.Unfinished}, capacity-suppressed={counts.CapacitySuppressedStarts}; unmatched stops={counts.UnmatchedStops}, empty stops={counts.EmptyStops}, invalid-timestamp stops={counts.InvalidTimestampStops}. MaxPendingActivities=4096, TTL=2 minutes, MaxRememberedIdentities=65536; identity-capacity reached={counts.IdentityCapacityReached}. Latencies describe only accepted pairs, not all operations.");
+        }
     }
 
     private static void HandleHttp(
         TraceEvent traceEvent,
         string name,
         DateTimeOffset timestamp,
-        Dictionary<Guid, PendingHttp> pending,
+        NetworkingActivityCorrelator<PendingHttp> pending,
         Dictionary<string, MutableHttpGroup> byOperation,
         MutableHttpGroup overflowOperation,
         BoundedDurationSampler httpDurations,
@@ -283,34 +277,24 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
         ref long connClosed,
         ref long leftQueue,
         ref int overflowedOperations,
-        ref int unmatchedFailures,
-        ref int expiredPendingActivities,
-        ref int evictedPendingActivities)
+        ref int unmatchedFailures)
     {
-        ExpirePending(pending, timestamp, static entry => entry.StartedAt, ref expiredPendingActivities);
-
         switch (name)
         {
             case "RequestStart":
             case "Request/Start":
                 started++;
-                AddPending(pending, traceEvent.ActivityID, new PendingHttp(
+                pending.Start(traceEvent.ActivityID, timestamp, new PendingHttp(
                     timestamp,
                     BuildHost(traceEvent),
-                    NormalizePath(PayloadString(traceEvent, "pathAndQuery"))), timestamp, static entry => entry.StartedAt, ref expiredPendingActivities, ref evictedPendingActivities);
+                    NormalizePath(PayloadString(traceEvent, "pathAndQuery"))));
                 break;
 
             case "RequestStop":
             case "Request/Stop":
                 stopped++;
-                if (pending.Remove(traceEvent.ActivityID, out var p))
+                if (pending.Stop(traceEvent.ActivityID, timestamp, out var p, out var elapsed))
                 {
-                    var elapsed = timestamp - p.StartedAt;
-                    if (elapsed < TimeSpan.Zero)
-                    {
-                        elapsed = TimeSpan.Zero;
-                    }
-
                     httpDurations.Add(elapsed);
                     var key = $"{p.Host} {p.Path}";
                     if (!byOperation.TryGetValue(key, out var group))
@@ -334,7 +318,7 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
             case "RequestFailed":
             case "Request/Failed":
                 failed++;
-                if (!pending.Remove(traceEvent.ActivityID))
+                if (!pending.Fail(traceEvent.ActivityID, timestamp))
                 {
                     unmatchedFailures++;
                 }
@@ -370,30 +354,25 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
         string failedSlash,
         Guid activityId,
         DateTimeOffset timestamp,
-        Dictionary<Guid, DateTimeOffset> pending,
+        NetworkingActivityCorrelator<DateTimeOffset> pending,
         BoundedDurationSampler durations,
         ref long started,
         ref long stopped,
         ref long failed,
-        ref int unmatchedFailures,
-        ref int expiredPendingActivities,
-        ref int evictedPendingActivities)
+        ref int unmatchedFailures)
     {
-        ExpirePending(pending, timestamp, static entry => entry, ref expiredPendingActivities);
-
         if (name == startName || name == startSlash)
         {
             started++;
-            AddPending(pending, activityId, timestamp, timestamp, static entry => entry, ref expiredPendingActivities, ref evictedPendingActivities);
+            pending.Start(activityId, timestamp, timestamp);
             return true;
         }
 
         if (name == stopName || name == stopSlash)
         {
             stopped++;
-            if (pending.Remove(activityId, out var start))
+            if (pending.Stop(activityId, timestamp, out _, out var elapsed))
             {
-                var elapsed = timestamp - start;
                 durations.Add(elapsed);
             }
 
@@ -403,7 +382,7 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
         if (name == failedName || name == failedSlash)
         {
             failed++;
-            if (!pending.Remove(activityId))
+            if (!pending.Fail(activityId, timestamp))
             {
                 unmatchedFailures++;
             }
@@ -500,61 +479,6 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
         var trimmed = pathAndQuery.Trim();
         var queryIndex = trimmed.IndexOf('?');
         return queryIndex >= 0 ? trimmed[..queryIndex] : trimmed;
-    }
-
-    private static void AddPending<TKey, TValue>(
-        Dictionary<TKey, TValue> pending,
-        TKey key,
-        TValue value,
-        DateTimeOffset now,
-        Func<TValue, DateTimeOffset> startedAtSelector,
-        ref int expiredCount,
-        ref int evictedCount)
-        where TKey : notnull
-    {
-        ExpirePending(pending, now, startedAtSelector, ref expiredCount);
-        if (!pending.ContainsKey(key))
-        {
-            while (pending.Count >= MaxPendingActivities)
-            {
-                RemoveOldestPending(pending, startedAtSelector);
-                evictedCount++;
-            }
-        }
-
-        pending[key] = value;
-    }
-
-    private static void ExpirePending<TKey, TValue>(
-        Dictionary<TKey, TValue> pending,
-        DateTimeOffset now,
-        Func<TValue, DateTimeOffset> startedAtSelector,
-        ref int expiredCount)
-        where TKey : notnull
-    {
-        if (pending.Count == 0)
-        {
-            return;
-        }
-
-        var cutoff = now - PendingActivityTtl;
-        foreach (var key in pending
-                     .Where(entry => startedAtSelector(entry.Value) <= cutoff)
-                     .Select(static entry => entry.Key)
-                     .ToArray())
-        {
-            pending.Remove(key);
-            expiredCount++;
-        }
-    }
-
-    private static void RemoveOldestPending<TKey, TValue>(
-        Dictionary<TKey, TValue> pending,
-        Func<TValue, DateTimeOffset> startedAtSelector)
-        where TKey : notnull
-    {
-        var oldest = pending.MinBy(entry => startedAtSelector(entry.Value));
-        pending.Remove(oldest.Key);
     }
 
     private static DateTimeOffset ToUtcOffset(DateTime timestamp) =>

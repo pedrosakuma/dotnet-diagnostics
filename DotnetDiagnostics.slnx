@@ -15,6 +15,7 @@
     <Project Path="src/DotnetDiagnostics.Mcp/DotnetDiagnostics.Mcp.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/NetworkingCorrelationTarget/NetworkingCorrelationTarget.csproj" />
     <Project Path="tests/DotnetDiagnostics.Cli.Tests/DotnetDiagnostics.Cli.Tests.csproj" />
     <Project Path="tests/DotnetDiagnostics.BenchmarkDotNet.Tests/DotnetDiagnostics.BenchmarkDotNet.Tests.csproj" />
     <Project Path="tests/DotnetDiagnostics.Core.Tests/DotnetDiagnostics.Core.Tests.csproj" />

@@ -562,13 +562,19 @@ public sealed record NetworkingSummaryView(
     long SocketConnectsStarted,
     long SocketConnectsFailed,
     IReadOnlyList<Networking.NetworkingCounterSample> Counters,
-    IReadOnlyList<string> Notes);
+    IReadOnlyList<string> Notes)
+{
+    public Networking.NetworkingCorrelation? Correlation { get; init; }
+}
 
 /// <summary>Outbound HTTP request volume + latency grouped by host + path.</summary>
 public sealed record NetworkingByOperationView(
     int TotalOperations,
     int Returned,
-    IReadOnlyList<Networking.NetworkingHttpGroup> ByOperation);
+    IReadOnlyList<Networking.NetworkingHttpGroup> ByOperation)
+{
+    public Networking.NetworkingCorrelation? Correlation { get; init; }
+}
 
 /// <summary>HttpClient connection-pool time-in-queue (the #1 outbound-HTTP failure signal) and connection churn.</summary>
 public sealed record NetworkingQueueView(
@@ -579,7 +585,10 @@ public sealed record NetworkingQueueView(
     long ConnectionsEstablished,
     long ConnectionsClosed,
     IReadOnlyList<Networking.NetworkingCounterSample> HttpCounters,
-    IReadOnlyList<string> Notes);
+    IReadOnlyList<string> Notes)
+{
+    public Networking.NetworkingCorrelation? Correlation { get; init; }
+}
 
 /// <summary>TLS handshake counts and latency percentiles plus the protocols observed.</summary>
 public sealed record NetworkingTlsView(
@@ -589,7 +598,10 @@ public sealed record NetworkingTlsView(
     TimeSpan P50,
     TimeSpan P95,
     TimeSpan Max,
-    IReadOnlyList<string> Protocols);
+    IReadOnlyList<string> Protocols)
+{
+    public Networking.NetworkingCorrelation? Correlation { get; init; }
+}
 
 /// <summary>DNS resolution counts and latency percentiles.</summary>
 public sealed record NetworkingDnsView(
@@ -598,7 +610,10 @@ public sealed record NetworkingDnsView(
     long Failed,
     TimeSpan P50,
     TimeSpan P95,
-    TimeSpan Max);
+    TimeSpan Max)
+{
+    public Networking.NetworkingCorrelation? Correlation { get; init; }
+}
 
 // --- Startup snapshot views --------------------------------------------------------------------
 

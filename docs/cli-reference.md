@@ -348,6 +348,11 @@ v1.0; migrate automation to `assessment`, `observedSignals`, and `hypotheses`.
 
 Open an EventPipe session and collect a window of events. `--kind` is required.
 
+For `--kind networking`, latencies describe accepted observed pairs, not all
+requests. JSON and session queries retain `correlation.byKind` exclusion
+accounting; legacy artifacts without it have unknown coverage. TPL activity
+flow can remain enabled after capture. See [networking correlation](networking-correlation.md).
+
 | Option | Meaning |
 |---|---|
 | `--kind <kind>` | One of `counters`, `exceptions`, `crash-guard`, `gc`, `datas`, `catalog`, `event_source`, `activities`, `gc-activities`, `logs`, `jit`, `threadpool`, `contention`, `db`, `kestrel`, `networking`, `requests`, `startup`, `sweep`, `cpu`, `allocation`, `off_cpu` (alias `off-cpu`), `native-alloc`, `native-lock-contention`, `thread-snapshot`, `cpu-efficiency`. |

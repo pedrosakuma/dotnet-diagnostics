@@ -15,6 +15,9 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="../NetworkingCorrelationTarget/NetworkingCorrelationTarget.csproj"
+                      ReferenceOutputAssembly="false" Private="false"
+                      SkipGetTargetFrameworkProperties="true" />
     <ProjectReference Include="..\..\src\DotnetDiagnostics.Core\DotnetDiagnostics.Core.csproj" />
     <ProjectReference Include="..\..\src\DotnetDiagnostics.Mcp\DotnetDiagnostics.Mcp.csproj" />
     <ProjectReference Include="..\DotnetDiagnostics.TestSupport\DotnetDiagnostics.TestSupport.csproj" />
@@ -36,6 +39,7 @@
 
   <ItemGroup>
     <Using Include="Xunit" />
+    <Compile Include="../NetworkingCorrelationContractFixture.cs" Link="NetworkingCorrelationContractFixture.cs" />
     <Using Include="DotnetDiagnostics.TestSupport" />
   </ItemGroup>
 

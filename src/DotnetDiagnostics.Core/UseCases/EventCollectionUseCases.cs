@@ -1104,6 +1104,9 @@ public static class EventCollectionUseCases
                             new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "byOperation", ["topN"] = 25 }));
                     }
 
+                    summary += snapshot.Correlation is { } correlation
+                        ? $" Latencies cover accepted observed pairs only: HTTP {correlation.Http.Paired}/{correlation.Http.Started}, DNS {correlation.Dns.Paired}/{correlation.Dns.Started}, TLS {correlation.Tls.Paired}/{correlation.Tls.Started}. See correlation accounting for exclusions; this does not establish acquisition completeness."
+                        : " Correlation coverage is unknown (legacy artifact without accounting).";
                     return DiagnosticResult.OkWithHandle(inlineSnapshot, summary, handle.Id, handle.ExpiresAt, hints.ToArray());
                 }),
             [
