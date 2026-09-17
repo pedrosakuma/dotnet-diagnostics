@@ -92,7 +92,7 @@ public sealed class NetworkingActivityCorrelatorTests
         pairs.Start(orphan, StartTime, "/late");
         Assert.False(pairs.Stop(orphan, StartTime, out _, out _));
         var failed = Guid.NewGuid();
-        pairs.Start(failed, StartTime, "/failure-population-remains-separate");
+        pairs.Start(failed, StartTime, "/failed");
         Assert.True(pairs.Fail(failed, StartTime));
         pairs.Start(failed, StartTime, "/reuse-after-failure");
         Assert.False(pairs.Stop(failed, StartTime, out _, out _));
@@ -101,7 +101,86 @@ public sealed class NetworkingActivityCorrelatorTests
         Assert.True(pairs.Stop(completed, StartTime, out _, out _));
         pairs.Start(completed, StartTime, "/reuse-after-completion");
         Assert.False(pairs.Stop(completed, StartTime, out _, out _));
-        Assert.Equal(1, pairs.Snapshot().FailureDiscarded);
+        Assert.Equal(0, pairs.Snapshot().FailureDiscarded);
+        Assert.Equal(4, pairs.Snapshot().AmbiguousStarts);
+        AssertPartition(pairs);
+    }
+
+    [Fact]
+    public void FailureIsNotTerminal_RepeatsDoNotDuplicateCompletionOrRenewTtl()
+    {
+        var pairs = new NetworkingActivityCorrelator<string>();
+        var id = Guid.NewGuid();
+        pairs.Start(id, StartTime, "/failed");
+        Assert.True(pairs.Fail(id, StartTime.AddMilliseconds(100)));
+        Assert.True(pairs.Fail(id, StartTime.AddMilliseconds(200)));
+        Assert.Equal(1, pairs.PendingCount);
+        Assert.Equal(1, pairs.Snapshot().UnfinishedFailed);
+        Assert.Equal(0, pairs.Snapshot().Paired);
+        Assert.True(pairs.Stop(id, StartTime.AddMilliseconds(255), out var path, out var elapsed, out var failed));
+        Assert.Equal("/failed", path);
+        Assert.Equal(TimeSpan.FromMilliseconds(255), elapsed);
+        Assert.True(failed);
+        Assert.False(pairs.Stop(id, StartTime.AddMilliseconds(300), out _, out _));
+        Assert.False(pairs.Fail(id, StartTime.AddMilliseconds(301)));
+        var counts = pairs.Snapshot();
+        Assert.Equal(2, counts.LatencyPopulationVersion);
+        Assert.Equal(1, counts.PairedFailed);
+        Assert.Equal(0, counts.PairedWithoutFailure);
+        Assert.Equal(2, counts.MatchedFailureEvents);
+        Assert.Equal(1, counts.RepeatedFailureEvents);
+        Assert.Equal(1, counts.UnmatchedFailures);
+        AssertPartition(pairs);
+    }
+
+    [Theory]
+    [InlineData("missing-stop")]
+    [InlineData("expiry")]
+    [InlineData("eviction")]
+    [InlineData("duplicate")]
+    [InlineData("capacity")]
+    [InlineData("empty")]
+    [InlineData("negative-failure")]
+    [InlineData("backwards-failure")]
+    [InlineData("stop-before-failure")]
+    public void FailedIncompleteOrAmbiguousLifecycles_NeverInventSamples(string scenario)
+    {
+        var pairs = new NetworkingActivityCorrelator<string>(maxPending: 1, maxIdentities: scenario == "capacity" ? 1 : 16);
+        var id = scenario == "empty" ? Guid.Empty : Guid.NewGuid();
+        pairs.Start(id, StartTime, "/failed");
+        pairs.Fail(id, StartTime.AddMilliseconds(scenario == "negative-failure" ? -1 : 100));
+        switch (scenario)
+        {
+            case "missing-stop":
+                Assert.Equal(1, pairs.Snapshot().UnfinishedFailed);
+                break;
+            case "expiry":
+                Assert.True(pairs.Fail(id, StartTime.AddSeconds(119)));
+                Assert.False(pairs.Stop(id, StartTime.AddMinutes(2), out _, out _));
+                Assert.Equal(1, pairs.Snapshot().Expired);
+                break;
+            case "eviction":
+            case "capacity":
+                pairs.Start(Guid.NewGuid(), StartTime.AddSeconds(1), "/new");
+                Assert.False(pairs.Stop(id, StartTime.AddSeconds(2), out _, out _));
+                break;
+            case "duplicate":
+                pairs.Start(id, StartTime.AddMilliseconds(150), "/reused");
+                Assert.False(pairs.Stop(id, StartTime.AddSeconds(1), out _, out _));
+                Assert.Equal(2, pairs.Snapshot().AmbiguousStarts);
+                break;
+            case "backwards-failure":
+                Assert.False(pairs.Fail(id, StartTime.AddMilliseconds(50)));
+                Assert.False(pairs.Stop(id, StartTime.AddSeconds(1), out _, out _));
+                Assert.Equal(1, pairs.Snapshot().InvalidTimestampFailures);
+                break;
+            default:
+                Assert.False(pairs.Stop(id, StartTime.AddMilliseconds(50), out _, out _));
+                break;
+        }
+        Assert.Equal(0, pairs.Snapshot().Paired);
+        Assert.Equal(0, pairs.Snapshot().PairedFailed);
+        Assert.True(pairs.Snapshot().HasLimitations);
         AssertPartition(pairs);
     }
 

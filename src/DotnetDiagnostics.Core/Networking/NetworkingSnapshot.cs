@@ -9,6 +9,8 @@ namespace DotnetDiagnostics.Core.Networking;
 /// correlation is unavailable the counts are still reported and a note is added. Each latency
 /// aggregate stays exact for the first few thousand samples, then switches to a bounded reservoir
 /// sample so p50/p95 become approximate while max remains exact.
+/// Population version 2 (in Correlation counts) includes failed completions; absent version means
+/// unknown legacy semantics. Paired is the latency sample denominator, not Started or Stopped.
 /// </summary>
 public sealed record NetworkingSnapshot(
     int ProcessId,

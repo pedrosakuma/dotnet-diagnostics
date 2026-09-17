@@ -1085,13 +1085,16 @@ public static class EventCollectionUseCases
                     var hints = new List<NextActionHint>();
                     string summary;
                     if (snapshot.HttpRequestsStarted == 0 && snapshot.DnsLookupsStarted == 0
-                        && snapshot.SocketConnectsStarted == 0 && snapshot.Counters.Count == 0)
+                        && snapshot.TlsHandshakesStarted == 0 && snapshot.SocketConnectsStarted == 0 && snapshot.Counters.Count == 0)
                     {
                         summary = $"No networking activity captured (requested {snapshot.Duration.TotalSeconds:g}s). Confirm the target makes outbound HTTP / DNS / socket calls during collection (start the session before the load).";
                     }
                     else
                     {
-                        summary = $"Captured {snapshot.HttpRequestsStarted} HTTP request(s) ({snapshot.HttpRequestsFailed} failed), requested {snapshot.Duration.TotalSeconds:g}s. Request p95={snapshot.HttpRequestP95.TotalMilliseconds:F1}ms, time-in-queue p95={snapshot.TimeInQueueP95.TotalMilliseconds:F1}ms. DNS: {snapshot.DnsLookupsStarted} lookup(s), {snapshot.DnsLookupsFailed} failed. TLS: {snapshot.TlsHandshakesStarted} handshake(s), {snapshot.TlsHandshakesFailed} failed. Sockets: {snapshot.SocketConnectsStarted} connect(s), {snapshot.SocketConnectsFailed} failed.";
+                        var requestLatency = snapshot.Correlation?.Http is { LatencyPopulationVersion: 2, Paired: 0 }
+                            ? "unavailable (0 accepted completions)"
+                            : $"{snapshot.HttpRequestP95.TotalMilliseconds:F1}ms";
+                        summary = $"Captured {snapshot.HttpRequestsStarted} HTTP request(s) ({snapshot.HttpRequestsFailed} failure events, including cancellation/timeouts), requested {snapshot.Duration.TotalSeconds:g}s. Request p95={requestLatency}, time-in-queue p95={snapshot.TimeInQueueP95.TotalMilliseconds:F1}ms. DNS: {snapshot.DnsLookupsStarted} lookup(s), {snapshot.DnsLookupsFailed} failure events. TLS: {snapshot.TlsHandshakesStarted} handshake(s), {snapshot.TlsHandshakesFailed} failure events. Sockets: {snapshot.SocketConnectsStarted} connect(s), {snapshot.SocketConnectsFailed} failed.";
                         if (snapshot.TimeInQueueP95 > TimeSpan.Zero || snapshot.HttpRequestsLeftQueue > 0)
                         {
                             hints.Add(new NextActionHint("query_snapshot",
@@ -1108,6 +1111,9 @@ public static class EventCollectionUseCases
                     summary += snapshot.Correlation is { } correlation
                         ? $" Latencies cover accepted observed pairs only: HTTP {correlation.Http.Paired}/{correlation.Http.Started}, DNS {correlation.Dns.Paired}/{correlation.Dns.Started}, TLS {correlation.Tls.Paired}/{correlation.Tls.Started}. See correlation accounting for exclusions; this does not establish acquisition completeness."
                         : " Correlation coverage is unknown (legacy artifact without accounting).";
+                    summary += snapshot.Correlation is { Http.LatencyPopulationVersion: 2, Dns.LatencyPopulationVersion: 2, Tls.LatencyPopulationVersion: 2 } populations
+                        ? $" Latency population v2 includes failed completions: HTTP {populations.Http.PairedFailed} failed/{populations.Http.PairedWithoutFailure} without observed failure, DNS {populations.Dns.PairedFailed}/{populations.Dns.PairedWithoutFailure}, TLS {populations.Tls.PairedFailed}/{populations.Tls.PairedWithoutFailure}. HTTP status-error responses={populations.Http.HttpStatusErrorStops}; these are not transport failure events. Zero accepted pairs means latency unavailable; no observed failure is not proof of success."
+                        : " Latency population/outcomes are unknown (legacy artifact).";
                     return DiagnosticResult.OkWithHandle(inlineSnapshot, summary, handle.Id, handle.ExpiresAt, hints.ToArray());
                 }),
             [

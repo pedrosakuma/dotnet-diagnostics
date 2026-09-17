@@ -37,6 +37,16 @@ public sealed class NetworkingCorrelationContractTests
         Assert.Equal(1, json.GetProperty("CaptureQuality").GetProperty("ParseErrors").GetInt64());
         Assert.True(json.GetProperty("CaptureQuality").GetProperty("HasLimitations").GetBoolean());
         Assert.True(json.GetProperty("Correlation").GetProperty("ByKind").GetProperty("tls").GetProperty("HasLimitations").GetBoolean());
+        foreach (var kind in new[] { "http", "dns", "tls" })
+        {
+            var counts = json.GetProperty("Correlation").GetProperty("ByKind").GetProperty(kind).GetProperty("Counts");
+            Assert.Equal(2, counts.GetProperty("latencyPopulationVersion").GetInt64());
+            Assert.Equal(1, counts.GetProperty("paired").GetInt64());
+            Assert.Equal(1, counts.GetProperty("pairedFailed").GetInt64());
+            Assert.Equal(0, counts.GetProperty("pairedWithoutFailure").GetInt64());
+        }
+        Assert.Equal(1, json.GetProperty("Correlation").GetProperty("ByKind").GetProperty("http")
+            .GetProperty("Counts").GetProperty("httpStatusErrorStops").GetInt64());
     }
 
     [Theory]
@@ -68,6 +78,12 @@ public sealed class NetworkingCorrelationContractTests
         if (!legacy)
             Assert.Equal(2, roundTrip.Correlation!.Http.AmbiguousStarts);
         Assert.Contains(legacy ? "unknown" : "HTTP 1/3", result.Summary, StringComparison.Ordinal);
+        Assert.Contains(legacy ? "Latency population/outcomes are unknown" : "v2 includes failed completions", result.Summary, StringComparison.Ordinal);
+        if (!legacy)
+        {
+            Assert.Equal(1, roundTrip.Correlation!.Http.PairedFailed);
+            Assert.Equal(1, stored.Correlation!.Tls.PairedFailed);
+        }
         if (legacy)
         {
             var json = JsonSerializer.SerializeToNode(snapshot)!.AsObject();
@@ -76,5 +92,55 @@ public sealed class NetworkingCorrelationContractTests
             Assert.Null(json.Deserialize<NetworkingSnapshot>()!.Correlation);
             Assert.Null(json.Deserialize<NetworkingSnapshot>()!.CaptureQuality);
         }
+    }
+
+    [Theory]
+    [InlineData("summary")]
+    [InlineData("byOperation")]
+    [InlineData("queue")]
+    [InlineData("tls")]
+    [InlineData("dns")]
+    public async Task LegacyAccountingWithoutPopulationVersion_RemainsUnknown(string view)
+    {
+        var oldCounts = new NetworkingCorrelationCounts(1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, false);
+        var snapshot = NetworkingCorrelationContractFixture.Create() with
+        {
+            Correlation = new(oldCounts, oldCounts, oldCounts),
+        };
+        var restored = JsonSerializer.Deserialize<NetworkingSnapshot>(JsonSerializer.Serialize(snapshot))!;
+        Assert.Null(restored.Correlation!.Http.LatencyPopulationVersion);
+        Assert.Null(restored.Correlation.Http.PairedFailed);
+        Assert.Null(restored.Correlation.Http.PairedWithoutFailure);
+        var query = CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.NetworkingSnapshot, view, restored, 5);
+        var counts = JsonSerializer.SerializeToElement(query.Result!.Payload)
+            .GetProperty("Correlation").GetProperty("ByKind").GetProperty("http").GetProperty("Counts");
+        Assert.False(counts.TryGetProperty("latencyPopulationVersion", out _));
+        Assert.False(counts.TryGetProperty("pairedFailed", out _));
+        var result = await EventCollectionUseCases.CollectNetworking(new NetworkingCorrelationContractFixture.Collector(restored),
+            new NetworkingCorrelationContractFixture.Resolver(), new MemoryDiagnosticHandleStore(), durationSeconds: 1);
+        Assert.Contains("Latency population/outcomes are unknown", result.Summary, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task UnfinishedFailureAndTlsOnly_AreNotReportedAsMeasuredZeroOrNoActivity(bool tlsOnly)
+    {
+        var pairs = new NetworkingActivityCorrelator<int>();
+        var id = Guid.NewGuid();
+        pairs.Start(id, DateTimeOffset.UnixEpoch, 0);
+        pairs.Fail(id, DateTimeOffset.UnixEpoch.AddMilliseconds(255));
+        var empty = new NetworkingActivityCorrelator<int>().Snapshot();
+        var snapshot = NetworkingCorrelationContractFixture.Create() with
+        {
+            HttpRequestsStarted = tlsOnly ? 0 : 1, HttpRequestsStopped = 0, HttpRequestsFailed = tlsOnly ? 0 : 1,
+            HttpRequestP95 = TimeSpan.Zero, DnsLookupsStarted = 0, TlsHandshakesStarted = tlsOnly ? 1 : 0,
+            Correlation = tlsOnly ? new(empty, empty, pairs.Snapshot()) : new(pairs.Snapshot(), empty, empty),
+        };
+        var result = await EventCollectionUseCases.CollectNetworking(new NetworkingCorrelationContractFixture.Collector(snapshot),
+            new NetworkingCorrelationContractFixture.Resolver(), new MemoryDiagnosticHandleStore(), durationSeconds: 1);
+        Assert.DoesNotContain("No networking activity", result.Summary, StringComparison.Ordinal);
+        Assert.Contains("Request p95=unavailable", result.Summary, StringComparison.Ordinal);
+        Assert.Equal(1, (tlsOnly ? result.Data!.Correlation!.Tls : result.Data!.Correlation!.Http).UnfinishedFailed);
     }
 }
