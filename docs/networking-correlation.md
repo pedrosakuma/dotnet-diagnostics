@@ -82,7 +82,7 @@ and `hasLimitations`. Count keys are:
 | `emptyStarts` | Starts with no identity |
 | `ambiguousStarts` | Duplicate/reused starts, invalidated pending starts, and starts with invalid timestamp stops |
 | `expired` / `evicted` | Pending starts removed by TTL / pending-cap pressure |
-| `failureDiscarded` | Starts removed by the existing failure-event policy |
+| `failureDiscarded` | Legacy failure-removal accounting; always zero for population v2 |
 | `unfinished` | Pending at capture end |
 | `capacitySuppressedStarts` | Pending/future starts excluded after exact identity history saturates |
 | `unmatchedStops` | Nonempty stops without a valid pending start, including late stops |
@@ -101,10 +101,84 @@ The bounded maps avoid repeating an entire schema per protocol in `tools/list`;
 Core also exposes typed accessors. The existing MCP catalog byte limit is not
 raised. No new tool is introduced.
 
-Failure-event population (#959) and broader availability semantics (#961)
-remain separate work. In particular, a failed
-HTTP/TLS lifecycle is still excluded from percentiles; its removal is now
-counted, not silently presented as complete coverage.
+## Latency population v2: failed completions included
+
+`correlation.byKind.http|dns|tls.counts.latencyPopulationVersion = 2` versions
+the existing HTTP/DNS/TLS percentile semantics. They now describe **all accepted
+completed Start/Stop pairs, including failures**, not successful-only operations.
+HTTP `ByOperation` count/total/p95/max uses that same population. No separate
+success-only or failed-only percentiles are exposed; the outcome denominators
+below explain the mixed distribution. Queue timing is a different, unchanged
+`RequestLeftQueue` payload population, not a request completion duration.
+
+`Start -> Failed -> Stop` retains the start and marks its outcome on `Failed`;
+only `Stop` contributes one latency sample, measured from Start to Stop.
+Repeated failures neither add samples nor renew the original TTL. A missing
+Stop remains unfinished (including at early/source-failure capture end);
+missing starts, duplicate/reused/empty identities, invalid event ordering,
+expiry and capacity exclusions never manufacture an interval. An orphan or
+post-Stop failure is unmatched and qualifies coverage, not a retroactive
+rewrite of an already sampled completion. A failure timestamp before its start
+or previous failure invalidates the pending start; a Stop before the last
+failure is also excluded.
+
+The collector does **not** substitute a failure's `elapsedMilliseconds`
+payload for a missing pair: its scope/identity/completeness cannot repair
+ambiguous or missing endpoints. This also avoids mixing payload durations
+with Start-to-Stop intervals.
+
+Additional fixed count keys (all nullable typed accessors on Core records):
+
+| Key | Meaning |
+| --- | --- |
+| `latencyPopulationVersion` | `2` identifies all-accepted-completion semantics; absent is legacy/unknown |
+| `paired` | All accepted completions and total latency samples seen, including samples beyond the bounded reservoir's exact prefix |
+| `pairedFailed` | Accepted completions with at least one observed Failed marker |
+| `pairedWithoutFailure` | Accepted completions with no observed Failed marker; not proof of application success |
+| `matchedFailureEvents` | Failed callbacks associated with a valid pending start, including repeats |
+| `repeatedFailureEvents` | Additional matched failures for an already marked pending operation |
+| `invalidTimestampFailures` | Failure callbacks invalidating a pending start due to backwards timestamps |
+| `unfinishedFailed` | Failed-marked pending starts at capture end; subset of `unfinished`, not samples |
+| `httpResponseStops` | HTTP Stops with a response status in 100-599, whether paired or not |
+| `httpStatusErrorStops` | Subset of response Stops with status 400-599 (including 503), **not** RequestFailed |
+| `httpStopsWithoutStatus` | HTTP Stops with no known response status, including runtime -1; not a cancellation classifier |
+
+`pairedFailed + pairedWithoutFailure = paired`. Observed Stop count is
+`paired + unmatchedStops + emptyStops + invalidTimestampStops` when all payloads
+parsed. The existing `*Failed` headline fields count **failure events**, not
+unique failed operations; repeats and unmatched failures remain distinguishable.
+The successful-operation population is only *observed no-failure completions*:
+HTTP 503 completes a response without a transport `RequestFailed`, and missing
+failure events could also make an operation appear successful. `RequestFailed`
+can represent cancellation, timeout or transport errors; this provider does not
+reliably classify those causes. They remain **unknown**, never inferred by
+parsing localized exception text. The controlled workload records actual
+cancellation/timeout causes independently; production does not claim those
+target-side witnesses.
+
+All maps are fixed-size additions to existing nullable/init-only `Correlation`;
+no positional constructors or MCP schemas change. Older artifacts with missing
+Correlation **or existing accounting without a population version** retain
+unknown outcome semantics. All five queries preserve these counts; shared Core
+summaries, CLI, MCP and BDN reports label v2 and its outcome denominators.
+Compare percentiles only with compatible population versions.
+
+Zero accepted completions means **latency unavailable**, even though existing
+nonnullable duration fields remain zero for compatibility. The HTTP headline
+does not print measured-looking `0.0ms` for a known v2 zero-sample population.
+No new general metric-availability API is added here (#961 remains separate).
+Correlation gaps and `CaptureQuality` still independently qualify evidence:
+adding failed samples does not turn a partial capture into complete acquisition.
+
+`NetworkingFailurePopulationLiveTests` exercises mixed 200/503/cancellation/
+HttpClient-timeout and all-failed captures, plus a rejecting loopback TLS peer.
+Each runs on .NET 8/9/10, retains bounded raw lifecycle witnesses, and compares
+accepted operation durations with independently measured client Stopwatch
+intervals. The TLS peer consumes ClientHello and sends a fatal handshake-failure
+alert over plain TCP, without host certificate-policy changes.
+Deterministic DNS (and TLS) cases invoke the production paired-event handler;
+**no live DNS failure reproduction is claimed**. The normal TLS success fixture
+and acquisition-quality cases remain separate regression controls.
 
 ## Acquisition quality
 

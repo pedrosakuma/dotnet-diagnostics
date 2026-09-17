@@ -348,7 +348,12 @@ v1.0; migrate automation to `assessment`, `observedSignals`, and `hypotheses`.
 
 Open an EventPipe session and collect a window of events. `--kind` is required.
 
-For `--kind networking`, latencies describe accepted observed pairs, not all
+For `--kind networking`, latency population v2 includes failed completions in
+the existing percentiles and HTTP operation groups. `correlation.byKind` counts
+carry the version, all/failed/no-observed-failure sample denominators and HTTP
+status-error response counts (503 is not a transport failure). Missing version
+means legacy/unknown; zero pairs means unavailable, not measured zero.
+Latencies describe accepted observed pairs, not all
 requests. JSON and session queries retain `correlation.byKind` exclusion
 accounting; legacy artifacts without it have unknown coverage. TPL activity
 flow can remain enabled after capture. `captureQuality` separately reports drain

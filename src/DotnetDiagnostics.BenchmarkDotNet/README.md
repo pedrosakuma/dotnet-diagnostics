@@ -142,6 +142,17 @@ Real report excerpt:
 Read the report top-down: each benchmark gets one table row per diagnostic kind, the `headline`
 column is the one-line takeaway, and the `artifact` file lets you drill into the full JSON payload.
 
+For `networking`, latency population v2 includes failed completions in existing
+HTTP/DNS/TLS percentiles and HTTP operation groups. JSON
+`Correlation.ByKind.http|dns|tls.Counts` carries `latencyPopulationVersion`,
+`paired` (all samples), `pairedFailed` and `pairedWithoutFailure`. HTTP 503 is a
+status-error response, not automatically a transport failure; cancellation and
+timeout causes are not reliably classified by the provider. Zero pairs means
+unavailable, not measured zero. Missing version/metadata means legacy/unknown.
+The report headline preserves population and independent capture-quality
+qualifications. See [networking evidence semantics](../../docs/networking-correlation.md)
+before comparing versions or interpreting a partial capture as complete.
+
 ## CI regression comparisons
 
 See [`docs/research/ci-performance-regression-spike.md`](../../docs/research/ci-performance-regression-spike.md)

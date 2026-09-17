@@ -24,6 +24,13 @@ while (await Console.In.ReadLineAsync(token) is { } command && command != "quit"
         continue;
     }
 
+    if (command is "failures-mixed" or "failures-only")
+    {
+        await FailureWorkload(command == "failures-mixed", token);
+        Console.WriteLine("DONE");
+        continue;
+    }
+
     var allocated = GC.GetTotalAllocatedBytes();
     var cpu = Process.GetCurrentProcess().TotalProcessorTime;
     var watch = Stopwatch.StartNew();
@@ -49,6 +56,172 @@ static bool ActivityTrackingEnabled()
     var type = typeof(EventSource).Assembly.GetType("System.Diagnostics.Tracing.ActivityTracker", throwOnError: true)!;
     var instance = type.GetProperty("Instance", BindingFlags.Public | BindingFlags.Static)!.GetValue(null);
     return type.GetField("m_current", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(instance) is not null;
+}
+
+static async Task FailureWorkload(bool includeResponses, CancellationToken token)
+{
+    if (includeResponses)
+    {
+        await ControlledHttpRequest("/success-200", 100, HttpStatusCode.OK, null, null, token);
+        await ControlledHttpRequest("/status-503", 180, HttpStatusCode.ServiceUnavailable, null, null, token);
+    }
+
+    await ControlledHttpRequest("/cancelled", 650, null, TimeSpan.FromMilliseconds(250), null, token);
+    await ControlledHttpRequest("/timed-out", 750, null, null, TimeSpan.FromMilliseconds(350), token);
+    await FailedTls(token);
+}
+
+static async Task ControlledHttpRequest(
+    string path,
+    int serverDelayMilliseconds,
+    HttpStatusCode? responseStatus,
+    TimeSpan? cancelAfter,
+    TimeSpan? clientTimeout,
+    CancellationToken token)
+{
+    using var listener = new TcpListener(IPAddress.Loopback, 0);
+    listener.Start();
+    var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+    var server = ServeControlledHttpRequest(listener, serverDelayMilliseconds, responseStatus, token);
+    using var handler = new SocketsHttpHandler { UseProxy = false };
+    using var client = new HttpClient(handler);
+    if (clientTimeout is { } timeout) client.Timeout = timeout;
+    using var requestCancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
+    if (cancelAfter is { } cancellationDelay) requestCancellation.CancelAfter(cancellationDelay);
+    var watch = Stopwatch.StartNew();
+    Exception? observed = null;
+    HttpStatusCode? observedStatus = null;
+    try
+    {
+        using var response = await client.GetAsync(
+            new Uri($"http://127.0.0.1:{port}{path}"),
+            HttpCompletionOption.ResponseHeadersRead,
+            requestCancellation.Token);
+        observedStatus = response.StatusCode;
+    }
+    catch (OperationCanceledException ex) when (cancelAfter is not null
+        && !token.IsCancellationRequested && requestCancellation.IsCancellationRequested)
+    {
+        observed = ex;
+    }
+    catch (OperationCanceledException ex) when (clientTimeout is not null
+        && !token.IsCancellationRequested
+        && !requestCancellation.IsCancellationRequested
+        && HasTimeoutException(ex))
+    {
+        observed = ex;
+    }
+    finally
+    {
+        watch.Stop();
+        await server;
+    }
+
+    var outcome = responseStatus switch
+    {
+        HttpStatusCode.OK when observedStatus == HttpStatusCode.OK && observed is null => "status-200",
+        HttpStatusCode.ServiceUnavailable when observedStatus == HttpStatusCode.ServiceUnavailable && observed is null
+            => "status-503",
+        null when cancelAfter is not null && observed is OperationCanceledException => "cancelled",
+        null when clientTimeout is not null && observed is OperationCanceledException => "timed-out",
+        _ => throw new InvalidOperationException(
+            $"Unexpected HTTP result for {path}: status={observedStatus}, exception={observed?.GetType().FullName}."),
+    };
+    Console.WriteLine(JsonSerializer.Serialize(new
+    {
+        Kind = "http",
+        Path = path,
+        Outcome = outcome,
+        ElapsedMs = watch.Elapsed.TotalMilliseconds,
+        Exception = observed?.GetType().FullName,
+    }));
+}
+
+static async Task ServeControlledHttpRequest(
+    TcpListener listener,
+    int delayMilliseconds,
+    HttpStatusCode? responseStatus,
+    CancellationToken token)
+{
+    using var socket = await listener.AcceptTcpClientAsync(token);
+    using var stream = socket.GetStream();
+    var buffer = new byte[4096];
+    var used = 0;
+    while (!Encoding.ASCII.GetString(buffer, 0, used).Contains("\r\n\r\n", StringComparison.Ordinal))
+    {
+        var read = await stream.ReadAsync(buffer.AsMemory(used), token);
+        if (read == 0 || used + read == buffer.Length) throw new IOException("Incomplete HTTP headers.");
+        used += read;
+    }
+    await Task.Delay(delayMilliseconds, token);
+    if (responseStatus is null) return;
+    var reason = responseStatus == HttpStatusCode.OK ? "OK" : "Service Unavailable";
+    await stream.WriteAsync(Encoding.ASCII.GetBytes(
+        $"HTTP/1.1 {(int)responseStatus} {reason}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"), token);
+}
+
+static bool HasTimeoutException(Exception exception)
+{
+    for (Exception? current = exception; current is not null; current = current.InnerException)
+        if (current is TimeoutException) return true;
+    return false;
+}
+
+static async Task FailedTls(CancellationToken token)
+{
+    using var listener = new TcpListener(IPAddress.Loopback, 0);
+    listener.Start();
+    var clientFinished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var server = Task.Run(async () =>
+    {
+        using var socket = await listener.AcceptTcpClientAsync(token);
+        using var stream = socket.GetStream();
+        var header = new byte[5];
+        await stream.ReadExactlyAsync(header, token);
+        var length = (header[3] << 8) | header[4];
+        if (header[0] != 0x16 || length is < 1 or > 18432)
+            throw new IOException("Expected a bounded TLS ClientHello record.");
+        await stream.ReadExactlyAsync(new byte[length], token);
+        await Task.Delay(250, token);
+        // Fatal handshake_failure alert, after consuming ClientHello. Keep the socket open
+        // until the client observes it; closing with unread bytes can cause a Windows TCP reset.
+        await stream.WriteAsync(new byte[] { 0x15, 0x03, 0x03, 0x00, 0x02, 0x02, 0x28 }, token);
+        await clientFinished.Task.WaitAsync(token);
+    }, token);
+    using var client = new TcpClient();
+    await client.ConnectAsync(IPAddress.Loopback, ((IPEndPoint)listener.LocalEndpoint).Port, token);
+    using var ssl = new SslStream(client.GetStream());
+    var watch = Stopwatch.StartNew();
+    Exception observed;
+    try
+    {
+        await ssl.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
+        {
+            TargetHost = "localhost",
+        }, token);
+        throw new InvalidOperationException("Rejecting TLS peer unexpectedly completed a handshake.");
+    }
+    catch (AuthenticationException ex)
+    {
+        observed = ex;
+    }
+    catch (IOException ex) when (ex.InnerException is AuthenticationException)
+    {
+        observed = ex;
+    }
+    finally
+    {
+        watch.Stop();
+        clientFinished.TrySetResult();
+        await server;
+    }
+    Console.WriteLine(JsonSerializer.Serialize(new
+    {
+        Kind = "tls",
+        Outcome = "authentication-failed",
+        ElapsedMs = watch.Elapsed.TotalMilliseconds,
+        Exception = observed.GetType().FullName,
+    }));
 }
 
 static async Task Tls(CancellationToken token)

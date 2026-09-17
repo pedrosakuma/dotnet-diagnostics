@@ -15,7 +15,8 @@ internal sealed class NetworkingActivityCorrelator<T>(
     private readonly Dictionary<Guid, Entry> _pending = [];
     private readonly HashSet<Guid> _seen = [];
     private long _started, _paired, _emptyStarts, _ambiguousStarts, _expired, _evicted;
-    private long _failureDiscarded, _suppressed, _unmatchedStops, _emptyStops, _invalidStops, _unmatchedFailures;
+    private long _suppressed, _unmatchedStops, _emptyStops, _invalidStops, _unmatchedFailures;
+    private long _pairedFailed, _matchedFailureEvents, _repeatedFailureEvents, _invalidTimestampFailures;
     private bool _capacityReached;
 
     internal int PendingCount => _pending.Count;
@@ -56,10 +57,14 @@ internal sealed class NetworkingActivityCorrelator<T>(
     }
 
     internal bool Stop(Guid id, DateTimeOffset timestamp, out T value, out TimeSpan elapsed)
+        => Stop(id, timestamp, out value, out elapsed, out _);
+
+    internal bool Stop(Guid id, DateTimeOffset timestamp, out T value, out TimeSpan elapsed, out bool failed)
     {
         Expire(timestamp);
         value = default!;
         elapsed = default;
+        failed = false;
         if (id == Guid.Empty)
         {
             _emptyStops++;
@@ -71,13 +76,15 @@ internal sealed class NetworkingActivityCorrelator<T>(
             Remember(id);
             return false;
         }
-        if (timestamp < entry.Timestamp)
+        if (timestamp < entry.Timestamp || timestamp < entry.LastFailure)
         {
             _invalidStops++;
             _ambiguousStarts++;
             return false;
         }
         _paired++;
+        failed = entry.LastFailure is not null;
+        if (failed) _pairedFailed++;
         value = entry.Value;
         elapsed = timestamp - entry.Timestamp;
         return true;
@@ -86,9 +93,19 @@ internal sealed class NetworkingActivityCorrelator<T>(
     internal bool Fail(Guid id, DateTimeOffset timestamp)
     {
         Expire(timestamp);
-        if (id != Guid.Empty && _pending.Remove(id))
+        if (id != Guid.Empty && _pending.TryGetValue(id, out var entry))
         {
-            _failureDiscarded++;
+            if (timestamp < entry.Timestamp || timestamp < entry.LastFailure)
+            {
+                _pending.Remove(id);
+                _ambiguousStarts++;
+                _invalidTimestampFailures++;
+                return false;
+            }
+            _matchedFailureEvents++;
+            if (entry.LastFailure is not null) _repeatedFailureEvents++;
+            // Failed is an outcome marker, not the terminal event. Only Stop contributes latency.
+            entry.LastFailure = timestamp;
             return true;
         }
         _unmatchedFailures++;
@@ -96,9 +113,25 @@ internal sealed class NetworkingActivityCorrelator<T>(
         return false;
     }
 
-    internal NetworkingCorrelationCounts Snapshot() => new(
-        _started, _paired, _emptyStarts, _ambiguousStarts, _expired, _evicted, _failureDiscarded,
-        _pending.Count, _suppressed, _unmatchedStops, _emptyStops, _invalidStops, _capacityReached, _unmatchedFailures);
+    internal NetworkingCorrelationCounts Snapshot()
+    {
+        var result = new NetworkingCorrelationCounts(
+            _started, _paired, _emptyStarts, _ambiguousStarts, _expired, _evicted, 0,
+            _pending.Count, _suppressed, _unmatchedStops, _emptyStops, _invalidStops, _capacityReached, _unmatchedFailures);
+        return result with
+        {
+            Counts = new Dictionary<string, long>(result.Counts, StringComparer.Ordinal)
+            {
+                ["latencyPopulationVersion"] = 2,
+                ["pairedFailed"] = _pairedFailed,
+                ["pairedWithoutFailure"] = _paired - _pairedFailed,
+                ["matchedFailureEvents"] = _matchedFailureEvents,
+                ["repeatedFailureEvents"] = _repeatedFailureEvents,
+                ["invalidTimestampFailures"] = _invalidTimestampFailures,
+                ["unfinishedFailed"] = _pending.Values.LongCount(static entry => entry.LastFailure is not null),
+            },
+        };
+    }
 
     private bool Remember(Guid id)
     {
@@ -128,5 +161,8 @@ internal sealed class NetworkingActivityCorrelator<T>(
         }
     }
 
-    private sealed record Entry(DateTimeOffset Timestamp, T Value);
+    private sealed record Entry(DateTimeOffset Timestamp, T Value)
+    {
+        internal DateTimeOffset? LastFailure { get; set; }
+    }
 }

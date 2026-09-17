@@ -35,12 +35,23 @@ public sealed class NetworkingCorrelationContractTests
             Assert.Equal(1, quality.GetProperty("ParseErrors").GetInt64());
         }
         if (!legacy)
+        {
             Assert.Equal(2, json.RootElement.GetProperty("Data").GetProperty("Correlation").GetProperty("ByKind").GetProperty("http")
                 .GetProperty("Counts").GetProperty("ambiguousStarts").GetInt64());
+            foreach (var kind in new[] { "http", "dns", "tls" })
+            {
+                var counts = json.RootElement.GetProperty("Data").GetProperty("Correlation").GetProperty("ByKind")
+                    .GetProperty(kind).GetProperty("Counts");
+                Assert.Equal(2, counts.GetProperty("latencyPopulationVersion").GetInt64());
+                Assert.Equal(1, counts.GetProperty("pairedFailed").GetInt64());
+                Assert.Equal(0, counts.GetProperty("pairedWithoutFailure").GetInt64());
+            }
+        }
         var report = DotnetDiagnosticsReportExporter.BuildMarkdown(
             [new BenchmarkDiagnosticEntry("Loopback", "networking", capture.IsError, capture.Summary,
                 capture.Headline, "networking.json")]);
         Assert.Contains(expected, report, StringComparison.Ordinal);
+        Assert.Contains(legacy ? "Latency population/outcomes are unknown" : "v2 includes failed completions", report, StringComparison.Ordinal);
         Assert.Contains(legacy ? "transport loss are unknown" : "completion=early", report, StringComparison.Ordinal);
     }
 }

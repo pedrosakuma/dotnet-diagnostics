@@ -2881,6 +2881,12 @@ session is enabled (TLS, limits, keep-alive, HTTP protocol versions).
 
 ## `collect_events(kind="networking")`
 
+Latency population v2 includes failed completions in the existing percentiles
+and HTTP operation groups. `correlation.byKind` counts carry the version,
+all/failed/no-observed-failure sample denominators and HTTP status-error response
+counts (503 is not RequestFailed). Missing version means legacy/unknown; zero
+pairs means unavailable, not measured zero. Cancellation/timeout causes cannot
+be reliably classified from failure events.
 Latency covers accepted observed pairs only. `correlation.byKind` carries
 HTTP/DNS/TLS exclusions through every networking query view; missing metadata
 means unknown. TPL activity-flow enablement can remain active in the target

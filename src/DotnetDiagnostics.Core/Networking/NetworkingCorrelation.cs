@@ -4,7 +4,7 @@ namespace DotnetDiagnostics.Core.Networking;
 
 /// <summary>
 /// Accounting for observed identities, not proof of transport completeness or successful-operation
-/// coverage. Absent metadata on older artifacts means unknown. Failed lifecycles remain excluded.
+/// coverage. Absent metadata on older artifacts means unknown.
 /// </summary>
 [method: JsonConstructor]
 public sealed record NetworkingCorrelation(IReadOnlyDictionary<string, NetworkingCorrelationCounts> ByKind)
@@ -72,7 +72,36 @@ public sealed record NetworkingCorrelationCounts(IReadOnlyDictionary<string, lon
     [JsonIgnore]
     public long UnmatchedFailures => Counts["unmatchedFailures"];
 
+    /// <summary>Version 2: latency includes all accepted completions, including Failed then Stop. Null is legacy/unknown.</summary>
+    [JsonIgnore]
+    public long? LatencyPopulationVersion => GetOptionalCount("latencyPopulationVersion");
+    /// <summary>Accepted completions with an observed failure marker; each operation is counted once.</summary>
+    [JsonIgnore]
+    public long? PairedFailed => GetOptionalCount("pairedFailed");
+    /// <summary>Accepted completions without an observed failure marker, not proof of application success.</summary>
+    [JsonIgnore]
+    public long? PairedWithoutFailure => GetOptionalCount("pairedWithoutFailure");
+    [JsonIgnore]
+    public long? MatchedFailureEvents => GetOptionalCount("matchedFailureEvents");
+    [JsonIgnore]
+    public long? RepeatedFailureEvents => GetOptionalCount("repeatedFailureEvents");
+    [JsonIgnore]
+    public long? InvalidTimestampFailures => GetOptionalCount("invalidTimestampFailures");
+    [JsonIgnore]
+    public long? UnfinishedFailed => GetOptionalCount("unfinishedFailed");
+    /// <summary>Observed HTTP Stop payloads with a response status (100-599), independent of pairing.</summary>
+    [JsonIgnore]
+    public long? HttpResponseStops => GetOptionalCount("httpResponseStops");
+    /// <summary>HTTP response Stop payloads with status 400-599, not RequestFailed events.</summary>
+    [JsonIgnore]
+    public long? HttpStatusErrorStops => GetOptionalCount("httpStatusErrorStops");
+    [JsonIgnore]
+    public long? HttpStopsWithoutStatus => GetOptionalCount("httpStopsWithoutStatus");
+
+    private long? GetOptionalCount(string key) => Counts.TryGetValue(key, out var value) ? value : null;
+
     /// <summary>Observed pairing gaps only; false does not establish complete acquisition.</summary>
     public bool HasLimitations => Started != Paired || UnmatchedStops != 0 || EmptyStops != 0
-        || InvalidTimestampStops != 0 || UnmatchedFailures != 0 || IdentityCapacityReached;
+        || InvalidTimestampStops != 0 || UnmatchedFailures != 0 || IdentityCapacityReached
+        || InvalidTimestampFailures is > 0;
 }

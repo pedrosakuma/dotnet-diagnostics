@@ -32,8 +32,19 @@ public sealed class NetworkingCorrelationContractTests
             Assert.Equal(1, quality.GetProperty("parseErrors").GetInt64());
         }
         Assert.Contains(legacy ? "unknown" : "HTTP 1/3", json.GetProperty("summary").GetString(), StringComparison.Ordinal);
+        Assert.Contains(legacy ? "Latency population/outcomes are unknown" : "v2 includes failed completions",
+            json.GetProperty("summary").GetString(), StringComparison.Ordinal);
         if (!legacy)
+        {
             Assert.Equal(2, json.GetProperty("data").GetProperty("correlation").GetProperty("byKind").GetProperty("http")
                 .GetProperty("counts").GetProperty("ambiguousStarts").GetInt64());
+            foreach (var kind in new[] { "http", "dns", "tls" })
+            {
+                var counts = json.GetProperty("data").GetProperty("correlation").GetProperty("byKind").GetProperty(kind).GetProperty("counts");
+                Assert.Equal(2, counts.GetProperty("latencyPopulationVersion").GetInt64());
+                Assert.Equal(1, counts.GetProperty("pairedFailed").GetInt64());
+                Assert.Equal(0, counts.GetProperty("pairedWithoutFailure").GetInt64());
+            }
+        }
     }
 }

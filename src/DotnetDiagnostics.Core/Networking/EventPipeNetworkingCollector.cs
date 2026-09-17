@@ -90,9 +90,7 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
         var counters = new Dictionary<string, NetworkingCounterSample>(StringComparer.Ordinal);
         var tlsProtocols = new HashSet<string>(StringComparer.Ordinal);
         var overflowedOperations = 0;
-        var unmatchedHttpFailures = 0;
-        var unmatchedDnsFailures = 0;
-        var unmatchedTlsFailures = 0;
+        long httpResponseStops = 0, httpStatusErrorStops = 0, httpStopsWithoutStatus = 0;
         long parseErrors = 0;
 
         var completion = await EventPipeCollectionRunner.RunAsync(
@@ -127,21 +125,21 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
                                 HandleHttp(
                                     traceEvent, name, timestamp, pendingHttp, byOperation, overflowOperation, httpDurations, queueTimes,
                                     ref httpStarted, ref httpStopped, ref httpFailed, ref connEstablished, ref connClosed, ref leftQueue,
-                                    ref overflowedOperations, ref unmatchedHttpFailures);
+                                    ref overflowedOperations, ref httpResponseStops, ref httpStatusErrorStops, ref httpStopsWithoutStatus);
                                 break;
 
                             case DnsProvider:
                                 HandlePaired(
                                     name, "ResolutionStart", "Resolution/Start", "ResolutionStop", "Resolution/Stop",
                                     "ResolutionFailed", "Resolution/Failed", traceEvent.ActivityID, timestamp,
-                                    pendingDns, dnsDurations, ref dnsStarted, ref dnsStopped, ref dnsFailed, ref unmatchedDnsFailures);
+                                    pendingDns, dnsDurations, ref dnsStarted, ref dnsStopped, ref dnsFailed);
                                 break;
 
                             case TlsProvider:
                                 if (HandlePaired(
                                     name, "HandshakeStart", "Handshake/Start", "HandshakeStop", "Handshake/Stop",
                                     "HandshakeFailed", "Handshake/Failed", traceEvent.ActivityID, timestamp,
-                                    pendingTls, tlsDurations, ref tlsStarted, ref tlsStopped, ref tlsFailed, ref unmatchedTlsFailures))
+                                    pendingTls, tlsDurations, ref tlsStarted, ref tlsStopped, ref tlsFailed))
                                 {
                                     var protocol = PayloadString(traceEvent, "protocol");
                                     if (!string.IsNullOrWhiteSpace(protocol))
@@ -204,22 +202,19 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
             notes.Add($"Grouped HTTP requests into at most {MaxTrackedOperationGroups} host/path buckets; {overflowedOperations} request(s) were aggregated into {OverflowHost} {OverflowPath}.");
         }
 
-        if (unmatchedHttpFailures > 0)
+        var httpCorrelation = pendingHttp.Snapshot();
+        httpCorrelation = httpCorrelation with
         {
-            notes.Add($"Observed {unmatchedHttpFailures} HTTP failure event(s) without a tracked RequestStart activity id.");
-        }
+            Counts = new Dictionary<string, long>(httpCorrelation.Counts, StringComparer.Ordinal)
+            {
+                ["httpResponseStops"] = httpResponseStops,
+                ["httpStatusErrorStops"] = httpStatusErrorStops,
+                ["httpStopsWithoutStatus"] = httpStopsWithoutStatus,
+            },
+        };
 
-        if (unmatchedDnsFailures > 0)
-        {
-            notes.Add($"Observed {unmatchedDnsFailures} DNS failure event(s) without a tracked ResolutionStart activity id.");
-        }
-
-        if (unmatchedTlsFailures > 0)
-        {
-            notes.Add($"Observed {unmatchedTlsFailures} TLS failure event(s) without a tracked HandshakeStart activity id.");
-        }
-
-        var correlation = new NetworkingCorrelation(pendingHttp.Snapshot(), pendingDns.Snapshot(), pendingTls.Snapshot());
+        var correlation = new NetworkingCorrelation(httpCorrelation, pendingDns.Snapshot(), pendingTls.Snapshot());
+        notes.Add("Latency population v2: all accepted Start/Stop completions, including failed operations; paired is the sample count and pairedFailed/pairedWithoutFailure partition it. No observed failure is not proof of success. HTTP status errors are responses, not RequestFailed; failure events include cancellation/timeouts but do not reliably identify their cause. Missing/ambiguous/unfinished lifecycles have no latency sample; zero samples means unavailable, not measured zero.");
         AddCorrelationNote("HTTP", correlation.Http, notes);
         AddCorrelationNote("DNS", correlation.Dns, notes);
         AddCorrelationNote("TLS", correlation.Tls, notes);
@@ -269,7 +264,7 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
     {
         if (counts.HasLimitations)
         {
-            notes.Add($"{kind} correlation is limited: paired={counts.Paired}/{counts.Started} observed starts; empty={counts.EmptyStarts}, ambiguous={counts.AmbiguousStarts}, expired={counts.Expired}, evicted={counts.Evicted}, failure-discarded={counts.FailureDiscarded}, unfinished={counts.Unfinished}, capacity-suppressed={counts.CapacitySuppressedStarts}; unmatched stops={counts.UnmatchedStops}, empty stops={counts.EmptyStops}, invalid-timestamp stops={counts.InvalidTimestampStops}. MaxPendingActivities=4096, TTL=2 minutes, MaxRememberedIdentities=65536; identity-capacity reached={counts.IdentityCapacityReached}. Latencies describe only accepted pairs, not all operations.");
+            notes.Add($"{kind} correlation is limited: paired={counts.Paired}/{counts.Started} observed starts; empty={counts.EmptyStarts}, ambiguous={counts.AmbiguousStarts}, expired={counts.Expired}, evicted={counts.Evicted}, failure-discarded={counts.FailureDiscarded}, unfinished={counts.Unfinished}, capacity-suppressed={counts.CapacitySuppressedStarts}; unmatched stops={counts.UnmatchedStops}, empty stops={counts.EmptyStops}, invalid-timestamp stops={counts.InvalidTimestampStops}, unmatched failures={counts.UnmatchedFailures}, invalid-timestamp failures={counts.InvalidTimestampFailures}. MaxPendingActivities=4096, TTL=2 minutes, MaxRememberedIdentities=65536; identity-capacity reached={counts.IdentityCapacityReached}. Latencies describe only accepted pairs, not all operations.");
         }
     }
 
@@ -289,7 +284,9 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
         ref long connClosed,
         ref long leftQueue,
         ref int overflowedOperations,
-        ref int unmatchedFailures)
+        ref long responseStops,
+        ref long statusErrorStops,
+        ref long stopsWithoutStatus)
     {
         switch (name)
         {
@@ -305,6 +302,13 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
             case "RequestStop":
             case "Request/Stop":
                 stopped++;
+                var status = ReadHttpStatus(traceEvent);
+                if (status is >= 100 and <= 599)
+                {
+                    responseStops++;
+                    if (status >= 400) statusErrorStops++;
+                }
+                else stopsWithoutStatus++;
                 if (pending.Stop(traceEvent.ActivityID, timestamp, out var p, out var elapsed))
                 {
                     httpDurations.Add(elapsed);
@@ -330,10 +334,7 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
             case "RequestFailed":
             case "Request/Failed":
                 failed++;
-                if (!pending.Fail(traceEvent.ActivityID, timestamp))
-                {
-                    unmatchedFailures++;
-                }
+                pending.Fail(traceEvent.ActivityID, timestamp);
                 break;
 
             case "ConnectionEstablished":
@@ -356,7 +357,7 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
         }
     }
 
-    private static bool HandlePaired(
+    internal static bool HandlePaired(
         string name,
         string startName,
         string startSlash,
@@ -370,8 +371,7 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
         BoundedDurationSampler durations,
         ref long started,
         ref long stopped,
-        ref long failed,
-        ref int unmatchedFailures)
+        ref long failed)
     {
         if (name == startName || name == startSlash)
         {
@@ -394,10 +394,7 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
         if (name == failedName || name == failedSlash)
         {
             failed++;
-            if (!pending.Fail(activityId, timestamp))
-            {
-                unmatchedFailures++;
-            }
+            pending.Fail(activityId, timestamp);
             return true;
         }
 
@@ -479,6 +476,15 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
 
         var prefix = string.IsNullOrEmpty(scheme) ? string.Empty : $"{scheme}://";
         return string.IsNullOrEmpty(port) ? $"{prefix}{host}" : $"{prefix}{host}:{port}";
+    }
+
+    private static int? ReadHttpStatus(TraceEvent traceEvent)
+    {
+        // The stable RequestStop payload uses -1 when no response was received.
+        // Missing fields on another provider version remain unknown; malformed payloads hit ParseErrors.
+        if (!traceEvent.PayloadNames.Contains("statusCode", StringComparer.Ordinal)) return null;
+        var value = traceEvent.PayloadByName("statusCode");
+        return value is null ? null : Convert.ToInt32(value, CultureInfo.InvariantCulture);
     }
 
     private static string NormalizePath(string pathAndQuery)
