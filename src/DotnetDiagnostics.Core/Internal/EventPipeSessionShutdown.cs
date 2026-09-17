@@ -2,6 +2,13 @@ using Microsoft.Diagnostics.NETCore.Client;
 
 namespace DotnetDiagnostics.Core.Internal;
 
+internal enum EventPipeForcedCloseReason
+{
+    StopBudgetExpired,
+    StopFailed,
+    DrainIncomplete,
+}
+
 internal static class EventPipeSessionShutdown
 {
     private static readonly TimeSpan DefaultBudget = TimeSpan.FromSeconds(5);
@@ -17,13 +24,36 @@ internal static class EventPipeSessionShutdown
         ArgumentNullException.ThrowIfNull(processingTask);
         ArgumentNullException.ThrowIfNull(onError);
 
-        var shutdownBudget = budget ?? DefaultBudget;
+        await StopAndDrainAsync(
+            session.StopAsync, session.Dispose, processingTask, onError,
+            budget ?? DefaultBudget, propagateProcessingErrors).ConfigureAwait(false);
+    }
+
+    internal static async Task StopAndDrainAsync(
+        Func<CancellationToken, Task> stopAsync,
+        Action dispose,
+        Task processingTask,
+        Action<Exception> onError,
+        TimeSpan shutdownBudget,
+        bool propagateProcessingErrors = false,
+        Func<EventPipeForcedCloseReason, Task>? beforeForcedClose = null)
+    {
+        var closePrepared = false;
+        async Task PrepareCloseAsync(EventPipeForcedCloseReason reason)
+        {
+            if (!closePrepared && beforeForcedClose is not null)
+            {
+                closePrepared = true;
+                await beforeForcedClose(reason).ConfigureAwait(false);
+            }
+        }
+
         try
         {
             // Session-control calls are serialized and may spend this whole budget waiting for a
             // sibling stop. The stream still needs its own bounded window to consume the stop marker.
             await StopThenDrainAsync(
-                () => StopSessionAsync(session, onError, shutdownBudget),
+                () => StopSessionAsync(stopAsync, dispose, onError, shutdownBudget, PrepareCloseAsync),
                 processingTask,
                 onError,
                 shutdownBudget,
@@ -31,7 +61,18 @@ internal static class EventPipeSessionShutdown
         }
         finally
         {
-            session.Dispose();
+            try
+            {
+                if (!processingTask.IsCompleted)
+                {
+                    await PrepareCloseAsync(EventPipeForcedCloseReason.DrainIncomplete).ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                ObserveLater(processingTask);
+                dispose();
+            }
         }
     }
 
@@ -87,10 +128,24 @@ internal static class EventPipeSessionShutdown
         ArgumentNullException.ThrowIfNull(session);
         ArgumentNullException.ThrowIfNull(onError);
 
-        var shutdownBudget = budget ?? DefaultBudget;
+        await StopSessionAsync(session.StopAsync, session.Dispose, onError, budget ?? DefaultBudget)
+            .ConfigureAwait(false);
+    }
+
+    private static async Task StopSessionAsync(
+        Func<CancellationToken, Task> stopAsync,
+        Action dispose,
+        Action<Exception> onError,
+        TimeSpan shutdownBudget,
+        Func<EventPipeForcedCloseReason, Task>? beforeForcedClose = null)
+    {
         if (shutdownBudget <= TimeSpan.Zero)
         {
-            session.Dispose();
+            if (beforeForcedClose is not null)
+            {
+                await beforeForcedClose(EventPipeForcedCloseReason.StopBudgetExpired).ConfigureAwait(false);
+            }
+            dispose();
             return;
         }
 
@@ -100,7 +155,7 @@ internal static class EventPipeSessionShutdown
             await EventPipeSessionControl.Gate.WaitAsync(shutdownCts.Token).ConfigureAwait(false);
             try
             {
-                await session.StopAsync(shutdownCts.Token).ConfigureAwait(false);
+                await stopAsync(shutdownCts.Token).ConfigureAwait(false);
             }
             finally
             {
@@ -110,7 +165,13 @@ internal static class EventPipeSessionShutdown
         catch (Exception ex)
         {
             onError(ex);
-            session.Dispose();
+            if (beforeForcedClose is not null)
+            {
+                await beforeForcedClose(shutdownCts.IsCancellationRequested
+                    ? EventPipeForcedCloseReason.StopBudgetExpired
+                    : EventPipeForcedCloseReason.StopFailed).ConfigureAwait(false);
+            }
+            dispose();
         }
     }
 
