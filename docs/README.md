@@ -1,15 +1,16 @@
 # Documentation
 
-> **v0.24.0 — Native contention/off-CPU diagnosis matures; MCP Tasks moves to the finalized SEP-2663 shape** ([CHANGELOG](../CHANGELOG.md#0240--2026-08-19))
+> **v0.26.0 — Diagnostic evidence integrity, concurrent GC/activity capture, and OS-backed CPU profiling** ([CHANGELOG](../CHANGELOG.md#0260--2026-09-17))
 >
-> - **MCP SDK bumped `1.4.0` → `2.2.0`; MCP Tasks moved to the finalized SEP-2663 extension** — a
->   breaking wire-format change for clients relying on the old experimental `tasks/get`/`tasks/result`
->   polling shape. Clients on older protocol revisions keep working unaffected.
-> - **New native-lock-contention collector, off-CPU-to-syscall attribution, and a CPU
->   microarchitecture-efficiency snapshot** — `collect_sample(kind="native-lock-contention" |
->   "cpu-efficiency")` and syscall-correlated off-CPU sampling.
-> - **Cross-collector investigation digests for `collect_batch`** correlate native-lock and
->   off-CPU evidence in one collection window, shared by the CLI and BenchmarkDotNet diagnoser.
+> - **GC collection elapsed is not pause.** Version-2 suspension evidence corrects GC
+>   queries, activity overlays, signals, and comparisons. Review the
+>   [migration notes](../CHANGELOG.md#0260--2026-09-17) for source/wire changes.
+> - **Concurrent GC/activity capture in the CLI** — `collect --kind gc-activities`
+>   returns an inline overlay and real session handles, with explicit partial outcomes.
+> - **Trace-targeted retention and explicit OS CPU profiling** — preserve bounded target
+>   traces through noisy traffic; select Linux perf or Windows ETW for on-CPU evidence.
+> - **More truthful ThreadPool/gcdump quality and safer gcdump shutdown** preserve
+>   uncertainty and avoid publishing incomplete captures as complete.
 > - Still current: non-loopback cleartext HTTP is refused by default (see
 >   [`client-setup.md` → Transport security](./client-setup.md#transport-security-non-loopback)),
 >   high-risk operations pause for explicit acknowledgement — CLI callers pass

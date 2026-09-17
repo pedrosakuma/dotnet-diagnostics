@@ -2,6 +2,90 @@
 
 ## [Unreleased]
 
+## [0.26.0] — 2026-09-17
+
+Highlights: **more trustworthy diagnostic evidence, concurrent GC/activity
+acquisition in the CLI, and explicit OS-backed CoreCLR CPU profiling.**
+This release corrects trace timing, GC attribution, and gcdump shutdown while
+keeping observed facts, inferred explanations, and unavailable evidence distinct.
+
+### Migration notes
+
+- **GC collection elapsed time is not application pause** (#950, #953).
+  Legacy `GcEvent.PauseDuration` and `GcSummary.TotalPauseTime` /
+  `MaxPauseTime` retain their collection-elapsed meanings. Use
+  `GcSummary.Suspension` for version-2 measurements of the fully-suspended
+  GC-related phase (`GCSuspendEEStop` to `GCRestartEEStart`, reasons 1 and 6),
+  with explicit quality and completion metadata. This is not the wider
+  suspension envelope or exact per-thread lost execution time.
+- **GC query and comparison contracts have intentional source/wire changes**
+  (#953): query payloads use `GcMeasurementView`; unavailable overlay
+  pause/overlap values and unassociated GC generation can be nullable.
+  Appended record parameters also change generated deconstruction arity.
+  Update consumers accordingly. Corrected comparison metrics use
+  `fullySuspendedTimeMs.v2`, `fullySuspendedPercent.v2`, and
+  `maxFullySuspendedTimeMs.v2`; the signal is `gc.fully-suspended-share.v2`.
+  Do not reinterpret old collection-elapsed baselines as these measurements.
+  See the [tool reference](./docs/tool-reference.md) and
+  [CLI reference](./docs/cli-reference.md).
+- **Evidence labels are more conservative** (#935, #936, #944).
+  Unknown ThreadPool adjustment reasons and worker growth no longer establish
+  starvation. EventPipe SampleProfiler observations do not establish scheduler
+  on-CPU state; unmatched states remain unknown rather than measured running
+  time. Consumers must preserve provenance and uncertainty instead of inferring
+  confirmation from a growing count or missing metadata.
+
+### Added
+
+- **Concurrent GC/activity acquisition in the Core-only CLI** (#952, #955):
+  `collect --kind gc-activities` resolves one target and captures both streams
+  concurrently, with independent retention budgets and explicit per-side
+  outcomes. One-shot output includes the correlated overlay; session REPL
+  handles support subsequent `gc-overlay` queries. Cancellation, process exit,
+  incompatible windows, and partial evidence remain explicit.
+- **Trace-targeted activity retention** (#949, #951): CLI `--trace-id` and
+  `--max-matched-activities`, with corresponding MCP acquisition parameters,
+  keep a bounded matching budget separate from unrelated traffic. Target
+  filters and retention metadata also propagate through distributed collection.
+- **Explicit OS-backed CoreCLR CPU profiling** (#943, #945): select
+  `--cpu-backend os` in the CLI or `cpuBackend=Os` in MCP to use Linux perf
+  or Windows kernel ETW, including bounded CLR symbol tracking. Prerequisite
+  failures are explicit; an explicitly selected backend never silently falls
+  back. Default CoreCLR collection remains EventPipe.
+
+### Fixed
+
+- **Trace and GC overlay timing** (#951, #953): use interval union instead
+  of double-counting overlapping child spans or GC intervals, normalize UTC
+  timing, and retain incomplete-evidence qualifications through queries and
+  distributed results. GC-overlay routing is available in both CLI and MCP.
+- **Auxiliary gcdump flush shutdown** (#940, #954): cancel and boundedly
+  quiesce the owned reader before forced pipe disposal. Unrelated parser
+  failures still propagate, timeout is rechecked after shutdown, and an
+  incomplete flush cannot publish a completed trace.
+- **Quality propagation across diagnostic consumers** (#925-#928,
+  #935-#938): ThreadPool and gcdump limitations survive summaries, drilldowns,
+  comparisons, and exports. No detected loss is not a universal completeness
+  guarantee; bounded known-graph results document the remaining fidelity limits.
+- **ClrMD updated to 4.1.745802** (#912), with Linux DAC-unload
+  revalidation. The ten former Core quarantines were retired; CI now rejects
+  failed, aborted, or incomplete runs without masking them through retries
+  (#915). Windows installer downloads have bounded transport retries (#918).
+
+### Research / internal
+
+- Added a blinded, bounded advisory diagnostic-agent harness and
+  fingerprinted human-review packets (#920, #939, #941), plus a frozen
+  calibration protocol and cross-platform identity corrections (#946-#948).
+  Human calibration remains incomplete under #921; this is not a model-quality
+  gate or a claim of independently validated diagnostic correctness.
+- Replaced sparse, mixed-clock GC-test heartbeats with a bounded, pre-armed
+  independent witness in the same EventPipe clock domain (#955). The test
+  still requires real managed progress inside an observed background GC.
+- Concurrent aggregate-suite reliability remains tracked in #879, and the
+  separate Linux culture-lookup restriction remains subject to #929.
+  Neither is declared resolved by this release.
+
 ## [0.25.0] — 2026-08-28
 
 Highlights: **`dotnet-diagnostics-core` and `dotnet-diagnostics-benchmarkdotnet`
