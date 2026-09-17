@@ -166,7 +166,6 @@ Compare percentiles only with compatible population versions.
 Zero accepted completions means **latency unavailable**, even though existing
 nonnullable duration fields remain zero for compatibility. The HTTP headline
 does not print measured-looking `0.0ms` for a known v2 zero-sample population.
-No new general metric-availability API is added here (#961 remains separate).
 Correlation gaps and `CaptureQuality` still independently qualify evidence:
 adding failed samples does not turn a partial capture into complete acquisition.
 
@@ -179,6 +178,95 @@ alert over plain TCP, without host certificate-policy changes.
 Deterministic DNS (and TLS) cases invoke the production paired-event handler;
 **no live DNS failure reproduction is claimed**. The normal TLS success fixture
 and acquisition-quality cases remain separate regression controls.
+
+## Latency availability and compatibility
+
+The existing C# positional constructors/deconstruction and nonnullable `TimeSpan`
+JSON scalars are preserved. **A scalar zero is a compatibility placeholder when
+there are no accepted samples, not a measured duration.** Do not infer availability
+from a positive scalar either, or from `Started`, `Stopped`, or `Failed`.
+
+`latencyAvailability` is a derived, read-only map with `http`, `queue`, `dns`,
+and `tls` keys on the snapshot and **all five** focused views. It is recomputed
+from existing `Correlation` and `CaptureQuality`, not independently persisted
+quality metadata. On JSON deserialization any supplied map is ignored and the
+authoritative counts/quality determine it again. BDN's default serializer uses
+`LatencyAvailability`; CLI/MCP use camel case.
+
+| Value | Meaning |
+| --- | --- |
+| `measured` | At least one accepted sample, possibly exactly zero duration. This says nothing about full population coverage |
+| `not-observed` | Known zero samples, no observed pairing gaps/pending operations (or rejected queue payloads), normal drain with known zero loss and no parse errors. No claim that no target activity occurred |
+| `uncorrelatable` | Zero accepted pairs with observed identity/order/retention exclusions or orphan events; inspect the kind's existing correlation counts |
+| `incomplete` | Zero samples with unfinished pairs or incomplete/uncertain acquisition; inspect `unfinished`, `CaptureQuality` and its nullable loss |
+| `unavailable` | Queue events were observed but none carried a valid duration; inspect `queueRejectedSamples` and parse errors |
+| `unknown` | No compatible sample evidence, or zero samples without enough acquisition evidence to say not-observed. Legacy absence is never promoted to known zero loss or a measured zero |
+
+These are availability labels, not an exclusive taxonomy of all limitations.
+Measured samples remain measured during loss/early/source-failure captures,
+while the existing quality records still mark the evidence partial. With zero
+samples, observed exclusions take precedence over unfinished/acquisition
+limitations; both remain visible in their original records. Queue payloads do
+not need activity-ID pairing and are not degraded by unrelated HTTP pairing
+gaps. Missing population version means unknown HTTP/DNS/TLS sample semantics;
+missing new retention counts on a v2 artifact means unknown reservoir retention,
+not unknown accepted-pair count.
+
+### Counts and populations
+
+| Aggregate | Accepted valid samples / population | Retained percentile samples |
+| --- | --- | --- |
+| HTTP request p50/p95/max | `correlation.byKind.http.counts.paired`, population version 2: all accepted completed Start/Stop pairs, including Failed -> Stop | `percentileSamples` in the same counts map |
+| DNS p50/p95/max | `dns.counts.paired`, same v2 semantics | `dns.counts.percentileSamples` |
+| TLS p50/p95/max | `tls.counts.paired`, same v2 semantics | `tls.counts.percentileSamples` |
+| Queue p50/p95/max | `http.counts.queueSamples`: finite, nonnegative, representable `RequestLeftQueue.timeOnQueueMilliseconds` payloads, including zero. Not HTTP completions or queue depth | `http.counts.queuePercentileSamples` |
+| Each HTTP operation total/p95/max | Group `count`: accepted HTTP completions assigned to that group; inherits parent HTTP population version, correlation exclusions and capture quality | Group's additive nullable `percentileSamples` |
+
+`http.counts.queueRejectedSamples` counts observed `RequestLeftQueue` events
+that did not yield a duration. Missing, malformed, non-finite, negative or
+unrepresentable payloads hit the existing parse-error boundary rather than
+silently turning into zero. `HttpRequestsLeftQueue = queueSamples +
+queueRejectedSamples` for events reaching that handler; acquisition/parser
+failures before it are still independently recorded in `CaptureQuality`.
+Queue validity does not imply that all queue events were observed.
+
+C# `NetworkingCorrelationCounts` has nullable, JSON-ignored typed accessors
+`LatencySamples`, `PercentileSamples`, `QueueSamples`, `QueuePercentileSamples`,
+and `QueueRejectedSamples`; missing keys remain null. HTTP groups add nullable
+`PercentileSamples` and derived `LatencyAvailability`: missing retention evidence
+is `unknown`, positive `Count` with evidence is `measured`, otherwise
+`unavailable`. Existing group constructors still work and produce unknown
+availability rather than guessing from legacy scalar/Count values. An absent
+group is not a zero-latency group: excluded/uncompleted requests cannot be
+assigned confidently to a retained bucket. Top-N/summary trimming does not
+change either per-group samples or the full artifact; the overflow bucket has
+the same evidence fields.
+
+### Reservoir retention is not capture coverage
+
+Each sampler retains every accepted sample up to **4096**, then uses a bounded
+reservoir. `paired`/`queueSamples`/group `Count` keep counting the full accepted
+population, while the retained count stays 4096. p50/p95 are approximate when
+retained < accepted. Max (and group total) still uses all accepted samples.
+No global percentile algorithm or empty-sampler behavior changes here.
+Zero accepted samples makes all associated latency scalars unavailable.
+An accurately computed percentile over retained samples does not prove full
+pairing or acquisition coverage, even below the reservoir cap.
+
+Shared Core summaries explicitly label unavailable HTTP, queue, DNS and TLS
+p95 instead of printing `0.0ms`; real measured zero still prints `0.0ms`.
+They also report retained/accepted percentile denominators, independently of
+correlation and capture quality. Handles, focused views, actual CLI output,
+MCP envelopes, and BDN JSON/report headlines preserve these distinctions.
+
+Deterministic regressions cover empty, zero, positive, all-failed, partial
+pairing, unfinished, loss, unknown loss, invalid queue payloads and legacy
+artifacts through the real shared consumer boundaries. Production paired
+handlers, queue validation, operation-group sampler and reservoir counts are
+exercised directly. Existing loopback failure and acquisition tests additionally
+assert measured availability and counts; the idle post-cancellation session
+asserts not-observed. Consumer fixtures isolate projection/serialization, not
+independent live networking workloads in each consumer.
 
 ## Acquisition quality
 

@@ -98,6 +98,20 @@ public sealed record NetworkingCorrelationCounts(IReadOnlyDictionary<string, lon
     [JsonIgnore]
     public long? HttpStopsWithoutStatus => GetOptionalCount("httpStopsWithoutStatus");
 
+    /// <summary>Accepted completion samples, including failures. Unknown for unversioned legacy populations.</summary>
+    [JsonIgnore]
+    public long? LatencySamples => LatencyPopulationVersion == 2 ? GetOptionalCount("paired") : null;
+    /// <summary>Samples retained for percentiles, not the accepted population size or a coverage guarantee.</summary>
+    [JsonIgnore]
+    public long? PercentileSamples => GetOptionalCount("percentileSamples");
+    /// <summary>Valid RequestLeftQueue duration payloads, independent of HTTP completion pairing.</summary>
+    [JsonIgnore]
+    public long? QueueSamples => GetOptionalCount("queueSamples");
+    [JsonIgnore]
+    public long? QueuePercentileSamples => GetOptionalCount("queuePercentileSamples");
+    [JsonIgnore]
+    public long? QueueRejectedSamples => GetOptionalCount("queueRejectedSamples");
+
     private long? GetOptionalCount(string key) => Counts.TryGetValue(key, out var value) ? value : null;
 
     /// <summary>Observed pairing gaps only; false does not establish complete acquisition.</summary>

@@ -2881,6 +2881,17 @@ session is enabled (TLS, limits, keep-alive, HTTP protocol versions).
 
 ## `collect_events(kind="networking")`
 
+`latencyAvailability` on snapshots and all five focused views distinguishes
+measured HTTP/queue/DNS/TLS latency (including genuine zero) from not-observed,
+uncorrelatable, incomplete, unavailable queue payloads, and unknown legacy
+evidence. It is derived from correlation counts and capture quality, not scalar
+values. Existing nonnullable durations remain compatible placeholders when
+unavailable. `percentileSamples` records bounded retained samples independently
+of `paired`; HTTP counts also carry `queueSamples`, `queuePercentileSamples`
+and `queueRejectedSamples`. Each operation group adds nullable
+`percentileSamples` and derived availability. Reservoir approximation is not
+missing-pair or capture loss; summaries preserve all three distinctions.
+
 Latency population v2 includes failed completions in the existing percentiles
 and HTTP operation groups. `correlation.byKind` counts carry the version,
 all/failed/no-observed-failure sample denominators and HTTP status-error response

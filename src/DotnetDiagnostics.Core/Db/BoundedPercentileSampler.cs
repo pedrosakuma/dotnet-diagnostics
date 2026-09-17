@@ -8,6 +8,7 @@ internal sealed class BoundedPercentileSampler
     private readonly Random _random = new(0);
 
     public long Count { get; private set; }
+    public int RetainedCount => _samples.Count;
     public bool IsApproximate { get; private set; }
 
     public void Add(double value)

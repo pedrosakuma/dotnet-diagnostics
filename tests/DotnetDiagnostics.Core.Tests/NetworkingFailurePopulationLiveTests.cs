@@ -129,12 +129,18 @@ public sealed class NetworkingFailurePopulationLiveTests(ITestOutputHelper outpu
             Assert.Equal(1, snapshot.TlsHandshakesFailed);
             var tls = Assert.IsType<NetworkingCorrelationCounts>(snapshot.Correlation?.Tls);
             AssertCompletePopulation(tls, 1, 1, 0);
+            Assert.Equal("measured", snapshot.LatencyAvailability["http"]);
+            Assert.Equal("measured", snapshot.LatencyAvailability["tls"]);
+            Assert.Equal(expectedHttp, http.PercentileSamples);
+            Assert.Equal(1, tls.PercentileSamples);
 
             Assert.Equal(expectedHttp, snapshot.ByOperation.Sum(static group => group.Count));
             foreach (var witness in witnesses.Where(static witness => witness.Kind == "http"))
             {
                 var group = Assert.Single(snapshot.ByOperation, group => group.Path == witness.Path);
                 Assert.Equal(1, group.Count);
+                Assert.Equal(1, group.PercentileSamples);
+                Assert.Equal("measured", group.LatencyAvailability);
                 Assert.True(group.TotalDuration > TimeSpan.Zero);
                 Assert.InRange(
                     Math.Abs(group.TotalDuration.TotalMilliseconds - witness.ElapsedMs),

@@ -5,6 +5,7 @@ internal sealed class BoundedDurationSampler
     private readonly BoundedPercentileSampler _samplesMs = new();
 
     public long Count => _samplesMs.Count;
+    public int RetainedCount => _samplesMs.RetainedCount;
     public bool IsApproximate => _samplesMs.IsApproximate;
     public TimeSpan Max { get; private set; }
 

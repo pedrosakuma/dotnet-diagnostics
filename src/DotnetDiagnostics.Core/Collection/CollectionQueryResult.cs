@@ -566,6 +566,7 @@ public sealed record NetworkingSummaryView(
 {
     public Networking.NetworkingCorrelation? Correlation { get; init; }
     public Networking.NetworkingCaptureQuality? CaptureQuality { get; init; }
+    public IReadOnlyDictionary<string, string> LatencyAvailability => Networking.NetworkingLatency.Availability(Correlation, CaptureQuality);
 }
 
 /// <summary>Outbound HTTP request volume + latency grouped by host + path.</summary>
@@ -576,6 +577,7 @@ public sealed record NetworkingByOperationView(
 {
     public Networking.NetworkingCorrelation? Correlation { get; init; }
     public Networking.NetworkingCaptureQuality? CaptureQuality { get; init; }
+    public IReadOnlyDictionary<string, string> LatencyAvailability => Networking.NetworkingLatency.Availability(Correlation, CaptureQuality);
 }
 
 /// <summary>HttpClient connection-pool time-in-queue (the #1 outbound-HTTP failure signal) and connection churn.</summary>
@@ -591,6 +593,7 @@ public sealed record NetworkingQueueView(
 {
     public Networking.NetworkingCorrelation? Correlation { get; init; }
     public Networking.NetworkingCaptureQuality? CaptureQuality { get; init; }
+    public IReadOnlyDictionary<string, string> LatencyAvailability => Networking.NetworkingLatency.Availability(Correlation, CaptureQuality);
 }
 
 /// <summary>TLS handshake counts and latency percentiles plus the protocols observed.</summary>
@@ -605,6 +608,7 @@ public sealed record NetworkingTlsView(
 {
     public Networking.NetworkingCorrelation? Correlation { get; init; }
     public Networking.NetworkingCaptureQuality? CaptureQuality { get; init; }
+    public IReadOnlyDictionary<string, string> LatencyAvailability => Networking.NetworkingLatency.Availability(Correlation, CaptureQuality);
 }
 
 /// <summary>DNS resolution counts and latency percentiles.</summary>
@@ -618,6 +622,7 @@ public sealed record NetworkingDnsView(
 {
     public Networking.NetworkingCorrelation? Correlation { get; init; }
     public Networking.NetworkingCaptureQuality? CaptureQuality { get; init; }
+    public IReadOnlyDictionary<string, string> LatencyAvailability => Networking.NetworkingLatency.Availability(Correlation, CaptureQuality);
 }
 
 // --- Startup snapshot views --------------------------------------------------------------------
