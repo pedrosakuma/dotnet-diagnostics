@@ -114,7 +114,7 @@ public sealed partial class CollectEventsTool
         ILoggerFactory? loggerFactory = null,
         [Description(
             "Family (default counters): counters=cheap EventCounter snapshot; exceptions=managed throws; " +
-            "crash-guard=fatal/unhandled exceptions; gc=GC events; datas=DATAS heap-count tuning; " +
+            "crash-guard=fatal/unhandled exceptions; gc=collection elapsed + v2 fully-suspended phases/quality; datas=DATAS heap-count tuning; " +
             "catalog=provider/event metadata; event_source=provider passthrough (requires providerName); " +
             "activities=completed ActivitySource spans; logs=ILogger; jit=tiering/ReadyToRun; " +
             "threadpool=worker/IOCP, hill-climbing and work-item evidence; contention=lock sites/owners; " +

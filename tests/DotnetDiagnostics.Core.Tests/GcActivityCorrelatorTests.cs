@@ -43,6 +43,8 @@ public sealed class GcActivityCorrelatorTests
                 new GcEvent(at.AddMilliseconds(250), 2, "AllocSmall", "NonConcurrentGC", TimeSpan.FromMilliseconds(30)),
             ]);
 
+        activities = activities with { Retention = new(null, 3, 3, 3, 3, 0, 0) };
+        gcSummary = WithExplicitPauses(gcSummary, 0);
         var overlay = GcActivityCorrelator.Correlate(activities, gcSummary, topN: 2);
 
         overlay.ImpactedCount.Should().Be(3);
@@ -100,6 +102,8 @@ public sealed class GcActivityCorrelatorTests
             Events: retainedEvents,
             DroppedEvents: 50);
 
+        gcSummary = WithExplicitPauses(gcSummary, 50);
+        activities = activities with { Retention = new(null, 2, 2, 2, 2, 0, 0) };
         var outcome = CollectionQueryDispatcher.Dispatch(
             CollectionHandleKinds.Activities,
             "gc-overlay",
@@ -119,6 +123,14 @@ public sealed class GcActivityCorrelatorTests
         overlay.ImpactedActivities.Should().ContainSingle()
             .Which.GcPauseIsLowerBound.Should().BeTrue();
     }
+
+    private static GcSummary WithExplicitPauses(GcSummary g, long dropped) => g with
+    {
+        Suspension = new("no-detected-loss", g.StartedAt, g.StartedAt + g.Duration, null, "normal-stop",
+            g.TotalPauseTime, g.MaxPauseTime, g.TotalCollections, dropped,
+            g.Events.Select(e => new GcSuspensionInterval(e.Timestamp, e.Timestamp + e.PauseDuration,
+                1, 1, 1, 0, TimeSpan.Zero)).ToArray(), new Dictionary<string, long>()),
+    };
 
     [Fact]
     public void BuildView_NotesWhenTimerAddressTrackingFallsBackToApproximateCounts()

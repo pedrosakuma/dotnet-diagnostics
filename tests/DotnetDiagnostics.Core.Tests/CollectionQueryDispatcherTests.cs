@@ -144,10 +144,11 @@ public class CollectionQueryDispatcherTests
             new List<GenerationStats> { new(0, 5) },
             events);
 
+        g = WithExplicitPauses(g);
         var outcome = CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.GcEvents, "pauseHistogram", g, 50);
 
-        var payload = outcome.Result!.Payload.Should().BeOfType<GcPauseHistogramView>().Subject;
-        payload.Buckets.Select(b => b.Count).Should().Equal(1, 1, 1, 1, 1);
+        var payload = outcome.Result!.Payload.Should().BeOfType<GcMeasurementView>().Subject;
+        ((GcPauseBucket[])payload.Data).Select(b => b.Count).Should().Equal(1, 1, 1, 1, 1);
     }
 
     // gen0 @+0ms (2ms), background gen2 @+10ms (50ms), gen1 @+30ms (5ms), gen2 @+40ms (100ms).
@@ -171,16 +172,26 @@ public class CollectionQueryDispatcherTests
         new(42, At, TimeSpan.FromSeconds(5), 0, TimeSpan.Zero, TimeSpan.Zero,
             new List<GenerationStats>(), new List<GcEvent>());
 
+    // Synthetic pause facts are explicit: production must never infer these from collection elapsed.
+    private static GcSummary WithExplicitPauses(GcSummary g) => g with
+    {
+        Suspension = new("no-detected-loss", g.StartedAt, g.StartedAt + g.Duration, null, "normal-stop",
+            g.TotalPauseTime, g.MaxPauseTime, g.Events.Count, 0,
+            g.Events.Select(e => new GcSuspensionInterval(e.Timestamp, e.Timestamp + e.PauseDuration,
+                1, 1, 1, 0, TimeSpan.Zero)).ToArray(), new Dictionary<string, long>()),
+    };
+
     [Fact]
     public void Gc_Timeline_OrdersByStartAndComputesGaps()
     {
         var outcome = CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.GcEvents, "timeline", ScrambledGc(), 50);
 
-        var payload = outcome.Result!.Payload.Should().BeOfType<GcTimelineView>().Subject;
-        payload.Returned.Should().Be(4);
-        payload.Entries.Select(e => e.Index).Should().Equal(0, 1, 2, 3);
-        payload.Entries.Select(e => e.Generation).Should().Equal(0, 2, 1, 2);
-        payload.Entries.Select(e => e.GapSincePreviousStart.TotalMilliseconds)
+        var payload = outcome.Result!.Payload.Should().BeOfType<GcMeasurementView>().Subject;
+        var entries = (GcCollectionTimelineEntry[])payload.Data;
+        entries.Should().HaveCount(4);
+        entries.Select(e => e.Index).Should().Equal(0, 1, 2, 3);
+        entries.Select(e => e.Generation).Should().Equal(0, 2, 1, 2);
+        entries.Select(e => e.GapSincePreviousStart.TotalMilliseconds)
             .Should().Equal(0, 10, 20, 10);
     }
 
@@ -189,20 +200,21 @@ public class CollectionQueryDispatcherTests
     {
         var outcome = CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.GcEvents, "timeline", ScrambledGc(), 2);
 
-        var payload = outcome.Result!.Payload.Should().BeOfType<GcTimelineView>().Subject;
-        payload.Returned.Should().Be(2);
-        payload.Entries.Select(e => e.Index).Should().Equal(0, 1); // earliest two by start time
+        var payload = outcome.Result!.Payload.Should().BeOfType<GcMeasurementView>().Subject;
+        var entries = (GcCollectionTimelineEntry[])payload.Data;
+        entries.Should().HaveCount(2);
+        entries.Select(e => e.Index).Should().Equal(0, 1);
     }
 
     [Fact]
     public void Gc_LongestPauses_RanksByPauseDescending()
     {
-        var outcome = CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.GcEvents, "longestPauses", ScrambledGc(), 2);
+        var outcome = CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.GcEvents, "longestPauses", WithExplicitPauses(ScrambledGc()), 2);
 
-        var payload = outcome.Result!.Payload.Should().BeOfType<GcLongestPausesView>().Subject;
-        payload.Returned.Should().Be(2);
-        payload.Pauses.Select(p => p.PauseDuration.TotalMilliseconds).Should().Equal(100, 50);
-        payload.Pauses.Select(p => p.Index).Should().Equal(3, 1); // timeline indices retained
+        var payload = outcome.Result!.Payload.Should().BeOfType<GcMeasurementView>().Subject;
+        var pauses = (GcSuspensionInterval[])payload.Data;
+        pauses.Should().HaveCount(2);
+        pauses.Select(p => p.Duration.TotalMilliseconds).Should().Equal(100, 50);
     }
 
     [Fact]
@@ -210,17 +222,19 @@ public class CollectionQueryDispatcherTests
     {
         var outcome = CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.GcEvents, "byGeneration", ScrambledGc(), 50);
 
-        var payload = outcome.Result!.Payload.Should().BeOfType<GcByGenerationView>().Subject;
-        payload.Generations.Select(s => s.Bucket).Should().Equal("gen0", "gen1", "gen2", "background");
+        var payload = outcome.Result!.Payload.Should().BeOfType<GcMeasurementView>().Subject;
+        var generations = (GcGenerationElapsedStats[])payload.Data;
+        generations.Select(s => s.Bucket).Should().Equal("gen0", "gen1", "gen2", "background");
 
-        var gen2 = payload.Generations.Single(s => s.Bucket == "gen2");
+        var gen2 = generations.Single(s => s.Bucket == "gen2");
         gen2.Count.Should().Be(1); // background gen2 excluded
-        gen2.MaxPause.Should().Be(TimeSpan.FromMilliseconds(100));
-        gen2.MeanPause.Should().Be(TimeSpan.FromMilliseconds(100));
+        gen2.MaxElapsed.Should().Be(TimeSpan.FromMilliseconds(100));
+        gen2.MeanElapsed.Should().Be(TimeSpan.FromMilliseconds(100));
+        gen2.SuspensionAttribution.Should().Be("unassociated");
 
-        var background = payload.Generations.Single(s => s.Bucket == "background");
+        var background = generations.Single(s => s.Bucket == "background");
         background.Count.Should().Be(1);
-        background.TotalPause.Should().Be(TimeSpan.FromMilliseconds(50));
+        background.TotalElapsed.Should().Be(TimeSpan.FromMilliseconds(50));
     }
 
     [Fact]
@@ -237,12 +251,12 @@ public class CollectionQueryDispatcherTests
 
         var outcome = CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.GcEvents, "byGeneration", g, 50);
 
-        var gen0 = outcome.Result!.Payload.Should().BeOfType<GcByGenerationView>().Subject
-            .Generations.Single(s => s.Bucket == "gen0");
+        var gen0 = ((GcGenerationElapsedStats[])outcome.Result!.Payload.Should().BeOfType<GcMeasurementView>().Subject.Data)
+            .Single(s => s.Bucket == "gen0");
         gen0.Count.Should().Be(2);
-        gen0.TotalPause.Should().Be(TimeSpan.FromMilliseconds(10));
-        gen0.MeanPause.Should().Be(TimeSpan.FromMilliseconds(5));
-        gen0.MaxPause.Should().Be(TimeSpan.FromMilliseconds(8));
+        gen0.TotalElapsed.Should().Be(TimeSpan.FromMilliseconds(10));
+        gen0.MeanElapsed.Should().Be(TimeSpan.FromMilliseconds(5));
+        gen0.MaxElapsed.Should().Be(TimeSpan.FromMilliseconds(8));
     }
 
     [Fact]
@@ -250,12 +264,13 @@ public class CollectionQueryDispatcherTests
     {
         var empty = EmptyGc();
 
-        CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.GcEvents, "timeline", empty, 50)
-            .Result!.Payload.Should().BeOfType<GcTimelineView>().Subject.Entries.Should().BeEmpty();
-        CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.GcEvents, "longestPauses", empty, 50)
-            .Result!.Payload.Should().BeOfType<GcLongestPausesView>().Subject.Pauses.Should().BeEmpty();
-        CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.GcEvents, "byGeneration", empty, 50)
-            .Result!.Payload.Should().BeOfType<GcByGenerationView>().Subject.Generations.Should().BeEmpty();
+        foreach (var view in new[] { "timeline", "longestPauses", "byGeneration" })
+        {
+            var projection = CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.GcEvents, view, empty, 50)
+                .Result!.Payload.Should().BeOfType<GcMeasurementView>().Subject;
+            ((Array)projection.Data).Length.Should().Be(0);
+            projection.MeasurementStatus.Should().Be("legacy-unknown");
+        }
 
         var heapStats = CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.GcEvents, "heap-stats", empty, 50)
             .Result!.Payload.Should().BeOfType<GcHeapStatsView>().Subject;
@@ -832,7 +847,7 @@ public class CollectionQueryDispatcherTests
             });
 
         var outcome = CollectionQueryDispatcher.Dispatch(
-            CollectionHandleKinds.Activities, "gc-overlay", activities, 50, gcSummary);
+            CollectionHandleKinds.Activities, "gc-overlay", activities, 50, WithExplicitPauses(gcSummary));
 
         outcome.Result.Should().NotBeNull();
         outcome.Result!.View.Should().Be("gc-overlay");
@@ -847,7 +862,7 @@ public class CollectionQueryDispatcherTests
         impacted.GcPauseMs.Should().Be(150);
         impacted.GcPausePercent.Should().Be(30); // 150ms of 500ms = 30%
         impacted.GcEvents.Should().HaveCount(1);
-        impacted.GcEvents[0].Generation.Should().Be(2);
+        impacted.GcEvents[0].Generation.Should().BeNull("suspension has no reliable collection association");
     }
 
     [Fact]
@@ -923,7 +938,7 @@ public class CollectionQueryDispatcherTests
             });
 
         var outcome = CollectionQueryDispatcher.Dispatch(
-            CollectionHandleKinds.Activities, "gc-overlay", activities, 50, gcSummary);
+            CollectionHandleKinds.Activities, "gc-overlay", activities, 50, WithExplicitPauses(gcSummary));
 
         var payload = outcome.Result!.Payload.Should().BeOfType<GcOverlayResult>().Subject;
         var impacted = payload.ImpactedActivities[0];

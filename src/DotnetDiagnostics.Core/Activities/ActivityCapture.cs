@@ -46,7 +46,8 @@ public sealed record ActivityCapture(
     IReadOnlyList<CapturedActivity> Activities,
     IReadOnlyList<ActivitySourceSummary> BySource,
     IReadOnlyList<ActivityOperationSummary> ByOperation,
-    ActivityRetention? Retention = null);
+    ActivityRetention? Retention = null,
+    DateTimeOffset? ProcessStartedAt = null);
 
 /// <summary>
 /// Insertion-time accounting after source filtering. With no applied trace filter, every observed

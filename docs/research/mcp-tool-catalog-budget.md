@@ -34,6 +34,15 @@ part of both surfaces.
 
 ## Reproduce
 
+### Issue #950 validation (2026-09-16)
+
+The local GC-suspension correction on base `22e580381ef0cbc36345aaf0d01981fda71176c1`,
+SDK 10.0.401/Linux x64, measures **279,560 bytes** for all 17 tools and **246,620 bytes**
+for the default 13. Additive suspension evidence and `gcHandle` initially exceeded the
+280,000-byte ceiling; concise equivalent `query_snapshot` parameter descriptions recovered
+the space without raising the ceiling or removing tools. The remaining headroom is 440 bytes.
+The measurement comes from the real HTTP `ToolCatalogBudgetTests` catalog.
+
 ### Issue #949 validation (2026-09-16)
 
 The local #949 trace-retention change, based on

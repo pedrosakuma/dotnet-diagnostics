@@ -1034,7 +1034,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         evidence.MeterProcessCumulative.Should().NotBeNull();
         evidence.MeterProcessCumulative!.Value.Should().BeGreaterThan(0);
         evidence.GcCollectorWindowCount.Should().BeGreaterThan(0);
-        evidence.GcCollectorWindowSeconds.Should().Be(report.DurationSeconds);
+        evidence.GcCollectorWindowSeconds.Should().BeInRange(report.DurationSeconds, report.DurationSeconds + 10);
         evidence.Explanation.Should().Contain("not interchangeable");
 
         var countersEntry = report.Results
@@ -1078,13 +1078,17 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         gcSnapshot.Should().NotBeNull();
         var gcPayload = gcSnapshot!.Payload.Should().BeOfType<JsonElement>().Subject;
         gcPayload.GetProperty("totalCollections").GetInt32().Should().Be(totalCollections);
-        var retained = gcPayload.GetProperty("retained").GetInt32();
-        var dropped = gcPayload.GetProperty("dropped").GetInt32();
-        var returned = gcPayload.GetProperty("returned").GetInt32();
+        gcPayload.GetProperty("measurementVersion").GetInt32().Should().Be(2);
+        gcPayload.GetProperty("measurementStatus").GetString().Should().Be(gcData.GetProperty("pauseMeasurementStatus").GetString());
+        gcPayload.GetProperty("evidence").GetProperty("boundaries").GetString().Should().Be("GCSuspendEEStop-to-GCRestartEEStart");
+        evidence.Explanation.Should().Contain("GC pairing/measurement quality");
+        var retained = gcPayload.GetProperty("retainedCollections").GetInt32();
+        var dropped = gcPayload.GetProperty("droppedCollections").GetInt32();
+        var returned = gcPayload.GetProperty("data").GetArrayLength();
         retained.Should().BeInRange(1, gcEventRetentionLimit);
         (retained + dropped).Should().Be(totalCollections);
         returned.Should().Be(retained);
-        gcPayload.GetProperty("events").GetArrayLength().Should().Be(returned);
+        gcPayload.GetProperty("data").GetArrayLength().Should().Be(returned);
 
         var countersHandle = countersEntry.Handle;
         countersHandle.Should().NotBeNullOrWhiteSpace();

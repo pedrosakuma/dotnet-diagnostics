@@ -41,7 +41,9 @@ public sealed class GcSignalsTests
             MaxPauseTime: totalPauseTime,
             Generations: generations,
             Events: Array.Empty<GcEvent>(),
-            HeapStats: heapStats);
+            HeapStats: heapStats,
+            Suspension: new("no-detected-loss", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow + duration, null,
+                "normal-stop", totalPauseTime, totalPauseTime, 1, 0, [], new Dictionary<string, long>()));
 
     // ---- pause-time share -------------------------------------------------------------------
 
@@ -56,7 +58,7 @@ public sealed class GcSignalsTests
 
         var signals = GcSignals.Detect(summary, "handle-gc");
 
-        var pauseShare = signals.Should().ContainSingle(s => s.Signal == "gc.pause-time-share").Subject;
+        var pauseShare = signals.Should().ContainSingle(s => s.Signal == "gc.fully-suspended-share.v2").Subject;
         pauseShare.Salience.Should().BeApproximately(0.12, 0.001);
         pauseShare.Buckets[0].Handle.Should().Be("handle-gc");
         pauseShare.NextAction!.SuggestedArguments!["view"].Should().Be("pauseHistogram");
@@ -71,7 +73,7 @@ public sealed class GcSignalsTests
             totalPauseTime: TimeSpan.FromMilliseconds(50),
             generations: new[] { new GenerationStats(0, 5) });
 
-        GcSignals.Detect(summary, "h").Should().NotContain(s => s.Signal == "gc.pause-time-share");
+        GcSignals.Detect(summary, "h").Should().NotContain(s => s.Signal == "gc.fully-suspended-share.v2");
     }
 
     // ---- gen2 share ---------------------------------------------------------------------------

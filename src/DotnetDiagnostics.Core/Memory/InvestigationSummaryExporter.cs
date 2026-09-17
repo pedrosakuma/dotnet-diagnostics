@@ -384,9 +384,12 @@ public sealed class InvestigationSummaryExporter : IInvestigationSummaryExporter
         var metrics = new List<MetricCandidate>
         {
             new("gc-total-collections", summary.TotalCollections, "count"),
-            new("gc-total-pause-ms", summary.TotalPauseTime.TotalMilliseconds, "ms"),
-            new("gc-max-pause-ms", summary.MaxPauseTime.TotalMilliseconds, "ms"),
         };
+        if (summary.Suspension is { IsAuthoritative: true, TotalSuspensionTime: { } total, MaxSuspensionTime: { } maximum })
+        {
+            metrics.Add(new("gc-fully-suspended-ms-v2", total.TotalMilliseconds, "ms"));
+            metrics.Add(new("gc-max-fully-suspended-ms-v2", maximum.TotalMilliseconds, "ms"));
+        }
         foreach (var generation in summary.Generations)
         {
             metrics.Add(new MetricCandidate(
@@ -399,7 +402,7 @@ public sealed class InvestigationSummaryExporter : IInvestigationSummaryExporter
         {
             new InvestigationEvidenceFinding(
                 "gc-summary",
-                $"{summary.TotalCollections} collection(s), {summary.TotalPauseTime.TotalMilliseconds:F2} ms total pause, {summary.MaxPauseTime.TotalMilliseconds:F2} ms max pause.",
+                summary.MeasurementSummary,
                 summary.TotalCollections),
         };
         return Projection(

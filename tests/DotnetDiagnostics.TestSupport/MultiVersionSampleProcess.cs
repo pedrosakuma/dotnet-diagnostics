@@ -14,6 +14,14 @@ public sealed class MultiVersionSampleProcess : IAsyncDisposable
 {
     private readonly Process _process;
     private string _lastOutputLine = "(no output)";
+    private readonly System.Collections.Concurrent.ConcurrentQueue<long> _heartbeats = new();
+    public IReadOnlyList<long> Heartbeats => _heartbeats.ToArray();
+
+    public async Task RequestGcAsync(string command)
+    {
+        await _process.StandardInput.WriteLineAsync(command).ConfigureAwait(false);
+        await _process.StandardInput.FlushAsync().ConfigureAwait(false);
+    }
 
     private MultiVersionSampleProcess(Process process)
     {
@@ -43,7 +51,8 @@ public sealed class MultiVersionSampleProcess : IAsyncDisposable
     public static async Task<MultiVersionSampleProcess> StartAsync(
         string targetFramework,
         TimeSpan? timeout = null,
-        bool generateGcEvents = false)
+        bool generateGcEvents = false,
+        bool gcPauseWorkload = false)
     {
         var major = ParseMajorVersion(targetFramework);
         if (!InstalledRuntimes.HasMajorVersion(major))
@@ -60,6 +69,7 @@ public sealed class MultiVersionSampleProcess : IAsyncDisposable
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            RedirectStandardInput = gcPauseWorkload,
             UseShellExecute = false,
             CreateNoWindow = true,
             WorkingDirectory = Path.GetDirectoryName(sampleDll)!,
@@ -70,6 +80,12 @@ public sealed class MultiVersionSampleProcess : IAsyncDisposable
             psi.ArgumentList.Add("--gc-events");
         }
         psi.Environment["DOTNET_NOLOGO"] = "1";
+        if (gcPauseWorkload)
+        {
+            psi.ArgumentList.Add("--gc-pause-workload");
+            psi.Environment["DOTNET_gcConcurrent"] = "1";
+            psi.Environment["DOTNET_gcServer"] = "0";
+        }
 
         var process = Process.Start(psi)
             ?? throw SkipException.ForReason($"Failed to start MultiVersionSample ({targetFramework}).");
@@ -87,6 +103,12 @@ public sealed class MultiVersionSampleProcess : IAsyncDisposable
                 while ((line = await reader.ReadLineAsync().ConfigureAwait(false)) is not null)
                 {
                     Volatile.Write(ref sample._lastOutputLine, line);
+                    if (line.StartsWith("Heartbeat: ", StringComparison.Ordinal) &&
+                        long.TryParse(line.AsSpan("Heartbeat: ".Length), out var ticks))
+                    {
+                        sample._heartbeats.Enqueue(ticks);
+                        while (sample._heartbeats.Count > 800) sample._heartbeats.TryDequeue(out _);
+                    }
                     if (line.StartsWith("Runtime: ", StringComparison.Ordinal) && !runtimeTcs.Task.IsCompleted)
                     {
                         runtimeTcs.TrySetResult(line["Runtime: ".Length..]);

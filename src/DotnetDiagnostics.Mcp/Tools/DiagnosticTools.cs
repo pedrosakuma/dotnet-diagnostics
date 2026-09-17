@@ -548,7 +548,10 @@ public sealed class DiagnosticTools
                         "gcHandle must point to a gc-events artifact from collect_events(kind='gc').",
                         gcHandle));
             }
-            correlateArtifact = gcEntry.Value.Artifact;
+            var correlationError = GcCorrelationHandles.Resolve(handles, entry.Value, gcHandle, out var gc);
+            if (correlationError is not null)
+                return InvalidArg<CollectionQueryResult>(nameof(gcHandle), correlationError);
+            correlateArtifact = gc;
         }
 
         return QueryCollection(

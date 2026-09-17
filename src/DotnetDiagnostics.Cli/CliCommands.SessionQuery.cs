@@ -39,16 +39,6 @@ internal static partial class CliCommands
     }
 
     /// <summary>
-    /// Dispatcher views the <c>session</c> <c>query</c> path cannot render yet because they correlate a
-    /// second collected artifact the session has no way to supply (currently only the activities
-    /// <c>gc-overlay</c>, which needs a GC handle). They are hidden from the advertised view list and
-    /// rejected with a clear <c>NotSupportedInSession</c> rather than the dispatcher's confusing
-    /// "missing correlate" <c>InvalidArgument</c>.
-    /// </summary>
-    private static readonly HashSet<string> SessionExcludedViews =
-        new(StringComparer.OrdinalIgnoreCase) { "gc-overlay" };
-
-    /// <summary>
     /// Handle kinds backing a <see cref="CpuSampleTraceArtifact"/> (directly, or wrapped in an
     /// <see cref="AllocationSampleArtifact"/>) whose session drill-down is the host-neutral
     /// <c>call-tree</c> view. Keep in sync with the server's <c>cpu-sample</c> /
@@ -81,10 +71,7 @@ internal static partial class CliCommands
         [.. ThreadSnapshotQueryDispatcher.SessionViews, "frame-vars"];
 
     /// <summary>
-    /// The subset of <see cref="CollectionQueryDispatcher.ViewsFor(string)"/> that the session
-    /// <c>query</c> path can actually render for <paramref name="kind"/> — i.e. minus
-    /// <see cref="SessionExcludedViews"/>. Used both to advertise valid views after a collect and to
-    /// list them in the unknown-view error, so the two never drift.
+    /// Views available for a session handle, shared by help and unknown-view errors.
     /// </summary>
     public static IReadOnlyList<string> SessionViewsFor(string kind)
     {
@@ -118,17 +105,7 @@ internal static partial class CliCommands
             return GcDatasQueryDispatcher.SessionViews;
         }
 
-        var all = CollectionQueryDispatcher.ViewsFor(kind);
-        var result = new List<string>(all.Count);
-        foreach (var view in all)
-        {
-            if (!SessionExcludedViews.Contains(view))
-            {
-                result.Add(view);
-            }
-        }
-
-        return result;
+        return CollectionQueryDispatcher.ViewsFor(kind);
     }
 
     /// <summary>
@@ -248,16 +225,13 @@ internal static partial class CliCommands
                 "Heap / CPU / thread drill-down routing still lives in the MCP server; re-run the originating command (e.g. inspect-heap) with the inline flags you need.");
         }
 
-        // Some dispatcher views correlate a second collected artifact (e.g. activities gc-overlay needs
-        // a GC handle) that the session can't supply yet — reject them with a clear message instead of
-        // letting the dispatcher fail with a confusing "missing correlate" InvalidArgument.
-        if (!string.IsNullOrWhiteSpace(options.View) && SessionExcludedViews.Contains(options.View))
-        {
-            return Fail($"query: view '{options.View}' for a '{kind}' handle is not available in the session yet.", "NotSupportedInSession",
-                "This view correlates two collected artifacts, which the session cannot supply yet; re-run the originating command with the inline flags you need.");
-        }
-
         var topN = ResolveQueryTopN(options, 50);
+        GcSummary? gc = null;
+        if (string.Equals(options.View, "gc-overlay", StringComparison.OrdinalIgnoreCase))
+        {
+            var error = GcCorrelationHandles.Resolve(store, lookup.Value, options.GcHandle, out gc);
+            if (error is not null) return Fail($"query: {error}", "InvalidArgument", "Supply --gc-handle from the same process and overlapping capture window.");
+        }
         var redactor = string.Equals(options.View, "trace", StringComparison.OrdinalIgnoreCase)
             ? services.GetService<SensitiveDataRedactor>() ?? new SensitiveDataRedactor()
             : null;
@@ -266,7 +240,7 @@ internal static partial class CliCommands
             options.View,
             lookup.Value.Artifact,
             topN,
-            correlateArtifact: null,
+            correlateArtifact: gc,
             traceId: options.TraceId,
             redactor: redactor);
 

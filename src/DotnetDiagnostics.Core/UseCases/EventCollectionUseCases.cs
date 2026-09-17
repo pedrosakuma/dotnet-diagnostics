@@ -372,33 +372,35 @@ public static class EventCollectionUseCases
                 {
                     var inlineGc = gc;
                     var inlineOmittedEvents = 0;
-                    if (context.Depth == SamplingDepth.Summary && gc.Events.Count > 0)
+                    if (context.Depth == SamplingDepth.Summary)
                     {
                         inlineOmittedEvents = gc.Events.Count;
-                        inlineGc = gc with { Events = Array.Empty<GcEvent>() };
+                        inlineGc = gc with { Events = Array.Empty<GcEvent>(),
+                            Suspension = gc.Suspension is { } evidence ? evidence with
+                            {
+                                Intervals = [], OutputOmittedIntervals = evidence.Intervals.Count,
+                            } : null };
                     }
 
-                    var summary = gc.TotalCollections == 0
-                        ? $"No GC activity in {context.DurationSeconds}s — heap is quiet or the workload is idle."
-                        : $"{gc.TotalCollections} collection(s), max pause {gc.MaxPauseTime.TotalMilliseconds:F1}ms, total pause {gc.TotalPauseTime.TotalMilliseconds:F1}ms.";
+                    var summary = gc.MeasurementSummary;
                     if (inlineOmittedEvents > 0)
                     {
                         summary += $" Omitted {inlineOmittedEvents} retained event row(s) from inline; the handle retains them.";
                     }
                     if (gc.DroppedEvents > 0)
                     {
-                        summary += $" Raw detail reached maxEvents={maxEvents}; {gc.DroppedEvents} later event row(s) were omitted, but totals and generation counts remain exact.";
+                        summary += $" Collection detail reached maxEvents={maxEvents}; {gc.DroppedEvents} later rows omitted; aggregates cover observed valid pairs.";
                     }
                     if (gc.DroppedHeapStats > 0)
                     {
                         summary += $" {gc.DroppedHeapStats} later heap-stat sample(s) were also omitted after maxEvents={maxEvents}.";
                     }
 
-                    var primaryHint = gc.MaxPauseTime.TotalMilliseconds > 100
+                    var primaryHint = gc.Suspension is { IsAuthoritative: true, MaxSuspensionTime.TotalMilliseconds: > 100 }
                         ? new NextActionHint("collect_process_dump",
-                            $"Max GC pause {gc.MaxPauseTime.TotalMilliseconds:F0}ms is high — capture a WithHeap dump for offline heap analysis.",
+                            "Observed fully-suspended GC phase exceeds 100ms — consider a WithHeap dump for offline heap analysis.",
                             new Dictionary<string, object?> { ["processId"] = context.ProcessId, ["dumpType"] = "WithHeap" })
-                        : new NextActionHint("collect_events", "GC looks healthy — pivot to a domain EventSource (e.g. System.Net.Http) for application-level signal.",
+                        : new NextActionHint("collect_events", "Review GC measurement quality; a low or unavailable suspension value does not establish healthy GC. Collect application events for context.",
                             new Dictionary<string, object?> { ["kind"] = "event_source", ["processId"] = context.ProcessId, ["providerName"] = "System.Net.Http", ["durationSeconds"] = 10 });
 
                     var signals = GcSignals.Detect(gc, handle.Id);

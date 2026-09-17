@@ -65,6 +65,7 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector
         var providerArguments = BuildProviderArguments(normalizedSourceFilters);
         var retention = new ActivityRetentionState(maxActivities, traceId, maxMatchedActivities);
 
+        var processStartedAt = ProcessLifetime.TryReadStart(processId);
         var client = new DiagnosticsClient(processId);
         var session = await client
             .StartEventPipeSessionWithTimeoutAsync(
@@ -132,7 +133,8 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector
             Activities: capturedActivities,
             BySource: BuildSourceSummary(capturedActivities),
             ByOperation: BuildOperationSummary(capturedActivities),
-            Retention: retention.Retention);
+            Retention: retention.Retention,
+            ProcessStartedAt: processStartedAt);
     }
 
     private static bool TryCreateActivity(

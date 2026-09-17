@@ -156,7 +156,8 @@ public static class SnapshotDiffer
             return SupportsRegression(snapshot.Quality);
         }
 
-        if (string.Equals(snapshot.Kind, "cpu-sample", StringComparison.Ordinal))
+        if (string.Equals(snapshot.Kind, "cpu-sample", StringComparison.Ordinal) ||
+            string.Equals(snapshot.Kind, Collection.CollectionHandleKinds.GcEvents, StringComparison.Ordinal))
         {
             return SupportsRegression(snapshot.Quality);
         }

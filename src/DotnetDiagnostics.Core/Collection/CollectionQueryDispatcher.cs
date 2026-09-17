@@ -211,143 +211,10 @@ public static class CollectionQueryDispatcher
 
     private static CollectionQueryResult Render(GcSummary g, string view, int topN)
     {
-        object payload = view.ToLowerInvariant() switch
-        {
-            "events" => new GcEventsView(
-                g.TotalCollections,
-                g.Events.Count,
-                g.DroppedEvents,
-                Math.Min(topN, g.Events.Count),
-                g.Events.Take(topN).ToList()),
-            "pausehistogram" => BuildHistogram(g),
-            "timeline" => BuildTimeline(g, topN),
-            "longestpauses" => BuildLongestPauses(g, topN),
-            "bygeneration" => BuildByGeneration(g),
-            "heap-stats" or "heapstats" => BuildHeapStats(g, topN),
-            _ /* summary */ => new GcSummaryView(
-                g.TotalCollections,
-                g.TotalPauseTime,
-                g.MaxPauseTime,
-                g.Generations,
-                g.Events.Count,
-                g.DroppedEvents,
-                g.HeapStats?.Count ?? 0,
-                g.DroppedHeapStats),
-        };
-
-        return new CollectionQueryResult(
-            CollectionHandleKinds.GcEvents, view, g.ProcessId, g.StartedAt, g.Duration, payload);
-    }
-
-    private static GcPauseHistogramView BuildHistogram(GcSummary g)
-    {
-        // Buckets aligned with the rules of thumb the playbook uses (<1ms negligible,
-        // 1-10ms typical gen0, 10-100ms gen1/gen2, >100ms problematic, >1s catastrophic).
-        var bounds = new (string Label, int UpperBoundMs)[]
-        {
-            ("<1ms", 1),
-            ("1-10ms", 10),
-            ("10-100ms", 100),
-            ("100-1000ms", 1000),
-            (">=1s", int.MaxValue),
-        };
-
-        var counts = new int[bounds.Length];
-        foreach (var ev in g.Events)
-        {
-            var ms = ev.PauseDuration.TotalMilliseconds;
-            for (var i = 0; i < bounds.Length; i++)
-            {
-                if (ms < bounds[i].UpperBoundMs)
-                {
-                    counts[i]++;
-                    break;
-                }
-            }
-        }
-
-        var buckets = bounds.Select((b, i) => new GcPauseBucket(b.Label, b.UpperBoundMs, counts[i])).ToList();
-        return new GcPauseHistogramView(
-            g.TotalCollections, g.Events.Count, g.DroppedEvents, g.MaxPauseTime, buckets);
-    }
-
-    // Orders retained GC events by start time (stable on original ordinal to break 1ms-resolution
-    // ties) and assigns each a 0-based timeline Index plus the start-to-start gap from its predecessor.
-    private static List<GcTimelineEntry> BuildTimelineEntries(GcSummary g)
-    {
-        var ordered = g.Events
-            .Select((ev, ordinal) => (ev, ordinal))
-            .OrderBy(x => x.ev.Timestamp)
-            .ThenBy(x => x.ordinal)
-            .ToList();
-
-        var entries = new List<GcTimelineEntry>(ordered.Count);
-        DateTimeOffset? previousStart = null;
-        for (var i = 0; i < ordered.Count; i++)
-        {
-            var ev = ordered[i].ev;
-            var gap = previousStart is { } prev && ev.Timestamp > prev
-                ? ev.Timestamp - prev
-                : TimeSpan.Zero;
-            entries.Add(new GcTimelineEntry(i, ev.Timestamp, ev.Generation, ev.Reason, ev.Type, ev.PauseDuration, gap));
-            previousStart = ev.Timestamp;
-        }
-
-        return entries;
-    }
-
-    private static GcTimelineView BuildTimeline(GcSummary g, int topN)
-    {
-        var entries = BuildTimelineEntries(g);
-        var slice = entries.Take(topN).ToList();
-        return new GcTimelineView(
-            g.TotalCollections, g.Events.Count, g.DroppedEvents, slice.Count, slice);
-    }
-
-    private static GcLongestPausesView BuildLongestPauses(GcSummary g, int topN)
-    {
-        var ranked = BuildTimelineEntries(g)
-            .OrderByDescending(e => e.PauseDuration)
-            .ThenBy(e => e.Index)
-            .Take(topN)
-            .ToList();
-        return new GcLongestPausesView(
-            g.TotalCollections, g.Events.Count, g.DroppedEvents, ranked.Count, ranked);
-    }
-
-    private static GcByGenerationView BuildByGeneration(GcSummary g)
-    {
-        // Background GCs are gen2 by depth but get their own mutually-exclusive bucket: gen2 here
-        // means non-background gen2 only. Buckets with no events are omitted.
-        static string BucketOf(GcEvent ev) =>
-            string.Equals(ev.Type, "BackgroundGC", StringComparison.Ordinal)
-                ? "background"
-                : $"gen{ev.Generation}";
-
-        static int OrderOf(string bucket) => bucket switch
-        {
-            "gen0" => 0,
-            "gen1" => 1,
-            "gen2" => 2,
-            "background" => 3,
-            _ => 4,
-        };
-
-        var stats = g.Events
-            .GroupBy(BucketOf)
-            .Select(grp =>
-            {
-                var total = grp.Aggregate(TimeSpan.Zero, (acc, e) => acc + e.PauseDuration);
-                var count = grp.Count();
-                var max = grp.Max(e => e.PauseDuration);
-                var mean = TimeSpan.FromTicks(total.Ticks / count);
-                return new GcGenerationPauseStats(grp.Key, count, total, mean, max);
-            })
-            .OrderBy(s => OrderOf(s.Bucket))
-            .ToList();
-
-        return new GcByGenerationView(
-            g.TotalCollections, g.Events.Count, g.DroppedEvents, stats);
+        if (view.Equals("heap-stats", StringComparison.OrdinalIgnoreCase) || view.Equals("heapstats", StringComparison.OrdinalIgnoreCase))
+            return new CollectionQueryResult(CollectionHandleKinds.GcEvents, view, g.ProcessId, g.StartedAt, g.Duration, BuildHeapStats(g, topN));
+        return new CollectionQueryResult(CollectionHandleKinds.GcEvents, view, g.ProcessId, g.StartedAt, g.Duration,
+            GcMeasurementProjection.Render(g, view, topN));
     }
 
     private static GcHeapStatsView BuildHeapStats(GcSummary g, int topN)
@@ -498,6 +365,8 @@ public static class CollectionQueryDispatcher
                     null);
             }
 
+            if (GcActivityCorrelator.Validate(capture, gcSummary) is { } error)
+                return new DispatchOutcome(null, null, null, error, null);
             var overlay = GcActivityCorrelator.Correlate(capture, gcSummary, topN);
             return Ok(new CollectionQueryResult(
                 CollectionHandleKinds.Activities,

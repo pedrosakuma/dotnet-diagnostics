@@ -358,7 +358,9 @@ public class InvestigationMemoryTests
             TotalPauseTime: TimeSpan.FromMilliseconds(12),
             MaxPauseTime: TimeSpan.FromMilliseconds(7),
             Generations: [new GenerationStats(0, 2), new GenerationStats(2, 1)],
-            Events: []);
+            Events: [],
+            Suspension: new("no-detected-loss", T0, T0.AddSeconds(5), null, "normal-stop",
+                TimeSpan.FromMilliseconds(4), TimeSpan.FromMilliseconds(3), 2, 0, [], new Dictionary<string, long>()));
 
         var exported = NewExporter().Export(new ExportRequest(
             Evidence: [new InvestigationEvidenceInput("gc-before", "gc-events", gc)]));
@@ -366,8 +368,8 @@ public class InvestigationMemoryTests
         exported.Summary.Findings.KeyMetrics.Should().Contain(new Dictionary<string, double>
         {
             ["gc-total-collections"] = 3,
-            ["gc-total-pause-ms"] = 12,
-            ["gc-max-pause-ms"] = 7,
+            ["gc-fully-suspended-ms-v2"] = 4,
+            ["gc-max-fully-suspended-ms-v2"] = 3,
         });
         exported.Summary.Evidence.Should().ContainSingle()
             .Which.SourceKind.Should().Be("gc");

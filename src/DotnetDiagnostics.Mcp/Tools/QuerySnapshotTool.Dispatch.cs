@@ -79,6 +79,7 @@ public sealed partial class QuerySnapshotTool
         public required string? RootMethodFilter { get; init; }
         public required string? ProviderFilter { get; init; }
         public required string? TraceId { get; init; }
+        public string? GcHandle { get; init; }
         public required bool ChangesOnly { get; init; }
         public required int MaxDepth { get; init; }
         public required int MaxNodes { get; init; }
@@ -475,13 +476,19 @@ public sealed partial class QuerySnapshotTool
                 "must be a non-zero 32-hex W3C trace-id when view='trace'"));
         }
 
+        GcSummary? gc = null;
+        if (context.MatchesView("gc-overlay"))
+        {
+            var error = GcCorrelationHandles.Resolve(context.Handles, context.Lookup, context.GcHandle, out gc);
+            if (error is not null) return Task.FromResult(InvalidArgument("gcHandle", error));
+        }
         var collection = DiagnosticTools.QueryCollection(
             context.Lookup,
             context.PrincipalAccessor,
             context.Handle,
             string.IsNullOrWhiteSpace(context.View) ? null : context.View,
             context.TopN ?? 50,
-            correlateArtifact: null,
+            correlateArtifact: gc,
             traceId: context.TraceId,
             redactor: context.Redactor);
         return Task.FromResult(AsObjectEnvelope(collection));

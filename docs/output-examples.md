@@ -321,7 +321,9 @@ two seconds after the collector.
 
 ```jsonc
 {
-  "summary": "19 collection(s), max pause 25.8ms, total pause 159.7ms.",
+  // Historical pre-v2 capture: pause-named numbers below are collection elapsed,
+  // not measured suspension. New collectors return separate suspension evidence.
+  "summary": "19 observed collection(s); legacy GC suspension evidence is unavailable.",
   "data": {
     "kind": "gc",
     "gc": {

@@ -1022,14 +1022,20 @@ public sealed class SessionReplTests
     public async Task Query_GcHandle_LongestPausesView_TopPrecedesLegacyTopTypes()
     {
         var (services, store) = BuildServices();
-        var handle = store.Register(Environment.ProcessId, CollectionHandleKinds.GcEvents, GcSummaryArtifact(), TimeSpan.FromMinutes(10));
-
+        var gc = GcSummaryArtifact();
+        gc = gc with { Suspension = new("no-detected-loss", gc.StartedAt, gc.StartedAt + gc.Duration, null,
+            "normal-stop", TimeSpan.FromMilliseconds(15), TimeSpan.FromMilliseconds(10), 2, 0,
+            [new(gc.StartedAt, gc.StartedAt.AddMilliseconds(10), 1, 1, 6, 0, TimeSpan.Zero),
+             new(gc.StartedAt.AddMilliseconds(20), gc.StartedAt.AddMilliseconds(25), 1, 2, 1, 0, TimeSpan.Zero)],
+            new Dictionary<string, long>()) };
+        var handle = store.Register(Environment.ProcessId, CollectionHandleKinds.GcEvents, gc, TimeSpan.FromMinutes(10));
         var (exit, stdout, _) = await RunReplAsync(
             $"query --handle {handle.Id} --view longestPauses --top 1 --top-types 2\nexit\n", services);
 
         exit.Should().Be(0);
         stdout.Should().Contain("view=longestPauses");
-        stdout.Should().Contain("AllocLarge");
+        stdout.Should().Contain("\"reason\": 6");
+        stdout.Should().NotContain("\"reason\": 1");
         stdout.Should().NotContain("BackgroundGC");
     }
 
@@ -1148,7 +1154,7 @@ public sealed class SessionReplTests
     }
 
     [Fact]
-    public async Task Query_ActivitiesGcOverlayView_ReturnsNotSupportedInSession()
+    public async Task Query_ActivitiesGcOverlayView_RequiresGcHandle()
     {
         var (services, store) = BuildServices();
         // gc-overlay needs a correlated GC artifact the session can't supply; the dummy artifact is
@@ -1159,22 +1165,50 @@ public sealed class SessionReplTests
             $"query --handle {handle.Id} --view gc-overlay\nexit\n", services);
 
         exit.Should().Be(0);
-        stdout.Should().Contain("not available in the session yet");
-        stdout.Should().Contain("NotSupportedInSession");
+        stdout.Should().Contain("requires a GC handle");
+        stdout.Should().Contain("InvalidArgument");
     }
 
     [Fact]
-    public void SessionViewsFor_ExcludesActivitiesGcOverlay_ButKeepsTheRest()
+    public void SessionViewsFor_IncludesActivitiesGcOverlay()
     {
         var all = CollectionQueryDispatcher.ViewsFor(CollectionHandleKinds.Activities);
         all.Should().Contain("gc-overlay", "the dispatcher itself still offers the correlated view");
 
         var sessionViews = CliCommands.SessionViewsFor(CollectionHandleKinds.Activities);
 
-        sessionViews.Should().NotContain("gc-overlay");
+        sessionViews.Should().Contain("gc-overlay");
         sessionViews.Should().Contain("summary");
         sessionViews.Should().Contain("bySource");
         sessionViews.Should().Contain("trace");
+    }
+
+    [Fact]
+    public async Task Query_GcHandleIsForwardedThroughParserReplAndCore()
+    {
+        var (services, store) = BuildServices();
+        var at = DateTimeOffset.UnixEpoch;
+        var capture = new ActivityCapture(Environment.ProcessId, null, at, TimeSpan.FromSeconds(1), 100, 100,
+            [new("test", "request", "a", null, null, null, null, at, at.AddMilliseconds(100),
+                TimeSpan.FromMilliseconds(100), new Dictionary<string, string>())], [], [],
+            new(null, 1, 100, 100, 1, 99, 0));
+        var activity = store.Register(Environment.ProcessId, CollectionHandleKinds.Activities, capture, TimeSpan.FromMinutes(10));
+        foreach (var milliseconds in new[] { 20, 40 })
+        {
+            var evidence = new Core.Gc.GcSuspensionEvidence("no-detected-loss", at, at.AddSeconds(1), null, "normal-stop",
+                TimeSpan.FromMilliseconds(milliseconds), TimeSpan.FromMilliseconds(milliseconds), 1, 0,
+                [new(at.AddMilliseconds(10), at.AddMilliseconds(10 + milliseconds), 1, 1, 6, 99, TimeSpan.Zero)],
+                new Dictionary<string, long>());
+            var gc = new Core.Gc.GcSummary(Environment.ProcessId, at, TimeSpan.FromSeconds(1), 0,
+                TimeSpan.FromMilliseconds(900), TimeSpan.FromMilliseconds(900), [], [], Suspension: evidence);
+            var handle = store.Register(Environment.ProcessId, CollectionHandleKinds.GcEvents, gc, TimeSpan.FromMinutes(10));
+            var (exit, stdout, _) = await RunReplAsync(
+                $"query --handle {activity.Id} --view gc-overlay --gc-handle {handle.Id} --json\nexit\n", services);
+            exit.Should().Be(0);
+            stdout.Should().Contain($"\"gcPauseMs\": {milliseconds}");
+            stdout.Should().Contain("\"measurementStatus\": \"no-detected-loss\"");
+            stdout.Should().Contain("\"candidateSelection\": \"incomplete\"");
+        }
     }
 
     [Fact]

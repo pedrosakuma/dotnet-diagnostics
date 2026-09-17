@@ -75,12 +75,12 @@ internal static class CollectBatchSalientEvidence
             MeterRatePerSecond: gen2Meter?.Rate,
             MeterProcessCumulative: gen2Meter?.LastValue,
             GcCollectorWindowCount: gen2WindowCount,
-            GcCollectorWindowSeconds: report.DurationSeconds,
+            GcCollectorWindowSeconds: gc.Duration.TotalSeconds,
             Explanation:
                 "EventCounterIntervalDelta is the last reporting-interval increment; " +
                 "MeterRatePerSecond is a rate; MeterProcessCumulative is the process-lifetime " +
                 "Meter value; GcCollectorWindowCount counts GC events observed only during this batch window. " +
-                "These values are not interchangeable.");
+                $"These values are not interchangeable. GC pairing/measurement quality: {gc.MeasurementSummary}");
 
         if (gen2WindowCount <= 0)
         {

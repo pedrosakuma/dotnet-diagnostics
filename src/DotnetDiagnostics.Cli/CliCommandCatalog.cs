@@ -30,7 +30,7 @@ internal static class CliCommandCatalog
         "-p", "--pid", "--kind", "-d", "--duration", "--depth", "--max-events", "--max-matched-activities", "--interval",
         "--provider", "--meter", "--source", "--category", "--min-level", "--save", "--dump-file",
         "--top-types", "--retention-path-limit", "--symbol-path", "--native-aot-map", "--cpu-backend", "--dump-type", "--out", "--mvid",
-        "--asset", "--handle", "--latest-of-kind", "--view", "--trace-id", "--provider-filter", "--root-method-filter", "--rank-by",
+        "--asset", "--handle", "--gc-handle", "--latest-of-kind", "--view", "--trace-id", "--provider-filter", "--root-method-filter", "--rank-by",
         "--type-filter", "--address", "--offset", "--cursor", "--max-depth", "--max-nodes", "--thread-id",
         "--native-alloc-sample-period", "--native-lock-contention-sample-period", "--max-frames-per-thread", "--watch",
         "--frames-to-hash", "--min-count", "--top", "--threshold", "--mode", "--stack-rank",
@@ -373,6 +373,7 @@ query options:
                                 non-expired handle of this kind (e.g. cpu-sample); narrow with --pid.
       --view <name>             Session drill-down view.
       --trace-id <32-hex>       Session query: required for an activities handle with --view trace.
+      --gc-handle <id>          Session query: GC capture for activities --view gc-overlay.
       --top <int>               Session query: cap ranked rows/groups; wins when --top-types is also set.
       --top-types <int>         Backward-compatible alias for --top on query views.
       --provider-filter <text>  Session query: event-catalog provider substring filter.
@@ -405,6 +406,7 @@ query options:
             string.Empty,
             [
                 "--handle",
+                "--gc-handle",
                 "--latest-of-kind",
                 "--view",
                 "--trace-id",

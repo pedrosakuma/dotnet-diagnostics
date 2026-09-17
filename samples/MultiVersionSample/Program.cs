@@ -10,6 +10,30 @@ Console.WriteLine($"Runtime: {RuntimeInformation.FrameworkDescription}");
 Console.WriteLine($"PID: {Environment.ProcessId}");
 Console.Out.Flush();
 
+if (args.Contains("--gc-pause-workload", StringComparer.Ordinal))
+{
+    // Bounded rooted graph (~34 MiB). Requests come only from the owned test harness.
+    var roots = Enumerable.Range(0, 65_536).Select(_ => new byte[512]).ToArray();
+    GC.Collect(2, GCCollectionMode.Forced, blocking: true);
+    using var readiness = new Timer(_ => GcReadiness.Log.Pulse(), null, 0, 10);
+    Console.WriteLine("READY");
+    Console.Out.Flush();
+    for (var request = 0; request < 8; request++)
+    {
+        var command = Console.ReadLine();
+        if (command is not ("blocking" or "background")) break;
+        GC.Collect(2, GCCollectionMode.Forced, blocking: command == "blocking", compacting: false);
+        for (var heartbeat = 0; heartbeat < 100; heartbeat++)
+        {
+            Console.WriteLine($"Heartbeat: {DateTimeOffset.UtcNow.UtcTicks}");
+            Thread.Sleep(1);
+        }
+        Console.Out.Flush();
+        GC.KeepAlive(roots);
+    }
+    return;
+}
+
 var cache = new List<byte[]>();
 var rng = new Random(42);
 var generateGcEvents = args.Contains("--gc-events", StringComparer.Ordinal);
@@ -63,4 +87,13 @@ static void BurnCpu(TimeSpan duration)
     {
         spin.SpinOnce();
     }
+
+}
+
+[System.Diagnostics.Tracing.EventSource(Name = "DotnetDiagnostics.GcReadiness")]
+sealed class GcReadiness : System.Diagnostics.Tracing.EventSource
+{
+    internal static readonly GcReadiness Log = new();
+    [System.Diagnostics.Tracing.Event(1)]
+    public void Pulse() => WriteEvent(1);
 }

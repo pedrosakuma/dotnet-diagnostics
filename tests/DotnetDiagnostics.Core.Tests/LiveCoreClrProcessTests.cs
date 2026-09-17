@@ -3164,25 +3164,36 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         var timelineQuery = timelineResult.Data.Should().BeOfType<CollectionQueryResult>().Subject;
         timelineQuery.Kind.Should().Be(CollectionHandleKinds.GcEvents);
         timelineQuery.View.Should().Be("timeline");
-        var timeline = timelineQuery.Payload.Should().BeOfType<GcTimelineView>().Subject;
-        timeline.Entries.Should().NotBeEmpty();
-        timeline.Entries.Should().BeInAscendingOrder(entry => entry.Index);
+        var timeline = timelineQuery.Payload.Should().BeOfType<GcMeasurementView>().Subject;
+        var entries = (GcCollectionTimelineEntry[])timeline.Data;
+        entries.Should().NotBeEmpty();
+        entries.Should().BeInAscendingOrder(entry => entry.Index);
 
         var longestResult = await QueryHandleAsync(handles, collected.Handle!, "longestPauses", topN: 5);
         longestResult.Error.Should().BeNull();
         var longestQuery = longestResult.Data.Should().BeOfType<CollectionQueryResult>().Subject;
         longestQuery.View.Should().Be("longestPauses");
-        var longest = longestQuery.Payload.Should().BeOfType<GcLongestPausesView>().Subject;
-        longest.Pauses.Should().NotBeEmpty();
-        longest.Pauses.Should().BeInDescendingOrder(pause => pause.PauseDuration);
+        var longest = longestQuery.Payload.Should().BeOfType<GcMeasurementView>().Subject;
+        var pauses = (GcSuspensionInterval[])longest.Data;
+        if (collected.Data.Suspension!.IsAuthoritative)
+        {
+            pauses.Should().NotBeEmpty();
+            pauses.Should().BeInDescendingOrder(pause => pause.Duration);
+        }
+        else
+        {
+            longest.MeasurementStatus.Should().NotBe("no-detected-loss");
+            pauses.Should().BeEmpty("unreliable pairing cannot be ranked as measured pause");
+        }
 
         var byGenResult = await QueryHandleAsync(handles, collected.Handle!, "byGeneration");
         byGenResult.Error.Should().BeNull();
         var byGenQuery = byGenResult.Data.Should().BeOfType<CollectionQueryResult>().Subject;
         byGenQuery.View.Should().Be("byGeneration");
-        var byGen = byGenQuery.Payload.Should().BeOfType<GcByGenerationView>().Subject;
-        byGen.Generations.Should().NotBeEmpty();
-        byGen.Generations.Sum(bucket => bucket.Count).Should().Be(byGen.TotalCollections);
+        var byGen = byGenQuery.Payload.Should().BeOfType<GcMeasurementView>().Subject;
+        var generations = (GcGenerationElapsedStats[])byGen.Data;
+        generations.Should().NotBeEmpty();
+        generations.Sum(bucket => bucket.Count).Should().Be(byGen.RetainedCollections);
     }
 
     [Trait("Category", "Flaky")]
