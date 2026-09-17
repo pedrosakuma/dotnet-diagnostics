@@ -23,6 +23,15 @@ public sealed class MultiVersionSampleProcess : IAsyncDisposable
         await _process.StandardInput.FlushAsync().ConfigureAwait(false);
     }
 
+    /// <summary>Closes the pause-workload protocol and waits for its owned witness to join and exit.</summary>
+    public async Task StopGcWorkloadAsync(CancellationToken cancellationToken)
+    {
+        _process.StandardInput.Close();
+        await _process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+        if (_process.ExitCode != 0)
+            throw new InvalidOperationException($"GC pause workload exited with code {_process.ExitCode}: {LastOutputLine}");
+    }
+
     private MultiVersionSampleProcess(Process process)
     {
         _process = process;

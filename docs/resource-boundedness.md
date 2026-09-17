@@ -120,6 +120,18 @@ bounded by `topN`, while tag output has a fixed key allowlist and per-value leng
 wall time merges clipped direct-child intervals before subtraction, so parallel children do not
 inflate accounted time.
 
+The CLI-only `gc-activities` coordinator owns exactly two concurrent collectors, not an
+unbounded fan-out. Duration is 1–300 seconds; GC details, exploratory activities and targeted
+matching activities each have independent 1–10000 budgets (default 200), and inline overlay
+top-N is 1–100 (default 20). It retains the same two bounded objects in the ordinary handle
+store and reuses the existing GC correlator. No raw trace spills to disk. A shared
+duration-plus-65-second cancellation deadline covers queued startup; collector-owned
+30-second startup and bounded stop/drain behavior remain in force, and both tasks are
+observed before return. Per-side failures and registration failures remain explicit.
+Activity captures now carry actual observed duration plus optional `observation` metadata
+(requested duration, transport events lost, completion); legacy missing metadata is unknown,
+and abnormal streams cannot be used for GC attribution.
+
 Hints also avoid suggesting evidence already present in the current payload: an untruncated call
 tree has no redundant call-tree hint, and heap-growth output with inline retention paths does not
 recommend fetching those same paths again.

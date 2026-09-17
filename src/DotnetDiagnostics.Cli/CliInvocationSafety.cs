@@ -96,6 +96,15 @@ internal static class CliInvocationSafety
     private static InvocationSafetyRequest Collect(CliOptions options)
     {
         var kind = options.Kind?.Trim().ToLowerInvariant();
+        if (kind == "gc-activities")
+        {
+            // Both streams have the existing runtime-event safety posture; this is not an MCP kind.
+            return InvocationSafetyRequest.Create(
+                DiagnosticOperationCatalog.CollectEvents,
+                ("kind", "gc"),
+                ("depth", options.Depth),
+                ("savePath", options.SavePath));
+        }
         if (DiagnosticOperationCatalog.CollectEventsKinds.Cli.Contains(kind, StringComparer.Ordinal))
         {
             return InvocationSafetyRequest.Create(

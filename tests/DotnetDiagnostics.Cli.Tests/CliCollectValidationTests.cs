@@ -122,13 +122,13 @@ public sealed class CliCollectValidationTests
     }
 
     [Fact]
-    public void CollectKinds_MatchMcpDiscriminatorSet()
+    public void CollectKinds_MatchMcpParityAndExplicitCliOnlyWorkflows()
     {
         // Keep the CLI's accepted kinds aligned with the MCP collect_events family plus the CLI's
-        // direct sampler parity additions / alias.
+        // direct sampler parity additions / alias and the CLI-only concurrent acquisition workflow.
         CliCommands.CollectKinds.Should().BeEquivalentTo(new[]
         {
-            "counters", "exceptions", "crash-guard", "gc", "datas", "catalog", "event_source", "activities",
+            "counters", "exceptions", "crash-guard", "gc", "datas", "catalog", "event_source", "activities", "gc-activities",
             "logs", "jit", "threadpool", "contention", "db", "kestrel", "networking", "requests", "startup", "sweep",
             "cpu", "allocation", "off_cpu", "off-cpu", "native-alloc", "native-lock-contention", "thread-snapshot", "cpu-efficiency",
         });

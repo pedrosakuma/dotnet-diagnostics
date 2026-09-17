@@ -79,6 +79,9 @@ internal sealed record CliOptions
     /// <summary>Maximum events/records (<c>--max-events</c>) — maps to the per-kind cap (maxEvents/maxRecent/maxActivities). Null applies the per-kind default.</summary>
     public int? MaxEvents { get; init; }
 
+    /// <summary>GC detail cap for the concurrent gc-activities workflow, independent of activity retention.</summary>
+    public int? MaxGcEvents { get; init; }
+
     /// <summary>Independent matching-stop-event cap for targeted activities (<c>--max-matched-activities</c>). Null uses Core's default of 200.</summary>
     public int? MaxMatchedActivities { get; init; }
 
@@ -504,6 +507,7 @@ internal sealed record CliOptions
             new IntOptionDescriptor((state, value) => state.DurationSeconds = value, "--duration", "-d"),
             new IntOptionDescriptor((state, value) => state.IntervalSeconds = value, "--interval"),
             new IntOptionDescriptor((state, value) => state.MaxEvents = value, "--max-events"),
+            new IntOptionDescriptor((state, value) => state.MaxGcEvents = value, "--max-gc-events"),
             new IntOptionDescriptor((state, value) => state.MaxMatchedActivities = value, "--max-matched-activities"),
             new IntOptionDescriptor((state, value) => state.WatchIntervalSeconds = value, "--watch"),
             new StringOptionDescriptor((state, value) => state.CaptureWhen = value, "--capture-when"),
@@ -630,6 +634,7 @@ internal sealed record CliOptions
         public int? WatchIntervalSeconds { get; set; }
 
         public int? MaxEvents { get; set; }
+        public int? MaxGcEvents { get; set; }
         public int? MaxMatchedActivities { get; set; }
 
         public string? MinLevel { get; set; }
@@ -800,6 +805,7 @@ internal sealed record CliOptions
                 IntervalSeconds = IntervalSeconds,
                 WatchIntervalSeconds = WatchIntervalSeconds,
                 MaxEvents = MaxEvents,
+                MaxGcEvents = MaxGcEvents,
                 MaxMatchedActivities = MaxMatchedActivities,
                 MinLevel = MinLevel,
                 Depth = Depth,

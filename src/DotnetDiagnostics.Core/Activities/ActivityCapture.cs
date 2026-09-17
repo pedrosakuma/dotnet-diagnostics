@@ -47,7 +47,14 @@ public sealed record ActivityCapture(
     IReadOnlyList<ActivitySourceSummary> BySource,
     IReadOnlyList<ActivityOperationSummary> ByOperation,
     ActivityRetention? Retention = null,
-    DateTimeOffset? ProcessStartedAt = null);
+    DateTimeOffset? ProcessStartedAt = null)
+{
+    /// <summary>Null on legacy captures, never proof of a clean or complete stream.</summary>
+    public ActivityObservation? Observation { get; init; }
+}
+
+/// <summary>Transport completion and loss are independent of source filtering and retention limits.</summary>
+public sealed record ActivityObservation(TimeSpan RequestedDuration, string Completion, long EventsLost);
 
 /// <summary>
 /// Insertion-time accounting after source filtering. With no applied trace filter, every observed
