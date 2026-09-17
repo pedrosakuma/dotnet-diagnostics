@@ -41,6 +41,7 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
 
     private readonly ILogger<GcDumpHeapSnapshotCollector> _logger;
     private readonly IArtifactRootProvider? _artifactRoot;
+    private readonly Func<TimeSpan, CancellationToken, Task<bool>>? _flush;
 
     public GcDumpHeapSnapshotCollector(
         ILogger<GcDumpHeapSnapshotCollector>? logger = null,
@@ -48,6 +49,14 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
     {
         _logger = logger ?? NullLogger<GcDumpHeapSnapshotCollector>.Instance;
         _artifactRoot = artifactRoot;
+    }
+
+    internal GcDumpHeapSnapshotCollector(
+        IArtifactRootProvider artifactRoot,
+        Func<TimeSpan, CancellationToken, Task<bool>> flush)
+        : this(artifactRoot: artifactRoot)
+    {
+        _flush = flush;
     }
 
     public async Task<HeapSnapshotArtifact> CollectAsync(
@@ -192,7 +201,9 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
         }
         try
         {
-            if (await FlushTypeTableAsync(client, flushBudget, ct).ConfigureAwait(false))
+            if (await (_flush is null
+                ? FlushTypeTableAsync(client, flushBudget, ct)
+                : _flush(flushBudget, ct)).ConfigureAwait(false))
             {
                 return new GcDumpCollection(new GcDumpTypeAggregator(), TimedOut: true);
             }
@@ -365,49 +376,129 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
         var session = await client
             .StartEventPipeSessionWithTimeoutAsync(providers, requestRundown: false, circularBufferMB: 1, timeout, ct)
             .ConfigureAwait(false);
+        return await RunFlushAsync(
+            session.EventStream,
+            static (stream, onEvent) =>
+            {
+                using var source = new EventPipeEventSource(stream);
+                source.Dynamic.All += _ => onEvent();
+                source.Process();
+            },
+            session.StopAsync,
+            session.Dispose,
+            () => Remaining(flushTimer, timeout),
+            ex => _logger.LogDebug(ex, "Stopping gcdump type-table flush session threw."),
+            ct).ConfigureAwait(false);
+    }
+
+    internal static async Task<bool> RunFlushAsync(
+        Stream stream,
+        Action<Stream, Action> process,
+        Func<CancellationToken, Task> stopAsync,
+        Action dispose,
+        Func<TimeSpan> remainingBudget,
+        Action<Exception> onError,
+        CancellationToken ct)
+    {
+        using var readCancellation = new CancellationTokenSource();
+        var readToken = readCancellation.Token;
+        using var readStream = new GcDumpFlushReadStream(stream, readToken);
         var firstEvent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var processing = Task.Run(() =>
         {
-            using var source = new EventPipeEventSource(session.EventStream);
-            source.Dynamic.All += _ => firstEvent.TrySetResult();
-            source.Process();
+            try
+            {
+                process(readStream, () => firstEvent.TrySetResult());
+            }
+            catch (OperationCanceledException ex) when (
+                ex.CancellationToken == readToken && readToken.IsCancellationRequested)
+            {
+                // Only cancellation of this flush's own read is expected. Parser errors (including
+                // ObjectDisposedException) and unrelated cancellation still propagate.
+            }
         }, CancellationToken.None);
 
-        var remaining = Remaining(flushTimer, timeout);
+        var remaining = remainingBudget();
         var timedOut = remaining <= TimeSpan.Zero;
         if (remaining > TimeSpan.Zero)
         {
-            var timeoutTask = Task.Delay(remaining, CancellationToken.None);
-            var cancellationTask = Task.Delay(Timeout.InfiniteTimeSpan, ct);
-            var completion = await Task.WhenAny(firstEvent.Task, processing, timeoutTask, cancellationTask).ConfigureAwait(false);
-            timedOut = completion == timeoutTask;
+            using var timeoutCancellation = new CancellationTokenSource();
+            var timeoutTask = Task.Delay(remaining, timeoutCancellation.Token);
+            try
+            {
+                var completion = await Task.WhenAny(firstEvent.Task, processing, timeoutTask)
+                    .WaitAsync(ct).ConfigureAwait(false);
+                timedOut = completion == timeoutTask;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                // Still stop and quiesce the owned reader before honoring user cancellation.
+            }
+            finally
+            {
+                await timeoutCancellation.CancelAsync().ConfigureAwait(false);
+            }
         }
 
         // The runtime can abort the stream at the deadline before Task.Delay wins the race.
         // Classify by the monotonic budget as well as by the winning task.
-        timedOut |= flushTimer.Elapsed >= timeout;
+        timedOut |= remainingBudget() <= TimeSpan.Zero;
 
+        EventPipeForcedCloseReason? forcedClose = null;
         try
         {
             await EventPipeSessionShutdown.StopAndDrainAsync(
-                session,
+                stopAsync,
+                dispose,
                 processing,
-                ex => _logger.LogDebug(ex, "Stopping gcdump type-table flush session threw."),
-                Remaining(flushTimer, timeout),
-                propagateProcessingErrors: true).ConfigureAwait(false);
+                onError,
+                remainingBudget(),
+                propagateProcessingErrors: true,
+                beforeForcedClose: async reason =>
+                {
+                    forcedClose = reason;
+                    if (processing.IsCompleted)
+                    {
+                        return;
+                    }
+                    async Task CancelAndQuiesceAsync()
+                    {
+                        await readCancellation.CancelAsync().ConfigureAwait(false);
+                        // Observe completion, not its error: the normal drain propagates parser failures.
+                        await Task.WhenAny(processing).ConfigureAwait(false);
+                    }
+                    var quiescence = CancelAndQuiesceAsync();
+                    try
+                    {
+                        await quiescence.WaitAsync(TimeSpan.FromSeconds(1), CancellationToken.None).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        _ = quiescence.ContinueWith(
+                            static task => _ = task.Exception,
+                            CancellationToken.None,
+                            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                            TaskScheduler.Default);
+                    }
+                }).ConfigureAwait(false);
         }
         catch (TimeoutException)
         {
             timedOut = true;
         }
-        catch (Exception ex) when (IsExpectedFlushTermination(ex, firstEvent.Task.IsCompletedSuccessfully, timedOut))
+        catch (Exception ex) when (IsExpectedFlushTermination(
+            ex, firstEvent.Task.IsCompletedSuccessfully, timedOut || remainingBudget() <= TimeSpan.Zero))
         {
             // A deliberately stopped auxiliary session can end TraceEvent with either of these
             // verified platform-specific truncated-stream shapes. Keep every other parser failure.
-            _logger.LogDebug(ex, "The gcdump type-table flush stream ended during deliberate shutdown.");
+            onError(ex);
         }
         ct.ThrowIfCancellationRequested();
-        return timedOut;
+        if (forcedClose == EventPipeForcedCloseReason.StopFailed && remainingBudget() > TimeSpan.Zero)
+        {
+            throw new IOException("The gcdump type-table flush could not stop its EventPipe session cleanly.");
+        }
+        return timedOut || remainingBudget() <= TimeSpan.Zero || forcedClose is not null;
     }
 
     internal static bool IsExpectedFlushTermination(Exception exception, bool firstEventObserved, bool timedOut)

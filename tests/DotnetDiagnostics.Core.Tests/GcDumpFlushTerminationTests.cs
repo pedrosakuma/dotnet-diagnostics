@@ -50,6 +50,7 @@ public sealed class GcDumpFlushTerminationTests
             new FormatException("invalid event payload"),
             new InvalidOperationException("unexpected processing failure"),
             new OperationCanceledException(),
+            new ObjectDisposedException("pipe"),
         ];
 
         foreach (var failure in failures)
