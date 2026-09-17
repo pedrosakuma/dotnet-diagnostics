@@ -169,22 +169,18 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
             completion.StreamReadDuration, parseErrors);
         notes.Add(quality.Describe());
 
-        var totalEvents = httpStarted + dnsStarted + tlsStarted + socketStarted;
-        if (totalEvents == 0 && counters.Count == 0)
+        var totalStarts = httpStarted + dnsStarted + tlsStarted + socketStarted;
+        if (totalStarts == 0 && counters.Count == 0)
         {
-            notes.Add("No networking events or counters were captured in the window. Confirm the target makes outbound HTTP / DNS / socket calls during collection (start the session before the load).");
-        }
-
-        if (httpStarted > 0 && httpDurations.Count == 0)
-        {
-            notes.Add("HTTP request latency is unavailable: Start/Stop events could not be correlated by activity id in this window.");
+            notes.Add("No networking starts or counters were captured in the window. Other lifecycle events may still be present; inspect the counts. Confirm the target makes outbound HTTP / DNS / socket calls during collection (start the session before the load).");
         }
 
         if (httpDurations.IsApproximate
             || queueTimes.IsApproximate
             || dnsDurations.IsApproximate
             || tlsDurations.IsApproximate
-            || byOperation.Values.Any(static g => g.IsApproximate))
+            || byOperation.Values.Any(static g => g.IsApproximate)
+            || overflowOperation.IsApproximate)
         {
             notes.Add($"Latency percentiles are exact up to {BoundedPercentileSampler.ExactSampleCapacity} samples per aggregate and become reservoir-sampled approximations above that cap; max values remain exact.");
         }
@@ -210,14 +206,27 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
                 ["httpResponseStops"] = httpResponseStops,
                 ["httpStatusErrorStops"] = httpStatusErrorStops,
                 ["httpStopsWithoutStatus"] = httpStopsWithoutStatus,
+                ["percentileSamples"] = httpDurations.RetainedCount,
+                ["queueSamples"] = queueTimes.Count,
+                ["queuePercentileSamples"] = queueTimes.RetainedCount,
+                ["queueRejectedSamples"] = leftQueue - queueTimes.Count,
             },
         };
 
-        var correlation = new NetworkingCorrelation(httpCorrelation, pendingDns.Snapshot(), pendingTls.Snapshot());
+        var correlation = new NetworkingCorrelation(httpCorrelation,
+            WithPercentileSamples(pendingDns.Snapshot(), dnsDurations),
+            WithPercentileSamples(pendingTls.Snapshot(), tlsDurations));
         notes.Add("Latency population v2: all accepted Start/Stop completions, including failed operations; paired is the sample count and pairedFailed/pairedWithoutFailure partition it. No observed failure is not proof of success. HTTP status errors are responses, not RequestFailed; failure events include cancellation/timeouts but do not reliably identify their cause. Missing/ambiguous/unfinished lifecycles have no latency sample; zero samples means unavailable, not measured zero.");
         AddCorrelationNote("HTTP", correlation.Http, notes);
         AddCorrelationNote("DNS", correlation.Dns, notes);
         AddCorrelationNote("TLS", correlation.Tls, notes);
+        foreach (var metric in NetworkingLatency.Availability(correlation, quality))
+        {
+            if (metric.Value != "measured")
+                notes.Add($"{metric.Key} latency is unavailable ({metric.Value}); see Correlation counts and CaptureQuality. Scalar zero is not a measurement without accepted samples.");
+        }
+        if (leftQueue != queueTimes.Count)
+            notes.Add($"Queue latency rejected {leftQueue - queueTimes.Count} RequestLeftQueue payload(s); only valid nonnegative durations are sampled.");
 
         return new NetworkingSnapshot(
             ProcessId: processId,
@@ -259,6 +268,15 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
             CaptureQuality = quality,
         };
     }
+
+    internal static NetworkingCorrelationCounts WithPercentileSamples(
+        NetworkingCorrelationCounts counts, BoundedDurationSampler durations) => counts with
+        {
+            Counts = new Dictionary<string, long>(counts.Counts, StringComparer.Ordinal)
+            {
+                ["percentileSamples"] = durations.RetainedCount,
+            },
+        };
 
     private static void AddCorrelationNote(string kind, NetworkingCorrelationCounts counts, HashSet<string> notes)
     {
@@ -347,12 +365,7 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
 
             case "RequestLeftQueue":
                 leftQueue++;
-                var queueMs = PayloadDouble(traceEvent, "timeOnQueueMilliseconds");
-                if (queueMs >= 0)
-                {
-                    queueTimes.Add(TimeSpan.FromMilliseconds(queueMs));
-                }
-
+                AddQueueSample(traceEvent.PayloadByName("timeOnQueueMilliseconds"), queueTimes);
                 break;
         }
     }
@@ -514,17 +527,14 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
         }
     }
 
-    private static double PayloadDouble(TraceEvent traceEvent, string name)
+    internal static void AddQueueSample(object? payload, BoundedDurationSampler queueTimes)
     {
-        try
-        {
-            var value = traceEvent.PayloadByName(name);
-            return value is null ? -1 : ToDouble(value);
-        }
-        catch (Exception)
-        {
-            return -1;
-        }
+        if (payload is null)
+            throw new FormatException("RequestLeftQueue duration payload is missing.");
+        var milliseconds = ToDouble(payload);
+        if (!double.IsFinite(milliseconds) || milliseconds < 0)
+            throw new FormatException("RequestLeftQueue duration must be finite and nonnegative.");
+        queueTimes.Add(TimeSpan.FromMilliseconds(milliseconds));
     }
 
     private static string AsString(IDictionary<string, object> data, string key)
@@ -544,7 +554,7 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
 
     private sealed record PendingHttp(DateTimeOffset StartedAt, string Host, string Path);
 
-    private sealed class MutableHttpGroup
+    internal sealed class MutableHttpGroup
     {
         private readonly BoundedDurationSampler _durations = new();
 
@@ -577,7 +587,7 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
                 Count,
                 TotalDuration,
                 _durations.GetPercentile(0.95),
-                _durations.Max);
+                _durations.Max) { PercentileSamples = _durations.RetainedCount };
         }
     }
 }

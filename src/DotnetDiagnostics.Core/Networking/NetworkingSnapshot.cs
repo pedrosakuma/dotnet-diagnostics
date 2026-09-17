@@ -56,6 +56,9 @@ public sealed record NetworkingSnapshot(
     public NetworkingCorrelation? Correlation { get; init; }
 
     public NetworkingCaptureQuality? CaptureQuality { get; init; }
+
+    /// <summary>Derived from accounting, never from scalar durations. Missing evidence remains unknown.</summary>
+    public IReadOnlyDictionary<string, string> LatencyAvailability => NetworkingLatency.Availability(Correlation, CaptureQuality);
 }
 
 /// <summary>Latest value of a single networking EventCounter captured in the window.</summary>
@@ -73,4 +76,11 @@ public sealed record NetworkingHttpGroup(
     int Count,
     TimeSpan TotalDuration,
     TimeSpan P95Duration,
-    TimeSpan MaxDuration);
+    TimeSpan MaxDuration)
+{
+    /// <summary>Retained percentile samples; null marks legacy/unknown evidence. Count is the accepted population.</summary>
+    public long? PercentileSamples { get; init; }
+
+    /// <summary>Group coverage and population inherit the parent HTTP Correlation and CaptureQuality.</summary>
+    public string LatencyAvailability => PercentileSamples is null ? "unknown" : Count > 0 ? "measured" : "unavailable";
+}

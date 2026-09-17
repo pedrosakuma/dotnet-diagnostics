@@ -11,11 +11,26 @@ namespace DotnetDiagnostics.Mcp.IntegrationTests;
 public sealed class NetworkingCorrelationContractTests
 {
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task ActualCollectEventsEnvelope_PreservesLimitationsAndLegacyUnknown(bool legacy)
+    [InlineData(false, null)]
+    [InlineData(true, null)]
+    [InlineData(false, "absent")]
+    [InlineData(false, "zero")]
+    [InlineData(false, "positive")]
+    [InlineData(false, "failed")]
+    [InlineData(false, "partial")]
+    [InlineData(false, "reservoir")]
+    [InlineData(false, "unpaired")]
+    [InlineData(false, "incomplete")]
+    [InlineData(false, "loss")]
+    [InlineData(false, "loss-empty")]
+    [InlineData(false, "unknown-loss")]
+    [InlineData(false, "invalid-queue")]
+    [InlineData(false, "legacy")]
+    [InlineData(false, "legacy-counts")]
+    public async Task ActualCollectEventsEnvelope_PreservesLimitationsAndLegacyUnknown(bool legacy, string? scenario)
     {
-        var snapshot = NetworkingCorrelationContractFixture.Create(legacy);
+        var snapshot = scenario is null ? NetworkingCorrelationContractFixture.Create(legacy)
+            : NetworkingCorrelationContractFixture.CreateLatencyScenario(scenario);
         var result = await CollectEventsTool.CollectEvents(
             counterCollector: null!, exceptionCollector: null!, crashGuardCollector: null!,
             gcCollector: null!, gcDatasCollector: null!, activityCollector: null!, eventSourceCollector: null!,
@@ -31,6 +46,13 @@ public sealed class NetworkingCorrelationContractTests
             loggerFactory: null, kind: "networking", processId: Environment.ProcessId, durationSeconds: 1,
             cancellationToken: CancellationToken.None);
         Assert.False(result.IsError);
+        if (scenario is not null)
+        {
+            var envelope = JsonSerializer.SerializeToElement(result, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            NetworkingCorrelationContractFixture.AssertLatencyScenario(scenario, envelope.GetProperty("data").GetProperty("networking"),
+                result.Summary);
+            return;
+        }
         Assert.Contains(legacy ? "unknown" : "HTTP 1/3", result.Summary, StringComparison.Ordinal);
         Assert.Contains(legacy ? "Latency population/outcomes are unknown" : "v2 includes failed completions",
             result.Summary, StringComparison.Ordinal);

@@ -84,6 +84,9 @@ public sealed class NetworkingCaptureQualityLiveTests(ITestOutputHelper output)
                     cancellationToken: token);
                 var next = await capture;
                 Assert.Equal("normal", next.CaptureQuality!.Completion);
+                Assert.All(next.LatencyAvailability.Values, availability => Assert.Equal("not-observed", availability));
+                Assert.Equal(0, next.Correlation!.Http.LatencySamples);
+                Assert.Equal(0, next.Correlation.Http.QueueSamples);
             }
             else
             {
@@ -120,6 +123,15 @@ public sealed class NetworkingCaptureQualityLiveTests(ITestOutputHelper output)
                 Assert.Equal(scenario != "normal", quality.HasLimitations);
                 Assert.Equal(scenario == "injected-source-failure" ? 2 : scenario == "injected-payload-failure" ? 5 : 6,
                     snapshot.ByOperation.Sum(g => g.Count));
+                Assert.Equal("measured", snapshot.LatencyAvailability["http"]);
+                Assert.Equal(snapshot.Correlation!.Http.Paired, snapshot.Correlation.Http.PercentileSamples);
+                Assert.All(snapshot.ByOperation, group =>
+                {
+                    Assert.Equal("measured", group.LatencyAvailability);
+                    Assert.Equal(group.Count, group.PercentileSamples);
+                });
+                Assert.Equal(snapshot.HttpRequestsLeftQueue, snapshot.Correlation.Http.QueueSamples);
+                Assert.Equal(0, snapshot.Correlation.Http.QueueRejectedSamples);
                 Assert.Contains(snapshot.Notes, n => n.Contains($"completion={quality.Completion}", StringComparison.Ordinal));
                 if (scenario is "actual-early-exit" or "injected-source-failure")
                     Assert.True(quality.StreamReadDuration < duration, JsonSerializer.Serialize(quality));

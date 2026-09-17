@@ -157,12 +157,12 @@ public sealed partial class CollectEventsTool
         // kind=activities
         [Description("activities/distributed_trace: optional ActivitySource name filters ('*'/'?' wildcards). Null/empty captures all sources.")]
         IReadOnlyList<string>? sources = null,
-        [Description("kind=activities only. Maximum number of captured activities to retain. Must be >= 1. Defaults to 200.")]
+        [Description("activities: retained activity cap, >=1 (default 200).")]
         int maxActivities = 200,
         // kind=requests
-        [Description("kind=requests only. Elapsed-time threshold (in milliseconds) above which an in-flight ASP.NET Core request is flagged as long-running. Must be >= 0. Defaults to 1000.")]
+        [Description("requests: in-flight ASP.NET Core elapsed-ms threshold for long-running requests, >=0 (default 1000).")]
         double longRunningThresholdMs = 1000,
-        [Description("kind=requests only. Maximum number of in-flight requests to return inline (oldest-first). Must be >= 1. Defaults to 100; the full set stays behind the handle.")]
+        [Description("requests: oldest-first inline cap, >=1 (default 100); full in-flight set stays behind the handle.")]
         int maxRequests = 100,
         // kind=distributed_trace
         [Description("kind=activities optional; kind=distributed_trace REQUIRED. Non-zero 32-hex W3C trace-id, normalized to lowercase. Filters before retention with independent maxMatchedActivities cap. Distributed correlation requires attached Pods and returns completed-window evidence, not a complete trace or reliable culprit ranking.")]

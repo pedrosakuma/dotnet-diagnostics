@@ -149,6 +149,14 @@ HTTP/DNS/TLS percentiles and HTTP operation groups. JSON
 status-error response, not automatically a transport failure; cancellation and
 timeout causes are not reliably classified by the provider. Zero pairs means
 unavailable, not measured zero. Missing version/metadata means legacy/unknown.
+`LatencyAvailability` derives HTTP/queue/DNS/TLS labels from these counts and
+`CaptureQuality`, including not-observed, uncorrelatable, incomplete and unknown
+evidence. Only `measured` permits interpreting a scalar zero as a duration.
+Counts also include `percentileSamples` (retained, not all accepted samples);
+HTTP adds `queueSamples`, `queuePercentileSamples` and `queueRejectedSamples`.
+Groups retain their own nullable `PercentileSamples` and availability. Reservoir
+approximation is independent of pairing/capture gaps. JSON and report headlines
+preserve the counts/qualifications and label unavailable p95 rather than `0.0ms`.
 The report headline preserves population and independent capture-quality
 qualifications. See [networking evidence semantics](../../docs/networking-correlation.md)
 before comparing versions or interpreting a partial capture as complete.

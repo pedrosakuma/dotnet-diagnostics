@@ -11,17 +11,42 @@ namespace DotnetDiagnostics.BenchmarkDotNet.Tests;
 public sealed class NetworkingCorrelationContractTests
 {
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task ActualCollectorAndReport_PreserveLimitationsAndLegacyUnknown(bool legacy)
+    [InlineData(false, null)]
+    [InlineData(true, null)]
+    [InlineData(false, "absent")]
+    [InlineData(false, "zero")]
+    [InlineData(false, "positive")]
+    [InlineData(false, "failed")]
+    [InlineData(false, "partial")]
+    [InlineData(false, "reservoir")]
+    [InlineData(false, "unpaired")]
+    [InlineData(false, "incomplete")]
+    [InlineData(false, "loss")]
+    [InlineData(false, "loss-empty")]
+    [InlineData(false, "unknown-loss")]
+    [InlineData(false, "invalid-queue")]
+    [InlineData(false, "legacy")]
+    [InlineData(false, "legacy-counts")]
+    public async Task ActualCollectorAndReport_PreserveLimitationsAndLegacyUnknown(bool legacy, string? scenario)
     {
-        var snapshot = NetworkingCorrelationContractFixture.Create(legacy);
+        var snapshot = scenario is null ? NetworkingCorrelationContractFixture.Create(legacy)
+            : NetworkingCorrelationContractFixture.CreateLatencyScenario(scenario);
         using var collector = new InProcessDiagnosticCollector(() => new ServiceCollection()
             .AddSingleton<INetworkingCollector>(new NetworkingCorrelationContractFixture.Collector(snapshot))
             .AddSingleton<IProcessContextResolver>(new NetworkingCorrelationContractFixture.Resolver())
             .AddSingleton<IDiagnosticHandleStore>(new MemoryDiagnosticHandleStore()).BuildServiceProvider());
         var capture = await collector.CollectAsync(Environment.ProcessId, "networking", 1, CancellationToken.None);
         Assert.False(capture.IsError);
+        if (scenario is not null)
+        {
+            using var materialized = JsonDocument.Parse(capture.Json);
+            var markdown = DotnetDiagnosticsReportExporter.BuildMarkdown(
+                [new BenchmarkDiagnosticEntry("Loopback", "networking", capture.IsError, capture.Summary,
+                    capture.Headline, "networking.json")]);
+            NetworkingCorrelationContractFixture.AssertLatencyScenario(scenario, materialized.RootElement.GetProperty("Data"), capture.Headline);
+            NetworkingCorrelationContractFixture.AssertLatencyScenario(scenario, materialized.RootElement.GetProperty("Data"), markdown);
+            return;
+        }
         var expected = legacy ? "unknown" : "HTTP 1/3";
         Assert.Contains(expected, capture.Headline, StringComparison.Ordinal);
         using var json = JsonDocument.Parse(capture.Json);

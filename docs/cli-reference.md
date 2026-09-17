@@ -353,6 +353,13 @@ the existing percentiles and HTTP operation groups. `correlation.byKind` counts
 carry the version, all/failed/no-observed-failure sample denominators and HTTP
 status-error response counts (503 is not a transport failure). Missing version
 means legacy/unknown; zero pairs means unavailable, not measured zero.
+`latencyAvailability` labels HTTP/queue/DNS/TLS independently on snapshots and
+all five query views. Existing duration scalars remain compatible: only
+`measured` makes zero a real measurement. `percentileSamples` (and
+`queuePercentileSamples`/`queueSamples` in HTTP counts) distinguishes reservoir
+retention from accepted samples and capture gaps. Operation groups retain their
+own nullable `percentileSamples` and availability; missing legacy metadata stays
+unknown. Human summaries label unavailable p95 instead of printing `0.0ms`.
 Latencies describe accepted observed pairs, not all
 requests. JSON and session queries retain `correlation.byKind` exclusion
 accounting; legacy artifacts without it have unknown coverage. TPL activity
