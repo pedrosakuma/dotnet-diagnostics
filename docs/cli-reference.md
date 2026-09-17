@@ -350,11 +350,12 @@ Open an EventPipe session and collect a window of events. `--kind` is required.
 
 | Option | Meaning |
 |---|---|
-| `--kind <kind>` | One of `counters`, `exceptions`, `crash-guard`, `gc`, `datas`, `catalog`, `event_source`, `activities`, `logs`, `jit`, `threadpool`, `contention`, `db`, `kestrel`, `networking`, `requests`, `startup`, `sweep`, `cpu`, `allocation`, `off_cpu` (alias `off-cpu`), `native-alloc`, `native-lock-contention`, `thread-snapshot`, `cpu-efficiency`. |
+| `--kind <kind>` | One of `counters`, `exceptions`, `crash-guard`, `gc`, `datas`, `catalog`, `event_source`, `activities`, `gc-activities`, `logs`, `jit`, `threadpool`, `contention`, `db`, `kestrel`, `networking`, `requests`, `startup`, `sweep`, `cpu`, `allocation`, `off_cpu` (alias `off-cpu`), `native-alloc`, `native-lock-contention`, `thread-snapshot`, `cpu-efficiency`. |
 | `-d, --duration <int>` | Window in seconds (default: `counters` 5, `datas` 15, `sweep` 6, others 10). |
 | `--depth <level>` | Verbosity: `summary`, `detail` (default), `raw`. |
 | `--top <n>` | Top-N cap for sampler kinds (`cpu`, `allocation`, `off_cpu`, `native-alloc`, `native-lock-contention`) and session query pages/ranked views. |
 | `--max-events <int>` | Per-kind cap (events / exceptions / activities / catalog occurrence sample). |
+| `--max-gc-events <int>` | `gc-activities` only: independent GC collection-row, heap-stat and suspension-interval detail cap (default 200, 1–10000). Does not affect activity retention or GC pairing-state limits. |
 | `--interval <int>` | Refresh interval in seconds (`counters`, `db`, `kestrel`, `networking`). Default 1. |
 | `--watch <seconds>` | Re-run the command every N seconds, clear/redraw the human output, and stop cleanly on Ctrl-C. Not compatible with `--json`. With `--capture-when` it is reinterpreted as the metric **sample interval** for the bounded gated watch (no redraw loop). |
 | `--capture-when <pred>` | Threshold-gated capture (`--kind counters`). Arm a **bounded** watch and capture when a single metric predicate `<metric><op><value>` trips — e.g. `cpu>85`, `gcHeapMb>=1500`, `rssMb>2000`, `threadCount>400`, `activeTimerCount>1000`. Operators: `>` `>=` `<` `<=`. |
@@ -374,9 +375,9 @@ Open an EventPipe session and collect a window of events. `--kind` is required.
 | `--max-captures <int>` | Stop after N captures (default 1, max 10). |
 | `--provider <name>` | `counters`: EventCounter provider (repeatable); `catalog`: EventPipe provider (repeatable; replaces broad defaults); `event_source`: required provider name. |
 | `--meter <name>` | `counters`: Meter name (repeatable). |
-| `--source <name>` | `activities`: ActivitySource filter (repeatable, `*` / `?` globs). |
-| `--trace-id <32-hex>` | `activities`: optional non-zero W3C trace ID. Core trims surrounding whitespace and normalizes casing before targeted retention. Also retains its existing session `query --view trace` meaning. |
-| `--max-matched-activities <int>` | `activities` with `--trace-id`: independent matching stop-event cap (default 200, minimum 1). Requires targeted collection; rejected for other commands/kinds or without `--trace-id`. |
+| `--source <name>` | `activities` / `gc-activities`: ActivitySource filter (repeatable, `*` / `?` globs). |
+| `--trace-id <32-hex>` | `activities` / `gc-activities`: optional non-zero W3C trace ID. Core trims surrounding whitespace and normalizes casing before targeted retention. Also retains its existing session `query --view trace` meaning. |
+| `--max-matched-activities <int>` | `activities` / `gc-activities` with `--trace-id`: independent matching stop-event cap (default 200, minimum 1). Requires targeted collection; rejected for other commands/kinds or without `--trace-id`. |
 | `--category <glob>` | `logs`: ILogger category filter (repeatable). |
 | `--min-level <level>` | `logs`: minimum level (default `Information`). |
 | `--unsafe-provider` | `event_source`: opt in to a non-allowlisted provider. |
@@ -388,7 +389,7 @@ retains only matching spans up to the independent `--max-matched-activities` bud
 unrelated traffic never spends that budget. `--max-events` keeps its exploratory meaning,
 and does not reduce the targeted budget. Invalid IDs and nonpositive budgets return the
 normal Core `InvalidArgument` CLI error envelope; unsupported option combinations are
-explicit usage errors. Collection-time `--trace-id` is rejected on other collect kinds.
+explicit usage errors. Collection-time `--trace-id` is accepted only on `activities` and `gc-activities`.
 
 Both one-shot commands and `session` REPL collection use the same Core-only pipeline;
 the CLI does not provide distributed/Pod orchestration. JSON capture and activity drilldown
@@ -406,6 +407,64 @@ dotnet-diagnostics-cli collect --kind activities --pid 1234 \
 Inside a session, use the same collect options, then
 `query --latest-of-kind activities --view trace --trace-id abcdef0123456789abcdef0123456789`
 without recollecting.
+
+### Concurrent GC/activity acquisition
+
+Sequential `collect --kind gc` and `collect --kind activities` do **not** establish
+overlapping observation windows. Use the Core-only `gc-activities` workflow to resolve one
+target once and start both collectors concurrently:
+
+```bash
+dotnet-diagnostics-cli collect --kind gc-activities --pid 1234 \
+  --duration 10 --source 'MyApp.*' \
+  --trace-id abcdef0123456789abcdef0123456789 \
+  --max-events 200 --max-matched-activities 1000 --max-gc-events 500 --top 20 --json
+```
+
+One-shot JSON includes the acquired GC and activity evidence, per-side status/reason,
+requested windows, actual observed windows, their intersection, signed startup skew
+(activity start minus GC start), and a useful inline `overlay`. The human output prints
+the handles, measurement/retention summaries and ranked overlapping spans. A one-shot
+handle expires with the CLI process; it is **not** needed to interpret the inline result.
+
+Inside `dotnet-diagnostics-cli session --pid 1234`, run:
+
+```text
+collect --kind gc-activities --duration 10 --source MyApp.* --trace-id abcdef0123456789abcdef0123456789 --json
+query --handle <data.activities.handle.id> --view gc-overlay --gc-handle <data.gc.handle.id> --json
+query --latest-of-kind activities --view trace --trace-id abcdef0123456789abcdef0123456789
+```
+
+Replace the placeholders with the two handles returned by **that** collection. Both actual
+artifacts are retained for 10 minutes (subject to the session store's normal capacity/TTL),
+even after target exit following a successful capture. No injected handles, MCP server,
+HTTP transport, bearer token, daemon, Pod orchestration, or raw-trace disk spill is involved.
+
+The coordinated workflow bounds `--duration` to 1–300 seconds, each retention budget to
+1–10000, and overlay `--top` to 1–100 (default 20). The normal exploratory activity default
+and targeted matching cap remain independent of `--max-gc-events`. GC collection elapsed
+is **not** pause time: the overlay reuses v2 fully-suspended intervals and per-span interval
+union. The same suspension can legitimately overlap multiple activities. Dropped matching
+activities, dropped GC intervals, dropped collection rows, transport/pairing uncertainty,
+and output top-N/detail omissions remain separate; filtering is not loss.
+
+Starting two tasks is not simultaneous stream readiness. Requested windows start at
+dispatch, while actual windows reflect EventPipe startup and drain. The intersection may
+exclude either end of a span; retained spans do not prove complete tracing. No matching
+retained span does not prove absence of GC or tracing. Each collector has its existing
+30-second startup budget and bounded stop/drain; a shared duration-plus-65-second deadline
+cancels pending work, and both collector tasks are awaited through cleanup. Failure of one
+side does not discard the other's successful evidence. `status=partial`/`failed`,
+per-side `unavailableReason` and a null `overlay` disclose failed, early-ended, unknown,
+nonoverlapping or incompatible evidence rather than measured zero. Inspect these fields
+even when the CLI returned a diagnostic response successfully. Missing/changed target
+lifetime prevents registration and attribution; unknown capture lifetime prevents attribution.
+
+For the real `CoreClrSample`, source `CoreClrSample.Activities` emits `/activity` spans.
+The optional sample-only `/activity?delayMs=20&collectGc=true` performs one bounded,
+blocking compacting GC inside the child span. Live acceptance drives a finite unrelated
+prefix and **asserts an observed event from each collector's own stream** before sending
+a known-trace request; a fixed startup sleep is not readiness evidence.
 
 ```bash
 dotnet-diagnostics-cli collect --kind counters --pid 1234 --duration 5
@@ -922,9 +981,11 @@ GC query payloads now return the versioned `GcMeasurementView` contract; unavail
 evidence does not become zero or a healthy hint. Portable corrected pause metrics have `.v2`
 identities and are never compared to legacy elapsed values under an unchanged metric name.
 
-In the session REPL, correlate overlapping captures from the same process:
+In the session REPL, acquire overlapping captures with
+[`collect --kind gc-activities`](#concurrent-gcactivity-acquisition), then correlate the returned handles:
 
 ```text
+collect --kind gc-activities --source MyApp.* --duration 10 --json
 query --handle <activities-handle> --view gc-overlay --gc-handle <gc-handle> --json
 ```
 

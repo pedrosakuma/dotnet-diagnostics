@@ -52,6 +52,9 @@ dotnet-diagnostics-cli capabilities --pid 1234
 # Collect a 5s EventCounters window
 dotnet-diagnostics-cli collect --kind counters --pid 1234 --duration 5
 
+# Concurrent GC suspension and ActivitySource spans, with a useful inline overlay
+dotnet-diagnostics-cli collect --kind gc-activities --pid 1234 --source 'MyApp.*' --duration 10 --json
+
 # Walk the managed heap (top retained types)
 dotnet-diagnostics-cli inspect-heap --pid 1234 --top-types 30 --acknowledge-risk high
 

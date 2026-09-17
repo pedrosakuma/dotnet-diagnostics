@@ -11,6 +11,9 @@ public static class GcActivityCorrelator
     internal static string? Validate(ActivityCapture activity, GcSummary gc)
     {
         if (activity.ProcessId != gc.ProcessId) return "Activity and GC process IDs differ.";
+        if (activity.Observation is { } observation &&
+            (observation.Completion != "normal-stop" || observation.EventsLost != 0))
+            return "Activity stream ended early, failed, or lost events; GC attribution is unavailable.";
         if (activity.ProcessStartedAt is { } a && gc.Suspension?.ProcessStartedAt is { } g && a != g)
             return "Activity and GC process lifetimes differ.";
         if (activity.Duration <= TimeSpan.Zero || gc.Duration <= TimeSpan.Zero ||

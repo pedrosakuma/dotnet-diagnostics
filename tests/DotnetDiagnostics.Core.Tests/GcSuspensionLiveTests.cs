@@ -1,3 +1,4 @@
+using DotnetDiagnostics.Core.Activities;
 using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.TestSupport;
 using FluentAssertions;
@@ -85,8 +86,22 @@ public sealed class GcSuspensionLiveTests(ITestOutputHelper output)
         evidence.IsAuthoritative.Should().BeTrue();
         evidence.Intervals.Should().NotBeEmpty();
         evidence.Intervals.Should().OnlyContain(p => p.Reason == 1 || p.Reason == 6);
-        evidence.TotalSuspensionTime.Should().BeLessThan(summary.CollectionElapsedTime,
-            "the rooted background workload includes concurrent execution, not only suspension");
+        evidence.DroppedIntervals.Should().Be(0, "exact union verification requires every measured interval");
+        evidence.OutputOmittedIntervals.Should().Be(0);
+        evidence.ObservedIntervals.Should().Be(evidence.Intervals.Count);
+        evidence.ObservationStart.Should().Be(summary.StartedAt);
+        evidence.ObservationEnd.Should().Be(summary.StartedAt + summary.Duration);
+        evidence.Intervals.Should().OnlyContain(p =>
+            p.StartedAt >= evidence.ObservationStart && p.StoppedAt <= evidence.ObservationEnd &&
+            p.StoppedAt >= p.StartedAt);
+        var union = UtcIntervalUnion.Measure(evidence.ObservationStart, evidence.ObservationEnd,
+            evidence.Intervals.Select(p => (p.StartedAt, p.StoppedAt)));
+        union.Clipped.Should().Be(0);
+        union.Disjoint.Should().Be(0);
+        // GCStart/GCStop do not enclose every GC-related suspension; compare within the observed pause scope.
+        evidence.TotalSuspensionTime.Should().Be(TimeSpan.FromTicks(union.CoveredTicks));
+        evidence.TotalSuspensionTime.Should().BeGreaterThan(TimeSpan.Zero).And.BeLessThanOrEqualTo(summary.Duration);
+        evidence.MaxSuspensionTime.Should().Be(evidence.Intervals.Max(p => p.Duration));
         var heartbeatsInsideBackground = summary.Events.Where(e => e.Type == "BackgroundGC")
             .Count(e => sample.Heartbeats.Any(t => t > e.Timestamp.UtcTicks && t < (e.Timestamp + e.CollectionElapsedDuration).UtcTicks));
         output.WriteLine($"Background collections with application heartbeat: {heartbeatsInsideBackground}");

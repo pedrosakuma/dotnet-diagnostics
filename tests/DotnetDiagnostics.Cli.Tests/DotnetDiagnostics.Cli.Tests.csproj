@@ -16,6 +16,9 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\DotnetDiagnostics.Cli\DotnetDiagnostics.Cli.csproj" />
+    <ProjectReference Include="..\DotnetDiagnostics.TestSupport\DotnetDiagnostics.TestSupport.csproj" />
+    <ProjectReference Include="..\..\samples\CoreClrSample\CoreClrSample.csproj"
+                      ReferenceOutputAssembly="false" Private="false" SkipGetTargetFrameworkProperties="true" />
   </ItemGroup>
 
   <ItemGroup>

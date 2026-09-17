@@ -77,12 +77,12 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector
             .ConfigureAwait(false);
 
         var collectionStartedAt = DateTimeOffset.UtcNow;
-
-        var processingTask = Task.Run(() =>
-        {
-            try
+        var observationEnd = collectionStartedAt;
+        var completion = "normal-stop";
+        long eventsLost = 0;
+        await EventPipeCollectionRunner.RunAsync(session, duration,
+            source =>
             {
-                using var source = new EventPipeEventSource(session.EventStream);
                 source.Dynamic.All += traceEvent =>
                 {
                     if (!string.Equals(traceEvent.ProviderName, ProviderName, StringComparison.Ordinal) ||
@@ -96,26 +96,22 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector
                     ActivityObserved?.Invoke();
                 };
 
-                source.Process();
-            }
-            catch (Exception ex)
+            },
+            ex =>
             {
+                completion = "processing-failure";
                 _logger.LogDebug(ex, "Activity EventPipe source ended for pid {Pid}.", processId);
-            }
-        }, cancellationToken);
-
-        try
-        {
-            await Task.Delay(duration, cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            await EventPipeSessionShutdown.StopAndDrainAsync(
-                session,
-                processingTask,
-                ex => _logger.LogDebug(ex, "Stopping Activity EventPipe session for pid {Pid} failed.", processId))
-                .ConfigureAwait(false);
-        }
+            }, cancellationToken,
+            (lost, early, streamStart) =>
+            {
+                eventsLost = lost;
+                observationEnd = DateTimeOffset.UtcNow;
+                if (early) completion = "early-exit";
+                if (streamStart > DateTimeOffset.UnixEpoch && streamStart <= observationEnd)
+                    collectionStartedAt = streamStart;
+                else
+                    completion = "missing-session-header";
+            }).ConfigureAwait(false);
 
         var capturedActivities = retention.Activities
             .OrderBy(activity => activity.StartedAt)
@@ -127,14 +123,17 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector
             ProcessId: processId,
             SourceFilters: normalizedSourceFilters,
             StartedAt: collectionStartedAt,
-            Duration: duration,
+            Duration: observationEnd > collectionStartedAt ? observationEnd - collectionStartedAt : TimeSpan.Zero,
             TotalActivities: retention.ObservedActivities,
             CompletedActivities: retention.ObservedActivities,
             Activities: capturedActivities,
             BySource: BuildSourceSummary(capturedActivities),
             ByOperation: BuildOperationSummary(capturedActivities),
             Retention: retention.Retention,
-            ProcessStartedAt: processStartedAt);
+            ProcessStartedAt: processStartedAt)
+        {
+            Observation = new ActivityObservation(duration, completion, eventsLost),
+        };
     }
 
     private static bool TryCreateActivity(

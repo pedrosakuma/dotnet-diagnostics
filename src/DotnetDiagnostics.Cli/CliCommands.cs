@@ -109,7 +109,7 @@ internal static partial class CliCommands
 
     /// <summary>
     /// EventPipe collection kinds accepted by the <c>collect</c> command (issue #288 PR2). Mirrors
-    /// the MCP <c>collect_events</c> discriminator set so both front-ends accept the same kinds.
+    /// MCP parity kinds plus explicit CLI-only workflows such as concurrent <c>gc-activities</c>.
     /// </summary>
     public static readonly IReadOnlyList<string> CollectKinds = CliCommandCatalog.CollectKinds;
 

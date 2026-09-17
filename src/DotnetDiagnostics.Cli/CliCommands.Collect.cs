@@ -145,6 +145,13 @@ internal static partial class CliCommands
                 pid, NullIfEmptyList(options.Sources), duration, options.MaxEvents ?? 200,
                 cancellationToken).ConfigureAwait(false)),
 
+            "gc-activities" => BuildResultWithComparableSave(options, await GcActivitiesCaptureUseCase.CollectAsync(
+                services.GetRequiredService<IGcCollector>(), services.GetRequiredService<IActivityCollector>(),
+                resolver, handles, new GcActivitiesCaptureOptions(duration, options.MaxGcEvents ?? 200,
+                    options.MaxEvents ?? 200, options.TraceId, options.MaxMatchedActivities ?? 200,
+                    NullIfEmptyList(options.Sources), options.Top ?? 20),
+                pid, cancellationToken).ConfigureAwait(false), RenderGcActivities),
+
             "event_source" => Wrap(options, await EventCollectionUseCases.CollectEventSource(
                 services.GetRequiredService<IEventSourceCollector>(), resolver, handles,
                 services.GetRequiredService<EventSourceAllowlist>(),
@@ -176,6 +183,27 @@ internal static partial class CliCommands
 
     private static CliCommandResult Wrap<T>(CliOptions options, DiagnosticResult<T> result) =>
         BuildResultWithComparableSave(options, result, static (_, _) => { });
+
+    private static void RenderGcActivities(System.Text.StringBuilder text, GcActivitiesCapture capture)
+    {
+        text.AppendLine(System.Globalization.CultureInfo.InvariantCulture, $"  GC handle: {capture.Gc.Handle?.Id ?? "unavailable"}");
+        text.AppendLine(System.Globalization.CultureInfo.InvariantCulture, $"  Activities handle: {capture.Activities.Handle?.Id ?? "unavailable"}");
+        text.AppendLine(System.Globalization.CultureInfo.InvariantCulture,
+            $"  Observed intersection: {capture.IntersectionStart:O} to {capture.IntersectionEnd:O}; startup skew: {capture.StartupSkewMs:F2}ms.");
+        if (capture.Gc.Capture is { } gc) text.AppendLine(System.Globalization.CultureInfo.InvariantCulture, $"  {gc.MeasurementSummary}");
+        if (capture.Activities.Capture?.Retention is { } retained)
+            text.AppendLine(System.Globalization.CultureInfo.InvariantCulture,
+                $"  Activities: matching={retained.MatchingActivities}, retained={retained.RetainedMatchingActivities}, dropped matching={retained.DroppedMatchingActivities}, non-matching={retained.NonMatchingActivities}.");
+        if (capture.Overlay is { } overlay)
+        {
+            text.AppendLine(System.Globalization.CultureInfo.InvariantCulture,
+                $"  GC-overlapping activities: {overlay.ImpactedCount}; quality: {overlay.CorrelationScope}.");
+            foreach (var activity in overlay.ImpactedActivities)
+                text.AppendLine(System.Globalization.CultureInfo.InvariantCulture,
+                    $"    {activity.SourceName}/{activity.OperationName}: GC overlap {activity.GcPauseMs:F3}ms ({activity.GcPausePercent:F2}%).");
+        }
+        foreach (var note in capture.Notes) text.AppendLine(System.Globalization.CultureInfo.InvariantCulture, $"  Note: {note}");
+    }
 
     private static async Task<CliCommandResult> CollectCpuSampleAsync(
         IServiceProvider services,

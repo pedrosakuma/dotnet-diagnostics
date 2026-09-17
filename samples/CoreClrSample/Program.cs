@@ -150,7 +150,7 @@ app.MapGet("/generics", (int? iterations) =>
 })
 .WithName("GenericInstantiations");
 
-app.MapGet("/activity", async (int? delayMs) =>
+app.MapGet("/activity", async (int? delayMs, bool? collectGc) =>
 {
     var delay = Math.Clamp(delayMs ?? 50, 1, 2_000);
 
@@ -166,6 +166,8 @@ app.MapGet("/activity", async (int? delayMs) =>
         child?.SetTag("child", "true");
         child?.SetTag("db.system", "sample");
         await Task.Delay(10);
+        if (collectGc == true)
+            GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
     }
 
     return Results.Json(new

@@ -11,14 +11,19 @@ internal static partial class CliCommands
     {
         ArgumentNullException.ThrowIfNull(options);
         error = null;
+        if (options.MaxGcEvents is not null && (options.Command != "collect" || options.Kind != "gc-activities"))
+        {
+            error = "--max-gc-events requires 'collect --kind gc-activities'.";
+            return false;
+        }
         if (options.TraceId is not null && options.Command is not ("collect" or "query"))
         {
-            error = "--trace-id requires 'collect --kind activities' or an activities trace query.";
+            error = "--trace-id requires 'collect --kind activities' / 'gc-activities' or an activities trace query.";
             return false;
         }
         if (options.MaxMatchedActivities is not null && options.Command != "collect")
         {
-            error = "--max-matched-activities requires 'collect --kind activities --trace-id <32-hex>'.";
+            error = "--max-matched-activities requires 'collect --kind activities' / 'gc-activities' with --trace-id <32-hex>.";
             return false;
         }
         if (!TryValidateWatch(options, out error))
@@ -231,15 +236,15 @@ internal static partial class CliCommands
             return false;
         }
 
-        if (options.TraceId is not null && options.Kind != "activities")
+        if (options.TraceId is not null && options.Kind is not ("activities" or "gc-activities"))
         {
-            error = "--trace-id is supported only for 'collect --kind activities' or an activities trace query.";
+            error = "--trace-id is supported only for 'collect --kind activities' / 'gc-activities' or an activities trace query.";
             return false;
         }
 
-        if (options.MaxMatchedActivities is not null && (options.Kind != "activities" || options.TraceId is null))
+        if (options.MaxMatchedActivities is not null && (options.Kind is not ("activities" or "gc-activities") || options.TraceId is null))
         {
-            error = "--max-matched-activities requires 'collect --kind activities --trace-id <32-hex>'.";
+            error = "--max-matched-activities requires 'collect --kind activities' / 'gc-activities' with --trace-id <32-hex>.";
             return false;
         }
 

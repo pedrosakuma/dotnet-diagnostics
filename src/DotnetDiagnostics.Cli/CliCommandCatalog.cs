@@ -27,7 +27,7 @@ internal static class CliCommandCatalog
 
     public static readonly IReadOnlyList<string> ValueFlags =
     [
-        "-p", "--pid", "--kind", "-d", "--duration", "--depth", "--max-events", "--max-matched-activities", "--interval",
+        "-p", "--pid", "--kind", "-d", "--duration", "--depth", "--max-events", "--max-gc-events", "--max-matched-activities", "--interval",
         "--provider", "--meter", "--source", "--category", "--min-level", "--save", "--dump-file",
         "--top-types", "--retention-path-limit", "--symbol-path", "--native-aot-map", "--cpu-backend", "--dump-type", "--out", "--mvid",
         "--asset", "--handle", "--gc-handle", "--latest-of-kind", "--view", "--trace-id", "--provider-filter", "--root-method-filter", "--rank-by",
@@ -64,7 +64,7 @@ internal static class CliCommandCatalog
     ];
 
     public static readonly IReadOnlyList<string> CollectKinds =
-        DiagnosticOperationCatalog.CliCollectKinds;
+        [.. DiagnosticOperationCatalog.CliCollectKinds, "gc-activities"];
 
     public const string GlobalOptionsHelpText =
 """
@@ -177,7 +177,7 @@ processes options:
 """
 collect options:
       --kind <kind>             Required. One of: counters, exceptions, crash-guard, gc, datas,
-                                catalog, event_source, activities, logs, jit, threadpool,
+                                catalog, event_source, activities, gc-activities, logs, jit, threadpool,
                                 contention, db, kestrel, networking, requests, startup, sweep,
                                 cpu, allocation, off_cpu (alias off-cpu), native-alloc,
                                 native-lock-contention, thread-snapshot, cpu-efficiency.
@@ -186,9 +186,11 @@ collect options:
       --top <int>               Top-N rows / hotspots for cpu, allocation, off_cpu, native-alloc,
                                 native-lock-contention.
       --max-events <int>        Per-kind cap; activities: exploratory first-N cap (default 200).
-      --trace-id <32-hex>       activities: target one non-zero W3C trace before retaining spans.
+      --max-gc-events <int>     gc-activities: independent GC detail cap (default 200, 1..10000).
+      --trace-id <32-hex>       activities / gc-activities: target one non-zero W3C trace before retention.
       --max-matched-activities <int>
-                                activities with --trace-id: independent matching cap (default 200, >= 1).
+                                activities / gc-activities with --trace-id: independent matching cap (default 200, >= 1).
+                                gc-activities: duration 1..300s, activity caps 1..10000, --top 1..100.
                                 Unrelated traffic is counted, never retained; --max-events is not the matching cap.
       --interval <int>          Refresh interval in seconds (counters, db, kestrel, networking). Default 1.
       --symbol-path <path>      NT_SYMBOL_PATH-style search path for cpu, off_cpu and
@@ -229,7 +231,7 @@ collect options:
                                 catalog: EventPipe provider (repeatable; replaces broad defaults);
                                 event_source: required provider name.
       --meter <name>            counters: Meter name (repeatable).
-      --source <name>           activities: ActivitySource filter (repeatable, * / ? globs).
+      --source <name>           activities / gc-activities: ActivitySource filter (repeatable, * / ? globs).
       --category <glob>         logs: ILogger category filter (repeatable).
       --min-level <level>       logs: minimum level (default Information).
       --threshold <ms>          requests: long-running flag threshold in ms (default 1000).
@@ -248,6 +250,7 @@ collect options:
   dotnet-diagnostics-cli collect --kind native-lock-contention --pid 1234 --native-lock-contention-sample-period 2000 --acknowledge-risk high
   dotnet-diagnostics-cli collect --kind thread-snapshot --pid 1234 --max-frames-per-thread 128 --acknowledge-risk high
   dotnet-diagnostics-cli collect --kind datas --pid 1234 --save ./before.json
+  dotnet-diagnostics-cli collect --kind gc-activities --pid 1234 --source 'MyApp.*' --duration 10 --max-gc-events 200 --json
   dotnet-diagnostics-cli collect --kind event_source --provider System.Net.Http --pid 1234
   dotnet-diagnostics-cli collect --kind requests --pid MyApp --duration 5 --threshold 2000  # in-flight requests
   dotnet-diagnostics-cli collect --kind startup --suspend-startup --launch --acknowledge-risk high -- dotnet App.dll  # cold start
@@ -261,6 +264,7 @@ collect options:
                 "--max-events",
                 "--trace-id",
                 "--max-matched-activities",
+                "--max-gc-events",
                 "--interval",
                 "--symbol-path",
                 "--export-trace",
