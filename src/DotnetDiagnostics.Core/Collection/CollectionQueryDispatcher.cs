@@ -709,7 +709,7 @@ public static class CollectionQueryDispatcher
             "byoperation" => new NetworkingByOperationView(
                 snapshot.ByOperation.Count,
                 Math.Min(topN, snapshot.ByOperation.Count),
-                snapshot.ByOperation.Take(topN).ToList()),
+                snapshot.ByOperation.Take(topN).ToList()) { Correlation = snapshot.Correlation },
             "queue" => new NetworkingQueueView(
                 snapshot.HttpRequestsLeftQueue,
                 snapshot.TimeInQueueP50,
@@ -718,7 +718,7 @@ public static class CollectionQueryDispatcher
                 snapshot.HttpConnectionsEstablished,
                 snapshot.HttpConnectionsClosed,
                 snapshot.Counters.Where(c => c.Provider == "System.Net.Http").ToList(),
-                snapshot.Notes),
+                snapshot.Notes) { Correlation = snapshot.Correlation },
             "tls" => new NetworkingTlsView(
                 snapshot.TlsHandshakesStarted,
                 snapshot.TlsHandshakesStopped,
@@ -726,14 +726,14 @@ public static class CollectionQueryDispatcher
                 snapshot.TlsP50,
                 snapshot.TlsP95,
                 snapshot.TlsMax,
-                snapshot.TlsProtocols),
+                snapshot.TlsProtocols) { Correlation = snapshot.Correlation },
             "dns" => new NetworkingDnsView(
                 snapshot.DnsLookupsStarted,
                 snapshot.DnsLookupsStopped,
                 snapshot.DnsLookupsFailed,
                 snapshot.DnsP50,
                 snapshot.DnsP95,
-                snapshot.DnsMax),
+                snapshot.DnsMax) { Correlation = snapshot.Correlation },
             _ => new NetworkingSummaryView(
                 snapshot.HttpRequestsStarted,
                 snapshot.HttpRequestsStopped,
@@ -750,7 +750,7 @@ public static class CollectionQueryDispatcher
                 snapshot.SocketConnectsStarted,
                 snapshot.SocketConnectsFailed,
                 snapshot.Counters,
-                snapshot.Notes),
+                snapshot.Notes) { Correlation = snapshot.Correlation },
         };
 
         return new CollectionQueryResult(

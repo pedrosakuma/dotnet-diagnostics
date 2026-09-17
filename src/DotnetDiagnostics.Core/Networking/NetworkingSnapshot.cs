@@ -48,7 +48,11 @@ public sealed record NetworkingSnapshot(
     IReadOnlyList<NetworkingCounterSample> Counters,
     IReadOnlyList<NetworkingHttpGroup> ByOperation,
     IReadOnlyList<string> TlsProtocols,
-    IReadOnlyList<string> Notes);
+    IReadOnlyList<string> Notes)
+{
+    /// <summary>Observed correlation accounting. Null for legacy artifacts means unknown, not complete.</summary>
+    public NetworkingCorrelation? Correlation { get; init; }
+}
 
 /// <summary>Latest value of a single networking EventCounter captured in the window.</summary>
 public sealed record NetworkingCounterSample(

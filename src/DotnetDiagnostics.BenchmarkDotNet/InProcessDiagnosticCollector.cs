@@ -86,7 +86,14 @@ internal sealed class InProcessDiagnosticCollector : IDisposable
         Converters = { new JsonStringEnumConverter() },
     };
 
-    private readonly Lazy<ServiceProvider> _provider = new(BuildProvider, LazyThreadSafetyMode.ExecutionAndPublication);
+    private readonly Lazy<ServiceProvider> _provider;
+
+    public InProcessDiagnosticCollector() : this(BuildProvider) { }
+
+    internal InProcessDiagnosticCollector(Func<ServiceProvider> createProvider)
+    {
+        _provider = new(createProvider, LazyThreadSafetyMode.ExecutionAndPublication);
+    }
 
     public static bool IsSupported(string kind) => SupportedKinds.Contains(kind);
 

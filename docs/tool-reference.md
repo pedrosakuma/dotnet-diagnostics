@@ -2881,6 +2881,11 @@ session is enabled (TLS, limits, keep-alive, HTTP protocol versions).
 
 ## `collect_events(kind="networking")`
 
+Latency covers accepted observed pairs only. `correlation.byKind` carries
+HTTP/DNS/TLS exclusions through every networking query view; missing metadata
+means unknown. TPL activity-flow enablement can remain active in the target
+after collection. See [identity, retention and target effects](networking-correlation.md).
+
 Collects a curated outbound-networking view by subscribing to the stable .NET
 networking EventSources: `System.Net.Http` (HttpClient request lifecycle,
 connection pool, time-in-queue), `System.Net.NameResolution` (DNS),
