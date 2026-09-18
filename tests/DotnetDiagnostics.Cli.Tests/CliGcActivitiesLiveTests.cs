@@ -22,32 +22,45 @@ public sealed class CliGcActivitiesLiveTests(ITestOutputHelper output)
     [InlineData(true)]
     public async Task CancellationOrTargetExitStopsBothOwnedStreamsBeforeRequestedLongWindow(bool exitTarget)
     {
+        var evidence = new LiveSampleEvidence(output.WriteLine);
+        await using var budget = new LiveTestBudget(TimeSpan.FromSeconds(20), TimeSpan.FromSeconds(5), evidence);
         await using var sample = await LiveSampleProcess.StartPublishedAsync("CoreClrSample",
-            new LiveSampleOptions { WaitForHttpReady = true, ReadinessPath = "/weatherforecast" });
+            new LiveSampleOptions { WaitForHttpReady = true, ReadinessPath = "/weatherforecast", Evidence = evidence,
+                CleanupTimeout = TimeSpan.FromSeconds(3) },
+            budget.WorkToken);
         using var http = new HttpClient { BaseAddress = new Uri(sample.BaseUrl), Timeout = TimeSpan.FromSeconds(3) };
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var activityReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var gcReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var services = Services(
             new EventPipeGcCollector { CollectionStarted = _ => gcReady.TrySetResult() },
             new EventPipeActivityCollector { ActivityObserved = () => activityReady.TrySetResult() });
+        evidence.Mark("collection-start");
         var collection = CliGcActivitiesTests.ExecuteAsync(services,
             ["collect", "--kind", "gc-activities", "--pid", sample.ProcessId.ToString(CultureInfo.InvariantCulture),
              "--duration", "300", "--source", "CoreClrSample.Activities", "--json"],
-            deadline.Token);
+            budget.Token);
+        budget.Own(collection);
         try
         {
             for (var attempt = 0; attempt < 60 && !(activityReady.Task.IsCompleted && gcReady.Task.IsCompleted); attempt++)
             {
-                using var response = await http.GetAsync("/activity?delayMs=1&collectGc=true", deadline.Token);
+                using var response = await http.GetAsync("/activity?delayMs=1&collectGc=true", budget.Token);
                 response.EnsureSuccessStatusCode();
-                await Task.WhenAny(Task.WhenAll(activityReady.Task, gcReady.Task), Task.Delay(50, deadline.Token));
+                await Task.WhenAny(Task.WhenAll(activityReady.Task, gcReady.Task), Task.Delay(50, budget.Token));
             }
             activityReady.Task.IsCompletedSuccessfully.Should().BeTrue();
             gcReady.Task.IsCompletedSuccessfully.Should().BeTrue();
-            if (exitTarget) sample.Process.Kill(entireProcessTree: true);
-            else await deadline.CancelAsync();
-            var result = await collection.WaitAsync(TimeSpan.FromSeconds(12));
+            evidence.Mark("both-streams-ready");
+            if (exitTarget)
+            {
+                evidence.Mark($"target-exit-request pid={sample.ProcessId}");
+                sample.Process.Kill(entireProcessTree: true);
+                await sample.Process.WaitForExitAsync(budget.WorkToken);
+                evidence.Mark($"target-exited pid={sample.ProcessId} exitCode={sample.Process.ExitCode}");
+            }
+            else await budget.CancelAsync();
+            var result = await collection.WaitAsync(budget.WorkToken);
+            evidence.Mark("collection-completed");
             var capture = result.Json.GetProperty("data").Deserialize<GcActivitiesCapture>(CliGcActivitiesTests.JsonOptions)!;
             result.Exit.Should().NotBe(0);
             capture.Overlay.Should().BeNull();
@@ -58,7 +71,15 @@ public sealed class CliGcActivitiesLiveTests(ITestOutputHelper output)
             if (!exitTarget) sample.IsRunning.Should().BeTrue();
             output.WriteLine($"exitTarget={exitTarget}; {result.Json}");
         }
-        finally { await deadline.CancelAsync(); await collection; }
+        finally
+        {
+            try { await budget.DisposeAsync(); }
+            finally
+            {
+                try { await sample.DisposeAsync(); }
+                finally { output.WriteLine(evidence.Describe()); }
+            }
+        }
     }
 
     [Theory(Timeout = 40_000)]
@@ -66,10 +87,13 @@ public sealed class CliGcActivitiesLiveTests(ITestOutputHelper output)
     [InlineData(true, 1)]
     public async Task LiveWorkflow_ObservedBothStreamsBeforeTargetedGcSpan_AndQueriesRealArtifacts(bool repl, int matchingCap)
     {
+        var evidenceLog = new LiveSampleEvidence(output.WriteLine);
+        await using var budget = new LiveTestBudget(TimeSpan.FromSeconds(28), TimeSpan.FromSeconds(5), evidenceLog);
         await using var sample = await LiveSampleProcess.StartPublishedAsync("CoreClrSample",
-            new LiveSampleOptions { WaitForHttpReady = true, ReadinessPath = "/weatherforecast" });
+            new LiveSampleOptions { WaitForHttpReady = true, ReadinessPath = "/weatherforecast", Evidence = evidenceLog,
+                CleanupTimeout = TimeSpan.FromSeconds(3) },
+            budget.WorkToken);
         using var http = new HttpClient { BaseAddress = new Uri(sample.BaseUrl), Timeout = TimeSpan.FromSeconds(3) };
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(25));
         var activityObserved = 0;
         var gcObserved = 0;
         var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -94,10 +118,12 @@ public sealed class CliGcActivitiesLiveTests(ITestOutputHelper output)
         using var input = new CliGcActivitiesTests.AcquiredHandleInput(services.GetRequiredService<IDiagnosticHandleStore>(), command);
         Task<(int Exit, JsonElement Json)>? oneShot = null;
         Task<int>? session = null;
+        evidenceLog.Mark($"collection-start mode={(repl ? "session" : "one-shot")}");
         if (repl)
             session = SessionRepl.RunAsync(services, new MutableArtifactRootProvider(root), input, stdout, stderr,
-                sample.ProcessId, deadline.Token, interactiveSafetyOverride: false);
-        else oneShot = CliGcActivitiesTests.ExecuteAsync(services, command.Split(' '), deadline.Token);
+                sample.ProcessId, budget.Token, interactiveSafetyOverride: false);
+        else oneShot = CliGcActivitiesTests.ExecuteAsync(services, command.Split(' '), budget.Token);
+        budget.Own((Task?)session ?? oneShot!);
         try
         {
             // After the non-GC stream marker, the bounded prefix proves BOTH collectors observe
@@ -106,15 +132,16 @@ public sealed class CliGcActivitiesLiveTests(ITestOutputHelper output)
             {
                 using var noise = await http.GetAsync("/activity?delayMs=1&collectGc=true", cancellationToken);
                 noise.EnsureSuccessStatusCode();
-            }, deadline.Token);
+            }, budget.Token);
+            evidenceLog.Mark("both-streams-ready");
             ready.Task.IsCompletedSuccessfully.Should().BeTrue("EACH collector must observe events before target workload");
             Volatile.Read(ref activityObserved).Should().BeGreaterThan(2);
             Volatile.Read(ref gcObserved).Should().BeGreaterThan(0);
             using var request = new HttpRequestMessage(HttpMethod.Get, "/activity?delayMs=20&collectGc=true");
             request.Headers.TryAddWithoutValidation("traceparent", $"00-{CliGcActivitiesTests.Trace}-9999999999999999-01");
-            using var response = await http.SendAsync(request, deadline.Token);
+            using var response = await http.SendAsync(request, budget.Token);
             response.EnsureSuccessStatusCode();
-            using var targetJson = JsonDocument.Parse(await response.Content.ReadAsStringAsync(deadline.Token));
+            using var targetJson = JsonDocument.Parse(await response.Content.ReadAsStringAsync(budget.Token));
             targetJson.RootElement.GetProperty("traceId").GetString().Should().Be(CliGcActivitiesTests.Trace);
             var targetSpanId = targetJson.RootElement.GetProperty("spanId").GetString();
 
@@ -122,14 +149,14 @@ public sealed class CliGcActivitiesLiveTests(ITestOutputHelper output)
             GcActivitiesCapture? inline = null;
             if (session is not null)
             {
-                (await session).Should().Be(0, stderr.ToString());
+                (await session.WaitAsync(budget.WorkToken)).Should().Be(0, stderr.ToString());
                 input.ActivityHandle.Should().NotBeNullOrEmpty();
                 input.GcHandle.Should().NotBeNullOrEmpty();
                 stdout.ToString().Should().Contain("gc-overlay").And.Contain("\"measurementStatus\": \"no-detected-loss\"");
             }
             else
             {
-                var result = await oneShot!;
+                var result = await oneShot!.WaitAsync(budget.WorkToken);
                 result.Exit.Should().Be(0);
                 inline = result.Json.GetProperty("data").Deserialize<GcActivitiesCapture>(CliGcActivitiesTests.JsonOptions)!;
                 inline.Status.Should().Be("captured", inline.OverlayUnavailableReason);
@@ -138,6 +165,7 @@ public sealed class CliGcActivitiesLiveTests(ITestOutputHelper output)
                 inline.IntersectionEnd.Should().BeAfter(inline.IntersectionStart!.Value);
                 output.WriteLine(JsonSerializer.Serialize(inline, CliGcActivitiesTests.JsonOptions));
             }
+            evidenceLog.Mark("collection-completed");
             var gcHandle = store.TryGetLatestByKind(CollectionHandleKinds.GcEvents, sample.ProcessId)!;
             var activityHandle = store.TryGetLatestByKind(CollectionHandleKinds.Activities, sample.ProcessId)!;
             var gcCapture = store.TryGet<GcSummary>(gcHandle.Id)!;
@@ -173,10 +201,16 @@ public sealed class CliGcActivitiesLiveTests(ITestOutputHelper output)
         }
         finally
         {
-            await deadline.CancelAsync();
-            if (oneShot is not null) await oneShot;
-            if (session is not null) await session;
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            try { await budget.DisposeAsync(); }
+            finally
+            {
+                try { await sample.DisposeAsync(); }
+                finally
+                {
+                    output.WriteLine(evidenceLog.Describe());
+                    if (Directory.Exists(root)) Directory.Delete(root, true);
+                }
+            }
         }
 
     }
