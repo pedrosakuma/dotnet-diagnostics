@@ -3,17 +3,71 @@ import importlib.util
 import json
 import os
 import pathlib
+import select
 import shutil
+import signal
 import subprocess
 import sys
 import unittest
 import uuid
+from unittest import mock
 
 sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location(
     "scenario_attempt", pathlib.Path(__file__).with_name("run-scenario-attempt.py"))
 supervisor = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(supervisor)
+
+
+def terminate_owned_fixture_child(pid):
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        kernel.TerminateProcess.restype = wintypes.BOOL
+        kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel.WaitForSingleObject.restype = wintypes.DWORD
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel.CloseHandle.restype = wintypes.BOOL
+        handle = kernel.OpenProcess(0x00100000 | 0x0001, False, pid)  # SYNCHRONIZE | PROCESS_TERMINATE
+        if not handle:
+            error = ctypes.get_last_error()
+            if error == 87:  # ERROR_INVALID_PARAMETER: this PID no longer exists.
+                raise ProcessLookupError(f"Owned fixture child {pid} has already exited.")
+            raise ctypes.WinError(error)
+        try:
+            if not kernel.TerminateProcess(handle, 1):
+                error = ctypes.get_last_error()
+                if kernel.WaitForSingleObject(handle, 0) != 0:
+                    raise ctypes.WinError(error)
+            waited = kernel.WaitForSingleObject(handle, 5000)
+            if waited == 0xFFFFFFFF:
+                raise ctypes.WinError(ctypes.get_last_error())
+            if waited != 0:
+                raise AssertionError(f"Owned fixture child {pid} did not exit within 5 seconds.")
+        finally:
+            if not kernel.CloseHandle(handle):
+                cleanup_error = ctypes.WinError(ctypes.get_last_error())
+                primary_error = sys.exc_info()[1]
+                if primary_error is None:
+                    raise cleanup_error
+                primary_error.add_note(f"CloseHandle also failed: {cleanup_error}")
+    else:
+        # The fixture is a grandchild: waitpid cannot reap it here. A pidfd gives
+        # a stable identity and an exit notification before its log is removed.
+        descriptor = os.pidfd_open(pid)
+        try:
+            signal.pidfd_send_signal(descriptor, signal.SIGKILL)
+            exited = select.poll()
+            exited.register(descriptor, select.POLLIN)
+            if not exited.poll(5000):
+                raise AssertionError(f"Owned fixture child {pid} did not exit within 5 seconds.")
+        finally:
+            os.close(descriptor)
 
 
 class ScenarioAttemptTests(unittest.TestCase):
@@ -61,7 +115,7 @@ class ScenarioAttemptTests(unittest.TestCase):
         try:
             result, status = self.run_child(
                 "import subprocess,sys,pathlib; "
-                "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); "
+                "child=subprocess.Popen([sys.executable,'-c','import threading; threading.Event().wait()']); "
                 f"pathlib.Path({str(child_pid)!r}).write_text(str(child.pid)); "
                 "print('parent done',flush=True)", timeout=2)
             self.assertEqual(0, result)
@@ -69,7 +123,7 @@ class ScenarioAttemptTests(unittest.TestCase):
         finally:
             if child_pid.exists():
                 try:
-                    os.kill(int(child_pid.read_text()), 9)
+                    terminate_owned_fixture_child(int(child_pid.read_text()))
                 except ProcessLookupError:
                     pass
 
@@ -78,6 +132,47 @@ class ScenarioAttemptTests(unittest.TestCase):
             [str(self.root / "does-not-exist")], self.log, self.status, 1)
         self.assertEqual(125, result)
         self.assertIn("launchError", json.loads(self.status.read_text()))
+
+    def test_missing_fixture_child_has_consistent_cleanup_error(self):
+        if os.name == "nt":
+            with mock.patch("ctypes.WinDLL") as library, mock.patch("ctypes.get_last_error", return_value=87):
+                library.return_value.OpenProcess.return_value = None
+                with self.assertRaises(ProcessLookupError):
+                    terminate_owned_fixture_child(123)
+        else:
+            with mock.patch("os.pidfd_open", side_effect=ProcessLookupError):
+                with self.assertRaises(ProcessLookupError):
+                    terminate_owned_fixture_child(123)
+
+    def test_fixture_cleanup_does_not_hide_access_denied(self):
+        if os.name == "nt":
+            with mock.patch("ctypes.WinDLL") as library, mock.patch("ctypes.get_last_error", return_value=5):
+                library.return_value.OpenProcess.return_value = None
+                with self.assertRaises(OSError) as error:
+                    terminate_owned_fixture_child(123)
+        else:
+            with mock.patch("os.pidfd_open", side_effect=PermissionError):
+                with self.assertRaises(OSError) as error:
+                    terminate_owned_fixture_child(123)
+        self.assertNotIsInstance(error.exception, ProcessLookupError)
+
+    def test_fixture_cleanup_preserves_primary_error(self):
+        if os.name == "nt":
+            with mock.patch("ctypes.WinDLL") as library, mock.patch("ctypes.get_last_error", return_value=6):
+                library.return_value.OpenProcess.return_value = 1
+                library.return_value.TerminateProcess.return_value = True
+                library.return_value.WaitForSingleObject.return_value = 258
+                library.return_value.CloseHandle.return_value = False
+                with self.assertRaisesRegex(AssertionError, "did not exit") as error:
+                    terminate_owned_fixture_child(123)
+                self.assertIn("CloseHandle also failed", error.exception.__notes__[0])
+        else:
+            with mock.patch("os.pidfd_open", return_value=7), \
+                    mock.patch("signal.pidfd_send_signal", side_effect=PermissionError), \
+                    mock.patch("os.close") as close:
+                with self.assertRaises(PermissionError):
+                    terminate_owned_fixture_child(123)
+                close.assert_called_once_with(7)
 
     @unittest.skipIf(os.name == "nt", "Shell integration uses the Linux bash control; supervisor runs natively on both OSes.")
     def test_runner_timeout_overrides_passed_artifact_without_retry(self):
