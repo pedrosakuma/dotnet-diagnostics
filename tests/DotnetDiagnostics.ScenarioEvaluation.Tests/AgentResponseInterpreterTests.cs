@@ -7,17 +7,29 @@ public sealed class AgentResponseInterpreterTests
     private readonly AgentResponseInterpreter interpreter = new();
 
     [Fact]
-    public void AgentResponse_CultureLookup_MapsGlobalizationHashEvidence()
+    public void AgentResponse_CultureLookup_MapsInclusiveWorkloadOwnershipEvidence()
     {
         var result = interpreter.Interpret(
             "culture-lookup",
-            "This likely points to a culture-aware hash hotspot: CompareInfo.IcuGetHashCodeOfString owns about 50.9% self time, so InvariantCultureIgnoreCase is the expensive path.");
+            "This likely shows inclusive workload ownership: RunCultureSensitive has culture ownership, while RunOrdinal has ordinal ownership in its separate phase. Inspect caller callee paths.");
 
-        result.Interpretation.EvidenceIds.Should().Contain(["cpu-self-time-signal", "globalization-hash-leaf"]);
+        result.Interpretation.EvidenceIds.Should().Contain(["culture-owned-cpu", "ordinal-owned-cpu"]);
         result.EvidenceCitations.Should().Contain(citation =>
-            citation.EvidencePath.Contains("cpu.self-time.concentration", StringComparison.Ordinal)
-            && citation.SupportedEvidenceIds.Contains("globalization-hash-leaf", StringComparer.Ordinal));
+            citation.EvidencePath == "metrics[name=culture.owned-inclusive-samples]"
+            && citation.SupportedEvidenceIds.Contains("culture-owned-cpu", StringComparer.Ordinal));
+        result.Interpretation.AttributionIds.Should().Contain("BadCodeSample.CultureLookupWorkload.RunCultureSensitive");
         result.Uncertainty.Disposition.Should().Be(AgentResponseUncertaintyDisposition.Hedged);
+    }
+
+    [Fact]
+    public void AgentResponse_CulturePrivateNames_DoNotEstablishTheOwnedWorkloadContract()
+    {
+        var result = interpreter.Interpret("culture-lookup",
+            "CompareInfo.IcuGetHashCodeOfString has 50.9% self time; the native hash leaf is expensive.");
+
+        result.Interpretation.EvidenceIds.Should().NotContain("culture-owned-cpu")
+            .And.NotContain("ordinal-owned-cpu");
+        result.Interpretation.AttributionIds.Should().BeEmpty();
     }
 
     [Fact]

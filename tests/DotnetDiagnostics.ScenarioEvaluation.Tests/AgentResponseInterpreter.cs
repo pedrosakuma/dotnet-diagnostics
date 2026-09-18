@@ -60,8 +60,10 @@ public sealed class AgentResponseInterpreter
         {
             ["culture-lookup"] = new Dictionary<string, string[]>(StringComparer.Ordinal)
             {
-                ["cpu-self-time-signal"] = ["cpu hotspot", "self time", "exclusive cpu"],
-                ["globalization-hash-leaf"] = ["globalization hash", "culture aware hash", "InvariantCultureIgnoreCase", "CompareInfo"],
+                ["culture-owned-cpu"] = ["culture ownership", "RunCultureSensitive", "culture inclusive"],
+                ["ordinal-owned-cpu"] = ["ordinal ownership", "RunOrdinal", "ordinal inclusive"],
+                ["culture-negative-control"] = ["culture negative control", "ordinal absent"],
+                ["ordinal-negative-control"] = ["ordinal negative control", "culture absent"],
             },
             ["sync-over-async"] = new Dictionary<string, string[]>(StringComparer.Ordinal)
             {
@@ -89,17 +91,19 @@ public sealed class AgentResponseInterpreter
             ["culture-lookup"] = new(
                 Hypotheses: new Dictionary<string, string[]>(StringComparer.Ordinal)
                 {
-                    ["cpu-expensive-globalization-hash"] = ["globalization hash", "culture aware hash", "CompareInfo", "InvariantCultureIgnoreCase", "IcuGetHashCodeOfString"],
+                    ["measured-lookup-workload-ownership"] = ["measured lookup ownership", "inclusive workload ownership", "owned lookup stacks"],
                     ["threadpool-runtime-overhead"] = ["threadpool overhead", "runtime overhead"],
-                    ["scale-compute"] = ["scale out", "more compute", "add cpu"],
+                    ["culture-always-slower"] = ["culture always slower", "culture must be slower"],
+                    ["native-hash-leaf-proven"] = ["native hash leaf proven", "icu function proven"],
                 },
                 Attributions: new Dictionary<string, string[]>(StringComparer.Ordinal)
                 {
-                    ["System.Globalization.CompareInfo.GetHashCodeOfString"] = ["CompareInfo", "GetHashCodeOfString", "IcuGetHashCodeOfString", "NlsGetHashCodeOfString"],
+                    ["BadCodeSample.CultureLookupWorkload.RunCultureSensitive"] = ["RunCultureSensitive", "culture ownership"],
+                    ["BadCodeSample.CultureLookupWorkload.RunOrdinal"] = ["RunOrdinal", "ordinal ownership"],
                 },
                 NextActions: new Dictionary<string, string[]>(StringComparer.Ordinal)
                 {
-                    ["query-cpu-top-methods-exclusive"] = ["top methods", "exclusive", "self time", "cpu top methods"],
+                    ["query-owned-method-callers-callees"] = ["caller callee", "callers callees", "owned method drilldown"],
                 }),
             ["sync-over-async"] = new(
                 Hypotheses: new Dictionary<string, string[]>(StringComparer.Ordinal)

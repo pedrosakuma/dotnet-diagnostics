@@ -24,7 +24,7 @@ public sealed class ScenarioEvaluationLiveGroup
 public sealed class ScenarioLiveTests
 {
     [WindowsOnlyFact(
-        "Culture-lookup live CPU capture is quarantined on Linux CI because the EventPipe SampleProfiler can crash the test host (#147).",
+        "Culture-lookup requires validated Windows ETW measured-CPU evidence; Linux support remains gated by reassessment #929.",
         Timeout = 600_000)]
     [Trait("Category", "ScenarioEvaluationLive")]
     public Task LiveCapture_CultureLookup_SatisfiesStructuredEvidenceInvariants()

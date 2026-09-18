@@ -1,68 +1,31 @@
 {
   "schemaVersion": 1,
   "scenarioId": "culture-lookup",
-  "scenarioVersion": "1.0.0",
+  "scenarioVersion": "2.0.0",
   "trial": 1,
   "environment": {
     "os": "windows",
     "architecture": "x64",
-    "frameworkDescription": ".NET 10.0.10",
-    "runtimeVersion": "10.0.10"
+    "frameworkDescription": "Synthetic contract replay; not a live capture",
+    "runtimeVersion": "synthetic"
   },
-  "activation": {
-    "status": "Passed",
-    "failureKind": "None",
-    "detail": "attempts=75; successes=59; requestFailures=0",
-    "durationSeconds": 11.100286
-  },
-  "collection": {
-    "status": "Passed",
-    "failureKind": "None",
-    "detail": null,
-    "durationSeconds": 8
-  },
+  "activation": { "status": "Passed", "failureKind": "None", "detail": "Both phases returned verified lookup results.", "durationSeconds": 20 },
+  "collection": { "status": "Passed", "failureKind": "None", "detail": "Synthetic paired OS ownership evidence.", "durationSeconds": 16 },
   "metrics": [
-    {
-      "name": "total-samples",
-      "value": 18770,
-      "unit": "samples"
-    }
+    { "name": "culture.measured-os-evidence", "value": 1 },
+    { "name": "culture.owned-inclusive-samples", "value": 100, "unit": "samples" },
+    { "name": "culture.other-route-inclusive-samples", "value": 0, "unit": "samples" },
+    { "name": "culture.verified-responses", "value": 2, "unit": "responses" },
+    { "name": "ordinal.measured-os-evidence", "value": 1 },
+    { "name": "ordinal.owned-inclusive-samples", "value": 80, "unit": "samples" },
+    { "name": "ordinal.other-route-inclusive-samples", "value": 0, "unit": "samples" },
+    { "name": "ordinal.verified-responses", "value": 3, "unit": "responses" }
   ],
-  "signals": [
-    {
-      "signal": "cpu.self-time.concentration",
-      "salience": 0.508791,
-      "buckets": [
-        {
-          "key": "System.Globalization.CompareInfo.IcuGetHashCodeOfString(value class System.ReadOnlySpan\u00601\u003Cwchar\u003E,value class System.Globalization.CompareOptions)",
-          "magnitude": 50.9,
-          "unit": "%"
-        },
-        {
-          "key": "System.Threading.Monitor.Wait(class System.Object,int32)",
-          "magnitude": 17,
-          "unit": "%"
-        },
-        {
-          "key": "Interop\u002BKernel32.GetQueuedCompletionStatus(int,unsigned int32\u0026,unsigned int\u0026,int\u0026,int32)",
-          "magnitude": 13.4,
-          "unit": "%"
-        },
-        {
-          "key": "System.Threading.PortableThreadPool\u002BIOCompletionPoller.Poll()",
-          "magnitude": 11.3,
-          "unit": "%"
-        },
-        {
-          "key": "System.Threading.WaitHandle.WaitOneNoCheck(int32,bool,class System.Object,value class WaitHandleWaitSourceMap)",
-          "magnitude": 5.5,
-          "unit": "%"
-        }
-      ],
-      "nextAction": "query_snapshot"
-    }
-  ],
+  "signals": [],
   "frames": [],
   "relations": [],
-  "notes": []
+  "notes": [
+    "Synthetic positive/negative contract fixture; positive native Windows acceptance remains separately required.",
+    "Ownership is inclusive distinct-stack attribution to project-owned entrypoints, not exclusive managed or native leaf time."
+  ]
 }
