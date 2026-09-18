@@ -113,16 +113,19 @@ public sealed class CrashGuardTemporalLiveTests(ITestOutputHelper output)
     [Fact(Timeout = 30_000)]
     public async Task CancellationAfterObservedReadinessReturnsNoSnapshotAndLeavesTargetAlive()
     {
+        var evidence = new LiveSampleEvidence(output.WriteLine);
+        await using var budget = new LiveTestBudget(TimeSpan.FromSeconds(20), TimeSpan.FromSeconds(5), evidence);
         output.WriteLine($"cancellation-control sample-launch-request at={DateTimeOffset.UtcNow:O}");
         await using var sample = await LiveSampleProcess.StartPublishedAsync("CoreClrSample",
             new LiveSampleOptions
             {
                 WaitForHttpReady = true,
                 ReadinessPath = "/weatherforecast",
-            });
+                Evidence = evidence,
+                CleanupTimeout = TimeSpan.FromSeconds(3),
+            }, budget.WorkToken);
         output.WriteLine($"cancellation-control sample-ready pid={sample.ProcessId} at={DateTimeOffset.UtcNow:O}");
         using var http = new HttpClient { BaseAddress = new Uri(sample.BaseUrl), Timeout = TimeSpan.FromSeconds(5) };
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var configured = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var collector = new EventPipeCrashGuardCollector
@@ -141,29 +144,35 @@ public sealed class CrashGuardTemporalLiveTests(ITestOutputHelper output)
                 configured.SetResult();
             },
         };
-        var capture = collector.CollectAsync(sample.ProcessId, TimeSpan.FromSeconds(14), 5, deadline.Token);
+        evidence.Mark("collection-start");
+        var capture = collector.CollectAsync(sample.ProcessId, TimeSpan.FromSeconds(14), 5, budget.Token);
+        budget.Own(capture);
         try
         {
-            await configured.Task.WaitAsync(deadline.Token);
+            await configured.Task.WaitAsync(budget.WorkToken);
             output.WriteLine($"cancellation-control source-configured at={DateTimeOffset.UtcNow:O}");
-            await ready.Task.WaitAsync(deadline.Token);
+            await ready.Task.WaitAsync(budget.WorkToken);
             output.WriteLine($"cancellation-control marker-observed at={DateTimeOffset.UtcNow:O}");
-            await deadline.CancelAsync();
+            await budget.CancelAsync();
             output.WriteLine($"cancellation-control cancellation-requested at={DateTimeOffset.UtcNow:O}");
-            var action = async () => await capture;
+            var action = async () => await capture.WaitAsync(budget.WorkToken);
             await action.Should().ThrowAsync<OperationCanceledException>();
+            capture.IsCanceled.Should().BeTrue("the collector itself must finish cancellation, not just the outer wait");
             output.WriteLine($"cancellation-control collection-stopped at={DateTimeOffset.UtcNow:O}");
             sample.Process.HasExited.Should().BeFalse();
-            using var response = await http.GetAsync("/weatherforecast", CancellationToken.None);
+            using var response = await http.GetAsync("/weatherforecast", budget.WorkToken);
             response.EnsureSuccessStatusCode();
             output.WriteLine($"Cancellation completed after observed stream readiness; pid={sample.ProcessId} remains responsive.");
         }
         finally
         {
             output.WriteLine($"cancellation-control cleanup-enter at={DateTimeOffset.UtcNow:O}");
-            await deadline.CancelAsync();
-            try { await capture; }
-            catch (OperationCanceledException) when (deadline.IsCancellationRequested) { }
+            try { await budget.DisposeAsync(); }
+            finally
+            {
+                try { await sample.DisposeAsync(); }
+                finally { output.WriteLine(evidence.Describe()); }
+            }
             output.WriteLine($"cancellation-control cleanup-done at={DateTimeOffset.UtcNow:O}");
         }
     }

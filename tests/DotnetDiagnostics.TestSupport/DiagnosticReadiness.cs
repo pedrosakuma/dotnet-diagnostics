@@ -15,20 +15,23 @@ public static class DiagnosticReadiness
     /// advertises a diagnostic endpoint, or throws <see cref="TimeoutException"/> after
     /// <paramref name="timeout"/>.
     /// </summary>
-    public static async Task WaitForDiagnosticEndpointAsync(int pid, TimeSpan timeout)
+    public static async Task WaitForDiagnosticEndpointAsync(int pid, TimeSpan timeout, CancellationToken cancellationToken = default)
     {
-        var deadline = DateTime.UtcNow + timeout;
-        while (DateTime.UtcNow < deadline)
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(timeout);
+        try
         {
-            if (DiagnosticsClient.GetPublishedProcesses().Contains(pid))
+            while (true)
             {
-                return;
+                deadline.Token.ThrowIfCancellationRequested();
+                if (DiagnosticsClient.GetPublishedProcesses().Contains(pid)) return;
+                await Task.Delay(500, deadline.Token).ConfigureAwait(false);
             }
-
-            await Task.Delay(500).ConfigureAwait(false);
         }
-
-        throw new TimeoutException($"pid {pid} did not expose a diagnostic endpoint within {timeout}.");
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException($"pid {pid} did not expose a diagnostic endpoint within {timeout}.");
+        }
     }
 
     /// <summary>
@@ -36,28 +39,35 @@ public static class DiagnosticReadiness
     /// status, or throws <see cref="SkipException"/> after <paramref name="timeout"/>. Kestrel
     /// occasionally logs its listening URL just before the socket is fully bound, hence the retry.
     /// </summary>
-    public static async Task WaitForHttpReadyAsync(string baseUrl, TimeSpan timeout, string readinessPath = "/")
+    public static async Task WaitForHttpReadyAsync(string baseUrl, TimeSpan timeout, string readinessPath = "/",
+        CancellationToken cancellationToken = default)
     {
         using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
-        var deadline = DateTime.UtcNow + timeout;
-        while (DateTime.UtcNow < deadline)
+        await WaitForHttpReadyAsync(http, timeout, readinessPath, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal static async Task WaitForHttpReadyAsync(HttpClient http, TimeSpan timeout, string readinessPath,
+        CancellationToken cancellationToken)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(timeout);
+        try
         {
-            try
+            while (true)
             {
-                using var response = await http.GetAsync(readinessPath, CancellationToken.None).ConfigureAwait(false);
-                if (response.IsSuccessStatusCode)
+                deadline.Token.ThrowIfCancellationRequested();
+                try
                 {
-                    return;
+                    using var response = await http.GetAsync(readinessPath, deadline.Token).ConfigureAwait(false);
+                    if (response.IsSuccessStatusCode) return;
                 }
+                catch (HttpRequestException) { }
+                await Task.Delay(250, deadline.Token).ConfigureAwait(false);
             }
-            catch (HttpRequestException)
-            {
-                // Socket not fully ready yet; retry until the deadline.
-            }
-
-            await Task.Delay(250).ConfigureAwait(false);
         }
-
-        throw SkipException.ForReason($"Sample did not accept HTTP requests on {baseUrl}{readinessPath} within the timeout.");
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw SkipException.ForReason($"Sample did not accept HTTP requests on {http.BaseAddress}{readinessPath} within the timeout.");
+        }
     }
 }

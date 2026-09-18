@@ -43,6 +43,46 @@ implications:
 
 ## Per-collector reference
 
+### Shared live-test startup evidence (#982)
+
+`tests/DotnetDiagnostics.TestSupport/LiveSampleProcess` is test infrastructure,
+not a production collector. Its stdout and stderr readers use 1,024-character
+chunks and retain independent **4,096-character tails**, removing old characters
+before insertion. URL parsing retains at most **2,048 characters per line**;
+oversized lines are not parsed as URLs, but readers continue draining. Evidence
+reports dropped-character and oversized-line counts. Phase history retains
+**8,192 characters** and reader/cleanup errors **2,048 characters**, with explicit
+drop counts. This trades old output for the latest startup/teardown evidence;
+empty tails are not proof that the target never listened.
+
+Diagnostic readiness, URL harvesting and HTTP readiness share one **30-second
+default startup deadline**, also constrained by an optional caller token. HTTP
+requests and polling delays receive that deadline token rather than using the
+HTTP client's longer default timeout. Owned process termination, output-reader
+cancellation/drain and disposal share a separate **5-second default cleanup
+deadline** (the previous process-exit wait allowance), narrowed to **3 seconds**
+by the affected short controls;
+failure is explicit and includes the owned PID/exit status, never a silent
+successful cleanup. Already-started OS operations can outlive a timed-out wait;
+the report does not claim termination when the observed process is still alive
+or its status is unavailable. A timed-out synchronous launch retains a deferred
+owner that terminates/disposes the child if launch returns later; incomplete
+pending-start cleanup is reported, not disguised as a successful teardown.
+Unlike the former swallowed cleanup errors, teardown failures now fail the
+calling test/fixture with evidence. This is deliberate leak detection, including
+for other consumers of the shared fixture, not a guarantee of successful cleanup.
+
+The affected 30-second CLI/CrashGuard cancellation controls budget **20 seconds
+for startup plus work**, **5 seconds for collection cleanup**, and **3 seconds
+for sample cleanup**, leaving runner headroom. The 40-second one-shot/REPL
+positive controls use **28 + 5 + 3 seconds**, preserving their outer timeout,
+both-stream readiness and strict real-artifact assertions. Collection start,
+cancellation/target exit and cleanup entry/exit are timestamped. At most two
+owned collection tasks are retained. Deterministic tests inject process,
+output-reader, HTTP and cleanup boundaries without private runtime event names.
+This establishes observable deadlines; it does not identify the original
+Windows startup cause or establish causal independence from preceding tests.
+
 ### Pure efficiency refactors — no data loss at any cap
 
 | Collector | What changed | Result vs. before |

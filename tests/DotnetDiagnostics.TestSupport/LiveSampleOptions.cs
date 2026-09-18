@@ -1,9 +1,9 @@
 namespace DotnetDiagnostics.TestSupport;
 
 /// <summary>
-/// Tuning knobs for <see cref="LiveSampleProcess.StartPublishedAsync"/>. Defaults reproduce the
-/// historical inline harness: bind Kestrel to an ephemeral loopback port, drain stdio, and wait
-/// for the diagnostic endpoint — but do not block on HTTP readiness unless asked.
+/// Tuning knobs for <see cref="LiveSampleProcess.StartPublishedAsync"/>. Defaults bind Kestrel to
+/// an ephemeral loopback port, drain bounded stdio tails, and wait for the diagnostic endpoint.
+/// HTTP readiness is opt-in; all enabled startup gates share one total deadline.
 /// </summary>
 public sealed record LiveSampleOptions
 {
@@ -29,6 +29,15 @@ public sealed record LiveSampleOptions
     /// <summary>Timeout for the diagnostic-endpoint readiness gate.</summary>
     public TimeSpan DiagnosticTimeout { get; init; } = TimeSpan.FromSeconds(30);
 
-    /// <summary>Timeout for harvesting the listening URL and for HTTP readiness.</summary>
+    /// <summary>Shared timeout for listening-URL harvesting plus HTTP readiness.</summary>
     public TimeSpan HttpTimeout { get; init; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>Total startup budget shared by diagnostic, URL and HTTP gates.</summary>
+    public TimeSpan StartupTimeout { get; init; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>Separate total budget for owned process termination and reader draining.</summary>
+    public TimeSpan CleanupTimeout { get; init; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>Optional retained phase/output evidence, also available on startup failure.</summary>
+    public LiveSampleEvidence? Evidence { get; init; }
 }
