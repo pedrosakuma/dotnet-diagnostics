@@ -296,7 +296,9 @@ public sealed class ScenarioLiveRunner
         await using var sample = await StartSampleAsync(manifest).ConfigureAwait(false);
         using var http = CreateHttpClient(sample.BaseUrl);
         using var loadCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var stopIssuingCts = new CancellationTokenSource();
         var load = new LoadCounters();
+        var activationStartedAt = DateTimeOffset.UtcNow;
         var activationWatch = Stopwatch.StartNew();
         var driver = DriveRepeatedRequestsAsync(
             http,
@@ -304,10 +306,12 @@ public sealed class ScenarioLiveRunner
             RequiredPositiveIntParameter(manifest, "concurrentRequests"),
             TimeSpan.FromMilliseconds(manifest.Workload.WarmupMilliseconds),
             load,
-            loadCts.Token);
+            loadCts.Token,
+            stopIssuingCts.Token);
 
         CounterSnapshot counters;
         GcSummary gc;
+        DateTimeOffset quiescedAt;
         try
         {
             var duration = TimeSpan.FromSeconds(manifest.Workload.ObservationSeconds);
@@ -318,16 +322,18 @@ public sealed class ScenarioLiveRunner
                 cancellationToken: cancellationToken);
             var gcTask = new EventPipeGcCollector().CollectAsync(
                 sample.ProcessId,
-                duration,
+                duration + TimeSpan.FromSeconds(RequiredPositiveIntParameter(manifest, "drainSeconds")),
                 // gc-storm drives a sustained LOH-allocation workload that produces far more
                 // than the collector's 200-sample default across an 8s window; a higher cap
                 // keeps GCHeapStats representative of the full observation window instead of
                 // truncating to only the earliest samples.
                 maxEvents: 4000,
                 cancellationToken: cancellationToken);
-            await Task.WhenAll(countersTask, gcTask).ConfigureAwait(false);
+            var quiescenceTask = QuiesceGcWorkloadAsync(countersTask, stopIssuingCts, driver);
+            await Task.WhenAll(countersTask, gcTask, quiescenceTask).ConfigureAwait(false);
             counters = countersTask.Result;
             gc = gcTask.Result;
+            quiescedAt = quiescenceTask.Result;
         }
         catch (Exception exception) when (
             exception is Microsoft.Diagnostics.NETCore.Client.DiagnosticsClientException
@@ -355,15 +361,21 @@ public sealed class ScenarioLiveRunner
             // transient LOH churn.
             .Concat(SelectMaxCounters(counters, "loh-size"))
             .Append(new ObservedMetric("gc-total-collections", gc.TotalCollections, "collections"))
+            .Concat(gc.Generations.Where(generation => generation.Generation is >= 0 and <= 2)
+                .Select(generation => new ObservedMetric(
+                    $"gc-gen{generation.Generation}-completed", generation.Count, "collections")))
+            .Append(new ObservedMetric("gc-capture-start-offset", (gc.StartedAt - activationStartedAt).TotalSeconds, "seconds"))
+            .Append(new ObservedMetric("gc-workload-quiesced-offset", (quiescedAt - activationStartedAt).TotalSeconds, "seconds"))
+            .Append(new ObservedMetric("gc-quiescent-tail-seconds", (gc.StartedAt + gc.Duration - quiescedAt).TotalSeconds, "seconds"))
             .OrderBy(metric => metric.Name, StringComparer.Ordinal)
             .ToArray();
         var signals = NormalizeSignals(
             manifest,
             GcSignals.Detect(gc, "replay"),
             manifest.Budget.MaximumEvidenceItems);
-        var notes = counters.Notes
+        var notes = DescribeGcQuality(gc)
+            .Concat(counters.Notes.OrderBy(note => note, StringComparer.Ordinal))
             .Concat(CollectGcNotes(gc))
-            .OrderBy(note => note, StringComparer.Ordinal)
             .Take(MaxNotes)
             .ToArray();
 
@@ -416,7 +428,8 @@ public sealed class ScenarioLiveRunner
         int workers,
         TimeSpan delay,
         LoadCounters counters,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        CancellationToken stopIssuingCancellationToken = default)
     {
         if (delay > TimeSpan.Zero)
         {
@@ -425,7 +438,7 @@ public sealed class ScenarioLiveRunner
 
         var tasks = Enumerable.Range(0, workers).Select(async _ =>
         {
-            while (!cancellationToken.IsCancellationRequested)
+            while (!cancellationToken.IsCancellationRequested && !stopIssuingCancellationToken.IsCancellationRequested)
             {
                 Interlocked.Increment(ref counters.Attempts);
                 try
@@ -449,6 +462,19 @@ public sealed class ScenarioLiveRunner
         });
 
         await Task.WhenAll(tasks).ConfigureAwait(false);
+    }
+
+    internal static async Task<DateTimeOffset> QuiesceGcWorkloadAsync(
+        Task countersTask,
+        CancellationTokenSource stopIssuing,
+        Task driver)
+    {
+        await countersTask.ConfigureAwait(false);
+        await stopIssuing.CancelAsync().ConfigureAwait(false);
+        // Do not cancel HTTP requests: their synchronous allocation handlers must
+        // finish before the remaining GC observation tail closes.
+        await driver.ConfigureAwait(false);
+        return DateTimeOffset.UtcNow;
     }
 
     private static async Task DrainDriverAsync(Task driver)
@@ -698,6 +724,25 @@ public sealed class ScenarioLiveRunner
         {
             yield return $"Dropped {gc.DroppedHeapStats} GCHeapStats sample(s) due to maxEvents cap.";
         }
+    }
+
+    internal static IReadOnlyList<string> DescribeGcQuality(GcSummary gc)
+    {
+        var quality = gc.Suspension;
+        var notes = new List<string>
+        {
+            "gc.provenance=EventPipe Microsoft-Windows-DotNETRuntime GCStart/GCStop completed pairs; collection elapsed is not suspension.",
+            $"gc.completion={quality?.Completion ?? "unavailable"}; suspensionStatus={gc.PauseMeasurementStatus}.",
+            FormattableString.Invariant($"gc.window: requestedSeconds={gc.RequestedDuration?.TotalSeconds}; observedSeconds={gc.Duration.TotalSeconds}."),
+        };
+        if (quality is not null)
+        {
+            notes.AddRange(quality.Limitations.OrderBy(pair => pair.Key, StringComparer.Ordinal).Take(10)
+                .Select(pair => $"gc.limitation:{pair.Key}={pair.Value}"));
+            if (quality.Limitations.Count > 10)
+                notes.Add($"gc.limitations-omitted={quality.Limitations.Count - 10}");
+        }
+        return notes;
     }
 
     private sealed class LoadCounters

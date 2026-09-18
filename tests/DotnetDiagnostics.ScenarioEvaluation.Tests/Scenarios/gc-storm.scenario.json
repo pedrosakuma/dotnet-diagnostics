@@ -7,12 +7,13 @@
   "groundTruth": "Repeated LOH allocations force frequent gen2 collections and sustained GC pause pressure over the observation window.",
   "workload": {
     "setup": "Launch a fresh Release BadCodeSample process over loopback.",
-    "activation": "Start repeated GET /loh-alloc?count=200 requests after warmup and keep driving them during the full observation window so multiple gen2 collections can occur.",
+    "activation": "Start repeated GET /loh-alloc?count=200 requests after warmup and drive them throughout the counter window. Then stop issuing requests, await in-flight handlers, and retain a two-second GC observation tail so the final collection can complete.",
     "cleanup": "Cancel load generation and terminate the sample process tree.",
     "parameters": {
       "endpoint": "/loh-alloc",
       "count": "200",
-      "concurrentRequests": "4"
+      "concurrentRequests": "4",
+      "drainSeconds": "2"
     },
     "warmupMilliseconds": 1200,
     "observationSeconds": 8

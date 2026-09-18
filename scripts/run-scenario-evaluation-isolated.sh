@@ -18,6 +18,7 @@ Options:
   --configuration <config>   Build configuration (default: Release).
   --build                    Omit --no-build when invoking dotnet test.
   --max-crash-retries <n>    Retry count for crash-only outcomes (default: 1).
+  --attempt-timeout-seconds <n> Whole-command deadline, including teardown (default: 180).
   --help                     Show this help.
 EOF
 }
@@ -27,6 +28,7 @@ configuration="Release"
 results_root="artifacts/scenario-evaluation-isolated"
 repetitions=1
 max_crash_retries=1
+attempt_timeout_seconds=180
 use_no_build=true
 declare -a scenarios=()
 
@@ -66,6 +68,11 @@ while [[ $# -gt 0 ]]; do
       max_crash_retries="$2"
       shift 2
       ;;
+    --attempt-timeout-seconds)
+      [[ $# -ge 2 ]] || { echo "missing value for --attempt-timeout-seconds" >&2; exit 2; }
+      attempt_timeout_seconds="$2"
+      shift 2
+      ;;
     --help|-h)
       usage
       exit 0
@@ -81,6 +88,7 @@ done
 [[ "$repetitions" =~ ^[0-9]+$ ]] || { echo "--repetitions must be a non-negative integer" >&2; exit 2; }
 [[ "$repetitions" -ge 1 ]] || { echo "--repetitions must be at least 1" >&2; exit 2; }
 [[ "$max_crash_retries" =~ ^[0-9]+$ ]] || { echo "--max-crash-retries must be a non-negative integer" >&2; exit 2; }
+[[ "$attempt_timeout_seconds" =~ ^[0-9]+$ && "$attempt_timeout_seconds" -ge 1 ]] || { echo "--attempt-timeout-seconds must be positive" >&2; exit 2; }
 
 repo_root=$(pwd)
 manifest_dir="$repo_root/tests/DotnetDiagnostics.ScenarioEvaluation.Tests/Scenarios"
@@ -214,6 +222,10 @@ record = {
     "logPath": sys.argv[10] or None,
     "detail": sys.argv[11],
 }
+process_status = pathlib.Path(sys.argv[10] + ".process.json")
+if process_status.is_file():
+    record["process"] = json.loads(process_status.read_text(encoding="utf-8"))
+    record["timedOut"] = record["process"]["timedOut"]
 metadata_path.parent.mkdir(parents=True, exist_ok=True)
 with metadata_path.open("a", encoding="utf-8") as handle:
     handle.write(json.dumps(record))
@@ -250,7 +262,9 @@ if artifact_path:
 final_outcome = str(latest["attemptOutcome"]).lower()
 final_failure_kind = "none"
 final_detail = latest["detail"]
-if final_outcome == "crashed":
+if latest.get("timedOut"):
+    final_failure_kind = "environment"
+elif final_outcome == "crashed":
     final_failure_kind = "environment"
     if artifact is not None:
         artifact_outcome = str(artifact.get("outcome", "unknown")).lower()
@@ -303,17 +317,31 @@ for scenario in "${scenarios[@]}"; do
         DOTNET_DIAGNOSTICS_SCENARIO_TRIAL="$trial" \
         DOTNET_DIAGNOSTICS_SCENARIO_ATTEMPT="$attempt" \
         DOTNET_DIAGNOSTICS_SCENARIO_TRIAL_ARTIFACT_PATH="$attempt_artifact_path" \
-        dotnet test "${test_common_args[@]}" \
+        "$python_bin" "$repo_root/scripts/run-scenario-attempt.py" \
+          --log "$log_path" --status "$log_path.process.json" \
+          --timeout-seconds "$attempt_timeout_seconds" -- \
+          dotnet test "${test_common_args[@]}" \
           --logger "trx;LogFileName=$trx_name" \
-          --results-directory "$results_dir" \
-          2>&1 | tee "$log_path"
-      exit_code=${PIPESTATUS[0]}
+          --results-directory "$results_dir"
+      exit_code=$?
       set -e
+      cat "$log_path"
 
       attempt_outcome=""
       detail=""
       artifact_outcome=""
-      if [[ -s "$attempt_artifact_path" ]]; then
+      timed_out=$("$python_bin" - "$log_path.process.json" <<'PY'
+import json
+import pathlib
+import sys
+path = pathlib.Path(sys.argv[1])
+print("true" if path.is_file() and json.loads(path.read_text(encoding="utf-8")).get("timedOut") else "false")
+PY
+)
+      if [[ "$timed_out" == "true" ]]; then
+        attempt_outcome="failed"
+        detail="Isolated command exceeded ${attempt_timeout_seconds}s including post-test teardown; see ${log_path}.process.json. No timeout retry was attempted."
+      elif [[ -s "$attempt_artifact_path" ]]; then
         set +e
         artifact_outcome=$("$python_bin" - "$attempt_artifact_path" <<'PY'
 import json

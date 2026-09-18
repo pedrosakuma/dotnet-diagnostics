@@ -9,6 +9,7 @@ public static class ScenarioFailureClassifier
         ArgumentNullException.ThrowIfNull(exception);
         return exception switch
         {
+            DotnetDiagnostics.TestSupport.SkipException => ScenarioFailureKind.Environment,
             PlatformNotSupportedException => ScenarioFailureKind.Environment,
             UnauthorizedAccessException => ScenarioFailureKind.Environment,
             ServerNotAvailableException => ScenarioFailureKind.Environment,
