@@ -325,6 +325,8 @@ for scenario in "${scenarios[@]}"; do
           --results-directory "$results_dir"
       exit_code=$?
       set -e
+      echo "phase: supervisor-returned scenario=$scenario trial=$trial attempt=$attempt exit=$exit_code"
+      echo "phase: log-replay scenario=$scenario trial=$trial attempt=$attempt"
       cat "$log_path"
 
       attempt_outcome=""
@@ -385,6 +387,7 @@ PY
         detail="dotnet test exited 0 without producing ${attempt_artifact_path}."
       fi
 
+      echo "phase: artifact-parsed scenario=$scenario trial=$trial attempt=$attempt"
       write_attempt_record \
         "$metadata_path" \
         "$scenario" \
@@ -397,6 +400,7 @@ PY
         "$results_dir" \
         "$log_path" \
         "$detail"
+      echo "phase: metadata-written scenario=$scenario trial=$trial attempt=$attempt"
 
       if [[ "$attempt_outcome" == "passed" ]]; then
         final_outcome="passed"

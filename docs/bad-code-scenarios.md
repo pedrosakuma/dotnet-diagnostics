@@ -87,6 +87,58 @@ stdout handles cannot keep a `tee` pipeline open. This is a containment measure,
 not proof that the underlying Windows post-test stall has been identified;
 that investigation remains tracked in [#983](https://github.com/pedrosakuma/dotnet-diagnostics/issues/983).
 
+Each attempt also starts an **independent, best-effort acquisition helper**.
+Its `.log.process.json.forensics.json` records up to 12 lifecycle phases,
+periodic owned-process observations, a snapshot requested three seconds before
+the target deadline, and the root-exit/cleanup observation. Fast commands may
+exit before the helper can establish ownership. The main process status reports
+the helper PID, exit code, dropped control messages, and explicit acquisition
+failure/deadline states; helper completion does **not** mean complete process
+coverage. Root exit remains root-only success: diagnostics never kill observed
+surviving descendants on success.
+
+Acquisition is bounded at retention and serialization: 64 known processes,
+128 thread hints per scan/snapshot across those processes, depth 8, 4,096 numeric
+Windows discovery entries, 50 ms cooperative discovery/snapshot work budgets,
+18,000 bytes per snapshot and 64 KiB per JSON artifact. There is one periodic
+snapshot slot (replaced at most once per second), one pre-deadline slot, and one
+final slot; `.partial` is the only staging file. Phase records are capped at
+512 bytes. A fixed-size local control pipe is nonblocking; a busy, denied,
+failed, or filesystem-stuck helper cannot defer target termination. After the
+existing target cleanup, helper completion has 0.5 seconds, followed by killing
+and waiting up to one second for **that helper only**. A missing exit confirmation
+is explicit. The helper closes inherited descriptors and stops on control EOF
+or its target-deadline-plus-22-second lifetime budget.
+
+All snapshots are labeled **best-effort incomplete**. Discovery retains only
+observed parent/child relationships with creation identity revalidation; polling
+can miss short-lived parents and previously unseen reparented children. Linux
+uses same-user `/proc` identity, fd 0–2 dispositions (attempt log, pipe, other),
+and bounded `wchan` wait hints. Access depends on procfs permissions; `wchan=0`
+is not proof of a particular wait or a stack. Windows uses Toolhelp only for
+capped numeric PID/parent discovery, discarding nonowned contents, and
+`PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE` on observed owned PIDs for
+creation identity and zero-time exit status. Permission failures and enumeration
+limits are explicit. Windows remote stdio, thread hints and process names are
+not collected; stacks are explicitly unavailable on **both** platforms. No
+debugger, WCT, Job Object, elevation, command lines or environments are involved.
+
+Atomic replacement avoids publishing partial JSON, but local filesystem and OS
+calls have practical limits: cooperative work budgets do not preempt a blocked
+kernel call, and Windows/UNC readers racing replacement can receive an access
+error rather than a document. Consumers should read the retained file after
+helper completion; the deterministic readiness fixture instead publishes one
+immutable acknowledgment after an owned child has been recorded. Helper-side
+stalls are isolated from target termination and may
+leave a capped `.partial` artifact; supervisor startup, final status persistence
+and the outer shell's log replay/parsing/metadata writes are **not** covered by
+the target's subprocess deadline. Console markers identify these outer phases.
+A pathological filesystem can still stall those operations; no success is
+inferred from missing evidence. Deterministic tests demonstrate the known
+inherited-output/surviving-child mechanism using explicit tracking readiness,
+and prove a genuinely hung helper does not delay target exit. They do not
+retrospectively identify the destroyed historical Windows runner's stall.
+
 > **Local Docker crash topology.** The supported topology uses an inert PID-namespace anchor
 > (see the `docker compose` command above), which keeps the sidecar alive after the target
 > exits. The old two-container `--pid=container:badcode` arrangement destroyed the sidecar
