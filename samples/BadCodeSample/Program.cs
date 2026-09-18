@@ -52,6 +52,7 @@ builder.Services.AddDbContextFactory<BadCodeDbContext>((serviceProvider, options
     options.UseSqlite(serviceProvider.GetRequiredService<SqliteConnection>()));
 
 var app = builder.Build();
+CrashGuardFixture.Map(app);
 
 var leakedBuffers = new List<byte[]>();
 var leakedFiles = new List<FileStream>();
