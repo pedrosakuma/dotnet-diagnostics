@@ -96,6 +96,7 @@ public sealed partial class CollectEventsTool
         public required IReadOnlyList<string>? Sources { get; init; }
         public required int MaxActivities { get; init; }
         public required int MaxMatchedActivities { get; init; }
+        public required bool IncludeHttpDestination { get; init; }
         public required double LongRunningThresholdMs { get; init; }
         public required int MaxRequests { get; init; }
         public required string? TraceId { get; init; }
@@ -315,13 +316,14 @@ public sealed partial class CollectEventsTool
                 context.ActivityCollector,
                 context.Resolver,
                 context.Handles,
+                context.IncludeHttpDestination,
                 context.TraceId,
                 context.MaxMatchedActivities,
                 context.ProcessId,
                 context.Sources,
                 effectiveDuration,
                 context.MaxActivities,
-                ct),
+                new SensitiveDataRedactor(context.SecurityOptions), ct),
             (env, data) => env with { Activities = data },
             cancellationToken);
 
@@ -502,6 +504,8 @@ public sealed partial class CollectEventsTool
             context.MaxActivities,
             context.Sources,
             context.MaxMatchedActivities,
+            context.IncludeHttpDestination,
+            new SensitiveDataRedactor(context.SecurityOptions),
             cancellationToken);
 
     private static Task<DiagnosticResult<CollectEventsEnvelope>> RunReplicaCountersKindAsync(CollectEventsDispatchContext context, int effectiveDuration, CancellationToken cancellationToken)

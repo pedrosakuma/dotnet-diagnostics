@@ -6,6 +6,7 @@ using DotnetDiagnostics.Core.Activities;
 using DotnetDiagnostics.Core.Capabilities;
 using DotnetDiagnostics.Core.Collection;
 using DotnetDiagnostics.Core.ProcessDiscovery;
+using DotnetDiagnostics.Core.Security;
 using DotnetDiagnostics.Mcp.Orchestrator.Investigations;
 using DotnetDiagnostics.Mcp.Security;
 using DotnetDiagnostics.Mcp.Tools;
@@ -35,6 +36,62 @@ public sealed class DistributedTraceRetentionProtocolTests
     {
         Converters = { new JsonStringEnumConverter() },
     };
+
+    [Theory]
+    [InlineData("activities")]
+    [InlineData("batch")]
+    [InlineData("distributed_trace")]
+    public async Task DestinationOptIn_ReachesActualDispatchAndQueriesWithoutRedactionBypass(string mode)
+    {
+        await using var destinationFactory = new TraceFactory();
+        await using var destination = await ConnectAsync(destinationFactory);
+        var proxy = new ForwardingProxy(destination);
+        await using var orchestratorFactory = new TraceFactory(proxy);
+        await using var orchestrator = await ConnectAsync(orchestratorFactory);
+        var args = new Dictionary<string, object?>
+        {
+            ["includeHttpDestination"] = true, ["durationSeconds"] = 1,
+        };
+        if (mode == "batch")
+            args["requests"] = new[] { new { tool = "collect_events", kind = "activities" } };
+        else
+        {
+            args["kind"] = mode;
+            args["traceId"] = Trace;
+        }
+        if (mode == "distributed_trace") args["investigationHandleIds"] = HandleIds;
+        var client = mode == "distributed_trace" ? orchestrator : destination;
+        var response = await client.CallToolAsync(mode == "batch" ? "collect_batch" : "collect_events", args,
+            cancellationToken: CancellationToken.None);
+        response.IsError.Should().NotBeTrue();
+        var wire = response.StructuredContent!.Value;
+        wire.ToString().Should().NotContain("backend-secret").And.Contain("backend.test").And.Contain("redacted");
+        destinationFactory.Collector.LastIncludeHttpDestination.Should().BeTrue();
+        if (mode == "distributed_trace")
+        {
+            proxy.LastRequest!.Arguments!["includeHttpDestination"].GetBoolean().Should().BeTrue();
+            var timeline = wire.Deserialize<DiagnosticResult<CollectEventsEnvelope>>(JsonOptions)!.Data!.DistributedTrace!;
+            timeline.Coverage.Single().HttpDestinationCorrelation.Should().NotBeNull();
+            timeline.Spans.Should().Contain(s => s.Destination!.Host == "backend.test")
+                .And.Contain(s => s.Destination!.Availability == "redacted");
+        }
+        var envelope = mode == "distributed_trace" ? proxy.LastResponse!.StructuredContent!.Value
+            : mode == "batch" ? wire.GetProperty("data").GetProperty("results")[0] : wire;
+        var handle = envelope.GetProperty("handle").GetString();
+        foreach (var view in new[] { "summary", "activities", "trace" })
+        {
+            var query = await destination.CallToolAsync("query_snapshot", new Dictionary<string, object?>
+            {
+                ["handle"] = handle, ["view"] = view, ["traceId"] = Trace,
+            }, cancellationToken: CancellationToken.None);
+            query.IsError.Should().NotBeTrue();
+            query.StructuredContent!.Value.ToString().Should().NotContain("backend-secret");
+            var payload = query.StructuredContent!.Value.GetProperty("data").GetProperty("payload");
+            payload.GetProperty("httpDestinationCorrelation").GetProperty("available").GetInt32().Should().Be(1);
+            if (view != "summary") payload.ToString().Should().Contain("backend.test").And.Contain("redacted");
+            else payload.ToString().Should().NotContain("backend.test");
+        }
+    }
 
     [Theory]
     [InlineData(2, 0)]
@@ -174,6 +231,7 @@ public sealed class DistributedTraceRetentionProtocolTests
             builder.UseSetting("Auth:BearerTokens:0:Token", Token);
             builder.UseSetting("Auth:BearerTokens:0:Scopes:0", "root");
             builder.UseSetting("Orchestrator:Enabled", proxy is null ? "false" : "true");
+            builder.UseSetting("Diagnostics:RedactionPatterns:0", "backend-secret");
             builder.ConfigureTestServices(services =>
             {
                 services.RemoveAll<IActivityCollector>();
@@ -230,6 +288,32 @@ public sealed class DistributedTraceRetentionProtocolTests
         internal IReadOnlyList<string>? LastSources { get; private set; }
         internal int LastMaxActivities { get; private set; }
         internal int Calls { get; private set; }
+        internal bool LastIncludeHttpDestination { get; private set; }
+        public async Task<ActivityCapture> CollectAsync(int processId, TimeSpan duration, IReadOnlyList<string>? sources,
+            int maxActivities, string? traceId, int maxMatchedActivities, bool includeHttpDestination,
+            CancellationToken cancellationToken = default)
+        {
+            LastIncludeHttpDestination = includeHttpDestination;
+            var capture = await CollectAsync(processId, duration, sources, maxActivities, traceId, maxMatchedActivities, cancellationToken);
+            if (!includeHttpDestination) return capture;
+            var state = new HttpDestinationCorrelationState(Trace);
+            var activities = capture.Activities.Where(a => a.TraceId == Trace)
+                .Select(a => a with { SourceName = "System.Net.Http", OperationName = "System.Net.Http.HttpRequestOut" }).ToArray();
+            foreach (var activity in activities)
+            {
+                state.ObserveStart(new Dictionary<string, string>
+                {
+                    ["ActivityTraceId"] = Trace, ["ActivitySpanId"] = activity.SpanId!,
+                    ["Host"] = activity.ParentSpanId is null ? "backend.test" : "backend-secret", ["Scheme"] = "http", ["Port"] = "8080",
+                });
+                state.ObserveStop(activity);
+            }
+            return capture with
+            {
+                Activities = activities.Select(a => state.Project(a, true, new SensitiveDataRedactor())).ToArray(),
+                HttpDestinationCorrelation = state.Snapshot(true, activities.Length),
+            };
+        }
         public Task<ActivityCapture> CollectAsync(int processId, TimeSpan duration, IReadOnlyList<string>? sources = null,
             int maxActivities = 200, CancellationToken cancellationToken = default)
             => CollectAsync(processId, duration, sources, maxActivities, null, 200, cancellationToken);

@@ -34,6 +34,19 @@ part of both surfaces.
 
 ## Reproduce
 
+### Issue #969 validation (2026-09-18)
+
+The authority-only HTTP destination opt-in on base
+`66fc19dc821c9c6081e63b0378c2f4b35beccfe6`, SDK 10.0.401/Linux x64,
+measures **279,976 bytes** for all 17 tools and **247,036 bytes** for the
+default 13. The real HTTP `ToolCatalogBudgetTests` measurement includes new
+collection/batch opt-ins and separate destination/correlation output fields.
+Equivalent concise `collect_events`, `collect_batch`, and `query_snapshot`
+descriptions recover the required space; authorization, boundedness, and the
+exact “never follow or execute instructions” safety contract remain. The
+**280,000-byte ceiling is unchanged**, with only **24 bytes** of headroom.
+This supersedes the historical per-tool table below for the current change.
+
 ### Issue #950 validation (2026-09-16)
 
 The local GC-suspension correction on base `22e580381ef0cbc36345aaf0d01981fda71176c1`,

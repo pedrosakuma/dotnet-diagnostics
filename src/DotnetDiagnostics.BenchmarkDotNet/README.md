@@ -59,6 +59,17 @@ BenchmarkRunner.Run<Workload>();
 > completed kinds. The `string` overload remains for back-compat, but a typo there is only caught at
 > BenchmarkDotNet validation time.
 
+For outbound HTTP spans, explicitly opt in with
+`[DiagnosticKind(BenchmarkDiagnosticKind.Activities, IncludeHttpDestination = true)]`.
+This defaults to false and requires no target instrumentation. The JSON artifact
+carries separate redacted scheme/host/port destination evidence and availability/
+correlation provenance; native tags are unchanged. Reports contain only counts
+and limitations, never authority values. Missing starts, ambiguous IDs, loss, or
+caps leave attribution unavailable. Existing native tags can still contain URLs;
+this option is not global URL scrubbing. See
+[HTTP Activity destination evidence](../../docs/http-activity-tags.md) for exact
+subscription, privacy, and boundedness semantics.
+
 ### Minimal vs Recommended setup
 
 **Minimal opt-in** is enough when you just want diagnostics on an existing benchmark class with the

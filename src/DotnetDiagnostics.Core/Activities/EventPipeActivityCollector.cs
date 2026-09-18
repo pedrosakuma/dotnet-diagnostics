@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
 using DotnetDiagnostics.Core.Internal;
+using DotnetDiagnostics.Core.Security;
 using Microsoft.Diagnostics.NETCore.Client;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Extensions.Logging;
@@ -22,16 +23,25 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector
     private const long ProviderKeywords = MessagesKeyword | EventsKeyword;
     private const string FilterArgumentName = "FilterAndPayloadSpecs";
     private const string TransformSuffix = ":-TraceId;SpanId;ParentSpanId;StartTimeTicks=StartTimeUtc.Ticks;DurationTicks=Duration.Ticks;ActivitySourceName=Source.Name;Tags=TagObjects.*Enumerate";
+    internal const string HttpDestinationFilter = "HttpHandlerDiagnosticListener/System.Net.Http.HttpRequestOut.Start:-Request.RequestUri.Host;Request.RequestUri.Port;Request.RequestUri.Scheme;ActivityTraceId=*Activity.TraceId;ActivitySpanId=*Activity.SpanId";
 
     private static readonly BoundedWildcardRegexCache WildcardRegexCache = new();
 
 
     private readonly ILogger<EventPipeActivityCollector> _logger;
+    private readonly SensitiveDataRedactor _redactor;
     internal Action? ActivityObserved { get; init; }
 
     public EventPipeActivityCollector(ILogger<EventPipeActivityCollector>? logger = null)
+        : this(logger, new SensitiveDataRedactor())
     {
+    }
+
+    public EventPipeActivityCollector(ILogger<EventPipeActivityCollector>? logger, SensitiveDataRedactor redactor)
+    {
+        ArgumentNullException.ThrowIfNull(redactor);
         _logger = logger ?? NullLogger<EventPipeActivityCollector>.Instance;
+        _redactor = redactor;
     }
 
     public Task<ActivityCapture> CollectAsync(
@@ -42,13 +52,19 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector
         CancellationToken cancellationToken = default)
         => CollectAsync(processId, duration, sources, maxActivities, null, 200, cancellationToken);
 
-    public async Task<ActivityCapture> CollectAsync(
+    public Task<ActivityCapture> CollectAsync(
         int processId,
         TimeSpan duration,
         IReadOnlyList<string>? sources,
         int maxActivities,
         string? traceId,
         int maxMatchedActivities,
+        CancellationToken cancellationToken = default)
+        => CollectAsync(processId, duration, sources, maxActivities, traceId, maxMatchedActivities, false, cancellationToken);
+
+    public async Task<ActivityCapture> CollectAsync(
+        int processId, TimeSpan duration, IReadOnlyList<string>? sources, int maxActivities,
+        string? traceId, int maxMatchedActivities, bool includeHttpDestination,
         CancellationToken cancellationToken = default)
     {
         if (duration <= TimeSpan.Zero)
@@ -62,8 +78,10 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector
         }
 
         var normalizedSourceFilters = NormalizeSourceFilters(sources);
-        var providerArguments = BuildProviderArguments(normalizedSourceFilters);
+        var providerArguments = BuildProviderArguments(normalizedSourceFilters, includeHttpDestination);
         var retention = new ActivityRetentionState(maxActivities, traceId, maxMatchedActivities);
+        var destinations = includeHttpDestination && MatchesAnyFilter("System.Net.Http", normalizedSourceFilters)
+            ? new HttpDestinationCorrelationState(retention.Retention.AppliedTraceId) : null;
 
         var processStartedAt = ProcessLifetime.TryReadStart(processId);
         var client = new DiagnosticsClient(processId);
@@ -85,13 +103,21 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector
             {
                 source.Dynamic.All += traceEvent =>
                 {
-                    if (!string.Equals(traceEvent.ProviderName, ProviderName, StringComparison.Ordinal) ||
-                        !IsActivityStopEvent(traceEvent.EventName) ||
+                    if (!string.Equals(traceEvent.ProviderName, ProviderName, StringComparison.Ordinal)) return;
+                    if (destinations is not null &&
+                        FormatString(traceEvent.PayloadByName("SourceName")) == "HttpHandlerDiagnosticListener" &&
+                        FormatString(traceEvent.PayloadByName("EventName")) == "System.Net.Http.HttpRequestOut.Start")
+                    {
+                        destinations.ObserveStart(DiagnosticSourcePayloadParser.ExtractArguments(traceEvent.PayloadByName("Arguments")));
+                        return;
+                    }
+                    if (!IsActivityStopEvent(traceEvent.EventName) ||
                         !TryCreateActivity(traceEvent, normalizedSourceFilters, collectionStartedAt, out var activity))
                     {
                         return;
                     }
 
+                    destinations?.ObserveStop(activity);
                     retention.Observe(activity);
                     ActivityObserved?.Invoke();
                 };
@@ -114,6 +140,7 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector
             }).ConfigureAwait(false);
 
         var capturedActivities = retention.Activities
+            .Select(activity => destinations?.Project(activity, eventsLost == 0 && completion == "normal-stop", _redactor) ?? activity)
             .OrderBy(activity => activity.StartedAt)
             .ThenBy(activity => activity.SourceName, StringComparer.Ordinal)
             .ThenBy(activity => activity.OperationName, StringComparer.Ordinal)
@@ -133,6 +160,11 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector
             ProcessStartedAt: processStartedAt)
         {
             Observation = new ActivityObservation(duration, completion, eventsLost),
+            HttpDestinationCorrelation = destinations?.Snapshot(eventsLost == 0 && completion == "normal-stop",
+                capturedActivities.Count(a => a.Destination?.Availability == "available")) ??
+                (includeHttpDestination ? new HttpDestinationCorrelation("source-excluded",
+                    HttpDestinationCorrelationState.MaxIdentities, HttpDestinationCorrelationState.MaxAuthorities,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0) : null),
         };
     }
 
@@ -201,12 +233,14 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector
         return normalized.Count == 0 ? null : normalized;
     }
 
-    internal static IDictionary<string, string> BuildProviderArguments(IReadOnlyList<string>? normalizedSourceFilters)
+    internal static IDictionary<string, string> BuildProviderArguments(IReadOnlyList<string>? normalizedSourceFilters, bool includeHttpDestination = false)
     {
         var providerFilters = CanApplyProviderSideFilters(normalizedSourceFilters) ? normalizedSourceFilters! : ["*"];
         return new Dictionary<string, string>(1, StringComparer.Ordinal)
         {
-            [FilterArgumentName] = BuildFilterSpec(providerFilters),
+            [FilterArgumentName] = BuildFilterSpec(providerFilters) +
+                (includeHttpDestination && MatchesAnyFilter("System.Net.Http", normalizedSourceFilters)
+                    ? "\n" + HttpDestinationFilter : string.Empty),
         };
     }
 
@@ -263,7 +297,7 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector
 
     private static string? NullIfEmpty(string? value) => string.IsNullOrWhiteSpace(value) ? null : value;
 
-    private static bool MatchesAnyFilter(string sourceName, List<string>? filters)
+    private static bool MatchesAnyFilter(string sourceName, IReadOnlyList<string>? filters)
     {
         if (filters is null || filters.Count == 0)
         {

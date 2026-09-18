@@ -62,6 +62,9 @@ public sealed class DiagnosticKindAttribute : Attribute
     /// </summary>
     public int DurationSeconds { get; set; }
 
+    /// <summary>Explicitly collect redacted HTTP authority evidence for the activities kind; native tags are unchanged.</summary>
+    public bool IncludeHttpDestination { get; set; }
+
     /// <summary>The parsed, trimmed, non-empty kinds.</summary>
     public IReadOnlyList<string> KindList { get; }
 }

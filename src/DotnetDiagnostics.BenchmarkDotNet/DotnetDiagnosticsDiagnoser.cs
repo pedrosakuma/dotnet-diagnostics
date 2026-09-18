@@ -113,7 +113,7 @@ public sealed class DotnetDiagnosticsDiagnoser : IDiagnoser, IDisposable
                 try
                 {
                     capture.Captures[kind] = await _collector
-                        .CollectAsync(pid, kind, attribute.DurationSeconds, token)
+                        .CollectAsync(pid, kind, attribute.DurationSeconds, attribute.IncludeHttpDestination, token)
                         .ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)

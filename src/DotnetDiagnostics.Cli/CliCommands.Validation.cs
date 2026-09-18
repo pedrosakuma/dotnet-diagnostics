@@ -11,6 +11,11 @@ internal static partial class CliCommands
     {
         ArgumentNullException.ThrowIfNull(options);
         error = null;
+        if (options.IncludeHttpDestination && (options.Command != "collect" || options.Kind is not ("activities" or "gc-activities")))
+        {
+            error = "--include-http-destination requires 'collect --kind activities' / 'gc-activities'.";
+            return false;
+        }
         if (options.MaxGcEvents is not null && (options.Command != "collect" || options.Kind != "gc-activities"))
         {
             error = "--max-gc-events requires 'collect --kind gc-activities'.";

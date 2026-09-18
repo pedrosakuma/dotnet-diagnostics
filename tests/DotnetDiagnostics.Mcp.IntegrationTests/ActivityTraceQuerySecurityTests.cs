@@ -40,7 +40,11 @@ public sealed class ActivityTraceQuerySecurityTests
                         ["http.request.method"] = "CUSTOMSECRET-43",
                         ["server.address"] = "127.0.0.1",
                         ["url.full"] = "http://127.0.0.1/sanitized",
-                    }),
+                    })
+                    {
+                        Destination = new HttpActivityDestination("available", "http", "CUSTOMSECRET-44", 80,
+                            "diagnostic-source-http-start"),
+                    },
             ],
             BySource: Array.Empty<ActivitySourceSummary>(),
             ByOperation: Array.Empty<ActivityOperationSummary>());
@@ -68,6 +72,8 @@ public sealed class ActivityTraceQuerySecurityTests
         projection.Spans[0].Tags["db.system"].Should().Be(SensitiveDataRedactor.RedactedPlaceholder);
         projection.Spans[0].Tags["http.request.method"].Should().Be(SensitiveDataRedactor.RedactedPlaceholder);
         projection.Spans[0].Tags.Should().NotContainKey("server.address").And.NotContainKey("url.full");
+        projection.Spans[0].Destination!.Availability.Should().Be("redacted");
+        projection.Spans[0].Destination!.Host.Should().BeNull();
         capture.Activities[0].Tags["http.request.method"].Should().Be("CUSTOMSECRET-43");
         var list = DiagnosticTools.QueryCollection(
             handles, TestPrincipalAccessors.WithScopes("eventpipe"), new SensitiveDataRedactor(options),
@@ -75,5 +81,8 @@ public sealed class ActivityTraceQuerySecurityTests
         list.Error.Should().BeNull();
         list.Data!.Payload.Should().BeOfType<ActivitiesListView>().Which.Activities[0].Tags
             .Should().BeEquivalentTo(capture.Activities[0].Tags);
+        list.Data!.Payload.Should().BeOfType<ActivitiesListView>().Which.Activities[0].Destination!.Availability
+            .Should().Be("redacted");
+        capture.Activities[0].Destination!.Host.Should().Be("CUSTOMSECRET-44");
     }
 }

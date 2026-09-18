@@ -21,7 +21,10 @@ public sealed record DistributedTraceSpan(
     double? SelfDurationMs,
     int Depth,
     bool ParentResolved,
-    IReadOnlyDictionary<string, string> Tags);
+    IReadOnlyDictionary<string, string> Tags)
+{
+    public DotnetDiagnostics.Core.Activities.HttpActivityDestination? Destination { get; init; }
+}
 
 /// <summary>
 /// A single W3C trace stitched across every attached replica that observed it. Spans are
@@ -49,4 +52,7 @@ public sealed record DistributedTracePodCoverage(
     string PodName,
     int MatchedSpans,
     int TotalCapturedActivities,
-    DotnetDiagnostics.Core.Activities.ActivityRetention? Retention = null);
+    DotnetDiagnostics.Core.Activities.ActivityRetention? Retention = null)
+{
+    public DotnetDiagnostics.Core.Activities.HttpDestinationCorrelation? HttpDestinationCorrelation { get; init; }
+}

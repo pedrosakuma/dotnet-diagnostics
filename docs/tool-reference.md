@@ -287,6 +287,7 @@ wall-clock** (so clock skew between nodes cannot scramble the order).
 | `traceId` | **Required.** Non-zero 32-hex W3C trace-id; surrounding whitespace is trimmed and casing normalized to lowercase. |
 | `durationSeconds` | Capture window applied to each Pod's fan-out collection (default 10). Correlation targets **in-flight** traces — run it while the trace is live. |
 | `maxMatchedActivities` | Independent per-Pod matching-stop-event cap, default 200, minimum 1. Unrelated traffic never consumes this budget. |
+| `includeHttpDestination` | Boolean, default false. Forward authority-only HTTP capture opt-in to each Pod; preserve separate redacted destination and correlation provenance in the stitched spans/coverage. |
 | `maxActivities` | Unfiltered exploratory cap, default 200, minimum 1. Does not control targeted retention on updated destinations. |
 | `sources` | Optional ActivitySource name filter forwarded to each Pod. |
 
@@ -1819,6 +1820,7 @@ call `collect_events(kind="sweep")` directly instead.
 | `processId` | `int?` | auto | Target process id. Resolved once and shared by every requested entry. |
 | `durationSeconds` | `int` | `10` | Shared collection window for every requested entry. ≥ 1. Individual entries cannot override this in v1 — call the specific tool directly if one kind genuinely needs a different window. |
 | `depth` | `string` | `"full"` | Inline verbosity for every entry's `data` (issue #805). `"full"` (default) preserves the tool's original behavior exactly — every entry's own canonical payload inline, unmodified, regardless of size — so existing callers that never pass this parameter see no change. `"compact"` always drops `data` for every entry that carries a `handle`, regardless of size; `summary` then names the byte size and repeats the handle to pass to `query_snapshot` for the full payload. Entries without a `handle` are never elided either way. |
+| `includeHttpDestination` | `bool` | `false` | Opt in to authority-only HTTP evidence for the `collect_events/activities` entry; requires that entry. Other entries are unchanged. Applies the same redaction and bounded correlation as direct collection. |
 
 **Returns:** `CollectBatchReport` — `processId`, `durationSeconds`, and `results` (one
 `CollectBatchEntryResult` per requested entry, in request order), plus optional `gen2Evidence`
@@ -2485,6 +2487,16 @@ boundary, controlled evidence, and limitations.
 | `maxActivities` | `int` | `200` | First-N exploratory stop-event cap when no `traceId` is supplied; minimum 1 |
 | `traceId` | `string?` | `null` | Optional non-zero 32-hex W3C ID; trimmed and lowercased, matched before retention |
 | `maxMatchedActivities` | `int` | `200` | Independent first-N matching stop-event cap with `traceId`; minimum 1 |
+| `includeHttpDestination` | `bool` | `false` | Opt in to HTTP scheme/host/port from classic DiagnosticSource Start, joined by W3C trace/span identity. Separate from unchanged native tags; no target modification. |
+
+Opt-in adds nullable `destination` availability/provenance on capture/list/trace
+spans and `httpDestinationCorrelation` accounting on capture and queries. Structured
+authority passes configured redaction before capture/export and projection;
+summaries contain only counts/limitations. The new bridge does not export full
+URI/path/query/userinfo/fragment/headers, but existing native tags may still carry
+URLs. The trace tag allowlist remains unchanged. Missing/duplicate/conflicting
+identities, transport loss, and caps withhold attribution, never infer it from
+duration. See [the exact subscription, caps and evidence](http-activity-tags.md#opt-in-http-destination-evidence-969).
 
 **Returns:** `ActivityCapture`:
 

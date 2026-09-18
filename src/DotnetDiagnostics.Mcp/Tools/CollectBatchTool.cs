@@ -165,25 +165,18 @@ public sealed class CollectBatchTool
         IPrincipalAccessor principalAccessor,
         Microsoft.Extensions.Logging.ILoggerFactory? loggerFactory,
         [Description(
-            "Which collectors to run, each naming an existing collect_sample/collect_events kind. " +
-            "Between 1 and 4 entries. Duplicate {tool, kind} pairs and kind='method-params' are " +
-            "rejected (security-sensitive; stays a single-purpose collect_sample call).")]
+            "1..4 existing collect_sample/collect_events kinds. Duplicate {tool,kind} pairs and " +
+            "security-sensitive method-params are rejected; use a separate collect_sample call for method-params.")]
         IReadOnlyList<CollectBatchRequest>? requests,
-        [Description("Operating system process id of the target .NET process. Resolved once and shared " +
-            "by every requested entry (auto-selects the lone visible .NET process when omitted).")]
+        [Description("Target PID, resolved once for all entries; omitted=auto-select lone visible .NET process.")]
         int? processId = null,
-        [Description("Shared duration of the collection window in seconds for every requested entry. " +
-            "Must be >= 1. Defaults to 10. Individual entries cannot override this in v1 — call the " +
-            "specific tool directly if one kind genuinely needs a different window.")]
+        [Description("Shared window >=1 seconds, default 10. No per-entry override; use separate calls for different windows.")]
         int durationSeconds = 10,
-        [Description("Inline verbosity for every entry's Data payload. `full` (default) preserves " +
-            "the tool's original behavior exactly — every entry's own canonical payload inline, " +
-            "unmodified, regardless of size — so existing callers that never pass this parameter " +
-            "see no change. `compact` always drops Data for every entry that carries a Handle, " +
-            "keeping the response small regardless of payload size; the Summary then names the " +
-            "byte size and the Handle to pass to query_snapshot for the full payload. Entries " +
-            "without a Handle are never elided either way.")]
+        [Description("full (default): canonical Data inline unchanged. compact: omit Data for entries with a Handle; " +
+            "Summary gives byte size and query_snapshot handle. Entries without handles are never elided.")]
         string depth = "full",
+        [Description("Opt in to redacted HTTP authority evidence for the activities entry only; requires that entry. Native tags are unchanged.")]
+        bool includeHttpDestination = false,
         CancellationToken cancellationToken = default)
     {
         if (durationSeconds < 1)
@@ -204,6 +197,10 @@ public sealed class CollectBatchTool
         {
             return validationFailure!;
         }
+        if (includeHttpDestination && !canonicalEntries.Contains((ToolCollectEvents, "activities")))
+            return DiagnosticResult.Fail<CollectBatchReport>(
+                "includeHttpDestination requires a collect_events activities entry.",
+                new DiagnosticError("InvalidArgument", "includeHttpDestination requires a collect_events activities entry.", nameof(includeHttpDestination)));
 
         // Pre-authorize every entry before opening any session — fail the whole call on the first
         // unauthorized entry (no partial start). This is the correctness gap the code review caught
@@ -303,6 +300,7 @@ public sealed class CollectBatchTool
                     kind: kind,
                     processId: pid,
                     durationSeconds: kind == "counters" ? countersDurationSeconds : durationSeconds,
+                    includeHttpDestination: includeHttpDestination && kind == "activities",
                     meters: collectGen2Meter && kind == "counters" ? Gen2MeterSelection : null,
                     maxInstrumentTimeSeries: collectGen2Meter && kind == "counters"
                         ? Gen2MeterMaxTimeSeries

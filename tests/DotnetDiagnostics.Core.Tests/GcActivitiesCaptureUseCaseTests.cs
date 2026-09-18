@@ -5,6 +5,7 @@ using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.Internal;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.UseCases;
+using DotnetDiagnostics.Core.Security;
 using FluentAssertions;
 
 namespace DotnetDiagnostics.Core.Tests;
@@ -13,6 +14,43 @@ public sealed class GcActivitiesCaptureUseCaseTests
 {
     private static readonly DateTimeOffset Start = DateTimeOffset.UtcNow;
     private static readonly DateTimeOffset Lifetime = ProcessLifetime.TryReadStart(Environment.ProcessId)!.Value;
+
+    [Fact]
+    public async Task DestinationOptionAndRedactionSurviveCorrelatedCaptureAndHandleStorage()
+    {
+        var activity = Activities() with
+        {
+            Activities = [new("System.Net.Http", "System.Net.Http.HttpRequestOut", "http", null,
+                "11111111111111111111111111111111", "1111111111111111", null, Start, Start.AddSeconds(1),
+                TimeSpan.FromSeconds(1), new Dictionary<string, string>())
+            { Destination = new("available", "http", "secret-backend", 80, "diagnostic-source-http-start") }],
+        };
+        var collector = new DestinationCollector(activity);
+        var store = new MemoryDiagnosticHandleStore();
+        var result = await GcActivitiesCaptureUseCase.CollectAsync(
+            new GcCollector(_ => Task.FromResult(Gc())), collector, new Resolver(), store,
+            new() { IncludeHttpDestination = true },
+            new SensitiveDataRedactor(new SecurityOptions { RedactionPatterns = ["secret-backend"] }));
+        collector.OptedIn.Should().BeTrue();
+        var captured = result.Data!.Activities.Capture!;
+        captured.Activities[0].Destination!.Availability.Should().Be("redacted");
+        store.TryGet<ActivityCapture>(result.Data.Activities.Handle!.Id)!.Activities[0].Destination!.Host.Should().BeNull();
+        activity.Activities[0].Destination!.Host.Should().Be("secret-backend");
+    }
+
+    private sealed class DestinationCollector(ActivityCapture capture) : IActivityCollector
+    {
+        internal bool OptedIn { get; private set; }
+        public Task<ActivityCapture> CollectAsync(int processId, TimeSpan duration, IReadOnlyList<string>? sources = null,
+            int maxActivities = 200, CancellationToken cancellationToken = default) => throw new InvalidOperationException();
+        public Task<ActivityCapture> CollectAsync(int processId, TimeSpan duration, IReadOnlyList<string>? sources,
+            int maxActivities, string? traceId, int maxMatchedActivities, bool includeHttpDestination,
+            CancellationToken cancellationToken = default)
+        {
+            OptedIn = includeHttpDestination;
+            return Task.FromResult(capture);
+        }
+    }
 
     [Fact]
     public async Task StartsBothBeforeEitherCompletes_ResolvesOnce_StoresAcquiredArtifactsAndActualIntersection()

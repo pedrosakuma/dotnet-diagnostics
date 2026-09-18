@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Activities;
 using DotnetDiagnostics.Core.DistributedTrace;
+using DotnetDiagnostics.Core.Security;
 using DotnetDiagnostics.Mcp.Security;
 using DotnetDiagnostics.Mcp.Tools;
 using ModelContextProtocol.Protocol;
@@ -48,7 +49,7 @@ internal static class DistributedTraceCorrelator
         => CorrelateAsync(store, proxy, callerPrincipal, investigationHandleIds, traceId,
             durationSeconds, maxActivities, sources, 200, cancellationToken);
 
-    internal static async Task<FanoutResult> CorrelateAsync(
+    internal static Task<FanoutResult> CorrelateAsync(
         IInvestigationStore store,
         IInvestigationProxyClient proxy,
         BearerPrincipal? callerPrincipal,
@@ -59,6 +60,14 @@ internal static class DistributedTraceCorrelator
         IReadOnlyList<string>? sources,
         int maxMatchedActivities,
         CancellationToken cancellationToken)
+        => CorrelateAsync(store, proxy, callerPrincipal, investigationHandleIds, traceId,
+            durationSeconds, maxActivities, sources, maxMatchedActivities, false, null, cancellationToken);
+
+    internal static async Task<FanoutResult> CorrelateAsync(
+        IInvestigationStore store, IInvestigationProxyClient proxy, BearerPrincipal? callerPrincipal,
+        IReadOnlyList<string>? investigationHandleIds, string traceId, int durationSeconds, int maxActivities,
+        IReadOnlyList<string>? sources, int maxMatchedActivities, bool includeHttpDestination,
+        SensitiveDataRedactor? redactor, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(proxy);
@@ -73,6 +82,7 @@ internal static class DistributedTraceCorrelator
         var captures = new List<(string PodName, ActivityCapture Capture)>(handles.Length);
 
         var arguments = BuildActivitiesArguments(durationSeconds, maxActivities, sources, normalizedTraceId, maxMatchedActivities);
+        if (includeHttpDestination) arguments["includeHttpDestination"] = JsonSerializer.SerializeToElement(true);
 
         var tasks = handles.Select(handle => CollectAsync(proxy, handle, arguments, cancellationToken)).ToArray();
         var results = await Task.WhenAll(tasks).ConfigureAwait(false);
@@ -93,7 +103,7 @@ internal static class DistributedTraceCorrelator
             return new FanoutResult(null, handles.Length, errors);
         }
 
-        var timeline = DistributedTraceStitcher.Stitch(traceId, captures);
+        var timeline = DistributedTraceStitcher.Stitch(traceId, captures, redactor);
         return new FanoutResult(timeline, handles.Length, errors);
     }
 

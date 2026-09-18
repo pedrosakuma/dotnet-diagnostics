@@ -111,17 +111,17 @@ public sealed partial class CollectEventsTool
         SecurityOptions securityOptions,
         ILoggerFactory? loggerFactory = null,
         [Description(
-            "Family (default counters): counters=cheap EventCounter snapshot; exceptions=managed throws; " +
+            "Default counters. counters=EventCounters; exceptions=managed throws; " +
             "crash-guard=fatal/unhandled exceptions; gc=collection elapsed + v2 fully-suspended phases/quality; datas=DATAS heap-count tuning; " +
             "catalog=provider/event metadata; event_source=provider passthrough (requires providerName); " +
             "activities=completed ActivitySource spans; logs=ILogger; jit=tiering/ReadyToRun; " +
-            "threadpool=worker/IOCP, hill-climbing and work-item evidence; contention=lock sites/owners; " +
+            "threadpool=worker/IOCP/hill-climbing/work-items; contention=lock sites/owners; " +
             "db=EF Core/SqlClient; kestrel=server connections/requests/TLS/queues/config; " +
-            "networking=outbound HTTP/DNS/TLS/sockets (accepted pairs only; TPL activity flow may remain enabled after capture); requests=in-flight ASP.NET requests, oldest first " +
-            "(use for hangs, no ptrace); startup=loader/DI; sweep=parallel counters+gc+exceptions+threadpool+resources triage. " +
-            "Attached Pods required: distributed_trace=targeted trace correlation; replica_counters=simultaneous counter skew. " +
+            "networking=outbound HTTP/DNS/TLS/sockets (accepted pairs only; TPL activity flow may remain enabled); requests=oldest in-flight ASP.NET requests " +
+            "(hangs, no ptrace); startup=loader/DI; sweep=parallel counters+gc+exceptions+threadpool+resources. " +
+            "Requires attached Pods: distributed_trace=targeted correlation; replica_counters=simultaneous counter skew. " +
             "Scopes: counters/replica_counters=read-counters; others=eventpipe. " +
-            "Start BEFORE load (~0.5–1s startup). Pre-attach events are missed; cold-start needs launch suspension/reverse-connect or startup tracing.")]
+            "Start BEFORE load (~0.5–1s startup); pre-attach events are missed. Cold-start needs launch suspension/reverse-connect or startup tracing.")]
         string kind = "counters",
         // Shared options.
         [Description("Target .NET PID; auto-selected if only one .NET process is visible.")]
@@ -131,7 +131,7 @@ public sealed partial class CollectEventsTool
         [Description("summary|detail|raw for all kinds. Summary trims inline lists; full data stays behind the handle.")]
         SamplingDepth depth = SamplingDepth.Summary,
         // kind=counters
-        [Description("counters: optional EventCounter providers; null=runtime/ASP.NET defaults, empty=skip legacy counters. catalog: EventPipe providers; null/empty=curated defaults. Name custom EventSources explicitly: EventPipe has no wildcard.")]
+        [Description("counters providers: null=runtime/ASP.NET, empty=skip legacy. catalog: null/empty=curated defaults. Custom EventSources need explicit names; EventPipe has no wildcard.")]
         string[]? providers = null,
         [Description("counters: optional System.Diagnostics.Metrics Meter names; null/empty disables Meters.")]
         string[]? meters = null,
@@ -146,13 +146,13 @@ public sealed partial class CollectEventsTool
         [Description("gc/catalog/event_source/logs: returned event cap, >=1. Default 200, or 500 for logs. Catalog captures metadata only, never payload values.")]
         int? maxEvents = null,
         // kind=event_source
-        [Description("kind=event_source only. EventSource provider name (e.g. 'System.Net.Http' or 'Microsoft.AspNetCore.Hosting'). Required when kind='event_source'.")]
+        [Description("event_source: required provider name, e.g. System.Net.Http.")]
         string? providerName = null,
-        [Description("kind=event_source only. EventSource keyword mask. -1 (default) means all keywords. Clamped to a safer default for non-allowlisted providers (unsafeProvider path).")]
+        [Description("event_source keyword mask: -1=all (default); clamped for non-allowlisted providers.")]
         long keywords = -1,
-        [Description("kind=event_source only. Event verbosity level (0=LogAlways..5=Verbose). Defaults to 5.")]
+        [Description("event_source verbosity: 0=LogAlways..5=Verbose (default).")]
         int eventLevel = 5,
-        [Description("kind=event_source only. Opt-in switch for non-allowlisted EventSource providers (issue #165 / M2). Only honoured when the server has 'Diagnostics:AllowSensitiveHeapValues=true' or the principal holds the 'eventsource-any' scope.")]
+        [Description("event_source: opt in to non-allowlisted providers; requires Diagnostics:AllowSensitiveHeapValues=true OR eventsource-any scope.")]
         bool unsafeProvider = false,
         // kind=activities
         [Description("activities/distributed_trace: optional ActivitySource name filters ('*'/'?' wildcards). Null/empty captures all sources.")]
@@ -165,43 +165,44 @@ public sealed partial class CollectEventsTool
         [Description("requests: oldest-first inline cap, >=1 (default 100); full in-flight set stays behind the handle.")]
         int maxRequests = 100,
         // kind=distributed_trace
-        [Description("kind=activities optional; kind=distributed_trace REQUIRED. Non-zero 32-hex W3C trace-id, normalized to lowercase. Filters before retention with independent maxMatchedActivities cap. Distributed correlation requires attached Pods and returns completed-window evidence, not a complete trace or reliable culprit ranking.")]
+        [Description("activities: optional; distributed_trace: REQUIRED non-zero 32-hex W3C ID, normalized lowercase. Filters before independent maxMatchedActivities retention. Attached-Pod evidence is completed-window-only, not a complete trace or reliable culprit ranking.")]
         string? traceId = null,
-        [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied on non-fan-out kinds, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
+        [Description("Non-fan-out routing: attach_to_pod handle overrides the current MCP session's Pod binding.")]
         string? investigationHandleId = null,
-        [Description("kind=distributed_trace or kind=replica_counters only. Explicit investigation handles returned by attach_to_pod. Primary routing path: when supplied, the fan-out scopes itself to these handles instead of discovering them from the current MCP session binding. Omit only for legacy session-bound callers.")]
+        [Description("distributed_trace/replica_counters: explicit attach_to_pod handles scope fan-out; omit only for legacy session-bound routing.")]
         IReadOnlyList<string>? investigationHandleIds = null,
         // kind=logs
-        [Description("kind=logs only. Optional case-insensitive glob filters for ILogger categories. Null/empty captures all categories.")]
+        [Description("logs: case-insensitive category globs; null/empty=all.")]
         IReadOnlyList<string>? categories = null,
-        [Description("kind=logs only. Minimum log level to retain (Trace|Debug|Information|Warning|Error|Critical). Defaults to Information.")]
+        [Description("logs minimum: Trace|Debug|Information (default)|Warning|Error|Critical.")]
         string minLevel = "Information",
-        [Description("kind=logs only. Maximum UTF-8 bytes retained per message/scope/exception string before truncation. Defaults to 4096.")]
+        [Description("logs: UTF-8 byte cap per message/scope/exception string; default 4096.")]
         int maxMessageBytes = 4096,
         // Bounded threshold-gated capture (issue #419). Requires kind=counters.
-        [Description("Threshold-gated capture (kind=counters). Single metric predicate that arms a BOUNDED watch: <metric><op><value>, e.g. 'cpu>85', 'gcHeapMb>=1500', 'rssMb>2000', 'threadCount>400', 'activeTimerCount>1000'. Operators: > >= < <=. When set together with captureKind, collect_events polls the metric for at most windowSeconds and fires captureKind the moment the predicate trips (NOT a daemon — one synchronous call). Metrics map to System.Runtime EventCounters (rssMb=working-set, threadCount=threadpool-thread-count).")]
+        [Description("counters gated capture: <metric><op><value>, e.g. cpu>85. Metrics: cpu|gcHeapMb|rssMb|threadCount|activeTimerCount; operators > >= < <=. With captureKind, polls for at most windowSeconds and captures on trigger: one bounded synchronous call, not a daemon. System.Runtime mappings include rssMb=working-set and threadCount=threadpool-thread-count.")]
         string? triggerWhen = null,
-        [Description("Threshold-gated capture (kind=counters). What to capture when triggerWhen trips: 'dump' | 'cpu-sample' | 'heap' | 'thread-snapshot'. The artifact registers under a drilldown handle (cpu-sample/heap/thread-snapshot) or writes to disk (dump). Required scopes by kind: cpu-sample=eventpipe; heap=heap-read+ptrace; thread-snapshot=ptrace; dump=dump-write+ptrace.")]
+        [Description("counters gated artifact/scopes: cpu-sample=eventpipe; heap=heap-read+ptrace; thread-snapshot=ptrace; dump=dump-write+ptrace. First three return handles; dump writes disk. Requires triggerWhen.")]
         string? captureKind = null,
-        [Description("Threshold-gated capture only. Hard upper bound (seconds) on how long the watch is armed. Required when triggerWhen/captureKind are set. Must be 1..300 (the watch is bounded — no indefinite arming).")]
+        [Description("Gated capture: required hard watch limit 1..300 seconds; no indefinite arming.")]
         int windowSeconds = 0,
-        [Description("Threshold-gated capture only. Hard cap on how many captures fire before the call returns. Must be 1..10. Defaults to 1.")]
+        [Description("Gated capture count cap: 1..10, default 1.")]
         int maxCaptures = 1,
-        [Description("Threshold-gated capture only. How often (seconds) the metric is polled within the window. Must be 1..windowSeconds. Defaults to 2.")]
+        [Description("Gated polling seconds: 1..windowSeconds, default 2.")]
         int sampleIntervalSeconds = 2,
-        [Description("Threshold-gated capture only. captureKind='dump' confirmation gate — writing a heap dump to disk requires confirmDump=true (defense-in-depth, mirrors collect_process_dump). Ignored for other capture kinds.")]
+        [Description("Gated dump writing requires true (additional confirmation gate); ignored for other capture kinds.")]
         bool confirmDump = false,
         // kind=startup launch-and-suspend-then-arm (issue #665 Part A)
         [Description(
-            "kind='startup' only (mutually exclusive with processId). Spawns fileName/arguments suspended on a fresh " +
-            "reverse-connect diagnostic port, arms the EventPipe startup session BEFORE the target's managed code runs, " +
-            "then resumes — eliminating the discovery/attach race for short-lived processes. The launched process is " +
-            "always terminated after capture. Requires --stdio transport and server config 'Diagnostics:AllowProcessLaunch=true'.")]
+            "startup only; incompatible with processId. Spawns fileName/arguments suspended on a fresh reverse-connect port, " +
+            "arms EventPipe before managed code, then resumes. Always terminates target after capture. Requires --stdio " +
+            "and Diagnostics:AllowProcessLaunch=true.")]
         LaunchSpec? launch = null,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
         RequestContext<CallToolRequestParams>? requestContext = null,
-        [Description("kind=activities with traceId or kind=distributed_trace. Independent per-process matching stop-event cap; unrelated traffic is counted but never retained. Must be >= 1. Defaults to 200; maxActivities remains the unfiltered exploratory cap.")]
+        [Description("activities+traceId/distributed_trace: matching-stop cap >=1, default 200. Unrelated traffic is counted, not retained; maxActivities remains the unfiltered cap.")]
         int maxMatchedActivities = 200,
+        [Description("activities/distributed_trace: opt in to redacted HTTP scheme/host/port evidence joined by W3C IDs, separate from unchanged native tags. Missing/ambiguous evidence stays unavailable.")]
+        bool includeHttpDestination = false,
         CancellationToken cancellationToken = default)
     {
         if (!ToolDispatchGuards.TryValidateDiscriminator<CollectEventsEnvelope>(
@@ -209,6 +210,11 @@ public sealed partial class CollectEventsTool
         {
             return dispatchFailure!;
         }
+
+        if (includeHttpDestination && canonicalKind is not ("activities" or "distributed_trace"))
+            return DiagnosticResult.Fail<CollectEventsEnvelope>(
+                "includeHttpDestination requires activities or distributed_trace.",
+                new DiagnosticError("InvalidArgument", "includeHttpDestination requires activities or distributed_trace.", "includeHttpDestination"));
 
         if (launch is not null)
         {
@@ -295,6 +301,7 @@ public sealed partial class CollectEventsTool
             Sources = sources,
             MaxActivities = maxActivities,
             MaxMatchedActivities = maxMatchedActivities,
+            IncludeHttpDestination = includeHttpDestination,
             LongRunningThresholdMs = longRunningThresholdMs,
             MaxRequests = maxRequests,
             TraceId = traceId,
@@ -448,6 +455,8 @@ public sealed partial class CollectEventsTool
         int maxActivities,
         IReadOnlyList<string>? sources,
         int maxMatchedActivities,
+        bool includeHttpDestination,
+        SensitiveDataRedactor redactor,
         CancellationToken cancellationToken)
     {
         if (!ActivityTraceProjector.TryNormalizeTraceId(traceId, out var normalizedTraceId))
@@ -517,6 +526,8 @@ public sealed partial class CollectEventsTool
             maxActivities,
             sources,
             maxMatchedActivities,
+            includeHttpDestination,
+            redactor,
             cancellationToken)
             .ConfigureAwait(false);
 

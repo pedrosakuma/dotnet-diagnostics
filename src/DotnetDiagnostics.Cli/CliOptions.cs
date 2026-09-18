@@ -84,6 +84,7 @@ internal sealed record CliOptions
 
     /// <summary>Independent matching-stop-event cap for targeted activities (<c>--max-matched-activities</c>). Null uses Core's default of 200.</summary>
     public int? MaxMatchedActivities { get; init; }
+    public bool IncludeHttpDestination { get; init; }
 
     /// <summary>Minimum log level (<c>--min-level</c>) for <c>kind=logs</c>. Null applies the default (Information).</summary>
     public string? MinLevel { get; init; }
@@ -491,6 +492,7 @@ internal sealed record CliOptions
             new StringOptionDescriptor((state, value) => state.AcknowledgeRisk = value, "--acknowledge-risk"),
             new StringOptionDescriptor((state, value) => state.SavePath = value, "--save"),
             new FlagOptionDescriptor(state => state.UnsafeProvider = true, "--unsafe-provider"),
+            new FlagOptionDescriptor(state => state.IncludeHttpDestination = true, "--include-http-destination"),
             new FlagOptionDescriptor(state => state.ExportTrace = true, "--export-trace"),
             new FlagOptionDescriptor(state => state.IncludeRetentionPaths = true, "--include-retention-paths"),
             new FlagOptionDescriptor(state => state.IncludeStaticFields = true, "--include-static-fields"),
@@ -636,6 +638,7 @@ internal sealed record CliOptions
         public int? MaxEvents { get; set; }
         public int? MaxGcEvents { get; set; }
         public int? MaxMatchedActivities { get; set; }
+        public bool IncludeHttpDestination { get; set; }
 
         public string? MinLevel { get; set; }
 
@@ -807,6 +810,7 @@ internal sealed record CliOptions
                 MaxEvents = MaxEvents,
                 MaxGcEvents = MaxGcEvents,
                 MaxMatchedActivities = MaxMatchedActivities,
+                IncludeHttpDestination = IncludeHttpDestination,
                 MinLevel = MinLevel,
                 Depth = Depth,
                 UnsafeProvider = UnsafeProvider,

@@ -6,6 +6,7 @@ using DotnetDiagnostics.Core.Capabilities;
 using DotnetDiagnostics.Core.Collection;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.ProcessDiscovery;
+using DotnetDiagnostics.Core.Security;
 using Microsoft.Extensions.DependencyInjection;
 using FluentAssertions;
 
@@ -28,8 +29,11 @@ public sealed class CliActivityTraceTests
         if (Environment.GetEnvironmentVariable("HTTP_ACTIVITY_REPLAY") is { Length: > 0 } directory)
         {
             foreach (var framework in new[] { "net8.0", "net9.0", "net10.0" })
-                foreach (var mode in new[] { "plain", "enrich" })
-                    yield return [$"{framework}-{mode}", Path.Combine(directory, $"{framework}-{mode}.json")];
+                foreach (var mode in new[] { "plain", "enrich", "bridge" })
+                {
+                    var file = Path.Combine(directory, $"{framework}-{mode}.json");
+                    if (File.Exists(file)) yield return [$"{framework}-{mode}", file];
+                }
         }
     }
 
@@ -79,7 +83,9 @@ public sealed class CliActivityTraceTests
             span.GetProperty("spanId").GetString().Should().Be(activity.SpanId);
             var tags = span.GetProperty("tags").Deserialize<Dictionary<string, string>>()!;
             tags.Should().NotContainKey("server.address").And.NotContainKey("url.full");
-            if (scenario is "empty" or "net8.0-plain")
+            (span.TryGetProperty("destination", out var destination)
+                ? destination.Deserialize<HttpActivityDestination>(JsonOptions) : null).Should().Be(activity.Destination);
+            if (scenario is "empty" or "net8.0-plain" or "net8.0-bridge")
             {
                 activity.Tags.Should().BeEmpty();
                 tags.Should().BeEmpty();
@@ -90,6 +96,48 @@ public sealed class CliActivityTraceTests
                 tags["http.request.method"].Should().Be("GET");
             }
         }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DestinationOptInFlowsThroughOneShotAndSessionWithRedaction(bool session)
+    {
+        var collector = new DestinationCollector();
+        using var services = new ServiceCollection()
+            .AddSingleton<IDiagnosticHandleStore>(new MemoryDiagnosticHandleStore())
+            .AddSingleton<IActivityCollector>(collector)
+            .AddSingleton<IProcessContextResolver>(new Resolver())
+            .AddSingleton(new SensitiveDataRedactor(new SecurityOptions { RedactionPatterns = ["secret-backend"] }))
+            .BuildServiceProvider();
+        var (exit, result) = await ExecuteAsync(services,
+            ["collect", "--kind", "activities", "--include-http-destination", "--json"], session);
+        exit.Should().Be(0);
+        collector.OptedIn.Should().BeTrue();
+        var capture = result.GetProperty("data").Deserialize<ActivityCapture>(JsonOptions)!;
+        capture.Activities[0].Destination!.Availability.Should().Be("redacted");
+        result.ToString().Should().NotContain("secret-backend");
+        var handle = services.GetRequiredService<IDiagnosticHandleStore>()
+            .TryGetLatestByKind(CollectionHandleKinds.Activities, Environment.ProcessId)!;
+        foreach (var view in new[] { "activities", "trace" })
+        {
+            var (queryExit, query) = await ExecuteAsync(services,
+                ["query", "--handle", handle.Id, "--view", view, "--trace-id", Trace, "--json"], true);
+            queryExit.Should().Be(0);
+            query.ToString().Should().Contain("redacted").And.NotContain("secret-backend");
+        }
+    }
+
+    [Theory]
+    [InlineData("collect", "counters")]
+    [InlineData("query", "activities")]
+    public void DestinationOptionRejectsInactiveKinds(string command, string kind)
+    {
+        var args = new[] { command, "--kind", kind, "--include-http-destination" };
+        CliCommandExecution.TryPrepareOneShot(args, out _, out var one).Should().BeFalse();
+        one!.Text.Should().Contain("--include-http-destination");
+        CliCommandExecution.TryPrepareSession(args, null, out _, out var session).Should().BeFalse();
+        session!.Text.Should().Contain("--include-http-destination");
     }
 
     [Theory]
@@ -206,12 +254,43 @@ public sealed class CliActivityTraceTests
     [Fact]
     public void HelpAndCompletionAdvertiseBothCollectionOptionsWithoutChangingQuery()
     {
-        CliHelp.ForCommand("collect").Should().Contain("--trace-id").And.Contain("--max-matched-activities");
+        CliHelp.ForCommand("collect").Should().Contain("--trace-id").And.Contain("--max-matched-activities")
+            .And.Contain("--include-http-destination");
         SessionReplCompletion.GetCandidates(["collect"], "--", null)
-            .Should().Contain("--trace-id").And.Contain("--max-matched-activities");
+            .Should().Contain("--trace-id").And.Contain("--max-matched-activities").And.Contain("--include-http-destination");
         SessionReplCompletion.GetCandidates(["collect", "--max-matched-activities"], "", null).Should().BeEmpty();
         SessionReplCompletion.GetCandidates(["query"], "--", null).Should().Contain("--trace-id")
             .And.NotContain("--max-matched-activities");
+    }
+
+    [Fact]
+    public async Task ActualSessionLoopRetainsDestinationOptInAndQueriesRedactedArtifact()
+    {
+        var collector = new DestinationCollector();
+        using var services = new ServiceCollection()
+            .AddSingleton<IDiagnosticHandleStore>(new MemoryDiagnosticHandleStore())
+            .AddSingleton<IActivityCollector>(collector)
+            .AddSingleton<IProcessContextResolver>(new Resolver())
+            .AddSingleton(new SensitiveDataRedactor(new SecurityOptions { RedactionPatterns = ["secret-backend"] }))
+            .BuildServiceProvider();
+        var root = Path.Combine("artifacts", $"cli-destination-{Guid.NewGuid():N}");
+        using var input = new StringReader(
+            "collect --kind activities --include-http-destination --json\n" +
+            $"query --latest-of-kind activities --view trace --trace-id {Trace} --json\nexit\n");
+        using var stdout = new StringWriter(CultureInfo.InvariantCulture);
+        using var stderr = new StringWriter(CultureInfo.InvariantCulture);
+        try
+        {
+            var exit = await SessionRepl.RunAsync(services, new MutableArtifactRootProvider(root),
+                input, stdout, stderr, Environment.ProcessId, CancellationToken.None, interactiveSafetyOverride: false);
+            exit.Should().Be(0, stderr.ToString());
+            collector.OptedIn.Should().BeTrue();
+            stdout.ToString().Should().Contain("redacted").And.Contain("\"spans\"").And.NotContain("secret-backend");
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
     }
 
     [Fact]
@@ -276,6 +355,24 @@ public sealed class CliActivityTraceTests
     {
         public Task<ActivityCapture> CollectAsync(int processId, TimeSpan duration, IReadOnlyList<string>? sources = null,
             int maxActivities = 200, CancellationToken cancellationToken = default) => Task.FromResult(capture);
+    }
+
+    private sealed class DestinationCollector : IActivityCollector
+    {
+        internal bool OptedIn { get; private set; }
+        public Task<ActivityCapture> CollectAsync(int processId, TimeSpan duration, IReadOnlyList<string>? sources = null,
+            int maxActivities = 200, CancellationToken cancellationToken = default) => throw new InvalidOperationException("Wrong overload.");
+        public Task<ActivityCapture> CollectAsync(int processId, TimeSpan duration, IReadOnlyList<string>? sources,
+            int maxActivities, string? traceId, int maxMatchedActivities, bool includeHttpDestination,
+            CancellationToken cancellationToken = default)
+        {
+            OptedIn = includeHttpDestination;
+            var start = DateTimeOffset.UnixEpoch;
+            return Task.FromResult(new ActivityCapture(processId, sources, start, duration, 1, 1,
+                [new("System.Net.Http", "System.Net.Http.HttpRequestOut", "http", null, Trace,
+                    "1111111111111111", null, start, start.AddSeconds(1), TimeSpan.FromSeconds(1), new Dictionary<string, string>())
+                { Destination = new("available", "http", "secret-backend", 8080, "diagnostic-source-http-start") }], [], []));
+        }
     }
 
     private sealed class Resolver : IProcessContextResolver

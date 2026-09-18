@@ -8,7 +8,9 @@ using System.Text.Json;
 using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(35));
 var token = budget.Token;
 var enrich = args is ["enrich"];
-if (args is not (["plain"] or ["enrich"])) throw new ArgumentException("Expected plain or enrich.");
+var destination = args is ["destination"];
+var window = args is ["window"];
+if (args is not (["plain"] or ["enrich"] or ["destination"] or ["window"])) throw new ArgumentException("Expected plain, enrich, destination or window.");
 using var observer = new HttpObserver(enrich);
 using var allListeners = DiagnosticListener.AllListeners.Subscribe(observer);
 // This witness requests no data: only the external EventPipe subscriptions enable recording.
@@ -31,29 +33,39 @@ ActivitySource.AddActivityListener(listener);
 using var server = new TcpListener(IPAddress.Loopback, 0);
 server.Start();
 var port = ((IPEndPoint)server.LocalEndpoint).Port;
-Write(new { kind = "configuration", runtime = Environment.Version.ToString(), enrich, port,
-    processId = Environment.ProcessId, listenerSampling = "None", requests = 4,
+using var secondServer = new TcpListener(IPAddress.Loopback, 0);
+if (destination) secondServer.Start();
+var secondPort = destination ? ((IPEndPoint)secondServer.LocalEndpoint).Port : port;
+Write(new { kind = "configuration", runtime = Environment.Version.ToString(), enrich, port, secondPort, destination,
+    processId = Environment.ProcessId, listenerSampling = "None", requests = window ? 1 : 4,
     diagnosticSourceVersion = typeof(Activity).Assembly.GetName().Version?.ToString(),
     httpVersion = typeof(HttpClient).Assembly.GetName().Version?.ToString() });
 if (await Console.In.ReadLineAsync(token) != "observe") throw new InvalidOperationException("Expected observe.");
-using (var readiness = new ActivitySource("HttpActivityTarget.Readiness"))
-{
-    for (var i = 0; i < 40; i++)
-    {
-        using var activity = readiness.StartActivity("ready");
-        await Task.Delay(25, token);
-    }
-}
+await EmitReadiness();
 if (await Console.In.ReadLineAsync(token) != "go") throw new InvalidOperationException("Expected go.");
 using var handler = new SocketsHttpHandler { UseProxy = false, AllowAutoRedirect = false };
 using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(5) };
 var acceptedCancellation = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-var serving = Serve();
+var releaseWindow = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+var serving = Task.WhenAll(Serve(server, window ? 1 : destination ? 3 : 4),
+    destination ? Serve(secondServer, 1) : Task.CompletedTask);
 try
 {
-    await Task.WhenAll(Send("/fast", 200), Send("/slow", 200));
-    await Send("/unavailable", 503);
-    await Send("/cancel", null);
+    if (window)
+    {
+        var request = Send("/window", 200);
+        if (await Console.In.ReadLineAsync(token) != "late") throw new InvalidOperationException("Expected late.");
+        await EmitReadiness();
+        if (await Console.In.ReadLineAsync(token) != "release") throw new InvalidOperationException("Expected release.");
+        releaseWindow.SetResult();
+        await request;
+    }
+    else
+    {
+        await Task.WhenAll(Send("/fast", 200), Send("/slow", 200));
+        await Send("/unavailable", 503);
+        await Send("/cancel", null);
+    }
 }
 finally
 {
@@ -65,7 +77,11 @@ if (await Console.In.ReadLineAsync(token) != "quit") throw new InvalidOperationE
 async Task Send(string path, int? expectedStatus)
 {
     using var cancel = CancellationTokenSource.CreateLinkedTokenSource(token);
-    var request = client.GetAsync($"http://127.0.0.1:{port}{path}", HttpCompletionOption.ResponseHeadersRead, cancel.Token);
+    var selectedPort = destination && path == "/slow" ? secondPort : port;
+    var uri = destination
+        ? $"http://fixture-user:fixture-password@127.0.0.1:{selectedPort}{path}?fixture-secret=query-value#fixture-fragment"
+        : $"http://127.0.0.1:{selectedPort}{path}";
+    var request = client.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, cancel.Token);
     if (expectedStatus is null)
     {
         await acceptedCancellation.Task.WaitAsync(token);
@@ -84,12 +100,12 @@ async Task Send(string path, int? expectedStatus)
     }
 }
 
-async Task Serve()
+async Task Serve(TcpListener endpoint, int count)
 {
     var connections = new List<Task>(4);
     try
     {
-        for (var i = 0; i < 4; i++) connections.Add(Handle(await server.AcceptTcpClientAsync(token)));
+        for (var i = 0; i < count; i++) connections.Add(Handle(await endpoint.AcceptTcpClientAsync(token)));
     }
     finally
     {
@@ -104,8 +120,9 @@ async Task Handle(TcpClient connection)
         var stream = connection.GetStream();
         using var reader = new StreamReader(stream, Encoding.ASCII, leaveOpen: true);
         var first = await reader.ReadLineAsync(token) ?? throw new IOException("Missing request line.");
-        var path = first.Split(' ')[1];
+        var path = first.Split(' ')[1].Split('?')[0];
         while (await reader.ReadLineAsync(token) is { Length: > 0 }) { }
+        if (path == "/window") await releaseWindow.Task.WaitAsync(token);
         if (path == "/cancel")
         {
             acceptedCancellation.SetResult();
@@ -116,6 +133,16 @@ async Task Handle(TcpClient connection)
         await Task.Delay(path == "/slow" ? 250 : 50, token);
         var status = path == "/unavailable" ? "503 Service Unavailable" : "200 OK";
         await stream.WriteAsync(Encoding.ASCII.GetBytes($"HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"), token);
+    }
+}
+
+async Task EmitReadiness()
+{
+    using var readiness = new ActivitySource("HttpActivityTarget.Readiness");
+    for (var i = 0; i < 40; i++)
+    {
+        using var activity = readiness.StartActivity("ready");
+        await Task.Delay(25, token);
     }
 }
 
@@ -146,7 +173,7 @@ internal sealed class HttpObserver(bool enrich) : IObserver<DiagnosticListener>,
         Console.WriteLine(JsonSerializer.Serialize(new
         {
             kind = "diagnosticSource", eventName = value.Key, traceId = activity.TraceId.ToHexString(),
-            spanId = activity.SpanId.ToHexString(), host = uri.Host, path = uri.AbsolutePath,
+            spanId = activity.SpanId.ToHexString(), host = uri.Host, port = uri.Port, path = uri.AbsolutePath,
             method = request.Method.Method, enrich,
         }));
     }
