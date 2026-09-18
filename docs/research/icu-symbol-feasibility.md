@@ -15,6 +15,9 @@ and returned a questionable `??`-prefixed name at the excluded-end control.
 This establishes concrete library behavior, **not historical sampled-function
 coverage or full product ETL aggregation**. Phase 2's redirect-policy failure and
 phase 3's PowerShell authorization failure remain preserved below.
+Subsequent source inspection **held the proposed rendered-name fix**: the marker
+is not unambiguous typed provenance. The next decision is bounded feasibility of
+a typed resolver contract before interning, not a string heuristic or log parser.
 
 Keep three outcomes separate:
 
@@ -385,10 +388,12 @@ stable range-metadata interface. The harness marked every result
 
 **Implication:** the source-level questionable-name concern is now reproduced
 through the actual dependency, and this exact newer-Info-age PDB works without
-relaxing the local age check. A narrowly scoped future proposal can reject
-questionable names while preserving unresolved addresses/sample totals and
-bounded diagnostics, with owned fixtures. That alone would **not** prove
-containing ranges for every remaining name, including zero-length symbols.
+relaxing the local age check. This initially suggested a narrow questionable-name
+filter. Subsequent construction tracing, below, **blocks that rendered-name
+approach**: filtering `??` cannot reliably distinguish a known range warning
+from literal name content, and some warnings can lose that prefix. Even an
+unambiguous questionable-result rejection would **not** prove containing ranges
+for every remaining name, including zero-length symbols.
 No historical PC, ICU sampled-function coverage, managed exclusive cost or
 full ETL capture/aggregation was tested.
 
@@ -424,6 +429,54 @@ questionable name. They are **not evidence of historical misnaming**. The comple
 three-address-per-path library probes do not validate full ETL aggregation or
 sampled-address coverage.
 
+### Construction ambiguity: source fix held before implementation
+
+After phase 4, the proposed production follow-up was inspected before editing.
+The public aggregation input does not preserve the status needed to reject
+**only known upstream out-of-range results**:
+
+1. `NativeSymbolModule.FindNameForRva` starts with `symbol.name`. It prepends `??`
+   when a nonzero-length symbol does not contain the requested RVA.[^questionable]
+   **At this point**, the resolver knows why it added the marker.
+2. **Afterward**, if the rendered string contains `@`, it calls
+   `symbol.get_undecoratedNameEx`. A non-null result **replaces** the string,
+   potentially removing the added marker. If undecoration returns null, literal
+   leading question marks are not escaped or separately tagged, and the string
+   may be truncated at `@`.[^undecoration] The resulting name cannot prove whether
+   a leading `??` came from range validation or literal native/decorated content.
+3. Project N merged-assembly mapping may then prepend an assembly name and `!`.
+   A surviving marker need not be at the beginning of the final string.[^merged-name]
+   This is a resolver transformation; `TraceMethods.FullMethodName` itself does
+   **not** prepend the module name.
+4. TraceLog interns the resulting nonempty string by name and stores the name,
+   module index and native symbol start. It retains neither an explicit
+   questionable-range status nor a containing end.[^intern][^method-store]
+5. `TraceCodeAddress.FullMethodName` returns that stored name directly.
+   `MethodToken`/`MethodRva` can distinguish managed/native identity, but do not
+   recover marker provenance or range validity.[^full-name][^method-kind]
+
+**Evidence boundary:** these transformations are verified in the pinned source.
+Phase 4 directly executed only the retained-prefix counterexample for its three
+selected RVAs. It did **not** execute additional decorated-name, failed-
+undecoration or Project N mapping controls. The source establishes why provenance
+is not encoded unambiguously; it is not a claim that a specific legitimate symbol
+was misclassified in the historical capture.
+
+Consequently, no `StartsWith("??")`, arbitrary substring filter, invented
+decorated-name grammar or formatted-log parser was implemented as a production
+contract. The isolated attribution worktree remains unused and clean at the
+inspected base. No extra profiling, symbol lookup or fixture execution was
+performed for this conclusion.
+
+**Chosen direction, pending separate feasibility:** obtain typed resolver
+provenance while identity, requested RVA and range status are known, and retain
+it **before name interning/aggregation**. Its unknown/name-only/questionable/
+verified distinctions must be explicit; a valid-looking name alone is not proof.
+The feasibility work must establish what the existing dependency can expose or
+what upstream API work is necessary—it must not claim such fields already exist.
+Do not substitute parsing `NOT IN RANGE` text or a custom production PDB parser.
+No external MCP schema/tool change or production fix is authorized by this note.
+
 ## Minimal next work, separately authorized
 
 Do not start another profiling capture merely to retry symbol discovery.
@@ -431,10 +484,10 @@ Do not start another profiling capture merely to retry symbol discovery.
 1. **Use the measured phase-4 results, not another discovery retry.** The approved
    ordinary .NET route completed both paths. Preserve prior policy/launcher
    failures and do not relax the age matcher on the basis of Info age alone.
-2. **Review a narrow questionable-name/provenance proposal** backed by owned
-   native fixtures. Rejecting `??` is a concrete candidate but is not equivalent
-   to establishing strict ranges for all accepted symbols. Do not infer structured
-   range guarantees from a diagnostic log or fields the API cannot supply.
+2. **Scope typed resolver-provenance feasibility before interning**, backed by
+   owned native fixtures. The rendered-name-only fix is held: do not reject `??`
+   heuristically or parse formatted warning logs as the production contract.
+   Establish a typed upstream boundary before proposing implementation.
 3. **Design bounded per-module provenance** before production changes: exact image
    identity/load base; requested/matched PDB identity and relevant ages; permitted
    source/cache and lookup outcome; retained PC/RVA counts and sample weights;
@@ -512,3 +565,8 @@ validation.
 [^intern]: [TraceLog name/method-index interning](https://github.com/microsoft/perfview/blob/ffa46a1548d9ba6cdbf92be3dd4271d1de723046/src/TraceEvent/TraceLog.cs#L9038-L9084).
 [^interface]: [Public name/start-only lookup interface](https://github.com/microsoft/perfview/blob/ffa46a1548d9ba6cdbf92be3dd4271d1de723046/src/TraceEvent/Symbols/ISymbolLookup.cs#L4-L8).
 [^path-policy]: [Cache derivation](https://github.com/microsoft/perfview/blob/ffa46a1548d9ba6cdbf92be3dd4271d1de723046/src/TraceEvent/Symbols/SymbolPath.cs#L174-L202), [remote-path classification](https://github.com/microsoft/perfview/blob/ffa46a1548d9ba6cdbf92be3dd4271d1de723046/src/TraceEvent/Symbols/SymbolPath.cs#L343-L365), and [CacheOnly directory gating](https://github.com/microsoft/perfview/blob/ffa46a1548d9ba6cdbf92be3dd4271d1de723046/src/TraceEvent/Symbols/SymbolReader.cs#L264-L280).
+[^undecoration]: [Undecoration can replace the marker-bearing string; fallback truncation](https://github.com/microsoft/perfview/blob/ffa46a1548d9ba6cdbf92be3dd4271d1de723046/src/TraceEvent/Symbols/NativeSymbolModule.cs#L96-L120).
+[^merged-name]: [Merged-assembly name transformation and assembly prefix](https://github.com/microsoft/perfview/blob/ffa46a1548d9ba6cdbf92be3dd4271d1de723046/src/TraceEvent/Symbols/NativeSymbolModule.cs#L129-L170).
+[^method-store]: [TraceMethods stores rendered name, module and token/RVA](https://github.com/microsoft/perfview/blob/ffa46a1548d9ba6cdbf92be3dd4271d1de723046/src/TraceEvent/TraceLog.cs#L10164-L10168).
+[^full-name]: [TraceCodeAddress.FullMethodName delegates to stored method name](https://github.com/microsoft/perfview/blob/ffa46a1548d9ba6cdbf92be3dd4271d1de723046/src/TraceEvent/TraceLog.cs#L9862-L9890), [direct stored-string return](https://github.com/microsoft/perfview/blob/ffa46a1548d9ba6cdbf92be3dd4271d1de723046/src/TraceEvent/TraceLog.cs#L10094-L10103).
+[^method-kind]: [Managed token/native RVA distinction, without validity status](https://github.com/microsoft/perfview/blob/ffa46a1548d9ba6cdbf92be3dd4271d1de723046/src/TraceEvent/TraceLog.cs#L10035-L10076).
