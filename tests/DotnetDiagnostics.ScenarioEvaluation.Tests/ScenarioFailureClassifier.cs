@@ -11,6 +11,7 @@ public static class ScenarioFailureClassifier
         return exception switch
         {
             CpuSamplingUnavailableException => ScenarioFailureKind.Environment,
+            DotnetDiagnostics.TestSupport.SkipException => ScenarioFailureKind.Environment,
             PlatformNotSupportedException => ScenarioFailureKind.Environment,
             UnauthorizedAccessException => ScenarioFailureKind.Environment,
             ServerNotAvailableException => ScenarioFailureKind.Environment,

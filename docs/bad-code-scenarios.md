@@ -62,6 +62,31 @@ all EventPipe buffers flush. `/crash?mode=oom` simulates an OOM-class fatal
 termination with an unhandled exception rather than forcing the host into real
 memory exhaustion.
 
+### Isolated GC scenario evaluation
+
+`scripts/run-scenario-evaluation-isolated.sh --scenario gc-storm --repetitions 3
+--max-crash-retries 0` captures one fresh process per trial. The workload runs
+through the eight-second counter window; then the driver stops issuing requests
+and awaits in-flight HTTP handlers without cancelling them. The GC collector
+keeps a two-second observation tail. This prevents deliberately sustained
+allocation from needlessly cutting off the last collection at the window edge;
+it does not override the collector's reliability gates or existing invariants.
+
+Evidence retains completed generation counts, requested/observed GC duration,
+workload quiescence and capture offsets, backend provenance, completion and up
+to ten limitation counters (with an explicit omission count). A missing gen2
+signal must be read alongside those quality notes, not interpreted as no GC.
+
+The isolated runner also bounds the **whole subprocess**, including post-test
+teardown, with `--attempt-timeout-seconds` (default 180). Each attempt retains
+stdout/stderr, any emitted JSON/TRX, and `.log.process.json` containing the
+owned PID, deadline, exit status, elapsed duration and cleanup outcome. A timeout
+is an environment failure even if xUnit already emitted a passing artifact;
+timeouts are never retried. The supervisor writes to a regular file so inherited
+stdout handles cannot keep a `tee` pipeline open. This is a containment measure,
+not proof that the underlying Windows post-test stall has been identified;
+that investigation remains tracked in [#983](https://github.com/pedrosakuma/dotnet-diagnostics/issues/983).
+
 > **Local Docker crash topology.** The supported topology uses an inert PID-namespace anchor
 > (see the `docker compose` command above), which keeps the sidecar alive after the target
 > exits. The old two-container `--pid=container:badcode` arrangement destroyed the sidecar

@@ -75,6 +75,12 @@ jobs:
           dotnet build tests/DotnetDiagnostics.ScenarioEvaluation.Tests/DotnetDiagnostics.ScenarioEvaluation.Tests.csproj
           --configuration Release --no-restore
 
+      - name: Validate isolated subprocess supervision
+        shell: bash
+        run: |
+          python_bin="$(command -v python3 || command -v python)"
+          "$python_bin" scripts/test_scenario_attempt.py -v
+
       - name: Run isolated scenario trials
         id: isolated_run
         shell: bash
