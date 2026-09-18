@@ -141,15 +141,18 @@ internal static partial class CliCommands
 
             "activities" => Wrap(options, await EventCollectionUseCases.CollectActivities(
                 services.GetRequiredService<IActivityCollector>(), resolver, handles,
+                options.IncludeHttpDestination,
                 options.TraceId, options.MaxMatchedActivities ?? 200,
                 pid, NullIfEmptyList(options.Sources), duration, options.MaxEvents ?? 200,
-                cancellationToken).ConfigureAwait(false)),
+                services.GetService<SensitiveDataRedactor>(), cancellationToken).ConfigureAwait(false)),
 
             "gc-activities" => BuildResultWithComparableSave(options, await GcActivitiesCaptureUseCase.CollectAsync(
                 services.GetRequiredService<IGcCollector>(), services.GetRequiredService<IActivityCollector>(),
                 resolver, handles, new GcActivitiesCaptureOptions(duration, options.MaxGcEvents ?? 200,
                     options.MaxEvents ?? 200, options.TraceId, options.MaxMatchedActivities ?? 200,
-                    NullIfEmptyList(options.Sources), options.Top ?? 20),
+                    NullIfEmptyList(options.Sources), options.Top ?? 20)
+                    { IncludeHttpDestination = options.IncludeHttpDestination },
+                services.GetService<SensitiveDataRedactor>() ?? new SensitiveDataRedactor(),
                 pid, cancellationToken).ConfigureAwait(false), RenderGcActivities),
 
             "event_source" => Wrap(options, await EventCollectionUseCases.CollectEventSource(

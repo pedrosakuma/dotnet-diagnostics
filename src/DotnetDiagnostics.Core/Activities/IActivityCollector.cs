@@ -25,4 +25,13 @@ public interface IActivityCollector
         => traceId is null
             ? CollectAsync(processId, duration, sources, maxActivities, cancellationToken)
             : throw new NotSupportedException("This collector does not support targeted activity retention.");
+
+    /// <summary>Authority capture is explicit; older implementations must not silently ignore opt-in.</summary>
+    Task<ActivityCapture> CollectAsync(
+        int processId, TimeSpan duration, IReadOnlyList<string>? sources, int maxActivities,
+        string? traceId, int maxMatchedActivities, bool includeHttpDestination,
+        CancellationToken cancellationToken = default)
+        => !includeHttpDestination
+            ? CollectAsync(processId, duration, sources, maxActivities, traceId, maxMatchedActivities, cancellationToken)
+            : throw new NotSupportedException("This collector does not support HTTP destination capture.");
 }

@@ -101,7 +101,11 @@ internal sealed class InProcessDiagnosticCollector : IDisposable
     /// Collects a single kind against <paramref name="processId"/> and projects the Core envelope
     /// into a <see cref="KindCapture"/> (a serialized JSON artifact plus a one-line headline).
     /// </summary>
-    public async Task<KindCapture> CollectAsync(int processId, string kind, int durationSeconds, CancellationToken cancellationToken)
+    public Task<KindCapture> CollectAsync(int processId, string kind, int durationSeconds, CancellationToken cancellationToken)
+        => CollectAsync(processId, kind, durationSeconds, false, cancellationToken);
+
+    public async Task<KindCapture> CollectAsync(int processId, string kind, int durationSeconds,
+        bool includeHttpDestination, CancellationToken cancellationToken)
     {
         if (!SupportedKinds.Contains(kind))
         {
@@ -147,7 +151,9 @@ internal sealed class InProcessDiagnosticCollector : IDisposable
             "gcdump" => Materialize(kind, await HeapInspectionUseCases.InspectGcDump(
                 services.GetRequiredService<IGcDumpHeapSnapshotCollector>(), handles, resolver, processId, cancellationToken: cancellationToken).ConfigureAwait(false)),
             "activities" => Materialize(kind, await EventCollectionUseCases.CollectActivities(
-                services.GetRequiredService<IActivityCollector>(), resolver, handles, processId, durationSeconds: durationSeconds, cancellationToken: cancellationToken).ConfigureAwait(false)),
+                services.GetRequiredService<IActivityCollector>(), resolver, handles, processId: processId, durationSeconds: durationSeconds,
+                cancellationToken: cancellationToken, includeHttpDestination: includeHttpDestination,
+                redactor: services.GetRequiredService<SensitiveDataRedactor>()).ConfigureAwait(false)),
             _ => KindCapture.Unsupported(kind),
         };
     }

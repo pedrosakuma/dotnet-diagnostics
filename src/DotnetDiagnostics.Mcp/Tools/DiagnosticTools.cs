@@ -1009,6 +1009,14 @@ public sealed class DiagnosticTools
         => EventCollectionUseCases.CollectActivities(collector, resolver, handles,
             traceId, maxMatchedActivities, processId, sources, durationSeconds, maxActivities, cancellationToken);
 
+    public static Task<DiagnosticResult<ActivityCapture>> CollectActivities(
+        IActivityCollector collector, IProcessContextResolver resolver, IDiagnosticHandleStore handles,
+        bool includeHttpDestination, string? traceId = null, int maxMatchedActivities = 200,
+        int? processId = null, IReadOnlyList<string>? sources = null, int durationSeconds = 10,
+        int maxActivities = 200, SensitiveDataRedactor? redactor = null, CancellationToken cancellationToken = default)
+        => EventCollectionUseCases.CollectActivities(collector, resolver, handles,
+            includeHttpDestination, traceId, maxMatchedActivities, processId, sources, durationSeconds, maxActivities, redactor, cancellationToken);
+
     [RequireScope("eventpipe")]
     [Description(
         "Generic EventSource passthrough: opens an EventPipe session for a single EventSource " +

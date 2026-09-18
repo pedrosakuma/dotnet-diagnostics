@@ -399,6 +399,7 @@ See [networking correlation and capture quality](networking-correlation.md).
 | `--source <name>` | `activities` / `gc-activities`: ActivitySource filter (repeatable, `*` / `?` globs). |
 | `--trace-id <32-hex>` | `activities` / `gc-activities`: optional non-zero W3C trace ID. Core trims surrounding whitespace and normalizes casing before targeted retention. Also retains its existing session `query --view trace` meaning. |
 | `--max-matched-activities <int>` | `activities` / `gc-activities` with `--trace-id`: independent matching stop-event cap (default 200, minimum 1). Requires targeted collection; rejected for other commands/kinds or without `--trace-id`. |
+| `--include-http-destination` | `activities` / `gc-activities`: opt in to redacted HTTP scheme/host/port joined by real W3C IDs; false by default. Separate from unchanged native tags. Valid in one-shot and `session`; rejected on other kinds/commands. |
 | `--category <glob>` | `logs`: ILogger category filter (repeatable). |
 | `--min-level <level>` | `logs`: minimum level (default `Information`). |
 | `--unsafe-provider` | `event_source`: opt in to a non-allowlisted provider. |
@@ -429,6 +430,14 @@ intentionally omits URL/host tags even if present in the full capture; collectio
 JSON and `query --view activities` preserve captured tags. See
 [HTTP Activity tag provenance](http-activity-tags.md) for .NET 9/10 differences
 and the controlled evidence boundary.
+
+`--include-http-destination` enables the authority-only DiagnosticSource bridge
+without target changes. Capture/list/trace expose a separate `destination` with
+availability and provenance, plus `httpDestinationCorrelation` quality/cap counts.
+Missing starts, ambiguous IDs, loss, or caps do not invent a backend. Configured
+redaction applies to structured authority, including collection JSON; summaries
+never include it. This does not scrub existing native URL tags or expand the
+trace tag allowlist. See the linked provenance guide for exact caps and limits.
 
 ```bash
 dotnet-diagnostics-cli collect --kind activities --pid 1234 \

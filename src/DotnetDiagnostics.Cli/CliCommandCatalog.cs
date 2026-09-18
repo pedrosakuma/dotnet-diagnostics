@@ -192,6 +192,8 @@ collect options:
                                 activities / gc-activities with --trace-id: independent matching cap (default 200, >= 1).
                                 gc-activities: duration 1..300s, activity caps 1..10000, --top 1..100.
                                 Unrelated traffic is counted, never retained; --max-events is not the matching cap.
+      --include-http-destination
+                                activities / gc-activities: opt-in redacted HTTP authority, separate from native tags.
       --interval <int>          Refresh interval in seconds (counters, db, kestrel, networking). Default 1.
       --symbol-path <path>      NT_SYMBOL_PATH-style search path for cpu, off_cpu and
                                 thread-snapshot symbol resolution.
@@ -264,6 +266,7 @@ collect options:
                 "--max-events",
                 "--trace-id",
                 "--max-matched-activities",
+                "--include-http-destination",
                 "--max-gc-events",
                 "--interval",
                 "--symbol-path",

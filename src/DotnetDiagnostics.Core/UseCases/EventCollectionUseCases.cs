@@ -1243,10 +1243,10 @@ public static class EventCollectionUseCases
         int durationSeconds = 10,
         int maxActivities = 200,
         CancellationToken cancellationToken = default)
-        => CollectActivities(collector, resolver, handles, null, 200, processId, sources,
-            durationSeconds, maxActivities, cancellationToken);
+        => CollectActivities(collector, resolver, handles, false, null, 200, processId, sources,
+            durationSeconds, maxActivities, cancellationToken: cancellationToken);
 
-    public static async Task<DiagnosticResult<ActivityCapture>> CollectActivities(
+    public static Task<DiagnosticResult<ActivityCapture>> CollectActivities(
         IActivityCollector collector,
         IProcessContextResolver resolver,
         IDiagnosticHandleStore handles,
@@ -1257,6 +1257,14 @@ public static class EventCollectionUseCases
         int durationSeconds = 10,
         int maxActivities = 200,
         CancellationToken cancellationToken = default)
+        => CollectActivities(collector, resolver, handles, false, traceId, maxMatchedActivities, processId, sources,
+            durationSeconds, maxActivities, cancellationToken: cancellationToken);
+
+    public static async Task<DiagnosticResult<ActivityCapture>> CollectActivities(
+        IActivityCollector collector, IProcessContextResolver resolver, IDiagnosticHandleStore handles,
+        bool includeHttpDestination, string? traceId = null, int maxMatchedActivities = 200,
+        int? processId = null, IReadOnlyList<string>? sources = null, int durationSeconds = 10,
+        int maxActivities = 200, SensitiveDataRedactor? redactor = null, CancellationToken cancellationToken = default)
     {
         if (durationSeconds < 1) return InvalidArg<ActivityCapture>(nameof(durationSeconds), "must be >= 1");
         if (maxActivities < 1) return InvalidArg<ActivityCapture>(nameof(maxActivities), "must be >= 1");
@@ -1271,8 +1279,9 @@ public static class EventCollectionUseCases
         var pid = resolved.ProcessId;
 
         var capture = await collector
-            .CollectAsync(pid, TimeSpan.FromSeconds(durationSeconds), sources, maxActivities, traceId, maxMatchedActivities, cancellationToken)
+            .CollectAsync(pid, TimeSpan.FromSeconds(durationSeconds), sources, maxActivities, traceId, maxMatchedActivities, includeHttpDestination, cancellationToken)
             .ConfigureAwait(false);
+        capture = HttpDestinationPrivacy.Redact(capture, redactor ?? new SensitiveDataRedactor());
 
         var retention = capture.Retention;
         var topSource = capture.BySource.Count > 0 ? capture.BySource[0] : null;
@@ -1288,6 +1297,10 @@ public static class EventCollectionUseCases
             ? " Retention provenance is unknown (legacy response)."
             : $" Applied trace filter: {retention.AppliedTraceId ?? "none"}; matching={retention.MatchingActivities}, retained matching={retention.RetainedMatchingActivities}, dropped matching={retention.DroppedMatchingActivities}, non-matching={retention.NonMatchingActivities}.";
         summary += " Completed-stop-only, bounded-window evidence cannot establish full trace completeness.";
+        if (includeHttpDestination)
+            summary += capture.HttpDestinationCorrelation is { } destination
+                ? $" HTTP destination evidence: {destination.Status}; available={destination.Available}; identity cap={destination.IdentityCap} (rejected={destination.IdentityCapEvents}), authority cap={destination.AuthorityCap} (rejected={destination.AuthorityCapEvents}). Native tags are unchanged; unavailable evidence does not identify a backend."
+                : " HTTP destination provenance is unknown (legacy response).";
 
         var primaryHint = topOperation is { MaxDurationMs: > 250 }
             ? new NextActionHint("collect_sample",

@@ -1,4 +1,5 @@
 using DotnetDiagnostics.Core.Activities;
+using DotnetDiagnostics.Core.Security;
 
 namespace DotnetDiagnostics.Core.DistributedTrace;
 
@@ -25,9 +26,16 @@ public static class DistributedTraceStitcher
     public static DistributedTraceTimeline Stitch(
         string traceId,
         IReadOnlyList<(string PodName, ActivityCapture Capture)> captures)
+        => Stitch(traceId, captures, null);
+
+    /// <summary>Stitches a trace while applying the caller's structured-destination redaction policy.</summary>
+    public static DistributedTraceTimeline Stitch(
+        string traceId, IReadOnlyList<(string PodName, ActivityCapture Capture)> captures,
+        SensitiveDataRedactor? redactor)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(traceId);
         ArgumentNullException.ThrowIfNull(captures);
+        redactor ??= new SensitiveDataRedactor();
 
         if (!ActivityTraceProjector.TryNormalizeTraceId(traceId, out var normalizedTraceId))
         {
@@ -54,10 +62,14 @@ public static class DistributedTraceStitcher
                 }
 
                 matched++;
-                working.Add(new WorkingSpan(podName, activity));
+                working.Add(new WorkingSpan(podName, activity with
+                {
+                    Destination = HttpDestinationPrivacy.Redact(activity.Destination, redactor),
+                }));
             }
 
-            coverage.Add(new DistributedTracePodCoverage(podName, matched, capture.Activities.Count, capture.Retention));
+            coverage.Add(new DistributedTracePodCoverage(podName, matched, capture.Activities.Count, capture.Retention)
+            { HttpDestinationCorrelation = capture.HttpDestinationCorrelation });
             if (capture.Retention?.RetentionLimited is null)
             {
                 warnings.Add($"Pod '{podName}': retention provenance is unknown (legacy response); zero matching loss is not established.");
@@ -335,6 +347,7 @@ public static class DistributedTraceStitcher
         public DateTimeOffset? StoppedAt { get; } = activity.StoppedAt;
         public double? DurationMs { get; } = activity.Duration?.TotalMilliseconds;
         public IReadOnlyDictionary<string, string> Tags { get; } = activity.Tags;
+        public HttpActivityDestination? Destination { get; } = activity.Destination;
         public double? SelfDurationMs { get; set; }
         public int Depth { get; set; }
         public bool ParentResolved { get; set; }
@@ -353,6 +366,6 @@ public static class DistributedTraceStitcher
             SelfDurationMs is { } s ? Math.Round(s, 3, MidpointRounding.AwayFromZero) : null,
             Depth,
             ParentResolved,
-            Tags);
+            Tags) { Destination = Destination };
     }
 }

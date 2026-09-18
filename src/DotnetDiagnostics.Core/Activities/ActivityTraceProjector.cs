@@ -319,7 +319,8 @@ public static class ActivityTraceProjector
             CriticalPathTruncated: criticalPathTruncated,
             Spans: projectedSpans,
             Warnings: warnings,
-            Retention: capture.Retention);
+            Retention: capture.Retention)
+        { HttpDestinationCorrelation = capture.HttpDestinationCorrelation };
     }
 
     /// <summary>Validates and lower-cases a non-zero W3C trace-id.</summary>
@@ -553,7 +554,10 @@ public static class ActivityTraceProjector
             StoppedAt,
             ToMilliseconds(StoppedAt.UtcTicks - Activity.StartedAt.UtcTicks),
             ToMilliseconds(ResidualTicks),
-            ProjectSafeTags(Activity.Tags, redactor));
+            ProjectSafeTags(Activity.Tags, redactor))
+        {
+            Destination = HttpDestinationPrivacy.Redact(Activity.Destination, redactor),
+        };
     }
 
     private sealed class WorkingSpanComparer : IComparer<WorkingSpan>
@@ -647,7 +651,10 @@ public sealed record ActivityTraceProjection(
     bool CriticalPathTruncated,
     IReadOnlyList<ActivityTraceSpan> Spans,
     IReadOnlyList<string> Warnings,
-    ActivityRetention? Retention = null);
+    ActivityRetention? Retention = null)
+{
+    public HttpDestinationCorrelation? HttpDestinationCorrelation { get; init; }
+}
 
 /// <summary>One completed span in deterministic parent-before-child order.</summary>
 public sealed record ActivityTraceSpan(
@@ -668,7 +675,10 @@ public sealed record ActivityTraceSpan(
     DateTimeOffset StoppedAt,
     double DurationMs,
     double ResidualDurationMs,
-    IReadOnlyDictionary<string, string> Tags);
+    IReadOnlyDictionary<string, string> Tags)
+{
+    public HttpActivityDestination? Destination { get; init; }
+}
 
 /// <summary>Stable span-id classifications emitted by <see cref="ActivityTraceSpan"/>.</summary>
 public static class ActivityTraceSpanIdStatus

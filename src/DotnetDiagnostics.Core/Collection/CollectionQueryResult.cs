@@ -257,7 +257,10 @@ public sealed record ActivitiesSummaryView(
     bool? Truncated,
     IReadOnlyList<Activities.ActivitySourceSummary> BySource,
     IReadOnlyList<Activities.ActivityOperationSummary> ByOperation,
-    Activities.ActivityRetention? Retention = null);
+    Activities.ActivityRetention? Retention = null)
+{
+    public Activities.HttpDestinationCorrelation? HttpDestinationCorrelation { get; init; }
+}
 
 /// <summary>Activities grouped by source name.</summary>
 public sealed record ActivitiesBySourceView(
@@ -266,7 +269,10 @@ public sealed record ActivitiesBySourceView(
     int CapturedCount,
     bool? Truncated,
     IReadOnlyList<Activities.ActivitySourceSummary> Sources,
-    Activities.ActivityRetention? Retention = null);
+    Activities.ActivityRetention? Retention = null)
+{
+    public Activities.HttpDestinationCorrelation? HttpDestinationCorrelation { get; init; }
+}
 
 /// <summary>Activities grouped by source+operation.</summary>
 public sealed record ActivitiesByOperationView(
@@ -275,7 +281,10 @@ public sealed record ActivitiesByOperationView(
     int CapturedCount,
     bool? Truncated,
     IReadOnlyList<Activities.ActivityOperationSummary> Operations,
-    Activities.ActivityRetention? Retention = null);
+    Activities.ActivityRetention? Retention = null)
+{
+    public Activities.HttpDestinationCorrelation? HttpDestinationCorrelation { get; init; }
+}
 
 /// <summary>Raw captured activities (capped by <c>topN</c>).</summary>
 public sealed record ActivitiesListView(
@@ -283,7 +292,10 @@ public sealed record ActivitiesListView(
     int TotalActivities,
     int Returned,
     IReadOnlyList<Activities.CapturedActivity> Activities,
-    Activities.ActivityRetention? Retention = null);
+    Activities.ActivityRetention? Retention = null)
+{
+    public Activities.HttpDestinationCorrelation? HttpDestinationCorrelation { get; init; }
+}
 
 
 // --- Log snapshot views ------------------------------------------------------------------------

@@ -292,18 +292,21 @@ public static class CollectionQueryDispatcher
                 capture.TotalActivities,
                 capturedCount,
                 truncated,
-                capture.BySource.Take(topN).ToList(), capture.Retention),
+                capture.BySource.Take(topN).ToList(), capture.Retention)
+                { HttpDestinationCorrelation = capture.HttpDestinationCorrelation },
             "byoperation" => new ActivitiesByOperationView(
                 capture.SourceFilters,
                 capture.TotalActivities,
                 capturedCount,
                 truncated,
-                capture.ByOperation.Take(topN).ToList(), capture.Retention),
+                capture.ByOperation.Take(topN).ToList(), capture.Retention)
+                { HttpDestinationCorrelation = capture.HttpDestinationCorrelation },
             "activities" => new ActivitiesListView(
                 capture.SourceFilters,
                 capture.TotalActivities,
                 Math.Min(topN, capture.Activities.Count),
-                capture.Activities.Take(topN).ToList(), capture.Retention),
+                capture.Activities.Take(topN).ToList(), capture.Retention)
+                { HttpDestinationCorrelation = capture.HttpDestinationCorrelation },
             _ /* summary */ => new ActivitiesSummaryView(
                 capture.SourceFilters,
                 capture.TotalActivities,
@@ -311,7 +314,8 @@ public static class CollectionQueryDispatcher
                 capturedCount,
                 truncated,
                 capture.BySource.Take(topN).ToList(),
-                capture.ByOperation.Take(topN).ToList(), capture.Retention),
+                capture.ByOperation.Take(topN).ToList(), capture.Retention)
+                { HttpDestinationCorrelation = capture.HttpDestinationCorrelation },
         };
 
         return new CollectionQueryResult(
@@ -329,6 +333,7 @@ public static class CollectionQueryDispatcher
         string? traceId,
         SensitiveDataRedactor? redactor)
     {
+        capture = HttpDestinationPrivacy.Redact(capture, redactor ?? new SensitiveDataRedactor());
         if (view.Equals("trace", StringComparison.OrdinalIgnoreCase))
         {
             if (!ActivityTraceProjector.TryNormalizeTraceId(traceId, out var normalizedTraceId))

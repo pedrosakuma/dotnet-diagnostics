@@ -4,6 +4,7 @@ using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.Internal;
 using DotnetDiagnostics.Core.ProcessDiscovery;
+using DotnetDiagnostics.Core.Security;
 
 namespace DotnetDiagnostics.Core.UseCases;
 
@@ -15,7 +16,10 @@ public sealed record GcActivitiesCaptureOptions(
     string? TraceId = null,
     int MaxMatchedActivities = 200,
     IReadOnlyList<string>? Sources = null,
-    int TopN = 20);
+    int TopN = 20)
+{
+    public bool IncludeHttpDestination { get; init; }
+}
 
 /// <summary>One collector's actual evidence, not a claim of simultaneous stream readiness.</summary>
 public sealed record CorrelatedCaptureSide<T>(
@@ -48,7 +52,7 @@ public sealed record GcActivitiesCapture(
 /// </summary>
 public static class GcActivitiesCaptureUseCase
 {
-    public static async Task<DiagnosticResult<GcActivitiesCapture>> CollectAsync(
+    public static Task<DiagnosticResult<GcActivitiesCapture>> CollectAsync(
         IGcCollector gcCollector,
         IActivityCollector activityCollector,
         IProcessContextResolver resolver,
@@ -56,12 +60,20 @@ public static class GcActivitiesCaptureUseCase
         GcActivitiesCaptureOptions options,
         int? processId = null,
         CancellationToken cancellationToken = default)
+        => CollectAsync(gcCollector, activityCollector, resolver, handles, options,
+            new SensitiveDataRedactor(), processId, cancellationToken);
+
+    public static async Task<DiagnosticResult<GcActivitiesCapture>> CollectAsync(
+        IGcCollector gcCollector, IActivityCollector activityCollector, IProcessContextResolver resolver,
+        IDiagnosticHandleStore handles, GcActivitiesCaptureOptions options, SensitiveDataRedactor redactor,
+        int? processId = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(gcCollector);
         ArgumentNullException.ThrowIfNull(activityCollector);
         ArgumentNullException.ThrowIfNull(resolver);
         ArgumentNullException.ThrowIfNull(handles);
         ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(redactor);
         if (Validate(options) is { } invalid)
             return new DiagnosticResult<GcActivitiesCapture>(invalid, [],
                 new DiagnosticError("InvalidArgument", invalid));
@@ -82,8 +94,10 @@ public static class GcActivitiesCaptureUseCase
         using var monitoring = new CancellationTokenSource();
         var targetExit = CancelOnExitAsync(pid, deadline, monitoring.Token);
         var gcTask = CaptureAsync(() => gcCollector.CollectAsync(pid, duration, options.MaxGcEvents, deadline.Token));
-        var activityTask = CaptureAsync(() => activityCollector.CollectAsync(pid, duration, options.Sources,
-            options.MaxActivities, options.TraceId, options.MaxMatchedActivities, deadline.Token));
+        var activityTask = CaptureAsync(async () => HttpDestinationPrivacy.Redact(
+            await activityCollector.CollectAsync(pid, duration, options.Sources,
+                options.MaxActivities, options.TraceId, options.MaxMatchedActivities, options.IncludeHttpDestination, deadline.Token)
+                .ConfigureAwait(false), redactor));
         await Task.WhenAll(gcTask, activityTask).ConfigureAwait(false);
         await monitoring.CancelAsync().ConfigureAwait(false);
         await targetExit.ConfigureAwait(false);
