@@ -51,6 +51,9 @@ Private ICU names and comparer cost ordering must not become its CI invariants.
 - **Phase 4 — directly observed:** an authorized session-only native .NET console
   harness completed the two offline identity lookups and six name/start calls.
   Setup, actual API arguments, dependency hashes and bounded logs were retained.
+- **Typed-API follow-up — independently researched, relayed:** public enumeration,
+  current upstream source and related issues were inspected without another
+  native probe. Enumeration availability is not a selected-address lookup result.
 
 ## Historical capture cannot be rebound to the current image
 
@@ -477,6 +480,68 @@ what upstream API work is necessary—it must not claim such fields already exis
 Do not substitute parsing `NOT IN RANGE` text or a custom production PDB parser.
 No external MCP schema/tool change or production fix is authorized by this note.
 
+### Public typed enumeration exists, but does not close the selected-address gap
+
+An independent follow-up qualified the API boundary: **public access to native
+symbol ranges does exist** in pinned TraceEvent 3.2.2:
+
+```text
+SymbolReader.OpenNativeSymbolFile(...)
+  -> NativeSymbolModule.GlobalSymbol
+  -> Symbol.GetChildren(Dia2Lib.SymTagEnum)
+  -> Symbol.RVA / Length / Id / Name / UndecoratedName
+```
+
+`GlobalSymbol`, the typed properties and enumeration are public.[^global-symbol][^symbol-properties][^children]
+The missing contract is narrower: a **typed result for the symbol selected for
+one queried RVA**, with validity preserved through TraceLog—not all public range
+metadata. A separate enumeration map cannot establish which symbol
+`FindNameForRva` selected without additional selection/ambiguity rules.
+
+There is also a boundedness constraint: `GetChildren` fills a `List` before
+returning `IEnumerable`. Applying `Take(N)` afterward does **not** bound its
+internal work or allocation.[^children] No enumeration probe was run; this is
+source/API inspection, not a measured inventory or performance claim.
+
+The researcher also inspected current upstream revision
+`4aab31822f3329632a5b566fd8a286d08881760e` (committed
+2026-09-18T01:33:19Z). It still has zero-length/name-only results, questionable
+prefixing before display transformations, and the name/start-only lookup
+interface.[^current-lookup] Lookup/interning and stored/serialized method data
+still do not preserve selected-address range status.[^current-storage]
+`OnSymbolFileFound` reports file path/GUID/age, not a per-RVA interception
+point.[^file-found] **No dependency-upgrade fix is established by that revision.**
+
+Related-issue research was bounded: four queries returned ten rows (one
+duplicate), and three relevant records were inspected. In
+[PerfView #162](https://github.com/microsoft/perfview/issues/162), the
+[2017 maintainer explanation](https://github.com/microsoft/perfview/issues/162#issuecomment-299666537)
+described DIA returning noncontaining symbols and `??` as a compromise.
+The [2019 closure](https://github.com/microsoft/perfview/issues/162#issuecomment-543932909)
+requested an actionable reproduction; it does not establish a shipped typed fix.
+[#2397](https://github.com/microsoft/perfview/pull/2397) concerns ELF resolution
+and [#2376](https://github.com/microsoft/perfview/pull/2376) an invalid dynamic
+`ProcessSymbol` range/null-reference case; neither is this native DIA validity
+contract. No exact typed fix was found in that search, which is not a claim of
+exhaustive upstream history.
+
+The proposed **feature discussion**, separate from the executed questionable-name
+counterexample, is an additive immutable selected-symbol result carrying
+`NotFound` / `RangeUnknown` / `InRange` / `OutOfRange`, display name, start RVA,
+length and, if available, symbol ID/kind. These are **proposed**, not existing
+fields. Compute overflow-safe containment before display transformations;
+zero length remains unknown and image/PDB identity stays a separate prerequisite.
+Preserve legacy name-overload compatibility.
+
+Validity belongs to the **queried address**, not just the interned method name:
+one candidate can contain one RVA and exclude another. A feasible integration
+must retain status at `TraceCodeAddress` or an equivalent point before aggregation,
+address same-name/different-start identity, and explicitly design ETLX
+serialization/version compatibility. Old artifacts and unsupported backends must
+remain unknown, never retroactively verified. Managed behavior must stay unchanged.
+Owned controls should cover these distinctions, including decorated names,
+successful undecoration, display prefixes and serialization round trips.
+
 ## Minimal next work, separately authorized
 
 Do not start another profiling capture merely to retry symbol discovery.
@@ -487,7 +552,8 @@ Do not start another profiling capture merely to retry symbol discovery.
 2. **Scope typed resolver-provenance feasibility before interning**, backed by
    owned native fixtures. The rendered-name-only fix is held: do not reject `??`
    heuristically or parse formatted warning logs as the production contract.
-   Establish a typed upstream boundary before proposing implementation.
+   Establish a typed selected-address boundary before proposing implementation;
+   do not mistake eager enumeration or a dependency upgrade for that contract.
 3. **Design bounded per-module provenance** before production changes: exact image
    identity/load base; requested/matched PDB identity and relevant ages; permitted
    source/cache and lookup outcome; retained PC/RVA counts and sample weights;
@@ -570,3 +636,9 @@ validation.
 [^method-store]: [TraceMethods stores rendered name, module and token/RVA](https://github.com/microsoft/perfview/blob/ffa46a1548d9ba6cdbf92be3dd4271d1de723046/src/TraceEvent/TraceLog.cs#L10164-L10168).
 [^full-name]: [TraceCodeAddress.FullMethodName delegates to stored method name](https://github.com/microsoft/perfview/blob/ffa46a1548d9ba6cdbf92be3dd4271d1de723046/src/TraceEvent/TraceLog.cs#L9862-L9890), [direct stored-string return](https://github.com/microsoft/perfview/blob/ffa46a1548d9ba6cdbf92be3dd4271d1de723046/src/TraceEvent/TraceLog.cs#L10094-L10103).
 [^method-kind]: [Managed token/native RVA distinction, without validity status](https://github.com/microsoft/perfview/blob/ffa46a1548d9ba6cdbf92be3dd4271d1de723046/src/TraceEvent/TraceLog.cs#L10035-L10076).
+[^global-symbol]: [Public GlobalSymbol entry point](https://github.com/microsoft/perfview/blob/ffa46a1548d9ba6cdbf92be3dd4271d1de723046/src/TraceEvent/Symbols/NativeSymbolModule.cs#L383-L393).
+[^symbol-properties]: [Public symbol identity/name/RVA/length properties](https://github.com/microsoft/perfview/blob/ffa46a1548d9ba6cdbf92be3dd4271d1de723046/src/TraceEvent/Symbols/NativeSymbolModule.cs#L1563-L1599).
+[^children]: [Public GetChildren and eager list construction](https://github.com/microsoft/perfview/blob/ffa46a1548d9ba6cdbf92be3dd4271d1de723046/src/TraceEvent/Symbols/NativeSymbolModule.cs#L1610-L1646).
+[^current-lookup]: [Current native lookup and undecoration](https://github.com/microsoft/perfview/blob/4aab31822f3329632a5b566fd8a286d08881760e/src/TraceEvent/Symbols/NativeSymbolModule.cs#L57-L120), [display mapping](https://github.com/microsoft/perfview/blob/4aab31822f3329632a5b566fd8a286d08881760e/src/TraceEvent/Symbols/NativeSymbolModule.cs#L131-L170), and [lookup interface](https://github.com/microsoft/perfview/blob/4aab31822f3329632a5b566fd8a286d08881760e/src/TraceEvent/Symbols/ISymbolLookup.cs#L3-L8).
+[^current-storage]: [Current lookup/interning](https://github.com/microsoft/perfview/blob/4aab31822f3329632a5b566fd8a286d08881760e/src/TraceEvent/TraceLog.cs#L9162-L9208), [creation/serialization](https://github.com/microsoft/perfview/blob/4aab31822f3329632a5b566fd8a286d08881760e/src/TraceEvent/TraceLog.cs#L10302-L10322), and [stored fields](https://github.com/microsoft/perfview/blob/4aab31822f3329632a5b566fd8a286d08881760e/src/TraceEvent/TraceLog.cs#L10353-L10364).
+[^file-found]: [OnSymbolFileFound is a file-identity callback](https://github.com/microsoft/perfview/blob/4aab31822f3329632a5b566fd8a286d08881760e/src/TraceEvent/Symbols/SymbolReader.cs#L1004-L1008).
