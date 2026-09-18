@@ -9,10 +9,12 @@ extracted from [#985](https://github.com/pedrosakuma/dotnet-diagnostics/issues/9
 **Conditional GO for a separately reviewed offline resolver/provenance follow-up;
 NO conclusion about historical sampled-function coverage.** Matching public symbols
 were obtained for the current local Windows ICU image and contain corroborated
-function-range metadata. Actual Windows DIA/TraceEvent lookup remains **unattempted**:
-phase 2 stopped on its no-redirect staging policy; the separately authorized
-redirect-aware phase 3 staged the exact PDB but its PowerShell launcher was
-rejected before setup or probes could execute.
+function-range metadata. **Phase 4 executed both declared Windows DIA/TraceEvent
+offline lookup paths:** both accepted the requested identity, exposed DIA age 1
+and returned a questionable `??`-prefixed name at the excluded-end control.
+This establishes concrete library behavior, **not historical sampled-function
+coverage or full product ETL aggregation**. Phase 2's redirect-policy failure and
+phase 3's PowerShell authorization failure remain preserved below.
 
 Keep three outcomes separate:
 
@@ -43,6 +45,9 @@ Private ICU names and comparer cost ordering must not become its CI invariants.
 - **Parent HEAD — relayed, separate:** one HTTP HEAD, not a PDB download,
   identified the redirect host used to constrain phase 3. Its signed query was
   neither reused nor retained.
+- **Phase 4 — directly observed:** an authorized session-only native .NET console
+  harness completed the two offline identity lookups and six name/start calls.
+  Setup, actual API arguments, dependency hashes and bounded logs were retained.
 
 ## Historical capture cannot be rebound to the current image
 
@@ -122,11 +127,14 @@ checks the GUID, rejects `imageAge > PdbAge`, and requires a **nonzero DBI age**
 to equal the image age.[^pdb-guid][^pdb-age] Thus image age 1, Info age 3 and DBI
 age 1 satisfy those structural checks.
 
-This is an implementation-backed compatibility observation, **not a measured
-answer about what DIA's `globalScope.age` returns** for this file. TraceEvent's
-local-file matcher compares the DIA-exposed GUID and age for equality, while
-the indexed-server/cache path follows a different selection path.[^local-match][^indexed]
-Both paths need explicit native execution before changing their validation.
+Phase 1 supplied an implementation-backed compatibility observation, **not a
+measurement of DIA's `globalScope.age`**. Phase 4 subsequently measured **DIA
+age 1 for this exact PDB**, with both declared paths accepting the requested
+GUID/age. TraceEvent's local-file matcher compares DIA GUID/age for equality,
+while the indexed-server/cache path follows different selection logic.[^local-match][^indexed]
+There is no evidence here that this legitimate newer Info age requires a
+production age-matcher change; neither one file nor the indexed-cache hit tests
+all possible identity mismatches.
 
 ### Metadata corroboration, not sampled coverage
 
@@ -183,9 +191,9 @@ not retained and is not inferred here.
 
 This is a **transport-policy stop**, not an authoritative missing-symbol response.
 It does not invalidate phase 1's successful availability observation. No alternate
-download, relaxed policy or repeated attempt was made. Native assembly loading,
-DIA GUID/age behavior and excluded-end naming remain **unattempted**, not passed
-or failed. A source-only check also found an invalid getter-only
+download, relaxed policy or repeated attempt was made in phase 2. At that stage,
+native assembly loading, DIA GUID/age behavior and excluded-end naming remained
+**unattempted**, not passed or failed. A source-only check also found an invalid getter-only
 `SymbolCacheDirectory` assignment in the unexecuted draft harness; that draft
 is not a working reproduction script.
 
@@ -272,10 +280,117 @@ it started its bounded child. Actual counts:
 The batch stopped without changing execution policy or trying an alternate
 launch route. The error's underlying authorization cause was not established.
 This is **a launcher authorization blocker**, not an assembly incompatibility,
-DIA failure, GUID/age mismatch, unavailable symbol or successful lookup. The
-public API's actual behavior still cannot guide a production identity/range fix.
-The PDB staging prerequisite is now satisfied for this image; native execution
-authorization remains the concrete next blocker.
+DIA failure, GUID/age mismatch, unavailable symbol or successful lookup. At the
+end of phase 3, PDB staging was satisfied but native execution remained blocked.
+Phase 4 below is a **separately authorized ordinary .NET route**, not a retry or
+policy workaround for the rejected PowerShell script.
+
+## Phase 4: actual offline TraceEvent/DIA results
+
+The [phase-4 plan](https://github.com/pedrosakuma/dotnet-diagnostics/issues/987#issuecomment-5736810063)
+was published before build/execution. It authorized a session-only C# console
+harness using installed native Windows **SDK 10.0.303**, direct references to
+existing TraceEvent/FastSerialization binaries and the existing
+`amd64/msdia140.dll`. No package dependencies were added; the session NuGet config
+cleared feeds and restore used installed reference packs. No PowerShell,
+execution-policy change, new PDB download or production source edit was involved.
+
+The single native build succeeded in **9.74 seconds, zero warnings/errors**.
+Both build and execution used the shared `flock --close` validation lock.
+The supervisor started exactly one child with a 60-second deadline; it exited 0
+without deadline termination. Supervisor stdout/stderr were empty.
+
+### Setup and provenance
+
+Before any identity lookup, the harness recorded public API reflection, loaded
+the native DIA dependency without opening a PDB, cleared inherited symbol paths
+in its own process, and rechecked the exact system DLL plus **both** staged PDB
+hashes/lengths. All matched the earlier tables.
+
+| Field | Executed value |
+|---|---|
+| Platform / architecture | Windows `10.0.26200.0` / X64 |
+| Runtime | `.NET 10.0.12` |
+| TraceEvent assembly / file version | `3.2.2.0` / `3.2.2` |
+| TraceEvent SHA-256 | `4251a4352098b77857ab70286f45718df373cc709e7cb4448843e6ab252e50fb` |
+| Native DIA SHA-256 | `7341081feac7a2cebcc796c9c2bc5041a295df0673244f2595294e06a0bd7ee8` |
+| Harness `Program.cs` SHA-256 | `31d255ba6223881ee4a3da0b4236fa583623e4a8f11526eae416b25a1a9bab5f` |
+
+The project, `global.json`, offline NuGet config, runtime config and source hashes
+are retained in session artifacts. Public reflection confirmed:
+
+```text
+SymbolReader(TextWriter, String, DelegatingHandler)
+String FindSymbolFilePath(String, Guid, Int32, String, String, Boolean)
+NativeSymbolModule OpenNativeSymbolFile(String)
+String FindNameForRva(UInt32, UInt32 ByRef)
+Guid PdbGuid
+Int32 PdbAge
+```
+
+`SymbolCacheDirectory` was confirmed getter-only. No private reflection/PDB
+parser or identity/security-check override was used.
+
+### Two paths, unchanged actual lookup budget
+
+Each separate reader used `CacheOnly`, an explicit symbol path and an
+HTTP-denying handler. The local path was `.\phase3\local` with the session root as
+the explicit process current directory; public path classification reported
+`IsRemote=false`, and its resolved backing path was the local WSL UNC session
+folder. The indexed path named the session's prepopulated cache explicitly and
+`https://msdl.microsoft.com/download/symbols`; its **cache hit** required no HTTP.
+This checks local WSL file access, not permission to use an arbitrary remote share.
+
+Both calls had exactly these arguments:
+
+```text
+FindSymbolFilePath("icu.pdb",
+  Guid("94451369-D782-EA5D-26A5-A3501C131722"), 1, null, "", false)
+```
+
+| Path | Identity calls | Explicit `OpenNativeSymbolFile` calls | RVA calls | HTTP-handler attempts |
+|---|---:|---:|---:|---:|
+| Explicit local folder | 1 | 1 | 3 | 0 |
+| Prepopulated indexed cache | 1 | 1 | 3 | 0 |
+
+Both returned their staged PDB path, exposed GUID
+`94451369-D782-EA5D-26A5-A3501C131722` and **DIA `PdbAge=1`**.
+The local matcher also opens the PDB internally during identity checking; that is
+not an extra harness lookup/retry. No attempt was repeated.
+
+### Boundary result: a returned name is not a containing-range guarantee
+
+Both paths produced identical results:
+
+| RVA | Metadata control | Returned name | Returned start |
+|---|---|---|---|
+| `0xCCF50` | Start | `initialize_legacy_wide_specifiers` | `0xCCF50` |
+| `0xCCF6C` | Last byte | `initialize_legacy_wide_specifiers` | `0xCCF50` |
+| `0xCCF6D` | Excluded end | `??initialize_legacy_wide_specifiers` | `0xCCF50` |
+
+Both logs explicitly reported:
+
+```text
+Warning: NOT IN RANGE: address 0xccf6d start ccf50 end ccf6d Offset 1d Len 1d,
+symbol initialize_legacy_wide_specifiers, prefixing with ??.
+```
+
+The local/indexed logs retained **584 / 1,345 characters**, respectively, with
+no truncation under the insertion-enforced 65,536-character cap. These are actual
+library results for the previously selected metadata controls. The public
+structured result still supplies **name/start, not end or confidence**: the
+human-readable warning is evidence of this counterexample, not a proposed
+stable range-metadata interface. The harness marked every result
+`containingRangeVerified=false`.
+
+**Implication:** the source-level questionable-name concern is now reproduced
+through the actual dependency, and this exact newer-Info-age PDB works without
+relaxing the local age check. A narrowly scoped future proposal can reject
+questionable names while preserving unresolved addresses/sample totals and
+bounded diagnostics, with owned fixtures. That alone would **not** prove
+containing ranges for every remaining name, including zero-length symbols.
+No historical PC, ICU sampled-function coverage, managed exclusive cost or
+full ETL capture/aggregation was tested.
 
 ## Source-verified product and dependency limits
 
@@ -304,22 +419,22 @@ Pinned TraceEvent makes additional distinctions important:
   not an end address or range-confidence value**.[^interface]
 
 These are source-level capability gaps and counterexamples to “name returned
-means verified range.” They are **not evidence of historical misnaming**. Even a
-future successful three-address library probe would not validate full ETL
-aggregation or sampled-address coverage.
+means verified range”; phase 4 also directly reproduced the excluded-end
+questionable name. They are **not evidence of historical misnaming**. The completed
+three-address-per-path library probes do not validate full ETL aggregation or
+sampled-address coverage.
 
 ## Minimal next work, separately authorized
 
 Do not start another profiling capture merely to retry symbol discovery.
 
-1. **Resolve the native-launch authorization blocker through an approved execution
-   environment/route.** Do not assume its cause or relax host policy. Phase 3 has
-   already staged the exact PDB; another download is not needed while its hash and
-   the image identity remain unchanged. Preserve both prior failed stages.
-2. **Authorize the still-unexecuted setup and two offline library paths** with
-   explicit finite limits. First verify the prepared loader/API/path controls;
-   then retain path, bounded diagnostics, exceptions, DIA GUID/age and name/start
-   outputs. Do not claim range verification from fields the API does not supply.
+1. **Use the measured phase-4 results, not another discovery retry.** The approved
+   ordinary .NET route completed both paths. Preserve prior policy/launcher
+   failures and do not relax the age matcher on the basis of Info age alone.
+2. **Review a narrow questionable-name/provenance proposal** backed by owned
+   native fixtures. Rejecting `??` is a concrete candidate but is not equivalent
+   to establishing strict ranges for all accepted symbols. Do not infer structured
+   range guarantees from a diagnostic log or fields the API cannot supply.
 3. **Design bounded per-module provenance** before production changes: exact image
    identity/load base; requested/matched PDB identity and relevant ages; permitted
    source/cache and lookup outcome; retained PC/RVA counts and sample weights;
@@ -373,13 +488,16 @@ of this research slice.
 
 ## Evidence retention and validation limits
 
-Session artifacts retain the full researcher handoff, both predeclared plans,
+Session artifacts retain the full researcher handoff, all predeclared plans,
 `phase2-download.json`, `phase3-download.json`, the launcher error/count record,
-stopped-batch explanations and unexecuted draft scripts. Phase 3's two PDB copies
-remain session-only. No native DLL/PDB is committed. No profiling, build/test run,
-installation, elevation, host-policy change, workflow dispatch or production
-change occurred in phases 2–3. Documentation review cannot substitute for the
-still-unattempted native library probes or historical exact-image evidence.
+stopped-batch explanations and unexecuted PowerShell drafts. Phase 4 additionally
+retains source/configuration hashes, build output, actual native API/runtime/
+identity/name/log results and the supervisor record. Session-only DLL/PDB/harness
+binaries are not committed. Phases 2–3 had no build/test run; phase 4 built and ran
+only its offline harness. No profiling, installation, elevation, host-policy
+change, workflow dispatch or production change occurred. The completed native
+library probes do not supply historical exact-image evidence or full-capture
+validation.
 
 [^windows-icu]: [Windows combined ICU distribution, immutable documentation](https://github.com/MicrosoftDocs/win32/blob/e103fa4e8810bd8d42c4777e17081e24dbe62dbd/desktop-src/Intl/international-components-for-unicode--icu-.md#L1130-L1149).
 [^pdb-guid]: [Microsoft PDB GUID validation](https://github.com/microsoft/microsoft-pdb/blob/805655a28bd8198004be2ac27e6e0290121a5e89/PDB/dbi/pdb.cpp#L826-L833).
