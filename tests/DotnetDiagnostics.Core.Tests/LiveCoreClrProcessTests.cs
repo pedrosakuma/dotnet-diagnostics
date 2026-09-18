@@ -752,68 +752,8 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
     }
 
     [Fact(Timeout = 60_000)]
-    public async Task CrashGuard_CapturesUnhandledException_FromBadCodeSample()
-    {
-        await using var sample = await LiveHttpSample.StartAsync("BadCodeSample", "/");
-        using var http = new HttpClient
-        {
-            BaseAddress = new Uri(sample.BaseUrl),
-            Timeout = TimeSpan.FromSeconds(5),
-        };
-        var collector = new EventPipeCrashGuardCollector();
-
-        var driver = Task.Run(async () =>
-        {
-            await Task.Delay(TimeSpan.FromMilliseconds(1500));
-            try
-            {
-                using var storm = await http.GetAsync("/exceptions?count=30", CancellationToken.None);
-                storm.EnsureSuccessStatusCode();
-                using var _ = await http.GetAsync("/crash?mode=unhandled", CancellationToken.None);
-            }
-            catch (HttpRequestException)
-            {
-                // The fixture deliberately kills the process; the collector assertions below are
-                // the contract, not whether Kestrel completed the 202 response first.
-            }
-        });
-
-        var snapshot = await collector.CollectAsync(
-            sample.ProcessId,
-            // 14s (not the original 8s) — the driver does two sequential HTTP round-trips (a
-            // 30-exception storm, then the crash), both slower under CI CPU contention from
-            // parallel non-live test collections (issue #667); the extra margin keeps both
-            // events inside the EventPipe collection window even when the runner is loaded.
-            TimeSpan.FromSeconds(14),
-            maxRecent: 5,
-            cancellationToken: CancellationToken.None);
-
-        await driver;
-
-        if (snapshot.ProcessExited)
-        {
-            sample.Process.HasExited.Should().BeTrue();
-        }
-        else
-        {
-            // A crash observer such as vstest --blame-crash can hold the target alive while
-            // writing its dump after EventPipe has already delivered the unhandled event.
-            await sample.Process.WaitForExitAsync()
-                .WaitAsync(TimeSpan.FromSeconds(20));
-            var exitedAt = new DateTimeOffset(sample.Process.ExitTime.ToUniversalTime(), TimeSpan.Zero);
-            exitedAt.Should().BeAfter(
-                snapshot.StartedAt + snapshot.Duration,
-                "ProcessExited may be false only when OS termination occurs after the snapshot completed");
-        }
-
-        sample.Process.ExitCode.Should().NotBe(0);
-        snapshot.UnhandledExceptionObserved.Should().BeTrue();
-        snapshot.TotalExceptions.Should().BeGreaterThan(5);
-        snapshot.FinalException.Should().NotBeNull();
-        snapshot.FinalException!.ExceptionType.Should().Contain("InvalidOperationException");
-        snapshot.FinalException.ExceptionMessage.Should().Contain("crash fixture");
-        snapshot.FinalException.ManagedStack.Should().NotBeEmpty();
-    }
+    public Task CrashGuard_CapturesUnhandledException_FromBadCodeSample()
+        => CrashGuardLiveContract.AssertAsync(output, exitAfterSnapshot: false);
 
     [Fact]
     public async Task CollectActivities_CapturesSampleActivitySourceEvents()

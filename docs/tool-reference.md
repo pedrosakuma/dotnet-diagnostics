@@ -2378,13 +2378,27 @@ a suspected fatal path, or during an incident where the process is about to die.
 | `depth` | `summary\|detail\|raw` | `Summary` | Summary keeps the final exception/headline inline; detail/raw include retained exceptions |
 
 **Returns:** `CrashGuardSnapshot` with `processExited`, `exitCode`,
-`unhandledExceptionObserved`, `finalException`, exact `byType` counts, retained
+`unhandledExceptionObserved`, `finalException`, observed `byType` counts, retained
 `exceptions[]`, and `notes[]`. The handle accepts:
 
 - `query_snapshot(handle, view="summary")` — final exception + by-type counts.
 - `query_snapshot(handle, view="exceptions")` — retained exception stream.
 - `query_snapshot(handle, view="stack")` — managed stack for the final exception
   when the runtime/event payload exposed one.
+
+Snapshots describe facts available when collection finishes. A dump observer can
+delay OS termination beyond that point; a later nonzero exit does not retroactively
+make an earlier snapshot report an unhandled exception. First-chance exceptions
+alone are not explicit unhandled notifications, and runtime versions need not emit
+an event named `Unhandled` or `FailFast`. The existing exit-based heuristic can use
+an unavailable exit code; consult the nullable `exitCode` and `notes`, rather than
+treating inferred status as an independently observed termination reason.
+
+The optional `observation` metadata records stream completion, nullable transport
+loss, parser/stop error types, bounded drain completion, explicit crash-marker observation, in-window exit
+observation, and the last observed exception independently of `finalException`.
+An abrupt fatal exit can leave an incomplete stream despite useful positive crash
+evidence. Missing metadata on older snapshots is unknown, not proof of completeness.
 
 When an unhandled exception is observed, the result emits a next-action hint
 toward `collect_process_dump(dumpType="Mini")` so the LLM can correlate

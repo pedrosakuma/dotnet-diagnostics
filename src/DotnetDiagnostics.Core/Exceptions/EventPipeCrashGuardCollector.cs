@@ -24,6 +24,10 @@ public sealed class EventPipeCrashGuardCollector : ICrashGuardCollector
     private static readonly char[] StackLineSeparators = ['\r', '\n'];
 
     private readonly ILogger<EventPipeCrashGuardCollector> _logger;
+    internal EventPipeProvider? ReadinessProvider { get; init; }
+    internal Action<EventPipeEventSource>? ConfigureReadiness { get; init; }
+    internal Action<CrashGuardExceptionEvent>? ExceptionObserved { get; init; }
+    internal Task? ObservationWindowEnded { get; init; }
 
     public EventPipeCrashGuardCollector(ILogger<EventPipeCrashGuardCollector>? logger = null)
     {
@@ -47,10 +51,11 @@ public sealed class EventPipeCrashGuardCollector : ICrashGuardCollector
         }
 
         using var process = TryGetProcess(processId);
-        var providers = new[]
+        var providers = new List<EventPipeProvider>
         {
             new EventPipeProvider(RuntimeProvider, EventLevel.Verbose, ExceptionKeyword | StackKeyword),
         };
+        if (ReadinessProvider is not null) providers.Add(ReadinessProvider);
 
         var client = new DiagnosticsClient(processId);
         var session = await client
@@ -66,16 +71,23 @@ public sealed class EventPipeCrashGuardCollector : ICrashGuardCollector
         var gate = new object();
         CrashGuardExceptionEvent? lastObservedException = null;
         CrashGuardExceptionEvent? explicitUnhandledException = null;
+        long? eventsLost = null;
+        string? processingError = null;
+        var streamCompleted = false;
+        var drainCompleted = false;
+        string? shutdownError = null;
 
         var processingTask = Task.Run(() =>
         {
             try
             {
                 using var source = new EventPipeEventSource(session.EventStream);
+                ConfigureReadiness?.Invoke(source);
                 source.Clr.ExceptionStart += traceEvent =>
                 {
                     var captured = CaptureException(traceEvent, "ExceptionThrown_V1", isUnhandled: false, notes);
                     RecordException(captured, exceptions, counts, gate, maxRecent, ref total, ref lastObservedException, ref explicitUnhandledException);
+                    ExceptionObserved?.Invoke(captured);
                 };
 
                 source.Dynamic.All += traceEvent =>
@@ -104,9 +116,15 @@ public sealed class EventPipeCrashGuardCollector : ICrashGuardCollector
                 };
 
                 source.Process();
+                lock (gate)
+                {
+                    eventsLost = source.EventsLost;
+                    streamCompleted = true;
+                }
             }
             catch (Exception ex)
             {
+                lock (gate) processingError = ex.GetType().Name;
                 _logger.LogDebug(ex, "EventPipe crash-guard source ended for pid {Pid}.", processId);
             }
         }, cancellationToken);
@@ -116,7 +134,8 @@ public sealed class EventPipeCrashGuardCollector : ICrashGuardCollector
         Task? exitTask = null;
         try
         {
-            var delayTask = Task.Delay(duration, cancellationToken);
+            // Tests can control this boundary without assuming a runtime's crash/dump latency.
+            var delayTask = ObservationWindowEnded?.WaitAsync(cancellationToken) ?? Task.Delay(duration, cancellationToken);
             exitTask = process is null
                 ? Task.Delay(Timeout.InfiniteTimeSpan, exitWaitCts.Token)
                 : process.WaitForExitAsync(exitWaitCts.Token);
@@ -138,7 +157,11 @@ public sealed class EventPipeCrashGuardCollector : ICrashGuardCollector
                 }
                 await EventPipeSessionShutdown.StopSessionAsync(
                     session,
-                    ex => _logger.LogDebug(ex, "Stopping crash-guard EventPipe session for pid {Pid} failed.", processId))
+                    ex =>
+                    {
+                        shutdownError = ex.GetType().Name;
+                        _logger.LogDebug(ex, "Stopping crash-guard EventPipe session for pid {Pid} failed.", processId);
+                    })
                     .ConfigureAwait(false);
             }
             try
@@ -147,6 +170,9 @@ public sealed class EventPipeCrashGuardCollector : ICrashGuardCollector
                 await (await Task.WhenAny(processingTask, drainTask).ConfigureAwait(false)).ConfigureAwait(false);
             }
             catch (Exception) { }
+            drainCompleted = processingTask.IsCompleted;
+            if (!drainCompleted)
+                notes.TryAdd("Crash-guard reader did not finish within the bounded drain; stream coverage is unknown.", 0);
             session.Dispose();
         }
 
@@ -155,22 +181,28 @@ public sealed class EventPipeCrashGuardCollector : ICrashGuardCollector
         List<CrashGuardExceptionEvent> capturedExceptions;
         CrashGuardExceptionEvent? lastObserved;
         CrashGuardExceptionEvent? explicitUnhandled;
+        CrashGuardObservation observation;
         lock (gate)
         {
             capturedExceptions = exceptions.ToList();
             lastObserved = lastObservedException;
             explicitUnhandled = explicitUnhandledException;
+            observation = new(streamCompleted, eventsLost, processingError,
+                Interlocked.CompareExchange(ref unhandledObserved, 0, 0) == 1,
+                targetEndedDuringWindow, lastObserved)
+            {
+                DrainCompleted = drainCompleted,
+                ShutdownError = shutdownError,
+            };
         }
 
-        var inferredUnhandled = Interlocked.CompareExchange(ref unhandledObserved, 0, 0) == 1 || explicitUnhandled is not null;
-        var finalException = explicitUnhandled;
-        if (!inferredUnhandled && processExited && exitCode.GetValueOrDefault(-1) != 0 && lastObserved is not null)
+        var finalEvidence = CrashGuardFinalEvidence.Resolve(processExited, exitCode,
+            observation.ExplicitCrashEventObserved, explicitUnhandled, lastObserved);
+        var finalException = finalEvidence.FinalException;
+        if (finalEvidence.InferredFromExit)
         {
-            inferredUnhandled = true;
             notes.TryAdd("Target process exited non-zero during the guard window; the last observed exception is treated as the final unhandled exception.", 0);
-            finalException = lastObserved with { IsUnhandled = true };
         }
-        finalException ??= processExited ? lastObserved : null;
 
         if (finalException is not null)
         {
@@ -189,13 +221,13 @@ public sealed class EventPipeCrashGuardCollector : ICrashGuardCollector
             Duration: DateTimeOffset.UtcNow - startedAt,
             ProcessExited: processExited,
             ExitCode: exitCode,
-            UnhandledExceptionObserved: inferredUnhandled,
+            UnhandledExceptionObserved: finalEvidence.UnhandledObserved,
             TotalExceptions: Volatile.Read(ref total),
             ByType: byType,
             Exceptions: capturedExceptions,
             FinalException: finalException,
             Notes: notes.Keys.OrderBy(static note => note, StringComparer.Ordinal).ToList())
-        { RecentCap = maxRecent };
+        { RecentCap = maxRecent, Observation = observation };
     }
 
     private static void RecordException(
