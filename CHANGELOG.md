@@ -2,6 +2,83 @@
 
 ## [Unreleased]
 
+## [0.27.0] — 2026-09-18
+
+Highlights: **opt-in outbound HttpClient destination attribution without target
+instrumentation, and more trustworthy networking latency and capture quality.**
+The MCP server, standalone CLI, Core library, and BenchmarkDotNet diagnoser ship
+from the same release tag.
+
+### Migration notes
+
+- **Networking latency population is version 2** (#959, #965). HTTP, DNS and TLS
+  percentiles now include all accepted Start-to-Stop completions, including
+  operations with an observed failure. Read `latencyPopulationVersion`, paired
+  outcome counts, and sample denominators before comparing with older captures.
+  "Without observed failure" does not prove application success; HTTP 503 is a
+  response status, not automatically a transport failure.
+- **Zero duration is not proof of a measurement** (#961, #966). Existing
+  nonnullable duration scalars remain for compatibility; use per-metric
+  `latencyAvailability` and sample counts to distinguish measured zero from
+  unavailable or unknown evidence. Accepted samples and reservoir-retained
+  percentile samples are separate. Missing legacy metadata remains unknown.
+- **Capture duration remains requested time** (#958, #964). New
+  `captureQuality` reports completion, nullable transport loss, parse errors,
+  and stream-read elapsed time. Stream-read elapsed is not target coverage.
+  Useful partial data can be returned with explicit incomplete/uncertain quality.
+- **HTTP destination collection remains opt-in** (#969, #970):
+  `includeHttpDestination=true` in MCP, `--include-http-destination` in CLI,
+  or `IncludeHttpDestination = true` in BenchmarkDotNet. Defaults are unchanged.
+  This is requested URI authority, not necessarily a physical server, proxy,
+  DNS address, or redirect-final endpoint.
+
+### Added
+
+- **Outbound HTTP destination evidence** (#970): the DiagnosticSource bridge
+  exports only scheme, host, port and actual W3C trace/span IDs, then correlates
+  with the unchanged completed Activity. This works with runtime-only .NET 8
+  Activities whose native HTTP tags are empty, without modifying the target.
+  Separate `destination` availability/provenance and bounded identity accounting
+  flow through collection, activity/trace queries, distributed collection,
+  CLI one-shot/session, concurrent GC/activity capture, and BenchmarkDotNet.
+  Configured redaction applies to structured authority; missing, ambiguous,
+  capped or transport-incomplete evidence is not assigned a backend.
+  The new path does not export full URLs, paths, queries or credentials.
+  Existing native tags remain unchanged and may already contain URLs; this is
+  not global URL scrubbing. See [HTTP Activity tags](./docs/http-activity-tags.md).
+
+### Fixed
+
+- **Concurrent networking latency attribution** (#957, #963): enable runtime
+  activity-ID flow and reject empty, duplicate, reused or invalid identities
+  instead of silently overwriting starts. Bounded pending/identity state and
+  explicit correlation accounting preserve uncertainty through all consumers.
+- **Early termination and processing failures** (#964): retain useful partial
+  networking observations with explicit acquisition quality, bounded stop/drain,
+  and caller cancellation rather than presenting the requested window as fully
+  observed.
+- **Failed-operation latency** (#965): retain starts through Failed until Stop,
+  avoiding missing latency and double counting. Versioned populations distinguish
+  accepted failed completions, completions without observed failure, and
+  unfinished operations.
+- **Unavailable latency reporting** (#966): HTTP, queue, DNS, TLS and operation
+  evidence retain sample/availability facts through summaries and focused views.
+  Invalid queue durations are rejected instead of becoming zero measurements.
+
+### Evidence and limits
+
+- Replaced note-only positive networking acceptance with finite observed
+  workloads, exact identities, independent same-scope timing, real drilldowns,
+  and production mutation controls (#962, #967). Linux/native Windows and
+  .NET 8/9/10 controls cover concurrency, status errors, cancellation and failed
+  TLS; DNS failures and transport-loss injections remain explicitly synthetic.
+- Pinned runtime and live source/raw/capture evidence explain .NET 8 outbound
+  HttpClient empty native tags (#960, #968). Optional source enrichment and
+  .NET 9/10 tags survive collection. The trace native-tag allowlist remains
+  narrow; the opt-in structured destination is separate.
+- These controls do not establish arbitrary host-load robustness, independently
+  verify the user's original recordings, or close the broader #919 roadmap.
+
 ## [0.26.0] — 2026-09-17
 
 Highlights: **more trustworthy diagnostic evidence, concurrent GC/activity
