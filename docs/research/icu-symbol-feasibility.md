@@ -10,7 +10,9 @@ extracted from [#985](https://github.com/pedrosakuma/dotnet-diagnostics/issues/9
 NO conclusion about historical sampled-function coverage.** Matching public symbols
 were obtained for the current local Windows ICU image and contain corroborated
 function-range metadata. Actual Windows DIA/TraceEvent lookup remains **unattempted**:
-the subsequent predeclared staging batch stopped on an HTTP redirect.
+phase 2 stopped on its no-redirect staging policy; the separately authorized
+redirect-aware phase 3 staged the exact PDB but its PowerShell launcher was
+rejected before setup or probes could execute.
 
 Keep three outcomes separate:
 
@@ -35,6 +37,12 @@ Private ICU names and comparer cost ordering must not become its CI invariants.
 - **Phase 2 — directly observed:** image hash recheck and one new HTTP request
   under the [published finite plan](https://github.com/pedrosakuma/dotnet-diagnostics/issues/987#issuecomment-5736646400).
   No native lookup was executed.
+- **Phase 3 — directly observed:** a new, explicitly authorized bounded redirect
+  policy staged the hash-verified PDB in one two-GET chain. The first native
+  setup-launcher invocation failed authorization before script execution.
+- **Parent HEAD — relayed, separate:** one HTTP HEAD, not a PDB download,
+  identified the redirect host used to constrain phase 3. Its signed query was
+  neither reused nor retained.
 
 ## Historical capture cannot be rebound to the current image
 
@@ -189,6 +197,86 @@ Before staging, only three conventional cache locations had been checked:
 `C:\symbols\private`, `C:\symbols`, and `C:\symcache`, each with the exact indexed
 PDB suffix. Their misses were not an exhaustive cache search.
 
+## Phase 3: verified staging, launcher authorization blocker
+
+After a **separate parent HEAD** observed an HTTP 302 to
+`vsblobprodscussu5shard65.blob.core.windows.net`, the parent explicitly authorized
+a new redirect-aware staging policy. The HEAD downloaded no PDB and is not
+counted as a phase-3 GET. The [phase-3 plan was published before execution](https://github.com/pedrosakuma/dotnet-diagnostics/issues/987#issuecomment-5736735352):
+
+- One chain, at most two GETs and one redirect from the exact MSDL symbol key to
+  **that exact HTTPS host**. No delegated credentials, global redirect following,
+  other host, second redirect or retry.
+- A fresh `Location` from the GET, never the parent's signed URL. Reject userinfo,
+  nonstandard ports and fragments. Keep the signed query only in memory; retain
+  only the host/path and full-URL hash.
+- A 16 MiB total response-body cap, 20-second socket timeout and 45-second
+  whole-operation deadline; the unchanged DLL and PDB hash/length requirements.
+- Separate bounded native setup/reflection from the unchanged maximum two
+  identity lookups and three RVAs per successful lookup. Unsupported setup
+  stops actual probes. Native commands use the shared validation lock.
+
+### Observed request chain
+
+| Request | Host | HTTP status |
+|---|---|---:|
+| First GET | `msdl.microsoft.com` | 302 |
+| Only redirected GET | `vsblobprodscussu5shard65.blob.core.windows.net` | 200 |
+
+Exactly **two GETs, one redirect and zero retries** read **3,059,712 bytes**.
+The current DLL still had the exact SHA-256 and length in the phase-1 table.
+The downloaded PDB SHA-256 was again
+`39903687ca8e10aec69ad64f98d100c3f67c5182a64a3b24c865726f60b0adb9`.
+The verified bytes were staged in the two session-owned local/indexed locations;
+both stored files were subsequently hash-checked. No signed query or redirect
+exception text was logged or persisted; no binary is committed.
+
+This is new availability evidence under an explicitly changed policy, **not a
+retry of phase 2's unchanged policy**. Phase 2's HTTP-302 failure remains preserved.
+Phase 1's three successful in-memory downloads, phase 2's single rejected GET,
+the parent's HEAD, and phase 3's two-GET chain are distinct operations.
+
+### Preparation and actual native counts
+
+Source inspection established why the unexecuted harness needed changes:
+`SymbolCacheDirectory` is getter-only, and `SymbolPathElement.IsRemote` classifies
+an absolute WSL UNC folder as remote, which `CacheOnly` skips for ordinary
+directory lookup.[^path-policy] The new preparation script uses an explicit
+session-relative local directory with a recorded UNC backing path, an explicit
+session-owned indexed cache, no inherited symbol paths, and `CacheOnly`.
+It would verify those effective paths/options by reflection, load the existing
+native DIA DLL without opening a PDB, and provide an HTTP-denying handler and
+an insertion-bounded diagnostic writer. These are **prepared controls, not
+executed validation**.
+
+The first native Windows PowerShell 7 invocation used `-NoLogo -NoProfile
+-NonInteractive -File` on the session-owned UNC launcher under `flock --close`.
+It exited **1** with:
+
+```text
+SecurityError: AuthorizationManager check failed.
+```
+
+No launcher/setup reports were emitted: the launcher script was rejected before
+it started its bounded child. Actual counts:
+
+| Operation | Count |
+|---|---:|
+| Native PowerShell host invocations | 1 |
+| Launcher script / setup child executions | 0 / 0 |
+| Reflection or native DIA prerequisite execution | 0 |
+| Local-folder / indexed-cache identity lookups | 0 / 0 |
+| `OpenNativeSymbolFile` / RVA probes | 0 / 0 |
+| Lookup retries / policy changes | 0 / 0 |
+
+The batch stopped without changing execution policy or trying an alternate
+launch route. The error's underlying authorization cause was not established.
+This is **a launcher authorization blocker**, not an assembly incompatibility,
+DIA failure, GUID/age mismatch, unavailable symbol or successful lookup. The
+public API's actual behavior still cannot guide a production identity/range fix.
+The PDB staging prerequisite is now satisfied for this image; native execution
+authorization remains the concrete next blocker.
+
 ## Source-verified product and dependency limits
 
 At the inspected repository revision:
@@ -224,13 +312,14 @@ aggregation or sampled-address coverage.
 
 Do not start another profiling capture merely to retry symbol discovery.
 
-1. **Authorize a new finite staging policy if desired.** Define allowed redirect
-   handling/destinations, timeout and byte caps before another GET; verify the
-   final file hash and current image again. The failed no-redirect batch stays
-   failed. Correct the unexecuted harness using supported public cache/path APIs.
-2. **Execute the two offline library paths** and retain path, bounded diagnostics,
-   exceptions, DIA GUID/age and name/start outputs. Do not claim range verification
-   from fields the API does not supply.
+1. **Resolve the native-launch authorization blocker through an approved execution
+   environment/route.** Do not assume its cause or relax host policy. Phase 3 has
+   already staged the exact PDB; another download is not needed while its hash and
+   the image identity remain unchanged. Preserve both prior failed stages.
+2. **Authorize the still-unexecuted setup and two offline library paths** with
+   explicit finite limits. First verify the prepared loader/API/path controls;
+   then retain path, bounded diagnostics, exceptions, DIA GUID/age and name/start
+   outputs. Do not claim range verification from fields the API does not supply.
 3. **Design bounded per-module provenance** before production changes: exact image
    identity/load base; requested/matched PDB identity and relevant ages; permitted
    source/cache and lookup outcome; retained PC/RVA counts and sample weights;
@@ -284,12 +373,13 @@ of this research slice.
 
 ## Evidence retention and validation limits
 
-Session artifacts retain the full researcher handoff, predeclared plan,
-`phase2-download.json`, stopped-batch explanation and unexecuted draft scripts.
-No native DLL/PDB is committed. No profiling, build/test run, installation,
-elevation, host-policy change, workflow dispatch or production change occurred
-in phase 2. Documentation review cannot substitute for the still-unattempted
-native library probes or historical exact-image evidence.
+Session artifacts retain the full researcher handoff, both predeclared plans,
+`phase2-download.json`, `phase3-download.json`, the launcher error/count record,
+stopped-batch explanations and unexecuted draft scripts. Phase 3's two PDB copies
+remain session-only. No native DLL/PDB is committed. No profiling, build/test run,
+installation, elevation, host-policy change, workflow dispatch or production
+change occurred in phases 2–3. Documentation review cannot substitute for the
+still-unattempted native library probes or historical exact-image evidence.
 
 [^windows-icu]: [Windows combined ICU distribution, immutable documentation](https://github.com/MicrosoftDocs/win32/blob/e103fa4e8810bd8d42c4777e17081e24dbe62dbd/desktop-src/Intl/international-components-for-unicode--icu-.md#L1130-L1149).
 [^pdb-guid]: [Microsoft PDB GUID validation](https://github.com/microsoft/microsoft-pdb/blob/805655a28bd8198004be2ac27e6e0290121a5e89/PDB/dbi/pdb.cpp#L826-L833).
@@ -303,3 +393,4 @@ native library probes or historical exact-image evidence.
 [^questionable]: [Zero-length and out-of-range naming](https://github.com/microsoft/perfview/blob/ffa46a1548d9ba6cdbf92be3dd4271d1de723046/src/TraceEvent/Symbols/NativeSymbolModule.cs#L57-L94).
 [^intern]: [TraceLog name/method-index interning](https://github.com/microsoft/perfview/blob/ffa46a1548d9ba6cdbf92be3dd4271d1de723046/src/TraceEvent/TraceLog.cs#L9038-L9084).
 [^interface]: [Public name/start-only lookup interface](https://github.com/microsoft/perfview/blob/ffa46a1548d9ba6cdbf92be3dd4271d1de723046/src/TraceEvent/Symbols/ISymbolLookup.cs#L4-L8).
+[^path-policy]: [Cache derivation](https://github.com/microsoft/perfview/blob/ffa46a1548d9ba6cdbf92be3dd4271d1de723046/src/TraceEvent/Symbols/SymbolPath.cs#L174-L202), [remote-path classification](https://github.com/microsoft/perfview/blob/ffa46a1548d9ba6cdbf92be3dd4271d1de723046/src/TraceEvent/Symbols/SymbolPath.cs#L343-L365), and [CacheOnly directory gating](https://github.com/microsoft/perfview/blob/ffa46a1548d9ba6cdbf92be3dd4271d1de723046/src/TraceEvent/Symbols/SymbolReader.cs#L264-L280).
