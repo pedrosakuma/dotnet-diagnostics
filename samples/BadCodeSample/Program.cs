@@ -12,6 +12,7 @@ using System.Runtime.Loader;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Channels;
+using BadCodeSample;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -220,11 +221,9 @@ static string ResolveSyncOverAsyncTarget(HttpRequest request, int? delaySeconds)
         ? $"{request.Scheme}://{request.Host}/slow-hang?seconds={Math.Clamp(seconds, 1, 4)}"
         : "https://example.com";
 
-// Culture-aware dictionary lookup — a hot path whose cost is INVISIBLE in the
-// endpoint source. The dictionaries are built with different string comparers;
-// the "slow" one uses a culture-sensitive comparer, so every lookup pays for
-// globalization (System.Globalization.CompareInfo hashing/compare via ICU)
-// instead of a plain ordinal hash. The loop below looks identical for both.
+// The two routes use the same lookup operation with different comparer semantics.
+// Their relative cost and framework/native implementation are runtime-dependent;
+// measured ownership is anchored on our entrypoints, not private framework names.
 var flagKeys = Enumerable.Range(0, 1000)
     .Select(i => $"Feature.Flag.{i:D4}.Enabled")
     .ToArray();
@@ -236,32 +235,16 @@ foreach (var flagKey in flagKeys)
     ordinalFlags[flagKey] = true;
 }
 
-static long RunFlagLookups(string[] keys, IReadOnlyDictionary<string, bool> flags, int loops)
-{
-    var hits = 0L;
-    for (var i = 0; i < loops; i++)
-    {
-        var key = keys[i % keys.Length];
-        if (flags.TryGetValue(key, out var enabled) && enabled)
-        {
-            hits++;
-        }
-    }
-    return hits;
-}
-
 app.MapGet("/culture-lookup", (int? iterations) =>
 {
     var loops = Math.Clamp(iterations ?? 2_000_000, 1, 50_000_000);
-    var hits = RunFlagLookups(flagKeys, cultureAwareFlags, loops);
-    return Results.Ok(new { loops, hits, comparer = "InvariantCultureIgnoreCase" });
+    return Results.Ok(CultureLookupWorkload.RunCultureSensitive(flagKeys, cultureAwareFlags, loops));
 });
 
 app.MapGet("/culture-lookup-fixed", (int? iterations) =>
 {
     var loops = Math.Clamp(iterations ?? 2_000_000, 1, 50_000_000);
-    var hits = RunFlagLookups(flagKeys, ordinalFlags, loops);
-    return Results.Ok(new { loops, hits, comparer = "OrdinalIgnoreCase" });
+    return Results.Ok(CultureLookupWorkload.RunOrdinal(flagKeys, ordinalFlags, loops));
 });
 
 // 5. Monitor lock contention — detect with counters

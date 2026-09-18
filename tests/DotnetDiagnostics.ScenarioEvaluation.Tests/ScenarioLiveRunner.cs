@@ -1,5 +1,7 @@
 using System.Diagnostics;
+using System.Net.Http.Json;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using DotnetDiagnostics.Core.Capabilities;
 using DotnetDiagnostics.Core.Counters;
 using DotnetDiagnostics.Core.CpuSampling;
@@ -82,14 +84,28 @@ public sealed class ScenarioLiveRunner
         int trial,
         CancellationToken cancellationToken)
     {
+        var culture = await CaptureCulturePhaseAsync(manifest, trial, ordinal: false, cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        var ordinal = await CaptureCulturePhaseAsync(manifest, trial, ordinal: true, cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        return CultureLookupCpuContract.Combine(culture, ordinal, manifest.Budget.MaximumEvidenceItems);
+    }
+
+    private static async Task<ScenarioEvidence> CaptureCulturePhaseAsync(
+        ScenarioManifest manifest, int trial, bool ordinal, CancellationToken cancellationToken)
+    {
         await using var sample = await StartSampleAsync(manifest).ConfigureAwait(false);
         using var http = CreateHttpClient(sample.BaseUrl);
         using var loadCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var load = new LoadCounters();
         var activationWatch = Stopwatch.StartNew();
-        var driver = DriveRepeatedRequestsAsync(
+        var iterations = RequiredPositiveIntParameter(manifest, "iterations");
+        var comparer = ordinal ? "OrdinalIgnoreCase" : "InvariantCultureIgnoreCase";
+        var driver = DriveCultureRequestsAsync(
             http,
-            $"{RequiredParameter(manifest, "endpoint")}?iterations={RequiredPositiveIntParameter(manifest, "iterations")}",
+            $"{RequiredParameter(manifest, ordinal ? "controlEndpoint" : "endpoint")}?iterations={iterations}",
+            iterations,
+            comparer,
             Math.Clamp(
                 Environment.ProcessorCount,
                 RequiredPositiveIntParameter(manifest, "minimumWorkers"),
@@ -135,6 +151,12 @@ public sealed class ScenarioLiveRunner
 
         activationWatch.Stop();
         EnsureActivated(manifest.Id, load);
+        if (load.Successes == 0 || load.Failures != 0)
+        {
+            throw new ScenarioRunException(
+                $"Culture lookup responses were not verified (comparer={comparer}, verified={load.Successes}, failures={load.Failures}).",
+                ScenarioFailureKind.Workload);
+        }
         var signals = NormalizeSignals(
             manifest,
             CpuSampleSignals.Detect(result.Artifact, "replay"),
@@ -153,11 +175,15 @@ public sealed class ScenarioLiveRunner
             signals,
             frames: [],
             relations: [],
-            notes: []), result, manifest.Budget.MaximumEvidenceItems);
+            notes: []), result, manifest.Budget.MaximumEvidenceItems,
+            ordinal ? CultureLookupCpuContract.OrdinalMethod : CultureLookupCpuContract.CultureMethod,
+            ordinal ? CultureLookupCpuContract.CultureMethod : CultureLookupCpuContract.OrdinalMethod,
+            load.Successes);
     }
 
     internal static ScenarioEvidence CompleteCultureCpuEvidence(
-        ScenarioEvidence evidence, CpuSampleResult result, int maximumEvidenceItems)
+        ScenarioEvidence evidence, CpuSampleResult result, int maximumEvidenceItems,
+        string? activeMethod = null, string? inactiveMethod = null, int verifiedResponses = 0)
     {
         var retainedLimit = Math.Clamp(maximumEvidenceItems, 1, 30);
         var methods = CpuSampleQueryDispatcher.RenderTopMethods(
@@ -196,6 +222,19 @@ public sealed class ScenarioLiveRunner
         try
         {
             ValidateCultureCpuEvidence(result);
+            if (activeMethod is not null)
+            {
+                diagnostics = diagnostics with
+                {
+                    Metrics = diagnostics.Metrics.Concat(CultureLookupCpuContract.ProjectOwnership(
+                        result.Artifact, activeMethod, inactiveMethod!, verifiedResponses))
+                        .OrderBy(metric => metric.Name, StringComparer.Ordinal).ToArray(),
+                    Notes = new[]
+                        {
+                            $"Acceptance measures distinct-stack inclusive ownership of {activeMethod}; the other route {inactiveMethod} must be absent. This is not exclusive managed/native leaf cost.",
+                        }.Concat(diagnostics.Notes).Take(MaxNotes).ToArray(),
+                };
+            }
         }
         catch (InvalidOperationException exception)
         {
@@ -212,6 +251,48 @@ public sealed class ScenarioLiveRunner
         }
         return diagnostics;
     }
+
+    private static async Task DriveCultureRequestsAsync(
+        HttpClient http, string path, int iterations, string comparer, int workers,
+        TimeSpan delay, LoadCounters counters, CancellationToken cancellationToken)
+    {
+        await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+        await Task.WhenAll(Enumerable.Range(0, workers).Select(async _ =>
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                Interlocked.Increment(ref counters.Attempts);
+                try
+                {
+                    using var response = await http.GetAsync(path, cancellationToken).ConfigureAwait(false);
+                    response.EnsureSuccessStatusCode();
+                    var result = await response.Content.ReadFromJsonAsync<CultureLookupResponse>(
+                        cancellationToken).ConfigureAwait(false);
+                    ValidateCultureResponse(result, iterations, comparer);
+                    Interlocked.Increment(ref counters.Successes);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    return;
+                }
+                catch (Exception exception) when (exception is HttpRequestException or JsonException or InvalidDataException)
+                {
+                    Interlocked.Increment(ref counters.Failures);
+                }
+            }
+        })).ConfigureAwait(false);
+    }
+
+    internal static void ValidateCultureResponse(CultureLookupResponse? result, int iterations, string comparer)
+    {
+        if (result is null || result.Loops != iterations || result.Hits != iterations
+            || !string.Equals(result.Comparer, comparer, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("The lookup route did not return the expected iterations, hits and comparer.");
+        }
+    }
+
+    internal sealed record CultureLookupResponse(int Loops, long Hits, string Comparer);
 
     internal static void ValidateCultureCpuEvidence(CpuSampleResult result)
     {

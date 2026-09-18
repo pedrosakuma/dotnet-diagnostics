@@ -19,7 +19,8 @@ public sealed class CultureLookupCpuDiagnosticsTests
             .Should().NotContain(signal => signal.Signal == "cpu.self-time.concentration");
 
         var evidence = ScenarioLiveRunner.CompleteCultureCpuEvidence(
-            BaseEvidence with { Signals = [] }, result, maximumEvidenceItems: 3);
+            BaseEvidence with { Signals = [] }, result, maximumEvidenceItems: 3,
+            CultureLookupCpuContract.CultureMethod, CultureLookupCpuContract.OrdinalMethod, verifiedResponses: 1);
 
         evidence.Collection.Status.Should().Be(ScenarioStageStatus.Passed);
         evidence.Signals.Should().BeEmpty();
@@ -34,8 +35,9 @@ public sealed class CultureLookupCpuDiagnosticsTests
         evidence.Notes.Should().Contain(note => note.Contains("artifactSymbolSource=PdbResolved; summarySymbolSource=missing", StringComparison.Ordinal));
         evidence.Notes.Count.Should().BeLessThanOrEqualTo(20);
 
-        var report = ScenarioEvaluator.CreateReport(Manifest, evidence);
-        report.Evidence.Should().Contain(item => item.Id == "globalization-hash-leaf" && !item.Passed);
+        var report = ScenarioEvaluator.CreateReport(
+            Manifest, CultureLookupCpuContract.Combine(evidence, evidence, maximumEvidenceItems: 3));
+        report.Evidence.Should().Contain(item => item.Id == "culture-owned-cpu" && !item.Passed);
     }
 
     [Theory]

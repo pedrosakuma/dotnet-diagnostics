@@ -1,19 +1,21 @@
+using System.Globalization;
 using FluentAssertions;
 
 namespace DotnetDiagnostics.ScenarioEvaluation.Tests;
 
 /// <summary>
-/// Covers #860: the culture-lookup scenario's `globalization-hash-leaf` invariant must attribute
-/// samples correctly no matter which equivalent ICU/NLS/managed globalization hashing leaf spelling
-/// the runtime happens to emit, or how the runtime splits self-time across those equivalent spellings.
+/// Preserves #860's historical v1 private-symbol normalization observations. These replay-only
+/// expectations are not the v2 live OS workload-ownership contract.
 /// </summary>
 public sealed class CultureLookupSymbolNormalizationTests
 {
     private static readonly ScenarioManifest Manifest =
-        ScenarioManifestLoader.LoadAll().Single(manifest => manifest.Id == "culture-lookup");
+        ScenarioManifestLoader.Load(ScenarioManifestLoader.ScenarioPath(
+            "Scenarios", "Compatibility", "culture-lookup.v1.scenario.json"));
 
     private static readonly ScenarioEvidence BaseEvidence =
-        ScenarioJson.ReadEvidence(ScenarioManifestLoader.ScenarioPath("Fixtures", "culture-lookup.windows.evidence.json"));
+        ScenarioJson.ReadEvidence(ScenarioManifestLoader.ScenarioPath(
+            "Fixtures", "Compatibility", "culture-lookup.v1.windows.evidence.json"));
 
     [Theory]
     [InlineData("System.Globalization.CompareInfo.IcuGetHashCodeOfString(value class System.ReadOnlySpan`1<wchar>,value class System.Globalization.CompareOptions)")]
@@ -126,9 +128,9 @@ public sealed class CultureLookupSymbolNormalizationTests
 
         var result = report.Evidence.Single(item => item.Id == "globalization-hash-leaf");
         result.Detail.Should().Contain("Monitor.Wait");
-        result.Detail.Should().Contain("44.5");
+        result.Detail.Should().Contain(44.5.ToString(CultureInfo.CurrentCulture));
         result.Detail.Should().Contain("GetQueuedCompletionStatus");
-        result.Detail.Should().Contain("22.1");
+        result.Detail.Should().Contain(22.1.ToString(CultureInfo.CurrentCulture));
     }
 
     private static ScenarioEvidence WithSignalBuckets(IReadOnlyList<ObservedSignalBucket> buckets)

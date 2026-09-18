@@ -177,6 +177,21 @@ public static class CalibrationProtocols
                 value.Id == slot.WorkloadFamily)
                 ?? throw new InvalidDataException(
                     $"Public workload '{slot.WorkloadFamily}' is not registered.");
+            if (!slot.WorkloadDefinition.StartsWith("public://", StringComparison.Ordinal))
+            {
+                throw new InvalidDataException($"Public workload definition '{slot.WorkloadDefinition}' is not a public reference.");
+            }
+            if (!slot.WorkloadDefinition.EndsWith($"/{manifest.Id}@{manifest.Version}", StringComparison.Ordinal))
+            {
+                var compatibilityDirectory = ScenarioManifestLoader.ScenarioPath("Scenarios", "Compatibility");
+                manifest = (Directory.Exists(compatibilityDirectory)
+                        ? Directory.EnumerateFiles(compatibilityDirectory, "*.scenario.json").Select(ScenarioManifestLoader.Load)
+                        : Enumerable.Empty<ScenarioManifest>())
+                    .SingleOrDefault(value => value.Id == slot.WorkloadFamily
+                        && slot.WorkloadDefinition.EndsWith($"/{value.Id}@{value.Version}", StringComparison.Ordinal))
+                    ?? throw new InvalidDataException(
+                        $"Public workload definition '{slot.WorkloadDefinition}' is not a registered version.");
+            }
             if (slot.PublicWorkloadParameters is null
                 || !SameParameters(manifest.Workload.Parameters, slot.PublicWorkloadParameters))
             {
