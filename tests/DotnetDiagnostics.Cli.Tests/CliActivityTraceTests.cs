@@ -20,6 +20,78 @@ public sealed class CliActivityTraceTests
     private const string Trace = "abcdef0123456789abcdef0123456789";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
+    public static IEnumerable<object[]> HttpTagCases()
+    {
+        yield return ["empty", null!];
+        yield return ["enriched", null!];
+        // Optional replay is additional coverage, never a substitute for the deterministic cases.
+        if (Environment.GetEnvironmentVariable("HTTP_ACTIVITY_REPLAY") is { Length: > 0 } directory)
+        {
+            foreach (var framework in new[] { "net8.0", "net9.0", "net10.0" })
+                foreach (var mode in new[] { "plain", "enrich" })
+                    yield return [$"{framework}-{mode}", Path.Combine(directory, $"{framework}-{mode}.json")];
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(HttpTagCases))]
+    public async Task HttpTags_CollectionAndQueriesPreserveAvailabilityWithoutInventingDestinations(string scenario, string? replayFile)
+    {
+        ActivityCapture capture;
+        if (replayFile is not null)
+        {
+            using var evidence = JsonDocument.Parse(await File.ReadAllTextAsync(replayFile));
+            capture = evidence.RootElement.GetProperty("capture").Deserialize<ActivityCapture>(JsonOptions)!;
+            capture.Activities.Count(a => a.SourceName == "System.Net.Http").Should().Be(4);
+        }
+        else
+        {
+            var start = DateTimeOffset.UnixEpoch;
+            var tags = new Dictionary<string, string>();
+            if (scenario == "enriched")
+            {
+                tags["server.address"] = "127.0.0.1";
+                tags["url.full"] = "http://127.0.0.1/sanitized";
+                tags["http.request.method"] = "GET";
+            }
+            capture = new ActivityCapture(Environment.ProcessId, ["System.Net.Http"], start, TimeSpan.FromSeconds(1),
+                1, 1, [new("System.Net.Http", "System.Net.Http.HttpRequestOut", "http", null, Trace,
+                    "1111111111111111", null, start, start.AddMilliseconds(50), TimeSpan.FromMilliseconds(50), tags)], [], []);
+        }
+        using var services = Services(new CaptureReplay(capture));
+        var (exit, json) = await ExecuteAsync(services, ["collect", "--kind", "activities", "--source", "System.Net.Http", "--json"]);
+        exit.Should().Be(0);
+        var returned = json.GetProperty("data").Deserialize<ActivityCapture>(JsonOptions)!;
+        returned.Should().BeEquivalentTo(capture);
+        var handle = services.GetRequiredService<IDiagnosticHandleStore>()
+            .TryGetLatestByKind(CollectionHandleKinds.Activities, Environment.ProcessId)!;
+        var (listExit, list) = await ExecuteAsync(services,
+            ["query", "--handle", handle.Id, "--view", "activities", "--top", "100", "--json"], session: true);
+        listExit.Should().Be(0, list.ToString());
+        list.GetProperty("data").GetProperty("payload").GetProperty("activities")
+            .Deserialize<CapturedActivity[]>(JsonOptions).Should().BeEquivalentTo(capture.Activities);
+        foreach (var activity in capture.Activities.Where(a => a.SourceName == "System.Net.Http"))
+        {
+            var (traceExit, trace) = await ExecuteAsync(services,
+                ["query", "--handle", handle.Id, "--view", "trace", "--trace-id", activity.TraceId!, "--json"], session: true);
+            traceExit.Should().Be(0, trace.ToString());
+            var span = trace.GetProperty("data").GetProperty("payload").GetProperty("spans").EnumerateArray().Single();
+            span.GetProperty("spanId").GetString().Should().Be(activity.SpanId);
+            var tags = span.GetProperty("tags").Deserialize<Dictionary<string, string>>()!;
+            tags.Should().NotContainKey("server.address").And.NotContainKey("url.full");
+            if (scenario is "empty" or "net8.0-plain")
+            {
+                activity.Tags.Should().BeEmpty();
+                tags.Should().BeEmpty();
+            }
+            else
+            {
+                activity.Tags["server.address"].Should().Be("127.0.0.1");
+                tags["http.request.method"].Should().Be("GET");
+            }
+        }
+    }
+
     [Theory]
     [InlineData(1, 1)]
     [InlineData(2, 0)]
@@ -177,25 +249,34 @@ public sealed class CliActivityTraceTests
         }
     }
 
-    private static async Task<(int Exit, JsonElement Json)> ExecuteAsync(IServiceProvider services, IReadOnlyList<string> args)
+    private static async Task<(int Exit, JsonElement Json)> ExecuteAsync(IServiceProvider services, IReadOnlyList<string> args, bool session = false)
     {
-        CliCommandExecution.TryPrepareOneShot(args, out var prepared, out var response).Should().BeTrue(response?.Text);
+        var valid = session
+            ? CliCommandExecution.TryPrepareSession(args, null, out var prepared, out var response)
+            : CliCommandExecution.TryPrepareOneShot(args, out prepared, out response);
+        valid.Should().BeTrue(response?.Text);
         using var stdout = new StringWriter(CultureInfo.InvariantCulture);
         using var stderr = new StringWriter(CultureInfo.InvariantCulture);
         var outcome = await CliCommandExecution.ExecuteAsync(services, prepared!, stdout, stderr,
-            new CliExecutionOptions(CliExecutionContext.OneShot, AnsiEnabled: false, ShowProgress: false),
+            new CliExecutionOptions(session ? CliExecutionContext.Session : CliExecutionContext.OneShot, AnsiEnabled: false, ShowProgress: false),
             CancellationToken.None);
         using var document = JsonDocument.Parse(stdout.ToString());
         return (outcome.ExitCode, document.RootElement.Clone());
     }
 
-    private static ServiceProvider Services(EventStreamCollector collector)
+    private static ServiceProvider Services(IActivityCollector collector)
         => new ServiceCollection()
             .AddSingleton<IDiagnosticHandleStore>(new MemoryDiagnosticHandleStore())
             .AddSingleton<IActivityCollector>(collector)
             .AddSingleton<Resolver>()
             .AddSingleton<IProcessContextResolver>(sp => sp.GetRequiredService<Resolver>())
             .BuildServiceProvider();
+
+    private sealed class CaptureReplay(ActivityCapture capture) : IActivityCollector
+    {
+        public Task<ActivityCapture> CollectAsync(int processId, TimeSpan duration, IReadOnlyList<string>? sources = null,
+            int maxActivities = 200, CancellationToken cancellationToken = default) => Task.FromResult(capture);
+    }
 
     private sealed class Resolver : IProcessContextResolver
     {

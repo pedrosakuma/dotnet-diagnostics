@@ -37,6 +37,9 @@ public sealed class ActivityTraceQuerySecurityTests
                     Tags: new Dictionary<string, string>
                     {
                         ["db.system"] = "CUSTOMSECRET-42",
+                        ["http.request.method"] = "CUSTOMSECRET-43",
+                        ["server.address"] = "127.0.0.1",
+                        ["url.full"] = "http://127.0.0.1/sanitized",
                     }),
             ],
             BySource: Array.Empty<ActivitySourceSummary>(),
@@ -63,5 +66,14 @@ public sealed class ActivityTraceQuerySecurityTests
         var projection = result.Data!.Payload.Should().BeOfType<ActivityTraceProjection>().Subject;
         projection.Spans.Should().ContainSingle();
         projection.Spans[0].Tags["db.system"].Should().Be(SensitiveDataRedactor.RedactedPlaceholder);
+        projection.Spans[0].Tags["http.request.method"].Should().Be(SensitiveDataRedactor.RedactedPlaceholder);
+        projection.Spans[0].Tags.Should().NotContainKey("server.address").And.NotContainKey("url.full");
+        capture.Activities[0].Tags["http.request.method"].Should().Be("CUSTOMSECRET-43");
+        var list = DiagnosticTools.QueryCollection(
+            handles, TestPrincipalAccessors.WithScopes("eventpipe"), new SensitiveDataRedactor(options),
+            handle.Id, view: "activities");
+        list.Error.Should().BeNull();
+        list.Data!.Payload.Should().BeOfType<ActivitiesListView>().Which.Activities[0].Tags
+            .Should().BeEquivalentTo(capture.Activities[0].Tags);
     }
 }
