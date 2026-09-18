@@ -1,16 +1,19 @@
 # Documentation
 
-> **v0.26.0 — Diagnostic evidence integrity, concurrent GC/activity capture, and OS-backed CPU profiling** ([CHANGELOG](../CHANGELOG.md#0260--2026-09-17))
+> **v0.27.0 — HTTP destination attribution and trustworthy networking evidence** ([CHANGELOG](../CHANGELOG.md#0270--2026-09-18))
 >
-> - **GC collection elapsed is not pause.** Version-2 suspension evidence corrects GC
->   queries, activity overlays, signals, and comparisons. Review the
->   [migration notes](../CHANGELOG.md#0260--2026-09-17) for source/wire changes.
-> - **Concurrent GC/activity capture in the CLI** — `collect --kind gc-activities`
->   returns an inline overlay and real session handles, with explicit partial outcomes.
-> - **Trace-targeted retention and explicit OS CPU profiling** — preserve bounded target
->   traces through noisy traffic; select Linux perf or Windows ETW for on-CPU evidence.
-> - **More truthful ThreadPool/gcdump quality and safer gcdump shutdown** preserve
->   uncertainty and avoid publishing incomplete captures as complete.
+> - **Opt-in HTTP destination attribution without target changes** — use
+>   `includeHttpDestination=true` (MCP) or `--include-http-destination` (CLI).
+>   Structured, redacted scheme/host/port evidence is separate from native tags;
+>   see [HTTP Activity tags](./http-activity-tags.md) for scope and privacy limits.
+> - **Networking latency includes accepted failed completions.** Version-2
+>   population/outcome counts make that change explicit; review the
+>   [migration notes](../CHANGELOG.md#0270--2026-09-18) before comparing captures.
+> - **Unavailable is not zero.** Per-metric availability, accepted/retained sample
+>   counts, correlation accounting and acquisition quality survive focused queries.
+>   Early exits and parser failures no longer imply a fully observed window.
+> - **Concurrent HTTP attribution is conservative and bounded.** Ambiguous
+>   identities and missing evidence remain explicit rather than guessed.
 > - Still current: non-loopback cleartext HTTP is refused by default (see
 >   [`client-setup.md` → Transport security](./client-setup.md#transport-security-non-loopback)),
 >   high-risk operations pause for explicit acknowledgement — CLI callers pass
