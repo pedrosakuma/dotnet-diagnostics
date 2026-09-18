@@ -127,8 +127,10 @@ Atomic replacement avoids publishing partial JSON, but local filesystem and OS
 calls have practical limits: cooperative work budgets do not preempt a blocked
 kernel call, and Windows/UNC readers racing replacement can receive an access
 error rather than a document. Consumers should read the retained file after
-helper completion; the deterministic readiness fixture instead publishes one
-immutable acknowledgment after an owned child has been recorded. Helper-side
+helper completion; the deterministic readiness fixture publishes one immutable
+acknowledgment after an owned child has been recorded, then signals over a
+bounded fixture-owned loopback channel **after publication returns**. A visible
+UNC pathname alone is not treated as readiness. Helper-side
 stalls are isolated from target termination and may
 leave a capped `.partial` artifact; supervisor startup, final status persistence
 and the outer shell's log replay/parsing/metadata writes are **not** covered by

@@ -4,6 +4,7 @@ import os
 import pathlib
 import select
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -70,6 +71,12 @@ def publish_tracking_ready(destination, document, publish):
     if (not destination.exists()
             and any(item.get("depth") == 1 for item in snapshot.get("processes", []))):
         publish(destination, snapshot)
+
+
+def publish_then_acknowledge(destination, document, publish, address, token):
+    publish(destination, document)
+    with socket.create_connection(address, timeout=2) as channel:
+        channel.sendall(token)
 
 
 class ForensicTests(unittest.TestCase):
@@ -144,6 +151,21 @@ class ForensicTests(unittest.TestCase):
                                    write)
         write.assert_not_called()
         self.assertEqual(first, json.loads(ready.read_text()))
+
+    def test_ipc_acknowledgment_requires_publication_to_return_successfully(self):
+        calls = []
+        document = {"processes": [{"depth": 1, "pid": 10}]}
+        with mock.patch.object(socket, "create_connection") as connect:
+            connect.side_effect = lambda *args, **kwargs: (calls.append("connect") or mock.MagicMock())
+            publish_then_acknowledge(self.forensics, document,
+                                     lambda *args: calls.append("published"), ("127.0.0.1", 1), b"token")
+            self.assertEqual(["published", "connect"], calls)
+            connect.assert_called_once_with(("127.0.0.1", 1), timeout=2)
+        with mock.patch.object(socket, "create_connection") as connect:
+            with self.assertRaises(PermissionError):
+                publish_then_acknowledge(self.forensics, document, mock.Mock(side_effect=PermissionError),
+                                         ("127.0.0.1", 1), b"token")
+            connect.assert_not_called()
 
     def test_permission_failure_is_explicit_not_complete(self):
         tracker = evidence.OwnedProcesses(10, 9, self.log)
@@ -291,6 +313,11 @@ class MechanismControl(unittest.TestCase):
         release = self.root / "release"
         ready = self.root / "tracked.json"
         child_pid = self.root / "child.pid"
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        listener.settimeout(8)
+        acknowledgment = uuid.uuid4().bytes
         child_code = "import threading; threading.Event().wait()"
         code = ("import subprocess,sys,pathlib,threading; "
                 f"child=subprocess.Popen([sys.executable,'-c',{child_code!r}]); "
@@ -299,16 +326,19 @@ class MechanismControl(unittest.TestCase):
                 "print('summary before root exit',flush=True)\n"
                 "while not release.exists(): threading.Event().wait(0.01)\n")
         outcome = {}
-        # Observe the real worker's successful publication once, not a concurrently
-        # replaced pathname. Native Windows readers need not race MoveFileEx/UNC.
+        # Path visibility does not establish completed, readable UNC publication.
+        # Signal success over fixture-owned IPC, never by pathname polling.
         helper = (
-            f"import sys,pathlib; sys.path.insert(0,{str(pathlib.Path(__file__).resolve().parent)!r}); "
+            f"import sys,pathlib,socket; sys.path.insert(0,{str(pathlib.Path(__file__).resolve().parent)!r}); "
             "import scenario_attempt_forensics as worker; "
-            "from test_scenario_forensics import publish_tracking_ready; "
+            "from test_scenario_forensics import publish_tracking_ready,publish_then_acknowledge; "
             "publish=worker.write_atomic\n"
+            "def ready_publish(path,document):\n"
+            f" publish_then_acknowledge(path,document,publish,('127.0.0.1',{listener.getsockname()[1]}),"
+            f"{acknowledgment!r})\n"
             "def acknowledge(path,document):\n"
             " publish(path,document)\n"
-            f" publish_tracking_ready(pathlib.Path({str(ready)!r}),document,publish)\n"
+            f" publish_tracking_ready(pathlib.Path({str(ready)!r}),document,ready_publish)\n"
             "worker.write_atomic=acknowledge\n"
             "raise SystemExit(worker.main())\n")
 
@@ -320,16 +350,24 @@ class MechanismControl(unittest.TestCase):
         run = threading.Thread(target=capture)
         run.start()
         try:
-            def tracked():
-                if not child_pid.exists() or not ready.exists():
-                    return False
-                snapshot = json.loads(ready.read_text())
-                return any(item["pid"] == int(child_pid.read_text()) for item in snapshot["processes"])
-            await_condition(tracked)
+            channel, _ = listener.accept()
+            with channel:
+                receive_deadline = time.monotonic() + 2
+                received = b""
+                while len(received) < len(acknowledgment):
+                    remaining = receive_deadline - time.monotonic()
+                    self.assertGreater(remaining, 0, "Tracking acknowledgment exceeded its total deadline.")
+                    channel.settimeout(remaining)
+                    part = channel.recv(len(acknowledgment) - len(received))
+                    self.assertTrue(part, "Tracking channel closed before its bounded acknowledgment.")
+                    received += part
+                self.assertEqual(acknowledgment, received)
             release.write_text("tracking observed; root may now exit")
             run.join(timeout=4)
             self.assertFalse(run.is_alive())
             self.assertEqual(0, outcome["exit"])
+            snapshot = json.loads(ready.read_text())
+            self.assertTrue(any(item["pid"] == int(child_pid.read_text()) for item in snapshot["processes"]))
             artifact = json.loads(self.forensics.read_text())
             child = next(item for item in artifact["finalSnapshot"]["processes"]
                          if item["pid"] == int(child_pid.read_text()))
@@ -337,6 +375,7 @@ class MechanismControl(unittest.TestCase):
             self.assertEqual("best-effort-incomplete", artifact["finalSnapshot"]["quality"])
             self.assertLessEqual(self.forensics.stat().st_size, writer.MAX_BYTES)
         finally:
+            listener.close()
             release.touch()
             run.join(timeout=40)
             if child_pid.exists():
