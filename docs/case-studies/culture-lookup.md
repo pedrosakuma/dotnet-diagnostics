@@ -55,6 +55,17 @@ Partial symbol-resolution notes and backend provenance are retained in each
 trial; neither a replay fixture nor a non-elevated Windows probe validates
 the live measured-CPU invariant.
 
+The bounded trial evidence also retains exclusive method candidates (including
+unresolved addresses) when the concentration provider emits no signal.
+For this CPU scenario, `frames[].matchCount` is the method's exclusive sample
+count. Metrics retain the provider's top-1 share and its unchanged 15% admission
+gate; notes retain exclusive module totals and both artifact and summary symbol
+provenance. These diagnostics do not synthesize a signal, promote inclusive
+managed wrappers into native self-time, or weaken the 20% hashing invariant.
+Missing artifact symbol provenance is a collection failure, with the diagnostic
+candidates retained rather than discarded. Partial symbol resolution is not
+proof that the responsible exclusive hashing leaf was resolved.
+
 ```bash
 # terminal 1 — the target
 ASPNETCORE_URLS=http://127.0.0.1:18210 \

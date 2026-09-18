@@ -50,6 +50,23 @@ public sealed class CultureLookupBackendTests
     }
 
     [Theory]
+    [InlineData(NativeAotSymbolDemangler.SymbolSource.Stripped)]
+    [InlineData(NativeAotSymbolDemangler.SymbolSource.Unknown)]
+    public void MissingSummarySymbolSource_DoesNotBypassArtifactSymbolFailure(
+        NativeAotSymbolDemangler.SymbolSource symbolSource)
+    {
+        var result = Result(CpuSampleEvidence.WindowsEtwOnCpu, 100);
+        result = result with
+        {
+            Summary = result.Summary with { SymbolSource = null },
+            Artifact = result.Artifact with { SymbolSource = symbolSource },
+        };
+
+        var validate = () => ScenarioLiveRunner.ValidateCultureCpuEvidence(result);
+        validate.Should().Throw<InvalidOperationException>().WithMessage("*no usable symbols*");
+    }
+
+    [Theory]
     [InlineData("PermissionDenied")]
     [InlineData("UnsupportedPrerequisite")]
     [InlineData("UnsupportedPlatform")]
@@ -73,6 +90,10 @@ public sealed class CultureLookupBackendTests
                 SymbolSource = NativeAotSymbolDemangler.SymbolSource.PdbResolved,
             },
             new CpuSampleTraceArtifact(1, started, duration, count,
-                new CallTreeNode(new SampledFrame("", "root"), count, 0, [])) { Evidence = evidence });
+                new CallTreeNode(new SampledFrame("", "root"), count, 0, []))
+            {
+                Evidence = evidence,
+                SymbolSource = NativeAotSymbolDemangler.SymbolSource.PdbResolved,
+            });
     }
 }

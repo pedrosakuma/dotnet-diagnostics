@@ -116,7 +116,6 @@ public sealed class ScenarioLiveRunner
                 exportTrace: false,
                 mode: CultureLookupSamplingMode,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
-            ValidateCultureCpuEvidence(result);
         }
         catch (Exception exception) when (
             exception is Microsoft.Diagnostics.NETCore.Client.DiagnosticsClientException
@@ -141,7 +140,7 @@ public sealed class ScenarioLiveRunner
             CpuSampleSignals.Detect(result.Artifact, "replay"),
             manifest.Budget.MaximumEvidenceItems);
 
-        return Evidence(
+        return CompleteCultureCpuEvidence(Evidence(
             manifest,
             trial,
             activationWatch.Elapsed,
@@ -154,13 +153,64 @@ public sealed class ScenarioLiveRunner
             signals,
             frames: [],
             relations: [],
-            notes: new[]
+            notes: []), result, manifest.Budget.MaximumEvidenceItems);
+    }
+
+    internal static ScenarioEvidence CompleteCultureCpuEvidence(
+        ScenarioEvidence evidence, CpuSampleResult result, int maximumEvidenceItems)
+    {
+        var retainedLimit = Math.Clamp(maximumEvidenceItems, 1, 30);
+        var methods = CpuSampleQueryDispatcher.RenderTopMethods(
+            result.Artifact, "replay", "running", retainedLimit).Data!;
+        var modules = CpuSampleQueryDispatcher.RenderByModule(result.Artifact, "replay", 5).Data!;
+        var totalRunning = result.Artifact.SelfSamples?.RunningSamples ?? result.Artifact.TotalSamples;
+        var topRunning = methods.Methods.Count > 0
+            ? methods.Methods[0].SelfSamples?.RunningSamples ?? methods.Methods[0].ExclusiveSamples
+            : 0;
+        var topShare = totalRunning > 0 ? topRunning * 100d / totalRunning : 0;
+        var diagnostics = evidence with
+        {
+            Metrics = evidence.Metrics.Concat(
+            [
+                new ObservedMetric("cpu-running-self-samples", totalRunning, "samples"),
+                new ObservedMetric("cpu-top1-running-self-share", topShare, "%"),
+                new ObservedMetric("cpu-concentration-min-top1-share", CpuSelfTimeConcentrationProvider.MinTop1Share * 100, "%"),
+                new ObservedMetric("cpu-retained-exclusive-samples", methods.Methods.Sum(method => method.ExclusiveSamples), "samples"),
+            ]).OrderBy(metric => metric.Name, StringComparer.Ordinal).ToArray(),
+            Frames = methods.Methods.Where(method => method.ExclusiveSamples > 0)
+                .Select(method => new ObservedFrame(
+                    $"{method.Module}!{method.Method}", checked((int)method.ExclusiveSamples)))
+                .ToArray(),
+            Notes = new[]
                 {
-                    $"CPU backend={result.Artifact.Evidence?.Backend}; evidence={result.Artifact.Evidence?.Kind}; symbolSource={result.Summary.SymbolSource}.",
+                    $"CPU backend={result.Artifact.Evidence?.Backend}; evidence={result.Artifact.Evidence?.Kind}; artifactSymbolSource={result.Artifact.SymbolSource}; summarySymbolSource={result.Summary.SymbolSource?.ToString() ?? "missing"}.",
+                    $"CPU frames retain at most {retainedLimit} exclusive candidates even when no concentration signal is emitted; matchCount is exclusive sample count, not inclusive attribution or thread count.",
+                    "Unresolved addresses remain separate candidates. Resolved ancestors or module totals do not establish a resolved hashing leaf.",
                 }
-                .Concat(result.Summary.Notes ?? [])
+                .Concat(modules.Groups.Select(module => FormattableString.Invariant(
+                    $"Exclusive module: {module.Group}; samples={module.ExclusiveSamples}; share={module.ExclusivePercent:0.##}%.")))
+                .Concat(result.Summary.Notes)
                 .Take(MaxNotes)
-                .ToArray());
+                .ToArray(),
+        };
+        try
+        {
+            ValidateCultureCpuEvidence(result);
+        }
+        catch (InvalidOperationException exception)
+        {
+            return diagnostics with
+            {
+                Collection = diagnostics.Collection with
+                {
+                    Status = ScenarioStageStatus.Failed,
+                    FailureKind = ScenarioFailureKind.Collection,
+                    Detail = exception.Message,
+                },
+                Signals = [],
+            };
+        }
+        return diagnostics;
     }
 
     internal static void ValidateCultureCpuEvidence(CpuSampleResult result)
@@ -175,7 +225,9 @@ public sealed class ScenarioLiveRunner
             throw new InvalidOperationException("The OS CPU backend collected no samples for the target process.");
         }
 
-        if (result.Summary.SymbolSource == NativeAotSymbolDemangler.SymbolSource.Stripped)
+        if (result.Artifact.SymbolSource is NativeAotSymbolDemangler.SymbolSource.Stripped
+            or NativeAotSymbolDemangler.SymbolSource.Unknown
+            || result.Summary.SymbolSource == NativeAotSymbolDemangler.SymbolSource.Stripped)
         {
             throw new InvalidOperationException(
                 $"OS CPU collection acquired {result.Summary.TotalSamples} samples, but no usable symbols for attribution. {string.Join(" ", result.Summary.Notes ?? [])}");

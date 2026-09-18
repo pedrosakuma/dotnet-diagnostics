@@ -385,6 +385,7 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
 
         var summary = new CpuSample(processId, startedAt, duration, total, hotspots)
         {
+            SymbolSource = symbolSource,
             Evidence = CpuSampleEvidence.WindowsEtwOnCpu,
             SelfSamples = new SelfSampleBreakdown(total, 0),
             TopSelfTime = CpuSampleAnalytics.TopSelfTime(root, total),
