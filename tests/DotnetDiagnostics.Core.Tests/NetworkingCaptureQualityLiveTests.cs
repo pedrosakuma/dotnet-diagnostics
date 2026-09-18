@@ -10,6 +10,7 @@ public sealed class NetworkingCaptureQualityLiveTests(ITestOutputHelper output)
 {
     [Theory]
     [InlineData("normal")]
+    [InlineData("empty")]
     [InlineData("actual-early-exit")]
     [InlineData("injected-source-failure")]
     [InlineData("injected-payload-failure")]
@@ -73,7 +74,26 @@ public sealed class NetworkingCaptureQualityLiveTests(ITestOutputHelper output)
             capture = collector.CollectAsync(process.Id, duration, cancellationToken: captureCancellation.Token);
             await process.StandardInput.WriteLineAsync("observe");
             Assert.Equal("OBSERVING", await ReadLine());
-            if (scenario == "caller-cancellation")
+            if (scenario == "empty")
+            {
+                var snapshot = await capture;
+                output.WriteLine($"empty (no workload requested): {JsonSerializer.Serialize(snapshot)}");
+                Assert.Equal(0, snapshot.HttpRequestsStarted);
+                Assert.Equal(0, snapshot.HttpRequestsStopped);
+                Assert.Equal(0, snapshot.HttpRequestsFailed);
+                Assert.Equal(0, snapshot.SocketConnectsStarted);
+                Assert.Equal(0, snapshot.DnsLookupsStarted);
+                Assert.Equal(0, snapshot.TlsHandshakesStarted);
+                Assert.Empty(snapshot.ByOperation);
+                Assert.All(snapshot.LatencyAvailability.Values, availability => Assert.Equal("not-observed", availability));
+                var quality = Assert.IsType<NetworkingCaptureQuality>(snapshot.CaptureQuality);
+                Assert.Equal("normal", quality.Completion);
+                Assert.Equal(0, quality.EventsLost);
+                Assert.Equal(0, quality.ParseErrors);
+                Assert.False(quality.HasLimitations);
+                Assert.NotEmpty(snapshot.Notes);
+            }
+            else if (scenario == "caller-cancellation")
             {
                 await captureCancellation.CancelAsync();
                 await Assert.ThrowsAnyAsync<OperationCanceledException>(() => capture);

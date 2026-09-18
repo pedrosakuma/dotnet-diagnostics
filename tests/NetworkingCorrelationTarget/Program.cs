@@ -66,8 +66,8 @@ static async Task FailureWorkload(bool includeResponses, CancellationToken token
         await ControlledHttpRequest("/status-503", 180, HttpStatusCode.ServiceUnavailable, null, null, token);
     }
 
-    await ControlledHttpRequest("/cancelled", 650, null, TimeSpan.FromMilliseconds(250), null, token);
-    await ControlledHttpRequest("/timed-out", 750, null, null, TimeSpan.FromMilliseconds(350), token);
+    await ControlledHttpRequest("/cancelled", 0, null, TimeSpan.FromMilliseconds(250), null, token);
+    await ControlledHttpRequest("/timed-out", 0, null, null, TimeSpan.FromMilliseconds(350), token);
     await FailedTls(token);
 }
 
@@ -79,10 +79,14 @@ static async Task ControlledHttpRequest(
     TimeSpan? clientTimeout,
     CancellationToken token)
 {
+    using var lifecycle = CancellationTokenSource.CreateLinkedTokenSource(token);
+    lifecycle.CancelAfter(TimeSpan.FromSeconds(5));
+    token = lifecycle.Token;
     using var listener = new TcpListener(IPAddress.Loopback, 0);
     listener.Start();
     var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-    var server = ServeControlledHttpRequest(listener, serverDelayMilliseconds, responseStatus, token);
+    var clientFinished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var server = ServeControlledHttpRequest(listener, serverDelayMilliseconds, responseStatus, clientFinished.Task, token);
     using var handler = new SocketsHttpHandler { UseProxy = false };
     using var client = new HttpClient(handler);
     if (clientTimeout is { } timeout) client.Timeout = timeout;
@@ -114,6 +118,7 @@ static async Task ControlledHttpRequest(
     finally
     {
         watch.Stop();
+        clientFinished.TrySetResult();
         await server;
     }
 
@@ -141,6 +146,7 @@ static async Task ServeControlledHttpRequest(
     TcpListener listener,
     int delayMilliseconds,
     HttpStatusCode? responseStatus,
+    Task clientFinished,
     CancellationToken token)
 {
     using var socket = await listener.AcceptTcpClientAsync(token);
@@ -153,8 +159,13 @@ static async Task ServeControlledHttpRequest(
         if (read == 0 || used + read == buffer.Length) throw new IOException("Incomplete HTTP headers.");
         used += read;
     }
+    if (responseStatus is null)
+    {
+        // Cancellation/timeout must win, not an arbitrary scheduled peer close.
+        await clientFinished.WaitAsync(token);
+        return;
+    }
     await Task.Delay(delayMilliseconds, token);
-    if (responseStatus is null) return;
     var reason = responseStatus == HttpStatusCode.OK ? "OK" : "Service Unavailable";
     await stream.WriteAsync(Encoding.ASCII.GetBytes(
         $"HTTP/1.1 {(int)responseStatus} {reason}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"), token);
@@ -295,11 +306,22 @@ static async Task Request(string path, int delay, bool report, CancellationToken
     using var handler = new SocketsHttpHandler { UseProxy = false };
     using var client = new HttpClient(handler);
     var uri = new Uri($"http://127.0.0.1:{port}{path}");
-    var watch = Stopwatch.StartNew();
-    using var response = await client.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, token);
-    watch.Stop();
-    response.EnsureSuccessStatusCode();
-    if (report)
-        Console.WriteLine(JsonSerializer.Serialize(new { Path = path, ElapsedMs = watch.Elapsed.TotalMilliseconds }));
-    await server;
+    var startedTimestamp = Stopwatch.GetTimestamp();
+    try
+    {
+        using var response = await client.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, token);
+        var stoppedTimestamp = Stopwatch.GetTimestamp();
+        response.EnsureSuccessStatusCode();
+        if (report)
+            Console.WriteLine(JsonSerializer.Serialize(new
+            {
+                Path = path, Host = uri.GetLeftPart(UriPartial.Authority),
+                ElapsedMs = Stopwatch.GetElapsedTime(startedTimestamp, stoppedTimestamp).TotalMilliseconds,
+                StartedTimestamp = startedTimestamp, StoppedTimestamp = stoppedTimestamp,
+            }));
+    }
+    finally
+    {
+        await server;
+    }
 }

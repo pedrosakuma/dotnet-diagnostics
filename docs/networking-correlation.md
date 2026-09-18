@@ -270,6 +270,56 @@ independent live networking workloads in each consumer.
 
 ## Acquisition quality
 
+### Positive acquisition acceptance versus empty/degraded windows
+
+`LiveCoreClrProcessTests.Networking_HandleEnablesDrilldownViews` no longer
+accepts observations **or any note**. It shares `NetworkingPositiveAcceptance`
+with the .NET 8/9/10 correlation matrix: fresh bounded loopback target,
+provider-enabled handshake, two real captures, six exact HTTP Start/Stop pairs,
+six distinct authority/path identities and positive matched durations. The
+shared Core collection use case registers the actual artifact; all five real
+`query_snapshot` routes must preserve its counts, acquisition quality,
+availability and measured values. No arbitrary counter or note substitutes
+for those observations.
+
+Three serial paths and three concurrent paths have independent target-side
+monotonic witnesses around `GetAsync(ResponseHeadersRead)` with empty bodies,
+matching the HTTP EventSource's response-header scope. Concurrent intervals
+must actually overlap. The predeclared comparison tolerance is
+**25 ms + 10% of the measured client interval**, not a configured server delay.
+The concurrent witnesses must have nonoverlapping tolerance bands, so a host
+that erases the workload contrast fails the fixture rather than making wrong
+attribution acceptable. The original acceptance rejects actual production
+mutations that drop events (leaving only notes), omit activity flow, mispair
+identities or omit capture quality; failure-population controls reject removal
+of failed starts before their terminal Stop.
+
+Legitimate empty windows remain a separate real-session case in
+`NetworkingCaptureQualityLiveTests`: no workload is requested, operation
+counts/groups are empty, and normal/known-zero-loss metadata yields
+`not-observed`, not measured zero. Early target exit is real; source callback,
+payload parser and loss-report failures are explicitly **injected** controls.
+Unsupported/legacy and zero/unknown/degraded metadata contracts remain
+deterministic tests, not successful positive acquisition claims.
+
+Failure fixtures continue to require actual cancellation/timeout causes,
+Start/Failed/Stop identities, 503 response versus transport-failure accounting,
+and the same independent duration comparison. Their peers now remain open
+until the client observes cancellation/timeout, with a separate five-second
+HTTP lifecycle deadline. Scheduled 250/350 ms cancellation/timeout values are
+workload controls, **not** absolute elapsed-time acceptance ceilings. This
+removes the old race with scheduled peer closure and the arbitrary 600/700 ms
+witness ceilings; it does not relax the collector-versus-client comparison
+or establish robustness under arbitrary host load. TLS still consumes a
+bounded ClientHello, sends its delayed fatal alert, and holds the socket until
+the client observes failure; no certificate or resolver policy is changed.
+
+These are finite, serialized live tests, with no retry-until-green or
+quarantine. Failed fixture readiness, timing contrast or missing runtime
+prerequisites must be reported as failures, not empty-window passes. CLI/MCP/
+BenchmarkDotNet networking contract tests independently cover consumer
+propagation; they are not additional live network workloads.
+
 `NetworkingSnapshot.CaptureQuality` (JSON `captureQuality`, BDN `CaptureQuality`)
 is separate from `Correlation`. This nullable, init-only addition also appears
 on **every** networking drilldown: `summary`, `byOperation`, `queue`, `tls`, `dns`.
