@@ -54,7 +54,7 @@ the output.
 | 6 | "GC pauses are frequent in production" | repeated `GET /loh-alloc?count=200` | `collect_events(kind="counters")`, `collect_events(kind="gc")` | `loh-size` and `gen2-gc-count` rise; collector reports gen-2 collections with `LowMemory` / `Induced` reasons (or just frequent gen-2) |
 | 7 | "Outbound HTTP calls are slow" | `GET /slow-http?url=https://httpbin.org/delay/3` | `collect_events(kind="event_source")` `name=System.Net.Http`, `collect_events(kind="counters")` with `System.Net.Http` | EventSource emits `Request*/Response*` events with latency between them; `requests-started-rate` and `current-requests` visible in counters |
 | 8 | "The process dies from an unhandled exception" | `GET /crash?mode=unhandled` | `collect_events(kind="crash-guard")` started before the request | `unhandledExceptionObserved=true`; `finalException` has the fatal type/message and `query_snapshot(view="stack")` returns the managed stack when available |
-| 9 | "A trivial in-memory lookup pegs one or more cores" | sustained `GET /culture-lookup?iterations=3000000` | `inspect_process(view="triage")`, `collect_sample(kind="cpu")` → `query_snapshot(view="call-tree")` | triage derives effective-core consumption from the target runtime's processor count rather than MCP/CLI topology, then emits the diagnosis-agnostic `cpu.compute-demand`; the call-tree drill, not triage, attributes exclusive runtime cost and lands on a high-*exclusive* `System.Globalization.CompareInfo.IcuGetHashCodeOfString` leaf (~89% of CPU) — a culture-aware `Dictionary` comparer |
+| 9 | "A trivial in-memory lookup pegs one or more cores" | sustained `GET /culture-lookup?iterations=3000000` | `inspect_process(view="triage")`, `collect_sample(kind="cpu", cpuBackend="Os")` → `query_snapshot(view="caller-callee")` | attribute measured stacks to the owned lookup entrypoint; distinguish inclusive workload ownership from exclusive managed/native cost. The historical private hashing-name concentration is a versioned observation, not an invariant across runtime or ICU versions |
 | 10 | "It's slow under load, but threads look idle, not spinning" | `GET /lock-storm?seconds=20&blockers=20` | `collect_thread_snapshot` → `query_snapshot(view="wait-chains")` / paged `lock-graph` + exact owner `stack` | `threads.by-wait-state` signal shows most threads parked on `Monitor.Enter (contended)`; `correlation.thread-overlap` and the wait-chain/lock-graph drill name the one stable owner thread that is itself asleep (`Thread.Sleep`) while 15+ others queue on the lock it holds |
 
 `/crash?mode=stackoverflow` is intentionally abrupt and may terminate before
@@ -110,13 +110,14 @@ that investigation remains tracked in [#983](https://github.com/pedrosakuma/dotn
 > `System.Security.Cryptography.SHA256` child frame. Treat the hot lambda as
 > the stable observable profiling signature.
 
-> **Runtime-only bug + a fixed variant (scenario 9).** `/culture-lookup` builds a
-> `Dictionary` with `StringComparer.InvariantCultureIgnoreCase`, so every
-> `TryGetValue` pays a culture-aware ICU string hash — a cost that is **invisible in
-> the endpoint source** (the hot loop is identical to the fast version).
-> `/culture-lookup-fixed` uses `OrdinalIgnoreCase` (~12× faster) for a live
-> before/after. This is the scenario that shows what the tools add *over* static
-> analysis; the full MCP-driven investigation is in
+> **Comparer-dependent work + an ordinal variant (scenario 9).** `/culture-lookup`
+> uses `StringComparer.InvariantCultureIgnoreCase`; `/culture-lookup-fixed` uses
+> `OrdinalIgnoreCase`. Both execute the same lookup loop. Their relative cost and
+> framework/native implementation details are observations, not durable promises.
+> Automated v2 acceptance checks verified results and reciprocal positive/negative
+> OS-sampled ownership of the two project-owned entrypoints in separate processes.
+> It does not require a speedup or claim native ICU symbol coverage. The historical
+> MCP-driven investigation (including its implementation-specific speedup) is in
 > [`case-studies/culture-lookup.md`](./case-studies/culture-lookup.md).
 
 > **Bounded thread/lock correlation (scenario 10).** `/lock-storm` holds

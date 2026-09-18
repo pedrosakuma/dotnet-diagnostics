@@ -34,6 +34,39 @@ part of both surfaces.
 
 ## Reproduce
 
+### Issue #986 validation (2026-09-18)
+
+The CrashGuard observation contract at
+`696e380a3b57f292f2e2e1eb5ba753e4f9347a41`, compared with its base
+`d522603`, measures **281,048 bytes** for all 17 tools and **248,108 bytes**
+for the default 13. Both revisions were measured on Linux with SDK **10.0.201**
+using the real HTTP `ToolCatalogBudgetTests` and the pinned MCP serializer
+described below; hosted Linux and Windows reproduced the new maximal size.
+The same local test on the original base measured **279,976 bytes** maximal
+and **247,036 bytes** default.
+
+The **1,072-byte increase** is entirely `collect_events` output-schema
+structure: output schema **65,918 → 66,990 bytes**, tool total
+**77,202 → 78,274 bytes**. Input schema (**8,200 bytes**), prose (**6,990 bytes**),
+and other per-tool metadata (**2,156 bytes**) are unchanged. No MCP tool was
+added or re-gated; the maximal/default counts remain **17/13**.
+
+The eight bounded, typed observation facts distinguish stream completion,
+nullable event loss, processing error, explicit crash-event observation,
+in-window process exit, the last observed exception, drain completion, and
+shutdown error. They let clients distinguish incomplete acquisition from absent
+crash evidence and avoid attributing a later process exit to an earlier snapshot.
+Removing fields or hiding their schema would obscure these distinctions;
+shortening the new XML comments saves no catalog prose.
+
+The former **280,000-byte** ceiling had only **24 bytes** of base headroom and
+was exceeded by **1,048 bytes**. Issue #986 explicitly raises the strict ceiling
+to **282,000 bytes**: **+2,000 bytes / +0.7142857%** of the old ceiling, leaving
+**952 bytes** above the new measurement. This is a bounded diagnostic-contract
+exception, not a general license to increase the budget, and does **not** restore
+the historical 3% headroom. The assertion remains strict and measures the full
+shipping catalog. The earlier measurements below remain historical evidence.
+
 ### Issue #969 validation (2026-09-18)
 
 The authority-only HTTP destination opt-in on base
@@ -175,12 +208,13 @@ No descriptions were shortened as part of this issue.
 
 ## Guardrails
 
-The integration test caps the maximal catalog at **280,000 bytes**. Issues #828
+The integration test caps the maximal catalog at **282,000 bytes**, following
+the measured #986 exception above. Historically, issues #828
 (`collect_sample(kind="cpu-efficiency")`) and #830
 (`collect_sample(kind="native-lock-contention")`) each added a new kind
 discriminator value, parameter, and description to the already-large
 `collect_sample` schema; combined, the measured catalog is 271,316 bytes.
-280,000 restores roughly 3% headroom above that measured baseline. The fixed
+280,000 restored roughly 3% headroom above that measured baseline. The fixed
 byte budget is portable, deterministic, and independent of model tokenizer
 changes.
 

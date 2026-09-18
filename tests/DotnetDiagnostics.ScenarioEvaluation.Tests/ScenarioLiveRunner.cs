@@ -1,5 +1,8 @@
 using System.Diagnostics;
+using System.Net.Http.Json;
 using System.Runtime.InteropServices;
+using System.Text.Json;
+using DotnetDiagnostics.Core.Capabilities;
 using DotnetDiagnostics.Core.Counters;
 using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Gc;
@@ -12,6 +15,7 @@ namespace DotnetDiagnostics.ScenarioEvaluation.Tests;
 public sealed class ScenarioLiveRunner
 {
     private const int MaxNotes = 20;
+    internal const CpuSamplingMode CultureLookupSamplingMode = CpuSamplingMode.Os;
 
     public static async Task<ScenarioEvidence> CaptureAsync(
         ScenarioManifest manifest,
@@ -80,14 +84,28 @@ public sealed class ScenarioLiveRunner
         int trial,
         CancellationToken cancellationToken)
     {
+        var culture = await CaptureCulturePhaseAsync(manifest, trial, ordinal: false, cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        var ordinal = await CaptureCulturePhaseAsync(manifest, trial, ordinal: true, cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        return CultureLookupCpuContract.Combine(culture, ordinal, manifest.Budget.MaximumEvidenceItems);
+    }
+
+    private static async Task<ScenarioEvidence> CaptureCulturePhaseAsync(
+        ScenarioManifest manifest, int trial, bool ordinal, CancellationToken cancellationToken)
+    {
         await using var sample = await StartSampleAsync(manifest).ConfigureAwait(false);
         using var http = CreateHttpClient(sample.BaseUrl);
         using var loadCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var load = new LoadCounters();
         var activationWatch = Stopwatch.StartNew();
-        var driver = DriveRepeatedRequestsAsync(
+        var iterations = RequiredPositiveIntParameter(manifest, "iterations");
+        var comparer = ordinal ? "OrdinalIgnoreCase" : "InvariantCultureIgnoreCase";
+        var driver = DriveCultureRequestsAsync(
             http,
-            $"{RequiredParameter(manifest, "endpoint")}?iterations={RequiredPositiveIntParameter(manifest, "iterations")}",
+            $"{RequiredParameter(manifest, ordinal ? "controlEndpoint" : "endpoint")}?iterations={iterations}",
+            iterations,
+            comparer,
             Math.Clamp(
                 Environment.ProcessorCount,
                 RequiredPositiveIntParameter(manifest, "minimumWorkers"),
@@ -99,18 +117,29 @@ public sealed class ScenarioLiveRunner
         CpuSampleResult result;
         try
         {
-            result = await new EventPipeCpuSampler().SampleAsync(
+            var perf = new PerfNativeAotCpuSampler();
+            var etw = new EtwNativeAotCpuSampler();
+            var sampler = new RoutingCpuSampler(
+                new CapabilityDetector(perfSampler: perf, etwSampler: etw),
+                new EventPipeCpuSampler(), perf, etw);
+            result = await sampler.SampleAsync(
                 sample.ProcessId,
                 TimeSpan.FromSeconds(manifest.Workload.ObservationSeconds),
                 topN: 25,
+                sourceResolution: null,
+                methodInstantiationResolution: null,
+                nativeAotSymbols: null,
+                exportTrace: false,
+                mode: CultureLookupSamplingMode,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
         }
         catch (Exception exception) when (
             exception is Microsoft.Diagnostics.NETCore.Client.DiagnosticsClientException
-            or InvalidOperationException)
+            or InvalidOperationException
+            or UnauthorizedAccessException)
         {
             throw new ScenarioRunException(
-                $"CPU collection failed for '{manifest.Id}'.",
+                $"OS CPU collection failed for '{manifest.Id}': {exception.Message}",
                 ScenarioFailureClassifier.Classify(exception, ScenarioFailureKind.Collection),
                 exception);
         }
@@ -122,12 +151,18 @@ public sealed class ScenarioLiveRunner
 
         activationWatch.Stop();
         EnsureActivated(manifest.Id, load);
+        if (load.Successes == 0 || load.Failures != 0)
+        {
+            throw new ScenarioRunException(
+                $"Culture lookup responses were not verified (comparer={comparer}, verified={load.Successes}, failures={load.Failures}).",
+                ScenarioFailureKind.Workload);
+        }
         var signals = NormalizeSignals(
             manifest,
             CpuSampleSignals.Detect(result.Artifact, "replay"),
             manifest.Budget.MaximumEvidenceItems);
 
-        return Evidence(
+        return CompleteCultureCpuEvidence(Evidence(
             manifest,
             trial,
             activationWatch.Elapsed,
@@ -140,7 +175,144 @@ public sealed class ScenarioLiveRunner
             signals,
             frames: [],
             relations: [],
-            notes: []);
+            notes: []), result, manifest.Budget.MaximumEvidenceItems,
+            ordinal ? CultureLookupCpuContract.OrdinalMethod : CultureLookupCpuContract.CultureMethod,
+            ordinal ? CultureLookupCpuContract.CultureMethod : CultureLookupCpuContract.OrdinalMethod,
+            load.Successes);
+    }
+
+    internal static ScenarioEvidence CompleteCultureCpuEvidence(
+        ScenarioEvidence evidence, CpuSampleResult result, int maximumEvidenceItems,
+        string? activeMethod = null, string? inactiveMethod = null, int verifiedResponses = 0)
+    {
+        var retainedLimit = Math.Clamp(maximumEvidenceItems, 1, 30);
+        var methods = CpuSampleQueryDispatcher.RenderTopMethods(
+            result.Artifact, "replay", "running", retainedLimit).Data!;
+        var modules = CpuSampleQueryDispatcher.RenderByModule(result.Artifact, "replay", 5).Data!;
+        var totalRunning = result.Artifact.SelfSamples?.RunningSamples ?? result.Artifact.TotalSamples;
+        var topRunning = methods.Methods.Count > 0
+            ? methods.Methods[0].SelfSamples?.RunningSamples ?? methods.Methods[0].ExclusiveSamples
+            : 0;
+        var topShare = totalRunning > 0 ? topRunning * 100d / totalRunning : 0;
+        var diagnostics = evidence with
+        {
+            Metrics = evidence.Metrics.Concat(
+            [
+                new ObservedMetric("cpu-running-self-samples", totalRunning, "samples"),
+                new ObservedMetric("cpu-top1-running-self-share", topShare, "%"),
+                new ObservedMetric("cpu-concentration-min-top1-share", CpuSelfTimeConcentrationProvider.MinTop1Share * 100, "%"),
+                new ObservedMetric("cpu-retained-exclusive-samples", methods.Methods.Sum(method => method.ExclusiveSamples), "samples"),
+            ]).OrderBy(metric => metric.Name, StringComparer.Ordinal).ToArray(),
+            Frames = methods.Methods.Where(method => method.ExclusiveSamples > 0)
+                .Select(method => new ObservedFrame(
+                    $"{method.Module}!{method.Method}", checked((int)method.ExclusiveSamples)))
+                .ToArray(),
+            Notes = new[]
+                {
+                    $"CPU backend={result.Artifact.Evidence?.Backend}; evidence={result.Artifact.Evidence?.Kind}; artifactSymbolSource={result.Artifact.SymbolSource}; summarySymbolSource={result.Summary.SymbolSource?.ToString() ?? "missing"}.",
+                    $"CPU frames retain at most {retainedLimit} exclusive candidates even when no concentration signal is emitted; matchCount is exclusive sample count, not inclusive attribution or thread count.",
+                    "Unresolved addresses remain separate candidates. Resolved ancestors or module totals do not establish a resolved hashing leaf.",
+                }
+                .Concat(modules.Groups.Select(module => FormattableString.Invariant(
+                    $"Exclusive module: {module.Group}; samples={module.ExclusiveSamples}; share={module.ExclusivePercent:0.##}%.")))
+                .Concat(result.Summary.Notes)
+                .Take(MaxNotes)
+                .ToArray(),
+        };
+        try
+        {
+            ValidateCultureCpuEvidence(result);
+            if (activeMethod is not null)
+            {
+                diagnostics = diagnostics with
+                {
+                    Metrics = diagnostics.Metrics.Concat(CultureLookupCpuContract.ProjectOwnership(
+                        result.Artifact, activeMethod, inactiveMethod!, verifiedResponses))
+                        .OrderBy(metric => metric.Name, StringComparer.Ordinal).ToArray(),
+                    Notes = new[]
+                        {
+                            $"Acceptance measures distinct-stack inclusive ownership of {activeMethod}; the other route {inactiveMethod} must be absent. This is not exclusive managed/native leaf cost.",
+                        }.Concat(diagnostics.Notes).Take(MaxNotes).ToArray(),
+                };
+            }
+        }
+        catch (InvalidOperationException exception)
+        {
+            return diagnostics with
+            {
+                Collection = diagnostics.Collection with
+                {
+                    Status = ScenarioStageStatus.Failed,
+                    FailureKind = ScenarioFailureKind.Collection,
+                    Detail = exception.Message,
+                },
+                Signals = [],
+            };
+        }
+        return diagnostics;
+    }
+
+    private static async Task DriveCultureRequestsAsync(
+        HttpClient http, string path, int iterations, string comparer, int workers,
+        TimeSpan delay, LoadCounters counters, CancellationToken cancellationToken)
+    {
+        await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+        await Task.WhenAll(Enumerable.Range(0, workers).Select(async _ =>
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                Interlocked.Increment(ref counters.Attempts);
+                try
+                {
+                    using var response = await http.GetAsync(path, cancellationToken).ConfigureAwait(false);
+                    response.EnsureSuccessStatusCode();
+                    var result = await response.Content.ReadFromJsonAsync<CultureLookupResponse>(
+                        cancellationToken).ConfigureAwait(false);
+                    ValidateCultureResponse(result, iterations, comparer);
+                    Interlocked.Increment(ref counters.Successes);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    return;
+                }
+                catch (Exception exception) when (exception is HttpRequestException or JsonException or InvalidDataException)
+                {
+                    Interlocked.Increment(ref counters.Failures);
+                }
+            }
+        })).ConfigureAwait(false);
+    }
+
+    internal static void ValidateCultureResponse(CultureLookupResponse? result, int iterations, string comparer)
+    {
+        if (result is null || result.Loops != iterations || result.Hits != iterations
+            || !string.Equals(result.Comparer, comparer, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("The lookup route did not return the expected iterations, hits and comparer.");
+        }
+    }
+
+    internal sealed record CultureLookupResponse(int Loops, long Hits, string Comparer);
+
+    internal static void ValidateCultureCpuEvidence(CpuSampleResult result)
+    {
+        if (result.Artifact.Evidence?.Kind != CpuSampleEvidenceKind.OsOnCpuSamples)
+        {
+            throw new InvalidOperationException("The culture-lookup scenario requires measured OS on-CPU evidence; no EventPipe fallback is accepted.");
+        }
+
+        if (result.Summary.TotalSamples == 0)
+        {
+            throw new InvalidOperationException("The OS CPU backend collected no samples for the target process.");
+        }
+
+        if (result.Artifact.SymbolSource is NativeAotSymbolDemangler.SymbolSource.Stripped
+            or NativeAotSymbolDemangler.SymbolSource.Unknown
+            || result.Summary.SymbolSource == NativeAotSymbolDemangler.SymbolSource.Stripped)
+        {
+            throw new InvalidOperationException(
+                $"OS CPU collection acquired {result.Summary.TotalSamples} samples, but no usable symbols for attribution. {string.Join(" ", result.Summary.Notes ?? [])}");
+        }
     }
 
     private static async Task<ScenarioEvidence> CaptureSyncOverAsyncAsync(

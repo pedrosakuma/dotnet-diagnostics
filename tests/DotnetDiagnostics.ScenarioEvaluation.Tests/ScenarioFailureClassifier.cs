@@ -1,4 +1,5 @@
 using Microsoft.Diagnostics.NETCore.Client;
+using DotnetDiagnostics.Core.CpuSampling;
 
 namespace DotnetDiagnostics.ScenarioEvaluation.Tests;
 
@@ -9,6 +10,7 @@ public static class ScenarioFailureClassifier
         ArgumentNullException.ThrowIfNull(exception);
         return exception switch
         {
+            CpuSamplingUnavailableException => ScenarioFailureKind.Environment,
             DotnetDiagnostics.TestSupport.SkipException => ScenarioFailureKind.Environment,
             PlatformNotSupportedException => ScenarioFailureKind.Environment,
             UnauthorizedAccessException => ScenarioFailureKind.Environment,

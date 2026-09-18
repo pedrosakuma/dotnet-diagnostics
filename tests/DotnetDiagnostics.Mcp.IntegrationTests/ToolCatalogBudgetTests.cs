@@ -25,7 +25,11 @@ public sealed class ToolCatalogBudgetTests : IClassFixture<ToolCatalogBudgetTest
     // discriminator value, parameter, and description to the already-large
     // collect_sample schema; combined, the measured catalog is 271,316 bytes.
     // 280,000 restores ~3% headroom above that measured baseline.
-    private const int MaximumCatalogBytes = 280_000;
+    // Issue #986: base d522603 measures 279,976 bytes; bounded CrashGuard
+    // observation facts add 1,072 output-schema bytes (no prose), reaching
+    // 281,048. The explicit 282,000 ceiling preserves all eight diagnostic
+    // fields with 952 bytes of headroom; it does not restore 3% headroom.
+    private const int MaximumCatalogBytes = 282_000;
 
     private readonly FullCatalogFactory _factory;
     private readonly ITestOutputHelper _output;

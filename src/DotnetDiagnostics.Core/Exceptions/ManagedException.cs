@@ -42,6 +42,19 @@ public sealed record CrashGuardExceptionEvent(
     bool IsUnhandled,
     IReadOnlyList<string> ManagedStack);
 
+/// <summary>Bounded acquisition facts; a last first-chance exception is not proof of termination.</summary>
+public sealed record CrashGuardObservation(
+    bool StreamCompleted,
+    long? EventsLost,
+    string? ProcessingError,
+    bool ExplicitCrashEventObserved,
+    bool ExitObservedDuringWindow,
+    CrashGuardExceptionEvent? LastObservedException)
+{
+    public bool DrainCompleted { get; init; }
+    public string? ShutdownError { get; init; }
+}
+
 /// <summary>Postmortem-oriented exception stream captured around a process crash.</summary>
 public sealed record CrashGuardSnapshot(
     int ProcessId,
@@ -58,4 +71,7 @@ public sealed record CrashGuardSnapshot(
 {
     /// <summary>Cap applied to <see cref="Exceptions"/> during collection.</summary>
     public int RecentCap { get; init; }
+
+    /// <summary>Evidence available when this snapshot was finalized, not facts learned after return.</summary>
+    public CrashGuardObservation? Observation { get; init; }
 }

@@ -376,7 +376,7 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
         var session = await client
             .StartEventPipeSessionWithTimeoutAsync(providers, requestRundown: false, circularBufferMB: 1, timeout, ct)
             .ConfigureAwait(false);
-        return await RunFlushAsync(
+        var result = await RunFlushAsync(
             session.EventStream,
             static (stream, onEvent) =>
             {
@@ -389,16 +389,18 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
             () => Remaining(flushTimer, timeout),
             ex => _logger.LogDebug(ex, "Stopping gcdump type-table flush session threw."),
             ct).ConfigureAwait(false);
+        return result.TimedOut;
     }
 
-    internal static async Task<bool> RunFlushAsync(
+    internal static async Task<GcDumpFlushResult> RunFlushAsync(
         Stream stream,
         Action<Stream, Action> process,
         Func<CancellationToken, Task> stopAsync,
         Action dispose,
         Func<TimeSpan> remainingBudget,
         Action<Exception> onError,
-        CancellationToken ct)
+        CancellationToken ct,
+        TimeProvider? quiescenceTimeProvider = null)
     {
         using var readCancellation = new CancellationTokenSource();
         var readToken = readCancellation.Token;
@@ -445,6 +447,7 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
         timedOut |= remainingBudget() <= TimeSpan.Zero;
 
         EventPipeForcedCloseReason? forcedClose = null;
+        var quiescenceOutcome = GcDumpFlushQuiescence.NotRequired;
         try
         {
             await EventPipeSessionShutdown.StopAndDrainAsync(
@@ -459,6 +462,7 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
                     forcedClose = reason;
                     if (processing.IsCompleted)
                     {
+                        quiescenceOutcome = GcDumpFlushQuiescence.Completed;
                         return;
                     }
                     async Task CancelAndQuiesceAsync()
@@ -470,7 +474,17 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
                     var quiescence = CancelAndQuiesceAsync();
                     try
                     {
-                        await quiescence.WaitAsync(TimeSpan.FromSeconds(1), CancellationToken.None).ConfigureAwait(false);
+                        await quiescence.WaitAsync(
+                            TimeSpan.FromSeconds(1), quiescenceTimeProvider ?? TimeProvider.System,
+                            CancellationToken.None).ConfigureAwait(false);
+                        quiescenceOutcome = GcDumpFlushQuiescence.Completed;
+                    }
+                    catch (TimeoutException) when (!quiescence.IsFaulted)
+                    {
+                        // Cooperative cancellation can still miss the cleanup deadline if its
+                        // continuations are delayed. Physical close remains bounded in that case.
+                        quiescenceOutcome = GcDumpFlushQuiescence.BudgetExpired;
+                        throw;
                     }
                     finally
                     {
@@ -484,6 +498,12 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
         }
         catch (TimeoutException)
         {
+            if (quiescenceOutcome != GcDumpFlushQuiescence.BudgetExpired
+                && processing.Exception?.InnerException is TimeoutException)
+            {
+                // A parser's own TimeoutException is not a shutdown-budget expiration.
+                await processing.ConfigureAwait(false);
+            }
             timedOut = true;
         }
         catch (Exception ex) when (IsExpectedFlushTermination(
@@ -498,7 +518,9 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
         {
             throw new IOException("The gcdump type-table flush could not stop its EventPipe session cleanly.");
         }
-        return timedOut || remainingBudget() <= TimeSpan.Zero || forcedClose is not null;
+        return new GcDumpFlushResult(
+            timedOut || remainingBudget() <= TimeSpan.Zero || forcedClose is not null,
+            quiescenceOutcome);
     }
 
     internal static bool IsExpectedFlushTermination(Exception exception, bool firstEventObserved, bool timedOut)
@@ -525,6 +547,15 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
         bool StreamCompleted = false,
         bool ReaderFailed = false);
 }
+
+internal enum GcDumpFlushQuiescence
+{
+    NotRequired,
+    Completed,
+    BudgetExpired,
+}
+
+internal sealed record GcDumpFlushResult(bool TimedOut, GcDumpFlushQuiescence Quiescence);
 
 /// <summary>
 /// Read-only stream wrapper that mirrors every byte read from the inner stream into a sink

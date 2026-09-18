@@ -173,6 +173,8 @@ public class EtwNativeAotCpuSamplerTests
             result.Artifact.SymbolSource.Should().BeOneOf(
                 new[] { NativeAotSymbolDemangler.SymbolSource.PdbResolved, NativeAotSymbolDemangler.SymbolSource.Stripped },
                 "Windows ETW path should report PdbResolved or Stripped (never ElfDemangled)");
+            result.Summary.SymbolSource.Should().Be(result.Artifact.SymbolSource,
+                "summary consumers must receive the same symbol provenance as drilldown consumers");
         }
         finally
         {

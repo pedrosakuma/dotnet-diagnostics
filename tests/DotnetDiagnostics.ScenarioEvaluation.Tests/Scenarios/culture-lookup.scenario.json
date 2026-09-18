@@ -1,16 +1,17 @@
 {
   "schemaVersion": 1,
   "id": "culture-lookup",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "supportedLivePlatforms": [ "windows" ],
-  "reportedSymptom": "A trivial in-memory lookup pegs a CPU core.",
-  "groundTruth": "InvariantCultureIgnoreCase forces culture-aware globalization hashing for every dictionary lookup.",
+  "reportedSymptom": "Attribute measured CPU observations to the application's culture-sensitive dictionary lookup work without assuming which framework or native function is expensive.",
+  "groundTruth": "The repository owns two distinct lookup entrypoints. Each route must return correct results and own measured on-CPU stacks only in its active phase. Inclusive workload ownership is not exclusive managed or native leaf cost; neither comparer is required to remain slower.",
   "workload": {
-    "setup": "Launch a fresh Release BadCodeSample process over loopback.",
-    "activation": "Drive sustained GET /culture-lookup?iterations=6000000 requests after the CPU sampler arms.",
-    "cleanup": "Cancel load generation and terminate the sample process tree.",
+    "setup": "Launch a fresh Release BadCodeSample per phase over loopback. Windows ETW kernel profiling requires elevation and resolution of the project-owned managed entrypoints. Explicit OS mode; no EventPipe fallback.",
+    "activation": "Capture two separate 8-second windows: sustained culture-sensitive requests, then sustained ordinal requests in a fresh process. Verify every completed response and require reciprocal positive/negative method ownership.",
+    "cleanup": "Cancel each phase's load and terminate its sample process before starting the other phase.",
     "parameters": {
       "endpoint": "/culture-lookup",
+      "controlEndpoint": "/culture-lookup-fixed",
       "iterations": "6000000",
       "minimumWorkers": "4",
       "maximumWorkers": "16"
@@ -19,33 +20,28 @@
     "observationSeconds": 8
   },
   "budget": {
-    "maximumRuntimeSeconds": 20,
+    "maximumRuntimeSeconds": 60,
     "maximumEvidenceItems": 30
   },
   "expectedEvidence": [
-    {
-      "id": "cpu-self-time-signal",
-      "kind": "signalPresent",
-      "signal": "cpu.self-time.concentration"
-    },
-    {
-      "id": "globalization-hash-leaf",
-      "kind": "signalBucketMatch",
-      "signal": "cpu.self-time.concentration",
-      "containsAny": [ "IcuGetHashCodeOfString", "NlsGetHashCodeOfString", "GetHashCodeOfString", "GetHashCodeOfStringCore" ],
-      "comparison": "greaterThanOrEqual",
-      "threshold": 20,
-      "aggregation": "sum"
-    }
+    { "id": "culture-owned-cpu", "kind": "counterComparison", "metric": "culture.owned-inclusive-samples", "comparison": "greaterThan", "threshold": 0 },
+    { "id": "culture-negative-control", "kind": "counterComparison", "metric": "culture.other-route-inclusive-samples", "comparison": "equal", "threshold": 0 },
+    { "id": "ordinal-owned-cpu", "kind": "counterComparison", "metric": "ordinal.owned-inclusive-samples", "comparison": "greaterThan", "threshold": 0 },
+    { "id": "ordinal-negative-control", "kind": "counterComparison", "metric": "ordinal.other-route-inclusive-samples", "comparison": "equal", "threshold": 0 },
+    { "id": "culture-results-verified", "kind": "counterComparison", "metric": "culture.verified-responses", "comparison": "greaterThan", "threshold": 0 },
+    { "id": "ordinal-results-verified", "kind": "counterComparison", "metric": "ordinal.verified-responses", "comparison": "greaterThan", "threshold": 0 },
+    { "id": "culture-measured-evidence", "kind": "counterComparison", "metric": "culture.measured-os-evidence", "comparison": "equal", "threshold": 1 },
+    { "id": "ordinal-measured-evidence", "kind": "counterComparison", "metric": "ordinal.measured-os-evidence", "comparison": "equal", "threshold": 1 }
   ],
   "misleadingSignals": [
-    "Inclusive ThreadPool dispatch frames can rank above the responsible exclusive leaf.",
-    "Runtime globalization backend (ICU vs. NLS), tiering, and inlining can split the same causal cost across differently-spelled leaf frames or fold it into the managed fallback entry point."
+    "An inclusive lookup entrypoint owns a sampled call path, not the exclusive CPU of its descendants.",
+    "A resolved framework ancestor or ICU module total does not prove native hashing function boundaries.",
+    "Runtime names, inlining, algorithm choices and relative comparer costs can legitimately change."
   ],
-  "temptingWrongHypotheses": [ "threadpool-runtime-overhead", "scale-compute" ],
-  "acceptableHypotheses": [ "cpu-expensive-globalization-hash" ],
-  "acceptableAttributions": [ "System.Globalization.CompareInfo.GetHashCodeOfString" ],
-  "acceptableNextActions": [ "query-cpu-top-methods-exclusive" ],
-  "forbiddenConclusions": [ "threadpool-runtime-overhead", "scale-compute" ],
-  "requiredCausalityPosture": "attributed-runtime-cost"
+  "temptingWrongHypotheses": [ "threadpool-runtime-overhead", "culture-always-slower" ],
+  "acceptableHypotheses": [ "measured-lookup-workload-ownership" ],
+  "acceptableAttributions": [ "BadCodeSample.CultureLookupWorkload.RunCultureSensitive", "BadCodeSample.CultureLookupWorkload.RunOrdinal" ],
+  "acceptableNextActions": [ "query-owned-method-callers-callees" ],
+  "forbiddenConclusions": [ "threadpool-runtime-overhead", "culture-always-slower", "native-hash-leaf-proven" ],
+  "requiredCausalityPosture": "inclusive-workload-ownership"
 }

@@ -82,10 +82,8 @@ public sealed class CliGcActivitiesLiveTests(ITestOutputHelper output)
         {
             ActivityObserved = () => { Interlocked.Increment(ref activityObserved); CheckReady(); },
         };
-        var gc = new EventPipeGcCollector
-        {
-            CollectionStarted = _ => { Interlocked.Increment(ref gcObserved); CheckReady(); },
-        };
+        var readiness = new CliGcActivitiesReadiness();
+        var gc = readiness.CreateCollector(_ => { Interlocked.Increment(ref gcObserved); CheckReady(); });
         using var services = Services(gc, activities);
         var command = $"collect --kind gc-activities --pid {sample.ProcessId.ToString(CultureInfo.InvariantCulture)} " +
             $"--duration 10 --source CoreClrSample.Activities --trace-id {CliGcActivitiesTests.Trace} " +
@@ -102,13 +100,13 @@ public sealed class CliGcActivitiesLiveTests(ITestOutputHelper output)
         else oneShot = CliGcActivitiesTests.ExecuteAsync(services, command.Split(' '), deadline.Token);
         try
         {
-            // Bounded prefix is both real stream readiness and unrelated trace-budget pressure.
-            for (var attempt = 0; attempt < 60 && !ready.Task.IsCompleted; attempt++)
+            // After the non-GC stream marker, the bounded prefix proves BOTH collectors observe
+            // workload events and creates unrelated trace-budget pressure before the target span.
+            await readiness.ObserveWorkloadAsync(ready.Task, async cancellationToken =>
             {
-                using var noise = await http.GetAsync("/activity?delayMs=1&collectGc=true", deadline.Token);
+                using var noise = await http.GetAsync("/activity?delayMs=1&collectGc=true", cancellationToken);
                 noise.EnsureSuccessStatusCode();
-                await Task.WhenAny(ready.Task, Task.Delay(50, deadline.Token));
-            }
+            }, deadline.Token);
             ready.Task.IsCompletedSuccessfully.Should().BeTrue("EACH collector must observe events before target workload");
             Volatile.Read(ref activityObserved).Should().BeGreaterThan(2);
             Volatile.Read(ref gcObserved).Should().BeGreaterThan(0);

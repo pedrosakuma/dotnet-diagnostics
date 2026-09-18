@@ -1,5 +1,12 @@
 # Case study — "The CPU is pegged, so optimise the loop" (MCP, blind to source)
 
+> **Historical observation, not a timeless acceptance contract.** The transcript
+> below preserves one runtime/backend's implementation-specific behavior.
+> EventPipe managed stack frequency is not OS-measured exclusive CPU (#944).
+> Private method names, the reported percentages and the relative comparer
+> speedup must not be extrapolated to other runtime/ICU versions. Automated
+> acceptance now uses the explicitly different v2 ownership contract below.
+
 > **The one-line lesson:** a hot path at 95% CPU *looks* like "our code is doing
 > too much work — parallelise it / add cores". A CPU sample plus **one call-tree
 > drill** proves the cost is not in our loop at all: it is a **culture-aware
@@ -43,6 +50,51 @@ I am blind to the source. All I have is the MCP server over stdio and a process
 list. Here is the actual loop.
 
 ## Reproduce the workload
+
+The automated `culture-lookup@2.0.0` scenario is Windows-only pending #929.
+It uses Windows ETW measured on-CPU evidence and **inclusive workload ownership**,
+not the old private managed-name/20%-exclusive-cost expectation. The historical
+v1 manifest and replay evidence remain under `Scenarios/Compatibility` and
+`Fixtures/Compatibility`; old attempts cannot be evaluated as v2 passes.
+
+Each trial has two separate eight-second capture windows in fresh processes:
+the culture-sensitive route, then the ordinal route. Each must return verified
+`loops`, `hits` and comparer fields; its stable, non-inlined
+`BadCodeSample.CultureLookupWorkload.RunCultureSensitive` or `RunOrdinal`
+entrypoint must occur in OS on-CPU stacks, while the other route must be absent.
+The existing caller/callee query counts each sampled stack once per method,
+including recursion. These entrypoints perform the existing lookup operation
+and construct its result; no dummy CPU work is added.
+
+This is stronger than nonempty collection: generic runtime/native stacks,
+swapped phase attribution, contamination by the other route, wrong assembly
+identity, EventPipe provenance or incorrect lookup results all fail. It makes
+**no prediction that either comparer stays slower**, consumes a particular share,
+or calls a particular ICU/private framework function. The 60-second trial budget
+covers two process startups, two capture windows, symbolication and teardown,
+not retries.
+
+Metrics are phase-prefixed (`culture.*`, `ordinal.*`). Ownership metrics are
+explicitly **inclusive**, while `frames[].matchCount` remains exclusive sample
+count for bounded diagnostic candidates, also labeled by phase. Top-1 shares,
+the provider's unchanged 15% gate, module totals and symbol degradation remain
+observations; no new signal is synthesized. Deterministic CPU provider tests
+continue to verify exclusive/provenance/gating semantics separately.
+
+Missing privileges remain an environment failure. Missing samples or symbol
+provenance remain a collection failure, with available diagnostics retained;
+missing or contaminated ownership fails evaluation. Neither synthetic replay
+nor a non-elevated probe validates live positive acceptance. This managed
+workload-ownership control **does not validate native ICU PDB/function coverage**:
+that requires separate exact-image symbol preflight and controlled native
+symbol-attribution coverage tracked in #985. Linux culture support is unchanged.
+
+The advisory text mapper uses the v2 ownership vocabulary. The blinded interactive
+target still exposes the culture route as a running investigation workload; that
+alone does not execute or certify the paired `ScenarioLiveRunner` controls.
+Neither old calibration packets nor a single-target agent conversation count as
+v2 paired live acceptance. The previously frozen calibration rubric and its
+fingerprint are unchanged.
 
 ```bash
 # terminal 1 — the target

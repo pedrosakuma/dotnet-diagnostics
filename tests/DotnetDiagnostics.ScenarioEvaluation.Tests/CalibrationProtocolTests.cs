@@ -57,6 +57,20 @@ public sealed class CalibrationProtocolTests
     }
 
     [Fact]
+    public void FrozenCultureV1_ResolvesItsArchivedContractRatherThanTheCurrentV2()
+    {
+        var protocol = CalibrationProtocols.Load(CalibrationProtocols.ProtocolPath(
+            "Calibration", "advisory-calibration-v1.protocol.json"));
+        var slot = protocol.Slots.Single(item => item.WorkloadFamily == "culture-lookup");
+
+        var manifest = CalibrationProtocols.ResolveWorkload(protocol, slot.Id);
+
+        manifest.Version.Should().Be("1.0.0");
+        manifest.ExpectedEvidence.Should().Contain(item => item.Id == "globalization-hash-leaf");
+        ScenarioManifestLoader.LoadAll().Single(item => item.Id == "culture-lookup").Version.Should().Be("2.0.0");
+    }
+
+    [Fact]
     public void Validate_RejectsStaleProtocolFingerprint()
     {
         var protocol = CreateProtocol() with { RubricId = "changed-after-freeze" };
