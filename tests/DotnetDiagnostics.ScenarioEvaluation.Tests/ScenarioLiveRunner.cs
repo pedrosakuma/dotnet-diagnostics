@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using DotnetDiagnostics.Core.Capabilities;
 using DotnetDiagnostics.Core.Counters;
 using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Gc;
@@ -12,6 +13,7 @@ namespace DotnetDiagnostics.ScenarioEvaluation.Tests;
 public sealed class ScenarioLiveRunner
 {
     private const int MaxNotes = 20;
+    internal const CpuSamplingMode CultureLookupSamplingMode = CpuSamplingMode.Os;
 
     public static async Task<ScenarioEvidence> CaptureAsync(
         ScenarioManifest manifest,
@@ -99,18 +101,30 @@ public sealed class ScenarioLiveRunner
         CpuSampleResult result;
         try
         {
-            result = await new EventPipeCpuSampler().SampleAsync(
+            var perf = new PerfNativeAotCpuSampler();
+            var etw = new EtwNativeAotCpuSampler();
+            var sampler = new RoutingCpuSampler(
+                new CapabilityDetector(perfSampler: perf, etwSampler: etw),
+                new EventPipeCpuSampler(), perf, etw);
+            result = await sampler.SampleAsync(
                 sample.ProcessId,
                 TimeSpan.FromSeconds(manifest.Workload.ObservationSeconds),
                 topN: 25,
+                sourceResolution: null,
+                methodInstantiationResolution: null,
+                nativeAotSymbols: null,
+                exportTrace: false,
+                mode: CultureLookupSamplingMode,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
+            ValidateCultureCpuEvidence(result);
         }
         catch (Exception exception) when (
             exception is Microsoft.Diagnostics.NETCore.Client.DiagnosticsClientException
-            or InvalidOperationException)
+            or InvalidOperationException
+            or UnauthorizedAccessException)
         {
             throw new ScenarioRunException(
-                $"CPU collection failed for '{manifest.Id}'.",
+                $"OS CPU collection failed for '{manifest.Id}': {exception.Message}",
                 ScenarioFailureClassifier.Classify(exception, ScenarioFailureKind.Collection),
                 exception);
         }
@@ -140,7 +154,32 @@ public sealed class ScenarioLiveRunner
             signals,
             frames: [],
             relations: [],
-            notes: []);
+            notes: new[]
+                {
+                    $"CPU backend={result.Artifact.Evidence?.Backend}; evidence={result.Artifact.Evidence?.Kind}; symbolSource={result.Summary.SymbolSource}.",
+                }
+                .Concat(result.Summary.Notes ?? [])
+                .Take(MaxNotes)
+                .ToArray());
+    }
+
+    internal static void ValidateCultureCpuEvidence(CpuSampleResult result)
+    {
+        if (result.Artifact.Evidence?.Kind != CpuSampleEvidenceKind.OsOnCpuSamples)
+        {
+            throw new InvalidOperationException("The culture-lookup scenario requires measured OS on-CPU evidence; no EventPipe fallback is accepted.");
+        }
+
+        if (result.Summary.TotalSamples == 0)
+        {
+            throw new InvalidOperationException("The OS CPU backend collected no samples for the target process.");
+        }
+
+        if (result.Summary.SymbolSource == NativeAotSymbolDemangler.SymbolSource.Stripped)
+        {
+            throw new InvalidOperationException(
+                $"OS CPU collection acquired {result.Summary.TotalSamples} samples, but no usable symbols for attribution. {string.Join(" ", result.Summary.Notes ?? [])}");
+        }
     }
 
     private static async Task<ScenarioEvidence> CaptureSyncOverAsyncAsync(

@@ -6,8 +6,8 @@
   "reportedSymptom": "A trivial in-memory lookup pegs a CPU core.",
   "groundTruth": "InvariantCultureIgnoreCase forces culture-aware globalization hashing for every dictionary lookup.",
   "workload": {
-    "setup": "Launch a fresh Release BadCodeSample process over loopback.",
-    "activation": "Drive sustained GET /culture-lookup?iterations=6000000 requests after the CPU sampler arms.",
+    "setup": "Launch a fresh Release BadCodeSample process over loopback. Windows ETW kernel profiling requires elevation and usable target symbols; explicitly select the OS CPU backend, never EventPipe.",
+    "activation": "Drive sustained GET /culture-lookup?iterations=6000000 requests during Windows ETW OS CPU collection after the warmup delay.",
     "cleanup": "Cancel load generation and terminate the sample process tree.",
     "parameters": {
       "endpoint": "/culture-lookup",

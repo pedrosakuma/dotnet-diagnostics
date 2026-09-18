@@ -44,6 +44,17 @@ list. Here is the actual loop.
 
 ## Reproduce the workload
 
+The automated `culture-lookup` scenario is Windows-only pending #929. Since
+#944, EventPipe observations are stack frequency, not measured CPU self-time.
+The scenario explicitly selects the OS backend (#945): Windows ETW kernel
+profiling requires an elevated diagnostics process and usable target symbols.
+Missing privileges are an environment failure, missing samples/symbols are a
+collection failure, and a valid resolved profile below the unchanged 20%
+hashing invariant is an evaluation failure. No EventPipe fallback is allowed.
+Partial symbol-resolution notes and backend provenance are retained in each
+trial; neither a replay fixture nor a non-elevated Windows probe validates
+the live measured-CPU invariant.
+
 ```bash
 # terminal 1 — the target
 ASPNETCORE_URLS=http://127.0.0.1:18210 \
