@@ -2465,6 +2465,16 @@ Captures `ActivitySource` spans through the `Microsoft-Diagnostics-DiagnosticSou
 EventPipe bridge, keeping completed span records inline and grouped rollups behind
 `query_snapshot`.
 
+**Outbound HTTP tag availability:** .NET 8 HttpClient Activities
+(`System.Net.Http` / `System.Net.Http.HttpRequestOut`) can have valid IDs and
+timing with `tags: {}`: the runtime does not populate their HTTP tags. Optional
+target instrumentation may add them; the collector does not require or install it.
+Without captured destination metadata, backend attribution is **unavailable**;
+never infer it from duration. .NET 9/10 differ. The `trace` view also intentionally
+omits destination tags even when the full capture contains them. See
+[HTTP Activity tag provenance](http-activity-tags.md) for the source/raw/projection
+boundary, controlled evidence, and limitations.
+
 **Parameters:**
 
 | Name | Type | Default | Description |

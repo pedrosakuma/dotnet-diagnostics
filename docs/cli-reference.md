@@ -420,6 +420,16 @@ captures cannot establish trace completeness; missing children can inflate resid
 and change trace rankings. Query's `--trace-id` only projects an existing artifact; it cannot
 recover spans discarded during exploratory collection.
 
+For outbound HttpClient (`System.Net.Http` / `System.Net.Http.HttpRequestOut`),
+.NET 8 can return valid IDs and timings with `tags: {}` because the runtime
+does not populate HTTP tags. Optional target instrumentation can supply them;
+the CLI does not add it. Backend attribution is **unavailable** without captured
+destination metadata, irrespective of timing accuracy. `query --view trace`
+intentionally omits URL/host tags even if present in the full capture; collection
+JSON and `query --view activities` preserve captured tags. See
+[HTTP Activity tag provenance](http-activity-tags.md) for .NET 9/10 differences
+and the controlled evidence boundary.
+
 ```bash
 dotnet-diagnostics-cli collect --kind activities --pid 1234 \
   --trace-id abcdef0123456789abcdef0123456789 --max-matched-activities 1000 --json

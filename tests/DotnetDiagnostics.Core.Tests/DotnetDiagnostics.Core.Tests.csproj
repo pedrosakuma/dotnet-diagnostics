@@ -15,6 +15,9 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="../HttpActivityTarget/HttpActivityTarget.csproj"
+                      ReferenceOutputAssembly="false" Private="false"
+                      SkipGetTargetFrameworkProperties="true" />
     <ProjectReference Include="../NetworkingCorrelationTarget/NetworkingCorrelationTarget.csproj"
                       ReferenceOutputAssembly="false" Private="false"
                       SkipGetTargetFrameworkProperties="true" />
