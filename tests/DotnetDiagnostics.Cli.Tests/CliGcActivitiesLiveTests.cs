@@ -17,15 +17,21 @@ namespace DotnetDiagnostics.Cli.Tests;
 
 public sealed class CliGcActivitiesLiveTests(ITestOutputHelper output)
 {
-    [Theory(Timeout = 30_000)]
+    internal const int NegativeOuterTimeoutMs = 30_000;
+    internal const int PositiveOuterTimeoutMs = 40_000;
+    internal static readonly TimeSpan NegativeBodyTimeout = TimeSpan.FromSeconds(20);
+    internal static readonly TimeSpan PositiveBodyTimeout = TimeSpan.FromSeconds(25);
+
+    [Theory(Timeout = NegativeOuterTimeoutMs)]
     [InlineData(false)]
     [InlineData(true)]
     public async Task CancellationOrTargetExitStopsBothOwnedStreamsBeforeRequestedLongWindow(bool exitTarget)
     {
+        using var work = new CancellationTokenSource(WorkTimeout(NegativeOuterTimeoutMs));
         await using var sample = await LiveSampleProcess.StartPublishedAsync("CoreClrSample",
-            new LiveSampleOptions { WaitForHttpReady = true, ReadinessPath = "/weatherforecast" });
+            new LiveSampleOptions { WaitForHttpReady = true, ReadinessPath = "/weatherforecast" }, work.Token);
         using var http = new HttpClient { BaseAddress = new Uri(sample.BaseUrl), Timeout = TimeSpan.FromSeconds(3) };
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        using var deadline = CreateBodyDeadline(NegativeBodyTimeout, work.Token);
         var activityReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var gcReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var services = Services(
@@ -61,15 +67,16 @@ public sealed class CliGcActivitiesLiveTests(ITestOutputHelper output)
         finally { await deadline.CancelAsync(); await collection; }
     }
 
-    [Theory(Timeout = 40_000)]
+    [Theory(Timeout = PositiveOuterTimeoutMs)]
     [InlineData(false, 2)]
     [InlineData(true, 1)]
     public async Task LiveWorkflow_ObservedBothStreamsBeforeTargetedGcSpan_AndQueriesRealArtifacts(bool repl, int matchingCap)
     {
+        using var work = new CancellationTokenSource(WorkTimeout(PositiveOuterTimeoutMs));
         await using var sample = await LiveSampleProcess.StartPublishedAsync("CoreClrSample",
-            new LiveSampleOptions { WaitForHttpReady = true, ReadinessPath = "/weatherforecast" });
+            new LiveSampleOptions { WaitForHttpReady = true, ReadinessPath = "/weatherforecast" }, work.Token);
         using var http = new HttpClient { BaseAddress = new Uri(sample.BaseUrl), Timeout = TimeSpan.FromSeconds(3) };
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+        using var deadline = CreateBodyDeadline(PositiveBodyTimeout, work.Token);
         var activityObserved = 0;
         var gcObserved = 0;
         var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -184,4 +191,14 @@ public sealed class CliGcActivitiesLiveTests(ITestOutputHelper output)
     private static ServiceProvider Services(IGcCollector gc, IActivityCollector activities)
         => new ServiceCollection().AddDiagnosticCoreServices(new SecurityOptions())
             .AddSingleton(gc).AddSingleton(activities).BuildServiceProvider();
+
+    internal static TimeSpan WorkTimeout(int outerTimeoutMs)
+        => TimeSpan.FromMilliseconds(outerTimeoutMs) - LiveSampleProcess.CleanupTimeout - TimeSpan.FromSeconds(2);
+
+    internal static CancellationTokenSource CreateBodyDeadline(TimeSpan bodyTimeout, CancellationToken workToken)
+    {
+        var deadline = CancellationTokenSource.CreateLinkedTokenSource(workToken);
+        deadline.CancelAfter(bodyTimeout);
+        return deadline;
+    }
 }

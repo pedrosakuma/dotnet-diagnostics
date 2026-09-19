@@ -15,19 +15,26 @@ public static class DiagnosticReadiness
     /// advertises a diagnostic endpoint, or throws <see cref="TimeoutException"/> after
     /// <paramref name="timeout"/>.
     /// </summary>
-    public static async Task WaitForDiagnosticEndpointAsync(int pid, TimeSpan timeout)
+    public static Task WaitForDiagnosticEndpointAsync(int pid, TimeSpan timeout)
+        => WaitForDiagnosticEndpointAsync(pid, timeout, CancellationToken.None);
+
+    /// <summary>Polls the diagnostic endpoint with cancellation of the actual polling delays.</summary>
+    public static async Task WaitForDiagnosticEndpointAsync(int pid, TimeSpan timeout, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var deadline = DateTime.UtcNow + timeout;
         while (DateTime.UtcNow < deadline)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (DiagnosticsClient.GetPublishedProcesses().Contains(pid))
             {
                 return;
             }
 
-            await Task.Delay(500).ConfigureAwait(false);
+            await Task.Delay(500, cancellationToken).ConfigureAwait(false);
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         throw new TimeoutException($"pid {pid} did not expose a diagnostic endpoint within {timeout}.");
     }
 
