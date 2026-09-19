@@ -122,11 +122,13 @@ public sealed class ScenarioIsolatedTrialTests
 
         ScenarioTrialArtifact artifact;
         Exception? capturedFailure = null;
+        var phaseRecorder = new ScenarioPhaseRecorder();
         try
         {
             var evidence = await ScenarioLiveRunner.CaptureAsync(
                 manifest,
                 trial,
+                phaseRecorder,
                 CancellationToken.None);
             var report = ScenarioEvaluator.CreateReport(manifest, evidence);
             var detail = EvidenceFailureDetail(report);
@@ -181,6 +183,10 @@ public sealed class ScenarioIsolatedTrialTests
                 Report: null);
         }
 
+        if (manifest.Id == "culture-lookup")
+        {
+            artifact = artifact with { PhaseTimeline = phaseRecorder.Snapshot() };
+        }
         PersistTrialArtifactWhenRequested(artifact);
         if (capturedFailure is not null)
         {

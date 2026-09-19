@@ -17,9 +17,16 @@ public sealed class ScenarioLiveRunner
     private const int MaxNotes = 20;
     internal const CpuSamplingMode CultureLookupSamplingMode = CpuSamplingMode.Os;
 
-    public static async Task<ScenarioEvidence> CaptureAsync(
+    public static Task<ScenarioEvidence> CaptureAsync(
         ScenarioManifest manifest,
         int trial,
+        CancellationToken cancellationToken)
+        => CaptureAsync(manifest, trial, new ScenarioPhaseRecorder(), cancellationToken);
+
+    internal static async Task<ScenarioEvidence> CaptureAsync(
+        ScenarioManifest manifest,
+        int trial,
+        ScenarioPhaseRecorder phaseRecorder,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(manifest);
@@ -35,7 +42,8 @@ public sealed class ScenarioLiveRunner
         {
             return manifest.Id switch
             {
-                "culture-lookup" => await CaptureCultureLookupAsync(manifest, trial, runtimeCts.Token).ConfigureAwait(false),
+                "culture-lookup" => await CaptureCultureLookupAsync(
+                    manifest, trial, phaseRecorder, runtimeCts.Token).ConfigureAwait(false),
                 "sync-over-async" => await CaptureSyncOverAsyncAsync(manifest, trial, runtimeCts.Token).ConfigureAwait(false),
                 "healthy-sync-over-async" => await CaptureSyncOverAsyncAsync(manifest, trial, runtimeCts.Token).ConfigureAwait(false),
                 "lock-storm" => await CaptureLockStormAsync(manifest, trial, runtimeCts.Token).ConfigureAwait(false),
@@ -82,19 +90,25 @@ public sealed class ScenarioLiveRunner
     private static async Task<ScenarioEvidence> CaptureCultureLookupAsync(
         ScenarioManifest manifest,
         int trial,
+        ScenarioPhaseRecorder phaseRecorder,
         CancellationToken cancellationToken)
     {
-        var culture = await CaptureCulturePhaseAsync(manifest, trial, ordinal: false, cancellationToken).ConfigureAwait(false);
+        var culture = await CaptureCulturePhaseAsync(manifest, trial, ordinal: false, phaseRecorder, cancellationToken).ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
-        var ordinal = await CaptureCulturePhaseAsync(manifest, trial, ordinal: true, cancellationToken).ConfigureAwait(false);
+        var ordinal = await CaptureCulturePhaseAsync(manifest, trial, ordinal: true, phaseRecorder, cancellationToken).ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
         return CultureLookupCpuContract.Combine(culture, ordinal, manifest.Budget.MaximumEvidenceItems);
     }
 
     private static async Task<ScenarioEvidence> CaptureCulturePhaseAsync(
-        ScenarioManifest manifest, int trial, bool ordinal, CancellationToken cancellationToken)
+        ScenarioManifest manifest, int trial, bool ordinal, ScenarioPhaseRecorder phaseRecorder,
+        CancellationToken cancellationToken)
     {
-        await using var sample = await StartSampleAsync(manifest).ConfigureAwait(false);
+        var phase = ordinal ? ScenarioWorkloadPhase.Ordinal : ScenarioWorkloadPhase.Culture;
+        var startedSample = await phaseRecorder.ObserveAsync(
+            phase, ScenarioPhaseStage.Startup, () => StartSampleAsync(manifest)).ConfigureAwait(false);
+        await using var lifetime = phaseRecorder.ObserveLifetime(phase, startedSample);
+        var sample = lifetime.Value;
         using var http = CreateHttpClient(sample.BaseUrl);
         using var loadCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var load = new LoadCounters();
@@ -122,7 +136,7 @@ public sealed class ScenarioLiveRunner
             var sampler = new RoutingCpuSampler(
                 new CapabilityDetector(perfSampler: perf, etwSampler: etw),
                 new EventPipeCpuSampler(), perf, etw);
-            result = await sampler.SampleAsync(
+            result = await phaseRecorder.ObserveAsync(phase, ScenarioPhaseStage.Capture, () => sampler.SampleAsync(
                 sample.ProcessId,
                 TimeSpan.FromSeconds(manifest.Workload.ObservationSeconds),
                 topN: 25,
@@ -131,7 +145,7 @@ public sealed class ScenarioLiveRunner
                 nativeAotSymbols: null,
                 exportTrace: false,
                 mode: CultureLookupSamplingMode,
-                cancellationToken: cancellationToken).ConfigureAwait(false);
+                cancellationToken: cancellationToken), captured => captured.Summary.Timings).ConfigureAwait(false);
         }
         catch (Exception exception) when (
             exception is Microsoft.Diagnostics.NETCore.Client.DiagnosticsClientException

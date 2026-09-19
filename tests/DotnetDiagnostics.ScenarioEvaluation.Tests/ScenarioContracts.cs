@@ -193,7 +193,11 @@ public sealed record ScenarioTrialArtifact(
     ScenarioFailureKind FailureKind,
     string Detail,
     ScenarioEvidence? Evidence,
-    ScenarioEvaluationReport? Report);
+    ScenarioEvaluationReport? Report)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ScenarioPhaseTimeline? PhaseTimeline { get; init; }
+}
 
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
