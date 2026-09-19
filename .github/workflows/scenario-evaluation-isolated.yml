@@ -80,6 +80,7 @@ jobs:
         run: |
           python_bin="$(command -v python3 || command -v python)"
           "$python_bin" scripts/test_scenario_attempt.py -v
+          "$python_bin" scripts/test_scenario_forensics.py -v
 
       - name: Run isolated scenario trials
         id: isolated_run
