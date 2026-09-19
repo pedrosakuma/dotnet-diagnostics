@@ -220,7 +220,7 @@ public sealed class HttpReadinessTests
     }
 
     // Same manually fired TimeProvider/ITimer pattern as GcDumpFlushLifecycleTests.
-    private sealed class ControlledClock : TimeProvider
+    internal sealed class ControlledClock : TimeProvider
     {
         private readonly Channel<ControlledTimer> _created = Channel.CreateBounded<ControlledTimer>(4);
         public override DateTimeOffset GetUtcNow() => throw new InvalidOperationException("Readiness must not depend on wall-clock time.");
@@ -239,7 +239,7 @@ public sealed class HttpReadinessTests
         }
     }
 
-    private sealed class ControlledTimer(TimerCallback callback, object? state, TimeSpan delay) : ITimer
+    internal sealed class ControlledTimer(TimerCallback callback, object? state, TimeSpan delay) : ITimer
     {
         private int _disposed;
         public TimeSpan Delay => delay;
