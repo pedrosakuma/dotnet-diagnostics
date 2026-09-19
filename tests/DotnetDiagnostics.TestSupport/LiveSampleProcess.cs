@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.ExceptionServices;
 
 namespace DotnetDiagnostics.TestSupport;
 
@@ -12,12 +13,21 @@ public sealed class LiveSampleProcess : IAsyncDisposable
 {
     private readonly Process _process;
     private readonly TaskCompletionSource<string> _listeningUrlTcs;
+    private readonly StreamReader _stdoutReader;
+    private readonly StreamReader _stderrReader;
+    private Task _stdout = Task.CompletedTask;
+    private Task _stderr = Task.CompletedTask;
+    private Task? _disposal;
+    private readonly object _disposeGate = new();
+    internal static readonly TimeSpan CleanupTimeout = TimeSpan.FromSeconds(5);
 
     private LiveSampleProcess(Process process, string sampleDll, TaskCompletionSource<string> listeningUrlTcs)
     {
         _process = process;
         SampleDll = sampleDll;
         _listeningUrlTcs = listeningUrlTcs;
+        _stdoutReader = process.StandardOutput;
+        _stderrReader = process.StandardError;
     }
 
     /// <summary>The spawned process.</summary>
@@ -44,8 +54,14 @@ public sealed class LiveSampleProcess : IAsyncDisposable
     /// HTTP endpoint accepts requests). Throws <see cref="SkipException"/> when the sample binary
     /// is missing or fails to start.
     /// </summary>
-    public static async Task<LiveSampleProcess> StartPublishedAsync(string sampleName, LiveSampleOptions? options = null)
+    public static Task<LiveSampleProcess> StartPublishedAsync(string sampleName, LiveSampleOptions? options = null)
+        => StartPublishedAsync(sampleName, options, CancellationToken.None);
+
+    /// <summary>Includes post-spawn readiness in caller cancellation and observes owned cleanup before failure returns.</summary>
+    public static async Task<LiveSampleProcess> StartPublishedAsync(string sampleName, LiveSampleOptions? options,
+        CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         options ??= new LiveSampleOptions();
         var harvestUrl = options.HarvestListeningUrl || options.WaitForHttpReady;
 
@@ -77,19 +93,19 @@ public sealed class LiveSampleProcess : IAsyncDisposable
             }
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         var process = Process.Start(psi)
             ?? throw SkipException.ForReason($"Failed to start {sampleName}.");
 
         var listeningUrlTcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
         var sample = new LiveSampleProcess(process, sampleDll, listeningUrlTcs);
 
-        // Drain stdout so the OS pipe buffer never fills (would deadlock the sample), harvesting
-        // the "Now listening on: http://127.0.0.1:NNNN" line when requested.
-        _ = Task.Run(async () =>
+        await CompleteStartupAsync(async () =>
         {
-            try
+            // Keep the existing line readers, but retain their completion for owned cleanup.
+            sample._stdout = Task.Run(async () =>
             {
-                using var reader = process.StandardOutput;
+                using var reader = sample._stdoutReader;
                 string? line;
                 while ((line = await reader.ReadLineAsync().ConfigureAwait(false)) is not null)
                 {
@@ -104,87 +120,135 @@ public sealed class LiveSampleProcess : IAsyncDisposable
                         listeningUrlTcs.TrySetResult(line[(idx + "Now listening on:".Length)..].Trim());
                     }
                 }
-            }
-            catch
-            {
-                // best-effort; if the read fails the URL TCS is never set and HTTP-driven tests
-                // skip via WaitForListeningUrlAsync's timeout.
-            }
-        });
+            });
 
-        _ = Task.Run(async () =>
-        {
-            try
+            sample._stderr = Task.Run(async () =>
             {
-                using var reader = process.StandardError;
+                using var reader = sample._stderrReader;
                 while (await reader.ReadLineAsync().ConfigureAwait(false) is not null)
                 {
                 }
-            }
-            catch
-            {
-                // best-effort
-            }
-        });
+            });
 
-        try
-        {
-            await DiagnosticReadiness.WaitForDiagnosticEndpointAsync(process.Id, options.DiagnosticTimeout).ConfigureAwait(false);
+            await DiagnosticReadiness.WaitForDiagnosticEndpointAsync(process.Id, options.DiagnosticTimeout, cancellationToken).ConfigureAwait(false);
 
             if (options.WaitForHttpReady)
             {
-                sample._baseUrl = await sample.WaitForListeningUrlAsync(options.HttpTimeout, options.ReadinessPath).ConfigureAwait(false);
+                sample._baseUrl = await sample.WaitForListeningUrlAsync(options.HttpTimeout, options.ReadinessPath, cancellationToken).ConfigureAwait(false);
             }
-        }
-        catch
-        {
-            // Readiness failed after the process was spawned; kill the tree so we don't leak it.
-            await sample.DisposeAsync().ConfigureAwait(false);
-            throw;
-        }
+            cancellationToken.ThrowIfCancellationRequested();
+        }, sample.DisposeAsync).ConfigureAwait(false);
 
         return sample;
+    }
+
+    internal static async Task CompleteStartupAsync(Func<Task> readiness, Func<ValueTask> cleanup)
+    {
+        try { await readiness().ConfigureAwait(false); }
+        catch (Exception primary)
+        {
+            try { await cleanup().ConfigureAwait(false); }
+            catch (Exception cleanupFailure)
+            {
+                throw new AggregateException("Sample startup failed and owned cleanup also failed.", primary, cleanupFailure);
+            }
+            throw;
+        }
     }
 
     /// <summary>
     /// Awaits the harvested listening URL and confirms HTTP readiness against
     /// <paramref name="readinessPath"/>. Throws <see cref="SkipException"/> on timeout.
     /// </summary>
-    public async Task<string> WaitForListeningUrlAsync(TimeSpan timeout, string readinessPath = "/")
-    {
-        using var cts = new CancellationTokenSource(timeout);
-        string url;
-        try
-        {
-            url = await _listeningUrlTcs.Task.WaitAsync(cts.Token).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            throw SkipException.ForReason($"{Path.GetFileNameWithoutExtension(SampleDll)} did not advertise an HTTP listening URL within the timeout.");
-        }
+    public Task<string> WaitForListeningUrlAsync(TimeSpan timeout, string readinessPath = "/")
+        => WaitForListeningUrlAsync(timeout, readinessPath, CancellationToken.None);
 
-        await DiagnosticReadiness.WaitForHttpReadyAsync(url, timeout, readinessPath).ConfigureAwait(false);
+    /// <summary>Waits for the URL and HTTP readiness without relabeling caller cancellation as a timeout.</summary>
+    public async Task<string> WaitForListeningUrlAsync(TimeSpan timeout, string readinessPath, CancellationToken cancellationToken)
+    {
+        var url = await WaitForUrlAsync(_listeningUrlTcs.Task, SampleDll, timeout, TimeProvider.System, cancellationToken).ConfigureAwait(false);
+        await DiagnosticReadiness.WaitForHttpReadyAsync(url, timeout, readinessPath, cancellationToken).ConfigureAwait(false);
         _baseUrl = url;
         return url;
     }
 
-    /// <summary>Kills the entire process tree and disposes the underlying <see cref="Process"/>.</summary>
+    internal static async Task<string> WaitForUrlAsync(Task<string> listeningUrl, string sampleDll, TimeSpan timeout,
+        TimeProvider timeProvider, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        using var deadline = new CancellationTokenSource(timeout, timeProvider);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, deadline.Token);
+        try
+        {
+            return await listeningUrl.WaitAsync(linked.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (deadline.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            throw SkipException.ForReason($"{Path.GetFileNameWithoutExtension(sampleDll)} did not advertise an HTTP listening URL within the timeout.");
+        }
+    }
+
+    /// <summary>Kills the owned process tree and observes exit and both line readers within one
+    /// independent five-second deadline. Failed or incomplete cleanup is reported, not ignored.</summary>
     public ValueTask DisposeAsync()
     {
-        if (!_process.HasExited)
-        {
-            try
-            {
-                _process.Kill(entireProcessTree: true);
-                _process.WaitForExit(5_000);
-            }
-            catch
-            {
-                // best-effort
-            }
-        }
+        lock (_disposeGate) return new ValueTask(_disposal ??= DisposeCoreAsync());
+    }
 
-        _process.Dispose();
-        return ValueTask.CompletedTask;
+    private async Task DisposeCoreAsync()
+    {
+        _listeningUrlTcs.TrySetCanceled();
+        var failures = new List<Exception>();
+        try
+        {
+            await ObserveCleanupAsync(() =>
+            {
+                if (!_process.HasExited)
+                {
+                    try { _process.Kill(entireProcessTree: true); }
+                    catch (InvalidOperationException) when (_process.HasExited) { }
+                }
+            }, _process.WaitForExitAsync(), _stdout, _stderr, CleanupTimeout, TimeProvider.System).ConfigureAwait(false);
+        }
+        catch (Exception error) { failures.Add(error); }
+        DisposeResource(_stdoutReader, failures);
+        DisposeResource(_stderrReader, failures);
+        DisposeResource(_process, failures);
+        if (failures.Count == 1) ExceptionDispatchInfo.Capture(failures[0]).Throw();
+        if (failures.Count > 1) throw new AggregateException("Owned sample cleanup had multiple failures.", failures);
+    }
+
+    private static void DisposeResource(IDisposable resource, List<Exception> failures)
+    {
+        try { resource.Dispose(); }
+        catch (Exception error) { failures.Add(error); }
+    }
+
+    internal static async Task ObserveCleanupAsync(Action terminate, Task exit, Task stdout, Task stderr,
+        TimeSpan timeout, TimeProvider timeProvider)
+    {
+        using var deadline = new CancellationTokenSource(timeout, timeProvider);
+        Exception? terminationFailure = null;
+        try { terminate(); }
+        catch (Exception error) { terminationFailure = error; }
+        var settled = Task.WhenAll(exit, stdout, stderr);
+        try
+        {
+            await settled.WaitAsync(deadline.Token).ConfigureAwait(false);
+        }
+        catch (Exception observationFailure)
+        {
+            // A bounded failure is not quiescence. Observe any later aggregate fault as well.
+            _ = settled.ContinueWith(static task => _ = task.Exception, CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            var failure = observationFailure is OperationCanceledException && deadline.IsCancellationRequested
+                ? new TimeoutException($"Owned sample cleanup exceeded {timeout}: exit={exit.Status}, stdout={stdout.Status}, stderr={stderr.Status}.", observationFailure)
+                : observationFailure;
+            if (terminationFailure is not null)
+                throw new AggregateException("Owned termination and exit/reader observation failed.", terminationFailure, failure);
+            ExceptionDispatchInfo.Capture(failure).Throw();
+        }
+        if (terminationFailure is not null)
+            throw new AggregateException("Owned process termination failed.", terminationFailure);
     }
 }
