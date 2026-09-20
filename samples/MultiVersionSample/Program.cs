@@ -10,6 +10,12 @@ Console.WriteLine($"Runtime: {RuntimeInformation.FrameworkDescription}");
 Console.WriteLine($"PID: {Environment.ProcessId}");
 Console.Out.Flush();
 
+if (args.Contains("--live-compatibility", StringComparer.Ordinal))
+{
+    CompatibilityFixture.Run();
+    return;
+}
+
 if (args.Contains("--gc-pause-workload", StringComparer.Ordinal))
 {
     GcProgressWorkload.Run();
