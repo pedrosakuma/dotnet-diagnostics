@@ -3,8 +3,9 @@ import json
 from pathlib import Path
 import subprocess
 import time
+from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch, sentinel
 
 from test_verify_clrmd_revalidation import EvidenceFixture
 
@@ -17,6 +18,15 @@ SPEC.loader.exec_module(RUNNER)
 class LiveCompatibilityEvidenceTests(EvidenceFixture):
     def setUp(self):
         super().setUp()
+        # Exercise the Linux runner's mocked control flow without requiring Unix APIs
+        # or replacing the host process's actual signal handlers.
+        signals = SimpleNamespace(
+            signal=Mock(), setitimer=Mock(), SIGALRM=sentinel.SIGALRM,
+            SIGTERM=sentinel.SIGTERM, SIGINT=sentinel.SIGINT,
+            ITIMER_REAL=sentinel.ITIMER_REAL)
+        signal_patch = patch.object(RUNNER, "signal", signals)
+        signal_patch.start()
+        self.addCleanup(signal_patch.stop)
         self.names = sorted(RUNNER.EXPECTED)
         self.write_evidence()
         self.mutate("t:Results/t:UnitTestResult[@outcome='NotExecuted']", "outcome", "Passed")
@@ -66,6 +76,7 @@ class LiveCompatibilityEvidenceTests(EvidenceFixture):
 
     def test_harness_failure_is_abort_and_cleans_exact_owned_names(self):
         with patch.object(RUNNER.signal, "setitimer"), \
+                patch.object(Path, "chmod", autospec=True) as chmod, \
                 patch.object(RUNNER, "command", side_effect=ValueError("Unexpected target identity")), \
                 patch.object(RUNNER, "container_metadata", return_value={}), \
                 patch.object(RUNNER, "cleanup_container", return_value="absent") as cleanup:
@@ -74,7 +85,8 @@ class LiveCompatibilityEvidenceTests(EvidenceFixture):
         self.assertEqual(2, cleanup.call_count)
         self.assertEqual({"live-compat-unit-owner-8-target", "live-compat-unit-owner-8-inspector"},
                          {call.args[0] for call in cleanup.call_args_list})
-        self.assertEqual(0o777, (self.root / "net8" / "evidence").stat().st_mode & 0o777)
+        chmod.assert_any_call(self.root.resolve() / "net8" / "evidence", 0o777)
+        chmod.assert_any_call(self.root.resolve() / "net8" / "diagnostics", 0o777)
         self.assertFalse((self.root / "net8" / "runtime").exists())
         self.assertFalse((self.root / "net8" / "diagnostics").exists())
 
