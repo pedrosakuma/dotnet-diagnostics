@@ -19,8 +19,8 @@ documented below and is smoke-validated independently by
 | Target runtime | Status | Notes |
 |---|---|---|
 | **.NET 10** | ✅ Fully supported | Primary development/CI target; all samples and docs assume this by default. |
-| **.NET 9** | ✅ Fully supported | Covered by `CrossVersionTargetTests` in CI (Linux). DATAS (adaptive GC sizing, default-on 9+) has no hard version gate and degrades gracefully off. |
-| **.NET 8** | ✅ Fully supported | Covered by `CrossVersionTargetTests` in CI (Linux). Minimum version for `collect_sample(kind="method-params")` (`MethodParameterCaptureCollector.cs`); profiler-attach + startup-hook injection genuinely requires 8+. |
+| **.NET 9** | ✅ Fully supported | `CrossVersionTargetTests` is configured in Linux and Windows Core CI; mechanisms below are narrower than all-reader parity. DATAS has no hard version gate and degrades gracefully off. |
+| **.NET 8** | ✅ Fully supported | `CrossVersionTargetTests` is configured in Linux and Windows Core CI. Minimum version for `collect_sample(kind="method-params")`; profiler attach genuinely requires 8+. |
 | **.NET 7** | ⚠️ Expected to work, not CI-covered | EOL (May 2024). No known blocker; not validated in this repo's automation because installing an EOL runtime in CI has no ongoing security-support payoff. `method-params` explicitly excludes it (see [`method-parameter-capture.md`](./research/method-parameter-capture.md)). |
 | **.NET 6** | ⚠️ Expected to work, not CI-covered | EOL (Nov 2024). Manually verified once during the spike (counters, GC events, dump capture, ClrMD heap walk all succeeded against a live 6.0.36 target) but not part of ongoing CI — same EOL rationale as .NET 7. |
 | **.NET Core 3.1 / .NET 5** | ❓ Untested | Older than anything checked here. The underlying libraries (`Microsoft.Diagnostics.NETCore.Client`, ClrMD, `TraceEvent`) are known to support this range for `dotnet-trace`/`dotnet-dump`-style tooling in general, but this repo has never pointed at one. Treat as "probably fine, verify before relying on it."  |
@@ -29,7 +29,8 @@ documented below and is smoke-validated independently by
 
 `CrossVersionTargetTests` (`tests/DotnetDiagnostics.Core.Tests/CrossVersionTargetTests.cs`) runs
 against `samples/MultiVersionSample` (a minimal multi-targeted `net8.0;net9.0;net10.0` console app)
-on every CI run, covering:
+in the Linux and Windows Core jobs of `ci.yml` (both install the .NET 8/9 shared
+runtimes; docs-only runs skip the test steps), covering:
 
 - **EventCounters** (`collect_events`-style counter snapshot)
 - **GC events** (EventPipe GC collector)
@@ -45,9 +46,10 @@ providers/keywords.
 ### Not yet validated against older runtimes
 
 - **Live ClrMD attach** (`inspect-heap --source live`, `collect_thread_snapshot`,
-  `capture_method_bytes` live path) — blocked in the CI sandbox by ptrace restrictions unrelated to
-  target version (see AGENTS.md's CAP_SYS_PTRACE section); only the dump-based ClrMD path is
-  exercised cross-version today.
+  `capture_method_bytes` live path) — the original spike could not attach under its host ptrace
+  policy. The new [advisory sidecar lane](./live-clrmd-compatibility.md) prepares live heap/thread
+  coverage without changing host policy; execution evidence is still pending. It does **not**
+  cover live method bytes or every reader.
 - **Deeper ClrMD drilldowns**: async state-machine walks, closed-generic-instantiation resolution
   (`query_snapshot` async/generics views) — depend on CLR-internal layout details that are unlikely
   but not proven to be stable across major versions.
@@ -57,6 +59,25 @@ providers/keywords.
 - **NativeAOT targets** on older SDKs — out of scope; NativeAOT support is tracked independently in
   [`aot-coverage.md`](./aot-coverage.md) and is inherently tied to the SDK version used to publish
   the AOT binary, not a CoreCLR major version.
+
+### Representative live layout coverage: evidence pending
+
+Issue [#931](https://github.com/pedrosakuma/dotnet-diagnostics/issues/931) adds
+`CrossVersionLiveSidecarTests` plus a manual advisory workflow. Each Linux x64
+runtime slot requires exactly four passing cases: named retained heap population,
+named live thread frame, pending async state machine, and IP-based ClrMD resolution
+of `ClosedGenericHold<System.Int32>`. Dump inspection and shared-canon do not satisfy
+these assertions. The [runner and evidence contract](./live-clrmd-compatibility.md)
+describe the single topology, bounds and retained artifacts.
+
+| Mechanism / topology | .NET 8 | .NET 9 | .NET 10 |
+|---|---|---|---|
+| Linux x64 matching-UID, shared-PID sidecar; four live/layout cases | Pending execution | Pending execution | Pending execution |
+| Windows cross-version live/layout cases | Not claimed | Not claimed | Existing `LiveCoreClrProcessTests` controls only |
+
+No successful sidecar evidence URL exists yet. A build, skipped ordinary test, or
+reachable Docker daemon is not compatibility evidence. Update the cells and link
+the immutable workflow run/artifact only after all expected cases execute and pass.
 
 ## How to extend this matrix
 

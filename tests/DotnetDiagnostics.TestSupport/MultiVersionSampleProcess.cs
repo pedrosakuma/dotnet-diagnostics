@@ -12,6 +12,21 @@ namespace DotnetDiagnostics.TestSupport;
 /// </summary>
 public sealed class MultiVersionSampleProcess : IAsyncDisposable
 {
+    /// <summary>
+    /// Reads the external, PID-namespace-scoped compatibility target. This does not start a
+    /// process or substitute the inspector's runtime for the target's runtime.
+    /// </summary>
+    public static (int ProcessId, int ExpectedMajor) ReadLiveCompatibilityTarget()
+    {
+        var value = Environment.GetEnvironmentVariable("DOTNET_DIAGNOSTICS_LIVE_COMPAT_MAJOR");
+        if (!int.TryParse(value, out var major) || major is not (8 or 9 or 10))
+            throw new InvalidOperationException("A provisioned live compatibility slot requires major 8, 9 or 10.");
+        if (!OperatingSystem.IsLinux() || System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture
+            != System.Runtime.InteropServices.Architecture.X64)
+            throw new PlatformNotSupportedException("Live compatibility slots require Linux x64.");
+        return (1, major);
+    }
+
     private readonly Process _process;
     private string _lastOutputLine = "(no output)";
     private readonly System.Collections.Concurrent.ConcurrentQueue<long> _heartbeats = new();

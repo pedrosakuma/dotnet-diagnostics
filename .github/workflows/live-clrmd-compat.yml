@@ -1,0 +1,81 @@
+name: Live ClrMD compatibility (advisory)
+
+# Deliberately manual and outside required branch protection. This runner label
+# requires an already configured/authenticated private NuGet feed; no credentials
+# or restore operation are passed into diagnostic containers.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-clrmd-compat
+  cancel-in-progress: false
+
+jobs:
+  compatibility:
+    name: Linux x64 live ClrMD (advisory)
+    runs-on: [self-hosted, linux, x64, dotnet-diagnostics-private-feed]
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify pinned SDK and existing private feed
+        shell: bash
+        run: |
+          # Fail closed before any restore: never fall back to the public gallery.
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          import subprocess
+          report = {"outcome": "missing-or-unsupported-prerequisite"}
+          try:
+              sdk = subprocess.check_output(["dotnet", "--version"], text=True, timeout=15).strip()
+              assert sdk == "10.0.201", "SDK 10.0.201 must already be selected"
+              sources = subprocess.check_output(
+                  ["dotnet", "nuget", "list", "source", "--format", "short"], text=True, timeout=15)
+              enabled = [line.split()[-1] for line in sources.splitlines() if line.startswith("E ")]
+              assert enabled == ["https://packagefeedproxy.microsoft.io/nuget/v3/index.json"], \
+                  "Only the existing authenticated private feed may be enabled"
+              report.update(outcome="verified-build-prerequisites", sdk=sdk)
+          finally:
+              Path("artifacts").mkdir(exist_ok=True)
+              Path("artifacts/live-clrmd-prerequisites.json").write_text(json.dumps(report))
+          PY
+
+      - name: Build targeted outputs using existing private configuration
+        run: |
+          dotnet build tests/DotnetDiagnostics.Core.Tests -c Release
+          dotnet build samples/MultiVersionSample -c Release
+
+      - name: Pure contract checks
+        run: |
+          python3 -m unittest discover -s scripts/tests -p test_live_clrmd_compat.py
+          dotnet test tests/DotnetDiagnostics.Core.Tests -c Release --no-build \
+            --filter 'FullyQualifiedName~MethodIdentityHandoffTests|FullyQualifiedName~AsyncStateMachineFrameFolderTests'
+
+      - name: Provision ordinary runtime images
+        run: |
+          docker pull mcr.microsoft.com/dotnet/sdk:10.0.201
+          for major in 8 9 10; do docker pull "mcr.microsoft.com/dotnet/runtime:$major.0"; done
+
+      - name: One bounded sequential slot per runtime
+        run: python3 scripts/live-clrmd-compat.py --output artifacts/live-clrmd-compat
+
+      - name: Retain bounded evidence (including failed attempts)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: live-clrmd-compat-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            artifacts/live-clrmd-prerequisites.json
+            artifacts/live-clrmd-compat/manifest.json
+            artifacts/live-clrmd-compat/net*/result.json
+            artifacts/live-clrmd-compat/net*/*.log
+            artifacts/live-clrmd-compat/net*/*.status.json
+            artifacts/live-clrmd-compat/net*/evidence/*.trx
+          retention-days: 14
+          if-no-files-found: warn
