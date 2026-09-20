@@ -69,10 +69,13 @@ public sealed class CrossVersionLiveSidecarTests(ITestOutputHelper output)
         identity.ModuleVersionId.Should().Be(frame.Identity.ModuleVersionId);
         identity.MetadataToken.Should().Be(token);
         identity.MethodName.Should().Be(frame.Identity.MethodName, "the production resolver preserves raw ClrMD method metadata");
-        identity.GenericTypeArguments!.Method.Should().Equal("System.Int32",
-            "shared-canon/unknown is not evidence of the known concrete fixture");
+        AssertConcreteInt32(identity.GenericTypeArguments!.Method);
         identity.ClosedSignature.Should().Be("CompatibilityFixture.ClosedGenericHold<System.Int32>");
     }
+
+    internal static void AssertConcreteInt32(IReadOnlyList<string> methodArguments)
+        => methodArguments.Should().Equal(["System.Int32"],
+            because: "shared-canon/unknown is not evidence of the known concrete fixture");
 
     private async Task<ThreadSnapshotArtifact> Threads()
     {

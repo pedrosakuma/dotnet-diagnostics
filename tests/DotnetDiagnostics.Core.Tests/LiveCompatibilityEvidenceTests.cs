@@ -18,6 +18,24 @@ public sealed class LiveCompatibilityEvidenceTests
         "Linux", "x64", "8.0.31", "MultiVersionSample", "linux-x64");
 
     [Fact]
+    public void ConcreteArgumentAssertionAcceptsExactlyOneInt32()
+    {
+        var action = () => CrossVersionLiveSidecarTests.AssertConcreteInt32(["System.Int32"]);
+        action.Should().NotThrow();
+    }
+
+    [Theory]
+    [InlineData()]
+    [InlineData("System.__Canon")]
+    [InlineData("System.Int64")]
+    [InlineData("System.Int32", "extra")]
+    public void ConcreteArgumentAssertionRejectsMissingWrongOrExtraArguments(params string[] arguments)
+    {
+        var action = () => CrossVersionLiveSidecarTests.AssertConcreteInt32(arguments);
+        action.Should().Throw<Xunit.Sdk.XunitException>();
+    }
+
+    [Fact]
     public void TargetVersion_IsFromBoundIpcAndMappedModule_NotClrMdOrRequestedMajor()
     {
         var evidence = LiveCompatibilityEvidence.ValidateTarget(1, 8, Info, Arguments, Modules, Started, Started);
