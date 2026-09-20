@@ -45,14 +45,13 @@ providers/keywords.
 
 ### Not yet validated against older runtimes
 
-- **Live ClrMD attach** (`inspect-heap --source live`, `collect_thread_snapshot`,
-  `capture_method_bytes` live path) — the original spike could not attach under its host ptrace
-  policy. The new [advisory sidecar lane](./live-clrmd-compatibility.md) prepares live heap/thread
-  coverage without changing host policy; no successful scoped execution exists yet. It does **not**
-  cover live method bytes or every reader.
-- **Deeper ClrMD drilldowns**: async state-machine walks, closed-generic-instantiation resolution
-  (`query_snapshot` async/generics views) — depend on CLR-internal layout details that are unlikely
-  but not proven to be stable across major versions.
+- **Other live readers**, including `capture_method_bytes`: the
+  [local sidecar evidence below](#representative-live-layout-coverage-local-evidence)
+  covers representative heap/thread inspection, not every live reader.
+- **Broader layout-sensitive drilldowns**: one pending async fixture and one
+  concrete value-type generic resolver path passed locally. Other async shapes,
+  shared reference-type instantiations and all `query_snapshot` views are not
+  established by that bounded evidence.
 - **`collect_sample(kind="method-params")`** — already hard-gated to .NET 8+; not exercised against
   9/10 targets specifically in `CrossVersionTargetTests` (covered separately by
   `MethodParameterCaptureCollectorTests` against the pinned net10.0 `CoreClrSample`).
@@ -60,7 +59,7 @@ providers/keywords.
   [`aot-coverage.md`](./aot-coverage.md) and is inherently tied to the SDK version used to publish
   the AOT binary, not a CoreCLR major version.
 
-### Representative live layout coverage: evidence pending
+### Representative live layout coverage: local evidence
 
 Issue [#931](https://github.com/pedrosakuma/dotnet-diagnostics/issues/931) adds
 `CrossVersionLiveSidecarTests` plus a local advisory runner. Each Linux x64
@@ -72,19 +71,21 @@ describe the single topology, bounds and retained artifacts.
 
 | Mechanism / topology | .NET 8 | .NET 9 | .NET 10 |
 |---|---|---|---|
-| Linux x64 matching-UID, shared-PID sidecar; four live/layout cases | First local batch failed; corrective execution pending | Not executed | Not executed |
+| Local Linux x64 matching-UID0, shared-PID sidecar on WSL2 kernel; four live/layout cases | **4 passed on 8.0.31** | **4 passed on 9.0.20** | **4 passed on 10.0.7** |
 | Windows cross-version live/layout cases | Not claimed | Not claimed | Existing `LiveCoreClrProcessTests` controls only |
 
-The first local batch observed a .NET8.0.31 fixture but failed all four facts at
-the raw ClrMD `0.0` version assertion, then aborted during filesystem cleanup.
-It never reached the generic enricher or the 9/10 slots. Corrective tests use
-PID-bound diagnostic IPC plus mapped-module version evidence, preserving raw
-ClrMD metadata separately; they have not been re-executed live. The unprovisioned
-self-hosted workflow proposal was removed rather than presented as operational.
+The [2026-09-20 local evidence report](./live-clrmd-compatibility-evidence.md)
+records **12/12 required passes** on tested code commit
+`cf6122fc13306661097640471b7fdec45bb9a274`, actual runtime/module identities,
+kernel/topology, output/DAC/ClrMD hashes and verified cleanup. It also preserves
+the earlier **0 passed/4 failed/8 unexecuted** and **9 passed/3 failed** batches
+and their deterministic corrections. Raw ClrMD version remained `0.0` (unknown);
+PID-bound diagnostic IPC plus mapped-module evidence established actual versions.
 
-No successful sidecar evidence URL exists yet. A build, skipped ordinary test, or
-reachable Docker daemon is not compatibility evidence. Update the cells and link
-the immutable workflow run/artifact only after all expected cases execute and pass.
+This is one local batch, not a hosted workflow or all-patch/OS reliability
+matrix. The unprovisioned self-hosted workflow proposal was removed rather than
+presented as operational. A build, unprovisioned skip or reachable Docker daemon
+alone is not compatibility evidence.
 
 ## How to extend this matrix
 

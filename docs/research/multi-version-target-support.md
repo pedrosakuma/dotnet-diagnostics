@@ -11,8 +11,10 @@ analysis below is preserved as the original findings record.
 is not a reason to relax host policy. A separate
 [bounded Linux x64 sidecar lane](../live-clrmd-compatibility.md) now prepares
 representative live heap/thread, pending-async and concrete closed-generic
-assertions for 8/9/10. Its first local batch failed four .NET8 facts and aborted
-during filesystem cleanup; corrective execution evidence is still pending.
+assertions for 8/9/10. The [2026-09-20 local evidence report](../live-clrmd-compatibility-evidence.md)
+records twelve required passes on actual 8.0.31/9.0.20/10.0.7 targets after
+separately reviewed deterministic corrections, preserving the prior failed
+attempts. This is local sidecar evidence, not hosted or universal coverage.
 Current CI installs
 8/9 shared runtimes for both Linux and Windows Core jobs; historical statements
 below about absent multi-version CI describe the spike date, not today's workflow.

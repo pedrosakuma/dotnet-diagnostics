@@ -1,10 +1,13 @@
 # Representative live ClrMD compatibility (advisory)
 
 Issue #931 prepares **four** representative live/layout checks against actual
-.NET 8/9/10 targets on **Linux x64**, not all-reader parity. The first local
-batch had four .NET8 failures followed by filesystem-cleanup abort; .NET9/10
-were not executed. Corrections have no new live execution evidence yet; see the
-[compatibility matrix](runtime-version-compat-matrix.md).
+.NET 8/9/10 targets on **Linux x64**, not all-reader parity. A separately
+authorized corrected batch passed all twelve facts against actual
+**8.0.31/9.0.20/10.0.7** targets. The [sanitized local evidence report](live-clrmd-compatibility-evidence.md)
+records the exact tested commit, topology and identities, including two earlier
+failed revisions that remain failed. See also the
+[compatibility matrix](runtime-version-compat-matrix.md). This is not hosted CI
+or universal runtime coverage.
 
 ## Fixture and assertions
 
@@ -60,7 +63,9 @@ frame with that token/MVID and the existing normalized Int32 signature.
 Shared-canon, another concrete argument, wrong identity and ambiguous frames
 are rejected. The real production enricher still must return the concrete
 `System.Int32` method argument and exact closed signature; raw stack text alone
-does not establish enrichment. That resolver was not reached in the first batch.
+does not establish enrichment. That resolver was not reached in the first batch;
+the successful corrected batch invoked it and passed both the concrete-argument
+and exact-signature assertions on each runtime.
 
 ## One topology, least privileges
 
@@ -84,18 +89,19 @@ The host runner owns two containers per runtime, sequentially:
   nested filesystems; the host removes the empty directory. It has no ptrace
   capability or shared target PID namespace and is separately reaped.
 - No privileged containers, host PID namespace, Docker socket mounts, broad
-  seccomp disabling, host Yama/sysctl changes, or target application changes.
+  seccomp disabling, host Yama/sysctl changes, or production-target application changes.
   Docker's normal seccomp profile plus the inspector capability must permit
   the attach; an unavailable prerequisite must not be called a pass.
 
-The runner never restores or builds inside a container. Host builds use only the
-already configured/authenticated private NuGet feed. It never creates credential
+The runner never restores or builds inside a container. The recorded local builds
+used the already configured/authenticated private NuGet feed. It never creates credential
 files or passes credentials to images. Image provenance records content IDs and
 digests even though provisioning uses servicing tags.
 
-## Build and deferred acceptance
+## Build and local acceptance
 
-Use SDK 10.0.201, the configured private feed, Linux x64 Docker and locally
+Use SDK 10.0.201, the environment's authorized configured feed (private for the
+recorded local run), Linux x64 Docker and locally
 available `mcr.microsoft.com/dotnet/sdk:10.0.201` plus
 `mcr.microsoft.com/dotnet/runtime:{8,9,10}.0` images. Public NuGet is not a
 fallback for environments where it is prohibited. This deliverable is the
@@ -181,5 +187,6 @@ conventions, serial slots and failure artifact upload. It must select SDK10.0.20
 and honor that environment's authorized feeds. It must not hardcode a developer
 machine's private endpoint or credentials, invent a self-hosted label, bypass
 local feed policy, or become a required check without a separate decision.
-Parent approval and successful scoped evidence are prerequisites to adding that
-delivery surface; no operational workflow is claimed here.
+Successful local evidence does not itself authorize that delivery surface:
+hosted integration and provisioning still require a separate decision.
+No operational workflow is claimed here.
