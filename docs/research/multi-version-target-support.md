@@ -11,7 +11,9 @@ analysis below is preserved as the original findings record.
 is not a reason to relax host policy. A separate
 [bounded Linux x64 sidecar lane](../live-clrmd-compatibility.md) now prepares
 representative live heap/thread, pending-async and concrete closed-generic
-assertions for 8/9/10. Execution evidence is still pending. Current CI installs
+assertions for 8/9/10. Its first local batch failed four .NET8 facts and aborted
+during filesystem cleanup; corrective execution evidence is still pending.
+Current CI installs
 8/9 shared runtimes for both Linux and Windows Core jobs; historical statements
 below about absent multi-version CI describe the spike date, not today's workflow.
 

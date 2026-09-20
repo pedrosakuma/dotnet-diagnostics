@@ -16,13 +16,14 @@ public sealed class CrossVersionLiveSidecarTests(ITestOutputHelper output)
     public async Task LiveHeap_RetainsNamedPopulation()
     {
         var (pid, major) = MultiVersionSampleProcess.ReadLiveCompatibilityTarget();
+        var target = LiveCompatibilityEvidence.ReadTarget(pid, major);
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(25));
         var heap = await new ClrMdDumpInspector().InspectLiveAsync(pid,
             new DumpInspectionOptions(TopTypes: 200), deadline.Token);
-        WriteEvidence(new { heap.Origin, heap.ProcessId, heap.Runtime, heap.TopTypesByInstances });
+        WriteEvidence(new { target, RawClrMdRuntime = heap.Runtime, heap.Origin, heap.ProcessId, heap.TopTypesByInstances });
         heap.Origin.Should().Be(HeapSnapshotOrigin.Live);
         heap.ProcessId.Should().Be(pid);
-        AssertMajor(heap.Runtime.Version, major);
+        LiveCompatibilityEvidence.VerifyUnchanged(target);
         heap.TopTypesByInstances.Should().Contain(t => t.TypeFullName == "RetainedMarker" && t.InstanceCount == 32);
     }
 
@@ -30,20 +31,21 @@ public sealed class CrossVersionLiveSidecarTests(ITestOutputHelper output)
     public async Task LiveThreads_FindNamedGenericFrame()
     {
         var snapshot = await Threads();
-        snapshot.Threads.SelectMany(t => t.Frames).Should().Contain(f =>
-            f.TypeFullName == "CompatibilityFixture" && f.Identity != null &&
-            f.Identity.MethodName == "ClosedGenericHold");
+        var (mvid, token) = LiveCompatibilityEvidence.ReadFixtureIdentity(LiveCompatibilityEvidence.SamplePath);
+        LiveCompatibilityEvidence.SelectGenericFrame(snapshot.Threads.SelectMany(t => t.Frames), mvid, token)
+            .Identity.Should().NotBeNull();
     }
 
     [LiveCompatibilityFact]
     public async Task LiveAsync_FindsPendingFixture()
     {
         var (pid, major) = MultiVersionSampleProcess.ReadLiveCompatibilityTarget();
+        var target = LiveCompatibilityEvidence.ReadTarget(pid, major);
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(25));
         var heap = await new ClrMdDumpInspector().InspectLiveAsync(pid, cancellationToken: deadline.Token);
-        WriteEvidence(new { heap.Origin, heap.Runtime, heap.AsyncOperations });
+        WriteEvidence(new { target, RawClrMdRuntime = heap.Runtime, heap.Origin, heap.AsyncOperations });
         heap.Origin.Should().Be(HeapSnapshotOrigin.Live);
-        AssertMajor(heap.Runtime.Version, major);
+        LiveCompatibilityEvidence.VerifyUnchanged(target);
         heap.AsyncOperations.Should().Contain(op =>
             op.StateMachineTypeFullName.StartsWith("CompatibilityFixture+<PendingAsync>", StringComparison.Ordinal) &&
             op.State >= 0 && op.AwaiterTypeFullName != null &&
@@ -54,8 +56,8 @@ public sealed class CrossVersionLiveSidecarTests(ITestOutputHelper output)
     public async Task LiveGenerics_ResolvesConcreteInt32()
     {
         var snapshot = await Threads();
-        var frame = snapshot.Threads.SelectMany(t => t.Frames).Single(f =>
-            f.TypeFullName == "CompatibilityFixture" && f.Identity?.MethodName == "ClosedGenericHold");
+        var (mvid, token) = LiveCompatibilityEvidence.ReadFixtureIdentity(LiveCompatibilityEvidence.SamplePath);
+        var frame = LiveCompatibilityEvidence.SelectGenericFrame(snapshot.Threads.SelectMany(t => t.Frames), mvid, token);
         frame.Identity!.ModuleVersionId.Should().NotBeNull("the sidecar mounts the exact target sample");
         var symbol = new SymbolRef(frame.ModuleName!, frame.DisplayName);
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(25));
@@ -65,26 +67,26 @@ public sealed class CrossVersionLiveSidecarTests(ITestOutputHelper output)
         WriteEvidence(resolved);
         var identity = resolved.Should().ContainSingle().Subject.Identity;
         identity.ModuleVersionId.Should().Be(frame.Identity.ModuleVersionId);
-        identity.MethodName.Should().Be("ClosedGenericHold");
+        identity.MetadataToken.Should().Be(token);
+        identity.MethodName.Should().Be(frame.Identity.MethodName, "the production resolver preserves raw ClrMD method metadata");
         identity.GenericTypeArguments!.Method.Should().Equal("System.Int32",
             "shared-canon/unknown is not evidence of the known concrete fixture");
-        identity.ClosedSignature.Should().Contain("ClosedGenericHold<System.Int32>");
+        identity.ClosedSignature.Should().Be("CompatibilityFixture.ClosedGenericHold<System.Int32>");
     }
 
     private async Task<ThreadSnapshotArtifact> Threads()
     {
         var (pid, major) = MultiVersionSampleProcess.ReadLiveCompatibilityTarget();
+        var target = LiveCompatibilityEvidence.ReadTarget(pid, major);
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(25));
         var snapshot = await new ClrMdThreadSnapshotInspector().InspectLiveAsync(pid,
             new ThreadSnapshotOptions(MaxFramesPerThread: 32), deadline.Token);
-        WriteEvidence(new { snapshot.Origin, snapshot.ProcessId, snapshot.RuntimeVersion, snapshot.Threads });
+        WriteEvidence(new { target, RawClrMdRuntimeVersion = snapshot.RuntimeVersion, snapshot.Origin, snapshot.ProcessId, snapshot.Threads });
         snapshot.Origin.Should().Be(ThreadSnapshotOrigin.Live);
         snapshot.ProcessId.Should().Be(pid);
-        AssertMajor(snapshot.RuntimeVersion, major);
+        LiveCompatibilityEvidence.VerifyUnchanged(target);
         return snapshot;
     }
-
-    private static void AssertMajor(string version, int major) => Version.Parse(version).Major.Should().Be(major);
 
     private void WriteEvidence<T>(T value)
     {

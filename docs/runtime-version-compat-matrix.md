@@ -48,7 +48,7 @@ providers/keywords.
 - **Live ClrMD attach** (`inspect-heap --source live`, `collect_thread_snapshot`,
   `capture_method_bytes` live path) — the original spike could not attach under its host ptrace
   policy. The new [advisory sidecar lane](./live-clrmd-compatibility.md) prepares live heap/thread
-  coverage without changing host policy; execution evidence is still pending. It does **not**
+  coverage without changing host policy; no successful scoped execution exists yet. It does **not**
   cover live method bytes or every reader.
 - **Deeper ClrMD drilldowns**: async state-machine walks, closed-generic-instantiation resolution
   (`query_snapshot` async/generics views) — depend on CLR-internal layout details that are unlikely
@@ -63,7 +63,7 @@ providers/keywords.
 ### Representative live layout coverage: evidence pending
 
 Issue [#931](https://github.com/pedrosakuma/dotnet-diagnostics/issues/931) adds
-`CrossVersionLiveSidecarTests` plus a manual advisory workflow. Each Linux x64
+`CrossVersionLiveSidecarTests` plus a local advisory runner. Each Linux x64
 runtime slot requires exactly four passing cases: named retained heap population,
 named live thread frame, pending async state machine, and IP-based ClrMD resolution
 of `ClosedGenericHold<System.Int32>`. Dump inspection and shared-canon do not satisfy
@@ -72,8 +72,15 @@ describe the single topology, bounds and retained artifacts.
 
 | Mechanism / topology | .NET 8 | .NET 9 | .NET 10 |
 |---|---|---|---|
-| Linux x64 matching-UID, shared-PID sidecar; four live/layout cases | Pending execution | Pending execution | Pending execution |
+| Linux x64 matching-UID, shared-PID sidecar; four live/layout cases | First local batch failed; corrective execution pending | Not executed | Not executed |
 | Windows cross-version live/layout cases | Not claimed | Not claimed | Existing `LiveCoreClrProcessTests` controls only |
+
+The first local batch observed a .NET8.0.31 fixture but failed all four facts at
+the raw ClrMD `0.0` version assertion, then aborted during filesystem cleanup.
+It never reached the generic enricher or the 9/10 slots. Corrective tests use
+PID-bound diagnostic IPC plus mapped-module version evidence, preserving raw
+ClrMD metadata separately; they have not been re-executed live. The unprovisioned
+self-hosted workflow proposal was removed rather than presented as operational.
 
 No successful sidecar evidence URL exists yet. A build, skipped ordinary test, or
 reachable Docker daemon is not compatibility evidence. Update the cells and link

@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import signal
 import subprocess
@@ -87,8 +88,8 @@ def validate_inventory(trx, discovery, log):
     return inventory
 
 
-def container_metadata(identity):
-    data = json.loads(command(["docker", "inspect", identity]))[0]
+def container_metadata(identity, timeout=30):
+    data = json.loads(command(["docker", "inspect", identity], timeout=timeout))[0]
     host = data["HostConfig"]
     return {"id": data["Id"], "image": data["Image"], "user": data["Config"]["User"],
             "pidMode": host["PidMode"], "capAdd": host["CapAdd"], "capDrop": host["CapDrop"],
@@ -96,18 +97,120 @@ def container_metadata(identity):
             "state": {key: data["State"].get(key) for key in ("Status", "Pid", "ExitCode", "OOMKilled")}}
 
 
-def cleanup_container(name, owner):
+def no_such_container(message, identity):
+    return re.search(r"no such (?:object|container):\s*" + re.escape(identity) + r"\s*$",
+                     message.strip(), re.IGNORECASE) is not None
+
+
+def inspect_owned(name, owner, remaining):
     # A create may have succeeded even when its client timed out. The exact generated name
     # plus ownership label recover that case without listing/deleting unrelated containers.
-    result = subprocess.run(["docker", "inspect", name], capture_output=True, text=True, timeout=15)
+    result = subprocess.run(["docker", "inspect", name], capture_output=True, text=True, timeout=remaining(10))
     if result.returncode:
-        if "No such object" in result.stderr:
-            return "absent"
+        if no_such_container(result.stderr, name):
+            return None
         raise RuntimeError(f"Cannot verify cleanup for {name}: {result.stderr[-1000:]}")
     data = json.loads(result.stdout)[0]
     require(data["Config"]["Labels"].get(LABEL) == owner, "Refusing cleanup of unowned container")
-    command(["docker", "rm", "--force", data["Id"]], timeout=15)
+    return data
+
+
+def cleanup_container(name, owner, remaining=lambda limit: limit):
+    data = inspect_owned(name, owner, remaining)
+    if data is None:
+        return "absent"
+    if data.get("State", {}).get("Running"):
+        command(["docker", "stop", "--time", "1", data["Id"]], timeout=remaining(10))
+    command(["docker", "rm", "--force", data["Id"]], timeout=remaining(10))
+    require(inspect_owned(data["Id"], owner, remaining) is None, "Owned container remains after removal")
     return "removed"
+
+
+def cleanup_scratch(slot, directory, owner, image_id, remaining, evidence):
+    require(directory.parent == slot and directory.name == "diagnostics" and
+            directory.resolve(strict=True) == directory, "Refusing noncanonical scratch path")
+    if not any(directory.iterdir()):
+        directory.rmdir()
+        evidence.update(outcome="removed-empty", directoryAbsent=True)
+        return
+    # Only an exact scratch mount, no diagnostic namespace or ptrace capability. GNU find's
+    # default -P plus -xdev unlinks symlinks without traversing them or nested filesystems.
+    name = f"live-compat-{owner}-{slot.name[3:]}-cleanup"
+    evidence["helperName"] = name
+    try:
+        identity = command(
+            ["docker", "create", "--name", name, "--label", f"{LABEL}={owner}",
+             "--user", "0:0", "--network", "none", "--cap-drop", "ALL",
+             "--security-opt", "no-new-privileges", "--read-only", "--pids-limit", "32",
+             "--memory", "128m", "--ulimit", "core=0",
+             "--mount", f"type=bind,src={directory},dst=/owned,bind-recursive=disabled",
+             "--entrypoint", "/usr/bin/timeout", image_id,
+             "20s", "/usr/bin/find", "-P", "/owned", "-xdev", "-depth", "-mindepth", "1", "-delete"],
+            timeout=remaining(10))
+        evidence["helperId"] = identity
+        data = inspect_owned(identity, owner, remaining)
+        require(data is not None and data["Image"] == image_id, "Cleanup helper image/identity mismatch")
+        command(["docker", "start", identity], timeout=remaining(10))
+        evidence["exitCode"] = int(command(["docker", "wait", identity], timeout=remaining(25)))
+        require(evidence["exitCode"] == 0, f"Scratch cleanup helper exited {evidence['exitCode']}")
+        require(not any(directory.iterdir()), "Scratch contents remain after helper")
+        directory.rmdir()
+        evidence.update(outcome="removed", directoryAbsent=True)
+    except Exception as error:
+        evidence["operationError"] = f"{type(error).__name__}: {error}"
+        raise
+    finally:
+        try:
+            evidence["helperCleanup"] = cleanup_container(name, owner, remaining)
+        except Exception as error:
+            evidence["helperCleanupError"] = f"{type(error).__name__}: {error}"
+            raise
+
+
+def cleanup_slot(slot, owner, image_id, target_name, inspector_name, deadline=None):
+    deadline = deadline if deadline is not None else time.monotonic() + 140
+    signal.setitimer(signal.ITIMER_REAL, max(0.01, deadline - time.monotonic()))
+    evidence = {"containers": {}, "filesystem": {}, "outcome": "completed"}
+
+    def remaining(limit):
+        seconds = min(limit, int(deadline - time.monotonic()))
+        if seconds < 1:
+            raise TimeoutError("Cleanup watchdog expired")
+        return seconds
+
+    try:
+        # Stop/remove both diagnostic roles and verify absence before any FS removal. If
+        # ownership or removal cannot be proven, retain scratch and runtime for recovery.
+        for role, name in (("inspector", inspector_name), ("target", target_name)):
+            try:
+                evidence["containers"][role] = cleanup_container(name, owner, remaining)
+            except Exception as error:
+                evidence["containers"][role] = f"failed: {type(error).__name__}: {error}"
+                evidence["outcome"] = "cleanup-failure"
+        if evidence["outcome"] != "completed":
+            evidence["filesystem"]["outcome"] = "retained-container-cleanup-unverified"
+            return evidence
+        scratch = evidence["filesystem"]["diagnostics"] = {}
+        try:
+            cleanup_scratch(slot, slot / "diagnostics", owner, image_id, remaining, scratch)
+        except Exception as error:
+            scratch.update(outcome="cleanup-failure", error=f"{type(error).__name__}: {error}")
+            evidence["outcome"] = "cleanup-failure"
+        try:
+            remaining(1)
+            runtime = slot / "runtime"
+            require(runtime.resolve(strict=True) == runtime, "Refusing noncanonical runtime copy")
+            shutil.rmtree(runtime)
+            evidence["filesystem"]["runtime"] = "removed"
+        except Exception as error:
+            evidence["filesystem"]["runtime"] = f"failed: {type(error).__name__}: {error}"
+            evidence["outcome"] = "cleanup-failure"
+        return evidence
+    except Exception as error:
+        evidence.update(outcome="cleanup-failure", error=f"{type(error).__name__}: {error}")
+        return evidence
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
 
 
 def create_options(name, owner, memory):
@@ -125,7 +228,7 @@ def mount(source, destination, readonly=True):
     return ["--mount", f"type=bind,src={source},dst={destination}" + (",readonly" if readonly else "")]
 
 
-def run_slot(repo, root, major, owner, global_deadline):
+def run_slot(repo, root, major, owner, global_deadline, cleanup_image_id):
     slot = root / f"net{major}"
     slot.mkdir()
     evidence = slot / "evidence"
@@ -216,25 +319,30 @@ def run_slot(repo, root, major, owner, global_deadline):
     except Exception as error:
         result.update(outcome="aborted", error=str(error))
     finally:
-        # Cleanup has its own bounded calls and must not be interrupted by an expired capture
-        # alarm. Each role has at most 70 seconds of metadata/log/removal work.
-        signal.setitimer(signal.ITIMER_REAL, 0)
+        cleanup_deadline = time.monotonic() + 140
+        signal.setitimer(signal.ITIMER_REAL, 140)
+        result["collectionOutcome"] = result["outcome"]
         for role, name in (("inspector", inspector_name), ("target", target_name)):
             try:
-                result[f"{role}Final"] = container_metadata(name)
+                if time.monotonic() >= cleanup_deadline:
+                    raise TimeoutError("Cleanup evidence budget expired")
+                result[f"{role}Final"] = container_metadata(name, timeout=5)
                 if role == "target":
-                    (slot / "target.log").write_text(command(["docker", "logs", name], 10), encoding="utf-8")
+                    (slot / "target.log").write_text(command(["docker", "logs", name], 5), encoding="utf-8")
             except Exception as error:
                 result[f"{role}FinalError"] = str(error)
-            try:
-                result["cleanup"][role] = cleanup_container(name, owner)
-            except Exception as error:
-                result["cleanup"][role] = f"failed: {error}"
+        try:
+            result["cleanup"] = cleanup_slot(slot, owner, cleanup_image_id, target_name, inspector_name, cleanup_deadline)
+            if result["cleanup"]["outcome"] != "completed":
                 result["outcome"] = "cleanup-failure"
-        write_json(slot / "result.json", result)
-        # Runtime binaries and socket directory are not evidence or upload artifacts.
-        shutil.rmtree(runtime)
-        shutil.rmtree(sockets)
+        except Exception as error:
+            result.update(outcome="cleanup-failure", cleanupError=f"{type(error).__name__}: {error}")
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+        try:
+            write_json(slot / "result.json", result)
+        except Exception as error:
+            result.update(outcome="evidence-write-failure", persistenceError=str(error))
     return result
 
 
@@ -274,8 +382,8 @@ def main(argv=None):
             if time.monotonic() >= global_deadline:
                 report["slots"].append({"major": major, "outcome": "not-executed-global-timeout"})
                 continue
-            report["slots"].append(run_slot(repo, root, major, owner, global_deadline))
-            if report["slots"][-1]["outcome"] in ("cleanup-failure", "aborted"):
+            report["slots"].append(run_slot(repo, root, major, owner, global_deadline, report["images"][SDK_IMAGE]["Id"]))
+            if report["slots"][-1]["outcome"] in ("cleanup-failure", "aborted", "evidence-write-failure"):
                 break
         report["outcome"] = ("passed" if len(report["slots"]) == 3 and
                              all(slot["outcome"] == "passed" for slot in report["slots"]) else "failed")

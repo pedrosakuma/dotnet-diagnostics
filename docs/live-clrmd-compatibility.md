@@ -1,8 +1,9 @@
 # Representative live ClrMD compatibility (advisory)
 
 Issue #931 prepares **four** representative live/layout checks against actual
-.NET 8/9/10 targets on **Linux x64**, not all-reader parity. No successful
-execution evidence has been recorded yet; see the
+.NET 8/9/10 targets on **Linux x64**, not all-reader parity. The first local
+batch had four .NET8 failures followed by filesystem-cleanup abort; .NET9/10
+were not executed. Corrections have no new live execution evidence yet; see the
 [compatibility matrix](runtime-version-compat-matrix.md).
 
 ## Fixture and assertions
@@ -23,11 +24,43 @@ CPU enrichment. This tests the resolver, **not statistical EventPipe sampling**.
 `System.__Canon`, open definitions and unknown arguments cannot satisfy the
 required `System.Int32` assertion.
 
-Each of four facts independently checks the actual CLR major from a live
-snapshot, not the image tag, framework moniker or inspector runtime. Assertions
+Each of four facts independently checks the actual target major through diagnostic
+IPC, corroborated by the target's mapped CoreCLR module, not the image tag,
+framework moniker, requested major or inspector runtime. Assertions
 include live origin and named fixture types/frames, exact retained count,
 pending async state/awaiter, and concrete closed method argument. Successful
 attach or nonempty JSON alone cannot pass.
+
+### Version and generic identity evidence
+
+The original batch against a self-reported .NET8.0.31 target produced live heap
+and thread snapshots whose raw ClrMD version was `0.0`. Static inspection of the
+pinned ClrMD assembly (MVID `7cc9d766-16f3-46bd-967e-0180180ffd7d`) shows:
+`LinuxLiveDataReader.GetModuleInfo` creates `ElfModuleInfo`, whose version getter
+returns an empty `Version` when ELF/version lookup fails. The Unix lookup searches
+a writable ELF load segment for a runtime version marker. Thus `0.0` is an
+**unknown metadata sentinel**, not evidence that the target runs CLR major zero.
+Retained snapshots do not establish which lookup subcondition failed.
+
+Tests now use the existing Core `ProcessInfoReflection` bridge to diagnostic IPC
+process-info metadata (the pinned client exposes that method internally).
+Unavailable metadata fails; there is no fallback to a configured expectation.
+Each fact requires response PID1, Linux/x64, the actual fixture command line
+from IPC and `/proc/1/cmdline`, a stable process start time, and exactly one mapped
+`libcoreclr.so` path whose version agrees with the IPC product version. The
+runner binds that PID namespace to the owned image/container and target-local
+DAC. Missing, zero, conflicting or uncorroborated IPC versions fail. The original
+raw ClrMD version remains separately recorded and is never overwritten.
+
+The retained generic frame's raw method name includes
+`ClosedGenericHold[[System.Int32, System.Private.CoreLib]]`. That is valid ClrMD
+metadata, not necessarily a product defect. Tests locate the fixture MethodDef
+in the mounted sample using metadata-only PE reading, then select exactly one
+frame with that token/MVID and the existing normalized Int32 signature.
+Shared-canon, another concrete argument, wrong identity and ambiguous frames
+are rejected. The real production enricher still must return the concrete
+`System.Int32` method argument and exact closed signature; raw stack text alone
+does not establish enrichment. That resolver was not reached in the first batch.
 
 ## One topology, least privileges
 
@@ -43,6 +76,13 @@ The host runner owns two containers per runtime, sequentially:
   read-only. The target-local runtime/DAC is copied from the owned target before
   startup and mounted read-only at its original versioned path in the inspector.
   This avoids a DAC download and preserves sample MVID/path resolution.
+- After both diagnostic roles have been stopped, removed and verified absent,
+  an optional finite cleanup role uses the already-resolved SDK image ID, UID0,
+  network-none, cap-drop-ALL and a read-only root. It mounts **only** the exact
+  canonical diagnostic scratch directory read-write, with recursive bind mounts
+  disabled. `find -P -xdev -depth` removes contents without following symlinks or
+  nested filesystems; the host removes the empty directory. It has no ptrace
+  capability or shared target PID namespace and is separately reaped.
 - No privileged containers, host PID namespace, Docker socket mounts, broad
   seccomp disabling, host Yama/sysctl changes, or target application changes.
   Docker's normal seccomp profile plus the inspector capability must permit
@@ -58,10 +98,11 @@ digests even though provisioning uses servicing tags.
 Use SDK 10.0.201, the configured private feed, Linux x64 Docker and locally
 available `mcr.microsoft.com/dotnet/sdk:10.0.201` plus
 `mcr.microsoft.com/dotnet/runtime:{8,9,10}.0` images. Public NuGet is not a
-fallback. The manual workflow uses a pre-provisioned self-hosted
-`dotnet-diagnostics-private-feed` runner; that label requires Docker, Python,
-pinned SDK and the existing authenticated private feed. No runner provisioning
-or credential change is performed by this lane. It is **not a required check**.
+fallback for environments where it is prohibited. This deliverable is the
+**local advisory runner**, not an operational CI job. The earlier proposed
+self-hosted workflow was removed because no matching runner was provisioned;
+shipping it would only queue indefinitely. No runner, secret or repository
+configuration change is performed here.
 
 Build the Core test project and all MultiVersionSample TFMs in Release using the
 normal private configuration. Pure checks (no target starts) are:
@@ -69,7 +110,7 @@ normal private configuration. Pure checks (no target starts) are:
 ```bash
 python3 -m unittest discover -s scripts/tests -p test_live_clrmd_compat.py
 dotnet test tests/DotnetDiagnostics.Core.Tests -c Release --no-build \
-  --filter 'FullyQualifiedName~MethodIdentityHandoffTests|FullyQualifiedName~AsyncStateMachineFrameFolderTests'
+  --filter 'FullyQualifiedName~MethodIdentityHandoffTests|FullyQualifiedName~AsyncStateMachineFrameFolderTests|FullyQualifiedName~LiveCompatibilityEvidenceTests'
 ```
 
 After explicit acceptance approval, run once with a **new** persistent directory:
@@ -96,13 +137,20 @@ unchanged controls. No new Windows cross-version or NativeAOT claim is made.
   external test-command watchdog 140 seconds is authoritative if native attach
   does not honor cancellation. Discovery is bounded to 20 seconds.
 - Each slot has a 240-second wall-clock alarm; global work deadline 900 seconds,
-  including a 60-second prerequisite deadline. Cleanup disarms capture alarms
-  and uses separate bounded Docker calls (at most 140 seconds per slot).
+  including a 60-second prerequisite deadline. Cleanup replaces the capture
+  alarm with its own 140-second wall-clock budget, including final metadata,
+  stop/removal, verification and any 20-second scratch-cleanup helper.
   Both container main processes also have finite 180-second lifetimes.
 - Exact generated names plus an ownership label recover ambiguous Docker-create
   timeouts. Cleanup verifies the label then removes only that container ID;
-  it never prunes or stops unrelated containers. Cleanup failure stops later
-  slots and remains a failure. Interruption records abort, not pass.
+  it never prunes or stops unrelated containers. Unverified role removal leaves
+  both runtime/scratch directories untouched. Collection outcome, container
+  cleanup and filesystem cleanup are recorded separately. Every filesystem
+  failure remains an explicit cleanup-failure **with the executed slot retained**
+  in the aggregate manifest; it stops later slots. Interruption records abort,
+  not pass. The original batch's aggregate omitted its executed slot after an
+  escaping filesystem exception; the original TRX and per-slot result remain
+  the authoritative four failed cases, not a zero-execution result.
 - `run-scenario-attempt.py` supervises discovery/tests with no forensic helper:
   this reuses the generic bounded process-attempt contract, not frozen
   investigation experiments. `test_evidence.py` checks independent discovery,
@@ -121,7 +169,17 @@ cleanup and excluded from upload. Docker logs are capped at 1 MiB per container;
 fixture population, threads, frames and tests are fixed. Dumps, nettraces,
 package caches and environment/credential dumps are not evidence artifacts.
 
-Workflow artifacts expire after 14 days. Before claiming compatibility, retain
-the bounded result table and artifacts in the agreed durable evidence location
-and link them from the matrix. Missing runner/image/ptrace prerequisites are
-actionable missing evidence, not validation.
+Before claiming compatibility, retain the bounded result table and artifacts in
+the agreed durable evidence location and link them from the matrix. Missing
+image/ptrace prerequisites are actionable missing evidence, not validation.
+
+### Future workflow decision (not shipped or dispatched)
+
+A minimal future integration could be manual/advisory on one hosted Linux x64
+runner, using the repository's normal environment-configured restore/build
+conventions, serial slots and failure artifact upload. It must select SDK10.0.201
+and honor that environment's authorized feeds. It must not hardcode a developer
+machine's private endpoint or credentials, invent a self-hosted label, bypass
+local feed policy, or become a required check without a separate decision.
+Parent approval and successful scoped evidence are prerequisites to adding that
+delivery surface; no operational workflow is claimed here.
