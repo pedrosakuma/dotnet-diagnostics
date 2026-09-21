@@ -54,3 +54,6 @@ array. A separately recorded subset comparison does not rewrite that run or
 retroactively make it technically complete. Any result must be reported as a
 new comparison with explicit source provenance, not imported as human review
 or converted into diagnostic ground truth.
+
+The separately executed case-05 outcome is recorded in
+[`advisory-case05-subset-results.md`](advisory-case05-subset-results.md).
