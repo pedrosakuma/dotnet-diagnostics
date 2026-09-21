@@ -188,6 +188,17 @@ public sealed partial class AdvisoryLlmAssessmentTests
                     && value.Result.PhaseB.Status == AdvisoryCallStatus.Succeeded
                     && value.Result.PhaseBResponse != null
                     && File.Exists(value.Result.SealedPhaseAPath));
+            var zeroHypothesisCase = summary.Cases.Single(
+                value => value.Result.SlotId == fixture.Protocol.Slots[6].SlotId);
+            zeroHypothesisCase.Result.PhaseAResponse!.Observations.Should().HaveCount(4);
+            zeroHypothesisCase.Result.PhaseAResponse.Hypotheses.Should().BeEmpty();
+            zeroHypothesisCase.Result.PhaseAResponse.Alternatives.Should().HaveCount(2);
+            var reanalysisMapping = zeroHypothesisCase.Result.CandidateMapping.Single(
+                value => value.Source == AdvisoryCandidateSource.Reanalysis);
+            reanalysisMapping.ClaimIds.Should().BeEmpty();
+            zeroHypothesisCase.Result.PhaseBResponse!.Candidates.Single(
+                    value => value.CandidateId == reanalysisMapping.CandidateId)
+                .Claims.Should().BeEmpty();
             HashTree(fixture.SourceRoot).Should().BeEquivalentTo(sourceHashes);
         }
         finally
@@ -409,7 +420,10 @@ public sealed partial class AdvisoryLlmAssessmentTests
             var sourceCase = cases[index];
             if (recover.Contains(index))
             {
-                var raw = "```json\n" + sourceCase.PhaseA.RawResponse + "\n```";
+                var retainedPayload = index == 6
+                    ? BuildZeroHypothesisPhaseA(sourceCase.PhaseA.RawResponse!)
+                    : sourceCase.PhaseA.RawResponse!;
+                var raw = "```json\n" + retainedPayload + "\n```";
                 sourceCase = sourceCase with
                 {
                     PhaseA = sourceCase.PhaseA with
@@ -559,6 +573,70 @@ public sealed partial class AdvisoryLlmAssessmentTests
             null,
             0);
 
+    private static string BuildZeroHypothesisPhaseA(string json)
+    {
+        var response = JsonSerializer.Deserialize<AdvisoryPhaseAResponse>(
+            json,
+            ContinuationTestJsonOptions)!;
+        var observation = response.Observations[0];
+        var alternative = response.Alternatives[0];
+        return JsonSerializer.Serialize(
+            response with
+            {
+                Observations = Enumerable.Range(1, 4)
+                    .Select(index => observation with
+                    {
+                        ObservationId = $"observation-{index:00}",
+                        Text = $"Synthetic retained observation {index}.",
+                    })
+                    .ToArray(),
+                Hypotheses = [],
+                Alternatives = Enumerable.Range(1, 2)
+                    .Select(index => alternative with
+                    {
+                        AlternativeId = $"alternative-{index:00}",
+                        Text = $"Synthetic retained alternative {index}.",
+                    })
+                    .ToArray(),
+                Abstained = true,
+            },
+            ContinuationTestJsonOptions);
+    }
+
+    private static string BuildPhaseBResponseForPrompt(string prompt)
+    {
+        const string marker = "\n\nEvidence and candidates:";
+        var payloadStart = prompt.IndexOf(marker, StringComparison.Ordinal);
+        payloadStart.Should().BeGreaterThanOrEqualTo(0);
+        using var payload = JsonDocument.Parse(prompt[(payloadStart + marker.Length)..]);
+        var candidates = payload.RootElement.GetProperty("candidates")
+            .EnumerateArray()
+            .Select(candidate => new
+            {
+                candidateId = candidate.GetProperty("candidateId").GetString(),
+                claims = candidate.GetProperty("claims")
+                    .EnumerateArray()
+                    .Select(claim => new
+                    {
+                        claimId = claim.GetProperty("claimId").GetString(),
+                        support = "supported",
+                        certainty = "appropriate",
+                        rationale = "Synthetic deterministic judgment.",
+                    })
+                    .ToArray(),
+                abstentionAndUncertainty = "useful",
+                nextStepUsefulness = "useful",
+                rationale = "Synthetic deterministic candidate judgment.",
+            })
+            .ToArray();
+        return JsonSerializer.Serialize(new
+        {
+            candidates,
+            disagreements = Array.Empty<string>(),
+            overallLimitations = "Synthetic deterministic limitations.",
+        });
+    }
+
     private static void WriteJson<T>(string path, T value)
         => File.WriteAllBytes(path, JsonSerializer.SerializeToUtf8Bytes(value, ContinuationTestJsonOptions));
 
@@ -608,9 +686,10 @@ public sealed partial class AdvisoryLlmAssessmentTests
                 .Should().HaveCountGreaterThanOrEqualTo(
                     Calls,
                     "each recovered Phase A must be sealed before its B call");
+            var phaseB = BuildPhaseBResponseForPrompt(prompt);
             var response = Calls == 1
-                ? "```json\r\n" + PhaseBJson() + "\r\n```"
-                : PhaseBJson();
+                ? "```json\r\n" + phaseB + "\r\n```"
+                : phaseB;
             return Task.FromResult(new AdvisoryStructuredInvocation(response));
         }
     }
