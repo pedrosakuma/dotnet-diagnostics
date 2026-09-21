@@ -904,6 +904,18 @@ public static partial class AdvisoryLlmAssessment
         AdvisoryFollowupSemanticView semanticView,
         AdvisoryProjection projection,
         out IReadOnlyList<AdvisoryCandidateMapping> mapping)
+        => BuildFollowupCandidates(
+            firstCandidate, packet, semanticView.Claims, semanticView.Uncertainty,
+            semanticView.NextQuestion, projection, out mapping);
+
+    private static List<AdvisoryCandidate> BuildFollowupCandidates(
+        AdvisoryCandidateSource firstCandidate,
+        CalibrationPacket packet,
+        IReadOnlyList<AdvisoryFollowupSemanticItem> claims,
+        string uncertainty,
+        string nextQuestion,
+        AdvisoryProjection projection,
+        out IReadOnlyList<AdvisoryCandidateMapping> mapping)
     {
         var originalClaims = packet.Claims.Select(claim => new AdvisoryCandidateClaim(
             string.Empty,
@@ -914,7 +926,7 @@ public static partial class AdvisoryLlmAssessment
                 .Cast<string>()
                 .ToArray(),
             AgentEvidencePosture.Inferred)).ToArray();
-        var reanalysisClaims = semanticView.Claims.Select(claim => new AdvisoryCandidateClaim(
+        var reanalysisClaims = claims.Select(claim => new AdvisoryCandidateClaim(
             string.Empty,
             claim.Text,
             claim.EvidenceLocations,
@@ -926,9 +938,9 @@ public static partial class AdvisoryLlmAssessment
             packet.Uncertainty,
             string.Join(" ", packet.NextSteps),
             reanalysisClaims,
-            semanticView.Claims.Select(claim => claim.ControllerId).ToArray(),
-            semanticView.Uncertainty,
-            semanticView.NextQuestion,
+            claims.Select(claim => claim.ControllerId).ToArray(),
+            uncertainty,
+            nextQuestion,
             out mapping);
     }
 
