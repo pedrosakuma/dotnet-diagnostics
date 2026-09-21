@@ -209,7 +209,7 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
         info.ArgumentList.Add(prompt);
         info.ArgumentList.Add("--model");
         info.ArgumentList.Add(configuration.Model);
-        info.ArgumentList.Add("--reasoning-effort");
+        info.ArgumentList.Add("--effort");
         info.ArgumentList.Add("low");
         info.ArgumentList.Add("--session-id");
         info.ArgumentList.Add(invocationId.ToString("D"));
