@@ -5,7 +5,7 @@ using FluentAssertions;
 
 namespace DotnetDiagnostics.ScenarioEvaluation.Tests;
 
-public sealed class AdvisoryLlmAssessmentTests
+public sealed partial class AdvisoryLlmAssessmentTests
 {
     [Fact]
     public void FreezeProtocol_UsesCanonicalFingerprintWithoutOverwritingFiles()

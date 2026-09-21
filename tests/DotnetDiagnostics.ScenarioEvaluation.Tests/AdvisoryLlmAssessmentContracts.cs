@@ -44,6 +44,21 @@ public enum AdvisoryUsefulness
     NotAssessable,
 }
 
+public enum AdvisoryContinuationDisposition
+{
+    RecoverRetainedPhaseA,
+    ReuseCompleted,
+    Unavailable,
+}
+
+public enum AdvisoryPhaseOrigin
+{
+    SourceFailurePreserved,
+    SourceCompletedReused,
+    NewlyInvoked,
+    NotRun,
+}
+
 public sealed record AdvisoryLlmModel(
     string Provider,
     string Model,
@@ -194,7 +209,10 @@ public sealed record AdvisoryCallRecord(
     int? InputTokens,
     int? OutputTokens,
     decimal? EstimatedCostUsd,
-    double DurationSeconds);
+    double DurationSeconds,
+    string ResponseFramingTransform = "unparsed",
+    string ResponseFramingVersion = "advisory-json-framing-v1",
+    string? NormalizedResponseSha256 = null);
 
 public sealed record AdvisoryCandidateMapping(
     string CandidateId,
@@ -229,6 +247,70 @@ public sealed record AdvisoryRunSummary(
     IReadOnlyList<AdvisoryCaseResult> Cases,
     bool AbortedForGlobalPrerequisite,
     string? AbortDetail);
+
+public sealed record AdvisoryNormalizedJson(
+    string Payload,
+    string PayloadSha256,
+    string Transform,
+    string Version);
+
+public sealed record AdvisoryPhaseASeal(
+    int SchemaVersion,
+    string ProtocolId,
+    string ProtocolFingerprint,
+    string SlotId,
+    string PacketFingerprint,
+    string ProjectionSha256,
+    string PromptSha256,
+    string? ResponseSha256,
+    AdvisoryCallRecord Call,
+    AdvisoryPhaseAResponse Response);
+
+public sealed record AdvisoryContinuationCaseBinding(
+    string SlotId,
+    string SourceCaseResultSha256,
+    AdvisoryContinuationDisposition Disposition,
+    [property: JsonRequired]
+    string? SourcePhaseASealSha256);
+
+public sealed record AdvisoryContinuationPlan(
+    int SchemaVersion,
+    string PlanId,
+    string PlanFingerprint,
+    string ProtocolFingerprint,
+    string SourceRunRoot,
+    string SourceRunSummarySha256,
+    int MaximumNewPhaseBCalls,
+    IReadOnlyList<AdvisoryContinuationCaseBinding> Cases);
+
+public sealed record AdvisoryContinuationCaseResult(
+    string SlotId,
+    AdvisoryContinuationDisposition Disposition,
+    string Detail,
+    string SourceCaseResultSha256,
+    AdvisoryCallStatus SourcePhaseAStatus,
+    AdvisoryCallStatus SourcePhaseBStatus,
+    string? SourcePhaseARawResponseSha256,
+    string? NormalizedPhaseAPayloadSha256,
+    string? PhaseAFramingTransform,
+    AdvisoryPhaseOrigin PhaseAOrigin,
+    AdvisoryPhaseOrigin PhaseBOrigin,
+    AdvisoryCaseResult Result);
+
+public sealed record AdvisoryContinuationSummary(
+    int SchemaVersion,
+    string PlanId,
+    string PlanFingerprint,
+    string ProtocolFingerprint,
+    string SourceRunSummarySha256,
+    DateTimeOffset StartedAtUtc,
+    DateTimeOffset CompletedAtUtc,
+    int MaximumNewPhaseBCalls,
+    int ActualNewModelCalls,
+    bool TechnicallyComplete,
+    bool AbortedForGlobalPrerequisite,
+    string? AbortDetail,
+    IReadOnlyList<AdvisoryContinuationCaseResult> Cases);
 
 public sealed record AdvisoryStructuredInvocation(
     string RawResponse,

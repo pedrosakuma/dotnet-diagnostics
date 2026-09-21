@@ -125,6 +125,69 @@ not complete, after preserving the run summary. This checks technical
 completeness only: unsupported claims, abstentions, and disagreements are valid
 assessment outcomes, not failures. Always inspect the per-phase statuses.
 
+## Bounded retained-response continuation
+
+A continuation is not a new inference batch. It may remove only one exact outer
+`json` fence (`LF` or `CRLF`) from an already retained response, then applies
+the unchanged strict JSON, duplicate-property, enum, ID, citation, count, text,
+and byte validation. Bare JSON is unchanged. Prose, incomplete or multiple
+fences, malformed inner JSON, and invalid evidence pointers remain failures.
+Raw response text and its SHA-256 remain intact; continuation provenance records
+the framing transform/version and normalized-payload SHA-256 separately. The
+same narrow normalization also applies to future Phase-B responses.
+
+The controller prepares an eight-slot continuation draft conforming to
+`Calibration/advisory-llm-continuation-v1.plan.schema.json`. It contains only
+the fixed source run root, exact source summary/case/seal hashes, dispositions,
+the frozen protocol fingerprint, and a blank `planFingerprint`. Preparation is
+file-only: it uses scoped paths (`run-summary.json`,
+`<slot>/case-result.json`, and the completed slot's
+`<slot>/phase-a.sealed.json`), revalidates packet/projection/prompt/response,
+model, seal, candidate, and input hashes, and writes a create-new canonical
+plan. It performs no model or target call:
+
+```bash
+DOTNET_DIAGNOSTICS_ADVISORY_LLM_OPERATION=continue-prepare \
+DOTNET_DIAGNOSTICS_ADVISORY_LLM_PROTOCOL=/absolute/frozen-protocol.json \
+DOTNET_DIAGNOSTICS_ADVISORY_LLM_CONTINUATION_DRAFT=/absolute/continuation.draft.json \
+DOTNET_DIAGNOSTICS_ADVISORY_LLM_CONTINUATION_PLAN=/absolute/continuation.plan.json \
+dotnet test tests/DotnetDiagnostics.ScenarioEvaluation.Tests/ -c Release \
+  --filter FullyQualifiedName~ExplicitLocalWorkflow_PreparesOrRunsFrozenProtocol
+```
+
+Continuation requires a new output directory, the same isolated CLI
+configuration, and a separate explicit authorization:
+
+```bash
+DOTNET_DIAGNOSTICS_ADVISORY_LLM_OPERATION=continue \
+DOTNET_DIAGNOSTICS_ADVISORY_LLM_CONTINUE=1 \
+DOTNET_DIAGNOSTICS_ADVISORY_LLM_PROTOCOL=/absolute/frozen-protocol.json \
+DOTNET_DIAGNOSTICS_ADVISORY_LLM_CONTINUATION_PLAN=/absolute/continuation.plan.json \
+DOTNET_DIAGNOSTICS_ADVISORY_LLM_OUTPUT_DIRECTORY=/absolute/new-continuation-output \
+DOTNET_DIAGNOSTICS_AGENT_COPILOT_PATH=/absolute/copilot \
+DOTNET_DIAGNOSTICS_AGENT_COPILOT_HOME=/absolute/empty-home \
+DOTNET_DIAGNOSTICS_AGENT_COPILOT_WORK_ROOT=/absolute/outside-repository \
+dotnet test tests/DotnetDiagnostics.ScenarioEvaluation.Tests/ -c Release \
+  --filter FullyQualifiedName~ExplicitLocalWorkflow_PreparesOrRunsFrozenProtocol
+```
+
+The bounded plan permits at most six new Phase-B calls, once each, with no
+retry. It has no Phase-A invocation path. Every accepted recovered Phase-A
+payload is written as a create-new seal before its Phase-B call. A previously
+completed case is reused after validating its scoped source seal and candidate
+bindings; neither phase is called again. A source response missing because it
+exceeded the byte cap remains unavailable and unassessed. Any retained payload
+that still fails strict validation also remains unassessed, reducing the number
+of new calls. A global isolation, authentication, model, or CLI prerequisite
+failure aborts remaining calls.
+
+Source case files and the original run summary are never rewritten. The
+continuation summary distinguishes preserved source failures, reused completed
+phases, and newly invoked Phase B, and reports actual new-call count. Because an
+unavailable source case remains unassessed, the explicit continuation command
+intentionally exits as technically incomplete after writing the partial
+summary. Do not repeat or enlarge the run to obtain a preferred outcome.
+
 ## Interpretation limits
 
 Retained evidence was selected by an earlier investigation and is therefore

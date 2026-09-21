@@ -7,7 +7,7 @@ using System.Text.Json.Serialization;
 
 namespace DotnetDiagnostics.ScenarioEvaluation.Tests;
 
-public static class AdvisoryLlmAssessment
+public static partial class AdvisoryLlmAssessment
 {
     public const int CurrentSchemaVersion = 2;
     public const string RunAuthorizationVariable = "DOTNET_DIAGNOSTICS_ADVISORY_LLM_RUN";
@@ -234,6 +234,15 @@ public static class AdvisoryLlmAssessment
         AdvisoryProjection projection,
         AdvisoryLlmLimits limits)
     {
+        var normalized = NormalizeJsonResponse(json, limits.MaximumResponseBytes);
+        return ParsePhaseANormalized(normalized.Payload, projection, limits);
+    }
+
+    private static AdvisoryPhaseAResponse ParsePhaseANormalized(
+        string json,
+        AdvisoryProjection projection,
+        AdvisoryLlmLimits limits)
+    {
         var bytes = Encoding.UTF8.GetBytes(json);
         RejectDuplicateProperties(bytes);
         var response = JsonSerializer.Deserialize<AdvisoryPhaseAResponse>(bytes, JsonOptions)
@@ -273,6 +282,15 @@ public static class AdvisoryLlmAssessment
         IReadOnlyList<AdvisoryCandidate> candidates,
         AdvisoryLlmLimits limits)
     {
+        var normalized = NormalizeJsonResponse(json, limits.MaximumResponseBytes);
+        return ParsePhaseBNormalized(normalized.Payload, candidates, limits);
+    }
+
+    private static AdvisoryPhaseBResponse ParsePhaseBNormalized(
+        string json,
+        IReadOnlyList<AdvisoryCandidate> candidates,
+        AdvisoryLlmLimits limits)
+    {
         var bytes = Encoding.UTF8.GetBytes(json);
         RejectDuplicateProperties(bytes);
         var response = JsonSerializer.Deserialize<AdvisoryPhaseBResponse>(bytes, JsonOptions)
@@ -307,6 +325,50 @@ public static class AdvisoryLlmAssessment
         }
         ValidateText(response.OverallLimitations, limits);
         return response;
+    }
+
+    public static AdvisoryNormalizedJson NormalizeJsonResponse(string rawResponse, int maximumBytes)
+    {
+        ArgumentNullException.ThrowIfNull(rawResponse);
+        EnforceUtf8(rawResponse, maximumBytes, "model response");
+        const string version = "advisory-json-framing-v1";
+        string payload;
+        string transform;
+        var openingLength = rawResponse.StartsWith("```json\r\n", StringComparison.Ordinal)
+            ? "```json\r\n".Length
+            : rawResponse.StartsWith("```json\n", StringComparison.Ordinal)
+                ? "```json\n".Length
+                : 0;
+        if (openingLength == 0)
+        {
+            payload = rawResponse;
+            transform = "bare-json";
+        }
+        else
+        {
+            var closingLength = rawResponse.EndsWith("\r\n```", StringComparison.Ordinal)
+                ? "\r\n```".Length
+                : rawResponse.EndsWith("\n```", StringComparison.Ordinal)
+                    ? "\n```".Length
+                    : 0;
+            if (closingLength == 0 || rawResponse.Length <= openingLength + closingLength)
+            {
+                throw new InvalidDataException("The advisory JSON fence is incomplete or empty.");
+            }
+
+            payload = rawResponse[openingLength..^closingLength];
+            if (payload.Contains("```", StringComparison.Ordinal))
+            {
+                throw new InvalidDataException("The advisory response contains more than one fenced block.");
+            }
+            transform = "outer-json-fence-removed";
+        }
+
+        return new AdvisoryNormalizedJson(
+            payload,
+            Sha256(Encoding.UTF8.GetBytes(payload)),
+            transform,
+            version);
     }
 
     public static async Task<AdvisoryRunSummary> RunAsync(
@@ -432,20 +494,27 @@ public static class AdvisoryLlmAssessment
         {
             try
             {
-                phaseAResponse = ParsePhaseA(phaseA.RawResponse!, projection, protocol.Limits);
-                var sealedArtifact = new
+                var normalized = NormalizeJsonResponse(
+                    phaseA.RawResponse!,
+                    protocol.Limits.MaximumResponseBytes);
+                phaseA = phaseA with
                 {
-                    schemaVersion = CurrentSchemaVersion,
-                    protocolId = protocol.ProtocolId,
-                    protocolFingerprint = protocol.ProtocolFingerprint,
-                    slotId = slot.SlotId,
-                    packetFingerprint = slot.PacketFingerprint,
-                    projectionSha256 = projection.ProjectionSha256,
-                    promptSha256 = phaseA.PromptSha256,
-                    responseSha256 = phaseA.ResponseSha256,
-                    call = phaseA,
-                    response = phaseAResponse,
+                    ResponseFramingTransform = normalized.Transform,
+                    ResponseFramingVersion = normalized.Version,
+                    NormalizedResponseSha256 = normalized.PayloadSha256,
                 };
+                phaseAResponse = ParsePhaseANormalized(normalized.Payload, projection, protocol.Limits);
+                var sealedArtifact = new AdvisoryPhaseASeal(
+                    CurrentSchemaVersion,
+                    protocol.ProtocolId,
+                    protocol.ProtocolFingerprint,
+                    slot.SlotId,
+                    slot.PacketFingerprint,
+                    projection.ProjectionSha256,
+                    phaseA.PromptSha256,
+                    phaseA.ResponseSha256,
+                    phaseA,
+                    phaseAResponse);
                 sealedPath = Path.Combine(directory, "phase-a.sealed.json");
                 var sealedBytes = Serialize(sealedArtifact);
                 WriteNew(sealedPath, sealedBytes, protocol.Limits.MaximumCaseArtifactBytes);
@@ -516,7 +585,16 @@ public static class AdvisoryLlmAssessment
         {
             try
             {
-                phaseBResponse = ParsePhaseB(phaseB.RawResponse!, candidates, protocol.Limits);
+                var normalized = NormalizeJsonResponse(
+                    phaseB.RawResponse!,
+                    protocol.Limits.MaximumResponseBytes);
+                phaseB = phaseB with
+                {
+                    ResponseFramingTransform = normalized.Transform,
+                    ResponseFramingVersion = normalized.Version,
+                    NormalizedResponseSha256 = normalized.PayloadSha256,
+                };
+                phaseBResponse = ParsePhaseBNormalized(normalized.Payload, candidates, protocol.Limits);
             }
             catch (Exception exception) when (exception is InvalidDataException or JsonException)
             {

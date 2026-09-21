@@ -22,6 +22,15 @@ public sealed class AdvisoryLlmAssessmentExecutionTests
         }
 
         var protocol = AdvisoryLlmAssessment.LoadProtocol(protocolPath);
+        if (operation == "continue-prepare")
+        {
+            AdvisoryLlmAssessment.FreezeContinuationPlan(
+                protocol,
+                RequiredEnvironment("DOTNET_DIAGNOSTICS_ADVISORY_LLM_CONTINUATION_DRAFT"),
+                RequiredEnvironment("DOTNET_DIAGNOSTICS_ADVISORY_LLM_CONTINUATION_PLAN"));
+            return;
+        }
+
         var output = RequiredEnvironment("DOTNET_DIAGNOSTICS_ADVISORY_LLM_OUTPUT_DIRECTORY");
         if (operation == "prepare")
         {
@@ -29,22 +38,39 @@ public sealed class AdvisoryLlmAssessmentExecutionTests
             return;
         }
 
-        operation.Should().Be("run");
+        operation.Should().BeOneOf("run", "continue");
+        if (operation == "continue")
+        {
+            Environment.GetEnvironmentVariable(AdvisoryLlmAssessment.ContinuationAuthorizationVariable)
+                .Should().Be("1", "continuation model execution must never be the default test path");
+            var continuationPlan = AdvisoryLlmAssessment.LoadContinuationPlan(
+                protocol,
+                RequiredEnvironment("DOTNET_DIAGNOSTICS_ADVISORY_LLM_CONTINUATION_PLAN"));
+            var (continuationTransport, continuationVersion) = await CreateTransportAsync();
+            continuationVersion.Should().Be(protocol.PhaseBModel.TransportVersion);
+            var continuation = await AdvisoryLlmAssessment.ContinueAsync(
+                protocol,
+                continuationPlan,
+                output,
+                continuationTransport,
+                CancellationToken.None);
+            continuation.ActualNewModelCalls.Should().BeLessThanOrEqualTo(6);
+            continuation.TechnicallyComplete.Should().BeTrue(
+                "the bounded continuation preserves unavailable cases and therefore intentionally "
+                + "fails this technical-completeness assertion after writing its partial summary");
+            return;
+        }
+
         Environment.GetEnvironmentVariable(AdvisoryLlmAssessment.RunAuthorizationVariable)
             .Should().Be("1", "real-model execution must never be the default test path");
-        var executable = RequiredEnvironment("DOTNET_DIAGNOSTICS_AGENT_COPILOT_PATH");
-        var home = RequiredEnvironment("DOTNET_DIAGNOSTICS_AGENT_COPILOT_HOME");
-        var workRoot = RequiredEnvironment("DOTNET_DIAGNOSTICS_AGENT_COPILOT_WORK_ROOT");
-        var cli = new CopilotCliAgentTransport(executable, home, workRoot);
-        using var versionTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        var version = await cli.DetectVersionAsync(versionTimeout.Token);
+        var (transport, version) = await CreateTransportAsync();
         version.Should().Be(protocol.PhaseAModel.TransportVersion);
         protocol.PhaseBModel.TransportVersion.Should().Be(version);
 
         var summary = await AdvisoryLlmAssessment.RunAsync(
             protocol,
             output,
-            new CopilotCliAdvisoryTransport(cli),
+            transport,
             CancellationToken.None);
 
         summary.Cases.Should().HaveCount(8);
@@ -54,6 +80,17 @@ public sealed class AdvisoryLlmAssessmentExecutionTests
             .Should().Be(16,
                 "all predeclared phases must complete; inspect run-summary.json for preserved failures. "
                 + "Semantic judgments themselves are not pass/fail criteria");
+    }
+
+    private static async Task<(IAdvisoryStructuredTransport Transport, string Version)> CreateTransportAsync()
+    {
+        var executable = RequiredEnvironment("DOTNET_DIAGNOSTICS_AGENT_COPILOT_PATH");
+        var home = RequiredEnvironment("DOTNET_DIAGNOSTICS_AGENT_COPILOT_HOME");
+        var workRoot = RequiredEnvironment("DOTNET_DIAGNOSTICS_AGENT_COPILOT_WORK_ROOT");
+        var cli = new CopilotCliAgentTransport(executable, home, workRoot);
+        using var versionTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var version = await cli.DetectVersionAsync(versionTimeout.Token);
+        return (new CopilotCliAdvisoryTransport(cli), version);
     }
 
     private static string RequiredEnvironment(string name)
