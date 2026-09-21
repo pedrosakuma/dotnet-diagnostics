@@ -11,6 +11,11 @@ public static class AdvisoryLlmAssessment
 {
     public const int CurrentSchemaVersion = 2;
     public const string RunAuthorizationVariable = "DOTNET_DIAGNOSTICS_ADVISORY_LLM_RUN";
+    private const string FrozenSourceProtocolFingerprint =
+        "83736e129e944f6e0481c5eff27b8e9a879669d73c700402c8c868596de923ad";
+    private const string FrozenSourceRubricFingerprint =
+        "3b67a0737764cffefb58b0e1708a3e04428d8b75d1ede4d6c6cb42c0bc8dff35";
+    private const string FrozenSourceProductCommit = "f9c2ef8e849155983ad2344ac9fc28d2b469d906";
     private const int MaximumProtocolBytes = 1024 * 1024;
     private static readonly JsonSerializerOptions JsonOptions = CreateJsonOptions();
 
@@ -871,6 +876,13 @@ public static class AdvisoryLlmAssessment
         }
         ValidateManifestText(protocol.ProtocolId, 200, "protocol id");
         RequireSha(protocol.ProtocolFingerprint, "protocol fingerprint");
+        if (protocol.Source.ProtocolId != "advisory-calibration-v1"
+            || !FixedEquals(protocol.Source.ProtocolFingerprint, FrozenSourceProtocolFingerprint)
+            || !FixedEquals(protocol.Source.RubricFingerprint, FrozenSourceRubricFingerprint)
+            || protocol.Source.ProductCommit != FrozenSourceProductCommit)
+        {
+            throw new InvalidDataException("Advisory source baseline does not match frozen calibration v1.");
+        }
         if (protocol.FrozenAtUtc == DateTimeOffset.UnixEpoch
             || protocol.Slots.Count != 8
             || protocol.Limits.MaximumCases != 8

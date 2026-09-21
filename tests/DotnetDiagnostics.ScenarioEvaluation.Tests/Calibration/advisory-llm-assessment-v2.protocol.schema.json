@@ -9,6 +9,7 @@
     "protocolId",
     "protocolFingerprint",
     "frozenAtUtc",
+    "source",
     "phaseAModel",
     "phaseBModel",
     "limits",
@@ -19,6 +20,28 @@
     "protocolId": { "type": "string", "minLength": 1 },
     "protocolFingerprint": { "$ref": "#/$defs/sha256" },
     "frozenAtUtc": { "type": "string", "format": "date-time" },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolId",
+        "protocolFingerprint",
+        "rubricFingerprint",
+        "productCommit"
+      ],
+      "properties": {
+        "protocolId": { "const": "advisory-calibration-v1" },
+        "protocolFingerprint": {
+          "const": "83736e129e944f6e0481c5eff27b8e9a879669d73c700402c8c868596de923ad"
+        },
+        "rubricFingerprint": {
+          "const": "3b67a0737764cffefb58b0e1708a3e04428d8b75d1ede4d6c6cb42c0bc8dff35"
+        },
+        "productCommit": {
+          "const": "f9c2ef8e849155983ad2344ac9fc28d2b469d906"
+        }
+      }
+    },
     "phaseAModel": { "$ref": "#/$defs/model" },
     "phaseBModel": { "$ref": "#/$defs/model" },
     "limits": {

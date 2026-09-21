@@ -45,6 +45,8 @@ Before any model call, freeze one explicit manifest with:
 
 - exactly eight development slots: five retained live-model packets and three
   authored edited replays; no failed Windows replacement and no held-out input;
+- the frozen source protocol, rubric, and source-product commit from calibration
+  v1, kept in controller provenance and never included in model prompts;
 - absolute packet paths, packet file SHA-256 values, packet fingerprints, and
   approved note bindings;
 - four original-first and four reanalysis-first candidate orders;

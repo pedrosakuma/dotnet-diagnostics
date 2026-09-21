@@ -25,6 +25,9 @@ public sealed class AdvisoryLlmAssessmentTests
         prompt.Should().NotContain("ANSWER HINT");
         prompt.Should().NotContain(slot.SlotId);
         prompt.Should().NotContain(slot.PacketFingerprint);
+        prompt.Should().NotContain(protocol.Source.ProtocolFingerprint);
+        prompt.Should().NotContain(protocol.Source.RubricFingerprint);
+        prompt.Should().NotContain(protocol.Source.ProductCommit);
         projection.PointersExcludedByProjection.Should().Contain(
             "tool-result://source-call#/evidence/notes/0");
         projection.OriginallyInvalidPointers.Should().Contain(
@@ -498,6 +501,11 @@ public sealed class AdvisoryLlmAssessmentTests
                 "advisory-llm-v2",
                 string.Empty,
                 DateTimeOffset.Parse("2026-09-21T00:00:00Z", CultureInfo.InvariantCulture),
+                new AdvisorySourceBaseline(
+                    "advisory-calibration-v1",
+                    "83736e129e944f6e0481c5eff27b8e9a879669d73c700402c8c868596de923ad",
+                    "3b67a0737764cffefb58b0e1708a3e04428d8b75d1ede4d6c6cb42c0bc8dff35",
+                    "f9c2ef8e849155983ad2344ac9fc28d2b469d906"),
                 Model("claude-sonnet-5"),
                 Model("gpt-5.6-sol"),
                 new AdvisoryLlmLimits(

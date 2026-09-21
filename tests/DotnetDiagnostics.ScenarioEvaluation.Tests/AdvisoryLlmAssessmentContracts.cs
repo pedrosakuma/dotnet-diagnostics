@@ -68,6 +68,12 @@ public sealed record AdvisoryLlmLimits(
     int MaximumClaimsPerCandidate,
     int MaximumStringCharacters);
 
+public sealed record AdvisorySourceBaseline(
+    string ProtocolId,
+    string ProtocolFingerprint,
+    string RubricFingerprint,
+    string ProductCommit);
+
 public sealed record AdvisoryApprovedFact(
     int SourceEvidenceIndex,
     string SourceJsonPointer,
@@ -88,6 +94,7 @@ public sealed record AdvisoryLlmProtocol(
     string ProtocolId,
     string ProtocolFingerprint,
     DateTimeOffset FrozenAtUtc,
+    AdvisorySourceBaseline Source,
     AdvisoryLlmModel PhaseAModel,
     AdvisoryLlmModel PhaseBModel,
     AdvisoryLlmLimits Limits,
