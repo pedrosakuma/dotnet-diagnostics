@@ -243,7 +243,8 @@ public sealed class AdvisoryLlmAssessmentTests
     {
         using var files = new AssessmentTestFiles();
         var protocol = files.CreateProtocol();
-        var transport = new RecordingTransport();
+        var transport = new RecordingTransport(
+            [PhaseAJson().Replace("\"abstained\":false", "\"abstained\":true", StringComparison.Ordinal)]);
         var previous = Environment.GetEnvironmentVariable(AdvisoryLlmAssessment.RunAuthorizationVariable);
         Environment.SetEnvironmentVariable(AdvisoryLlmAssessment.RunAuthorizationVariable, "1");
         try
@@ -262,6 +263,23 @@ public sealed class AdvisoryLlmAssessmentTests
                 .Should().OnlyContain(prompt => prompt.Contains("candidate-01", StringComparison.Ordinal));
             transport.Prompts.Should().OnlyContain(prompt =>
                 prompt.Contains("No tools are available", StringComparison.Ordinal));
+            using var comparisonInput = JsonDocument.Parse(
+                transport.Prompts[1].Split("Evidence and candidates:", 2, StringSplitOptions.None)[1]);
+            var candidates = comparisonInput.RootElement.GetProperty("candidates");
+            candidates[0].GetProperty("claims")[0].GetProperty("declaredPosture")
+                .GetString().Should().Be("inferred");
+            candidates[1].GetProperty("claims")[0].GetProperty("declaredPosture")
+                .GetString().Should().Be("inferred");
+            foreach (var candidate in candidates.EnumerateArray())
+            {
+                candidate.TryGetProperty("declaredAbstention", out _).Should().BeFalse();
+                foreach (var claim in candidate.GetProperty("claims").EnumerateArray())
+                {
+                    claim.TryGetProperty("confidence", out _).Should().BeFalse();
+                }
+            }
+            summary.Cases[0].PhaseAResponse!.Abstained.Should().BeTrue();
+            summary.Cases[0].PhaseAResponse!.Hypotheses[0].Confidence.Should().Be("low");
             summary.Cases.Should().OnlyContain(value =>
                 value.SealedPhaseASha256 != null
                 && File.Exists(value.SealedPhaseAPath)

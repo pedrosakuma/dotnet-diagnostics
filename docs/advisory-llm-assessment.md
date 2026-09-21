@@ -33,6 +33,12 @@ Phase B runs in a fresh Copilot CLI session. It sees the same projected evidence
 and two opaque, counterbalanced candidates. It judges every claim in both the
 earlier interpretation and the new interpretation for evidence support and
 certainty, then judges uncertainty/abstention and next-step usefulness.
+Declared claim posture is retained for that judgment, but is not ground truth.
+Structured confidence and abstention declarations are withheld symmetrically:
+the earlier format did not record them, so null/non-null fields would identify
+the sources. The complete Phase-A declarations remain in its sealed artifact.
+Phase B therefore judges certainty from wording/posture and uncertainty or
+abstention from prose, not the withheld structured declarations.
 Original/new aliases remain in the controller-only result. Phase A is not an
 oracle. Mechanical pointer existence is reported separately from semantic
 judgment; a pointer excluded by projection is not relabeled as originally

@@ -155,7 +155,8 @@ public sealed record AdvisoryPhaseAResponse(
 public sealed record AdvisoryCandidateClaim(
     string ClaimId,
     string Text,
-    IReadOnlyList<string> EvidenceLocations);
+    IReadOnlyList<string> EvidenceLocations,
+    AgentEvidencePosture? DeclaredPosture = null);
 
 public sealed record AdvisoryCandidate(
     string CandidateId,
