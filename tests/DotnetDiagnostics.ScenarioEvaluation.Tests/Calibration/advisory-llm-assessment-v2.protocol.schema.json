@@ -87,18 +87,18 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "evidenceResultIndex",
+        "sourceEvidenceIndex",
         "sourceJsonPointer",
-        "sourceValueSha256",
+        "sourceTextSha256",
         "text"
       ],
       "properties": {
-        "evidenceResultIndex": { "type": "integer", "minimum": 0 },
+        "sourceEvidenceIndex": { "type": "integer", "minimum": 0 },
         "sourceJsonPointer": {
           "type": "string",
           "pattern": "^/evidence/notes/[0-9]+$"
         },
-        "sourceValueSha256": { "$ref": "#/$defs/sha256" },
+        "sourceTextSha256": { "$ref": "#/$defs/sha256" },
         "text": { "type": "string", "minLength": 1, "maxLength": 1000 }
       }
     },

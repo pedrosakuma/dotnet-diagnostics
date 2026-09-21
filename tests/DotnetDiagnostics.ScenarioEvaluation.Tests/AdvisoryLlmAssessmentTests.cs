@@ -65,7 +65,7 @@ public sealed class AdvisoryLlmAssessmentTests
         var fact = new AdvisoryApprovedFact(
             0,
             "/evidence/notes/0",
-            Sha256(JsonSerializer.SerializeToUtf8Bytes("ANSWER HINT: synthetic forbidden text")),
+            Sha256(Encoding.UTF8.GetBytes("ANSWER HINT: synthetic forbidden text")),
             "The retained counter note states that the capture was edited.");
         var changedSlot = slot with { ApprovedFacts = [fact] };
         var changed = AssessmentTestFiles.Refingerprint(protocol with
@@ -76,8 +76,9 @@ public sealed class AdvisoryLlmAssessmentTests
         var projection = AdvisoryLlmAssessment.Project(changed, changedSlot);
         projection.Evidence[0].Evidence.GetRawText().Should().Contain("approvedFacts");
         projection.Evidence[0].Evidence.GetRawText().Should().NotContain("ANSWER HINT");
+        projection.Evidence[0].Evidence.GetRawText().Should().NotContain(fact.SourceTextSha256);
 
-        var staleFact = fact with { SourceValueSha256 = new string('a', 64) };
+        var staleFact = fact with { SourceTextSha256 = new string('a', 64) };
         var staleSlot = changedSlot with { ApprovedFacts = [staleFact] };
         var action = () => AdvisoryLlmAssessment.Project(changed, staleSlot);
         action.Should().Throw<InvalidDataException>().WithMessage("*binding changed*");

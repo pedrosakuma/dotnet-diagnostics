@@ -16,7 +16,9 @@ identifiers are replaced with `evidence-01`, and retained pointers use
 
 Counter projections retain raw counter fields and explicit capture limitations.
 Original free-text notes are excluded. A neutral fact may be added only through
-an approved annotation bound to the exact source note JSON pointer and SHA-256.
+an approved annotation bound to the exact source note JSON pointer and SHA-256
+of the decoded UTF-8 note text, without a newline. The source text and binding
+hash remain controller-only; only the neutral replacement enters model input.
 Thread snapshot projections retain raw thread IDs, states, stacks, the runtime
 ThreadPool-worker flag, and lock ownership/waiter graph. Product-derived
 signals, recommendations, salience, inferred wait reasons, blocked heuristics,

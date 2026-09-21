@@ -649,7 +649,6 @@ public static class AdvisoryLlmAssessment
             {
                 ["factId"] = $"approved-fact-{index + 1:00}",
                 ["text"] = fact.Text,
-                ["sourceBindingSha256"] = fact.SourceValueSha256,
             }).ToArray());
         }
 
@@ -817,7 +816,7 @@ public static class AdvisoryLlmAssessment
         CalibrationPacket packet)
     {
         var result = new Dictionary<int, IReadOnlyList<AdvisoryApprovedFact>>();
-        foreach (var group in slot.ApprovedFacts.GroupBy(value => value.EvidenceResultIndex))
+        foreach (var group in slot.ApprovedFacts.GroupBy(value => value.SourceEvidenceIndex))
         {
             if (group.Key < 0 || group.Key >= packet.Evidence.Count)
             {
@@ -827,7 +826,10 @@ public static class AdvisoryLlmAssessment
             foreach (var fact in group)
             {
                 if (!TryResolvePointer(document.RootElement, fact.SourceJsonPointer, out var value)
-                    || !FixedEquals(Sha256(Encoding.UTF8.GetBytes(value.GetRawText())), fact.SourceValueSha256))
+                    || value.ValueKind != JsonValueKind.String
+                    || !FixedEquals(
+                        Sha256(Encoding.UTF8.GetBytes(value.GetString()!)),
+                        fact.SourceTextSha256))
                 {
                     throw new InvalidDataException(
                         $"Slot '{slot.SlotId}' approved fact source binding changed.");

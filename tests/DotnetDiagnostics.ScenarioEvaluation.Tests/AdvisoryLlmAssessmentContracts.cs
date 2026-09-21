@@ -69,9 +69,9 @@ public sealed record AdvisoryLlmLimits(
     int MaximumStringCharacters);
 
 public sealed record AdvisoryApprovedFact(
-    int EvidenceResultIndex,
+    int SourceEvidenceIndex,
     string SourceJsonPointer,
-    string SourceValueSha256,
+    string SourceTextSha256,
     string Text);
 
 public sealed record AdvisoryAssessmentSlot(
