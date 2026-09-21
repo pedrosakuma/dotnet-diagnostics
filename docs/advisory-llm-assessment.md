@@ -5,6 +5,10 @@ separate from the frozen human-calibration v1 protocol. It does not import or
 fabricate human reviews, establish ground truth, gate CI, or measure diagnostic
 accuracy.
 
+The [2026-09-21 development results](advisory-llm-assessment-results.md) report
+three completed edited-replay comparisons and five unassessed live-origin
+packets, including every transport and schema failure.
+
 ## Two isolated phases
 
 Phase A receives only an allowlisted projection of retained counter or thread
