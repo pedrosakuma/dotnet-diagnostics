@@ -10,6 +10,32 @@ namespace DotnetDiagnostics.ScenarioEvaluation.Tests;
 [Collection(ScenarioEvaluationLiveGroup.Name)]
 public sealed class BlindedAgentHarnessTests
 {
+    [Theory]
+    [InlineData("[]")]
+    [InlineData("{\"plugins\":[],\"errors\":[]}")]
+    public void CopilotCliPreflight_AcceptsEmptyKnownInventoryFormats(string inventory)
+    {
+        FluentActions.Invoking(() => CopilotCliAgentTransport.ValidatePluginInventory(inventory))
+            .Should().NotThrow();
+    }
+
+    [Theory]
+    [InlineData("null")]
+    [InlineData("\"unexpected\"")]
+    [InlineData("{}")]
+    [InlineData("[{}]")]
+    [InlineData("[{\"enabled\":false,\"scope\":\"builtin\"}]")]
+    [InlineData("{\"plugins\":[null],\"errors\":[]}")]
+    [InlineData("{\"plugins\":[{\"enabled\":\"false\"}],\"errors\":[]}")]
+    [InlineData("{\"plugins\":[{\"scope\":false}],\"errors\":[]}")]
+    [InlineData("{\"plugins\":[{\"source\":42}],\"errors\":[]}")]
+    [InlineData("{\"plugins\":[],\"errors\":[\"inventory failed\"]}")]
+    public void CopilotCliPreflight_RejectsUnverifiedShapesAsIsolationFailure(string inventory)
+    {
+        FluentActions.Invoking(() => CopilotCliAgentTransport.ValidatePluginInventory(inventory))
+            .Should().Throw<AgentTransportException>().WithMessage("*isolation preflight*");
+    }
+
     [Fact]
     public async Task Conversation_BlindsControllerRouteFromModel_ButRetainsPrivateProvenance()
     {
@@ -227,6 +253,17 @@ public sealed class BlindedAgentHarnessTests
     }
 
     [Fact]
+    public void CopilotCliTransport_NormalizesCurrentVersionOutput()
+    {
+        CopilotCliAgentTransport.ParseVersionOutput(
+                "GitHub Copilot CLI 1.0.86.\nRun 'copilot update' to check for updates.\n")
+            .Should().Be("GitHub Copilot CLI 1.0.86");
+
+        FluentActions.Invoking(() => CopilotCliAgentTransport.ParseVersionOutput("copilot unknown"))
+            .Should().Throw<AgentTransportException>();
+    }
+
+    [Fact]
     public void CopilotCliTransport_ParsesOnlyStrictDecisionAndDropsCliMetadata()
     {
         const string output =
@@ -234,7 +271,7 @@ public sealed class BlindedAgentHarnessTests
             {"type":"session.start","data":{"sessionId":"private-cli-session","model":"test-model"}}
             {"type":"session.tools_updated","data":{"model":"test-model"}}
             {"type":"assistant.message","data":{"content":"{\"action\":\"tool\",\"toolCall\":{\"id\":\"call-1\",\"name\":\"collect_events\",\"arguments\":{\"target\":\"target-1\",\"kind\":\"counters\",\"durationSeconds\":2}}}"}}
-            {"type":"usage","data":{"premiumRequests":1}}
+            {"type":"result","timestamp":"2026-09-21T00:00:01Z","sessionId":"private-cli-session","exitCode":0,"usage":{"premiumRequests":1}}
             """;
 
         var turn = CopilotCliAgentTransport.ParseOutput(output);
