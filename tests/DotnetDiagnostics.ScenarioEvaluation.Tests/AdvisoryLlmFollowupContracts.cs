@@ -29,6 +29,7 @@ public sealed record AdvisoryFollowupSource(
 
 public sealed record AdvisoryFollowupRetainedBinding(
     string SourceId,
+    string SourceCaseRelativePath,
     string SourceCaseResultSha256,
     string SourcePhaseAPromptSha256,
     [property: JsonRequired]
@@ -76,6 +77,7 @@ public sealed record AdvisoryFollowupPlan(
     string PlanId,
     string PlanFingerprint,
     string ProtocolFingerprint,
+    string PreviousSourceSummarySha256,
     string RubricVersion,
     string RubricSha256,
     string MeasurementGlossaryVersion,
@@ -189,6 +191,7 @@ public sealed record AdvisoryFollowupOrderControlResult(
 public sealed record AdvisoryFollowupCaseResult(
     string SlotId,
     AdvisoryFollowupPhaseAMode PhaseAMode,
+    bool PhaseAReceivedMeasurementGlossary,
     AdvisoryCallStatus SourcePhaseAStatus,
     string SourcePhaseADetail,
     string? SourcePhaseAResponseSha256,
@@ -207,6 +210,7 @@ public sealed record AdvisoryFollowupSummary(
     string PlanId,
     string PlanFingerprint,
     string ProtocolFingerprint,
+    string PreviousSourceSummarySha256,
     string RubricVersion,
     string RubricSha256,
     string MeasurementGlossaryVersion,

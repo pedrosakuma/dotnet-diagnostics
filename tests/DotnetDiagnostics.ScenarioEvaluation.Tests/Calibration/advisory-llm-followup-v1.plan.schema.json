@@ -8,6 +8,7 @@
     "planId",
     "planFingerprint",
     "protocolFingerprint",
+    "previousSourceSummarySha256",
     "rubricVersion",
     "rubricSha256",
     "measurementGlossaryVersion",
@@ -33,6 +34,7 @@
       "pattern": "^$|^[0-9a-f]{64}$"
     },
     "protocolFingerprint": { "$ref": "#/$defs/sha256" },
+    "previousSourceSummarySha256": { "$ref": "#/$defs/sha256" },
     "rubricVersion": { "const": "advisory-semantic-followup-v1" },
     "rubricSha256": { "$ref": "#/$defs/sha256" },
     "measurementGlossaryVersion": {
@@ -55,8 +57,8 @@
     "maximumNewPhaseBCalls": { "const": 7 },
     "sources": {
       "type": "array",
-      "minItems": 2,
-      "maxItems": 2,
+      "minItems": 1,
+      "maxItems": 1,
       "items": { "$ref": "#/$defs/source" }
     },
     "cases": {
@@ -154,7 +156,7 @@
       "required": [ "sourceId", "kind", "rootPath", "summarySha256" ],
       "properties": {
         "sourceId": { "type": "string", "minLength": 1, "maxLength": 64 },
-        "kind": { "enum": [ "assessmentRun", "continuationRun" ] },
+        "kind": { "const": "continuationRun" },
         "rootPath": { "type": "string", "minLength": 1, "maxLength": 4096 },
         "summarySha256": { "$ref": "#/$defs/sha256" }
       }
@@ -164,6 +166,7 @@
       "additionalProperties": false,
       "required": [
         "sourceId",
+        "sourceCaseRelativePath",
         "sourceCaseResultSha256",
         "sourcePhaseAPromptSha256",
         "sourcePhaseAResponseSha256",
@@ -175,6 +178,10 @@
       ],
       "properties": {
         "sourceId": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "sourceCaseRelativePath": {
+          "type": "string",
+          "pattern": "^case-[0-9]{2}/continuation-case-result\\.json$"
+        },
         "sourceCaseResultSha256": { "$ref": "#/$defs/sha256" },
         "sourcePhaseAPromptSha256": { "$ref": "#/$defs/sha256" },
         "sourcePhaseAResponseSha256": { "$ref": "#/$defs/nullableSha256" },

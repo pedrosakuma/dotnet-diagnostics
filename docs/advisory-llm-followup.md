@@ -35,6 +35,8 @@ The v1 follow-up plan contains exactly:
 - at most eight new calls: one A and seven B, with no retry or fallback;
 - exact source summary, case, response, normalized-payload, projection, prompt,
   and applicable recovered-seal hashes;
+- one coherent continuation source inventory, plus the exact previous pilot
+  summary hash recorded by that continuation;
 - exact models, transport versions, byte/time budgets, rubric hash, and prompt
   template fingerprints;
 - the glossary version, glossary hash, and controller-only source citations.
@@ -92,6 +94,15 @@ revision `f9c2ef8e`:
 Only the neutral glossary text enters model prompts. The source revision, file
 paths, line ranges, and provenance subjects remain outside prompts.
 
+The retained Phase-A text for cases 01 through 04 predates this glossary. Its
+old prompt hash is validated against the frozen v2 Phase-A builder, not against
+the new follow-up prompt. Case 05 is the only Phase A that receives the glossary
+and common-`id` contract. Phase B receives a neutral disclosure that some
+candidate text predates the glossary, without receiving a candidate mapping,
+source label, schema status, prior verdict, or expected diagnosis. This prevents
+measurement-context omissions from being attributed solely to reasoning while
+leaving semantic support judgments unchanged.
+
 ## Case 05 Phase A
 
 Case 05 is the only slot allowed a new Phase-A invocation. It receives the same
@@ -138,9 +149,11 @@ DOTNET_DIAGNOSTICS_ADVISORY_LLM_OUTPUT_DIRECTORY=/absolute/new-preflight-output 
   --filter FullyQualifiedName~ExplicitLocalWorkflow_PreparesOrRunsFrozenProtocol
 ```
 
-Both operations are file-only. They use declared source roots and scoped
-`run-summary.json`, `<slot>/case-result.json`, and recovered-seal paths. They do
-not discover neighboring reports or held-out inputs.
+Both operations are file-only. They use one declared continuation source root
+and scoped `run-summary.json`,
+`<slot>/continuation-case-result.json`, and recovered-seal paths. They bind the
+previous pilot summary by hash but do not open it, discover neighboring reports,
+or access held-out inputs.
 
 ## Explicit execution
 

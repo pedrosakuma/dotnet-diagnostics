@@ -23,7 +23,7 @@ public sealed partial class AdvisoryLlmAssessmentTests
         using var files = new AssessmentTestFiles();
         var fixture = await CreateFollowupFixtureAsync(files);
         var sourceHashes = FollowupHashTree(fixture.SourceRoot);
-        var sealSourceHashes = FollowupHashTree(fixture.SealSourceRoot);
+        var previousSourceHashes = FollowupHashTree(fixture.PreviousSourceRoot);
         var frozenPath = files.Path("followup.plan.json");
         var plan = AdvisoryLlmAssessment.FreezeFollowupPlan(
             fixture.Protocol,
@@ -54,6 +54,7 @@ public sealed partial class AdvisoryLlmAssessmentTests
             summary.MeasurementGlossaryProvenance.Should().BeEquivalentTo(
                 AdvisoryLlmAssessment.FollowupMeasurementGlossaryProvenance,
                 options => options.WithStrictOrdering());
+            summary.PreviousSourceSummarySha256.Should().Be(plan.PreviousSourceSummarySha256);
             transport.PhaseACalls.Should().Be(1);
             transport.PhaseBCalls.Should().Be(7);
             transport.Prompts.Should().OnlyContain(prompt =>
@@ -61,6 +62,10 @@ public sealed partial class AdvisoryLlmAssessmentTests
                 && !prompt.Contains(plan.PlanFingerprint, StringComparison.Ordinal)
                 && !prompt.Contains("schemaInvalid", StringComparison.OrdinalIgnoreCase)
                 && !prompt.Contains("source-run", StringComparison.Ordinal)
+                && !prompt.Contains("continuation-source", StringComparison.Ordinal)
+                && !prompt.Contains("case-0", StringComparison.Ordinal)
+                && !prompt.Contains("PRIOR-B-VERDICT-MARKER", StringComparison.Ordinal)
+                && !prompt.Contains("CONTROLLER-SOURCE-STATUS-MARKER", StringComparison.Ordinal)
                 && !prompt.Contains("f9c2ef8e", StringComparison.Ordinal)
                 && !prompt.Contains("CounterValue.cs", StringComparison.Ordinal)
                 && prompt.Contains("value is the last observed sample", StringComparison.Ordinal)
@@ -74,10 +79,16 @@ public sealed partial class AdvisoryLlmAssessmentTests
                     && prompt.Contains("do not establish simultaneity or causation", StringComparison.Ordinal)
                     && prompt.Contains("Missing data supports uncertainty", StringComparison.Ordinal)
                     && prompt.Contains("Candidate agreement is not truth", StringComparison.Ordinal)
-                    && prompt.Contains("Do not choose a winner", StringComparison.Ordinal));
+                    && prompt.Contains("Do not choose a winner", StringComparison.Ordinal)
+                    && prompt.Contains("predates the measurement glossary", StringComparison.Ordinal)
+                    && prompt.Contains("do not attribute a measurement-semantics mismatch solely",
+                        StringComparison.Ordinal));
 
             var first = summary.Cases[0];
             first.PhaseAMode.Should().Be(AdvisoryFollowupPhaseAMode.RetainedSemanticExtraction);
+            first.PhaseAReceivedMeasurementGlossary.Should().BeFalse();
+            first.PhaseA.PromptSha256.Should().Be(
+                plan.Cases[0].Source.SourcePhaseAPromptSha256);
             first.PhaseA.Status.Should().Be(AdvisoryCallStatus.InvalidResponse);
             first.Format.Compliance.Should().Be(AdvisoryFollowupFormatCompliance.Noncompliant);
             first.SemanticView!.Claims.Should().ContainSingle();
@@ -92,6 +103,9 @@ public sealed partial class AdvisoryLlmAssessmentTests
 
             var fresh = summary.Cases[4];
             fresh.PhaseAMode.Should().Be(AdvisoryFollowupPhaseAMode.FreshEvidenceOnly);
+            fresh.PhaseAReceivedMeasurementGlossary.Should().BeTrue();
+            fresh.PhaseA.PromptSha256.Should().NotBe(
+                plan.Cases[4].Source.SourcePhaseAPromptSha256);
             fresh.SourcePhaseAStatus.Should().Be(AdvisoryCallStatus.TransportFailed);
             fresh.SourcePhaseAResponseSha256.Should().BeNull();
             fresh.PhaseA.Status.Should().Be(AdvisoryCallStatus.Succeeded);
@@ -115,7 +129,7 @@ public sealed partial class AdvisoryLlmAssessmentTests
                     candidate.PrimaryUncertainty == candidate.ControlUncertainty
                     && candidate.PrimaryNextStep == candidate.ControlNextStep));
             FollowupHashTree(fixture.SourceRoot).Should().BeEquivalentTo(sourceHashes);
-            FollowupHashTree(fixture.SealSourceRoot).Should().BeEquivalentTo(sealSourceHashes);
+            FollowupHashTree(fixture.PreviousSourceRoot).Should().BeEquivalentTo(previousSourceHashes);
         }
         finally
         {
@@ -167,6 +181,9 @@ public sealed partial class AdvisoryLlmAssessmentTests
     [InlineData("missingText")]
     [InlineData("duplicateProperty")]
     [InlineData("seal")]
+    [InlineData("oldPrompt")]
+    [InlineData("previousSummary")]
+    [InlineData("wrapperPath")]
     public async Task FollowupPreparation_RejectsChangedOrUnreadableRetainedSource(string defect)
     {
         using var files = new AssessmentTestFiles();
@@ -428,74 +445,99 @@ public sealed partial class AdvisoryLlmAssessmentTests
         source = source with { Cases = cases };
         WriteFollowupJson(Path.Combine(sourceRoot, "run-summary.json"), source);
 
-        var sealSourceRoot = files.Path("continuation-source");
-        var sealedCases = new List<AdvisoryContinuationCaseResult>();
-        var sealBindings = new Dictionary<string, (string CaseSha, string SealSha)>(StringComparer.Ordinal);
-        foreach (var index in new[] { 2, 3 })
+        var continuationRoot = files.Path("continuation-source");
+        var wrappers = new AdvisoryContinuationCaseResult[5];
+        var wrapperBindings =
+            new Dictionary<string, (string CaseSha, string? SealSha)>(StringComparer.Ordinal);
+        for (var index = 0; index < 5; index++)
         {
             var sourceCase = cases[index];
             var slot = protocol.Slots[index];
             var projection = AdvisoryLlmAssessment.Project(protocol, slot);
-            var normalized = AdvisoryLlmAssessment.NormalizeJsonResponse(
-                sourceCase.PhaseA.RawResponse!,
-                protocol.Limits.MaximumResponseBytes);
-            var response = AdvisoryLlmAssessment.ParsePhaseA(
-                sourceCase.PhaseA.RawResponse!,
-                projection,
-                protocol.Limits);
-            var normalizedCall = sourceCase.PhaseA with
-            {
-                ResponseFramingTransform = normalized.Transform,
-                ResponseFramingVersion = normalized.Version,
-                NormalizedResponseSha256 = normalized.PayloadSha256,
-            };
-            var seal = new AdvisoryPhaseASeal(
-                2,
-                protocol.ProtocolId,
-                protocol.ProtocolFingerprint,
-                slot.SlotId,
-                slot.PacketFingerprint,
-                projection.ProjectionSha256,
-                normalizedCall.PromptSha256,
-                normalizedCall.ResponseSha256,
-                normalizedCall,
-                response);
-            var directory = Path.Combine(sealSourceRoot, slot.SlotId);
+            var normalized = sourceCase.PhaseA.RawResponse is null
+                ? null
+                : AdvisoryLlmAssessment.NormalizeJsonResponse(
+                    sourceCase.PhaseA.RawResponse,
+                    protocol.Limits.MaximumResponseBytes);
+            var directory = Path.Combine(continuationRoot, slot.SlotId);
             Directory.CreateDirectory(directory);
-            var sealPath = Path.Combine(directory, "phase-a.recovered.sealed.json");
-            WriteFollowupJson(sealPath, seal);
-            var sealSha = Sha256(File.ReadAllBytes(sealPath));
-            var continuedCase = sourceCase with
+            string? sealSha = null;
+            var continuedCase = sourceCase;
+            if (index is 2 or 3)
             {
-                PhaseA = normalizedCall,
-                SealedPhaseAPath = sealPath,
-                SealedPhaseASha256 = sealSha,
-                PhaseAResponse = response,
+                var response = AdvisoryLlmAssessment.ParsePhaseA(
+                    sourceCase.PhaseA.RawResponse!,
+                    projection,
+                    protocol.Limits);
+                var normalizedCall = sourceCase.PhaseA with
+                {
+                    ResponseFramingTransform = normalized!.Transform,
+                    ResponseFramingVersion = normalized.Version,
+                    NormalizedResponseSha256 = normalized.PayloadSha256,
+                };
+                var seal = new AdvisoryPhaseASeal(
+                    2,
+                    protocol.ProtocolId,
+                    protocol.ProtocolFingerprint,
+                    slot.SlotId,
+                    slot.PacketFingerprint,
+                    projection.ProjectionSha256,
+                    normalizedCall.PromptSha256,
+                    normalizedCall.ResponseSha256,
+                    normalizedCall,
+                    response);
+                var sealPath = Path.Combine(directory, "phase-a.recovered.sealed.json");
+                WriteFollowupJson(sealPath, seal);
+                sealSha = Sha256(File.ReadAllBytes(sealPath));
+                continuedCase = sourceCase with
+                {
+                    PhaseA = normalizedCall,
+                    SealedPhaseAPath = sealPath,
+                    SealedPhaseASha256 = sealSha,
+                    PhaseAResponse = response,
+                };
+            }
+            var priorVerdict = "PRIOR-B-VERDICT-MARKER";
+            continuedCase = continuedCase with
+            {
+                PhaseB = continuedCase.PhaseB with
+                {
+                    Detail = priorVerdict,
+                    RawResponse = priorVerdict,
+                    ResponseSha256 = Sha256(Encoding.UTF8.GetBytes(priorVerdict)),
+                },
+                PhaseBResponse = null,
+                CandidateMapping = [],
             };
             var wrapper = new AdvisoryContinuationCaseResult(
                 slot.SlotId,
-                AdvisoryContinuationDisposition.RecoverRetainedPhaseA,
-                "Synthetic recovered source.",
+                index == 4
+                    ? AdvisoryContinuationDisposition.Unavailable
+                    : AdvisoryContinuationDisposition.RecoverRetainedPhaseA,
+                "CONTROLLER-SOURCE-STATUS-MARKER",
                 Sha256(File.ReadAllBytes(Path.Combine(sourceRoot, slot.SlotId, "case-result.json"))),
                 sourceCase.PhaseA.Status,
                 sourceCase.PhaseB.Status,
                 sourceCase.PhaseA.ResponseSha256,
-                normalized.PayloadSha256,
-                normalized.Transform,
+                normalized?.PayloadSha256,
+                normalized?.Transform,
                 AdvisoryPhaseOrigin.SourceFailurePreserved,
                 AdvisoryPhaseOrigin.NotRun,
                 continuedCase);
-            var casePath = Path.Combine(directory, "case-result.json");
+            var casePath = Path.Combine(directory, "continuation-case-result.json");
             WriteFollowupJson(casePath, wrapper);
-            sealBindings.Add(slot.SlotId, (Sha256(File.ReadAllBytes(casePath)), sealSha));
-            sealedCases.Add(wrapper);
+            wrapperBindings.Add(
+                slot.SlotId,
+                (Sha256(File.ReadAllBytes(casePath)), sealSha));
+            wrappers[index] = wrapper;
         }
-        var sealSummary = new AdvisoryContinuationSummary(
+        var previousSummarySha = Sha256(File.ReadAllBytes(Path.Combine(sourceRoot, "run-summary.json")));
+        var continuationSummary = new AdvisoryContinuationSummary(
             2,
             "synthetic-continuation-source",
             new string('c', 64),
             protocol.ProtocolFingerprint,
-            Sha256(File.ReadAllBytes(Path.Combine(sourceRoot, "run-summary.json"))),
+            previousSummarySha,
             DateTimeOffset.UnixEpoch,
             DateTimeOffset.UnixEpoch,
             0,
@@ -503,9 +545,9 @@ public sealed partial class AdvisoryLlmAssessmentTests
             false,
             false,
             null,
-            sealedCases);
-        Directory.CreateDirectory(sealSourceRoot);
-        WriteFollowupJson(Path.Combine(sealSourceRoot, "run-summary.json"), sealSummary);
+            wrappers);
+        Directory.CreateDirectory(continuationRoot);
+        WriteFollowupJson(Path.Combine(continuationRoot, "run-summary.json"), continuationSummary);
 
         var followupLimits = protocol.Limits with
         {
@@ -514,18 +556,21 @@ public sealed partial class AdvisoryLlmAssessmentTests
             MaximumCallsPerCase = 3,
         };
         var sourceDefinition = new AdvisoryFollowupSource(
-            "pilot-source",
-            AdvisoryFollowupSourceKind.AssessmentRun,
-            Path.GetFullPath(sourceRoot),
-            Sha256(File.ReadAllBytes(Path.Combine(sourceRoot, "run-summary.json"))));
-        var sealSourceDefinition = new AdvisoryFollowupSource(
             "continuation-source",
             AdvisoryFollowupSourceKind.ContinuationRun,
-            Path.GetFullPath(sealSourceRoot),
-            Sha256(File.ReadAllBytes(Path.Combine(sealSourceRoot, "run-summary.json"))));
+            Path.GetFullPath(continuationRoot),
+            Sha256(File.ReadAllBytes(Path.Combine(continuationRoot, "run-summary.json"))));
+        var primaryOrders = new[]
+        {
+            AdvisoryCandidateSource.Original,
+            AdvisoryCandidateSource.Reanalysis,
+            AdvisoryCandidateSource.Original,
+            AdvisoryCandidateSource.Reanalysis,
+            AdvisoryCandidateSource.Original,
+        };
         var plans = protocol.Slots.Take(5).Select((slot, index) =>
         {
-            var sourceCase = cases[index];
+            var sourceCase = wrappers[index].Result;
             var normalized = sourceCase.PhaseA.RawResponse is null
                 ? null
                 : AdvisoryLlmAssessment.NormalizeJsonResponse(
@@ -536,17 +581,18 @@ public sealed partial class AdvisoryLlmAssessmentTests
                 index == 4
                     ? AdvisoryFollowupPhaseAMode.FreshEvidenceOnly
                     : AdvisoryFollowupPhaseAMode.RetainedSemanticExtraction,
-                slot.FirstCandidate,
+                primaryOrders[index],
                 new AdvisoryFollowupRetainedBinding(
                     sourceDefinition.SourceId,
-                    Sha256(File.ReadAllBytes(Path.Combine(sourceRoot, slot.SlotId, "case-result.json"))),
+                    $"{slot.SlotId}/continuation-case-result.json",
+                    wrapperBindings[slot.SlotId].CaseSha,
                     sourceCase.PhaseA.PromptSha256,
                     sourceCase.PhaseA.ResponseSha256,
                     normalized?.PayloadSha256,
                     sourceCase.ProjectionSha256,
-                    index is 2 or 3 ? sealSourceDefinition.SourceId : null,
-                    index is 2 or 3 ? sealBindings[slot.SlotId].CaseSha : null,
-                    index is 2 or 3 ? sealBindings[slot.SlotId].SealSha : null),
+                    index is 2 or 3 ? sourceDefinition.SourceId : null,
+                    index is 2 or 3 ? wrapperBindings[slot.SlotId].CaseSha : null,
+                    wrapperBindings[slot.SlotId].SealSha),
                 new AdvisoryFollowupSemanticBindings(
                     index == 4
                         ? []
@@ -566,6 +612,7 @@ public sealed partial class AdvisoryLlmAssessmentTests
             "synthetic-semantic-followup",
             string.Empty,
             protocol.ProtocolFingerprint,
+            previousSummarySha,
             AdvisoryLlmAssessment.FollowupRubricVersion,
             AdvisoryLlmAssessment.FollowupRubricSha256,
             AdvisoryLlmAssessment.FollowupMeasurementGlossaryVersion,
@@ -579,7 +626,7 @@ public sealed partial class AdvisoryLlmAssessmentTests
             8,
             1,
             7,
-            [sourceDefinition, sealSourceDefinition],
+            [sourceDefinition],
             plans,
             [
                 new AdvisoryFollowupOrderControlPlan("control-01", protocol.Slots[0].SlotId),
@@ -596,6 +643,40 @@ public sealed partial class AdvisoryLlmAssessmentTests
                         Source = value.Source with
                         {
                             SourceCaseResultSha256 = new string('a', 64),
+                        },
+                    }
+                    : value).ToArray(),
+            };
+        }
+        else if (defect == "oldPrompt")
+        {
+            draft = draft with
+            {
+                Cases = draft.Cases.Select((value, index) => index == 0
+                    ? value with
+                    {
+                        Source = value.Source with
+                        {
+                            SourcePhaseAPromptSha256 = new string('b', 64),
+                        },
+                    }
+                    : value).ToArray(),
+            };
+        }
+        else if (defect == "previousSummary")
+        {
+            draft = draft with { PreviousSourceSummarySha256 = new string('d', 64) };
+        }
+        else if (defect == "wrapperPath")
+        {
+            draft = draft with
+            {
+                Cases = draft.Cases.Select((value, index) => index == 0
+                    ? value with
+                    {
+                        Source = value.Source with
+                        {
+                            SourceCaseRelativePath = "case-01/other.json",
                         },
                     }
                     : value).ToArray(),
@@ -624,7 +705,8 @@ public sealed partial class AdvisoryLlmAssessmentTests
         }
         else if (defect == "duplicateProperty")
         {
-            var changed = cases[0];
+            var changedWrapper = wrappers[0];
+            var changed = changedWrapper.Result;
             var raw = changed.PhaseA.RawResponse!.Replace(
                 "\"uncertainty\":",
                 "\"uncertainty\":\"duplicate\",\"uncertainty\":",
@@ -637,18 +719,25 @@ public sealed partial class AdvisoryLlmAssessmentTests
                     ResponseSha256 = Sha256(Encoding.UTF8.GetBytes(raw)),
                 },
             };
-            WriteFollowupJson(Path.Combine(sourceRoot, changed.SlotId, "case-result.json"), changed);
-            cases[0] = changed;
-            source = source with { Cases = cases };
-            WriteFollowupJson(Path.Combine(sourceRoot, "run-summary.json"), source);
+            changedWrapper = changedWrapper with { Result = changed };
+            wrappers[0] = changedWrapper;
+            var wrapperPath = Path.Combine(
+                continuationRoot,
+                changed.SlotId,
+                "continuation-case-result.json");
+            WriteFollowupJson(wrapperPath, changedWrapper);
+            continuationSummary = continuationSummary with { Cases = wrappers };
+            WriteFollowupJson(
+                Path.Combine(continuationRoot, "run-summary.json"),
+                continuationSummary);
             sourceDefinition = sourceDefinition with
             {
-                SummarySha256 = Sha256(File.ReadAllBytes(Path.Combine(sourceRoot, "run-summary.json"))),
+                SummarySha256 = Sha256(
+                    File.ReadAllBytes(Path.Combine(continuationRoot, "run-summary.json"))),
             };
             var changedBinding = draft.Cases[0].Source with
             {
-                SourceCaseResultSha256 = Sha256(
-                    File.ReadAllBytes(Path.Combine(sourceRoot, changed.SlotId, "case-result.json"))),
+                SourceCaseResultSha256 = Sha256(File.ReadAllBytes(wrapperPath)),
                 SourcePhaseAResponseSha256 = changed.PhaseA.ResponseSha256,
                 NormalizedPayloadSha256 = AdvisoryLlmAssessment.NormalizeJsonResponse(
                     raw,
@@ -656,7 +745,7 @@ public sealed partial class AdvisoryLlmAssessmentTests
             };
             draft = draft with
             {
-                Sources = [sourceDefinition, sealSourceDefinition],
+                Sources = [sourceDefinition],
                 Cases = draft.Cases.Select((value, index) => index == 0
                     ? value with { Source = changedBinding }
                     : value).ToArray(),
@@ -666,7 +755,7 @@ public sealed partial class AdvisoryLlmAssessmentTests
         {
             File.AppendAllText(
                 Path.Combine(
-                    sealSourceRoot,
+                    continuationRoot,
                     protocol.Slots[2].SlotId,
                     "phase-a.recovered.sealed.json"),
                 " ");
@@ -674,7 +763,7 @@ public sealed partial class AdvisoryLlmAssessmentTests
 
         var draftPath = files.Path("followup.draft.json");
         WriteFollowupJson(draftPath, draft);
-        return new FollowupFixture(protocol, sourceRoot, sealSourceRoot, draftPath);
+        return new FollowupFixture(protocol, continuationRoot, sourceRoot, draftPath);
     }
 
     private static string RetainedPhaseAJson(bool invalidLegacyId, bool invalidCitation)
@@ -736,7 +825,7 @@ public sealed partial class AdvisoryLlmAssessmentTests
     private sealed record FollowupFixture(
         AdvisoryLlmProtocol Protocol,
         string SourceRoot,
-        string SealSourceRoot,
+        string PreviousSourceRoot,
         string DraftPath);
 
     private sealed class FollowupTransport(
