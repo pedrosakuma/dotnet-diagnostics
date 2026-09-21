@@ -93,6 +93,27 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
         IReadOnlyList<JsonObject> messages,
         IReadOnlyList<AgentToolDefinition> tools,
         CancellationToken cancellationToken)
+        => await InvokeIsolatedAsync(
+            configuration,
+            BuildPrompt(messages, tools),
+            ParseOutput,
+            cancellationToken).ConfigureAwait(false);
+
+    internal async Task<string> CompleteStructuredJsonAsync(
+        AgentModelConfiguration configuration,
+        string prompt,
+        CancellationToken cancellationToken)
+        => await InvokeIsolatedAsync(
+            configuration,
+            prompt,
+            ParseStructuredJsonOutput,
+            cancellationToken).ConfigureAwait(false);
+
+    private async Task<T> InvokeIsolatedAsync<T>(
+        AgentModelConfiguration configuration,
+        string prompt,
+        Func<string, T> parseOutput,
+        CancellationToken cancellationToken)
     {
         var invocationId = Guid.NewGuid();
         var workingDirectory = Path.Combine(_workRoot, invocationId.ToString("n"));
@@ -104,7 +125,6 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
                 workingDirectory,
                 configuration.MaximumResponseBytes,
                 cancellationToken).ConfigureAwait(false);
-            var prompt = BuildPrompt(messages, tools);
             var startInfo = CreateStartInfo(configuration, prompt, workingDirectory, invocationId);
             using var process = new Process { StartInfo = startInfo };
             if (!process.Start())
@@ -140,7 +160,7 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
                     await stderrTask.ConfigureAwait(false)));
             }
 
-            return ParseOutput(await stdoutTask.ConfigureAwait(false));
+            return parseOutput(await stdoutTask.ConfigureAwait(false));
         }
         catch (AgentTransportException)
         {
@@ -486,6 +506,49 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
             [],
             new AgentModelUsage(null, null, null),
             null);
+    }
+
+    internal static string ParseStructuredJsonOutput(string jsonLines)
+    {
+        string? accepted = null;
+        foreach (var line in jsonLines.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            using var document = JsonDocument.Parse(line);
+            var eventRoot = document.RootElement;
+            RejectCliToolActivity(eventRoot);
+            if (eventRoot.ValueKind != JsonValueKind.Object
+                || !eventRoot.TryGetProperty("type", out var type)
+                || type.ValueKind != JsonValueKind.String
+                || type.GetString() != "assistant.message"
+                || !eventRoot.TryGetProperty("data", out var data)
+                || data.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            if (data.TryGetProperty("toolRequests", out var toolRequests)
+                && toolRequests.ValueKind == JsonValueKind.Array
+                && toolRequests.GetArrayLength() != 0)
+            {
+                throw new JsonException("Copilot CLI reported tool activity despite the empty tool boundary.");
+            }
+
+            if (!data.TryGetProperty("content", out var content)
+                || content.ValueKind != JsonValueKind.String)
+            {
+                continue;
+            }
+
+            if (accepted is not null)
+            {
+                throw new JsonException("Copilot CLI emitted more than one structured response.");
+            }
+
+            accepted = content.GetString()!;
+        }
+
+        return accepted
+            ?? throw new JsonException("Copilot CLI did not emit the required structured JSON object.");
     }
 
     private static void RejectCliToolActivity(JsonElement root)

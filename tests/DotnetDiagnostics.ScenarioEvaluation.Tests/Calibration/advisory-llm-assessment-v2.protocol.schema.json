@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/pedrosakuma/dotnet-diagnostics/advisory-llm-assessment-v2.protocol.schema.json",
+  "title": "Advisory evidence-only LLM assessment protocol v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "protocolId",
+    "protocolFingerprint",
+    "frozenAtUtc",
+    "phaseAModel",
+    "phaseBModel",
+    "limits",
+    "slots"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 2 },
+    "protocolId": { "type": "string", "minLength": 1 },
+    "protocolFingerprint": { "$ref": "#/$defs/sha256" },
+    "frozenAtUtc": { "type": "string", "format": "date-time" },
+    "phaseAModel": { "$ref": "#/$defs/model" },
+    "phaseBModel": { "$ref": "#/$defs/model" },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maximumCases",
+        "maximumCalls",
+        "maximumCallsPerCase",
+        "perCallTimeoutSeconds",
+        "maximumInferenceSeconds",
+        "maximumOuterOverheadSeconds",
+        "maximumPromptBytes",
+        "maximumResponseBytes",
+        "maximumCaseArtifactBytes",
+        "maximumHypotheses",
+        "maximumObservations",
+        "maximumAlternatives",
+        "maximumCitationsPerItem",
+        "maximumClaimsPerCandidate",
+        "maximumStringCharacters"
+      ],
+      "properties": {
+        "maximumCases": { "const": 8 },
+        "maximumCalls": { "const": 16 },
+        "maximumCallsPerCase": { "const": 2 },
+        "perCallTimeoutSeconds": { "const": 120 },
+        "maximumInferenceSeconds": { "const": 1920 },
+        "maximumOuterOverheadSeconds": { "const": 300 },
+        "maximumPromptBytes": { "const": 65536 },
+        "maximumResponseBytes": { "const": 65536 },
+        "maximumCaseArtifactBytes": { "const": 1048576 },
+        "maximumHypotheses": { "const": 5 },
+        "maximumObservations": { "const": 12 },
+        "maximumAlternatives": { "const": 4 },
+        "maximumCitationsPerItem": { "const": 8 },
+        "maximumClaimsPerCandidate": { "const": 16 },
+        "maximumStringCharacters": { "const": 2000 }
+      }
+    },
+    "slots": {
+      "type": "array",
+      "minItems": 8,
+      "maxItems": 8,
+      "items": { "$ref": "#/$defs/slot" }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{64}$"
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "model", "modelVersion", "transport", "transportVersion"],
+      "properties": {
+        "provider": { "const": "github-copilot-cli" },
+        "model": { "enum": ["claude-sonnet-5", "gpt-5.6-sol"] },
+        "modelVersion": { "const": "unknown" },
+        "transport": { "const": "copilot-cli" },
+        "transportVersion": { "type": "string", "minLength": 1 }
+      }
+    },
+    "approvedFact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "evidenceResultIndex",
+        "sourceJsonPointer",
+        "sourceValueSha256",
+        "text"
+      ],
+      "properties": {
+        "evidenceResultIndex": { "type": "integer", "minimum": 0 },
+        "sourceJsonPointer": {
+          "type": "string",
+          "pattern": "^/evidence/notes/[0-9]+$"
+        },
+        "sourceValueSha256": { "$ref": "#/$defs/sha256" },
+        "text": { "type": "string", "minLength": 1, "maxLength": 1000 }
+      }
+    },
+    "slot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "slotId",
+        "packetPath",
+        "packetFileSha256",
+        "packetFingerprint",
+        "expectedProvenance",
+        "firstCandidate",
+        "approvedFacts"
+      ],
+      "properties": {
+        "slotId": { "type": "string", "minLength": 1 },
+        "packetPath": { "type": "string", "minLength": 1 },
+        "packetFileSha256": { "$ref": "#/$defs/sha256" },
+        "packetFingerprint": { "$ref": "#/$defs/sha256" },
+        "expectedProvenance": {
+          "enum": ["liveModel", "authoredEditedReplay"]
+        },
+        "firstCandidate": { "enum": ["original", "reanalysis"] },
+        "approvedFacts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/approvedFact" }
+        }
+      }
+    }
+  }
+}
