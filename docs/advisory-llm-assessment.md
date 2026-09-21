@@ -27,6 +27,7 @@ and derived role/contended flags are excluded. Unknown shapes fail closed.
 Phase A must produce bounded observations, hypotheses, alternatives, citations,
 uncertainty, optional abstention, and one next diagnostic question. Its result
 is written with create-new semantics and hashed before Phase B.
+Both prompts disclose the enforced response limits before the single attempt.
 
 Phase B runs in a fresh Copilot CLI session. It sees the same projected evidence
 and two opaque, counterbalanced candidates. It judges every claim in both the
@@ -61,8 +62,26 @@ Before any model call, freeze one explicit manifest with:
 The CLI's minimum `--max-ai-credits 30` is a transport cap, not a dollar or
 token ceiling. Token counts and cost remain `null` when the CLI does not report
 them.
+Each packet must match the declared source protocol ID, protocol fingerprint,
+rubric fingerprint, and product commit as well as its own file and packet
+hashes. Missing or foreign source provenance is rejected.
 
 ## Local preparation and execution
+
+Create a draft with all protocol fields and an empty `protocolFingerprint`.
+Freeze it using the canonical .NET serializer, without invoking a model or
+reading packet contents:
+
+```bash
+DOTNET_DIAGNOSTICS_ADVISORY_LLM_OPERATION=freeze \
+DOTNET_DIAGNOSTICS_ADVISORY_LLM_PROTOCOL=/absolute/protocol.draft.json \
+DOTNET_DIAGNOSTICS_ADVISORY_LLM_FROZEN_PROTOCOL=/absolute/frozen-protocol.json \
+dotnet test tests/DotnetDiagnostics.ScenarioEvaluation.Tests/ -c Release \
+  --filter FullyQualifiedName~ExplicitLocalWorkflow_PreparesOrRunsFrozenProtocol
+```
+
+The draft is strictly validated and remains unchanged. The frozen output must
+not already exist; existing protocols are never overwritten or re-fingerprinted.
 
 Preparation is file-only and does not invoke a model:
 

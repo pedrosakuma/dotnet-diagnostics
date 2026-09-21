@@ -12,8 +12,16 @@ public sealed class AdvisoryLlmAssessmentExecutionTests
     public async Task ExplicitLocalWorkflow_PreparesOrRunsFrozenProtocol()
     {
         var operation = RequiredEnvironment("DOTNET_DIAGNOSTICS_ADVISORY_LLM_OPERATION");
-        var protocol = AdvisoryLlmAssessment.LoadProtocol(
-            RequiredEnvironment("DOTNET_DIAGNOSTICS_ADVISORY_LLM_PROTOCOL"));
+        var protocolPath = RequiredEnvironment("DOTNET_DIAGNOSTICS_ADVISORY_LLM_PROTOCOL");
+        if (operation == "freeze")
+        {
+            AdvisoryLlmAssessment.FreezeProtocol(
+                protocolPath,
+                RequiredEnvironment("DOTNET_DIAGNOSTICS_ADVISORY_LLM_FROZEN_PROTOCOL"));
+            return;
+        }
+
+        var protocol = AdvisoryLlmAssessment.LoadProtocol(protocolPath);
         var output = RequiredEnvironment("DOTNET_DIAGNOSTICS_ADVISORY_LLM_OUTPUT_DIRECTORY");
         if (operation == "prepare")
         {

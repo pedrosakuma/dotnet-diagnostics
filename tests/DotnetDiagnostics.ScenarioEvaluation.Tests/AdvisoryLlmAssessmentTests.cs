@@ -8,6 +8,120 @@ namespace DotnetDiagnostics.ScenarioEvaluation.Tests;
 public sealed class AdvisoryLlmAssessmentTests
 {
     [Fact]
+    public void FreezeProtocol_UsesCanonicalFingerprintWithoutOverwritingFiles()
+    {
+        using var files = new AssessmentTestFiles();
+        var protocol = files.CreateProtocol();
+        var sourcePath = files.Path("source-protocol.json");
+        AdvisoryLlmAssessment.WriteProtocol(sourcePath, protocol);
+        var draftJson = File.ReadAllText(sourcePath)
+            .Replace(protocol.ProtocolFingerprint, string.Empty, StringComparison.Ordinal);
+        var draftPath = files.Path("draft.json");
+        File.WriteAllText(draftPath, draftJson);
+        var outputPath = files.Path("frozen.json");
+
+        var frozen = AdvisoryLlmAssessment.FreezeProtocol(draftPath, outputPath);
+
+        frozen.ProtocolFingerprint.Should().Be(protocol.ProtocolFingerprint);
+        AdvisoryLlmAssessment.LoadProtocol(outputPath).Should().BeEquivalentTo(protocol);
+        File.ReadAllText(draftPath).Should().Be(draftJson);
+        var frozenBytes = File.ReadAllBytes(outputPath);
+        FluentActions.Invoking(() => AdvisoryLlmAssessment.FreezeProtocol(draftPath, outputPath))
+            .Should().Throw<IOException>();
+        File.ReadAllBytes(outputPath).Should().Equal(frozenBytes);
+    }
+
+    [Theory]
+    [InlineData("nonemptyFingerprint")]
+    [InlineData("duplicateProperty")]
+    [InlineData("unknownProperty")]
+    [InlineData("invalidLimits")]
+    public void FreezeProtocol_RejectsInvalidDraftBeforeCreatingOutput(string defect)
+    {
+        using var files = new AssessmentTestFiles();
+        var protocol = files.CreateProtocol();
+        var sourcePath = files.Path("source-protocol.json");
+        AdvisoryLlmAssessment.WriteProtocol(sourcePath, protocol);
+        var json = File.ReadAllText(sourcePath);
+        if (defect != "nonemptyFingerprint")
+        {
+            json = json.Replace(protocol.ProtocolFingerprint, string.Empty, StringComparison.Ordinal);
+        }
+
+        json = defect switch
+        {
+            "duplicateProperty" => json.Insert(1, "\"schemaVersion\":2,"),
+            "unknownProperty" => json.Insert(1, "\"unexpected\":true,"),
+            "invalidLimits" => json.Replace(
+                "\"maximumCalls\": 16", "\"maximumCalls\": 17", StringComparison.Ordinal),
+            _ => json,
+        };
+        var draftPath = files.Path("draft.json");
+        File.WriteAllText(draftPath, json);
+        var outputPath = files.Path("frozen.json");
+        var action = () => AdvisoryLlmAssessment.FreezeProtocol(draftPath, outputPath);
+
+        if (defect == "unknownProperty")
+        {
+            action.Should().Throw<JsonException>();
+        }
+        else
+        {
+            action.Should().Throw<InvalidDataException>();
+        }
+
+        File.Exists(outputPath).Should().BeFalse();
+    }
+
+    [Fact]
+    public void Prompts_DiscloseEnforcedResponseBounds()
+    {
+        using var files = new AssessmentTestFiles();
+        var protocol = files.CreateProtocol();
+        var projection = AdvisoryLlmAssessment.Project(protocol, protocol.Slots[0]);
+        var phaseA = AdvisoryLlmAssessment.BuildPhaseAPrompt(protocol, projection);
+        var packet = CalibrationPackets.ReadPacket(protocol.Slots[0].PacketPath);
+        var candidates = CandidatePair(
+            packet, AdvisoryLlmAssessment.ParsePhaseA(PhaseAJson(), projection, protocol.Limits));
+        var phaseB = AdvisoryLlmAssessment.BuildPhaseBPrompt(protocol, projection, candidates);
+
+        phaseA.Should().Contain("1-12 observations, 0-5 hypotheses, 0-4 alternatives");
+        phaseA.Should().Contain("1-8 citations per item");
+        phaseB.Should().Contain("0-16 disagreements");
+        foreach (var prompt in new[] { phaseA, phaseB })
+        {
+            prompt.Should().Contain("nonblank and at most 2000 characters");
+            prompt.Should().Contain("65536 UTF-8 bytes");
+        }
+    }
+
+    [Theory]
+    [InlineData("protocolId")]
+    [InlineData("protocolFingerprint")]
+    [InlineData("missingProtocolFingerprint")]
+    [InlineData("rubricFingerprint")]
+    [InlineData("productCommit")]
+    public void Projection_RejectsSelfConsistentPacketFromDifferentSourceBaseline(string defect)
+    {
+        using var files = new AssessmentTestFiles();
+        var source = AssessmentTestFiles.FrozenSource;
+        var foreignSource = defect switch
+        {
+            "protocolId" => source with { ProtocolId = "other-protocol" },
+            "protocolFingerprint" => source with { ProtocolFingerprint = new string('a', 64) },
+            "rubricFingerprint" => source with { RubricFingerprint = new string('b', 64) },
+            "productCommit" => source with { ProductCommit = new string('a', 40) },
+            _ => source,
+        };
+        var protocol = files.CreateProtocol(
+            packetSource: foreignSource,
+            omitPacketProtocolFingerprint: defect == "missingProtocolFingerprint");
+
+        FluentActions.Invoking(() => AdvisoryLlmAssessment.Project(protocol, protocol.Slots[0]))
+            .Should().Throw<InvalidDataException>().WithMessage("*source baseline does not match*");
+    }
+
+    [Fact]
     public void ProjectionAndPhaseAPrompt_FailClosedAndExcludePriorInterpretation()
     {
         using var files = new AssessmentTestFiles();
@@ -463,8 +577,18 @@ public sealed class AdvisoryLlmAssessmentTests
             return System.IO.Path.Combine(directory, name);
         }
 
-        public AdvisoryLlmProtocol CreateProtocol(string suffix = "first")
+        public static AdvisorySourceBaseline FrozenSource { get; } = new(
+            "advisory-calibration-v1",
+            "83736e129e944f6e0481c5eff27b8e9a879669d73c700402c8c868596de923ad",
+            "3b67a0737764cffefb58b0e1708a3e04428d8b75d1ede4d6c6cb42c0bc8dff35",
+            "f9c2ef8e849155983ad2344ac9fc28d2b469d906");
+
+        public AdvisoryLlmProtocol CreateProtocol(
+            string suffix = "first",
+            AdvisorySourceBaseline? packetSource = null,
+            bool omitPacketProtocolFingerprint = false)
         {
+            packetSource ??= FrozenSource;
             var slots = new List<AdvisoryAssessmentSlot>();
             for (var index = 0; index < 8; index++)
             {
@@ -472,18 +596,19 @@ public sealed class AdvisoryLlmAssessmentTests
                     ? CalibrationProvenanceKind.LiveModel
                     : CalibrationProvenanceKind.AuthoredEditedReplay;
                 var reportPath = Path($"{suffix}-report-{index}.json");
-                BlindedAgentHarness.WriteReport(reportPath, CreateReport(index == 1));
+                BlindedAgentHarness.WriteReport(reportPath, CreateReport(index == 1, packetSource.ProductCommit));
                 var packet = CalibrationPackets.CreatePacket(
                     reportPath,
                     new CalibrationCaseDescriptor(
-                        "advisory-llm-v2",
-                        new string('b', 64),
+                        packetSource.ProtocolId,
+                        packetSource.RubricFingerprint,
                         $"synthetic-slot-{index + 1:00}",
                         CalibrationPartition.Development,
                         provenance,
                         $"synthetic-capture-{index + 1:00}",
                         new string('c', 64),
-                        "SYNTHETIC TEST packet only."));
+                        "SYNTHETIC TEST packet only.",
+                        omitPacketProtocolFingerprint ? null : packetSource.ProtocolFingerprint));
                 var packetPath = Path($"{suffix}-packet-{index}.json");
                 CalibrationPackets.WritePacket(packetPath, packet);
                 slots.Add(new AdvisoryAssessmentSlot(
@@ -501,11 +626,7 @@ public sealed class AdvisoryLlmAssessmentTests
                 "advisory-llm-v2",
                 string.Empty,
                 DateTimeOffset.Parse("2026-09-21T00:00:00Z", CultureInfo.InvariantCulture),
-                new AdvisorySourceBaseline(
-                    "advisory-calibration-v1",
-                    "83736e129e944f6e0481c5eff27b8e9a879669d73c700402c8c868596de923ad",
-                    "3b67a0737764cffefb58b0e1708a3e04428d8b75d1ede4d6c6cb42c0bc8dff35",
-                    "f9c2ef8e849155983ad2344ac9fc28d2b469d906"),
+                FrozenSource,
                 Model("claude-sonnet-5"),
                 Model("gpt-5.6-sol"),
                 new AdvisoryLlmLimits(
@@ -546,7 +667,7 @@ public sealed class AdvisoryLlmAssessmentTests
         private static AdvisoryLlmModel Model(string name)
             => new("github-copilot-cli", name, "unknown", "copilot-cli", "GitHub Copilot CLI synthetic-test");
 
-        private static AgentHarnessReport CreateReport(bool snapshot)
+        private static AgentHarnessReport CreateReport(bool snapshot, string productCommit)
         {
             var content = snapshot ? SnapshotContent() : CounterContent();
             var result = new AgentToolResult(
@@ -580,7 +701,7 @@ public sealed class AdvisoryLlmAssessmentTests
                     100,
                     new string('d', 64),
                     new string('e', 64),
-                    "commit",
+                    productCommit,
                     "version",
                     "PRIVATE-WORKLOAD",
                     "1",

@@ -17,16 +17,35 @@ public static class AdvisoryLlmAssessment
         "3b67a0737764cffefb58b0e1708a3e04428d8b75d1ede4d6c6cb42c0bc8dff35";
     private const string FrozenSourceProductCommit = "f9c2ef8e849155983ad2344ac9fc28d2b469d906";
     private const int MaximumProtocolBytes = 1024 * 1024;
+    private const int MaximumDisagreements = 16;
     private static readonly JsonSerializerOptions JsonOptions = CreateJsonOptions();
 
     public static AdvisoryLlmProtocol LoadProtocol(string path)
     {
-        var bytes = ReadBounded(path, MaximumProtocolBytes);
-        RejectDuplicateProperties(bytes);
-        var protocol = JsonSerializer.Deserialize<AdvisoryLlmProtocol>(bytes, JsonOptions)
-            ?? throw new InvalidDataException("The advisory LLM protocol was empty.");
+        var protocol = ReadProtocolFile(path);
         ValidateProtocol(protocol);
         return protocol;
+    }
+
+    public static AdvisoryLlmProtocol FreezeProtocol(string draftPath, string outputPath)
+    {
+        var draft = ReadProtocolFile(draftPath);
+        if (draft.ProtocolFingerprint != string.Empty)
+        {
+            throw new InvalidDataException("A protocol draft must have an empty protocolFingerprint.");
+        }
+
+        var protocol = draft with { ProtocolFingerprint = ComputeProtocolFingerprint(draft) };
+        WriteProtocol(outputPath, protocol);
+        return protocol;
+    }
+
+    private static AdvisoryLlmProtocol ReadProtocolFile(string path)
+    {
+        var bytes = ReadBounded(path, MaximumProtocolBytes);
+        RejectDuplicateProperties(bytes);
+        return JsonSerializer.Deserialize<AdvisoryLlmProtocol>(bytes, JsonOptions)
+            ?? throw new InvalidDataException("The advisory LLM protocol was empty.");
     }
 
     public static void WriteProtocol(string path, AdvisoryLlmProtocol protocol)
@@ -56,6 +75,20 @@ public static class AdvisoryLlmAssessment
         {
             throw new InvalidDataException(
                 $"Slot '{slot.SlotId}' packet binding or development provenance does not match.");
+        }
+
+        if (packet.Descriptor.ProtocolId != protocol.Source.ProtocolId
+            || !string.Equals(
+                packet.Descriptor.ProtocolFingerprint,
+                protocol.Source.ProtocolFingerprint,
+                StringComparison.OrdinalIgnoreCase)
+            || !FixedEquals(packet.Descriptor.RubricFingerprint, protocol.Source.RubricFingerprint)
+            || !string.Equals(
+                packet.Generation.ProductCommit,
+                protocol.Source.ProductCommit,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException($"Slot '{slot.SlotId}' packet source baseline does not match.");
         }
 
         var approvedByResult = ValidateApprovedFacts(slot, packet);
@@ -127,6 +160,7 @@ public static class AdvisoryLlmAssessment
     public static string BuildPhaseAPrompt(AdvisoryLlmProtocol protocol, AdvisoryProjection projection)
     {
         var projectionJson = JsonSerializer.Serialize(projection.Evidence, JsonOptions);
+        var limits = protocol.Limits;
         var prompt =
             """
             You are performing an automated advisory reanalysis of retained .NET diagnostic signals.
@@ -142,8 +176,15 @@ public static class AdvisoryLlmAssessment
             uncertainty, abstain when retained signals do not justify a diagnosis, and ask one useful
             next diagnostic question.
 
-            Evidence:
-            """ + projectionJson;
+            """
+            + "\n" + FormattableString.Invariant(
+                $"""
+                Output limits: 1-{limits.MaximumObservations} observations, 0-{limits.MaximumHypotheses} hypotheses, 0-{limits.MaximumAlternatives} alternatives.
+                Use 1-{limits.MaximumCitationsPerItem} citations per item.
+                All text fields must be nonblank and at most {limits.MaximumStringCharacters} characters.
+                Keep the complete JSON response within {limits.MaximumResponseBytes} UTF-8 bytes.
+                """)
+            + "\n\nEvidence:" + projectionJson;
         EnforceUtf8(prompt, protocol.Limits.MaximumPromptBytes, "Phase A prompt");
         return prompt;
     }
@@ -154,6 +195,7 @@ public static class AdvisoryLlmAssessment
         IReadOnlyList<AdvisoryCandidate> candidates)
     {
         var payload = JsonSerializer.Serialize(new { evidence = projection.Evidence, candidates }, JsonOptions);
+        var limits = protocol.Limits;
         var prompt =
             """
             You are evaluating two opaque candidate interpretations of the same retained .NET
@@ -169,8 +211,14 @@ public static class AdvisoryLlmAssessment
             Candidate and claim IDs must exactly match the supplied payload, with no duplicates or
             omissions. Candidate order carries no meaning.
 
-            Evidence and candidates:
-            """ + payload;
+            """
+            + "\n" + FormattableString.Invariant(
+                $"""
+                Output limits: 0-{MaximumDisagreements} disagreements.
+                All text fields must be nonblank and at most {limits.MaximumStringCharacters} characters.
+                Keep the complete JSON response within {limits.MaximumResponseBytes} UTF-8 bytes.
+                """)
+            + "\n\nEvidence and candidates:" + payload;
         EnforceUtf8(prompt, protocol.Limits.MaximumPromptBytes, "Phase B prompt");
         return prompt;
     }
@@ -246,7 +294,7 @@ public static class AdvisoryLlmAssessment
                 ValidateText(claim.Rationale, limits);
             }
         }
-        RequireBounded(response.Disagreements, 0, 16, "disagreements");
+        RequireBounded(response.Disagreements, 0, MaximumDisagreements, "disagreements");
         foreach (var disagreement in response.Disagreements)
         {
             ValidateText(disagreement, limits);
