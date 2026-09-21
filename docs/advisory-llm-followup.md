@@ -119,6 +119,36 @@ Phase B.
 
 ## File-only freeze and preparation
 
+### Frozen transport byte domains
+
+The plan binds `copilot-cli-jsonl-transport-budget-v1`, evidenced by transport
+revision `c2cdcfe3997435f10015d64ee0e51d9b3170c177`:
+
+- decoded `assistant.message.data.content`: 65,536 bytes, equal to the existing
+  `MaximumResponseBytes`;
+- per-assistant JSON event envelope: 262,144 bytes;
+- cumulative non-answer JSONL framing: 1,048,576 bytes;
+- insertion-time line cap: `6 * 65,536 + 262,144 = 655,360` bytes;
+- stderr: 32,768 bytes.
+
+These are finite transport safety policies, not promises about Copilot CLI
+output size. The decoded assistant payload cap remains 65,536 bytes. The older
+transport incorrectly applied that cap to the complete JSONL stdout stream,
+which can contain prompt echo, reasoning, and answer events. The exact event or
+stream that overflowed in each historical call was not retained and remains
+unknown.
+
+Before drafting the plan, run only the target-free version check:
+
+```bash
+/absolute/copilot --version
+```
+
+Freeze that exact output into both model `transportVersion` fields. Do not copy
+the pilot's historical CLI version. Preparation and execution reject differing
+phase versions, and execution rejects an installed version that changed after
+the plan was frozen. Version detection does not invoke a model.
+
 The controller first creates a draft conforming to
 `Calibration/advisory-llm-followup-v1.plan.schema.json`, with a blank
 `planFingerprint`. Freezing verifies every scoped source binding and semantic
@@ -129,11 +159,18 @@ DOTNET_DIAGNOSTICS_ADVISORY_LLM_OPERATION=followup-freeze \
 DOTNET_DIAGNOSTICS_ADVISORY_LLM_PROTOCOL=/absolute/frozen-v2-protocol.json \
 DOTNET_DIAGNOSTICS_ADVISORY_LLM_FOLLOWUP_DRAFT=/absolute/followup.draft.json \
 DOTNET_DIAGNOSTICS_ADVISORY_LLM_FOLLOWUP_PLAN=/absolute/followup.plan.json \
+DOTNET_DIAGNOSTICS_AGENT_COPILOT_PATH=/absolute/copilot \
+DOTNET_DIAGNOSTICS_AGENT_COPILOT_HOME=/absolute/empty-home \
+DOTNET_DIAGNOSTICS_AGENT_COPILOT_WORK_ROOT=/absolute/outside-repository \
 /home/pedrotravi/.dotnet/dotnet \
   /home/pedrotravi/.dotnet/sdk/10.0.201/dotnet.dll \
   test tests/DotnetDiagnostics.ScenarioEvaluation.Tests/ -c Release \
   --filter FullyQualifiedName~ExplicitLocalWorkflow_PreparesOrRunsFrozenProtocol
 ```
+
+The freeze entrypoint detects the installed CLI version before writing and
+rejects a draft that binds a different value. It does not authenticate or
+invoke a model.
 
 Optional preparation writes create-new projections and the case 05 Phase-A
 prompt without invoking a model or target:
@@ -183,6 +220,7 @@ the output. Technical completion means the declared safe semantic operations,
 five primary comparisons, and two controls completed; it says nothing about
 whether any claim was supported.
 
-Transport response limits are supplied by the independently reviewed transport
-configuration and frozen into the plan. This protocol does not silently raise
-them or promise unavailable token, dollar, or provider-version guarantees.
+Transport byte-domain limits are frozen into the plan and summary. They remain
+controller-only and do not enter model prompts. This protocol does not silently
+raise them or promise unavailable token, dollar, or provider-version
+guarantees.

@@ -12,6 +12,8 @@ public static partial class AdvisoryLlmAssessment
     public const string FollowupRubricVersion = "advisory-semantic-followup-v1";
     public const string FollowupMeasurementGlossaryVersion =
         "advisory-counter-measurement-glossary-v1";
+    public const string FollowupTransportBudgetPolicyVersion =
+        "copilot-cli-jsonl-transport-budget-v1";
     private const int FollowupSchemaVersion = 1;
     private const string FollowupRubric =
         """
@@ -102,6 +104,18 @@ public static partial class AdvisoryLlmAssessment
                 "projected-counter-field-surface"),
         ];
 
+    public static AdvisoryFollowupTransportBudgetPolicy FollowupTransportBudgetPolicy { get; } =
+        new(
+            FollowupTransportBudgetPolicyVersion,
+            "c2cdcfe3997435f10015d64ee0e51d9b3170c177",
+            "transport-safety-policy-not-cli-guarantee",
+            65_536,
+            262_144,
+            1_048_576,
+            6,
+            (6 * 65_536) + 262_144,
+            32_768);
+
     public static string FollowupPhaseAPromptFingerprint
         => Sha256(Encoding.UTF8.GetBytes(
             FollowupPhaseAInstructions + "\n" + FollowupMeasurementGlossary));
@@ -117,11 +131,25 @@ public static partial class AdvisoryLlmAssessment
         AdvisoryLlmProtocol protocol,
         string draftPath,
         string outputPath)
+        => FreezeFollowupPlan(protocol, draftPath, outputPath, detectedTransportVersion: null);
+
+    public static AdvisoryFollowupPlan FreezeFollowupPlan(
+        AdvisoryLlmProtocol protocol,
+        string draftPath,
+        string outputPath,
+        string? detectedTransportVersion)
     {
         var draft = ReadFollowupPlan(draftPath);
         if (draft.PlanFingerprint.Length != 0)
         {
             throw new InvalidDataException("A follow-up draft must have a blank plan fingerprint.");
+        }
+        if (detectedTransportVersion is not null
+            && (draft.PhaseAModel.TransportVersion != detectedTransportVersion
+                || draft.PhaseBModel.TransportVersion != detectedTransportVersion))
+        {
+            throw new InvalidDataException(
+                "The follow-up draft does not bind the currently detected CLI version.");
         }
         var frozen = draft with { PlanFingerprint = ComputeFollowupPlanFingerprint(draft) };
         ValidateFollowupPlan(protocol, frozen, requireFingerprint: true);
@@ -374,6 +402,7 @@ public static partial class AdvisoryLlmAssessment
             plan.MeasurementGlossaryVersion,
             plan.MeasurementGlossarySha256,
             plan.MeasurementGlossaryProvenance,
+            plan.TransportBudgetPolicy,
             started,
             DateTimeOffset.UtcNow,
             plan.MaximumNewCalls,
@@ -1049,9 +1078,21 @@ public static partial class AdvisoryLlmAssessment
         {
             throw new InvalidDataException("Follow-up plan shape or frozen rubric is invalid.");
         }
-        if (plan.PhaseAModel != protocol.PhaseAModel || plan.PhaseBModel != protocol.PhaseBModel)
+        ValidateModel(plan.PhaseAModel, protocol.PhaseAModel.Model);
+        ValidateModel(plan.PhaseBModel, protocol.PhaseBModel.Model);
+        if (plan.PhaseAModel.TransportVersion != plan.PhaseBModel.TransportVersion)
         {
-            throw new InvalidDataException("Follow-up models do not match the frozen source protocol.");
+            throw new InvalidDataException("Follow-up phases must freeze the same detected CLI version.");
+        }
+        if (plan.TransportBudgetPolicy != FollowupTransportBudgetPolicy
+            || plan.TransportBudgetPolicy.DecodedAssistantPayloadBytes
+                != plan.Limits.MaximumResponseBytes
+            || plan.TransportBudgetPolicy.InsertionLineBytes
+                != (plan.TransportBudgetPolicy.JsonEscapingExpansionFactor
+                    * plan.TransportBudgetPolicy.DecodedAssistantPayloadBytes)
+                   + plan.TransportBudgetPolicy.PerAssistantEnvelopeBytes)
+        {
+            throw new InvalidDataException("Follow-up transport byte-domain policy is stale or invalid.");
         }
         if (plan.Limits.MaximumCalls != 8
             || plan.Limits.MaximumCallsPerCase != 3
@@ -1061,6 +1102,7 @@ public static partial class AdvisoryLlmAssessment
             || plan.Limits.MaximumOuterOverheadSeconds > protocol.Limits.MaximumOuterOverheadSeconds
             || plan.Limits.MaximumPromptBytes != protocol.Limits.MaximumPromptBytes
             || plan.Limits.MaximumResponseBytes != protocol.Limits.MaximumResponseBytes
+            || plan.Limits.MaximumResponseBytes != 65_536
             || plan.Limits.MaximumCaseArtifactBytes != protocol.Limits.MaximumCaseArtifactBytes
             || plan.Limits.MaximumHypotheses != protocol.Limits.MaximumHypotheses
             || plan.Limits.MaximumObservations != protocol.Limits.MaximumObservations

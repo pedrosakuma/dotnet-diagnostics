@@ -18,6 +18,7 @@
     "phaseBPromptFingerprint",
     "phaseAModel",
     "phaseBModel",
+    "transportBudgetPolicy",
     "limits",
     "maximumNewCalls",
     "maximumNewPhaseACalls",
@@ -51,6 +52,7 @@
     "phaseBPromptFingerprint": { "$ref": "#/$defs/sha256" },
     "phaseAModel": { "$ref": "#/$defs/model" },
     "phaseBModel": { "$ref": "#/$defs/model" },
+    "transportBudgetPolicy": { "$ref": "#/$defs/transportBudgetPolicy" },
     "limits": { "$ref": "#/$defs/limits" },
     "maximumNewCalls": { "const": 8 },
     "maximumNewPhaseACalls": { "const": 1 },
@@ -110,6 +112,34 @@
         "modelVersion": { "const": "unknown" },
         "transport": { "const": "copilot-cli" },
         "transportVersion": { "type": "string", "minLength": 1, "maxLength": 128 }
+      }
+    },
+    "transportBudgetPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policyVersion",
+        "evidenceRevision",
+        "scope",
+        "decodedAssistantPayloadBytes",
+        "perAssistantEnvelopeBytes",
+        "cumulativeNonAnswerFramingBytes",
+        "jsonEscapingExpansionFactor",
+        "insertionLineBytes",
+        "stderrBytes"
+      ],
+      "properties": {
+        "policyVersion": { "const": "copilot-cli-jsonl-transport-budget-v1" },
+        "evidenceRevision": {
+          "const": "c2cdcfe3997435f10015d64ee0e51d9b3170c177"
+        },
+        "scope": { "const": "transport-safety-policy-not-cli-guarantee" },
+        "decodedAssistantPayloadBytes": { "const": 65536 },
+        "perAssistantEnvelopeBytes": { "const": 262144 },
+        "cumulativeNonAnswerFramingBytes": { "const": 1048576 },
+        "jsonEscapingExpansionFactor": { "const": 6 },
+        "insertionLineBytes": { "const": 655360 },
+        "stderrBytes": { "const": 32768 }
       }
     },
     "limits": {

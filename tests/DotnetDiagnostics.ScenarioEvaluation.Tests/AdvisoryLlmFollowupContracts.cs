@@ -72,6 +72,17 @@ public sealed record AdvisoryFollowupGlossaryCitation(
     string LineRange,
     string Subject);
 
+public sealed record AdvisoryFollowupTransportBudgetPolicy(
+    string PolicyVersion,
+    string EvidenceRevision,
+    string Scope,
+    int DecodedAssistantPayloadBytes,
+    int PerAssistantEnvelopeBytes,
+    int CumulativeNonAnswerFramingBytes,
+    int JsonEscapingExpansionFactor,
+    int InsertionLineBytes,
+    int StderrBytes);
+
 public sealed record AdvisoryFollowupPlan(
     int SchemaVersion,
     string PlanId,
@@ -87,6 +98,7 @@ public sealed record AdvisoryFollowupPlan(
     string PhaseBPromptFingerprint,
     AdvisoryLlmModel PhaseAModel,
     AdvisoryLlmModel PhaseBModel,
+    AdvisoryFollowupTransportBudgetPolicy TransportBudgetPolicy,
     AdvisoryLlmLimits Limits,
     int MaximumNewCalls,
     int MaximumNewPhaseACalls,
@@ -216,6 +228,7 @@ public sealed record AdvisoryFollowupSummary(
     string MeasurementGlossaryVersion,
     string MeasurementGlossarySha256,
     IReadOnlyList<AdvisoryFollowupGlossaryCitation> MeasurementGlossaryProvenance,
+    AdvisoryFollowupTransportBudgetPolicy TransportBudgetPolicy,
     DateTimeOffset StartedAtUtc,
     DateTimeOffset CompletedAtUtc,
     int MaximumNewCalls,

@@ -54,7 +54,12 @@ public sealed partial class AdvisoryLlmAssessmentTests
             summary.MeasurementGlossaryProvenance.Should().BeEquivalentTo(
                 AdvisoryLlmAssessment.FollowupMeasurementGlossaryProvenance,
                 options => options.WithStrictOrdering());
+            summary.TransportBudgetPolicy.Should().Be(
+                AdvisoryLlmAssessment.FollowupTransportBudgetPolicy);
             summary.PreviousSourceSummarySha256.Should().Be(plan.PreviousSourceSummarySha256);
+            plan.PhaseAModel.TransportVersion.Should().Be("GitHub Copilot CLI 1.0.87");
+            plan.PhaseAModel.TransportVersion.Should().NotBe(
+                fixture.Protocol.PhaseAModel.TransportVersion);
             transport.PhaseACalls.Should().Be(1);
             transport.PhaseBCalls.Should().Be(7);
             transport.Prompts.Should().OnlyContain(prompt =>
@@ -68,6 +73,11 @@ public sealed partial class AdvisoryLlmAssessmentTests
                 && !prompt.Contains("CONTROLLER-SOURCE-STATUS-MARKER", StringComparison.Ordinal)
                 && !prompt.Contains("f9c2ef8e", StringComparison.Ordinal)
                 && !prompt.Contains("CounterValue.cs", StringComparison.Ordinal)
+                && !prompt.Contains(
+                    AdvisoryLlmAssessment.FollowupTransportBudgetPolicyVersion,
+                    StringComparison.Ordinal)
+                && !prompt.Contains("c2cdcfe3997435f10015d64ee0e51d9b3170c177",
+                    StringComparison.Ordinal)
                 && prompt.Contains("value is the last observed sample", StringComparison.Ordinal)
                 && prompt.Contains("not a capture-wide mean or total", StringComparison.Ordinal)
                 && prompt.Contains("do not divide value by", StringComparison.Ordinal));
@@ -203,6 +213,7 @@ public sealed partial class AdvisoryLlmAssessmentTests
     [InlineData("duplicateProperty")]
     [InlineData("unknownProperty")]
     [InlineData("glossaryProvenance")]
+    [InlineData("transportBudget")]
     public async Task FollowupPreparation_StrictlyRejectsMalformedDraft(string defect)
     {
         using var files = new AssessmentTestFiles();
@@ -219,6 +230,10 @@ public sealed partial class AdvisoryLlmAssessmentTests
                 "\"sourceRevision\": \"f9c2ef8e\"",
                 "\"sourceRevision\": \"deadbeef\"",
                 StringComparison.Ordinal),
+            "transportBudget" => json.Replace(
+                "\"perAssistantEnvelopeBytes\": 262144",
+                "\"perAssistantEnvelopeBytes\": 262145",
+                StringComparison.Ordinal),
             _ => json.Insert(1, "\"unexpected\":true,"),
         };
         var malformed = files.Path("malformed-followup.json");
@@ -231,6 +246,30 @@ public sealed partial class AdvisoryLlmAssessmentTests
                 output))
             .Should().Throw<Exception>();
         File.Exists(output).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task FollowupPreparation_BindsCurrentlyDetectedTransportVersion()
+    {
+        using var files = new AssessmentTestFiles();
+        var fixture = await CreateFollowupFixtureAsync(files);
+        var output = files.Path("wrong-version.plan.json");
+
+        FluentActions.Invoking(() => AdvisoryLlmAssessment.FreezeFollowupPlan(
+                fixture.Protocol,
+                fixture.DraftPath,
+                output,
+                "GitHub Copilot CLI 1.0.86"))
+            .Should().Throw<InvalidDataException>()
+            .WithMessage("*currently detected CLI version*");
+        File.Exists(output).Should().BeFalse();
+
+        var frozen = AdvisoryLlmAssessment.FreezeFollowupPlan(
+            fixture.Protocol,
+            fixture.DraftPath,
+            files.Path("detected-version.plan.json"),
+            "GitHub Copilot CLI 1.0.87");
+        frozen.PhaseAModel.TransportVersion.Should().Be("GitHub Copilot CLI 1.0.87");
     }
 
     [Fact]
@@ -620,8 +659,9 @@ public sealed partial class AdvisoryLlmAssessmentTests
             AdvisoryLlmAssessment.FollowupMeasurementGlossaryProvenance,
             AdvisoryLlmAssessment.FollowupPhaseAPromptFingerprint,
             AdvisoryLlmAssessment.FollowupPhaseBPromptFingerprint,
-            protocol.PhaseAModel,
-            protocol.PhaseBModel,
+            protocol.PhaseAModel with { TransportVersion = "GitHub Copilot CLI 1.0.87" },
+            protocol.PhaseBModel with { TransportVersion = "GitHub Copilot CLI 1.0.87" },
+            AdvisoryLlmAssessment.FollowupTransportBudgetPolicy,
             followupLimits,
             8,
             1,

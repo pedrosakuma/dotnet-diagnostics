@@ -32,10 +32,12 @@ public sealed class AdvisoryLlmAssessmentExecutionTests
         }
         if (operation == "followup-freeze")
         {
+            var (_, detectedVersion) = await CreateTransportAsync();
             AdvisoryLlmAssessment.FreezeFollowupPlan(
                 protocol,
                 RequiredEnvironment("DOTNET_DIAGNOSTICS_ADVISORY_LLM_FOLLOWUP_DRAFT"),
-                RequiredEnvironment("DOTNET_DIAGNOSTICS_ADVISORY_LLM_FOLLOWUP_PLAN"));
+                RequiredEnvironment("DOTNET_DIAGNOSTICS_ADVISORY_LLM_FOLLOWUP_PLAN"),
+                detectedVersion);
             return;
         }
 
