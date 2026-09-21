@@ -305,7 +305,7 @@ public static class BlindedAgentHarness
             limitations.Add(
                 "Copilot CLI uses cloud inference through its own login. The CLI does not expose provider token/cost usage or a hard output-token setting here; wall-time, turn, tool, capture, response-byte, and artifact-byte caps remain enforced.");
             limitations.Add(
-                "Temperature zero and the output-token value are requested evaluation metadata, not CLI-enforced generation settings. CLI invocation explicitly requests --effort low and --max-ai-credits 30 (a soft limit, not measured spend).");
+                "Temperature zero and the output-token value are requested evaluation metadata, not CLI-enforced generation settings. CLI invocation explicitly requests --reasoning-effort low and --max-ai-credits 30 (a soft limit, not measured spend).");
         }
 
         try

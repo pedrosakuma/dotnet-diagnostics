@@ -209,7 +209,7 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
         info.ArgumentList.Add(prompt);
         info.ArgumentList.Add("--model");
         info.ArgumentList.Add(configuration.Model);
-        info.ArgumentList.Add("--effort");
+        info.ArgumentList.Add("--reasoning-effort");
         info.ArgumentList.Add("low");
         info.ArgumentList.Add("--session-id");
         info.ArgumentList.Add(invocationId.ToString("D"));
@@ -293,17 +293,26 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
                 await stderrTask.ConfigureAwait(false)));
         }
 
-        var version = (await stdoutTask.ConfigureAwait(false))
+        return ParseVersionOutput(await stdoutTask.ConfigureAwait(false));
+    }
+
+    internal static string ParseVersionOutput(string output)
+    {
+        const string prefix = "GitHub Copilot CLI ";
+        var line = output
             .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .FirstOrDefault();
-        if (string.IsNullOrWhiteSpace(version)
-            || !version.StartsWith("GitHub Copilot CLI ", StringComparison.Ordinal))
+        var versionText = line?.StartsWith(prefix, StringComparison.Ordinal) == true
+            ? line[prefix.Length..].TrimEnd('.')
+            : null;
+        if (string.IsNullOrWhiteSpace(versionText)
+            || !Version.TryParse(versionText, out _))
         {
             throw new AgentTransportException(
                 "Copilot CLI version probe did not return the expected product/version line.");
         }
 
-        return version;
+        return prefix + versionText;
     }
 
     internal ProcessStartInfo CreateVersionStartInfo()

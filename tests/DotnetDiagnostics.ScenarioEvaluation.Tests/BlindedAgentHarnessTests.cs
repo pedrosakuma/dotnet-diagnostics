@@ -183,7 +183,7 @@ public sealed class BlindedAgentHarnessTests
 
             info.UseShellExecute.Should().BeFalse();
             info.WorkingDirectory.Should().Be(invocationDirectory);
-            info.ArgumentList.Should().ContainInOrder("--effort", "low");
+            info.ArgumentList.Should().ContainInOrder("--reasoning-effort", "low");
             info.ArgumentList.Should().ContainInOrder(
                 "--session-id",
                 "e1bf1639-7d23-4d66-a7f3-c21a2280201f");
@@ -224,6 +224,17 @@ public sealed class BlindedAgentHarnessTests
         {
             Directory.Delete(root, recursive: true);
         }
+    }
+
+    [Fact]
+    public void CopilotCliTransport_NormalizesCurrentVersionOutput()
+    {
+        CopilotCliAgentTransport.ParseVersionOutput(
+                "GitHub Copilot CLI 1.0.86.\nRun 'copilot update' to check for updates.\n")
+            .Should().Be("GitHub Copilot CLI 1.0.86");
+
+        FluentActions.Invoking(() => CopilotCliAgentTransport.ParseVersionOutput("copilot unknown"))
+            .Should().Throw<AgentTransportException>();
     }
 
     [Fact]
