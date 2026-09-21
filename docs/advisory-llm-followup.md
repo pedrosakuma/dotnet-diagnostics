@@ -9,6 +9,9 @@ into eight, create human review, estimate accuracy, or establish a CI gate.
 The first frozen follow-up was blocked by CLI event compatibility; see
 [`advisory-llm-followup-results.md`](advisory-llm-followup-results.md) for the
 preserved five-call, zero-comparison outcome.
+The separately declared second iteration completed four primary comparisons
+and both order controls; see
+[`advisory-llm-followup-02-results.md`](advisory-llm-followup-02-results.md).
 
 ## Two independent dimensions
 
