@@ -1,0 +1,230 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Advisory semantic follow-up plan v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "planId",
+    "planFingerprint",
+    "protocolFingerprint",
+    "rubricVersion",
+    "rubricSha256",
+    "phaseAPromptFingerprint",
+    "phaseBPromptFingerprint",
+    "phaseAModel",
+    "phaseBModel",
+    "limits",
+    "maximumNewCalls",
+    "maximumNewPhaseACalls",
+    "maximumNewPhaseBCalls",
+    "sources",
+    "cases",
+    "orderControls"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "planId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "planFingerprint": {
+      "type": "string",
+      "pattern": "^$|^[0-9a-f]{64}$"
+    },
+    "protocolFingerprint": { "$ref": "#/$defs/sha256" },
+    "rubricVersion": { "const": "advisory-semantic-followup-v1" },
+    "rubricSha256": { "$ref": "#/$defs/sha256" },
+    "phaseAPromptFingerprint": { "$ref": "#/$defs/sha256" },
+    "phaseBPromptFingerprint": { "$ref": "#/$defs/sha256" },
+    "phaseAModel": { "$ref": "#/$defs/model" },
+    "phaseBModel": { "$ref": "#/$defs/model" },
+    "limits": { "$ref": "#/$defs/limits" },
+    "maximumNewCalls": { "const": 8 },
+    "maximumNewPhaseACalls": { "const": 1 },
+    "maximumNewPhaseBCalls": { "const": 7 },
+    "sources": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": { "$ref": "#/$defs/source" }
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "items": { "$ref": "#/$defs/case" }
+    },
+    "orderControls": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": { "$ref": "#/$defs/control" }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "nullableSha256": {
+      "type": [ "string", "null" ],
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "model",
+        "modelVersion",
+        "transport",
+        "transportVersion"
+      ],
+      "properties": {
+        "provider": { "const": "github-copilot-cli" },
+        "model": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "modelVersion": { "const": "unknown" },
+        "transport": { "const": "copilot-cli" },
+        "transportVersion": { "type": "string", "minLength": 1, "maxLength": 128 }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maximumCases",
+        "maximumCalls",
+        "maximumCallsPerCase",
+        "perCallTimeoutSeconds",
+        "maximumInferenceSeconds",
+        "maximumOuterOverheadSeconds",
+        "maximumPromptBytes",
+        "maximumResponseBytes",
+        "maximumCaseArtifactBytes",
+        "maximumHypotheses",
+        "maximumObservations",
+        "maximumAlternatives",
+        "maximumCitationsPerItem",
+        "maximumClaimsPerCandidate",
+        "maximumStringCharacters"
+      ],
+      "properties": {
+        "maximumCases": { "const": 5 },
+        "maximumCalls": { "const": 8 },
+        "maximumCallsPerCase": { "type": "integer", "minimum": 2, "maximum": 3 },
+        "perCallTimeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 600 },
+        "maximumInferenceSeconds": { "type": "integer", "minimum": 1, "maximum": 1920 },
+        "maximumOuterOverheadSeconds": { "type": "integer", "minimum": 1, "maximum": 600 },
+        "maximumPromptBytes": { "type": "integer", "minimum": 1024, "maximum": 262144 },
+        "maximumResponseBytes": { "type": "integer", "minimum": 1024, "maximum": 262144 },
+        "maximumCaseArtifactBytes": { "type": "integer", "minimum": 4096, "maximum": 1048576 },
+        "maximumHypotheses": { "type": "integer", "minimum": 0, "maximum": 5 },
+        "maximumObservations": { "type": "integer", "minimum": 1, "maximum": 12 },
+        "maximumAlternatives": { "type": "integer", "minimum": 0, "maximum": 4 },
+        "maximumCitationsPerItem": { "type": "integer", "minimum": 0, "maximum": 16 },
+        "maximumClaimsPerCandidate": { "type": "integer", "minimum": 1, "maximum": 16 },
+        "maximumStringCharacters": { "type": "integer", "minimum": 1, "maximum": 4096 }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [ "sourceId", "kind", "rootPath", "summarySha256" ],
+      "properties": {
+        "sourceId": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "kind": { "enum": [ "assessmentRun", "continuationRun" ] },
+        "rootPath": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "summarySha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "retainedBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sourceId",
+        "sourceCaseResultSha256",
+        "sourcePhaseAPromptSha256",
+        "sourcePhaseAResponseSha256",
+        "normalizedPayloadSha256",
+        "projectionSha256",
+        "sealSourceId",
+        "sealCaseResultSha256",
+        "sealSha256"
+      ],
+      "properties": {
+        "sourceId": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "sourceCaseResultSha256": { "$ref": "#/$defs/sha256" },
+        "sourcePhaseAPromptSha256": { "$ref": "#/$defs/sha256" },
+        "sourcePhaseAResponseSha256": { "$ref": "#/$defs/nullableSha256" },
+        "normalizedPayloadSha256": { "$ref": "#/$defs/nullableSha256" },
+        "projectionSha256": { "$ref": "#/$defs/sha256" },
+        "sealSourceId": { "type": [ "string", "null" ], "minLength": 1, "maxLength": 64 },
+        "sealCaseResultSha256": { "$ref": "#/$defs/nullableSha256" },
+        "sealSha256": { "$ref": "#/$defs/nullableSha256" }
+      }
+    },
+    "claimBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [ "claimId", "textPointer", "evidenceLocationsPointer" ],
+      "properties": {
+        "claimId": {
+          "type": "string",
+          "pattern": "^followup-claim-[0-9]{2}$"
+        },
+        "textPointer": { "type": "string", "pattern": "^/hypotheses/[0-9]+/text$" },
+        "evidenceLocationsPointer": {
+          "type": "string",
+          "pattern": "^/hypotheses/[0-9]+/evidenceLocations$"
+        }
+      }
+    },
+    "semanticBindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "claims",
+        "uncertaintyPointer",
+        "abstainedPointer",
+        "nextQuestionPointer"
+      ],
+      "properties": {
+        "claims": {
+          "type": "array",
+          "maxItems": 5,
+          "items": { "$ref": "#/$defs/claimBinding" }
+        },
+        "uncertaintyPointer": { "const": "/uncertainty" },
+        "abstainedPointer": { "const": "/abstained" },
+        "nextQuestionPointer": { "const": "/nextDiagnosticQuestion" }
+      }
+    },
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "slotId",
+        "phaseAMode",
+        "primaryFirstCandidate",
+        "source",
+        "semanticBindings"
+      ],
+      "properties": {
+        "slotId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "phaseAMode": {
+          "enum": [ "retainedSemanticExtraction", "freshEvidenceOnly" ]
+        },
+        "primaryFirstCandidate": { "enum": [ "original", "reanalysis" ] },
+        "source": { "$ref": "#/$defs/retainedBinding" },
+        "semanticBindings": { "$ref": "#/$defs/semanticBindings" }
+      }
+    },
+    "control": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [ "controlId", "slotId" ],
+      "properties": {
+        "controlId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "slotId": { "type": "string", "minLength": 1, "maxLength": 128 }
+      }
+    }
+  }
+}

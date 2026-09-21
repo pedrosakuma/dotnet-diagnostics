@@ -706,8 +706,32 @@ public static partial class AdvisoryLlmAssessment
             hypothesis.Text,
             hypothesis.EvidenceLocations,
             AgentEvidencePosture.Inferred)).ToArray();
+        return BuildCandidates(
+            slot.FirstCandidate,
+            originalClaims,
+            packet.Claims.Select(claim => claim.ClaimId).ToArray(),
+            packet.Uncertainty,
+            string.Join(" ", packet.NextSteps),
+            newClaims,
+            phaseA.Hypotheses.Select(hypothesis => hypothesis.HypothesisId).ToArray(),
+            phaseA.Uncertainty,
+            phaseA.NextDiagnosticQuestion,
+            out mappings);
+    }
 
-        var sources = slot.FirstCandidate == AdvisoryCandidateSource.Original
+    private static List<AdvisoryCandidate> BuildCandidates(
+        AdvisoryCandidateSource firstCandidate,
+        IReadOnlyList<AdvisoryCandidateClaim> originalClaims,
+        IReadOnlyList<string> originalClaimIds,
+        string originalUncertainty,
+        string originalNextStep,
+        IReadOnlyList<AdvisoryCandidateClaim> reanalysisClaims,
+        IReadOnlyList<string> reanalysisClaimIds,
+        string reanalysisUncertainty,
+        string reanalysisNextStep,
+        out IReadOnlyList<AdvisoryCandidateMapping> mappings)
+    {
+        var sources = firstCandidate == AdvisoryCandidateSource.Original
             ? new[] { AdvisoryCandidateSource.Original, AdvisoryCandidateSource.Reanalysis }
             : new[] { AdvisoryCandidateSource.Reanalysis, AdvisoryCandidateSource.Original };
         var candidates = new List<AdvisoryCandidate>(2);
@@ -717,25 +741,26 @@ public static partial class AdvisoryLlmAssessment
             var candidateId = $"candidate-{candidateIndex + 1:00}";
             var sourceClaims = sources[candidateIndex] == AdvisoryCandidateSource.Original
                 ? originalClaims
-                : newClaims;
+                : reanalysisClaims;
+            var sourceClaimIds = sources[candidateIndex] == AdvisoryCandidateSource.Original
+                ? originalClaimIds
+                : reanalysisClaimIds;
             var claims = sourceClaims.Select((claim, claimIndex) => claim with
             {
                 ClaimId = $"{candidateId}-claim-{claimIndex + 1:00}",
             }).ToArray();
             var mapping = claims.Select((claim, claimIndex) => new KeyValuePair<string, string>(
                 claim.ClaimId,
-                sources[candidateIndex] == AdvisoryCandidateSource.Original
-                    ? packet.Claims[claimIndex].ClaimId
-                    : phaseA.Hypotheses[claimIndex].HypothesisId)).ToDictionary();
+                sourceClaimIds[claimIndex])).ToDictionary();
             candidates.Add(new AdvisoryCandidate(
                 candidateId,
                 claims,
                 sources[candidateIndex] == AdvisoryCandidateSource.Original
-                    ? packet.Uncertainty
-                    : phaseA.Uncertainty,
+                    ? originalUncertainty
+                    : reanalysisUncertainty,
                 sources[candidateIndex] == AdvisoryCandidateSource.Original
-                    ? string.Join(" ", packet.NextSteps)
-                    : phaseA.NextDiagnosticQuestion));
+                    ? originalNextStep
+                    : reanalysisNextStep));
             controllerMappings.Add(new AdvisoryCandidateMapping(candidateId, sources[candidateIndex], mapping));
         }
 

@@ -1,0 +1,147 @@
+# Advisory LLM semantic follow-up
+
+This document defines the separately versioned semantic follow-up to the
+partial development assessment recorded in
+[`advisory-llm-assessment-results.md`](advisory-llm-assessment-results.md).
+It does not rewrite that experiment, convert its three completed comparisons
+into eight, create human review, estimate accuracy, or establish a CI gate.
+
+## Two independent dimensions
+
+The follow-up records technical schema compliance separately from semantic
+usability.
+
+A retained response can remain `schemaInvalid` under its original contract
+while a new, frozen controller plan safely reads bounded strings from declared
+JSON pointers. The raw response, SHA-256, source status, and source file remain
+unchanged. The derived view assigns controller-only opaque claim IDs mapped to
+the exact source text and citation-array pointers. It does not rename a source
+field, fabricate a source hypothesis ID, repair a citation, or mark the old
+response valid.
+
+Unreadable, missing, duplicate, malformed, oversized, or wrongly typed semantic
+fields fail closed during file-only preflight. Citation existence is recorded
+mechanically and separately from the comparator's semantic support judgment.
+
+## Frozen scope
+
+The v1 follow-up plan contains exactly:
+
+- the five live-origin slots, case 01 through case 05;
+- retained Phase-A semantic extraction for cases 01 through 04;
+- at most one fresh evidence-only Phase-A call for case 05;
+- one primary Phase-B comparison for each usable case;
+- reversed-order Phase-B controls for predeclared cases 01 and 03;
+- at most eight new calls: one A and seven B, with no retry or fallback;
+- exact source summary, case, response, normalized-payload, projection, prompt,
+  and applicable recovered-seal hashes;
+- exact models, transport versions, byte/time budgets, rubric hash, and prompt
+  template fingerprints.
+
+Cases 06 through 08 are not rerun or pooled with the live-origin follow-up.
+The order controls compare source-mapped support, certainty,
+uncertainty/abstention usefulness, and next-step usefulness. They do not compare
+opaque candidate IDs, choose a favorable ordering, or select a winner.
+
+## Revised comparator rubric
+
+The frozen `advisory-semantic-followup-v1` rubric requires the comparator to
+apply these rules:
+
+- numerical levels alone do not demonstrate growth;
+- relative terms such as "large" or "elevated" require a baseline or reference,
+  otherwise they are heuristic or inferred;
+- measurements without time alignment do not establish simultaneity or
+  causation;
+- a plausible alternative is not automatically an evidence-supported
+  hypothesis;
+- missing data supports uncertainty and a request for evidence, not a health or
+  root-cause assertion;
+- a proposed operation, including disabling truncation, must not be assumed
+  available or safe;
+- candidate agreement is not truth;
+- declared posture is self-description, not evidential support.
+
+The result contains no winner, accuracy score, weighted score, or CI verdict.
+
+## Case 05 Phase A
+
+Case 05 is the only slot allowed a new Phase-A invocation. It receives the same
+unchanged evidence-only projection and no prior claims, hypotheses, case label,
+source-model identity, schema status, score, or assessment result.
+
+Its new contract uses a common `id` property for observations, hypotheses, and
+alternatives. Strict schema compliance is recorded independently. If a bounded,
+syntactically safe response fails that schema but the declared semantic fields
+remain safely readable, the format failure stays visible and the semantic view
+may proceed. The response is never rerun to obtain a desired interpretation.
+The raw response and semantic view are sealed with create-new semantics before
+Phase B.
+
+## File-only freeze and preparation
+
+The controller first creates a draft conforming to
+`Calibration/advisory-llm-followup-v1.plan.schema.json`, with a blank
+`planFingerprint`. Freezing verifies every scoped source binding and semantic
+pointer before writing the canonical plan:
+
+```bash
+DOTNET_DIAGNOSTICS_ADVISORY_LLM_OPERATION=followup-freeze \
+DOTNET_DIAGNOSTICS_ADVISORY_LLM_PROTOCOL=/absolute/frozen-v2-protocol.json \
+DOTNET_DIAGNOSTICS_ADVISORY_LLM_FOLLOWUP_DRAFT=/absolute/followup.draft.json \
+DOTNET_DIAGNOSTICS_ADVISORY_LLM_FOLLOWUP_PLAN=/absolute/followup.plan.json \
+/home/pedrotravi/.dotnet/dotnet \
+  /home/pedrotravi/.dotnet/sdk/10.0.201/dotnet.dll \
+  test tests/DotnetDiagnostics.ScenarioEvaluation.Tests/ -c Release \
+  --filter FullyQualifiedName~ExplicitLocalWorkflow_PreparesOrRunsFrozenProtocol
+```
+
+Optional preparation writes create-new projections and the case 05 Phase-A
+prompt without invoking a model or target:
+
+```bash
+DOTNET_DIAGNOSTICS_ADVISORY_LLM_OPERATION=followup-prepare \
+DOTNET_DIAGNOSTICS_ADVISORY_LLM_PROTOCOL=/absolute/frozen-v2-protocol.json \
+DOTNET_DIAGNOSTICS_ADVISORY_LLM_FOLLOWUP_PLAN=/absolute/followup.plan.json \
+DOTNET_DIAGNOSTICS_ADVISORY_LLM_OUTPUT_DIRECTORY=/absolute/new-preflight-output \
+/home/pedrotravi/.dotnet/dotnet \
+  /home/pedrotravi/.dotnet/sdk/10.0.201/dotnet.dll \
+  test tests/DotnetDiagnostics.ScenarioEvaluation.Tests/ -c Release \
+  --filter FullyQualifiedName~ExplicitLocalWorkflow_PreparesOrRunsFrozenProtocol
+```
+
+Both operations are file-only. They use declared source roots and scoped
+`run-summary.json`, `<slot>/case-result.json`, and recovered-seal paths. They do
+not discover neighboring reports or held-out inputs.
+
+## Explicit execution
+
+Execution requires a new output directory, the isolated local Copilot CLI
+configuration, and a follow-up-specific opt-in:
+
+```bash
+DOTNET_DIAGNOSTICS_ADVISORY_LLM_OPERATION=followup \
+DOTNET_DIAGNOSTICS_ADVISORY_LLM_FOLLOWUP=1 \
+DOTNET_DIAGNOSTICS_ADVISORY_LLM_PROTOCOL=/absolute/frozen-v2-protocol.json \
+DOTNET_DIAGNOSTICS_ADVISORY_LLM_FOLLOWUP_PLAN=/absolute/followup.plan.json \
+DOTNET_DIAGNOSTICS_ADVISORY_LLM_OUTPUT_DIRECTORY=/absolute/new-followup-output \
+DOTNET_DIAGNOSTICS_AGENT_COPILOT_PATH=/absolute/copilot \
+DOTNET_DIAGNOSTICS_AGENT_COPILOT_HOME=/absolute/empty-home \
+DOTNET_DIAGNOSTICS_AGENT_COPILOT_WORK_ROOT=/absolute/outside-repository \
+/home/pedrotravi/.dotnet/dotnet \
+  /home/pedrotravi/.dotnet/sdk/10.0.201/dotnet.dll \
+  test tests/DotnetDiagnostics.ScenarioEvaluation.Tests/ -c Release \
+  --filter FullyQualifiedName~ExplicitLocalWorkflow_PreparesOrRunsFrozenProtocol
+```
+
+Normal tests cannot execute models. A global isolation, authentication, model,
+or CLI prerequisite failure aborts remaining calls. Other unavailable or
+invalid inputs skip only their dependent comparisons. All attempted calls,
+bounded raw responses, unknown token/cost fields, skips, and failures remain in
+the output. Technical completion means the declared safe semantic operations,
+five primary comparisons, and two controls completed; it says nothing about
+whether any claim was supported.
+
+Transport response limits are supplied by the independently reviewed transport
+configuration and frozen into the plan. This protocol does not silently raise
+them or promise unavailable token, dollar, or provider-version guarantees.

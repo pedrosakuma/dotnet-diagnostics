@@ -30,15 +30,53 @@ public sealed class AdvisoryLlmAssessmentExecutionTests
                 RequiredEnvironment("DOTNET_DIAGNOSTICS_ADVISORY_LLM_CONTINUATION_PLAN"));
             return;
         }
+        if (operation == "followup-freeze")
+        {
+            AdvisoryLlmAssessment.FreezeFollowupPlan(
+                protocol,
+                RequiredEnvironment("DOTNET_DIAGNOSTICS_ADVISORY_LLM_FOLLOWUP_DRAFT"),
+                RequiredEnvironment("DOTNET_DIAGNOSTICS_ADVISORY_LLM_FOLLOWUP_PLAN"));
+            return;
+        }
 
         var output = RequiredEnvironment("DOTNET_DIAGNOSTICS_ADVISORY_LLM_OUTPUT_DIRECTORY");
+        if (operation == "followup-prepare")
+        {
+            var followupPlan = AdvisoryLlmAssessment.LoadFollowupPlan(
+                protocol,
+                RequiredEnvironment("DOTNET_DIAGNOSTICS_ADVISORY_LLM_FOLLOWUP_PLAN"));
+            AdvisoryLlmAssessment.PrepareFollowup(protocol, followupPlan, output);
+            return;
+        }
         if (operation == "prepare")
         {
             AdvisoryLlmAssessment.Prepare(protocol, output);
             return;
         }
 
-        operation.Should().BeOneOf("run", "continue");
+        operation.Should().BeOneOf("run", "continue", "followup");
+        if (operation == "followup")
+        {
+            Environment.GetEnvironmentVariable(AdvisoryLlmAssessment.FollowupAuthorizationVariable)
+                .Should().Be("1", "semantic follow-up execution must never be the default test path");
+            var followupPlan = AdvisoryLlmAssessment.LoadFollowupPlan(
+                protocol,
+                RequiredEnvironment("DOTNET_DIAGNOSTICS_ADVISORY_LLM_FOLLOWUP_PLAN"));
+            var (followupTransport, followupVersion) = await CreateTransportAsync();
+            followupVersion.Should().Be(followupPlan.PhaseAModel.TransportVersion);
+            followupPlan.PhaseBModel.TransportVersion.Should().Be(followupVersion);
+            var followup = await AdvisoryLlmAssessment.RunFollowupAsync(
+                protocol,
+                followupPlan,
+                output,
+                followupTransport,
+                CancellationToken.None);
+            followup.ActualNewCalls.Should().BeLessThanOrEqualTo(8);
+            followup.TechnicallyComplete.Should().BeTrue(
+                "technical completion means every declared safe semantic extraction, primary "
+                + "comparison, and order control completed; semantic ratings are not pass/fail");
+            return;
+        }
         if (operation == "continue")
         {
             Environment.GetEnvironmentVariable(AdvisoryLlmAssessment.ContinuationAuthorizationVariable)
