@@ -10,6 +10,9 @@
     "protocolFingerprint",
     "rubricVersion",
     "rubricSha256",
+    "measurementGlossaryVersion",
+    "measurementGlossarySha256",
+    "measurementGlossaryProvenance",
     "phaseAPromptFingerprint",
     "phaseBPromptFingerprint",
     "phaseAModel",
@@ -32,6 +35,16 @@
     "protocolFingerprint": { "$ref": "#/$defs/sha256" },
     "rubricVersion": { "const": "advisory-semantic-followup-v1" },
     "rubricSha256": { "$ref": "#/$defs/sha256" },
+    "measurementGlossaryVersion": {
+      "const": "advisory-counter-measurement-glossary-v1"
+    },
+    "measurementGlossarySha256": { "$ref": "#/$defs/sha256" },
+    "measurementGlossaryProvenance": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": { "$ref": "#/$defs/glossaryCitation" }
+    },
     "phaseAPromptFingerprint": { "$ref": "#/$defs/sha256" },
     "phaseBPromptFingerprint": { "$ref": "#/$defs/sha256" },
     "phaseAModel": { "$ref": "#/$defs/model" },
@@ -67,6 +80,17 @@
     "nullableSha256": {
       "type": [ "string", "null" ],
       "pattern": "^[0-9a-f]{64}$"
+    },
+    "glossaryCitation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [ "sourceRevision", "path", "lineRange", "subject" ],
+      "properties": {
+        "sourceRevision": { "const": "f9c2ef8e" },
+        "path": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "lineRange": { "type": "string", "pattern": "^[0-9]+-[0-9]+$" },
+        "subject": { "type": "string", "minLength": 1, "maxLength": 128 }
+      }
     },
     "model": {
       "type": "object",

@@ -10,6 +10,8 @@ public static partial class AdvisoryLlmAssessment
 {
     public const string FollowupAuthorizationVariable = "DOTNET_DIAGNOSTICS_ADVISORY_LLM_FOLLOWUP";
     public const string FollowupRubricVersion = "advisory-semantic-followup-v1";
+    public const string FollowupMeasurementGlossaryVersion =
+        "advisory-counter-measurement-glossary-v1";
     private const int FollowupSchemaVersion = 1;
     private const string FollowupRubric =
         """
@@ -23,6 +25,16 @@ public static partial class AdvisoryLlmAssessment
         including disabling truncation, is available or safe. Candidate agreement is not truth.
         Declared posture is a self-description, not evidential support. Do not select a winner or
         produce an accuracy score.
+        """;
+    private const string FollowupMeasurementGlossary =
+        """
+        For projected counter evidence, value is the last observed sample for that counter key.
+        maximumObserved is the maximum raw value observed across collection ticks. kind Mean is
+        the producer's interval mean for the last sample; kind Sum is the raw increment reported
+        for the producer interval. The projection does not include the first sample, a time series,
+        IntervalSec, or DisplayRateTimeScale. Therefore value is not a capture-wide mean or total.
+        Do not infer growth, a full-window total, or a rate from value, and do not divide value by
+        captureSeconds to manufacture a rate.
         """;
     private const string FollowupPhaseAInstructions =
         """
@@ -59,12 +71,44 @@ public static partial class AdvisoryLlmAssessment
     public static string FollowupRubricSha256
         => Sha256(Encoding.UTF8.GetBytes(FollowupRubric));
 
+    public static string FollowupMeasurementGlossarySha256
+        => Sha256(Encoding.UTF8.GetBytes(FollowupMeasurementGlossary));
+
+    public static IReadOnlyList<AdvisoryFollowupGlossaryCitation>
+        FollowupMeasurementGlossaryProvenance { get; } =
+        [
+            new(
+                "f9c2ef8e",
+                "src/DotnetDiagnostics.Core/Counters/CounterValue.cs",
+                "93-107",
+                "last-sample-and-maximum-snapshot-semantics"),
+            new(
+                "f9c2ef8e",
+                "src/DotnetDiagnostics.Core/Counters/EventPipeCounterCollector.cs",
+                "462-473",
+                "raw-maximum-tracking"),
+            new(
+                "f9c2ef8e",
+                "src/DotnetDiagnostics.Core/Counters/EventPipeCounterCollector.cs",
+                "501-532",
+                "producer-interval-mean-and-sum-semantics"),
+            new(
+                "f9c2ef8e",
+                "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/BlindedDiagnosticToolGateway.cs",
+                "170-183",
+                "projected-counter-field-surface"),
+        ];
+
     public static string FollowupPhaseAPromptFingerprint
-        => Sha256(Encoding.UTF8.GetBytes(FollowupPhaseAInstructions));
+        => Sha256(Encoding.UTF8.GetBytes(
+            FollowupPhaseAInstructions + "\n" + FollowupMeasurementGlossary));
 
     public static string FollowupPhaseBPromptFingerprint
         => Sha256(Encoding.UTF8.GetBytes(
-            FollowupPhaseBPrefix + "\n" + FollowupRubric + "\n" + FollowupPhaseBSuffix));
+            FollowupPhaseBPrefix
+            + "\n" + FollowupRubric
+            + "\n" + FollowupMeasurementGlossary
+            + "\n" + FollowupPhaseBSuffix));
 
     public static AdvisoryFollowupPlan FreezeFollowupPlan(
         AdvisoryLlmProtocol protocol,
@@ -322,6 +366,9 @@ public static partial class AdvisoryLlmAssessment
             plan.ProtocolFingerprint,
             plan.RubricVersion,
             plan.RubricSha256,
+            plan.MeasurementGlossaryVersion,
+            plan.MeasurementGlossarySha256,
+            plan.MeasurementGlossaryProvenance,
             started,
             DateTimeOffset.UtcNow,
             plan.MaximumNewCalls,
@@ -346,7 +393,9 @@ public static partial class AdvisoryLlmAssessment
         AdvisoryProjection projection)
     {
         var payload = JsonSerializer.Serialize(new { evidence = projection.Evidence }, JsonOptions);
-        var prompt = FollowupPhaseAInstructions + "\n\nEvidence:" + payload;
+        var prompt = FollowupPhaseAInstructions
+            + "\n\nMeasurement glossary:\n" + FollowupMeasurementGlossary
+            + "\n\nEvidence:" + payload;
         EnforceUtf8(prompt, plan.Limits.MaximumPromptBytes, "follow-up Phase A prompt");
         return prompt;
     }
@@ -359,6 +408,7 @@ public static partial class AdvisoryLlmAssessment
         var payload = JsonSerializer.Serialize(new { evidence = projection.Evidence, candidates }, JsonOptions);
         var prompt = FollowupPhaseBPrefix
             + "\n" + FollowupRubric
+            + "\n\nMeasurement glossary:\n" + FollowupMeasurementGlossary
             + "\n" + FollowupPhaseBSuffix
             + "\n\nEvidence and candidates:" + payload;
         EnforceUtf8(prompt, plan.Limits.MaximumPromptBytes, "follow-up Phase B prompt");
@@ -976,6 +1026,13 @@ public static partial class AdvisoryLlmAssessment
             || plan.ProtocolFingerprint != protocol.ProtocolFingerprint
             || plan.RubricVersion != FollowupRubricVersion
             || !FixedEquals(plan.RubricSha256, FollowupRubricSha256)
+            || plan.MeasurementGlossaryVersion != FollowupMeasurementGlossaryVersion
+            || !FixedEquals(
+                plan.MeasurementGlossarySha256,
+                FollowupMeasurementGlossarySha256)
+            || plan.MeasurementGlossaryProvenance is null
+            || !plan.MeasurementGlossaryProvenance.SequenceEqual(
+                FollowupMeasurementGlossaryProvenance)
             || !FixedEquals(plan.PhaseAPromptFingerprint, FollowupPhaseAPromptFingerprint)
             || !FixedEquals(plan.PhaseBPromptFingerprint, FollowupPhaseBPromptFingerprint)
             || plan.MaximumNewCalls != 8

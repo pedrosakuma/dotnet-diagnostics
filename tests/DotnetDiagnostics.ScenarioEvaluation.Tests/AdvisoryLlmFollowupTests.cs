@@ -47,13 +47,25 @@ public sealed partial class AdvisoryLlmAssessmentTests
             summary.ActualNewCalls.Should().Be(8);
             summary.ActualNewPhaseACalls.Should().Be(1);
             summary.ActualNewPhaseBCalls.Should().Be(7);
+            summary.MeasurementGlossaryVersion.Should().Be(
+                AdvisoryLlmAssessment.FollowupMeasurementGlossaryVersion);
+            summary.MeasurementGlossarySha256.Should().Be(
+                AdvisoryLlmAssessment.FollowupMeasurementGlossarySha256);
+            summary.MeasurementGlossaryProvenance.Should().BeEquivalentTo(
+                AdvisoryLlmAssessment.FollowupMeasurementGlossaryProvenance,
+                options => options.WithStrictOrdering());
             transport.PhaseACalls.Should().Be(1);
             transport.PhaseBCalls.Should().Be(7);
             transport.Prompts.Should().OnlyContain(prompt =>
                 !prompt.Contains(plan.PlanId, StringComparison.Ordinal)
                 && !prompt.Contains(plan.PlanFingerprint, StringComparison.Ordinal)
                 && !prompt.Contains("schemaInvalid", StringComparison.OrdinalIgnoreCase)
-                && !prompt.Contains("source-run", StringComparison.Ordinal));
+                && !prompt.Contains("source-run", StringComparison.Ordinal)
+                && !prompt.Contains("f9c2ef8e", StringComparison.Ordinal)
+                && !prompt.Contains("CounterValue.cs", StringComparison.Ordinal)
+                && prompt.Contains("value is the last observed sample", StringComparison.Ordinal)
+                && prompt.Contains("not a capture-wide mean or total", StringComparison.Ordinal)
+                && prompt.Contains("do not divide value by", StringComparison.Ordinal));
             transport.Prompts.Where(prompt =>
                     prompt.Contains("opaque candidate interpretations", StringComparison.Ordinal))
                 .Should().OnlyContain(prompt =>
@@ -173,6 +185,7 @@ public sealed partial class AdvisoryLlmAssessmentTests
     [InlineData("nonemptyFingerprint")]
     [InlineData("duplicateProperty")]
     [InlineData("unknownProperty")]
+    [InlineData("glossaryProvenance")]
     public async Task FollowupPreparation_StrictlyRejectsMalformedDraft(string defect)
     {
         using var files = new AssessmentTestFiles();
@@ -185,6 +198,10 @@ public sealed partial class AdvisoryLlmAssessmentTests
                 $"\"planFingerprint\": \"{new string('a', 64)}\"",
                 StringComparison.Ordinal),
             "duplicateProperty" => json.Insert(1, "\"schemaVersion\":1,"),
+            "glossaryProvenance" => json.Replace(
+                "\"sourceRevision\": \"f9c2ef8e\"",
+                "\"sourceRevision\": \"deadbeef\"",
+                StringComparison.Ordinal),
             _ => json.Insert(1, "\"unexpected\":true,"),
         };
         var malformed = files.Path("malformed-followup.json");
@@ -551,6 +568,9 @@ public sealed partial class AdvisoryLlmAssessmentTests
             protocol.ProtocolFingerprint,
             AdvisoryLlmAssessment.FollowupRubricVersion,
             AdvisoryLlmAssessment.FollowupRubricSha256,
+            AdvisoryLlmAssessment.FollowupMeasurementGlossaryVersion,
+            AdvisoryLlmAssessment.FollowupMeasurementGlossarySha256,
+            AdvisoryLlmAssessment.FollowupMeasurementGlossaryProvenance,
             AdvisoryLlmAssessment.FollowupPhaseAPromptFingerprint,
             AdvisoryLlmAssessment.FollowupPhaseBPromptFingerprint,
             protocol.PhaseAModel,

@@ -36,7 +36,8 @@ The v1 follow-up plan contains exactly:
 - exact source summary, case, response, normalized-payload, projection, prompt,
   and applicable recovered-seal hashes;
 - exact models, transport versions, byte/time budgets, rubric hash, and prompt
-  template fingerprints.
+  template fingerprints;
+- the glossary version, glossary hash, and controller-only source citations.
 
 Cases 06 through 08 are not rerun or pooled with the live-origin follow-up.
 The order controls compare source-mapped support, certainty,
@@ -63,6 +64,33 @@ apply these rules:
 - declared posture is self-description, not evidential support.
 
 The result contains no winner, accuracy score, weighted score, or CI verdict.
+
+## Frozen counter measurement glossary
+
+The follow-up freezes a neutral counter data dictionary before any calls:
+
+- `value` is the last observed sample for that counter key, not a
+  capture-wide mean or total;
+- `maximumObserved` is the maximum raw value observed across collection ticks;
+- `kind="Mean"` is the producer's interval mean for the last sample;
+- `kind="Sum"` is the raw increment reported for the producer interval;
+- the blinded projection does not expose the first sample, a time series,
+  `IntervalSec`, or `DisplayRateTimeScale`.
+
+The evaluator must not infer growth or a full-window total from `value`, and
+must not divide it by `captureSeconds` to manufacture a rate. This glossary
+defines measurement semantics only; it supplies no expected diagnosis.
+
+The frozen plan and summary carry controller-visible provenance for source
+revision `f9c2ef8e`:
+
+- `src/DotnetDiagnostics.Core/Counters/CounterValue.cs:93-107`;
+- `src/DotnetDiagnostics.Core/Counters/EventPipeCounterCollector.cs:462-473`;
+- `src/DotnetDiagnostics.Core/Counters/EventPipeCounterCollector.cs:501-532`;
+- `tests/DotnetDiagnostics.ScenarioEvaluation.Tests/BlindedDiagnosticToolGateway.cs:170-183`.
+
+Only the neutral glossary text enters model prompts. The source revision, file
+paths, line ranges, and provenance subjects remain outside prompts.
 
 ## Case 05 Phase A
 

@@ -65,6 +65,12 @@ public sealed record AdvisoryFollowupOrderControlPlan(
     string ControlId,
     string SlotId);
 
+public sealed record AdvisoryFollowupGlossaryCitation(
+    string SourceRevision,
+    string Path,
+    string LineRange,
+    string Subject);
+
 public sealed record AdvisoryFollowupPlan(
     int SchemaVersion,
     string PlanId,
@@ -72,6 +78,9 @@ public sealed record AdvisoryFollowupPlan(
     string ProtocolFingerprint,
     string RubricVersion,
     string RubricSha256,
+    string MeasurementGlossaryVersion,
+    string MeasurementGlossarySha256,
+    IReadOnlyList<AdvisoryFollowupGlossaryCitation> MeasurementGlossaryProvenance,
     string PhaseAPromptFingerprint,
     string PhaseBPromptFingerprint,
     AdvisoryLlmModel PhaseAModel,
@@ -200,6 +209,9 @@ public sealed record AdvisoryFollowupSummary(
     string ProtocolFingerprint,
     string RubricVersion,
     string RubricSha256,
+    string MeasurementGlossaryVersion,
+    string MeasurementGlossarySha256,
+    IReadOnlyList<AdvisoryFollowupGlossaryCitation> MeasurementGlossaryProvenance,
     DateTimeOffset StartedAtUtc,
     DateTimeOffset CompletedAtUtc,
     int MaximumNewCalls,
