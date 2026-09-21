@@ -33,6 +33,7 @@ The v1 follow-up plan contains exactly:
 - one primary Phase-B comparison for each usable case;
 - reversed-order Phase-B controls for predeclared cases 01 and 03;
 - at most eight new calls: one A and seven B, with no retry or fallback;
+- at most two new calls per case, including any reversed-order control;
 - exact source summary, case, response, normalized-payload, projection, prompt,
   and applicable recovered-seal hashes;
 - one coherent continuation source inventory, plus the exact previous pilot
@@ -187,7 +188,7 @@ DOTNET_DIAGNOSTICS_ADVISORY_LLM_OUTPUT_DIRECTORY=/absolute/new-preflight-output 
 ```
 
 Both operations are file-only. They use one declared continuation source root
-and scoped `run-summary.json`,
+and scoped `continuation-summary.json`,
 `<slot>/continuation-case-result.json`, and recovered-seal paths. They bind the
 previous pilot summary by hash but do not open it, discover neighboring reports,
 or access held-out inputs.

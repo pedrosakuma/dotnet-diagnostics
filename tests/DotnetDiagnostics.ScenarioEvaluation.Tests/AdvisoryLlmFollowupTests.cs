@@ -23,6 +23,8 @@ public sealed partial class AdvisoryLlmAssessmentTests
         using var files = new AssessmentTestFiles();
         var fixture = await CreateFollowupFixtureAsync(files);
         var sourceHashes = FollowupHashTree(fixture.SourceRoot);
+        sourceHashes.Should().ContainKey("continuation-summary.json");
+        sourceHashes.Should().NotContainKey("run-summary.json");
         var previousSourceHashes = FollowupHashTree(fixture.PreviousSourceRoot);
         var frozenPath = files.Path("followup.plan.json");
         var plan = AdvisoryLlmAssessment.FreezeFollowupPlan(
@@ -47,6 +49,7 @@ public sealed partial class AdvisoryLlmAssessmentTests
             summary.ActualNewCalls.Should().Be(8);
             summary.ActualNewPhaseACalls.Should().Be(1);
             summary.ActualNewPhaseBCalls.Should().Be(7);
+            plan.Limits.MaximumCallsPerCase.Should().Be(2);
             summary.MeasurementGlossaryVersion.Should().Be(
                 AdvisoryLlmAssessment.FollowupMeasurementGlossaryVersion);
             summary.MeasurementGlossarySha256.Should().Be(
@@ -214,6 +217,7 @@ public sealed partial class AdvisoryLlmAssessmentTests
     [InlineData("unknownProperty")]
     [InlineData("glossaryProvenance")]
     [InlineData("transportBudget")]
+    [InlineData("perCaseBudget")]
     public async Task FollowupPreparation_StrictlyRejectsMalformedDraft(string defect)
     {
         using var files = new AssessmentTestFiles();
@@ -233,6 +237,10 @@ public sealed partial class AdvisoryLlmAssessmentTests
             "transportBudget" => json.Replace(
                 "\"perAssistantEnvelopeBytes\": 262144",
                 "\"perAssistantEnvelopeBytes\": 262145",
+                StringComparison.Ordinal),
+            "perCaseBudget" => json.Replace(
+                "\"maximumCallsPerCase\": 2",
+                "\"maximumCallsPerCase\": 3",
                 StringComparison.Ordinal),
             _ => json.Insert(1, "\"unexpected\":true,"),
         };
@@ -586,19 +594,19 @@ public sealed partial class AdvisoryLlmAssessmentTests
             null,
             wrappers);
         Directory.CreateDirectory(continuationRoot);
-        WriteFollowupJson(Path.Combine(continuationRoot, "run-summary.json"), continuationSummary);
+        WriteFollowupJson(Path.Combine(continuationRoot, "continuation-summary.json"), continuationSummary);
 
         var followupLimits = protocol.Limits with
         {
             MaximumCases = 5,
             MaximumCalls = 8,
-            MaximumCallsPerCase = 3,
+            MaximumCallsPerCase = 2,
         };
         var sourceDefinition = new AdvisoryFollowupSource(
             "continuation-source",
             AdvisoryFollowupSourceKind.ContinuationRun,
             Path.GetFullPath(continuationRoot),
-            Sha256(File.ReadAllBytes(Path.Combine(continuationRoot, "run-summary.json"))));
+            Sha256(File.ReadAllBytes(Path.Combine(continuationRoot, "continuation-summary.json"))));
         var primaryOrders = new[]
         {
             AdvisoryCandidateSource.Original,
@@ -768,12 +776,12 @@ public sealed partial class AdvisoryLlmAssessmentTests
             WriteFollowupJson(wrapperPath, changedWrapper);
             continuationSummary = continuationSummary with { Cases = wrappers };
             WriteFollowupJson(
-                Path.Combine(continuationRoot, "run-summary.json"),
+                Path.Combine(continuationRoot, "continuation-summary.json"),
                 continuationSummary);
             sourceDefinition = sourceDefinition with
             {
                 SummarySha256 = Sha256(
-                    File.ReadAllBytes(Path.Combine(continuationRoot, "run-summary.json"))),
+                    File.ReadAllBytes(Path.Combine(continuationRoot, "continuation-summary.json"))),
             };
             var changedBinding = draft.Cases[0].Source with
             {

@@ -1095,7 +1095,7 @@ public static partial class AdvisoryLlmAssessment
             throw new InvalidDataException("Follow-up transport byte-domain policy is stale or invalid.");
         }
         if (plan.Limits.MaximumCalls != 8
-            || plan.Limits.MaximumCallsPerCase != 3
+            || plan.Limits.MaximumCallsPerCase != 2
             || plan.Limits.MaximumCases != 5
             || plan.Limits.PerCallTimeoutSeconds > protocol.Limits.PerCallTimeoutSeconds
             || plan.Limits.MaximumInferenceSeconds > protocol.Limits.MaximumInferenceSeconds
@@ -1251,7 +1251,13 @@ public static partial class AdvisoryLlmAssessment
         var sources = plan.Sources.ToDictionary(value => value.SourceId, StringComparer.Ordinal);
         foreach (var source in sources.Values)
         {
-            var summaryPath = ScopedFollowupPath(source.RootPath, "run-summary.json");
+            var summaryFileName = source.Kind switch
+            {
+                AdvisoryFollowupSourceKind.AssessmentRun => "run-summary.json",
+                AdvisoryFollowupSourceKind.ContinuationRun => "continuation-summary.json",
+                _ => throw new InvalidDataException("Unknown follow-up source kind."),
+            };
+            var summaryPath = ScopedFollowupPath(source.RootPath, summaryFileName);
             var summaryBytes = ReadBounded(
                 summaryPath,
                 plan.Limits.MaximumCaseArtifactBytes * protocol.Limits.MaximumCases);

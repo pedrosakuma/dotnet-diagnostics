@@ -165,7 +165,7 @@
       "properties": {
         "maximumCases": { "const": 5 },
         "maximumCalls": { "const": 8 },
-        "maximumCallsPerCase": { "type": "integer", "minimum": 2, "maximum": 3 },
+        "maximumCallsPerCase": { "const": 2 },
         "perCallTimeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 600 },
         "maximumInferenceSeconds": { "type": "integer", "minimum": 1, "maximum": 1920 },
         "maximumOuterOverheadSeconds": { "type": "integer", "minimum": 1, "maximum": 600 },
