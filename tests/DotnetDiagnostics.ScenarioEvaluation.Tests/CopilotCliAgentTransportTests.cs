@@ -99,6 +99,30 @@ public sealed class CopilotCliAgentTransportTests
         result.AssistantContent.Should().Be("{}");
     }
 
+    [Fact]
+    public async Task Reader_AcceptsSourceDerivedUsageCheckpointsBeforeAndAfterAnswer()
+    {
+        var beforeAnswer = Event(
+            "session.usage_checkpoint",
+            new { totalNanoAiu = 1_250_000L });
+        var afterAnswer = Event(
+            "session.usage_checkpoint",
+            new { totalNanoAiu = 2_500_000L });
+        var output = beforeAnswer
+            + "\n"
+            + AssistantEvent("{}", "answer")
+            + "\n"
+            + afterAnswer
+            + "\n"
+            + JsonSerializer.Serialize(new { type = "result", exitCode = 0 });
+
+        var result = await ReadAsync(output, maximumResponseBytes: 64);
+
+        result.AssistantContent.Should().Be("{}");
+        result.FramingBytes.Should().Be(
+            Encoding.UTF8.GetByteCount(output) - Encoding.UTF8.GetByteCount("{}"));
+    }
+
     [Theory]
     [InlineData("session.idle")]
     [InlineData("session.shutdown")]

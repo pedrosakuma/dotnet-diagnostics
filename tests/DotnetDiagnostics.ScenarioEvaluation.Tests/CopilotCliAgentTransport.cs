@@ -42,6 +42,7 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
         "session.skills_loaded",
         "session.start",
         "session.tools_updated",
+        "session.usage_checkpoint",
         "session.warning",
         "user.message",
     };
