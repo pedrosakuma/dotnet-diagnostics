@@ -51,7 +51,9 @@ public sealed class AdvisoryLlmAssessmentExecutionTests
         summary.Cases.Sum(value =>
             (value.PhaseA.Status == AdvisoryCallStatus.Succeeded ? 1 : 0)
             + (value.PhaseB.Status == AdvisoryCallStatus.Succeeded ? 1 : 0))
-            .Should().BeLessThanOrEqualTo(16);
+            .Should().Be(16,
+                "all predeclared phases must complete; inspect run-summary.json for preserved failures. "
+                + "Semantic judgments themselves are not pass/fail criteria");
     }
 
     private static string RequiredEnvironment(string name)

@@ -120,6 +120,10 @@ execution/export, normal external authentication, and bounded cleanup.
 Failures and bounded raw responses are retained. A Phase A timeout or invalid
 response skips Phase B. A global isolation, authentication, model availability,
 or CLI-configuration failure aborts remaining calls.
+The explicit execution entrypoint reports failure if any declared phase did
+not complete, after preserving the run summary. This checks technical
+completeness only: unsupported claims, abstentions, and disagreements are valid
+assessment outcomes, not failures. Always inspect the per-phase statuses.
 
 ## Interpretation limits
 

@@ -381,7 +381,20 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
     {
         using var document = JsonDocument.Parse(json);
         var root = document.RootElement;
-        if (!root.TryGetProperty("errors", out var errors)
+        if (root.ValueKind == JsonValueKind.Array)
+        {
+            if (root.GetArrayLength() != 0)
+            {
+                throw new AgentTransportException(
+                    "Copilot CLI isolation preflight found a nonempty array-format plugin inventory; "
+                    + "its entries cannot establish an isolated profile.");
+            }
+
+            return;
+        }
+
+        if (root.ValueKind != JsonValueKind.Object
+            || !root.TryGetProperty("errors", out var errors)
             || errors.ValueKind != JsonValueKind.Array
             || errors.GetArrayLength() != 0
             || !root.TryGetProperty("plugins", out var plugins)
@@ -392,6 +405,17 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
 
         foreach (var plugin in plugins.EnumerateArray())
         {
+            if (plugin.ValueKind != JsonValueKind.Object
+                || (plugin.TryGetProperty("enabled", out var enabledValue)
+                    && enabledValue.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                || (plugin.TryGetProperty("scope", out var scopeValue)
+                    && scopeValue.ValueKind is not (JsonValueKind.String or JsonValueKind.Null))
+                || (plugin.TryGetProperty("source", out var sourceValue)
+                    && sourceValue.ValueKind is not (JsonValueKind.String or JsonValueKind.Null)))
+            {
+                throw new AgentTransportException("Copilot CLI isolation preflight returned an invalid inventory.");
+            }
+
             var enabled = !plugin.TryGetProperty("enabled", out var enabledElement)
                 || enabledElement.ValueKind != JsonValueKind.False;
             var scope = plugin.TryGetProperty("scope", out var scopeElement)

@@ -10,6 +10,32 @@ namespace DotnetDiagnostics.ScenarioEvaluation.Tests;
 [Collection(ScenarioEvaluationLiveGroup.Name)]
 public sealed class BlindedAgentHarnessTests
 {
+    [Theory]
+    [InlineData("[]")]
+    [InlineData("{\"plugins\":[],\"errors\":[]}")]
+    public void CopilotCliPreflight_AcceptsEmptyKnownInventoryFormats(string inventory)
+    {
+        FluentActions.Invoking(() => CopilotCliAgentTransport.ValidatePluginInventory(inventory))
+            .Should().NotThrow();
+    }
+
+    [Theory]
+    [InlineData("null")]
+    [InlineData("\"unexpected\"")]
+    [InlineData("{}")]
+    [InlineData("[{}]")]
+    [InlineData("[{\"enabled\":false,\"scope\":\"builtin\"}]")]
+    [InlineData("{\"plugins\":[null],\"errors\":[]}")]
+    [InlineData("{\"plugins\":[{\"enabled\":\"false\"}],\"errors\":[]}")]
+    [InlineData("{\"plugins\":[{\"scope\":false}],\"errors\":[]}")]
+    [InlineData("{\"plugins\":[{\"source\":42}],\"errors\":[]}")]
+    [InlineData("{\"plugins\":[],\"errors\":[\"inventory failed\"]}")]
+    public void CopilotCliPreflight_RejectsUnverifiedShapesAsIsolationFailure(string inventory)
+    {
+        FluentActions.Invoking(() => CopilotCliAgentTransport.ValidatePluginInventory(inventory))
+            .Should().Throw<AgentTransportException>().WithMessage("*isolation preflight*");
+    }
+
     [Fact]
     public async Task Conversation_BlindsControllerRouteFromModel_ButRetainsPrivateProvenance()
     {
