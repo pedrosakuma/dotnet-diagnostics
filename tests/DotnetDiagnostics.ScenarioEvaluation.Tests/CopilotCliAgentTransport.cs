@@ -766,11 +766,29 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
             (maximumResponseBytes * 6) + MaximumCliEventEnvelopeBytes);
         var framingBytes = 0;
         string? assistantContent = null;
+        void AddFramingBytes(int additionalBytes)
+        {
+            framingBytes = checked(framingBytes + additionalBytes);
+            if (framingBytes > MaximumCliFramingBytes)
+            {
+                throw new AgentTransportException(
+                    "Copilot CLI framing exceeded "
+                    + $"MaximumCliFramingBytes={MaximumCliFramingBytes} UTF-8 bytes "
+                    + $"(observed {framingBytes}).");
+            }
+        }
+
         await ReadUtf8LinesAsync(
             stream,
             maximumEventBytes,
-            (line, lineBytes) =>
+            (line, lineBytes, delimiterBytes) =>
             {
+                if (IsJsonWhitespace(line.Span))
+                {
+                    AddFramingBytes(checked(lineBytes + delimiterBytes));
+                    return;
+                }
+
                 using var document = JsonDocument.Parse(line);
                 var root = document.RootElement;
                 if (root.ValueKind != JsonValueKind.Object
@@ -808,7 +826,8 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
                             + $"(observed {payloadBytes}).");
                     }
 
-                    var envelopeBytes = Math.Max(0, lineBytes - payloadBytes);
+                    var envelopeBytes = checked(
+                        Math.Max(0, lineBytes - payloadBytes) + delimiterBytes);
                     if (envelopeBytes > MaximumCliEventEnvelopeBytes)
                     {
                         throw new AgentTransportException(
@@ -817,7 +836,7 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
                             + $"(observed {envelopeBytes}).");
                     }
 
-                    framingBytes = checked(framingBytes + envelopeBytes);
+                    AddFramingBytes(envelopeBytes);
                 }
                 else
                 {
@@ -827,15 +846,7 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
                             $"Copilot CLI emitted unsupported event type '{eventType}'.");
                     }
 
-                    framingBytes = checked(framingBytes + lineBytes);
-                }
-
-                if (framingBytes > MaximumCliFramingBytes)
-                {
-                    throw new AgentTransportException(
-                        "Copilot CLI framing exceeded "
-                        + $"MaximumCliFramingBytes={MaximumCliFramingBytes} UTF-8 bytes "
-                        + $"(observed {framingBytes}).");
+                    AddFramingBytes(checked(lineBytes + delimiterBytes));
                 }
             },
             "stdout event",
@@ -846,6 +857,19 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
             assistantContent
                 ?? throw new JsonException("Copilot CLI did not emit the required assistant answer."),
             framingBytes);
+    }
+
+    private static bool IsJsonWhitespace(ReadOnlySpan<byte> value)
+    {
+        foreach (var character in value)
+        {
+            if (character is not ((byte)' ' or (byte)'\t' or (byte)'\r'))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static async Task<string> ReadBoundedAsync(
@@ -881,7 +905,7 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
     private static async Task ReadUtf8LinesAsync(
         Stream stream,
         int maximumLineBytes,
-        Action<ReadOnlyMemory<byte>, int> consumeLine,
+        Action<ReadOnlyMemory<byte>, int, int> consumeLine,
         string streamName,
         string budgetName,
         CancellationToken cancellationToken)
@@ -897,7 +921,8 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
                 {
                     consumeLine(
                         line.GetBuffer().AsMemory(0, checked((int)line.Length)),
-                        checked((int)line.Length));
+                        checked((int)line.Length),
+                        0);
                 }
 
                 return;
@@ -917,13 +942,11 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
                     maximumLineBytes,
                     streamName,
                     budgetName);
-                if (line.Length != 0)
-                {
-                    consumeLine(
-                        line.GetBuffer().AsMemory(0, checked((int)line.Length)),
-                        checked((int)line.Length));
-                    line.SetLength(0);
-                }
+                consumeLine(
+                    line.GetBuffer().AsMemory(0, checked((int)line.Length)),
+                    checked((int)line.Length),
+                    1);
+                line.SetLength(0);
 
                 segmentStart = index + 1;
             }

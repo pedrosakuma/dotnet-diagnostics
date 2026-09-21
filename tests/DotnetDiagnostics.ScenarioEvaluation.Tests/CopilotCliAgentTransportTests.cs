@@ -103,6 +103,54 @@ public sealed class CopilotCliAgentTransportTests
     }
 
     [Fact]
+    public async Task Reader_CountsLfDelimitedBlankLinesAtTheExactFramingBoundary()
+    {
+        const string payload = "{}";
+        var answer = AssistantEvent(payload, "answer");
+        var answerEnvelopeBytes = Encoding.UTF8.GetByteCount(answer)
+            - Encoding.UTF8.GetByteCount(payload);
+        var delimiterCount = CopilotCliAgentTransport.MaximumCliFramingBytes - answerEnvelopeBytes;
+        var exactOutput = answer + new string('\n', delimiterCount);
+
+        var result = await ReadAsync(exactOutput, maximumResponseBytes: 64);
+
+        result.FramingBytes.Should().Be(CopilotCliAgentTransport.MaximumCliFramingBytes);
+        var overflow = () => ReadAsync(exactOutput + "\n", maximumResponseBytes: 64);
+        await overflow.Should().ThrowAsync<AgentTransportException>()
+            .WithMessage(
+                $"*MaximumCliFramingBytes={CopilotCliAgentTransport.MaximumCliFramingBytes}*"
+                + $"observed {CopilotCliAgentTransport.MaximumCliFramingBytes + 1}*");
+    }
+
+    [Fact]
+    public async Task Reader_CountsCrLfDelimitedBlankLinesAtTheExactFramingBoundary()
+    {
+        const string payload = "{}";
+        var messageId = "answer";
+        var answer = AssistantEvent(payload, messageId);
+        var answerEnvelopeBytes = Encoding.UTF8.GetByteCount(answer)
+            - Encoding.UTF8.GetByteCount(payload);
+        if ((CopilotCliAgentTransport.MaximumCliFramingBytes - answerEnvelopeBytes) % 2 != 0)
+        {
+            answer = AssistantEvent(payload, messageId + "x");
+            answerEnvelopeBytes++;
+        }
+
+        var delimiterCount = (
+            CopilotCliAgentTransport.MaximumCliFramingBytes - answerEnvelopeBytes) / 2;
+        var exactOutput = answer + string.Concat(Enumerable.Repeat("\r\n", delimiterCount));
+
+        var result = await ReadAsync(exactOutput, maximumResponseBytes: 64);
+
+        result.FramingBytes.Should().Be(CopilotCliAgentTransport.MaximumCliFramingBytes);
+        var overflow = () => ReadAsync(exactOutput + "\r\n", maximumResponseBytes: 64);
+        await overflow.Should().ThrowAsync<AgentTransportException>()
+            .WithMessage(
+                $"*MaximumCliFramingBytes={CopilotCliAgentTransport.MaximumCliFramingBytes}*"
+                + $"observed {CopilotCliAgentTransport.MaximumCliFramingBytes + 2}*");
+    }
+
+    [Fact]
     public async Task Reader_RejectsSingleOversizedEventBeforeBufferingTheRemainder()
     {
         var output = Event("user.message", new { content = new string('p', 300_000) });
@@ -230,6 +278,11 @@ public sealed class CopilotCliAgentTransportTests
             type,
             data,
         });
+
+    private static string AssistantEvent(string content, string messageId)
+        => Event(
+            "assistant.message",
+            new { messageId, content, toolRequests = Array.Empty<object>() });
 
     private sealed class SyntheticCliFiles : IDisposable
     {
