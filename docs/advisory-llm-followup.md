@@ -6,6 +6,10 @@ partial development assessment recorded in
 It does not rewrite that experiment, convert its three completed comparisons
 into eight, create human review, estimate accuracy, or establish a CI gate.
 
+The first frozen follow-up was blocked by CLI event compatibility; see
+[`advisory-llm-followup-results.md`](advisory-llm-followup-results.md) for the
+preserved five-call, zero-comparison outcome.
+
 ## Two independent dimensions
 
 The follow-up records technical schema compliance separately from semantic
@@ -214,7 +218,8 @@ DOTNET_DIAGNOSTICS_AGENT_COPILOT_WORK_ROOT=/absolute/outside-repository \
 ```
 
 Normal tests cannot execute models. A global isolation, authentication, model,
-or CLI prerequisite failure aborts remaining calls. Other unavailable or
+or CLI prerequisite failure, including an unsupported CLI event type, aborts
+remaining calls. Other unavailable or
 invalid inputs skip only their dependent comparisons. All attempted calls,
 bounded raw responses, unknown token/cost fields, skips, and failures remain in
 the output. Technical completion means the declared safe semantic operations,

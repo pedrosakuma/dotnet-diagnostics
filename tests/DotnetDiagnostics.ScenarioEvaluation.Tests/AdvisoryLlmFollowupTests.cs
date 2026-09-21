@@ -332,8 +332,10 @@ public sealed partial class AdvisoryLlmAssessmentTests
         }
     }
 
-    [Fact]
-    public async Task Followup_GlobalPrerequisiteFailureAbortsRemainingCalls()
+    [Theory]
+    [InlineData("Authentication is required.")]
+    [InlineData("Copilot CLI output violated the decision protocol: Copilot CLI emitted unsupported event type 'session.usage_checkpoint'.")]
+    public async Task Followup_GlobalPrerequisiteFailureAbortsRemainingCalls(string failure)
     {
         using var files = new AssessmentTestFiles();
         var fixture = await CreateFollowupFixtureAsync(files);
@@ -342,7 +344,7 @@ public sealed partial class AdvisoryLlmAssessmentTests
             fixture.DraftPath,
             files.Path("abort.plan.json"));
         var output = files.Path("abort-output");
-        var transport = new FollowupAuthenticationFailureTransport();
+        var transport = new FollowupPrerequisiteFailureTransport(failure);
         var previous = Environment.GetEnvironmentVariable(
             AdvisoryLlmAssessment.FollowupAuthorizationVariable);
         Environment.SetEnvironmentVariable(AdvisoryLlmAssessment.FollowupAuthorizationVariable, "1");
@@ -923,13 +925,13 @@ public sealed partial class AdvisoryLlmAssessmentTests
         }
     }
 
-    private sealed class FollowupAuthenticationFailureTransport : IAdvisoryStructuredTransport
+    private sealed class FollowupPrerequisiteFailureTransport(string failure) : IAdvisoryStructuredTransport
     {
         public Task<AdvisoryStructuredInvocation> CompleteAsync(
             AdvisoryLlmModel model,
             string prompt,
             int maximumResponseBytes,
             CancellationToken cancellationToken)
-            => throw new AgentTransportException("Authentication is required.");
+            => throw new AgentTransportException(failure);
     }
 }

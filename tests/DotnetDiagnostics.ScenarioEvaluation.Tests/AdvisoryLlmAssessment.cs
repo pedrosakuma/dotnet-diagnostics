@@ -1219,7 +1219,8 @@ public static partial class AdvisoryLlmAssessment
         => detail.Contains("authentication", StringComparison.OrdinalIgnoreCase)
            || detail.Contains("isolation preflight", StringComparison.OrdinalIgnoreCase)
            || detail.Contains("configured model was rejected", StringComparison.OrdinalIgnoreCase)
-           || detail.Contains("command-line configuration", StringComparison.OrdinalIgnoreCase);
+           || detail.Contains("command-line configuration", StringComparison.OrdinalIgnoreCase)
+           || detail.Contains("Copilot CLI emitted unsupported event type", StringComparison.OrdinalIgnoreCase);
 
     private static void ValidateCitations(
         IReadOnlyList<string> citations,
