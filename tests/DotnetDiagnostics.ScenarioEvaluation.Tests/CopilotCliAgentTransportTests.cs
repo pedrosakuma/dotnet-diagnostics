@@ -56,6 +56,71 @@ public sealed class CopilotCliAgentTransportTests
     }
 
     [Fact]
+    public async Task Reader_AcceptsSourceDerivedToolFreePromptLifecycleEvents()
+    {
+        string[] eventTypes =
+        [
+            "session.start",
+            "session.custom_agents_updated",
+            "session.extensions_loaded",
+            "session.skills_loaded",
+            "session.mcp_servers_loaded",
+            "session.mcp_server_status_changed",
+            "mcp.tools.list_changed",
+            "mcp.resources.list_changed",
+            "mcp.prompts.list_changed",
+            "commands.changed",
+            "capabilities.changed",
+            "session.tools_updated",
+            "user.message",
+            "assistant.turn_start",
+            "model.call_start",
+            "assistant.message_start",
+            "model.call_failure",
+            "assistant.reasoning_delta",
+            "assistant.reasoning",
+            "assistant.message_delta",
+            "model.call_finished",
+            "assistant.turn_end",
+            "assistant.idle",
+            "session.info",
+            "session.warning",
+        ];
+        var output = string.Join(
+            '\n',
+            eventTypes.Select(type => Event(type, new { sourceEvidence = "cli-1.0.86-and-1.0.87" })))
+            + "\n"
+            + AssistantEvent("{}", "answer")
+            + "\n"
+            + JsonSerializer.Serialize(new { type = "result", exitCode = 0 });
+
+        var result = await ReadAsync(output, maximumResponseBytes: 64);
+
+        result.AssistantContent.Should().Be("{}");
+    }
+
+    [Theory]
+    [InlineData("session.idle")]
+    [InlineData("session.shutdown")]
+    [InlineData("session.model_change")]
+    [InlineData("session.usage_info")]
+    [InlineData("assistant.intent")]
+    [InlineData("assistant.usage")]
+    [InlineData("system.message")]
+    public async Task Reader_FailsClosedIfWriterExcludedLifecycleEventUnexpectedlyAppears(
+        string eventType)
+    {
+        var output = Event(eventType, new { sourceEvidence = "writer-excluded" })
+            + "\n"
+            + AssistantEvent("{}", "answer");
+
+        var action = () => ReadAsync(output, maximumResponseBytes: 64);
+
+        await action.Should().ThrowAsync<JsonException>()
+            .WithMessage($"*unsupported event type '{eventType}'*");
+    }
+
+    [Fact]
     public async Task Reader_RejectsOversizedAssistantPayloadWithObservedCountAndNamedCap()
     {
         var output = Event(

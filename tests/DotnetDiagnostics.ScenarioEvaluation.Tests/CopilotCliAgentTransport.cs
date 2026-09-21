@@ -13,33 +13,36 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
     internal const int MaximumCliFramingBytes = 1_048_576;
     internal const int MaximumCliStderrBytes = 32_768;
     private const string UnavailableToolSentinel = "blinded-harness-no-cli-tools";
+    // Copilot CLI 1.0.86 and 1.0.87 install a wildcard listener in prompt mode, then their
+    // JSON writer excludes a fixed set before serializing each remaining event. This list is
+    // the non-tool subset emitted by prompt setup and a normal model turn, using schema names.
     private static readonly HashSet<string> IgnoredCliEventTypes = new(StringComparer.Ordinal)
     {
         "assistant.idle",
         "assistant.message_delta",
         "assistant.message_start",
-        "assistant.model_call_finished",
         "assistant.reasoning",
         "assistant.reasoning_delta",
         "assistant.turn_end",
         "assistant.turn_start",
-        "assistant.usage",
         "capabilities.changed",
         "commands.changed",
-        "custom_agents.updated",
-        "extensions.loaded",
-        "mcp.prompts_list_changed",
-        "mcp.resources_list_changed",
-        "mcp.server_status_changed",
-        "mcp.servers_loaded",
-        "mcp.tools_list_changed",
+        "mcp.prompts.list_changed",
+        "mcp.resources.list_changed",
+        "mcp.tools.list_changed",
+        "model.call_failure",
+        "model.call_finished",
+        "model.call_start",
         "result",
+        "session.custom_agents_updated",
+        "session.extensions_loaded",
         "session.info",
+        "session.mcp_server_status_changed",
+        "session.mcp_servers_loaded",
+        "session.skills_loaded",
         "session.start",
         "session.tools_updated",
         "session.warning",
-        "skills.loaded",
-        "usage",
         "user.message",
     };
     internal const string ProtocolInstructions =

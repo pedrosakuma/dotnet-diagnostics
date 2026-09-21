@@ -271,7 +271,7 @@ public sealed class BlindedAgentHarnessTests
             {"type":"session.start","data":{"sessionId":"private-cli-session","model":"test-model"}}
             {"type":"session.tools_updated","data":{"model":"test-model"}}
             {"type":"assistant.message","data":{"content":"{\"action\":\"tool\",\"toolCall\":{\"id\":\"call-1\",\"name\":\"collect_events\",\"arguments\":{\"target\":\"target-1\",\"kind\":\"counters\",\"durationSeconds\":2}}}"}}
-            {"type":"usage","data":{"premiumRequests":1}}
+            {"type":"result","timestamp":"2026-09-21T00:00:01Z","sessionId":"private-cli-session","exitCode":0,"usage":{"premiumRequests":1}}
             """;
 
         var turn = CopilotCliAgentTransport.ParseOutput(output);
