@@ -16,6 +16,11 @@ if (args.Length > 0 && string.Equals(args[0], "perf-regression", StringCompariso
     return PerfRegressionSpikeRunner.Run(args[1..]);
 }
 
+if (args.Length > 0 && string.Equals(args[0], "durable-capture-spike", StringComparison.OrdinalIgnoreCase))
+{
+    return DurableStorageSpikeCommand.Run(args[1..]);
+}
+
 if (args.Length >= 2 && string.Equals(args[0], "--analyze-nettrace", StringComparison.Ordinal))
 {
     return NettraceSelfTimeAnalyzer.AnalyzeToConsole(
