@@ -15,6 +15,10 @@ used to query it. It consolidates the maintainer discussion and a multi-model
 design review. No collector, retention default, tool, package dependency,
 diagnostic threshold or frozen evaluation changes as a result of this document.
 
+The storage-independent DC1 spike contract, exact first-artifact allowlist,
+lifecycle fixtures and proposed (not approved) public placement are specified
+in [Durable capture contract and internal spike gate](durable-capture-contract.md).
+
 ## 1. Problem and goals
 
 Current compact responses can omit useful detail, while in-memory artifacts
