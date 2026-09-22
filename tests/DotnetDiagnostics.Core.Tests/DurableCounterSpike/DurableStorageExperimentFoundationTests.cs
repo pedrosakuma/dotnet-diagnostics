@@ -243,7 +243,176 @@ public sealed class DurableStorageExperimentFoundationTests : IDisposable
 
         public IDurableCounterStorageAdapter Create(DurableStorageAdapterCreateRequest request)
             => throw new NotSupportedException("This fixture only describes an adapter identity.");
+
+        public IDurableCounterReadonlyStore OpenReadonly(DurableStorageOpenRequest request)
+            => throw new NotSupportedException("This fixture cannot open a package.");
+
+        public ValueTask<DurableStorageRecoveryResult> RecoverAsync(
+            DurableStorageRecoveryRequest request,
+            CancellationToken cancellationToken)
+            => throw new NotSupportedException("This fixture cannot recover a package.");
     }
+
+    [Fact]
+    public void RecoveredQualityPreservesUnknownAccountingAndKnownRetainedCount()
+    {
+        var recovered = new DurableStorageQualityReport(null, 64, VolatileTailUnknown: true);
+
+        Action validate = () => DurableStorageQualityRules.Validate(recovered);
+        validate.Should().NotThrow();
+        recovered.FinalPipelineQuality.Should().BeNull();
+        recovered.RetainedRecords.Should().Be(64);
+
+        Action missingKnownQuality = () => DurableStorageQualityRules.Validate(
+            recovered with { VolatileTailUnknown = false });
+        missingKnownQuality.Should().Throw<DurableStorageExperimentException>()
+            .Which.Code.Should().Be("MissingFinalQuality");
+    }
+
+    [Fact]
+    public void FinalizedQualityRequiresExactQuiescentHostAccounting()
+    {
+        var accounting = new DurableCounterAccounting(
+            Offered: 100, Rejected: 3, Admitted: 97,
+            InCopy: 0, Queued: 0, ActiveBatch: 0, Committed: 97,
+            FailedAfterAdmission: 0, AbandonedKnown: 0, UnknownCommitOutcome: 0,
+            OwnedRecords: 0, OwnedBytes: 0, PeakOwnedRecords: 64, PeakOwnedBytes: 262_144,
+            AdmissionCancelled: false, Rejections: new Dictionary<string, long> { ["invalid"] = 3 });
+        var quality = new DurableCounterQuery([], new DurableCounterPipelineLimits(
+            BatchMaxAge: TimeSpan.FromMilliseconds(100))).Quality(accounting);
+        var finalized = new DurableStorageQualityReport(quality, 97, VolatileTailUnknown: false);
+
+        Action validate = () => DurableStorageQualityRules.Validate(finalized);
+        validate.Should().NotThrow();
+        finalized.FinalPipelineQuality!.Accounting.Should().BeSameAs(accounting);
+
+        Action inventRecoveryQuality = () => DurableStorageQualityRules.Validate(
+            finalized with { VolatileTailUnknown = true });
+        inventRecoveryQuality.Should().Throw<DurableStorageExperimentException>()
+            .Which.Code.Should().Be("RecoveryQualityOverclaim");
+
+        Action activeWriter = () => DurableStorageQualityRules.Validate(finalized with
+        {
+            FinalPipelineQuality = quality with { Accounting = accounting with { ActiveBatch = 1 } },
+        });
+        activeWriter.Should().Throw<DurableStorageExperimentException>()
+            .Which.Code.Should().Be("InvalidFinalQuality");
+
+        Action lostRecord = () => DurableStorageQualityRules.Validate(finalized with { RetainedRecords = 96 });
+        lostRecord.Should().Throw<DurableStorageExperimentException>()
+            .Which.Code.Should().Be("RetainedCountMismatch");
+    }
+
+    [Theory]
+    [InlineData(-1L, "InvalidRetainedCount")]
+    [InlineData(0L, "RetainedCountMismatch")]
+    [InlineData(96L, "RetainedCountMismatch")]
+    [InlineData(97L, null)]
+    [InlineData(100L, null)]
+    [InlineData(104L, null)]
+    [InlineData(105L, "RetainedCountMismatch")]
+    public void UncertainCommitsStillBoundRetainedRecords(long retained, string? error)
+    {
+        var report = new DurableStorageQualityReport(CreateUncertainQuality(), retained, VolatileTailUnknown: false);
+        Action validate = () => DurableStorageQualityRules.Validate(report);
+
+        if (error is null)
+        {
+            validate.Should().NotThrow();
+        }
+        else
+        {
+            validate.Should().Throw<DurableStorageExperimentException>().Which.Code.Should().Be(error);
+        }
+    }
+
+    [Fact]
+    public void UncertainCommitsCannotBypassAdmissionConservationOrWrapTotals()
+    {
+        var quality = CreateUncertainQuality();
+        DurableCounterAccounting[] invalidAccounting =
+        [
+            quality.Accounting with { Offered = 0 },
+            quality.Accounting with { Offered = 108, Admitted = 105 },
+            quality.Accounting with { Committed = -1, UnknownCommitOutcome = 105 },
+            quality.Accounting with
+            {
+                Offered = 0, Rejected = 0, Admitted = 0,
+                Committed = long.MaxValue, FailedAfterAdmission = long.MaxValue, UnknownCommitOutcome = 2,
+            },
+        ];
+        foreach (var accounting in invalidAccounting)
+        {
+            var report = new DurableStorageQualityReport(
+                quality with { Accounting = accounting }, 100, VolatileTailUnknown: false);
+            Action validate = () => DurableStorageQualityRules.Validate(report);
+            validate.Should().Throw<DurableStorageExperimentException>()
+                .Which.Code.Should().Be("InvalidFinalQuality");
+        }
+    }
+
+    [Fact]
+    public void FreshQualityMatchesManifestValuesAcrossSerialization()
+    {
+        var quality = CreateUncertainQuality();
+        var manifest = new DurableStoragePackageManifest(
+            DurableStorageExperimentVersions.PackageContract,
+            DurableStorageExperimentVersions.RecordSchema,
+            "capture", "artifact", DateTimeOffset.UnixEpoch,
+            new DurableStorageAdapterIdentity("test", "1", "test", "test"),
+            ProtocolHash, FixtureHash, "760dfe8c30e57ce4a226178f316b8f2ad047943a",
+            [], null, null, VolatileTailUnknown: false, FinalPipelineQuality: quality);
+        var reopenedManifest = JsonSerializer.Deserialize<DurableStoragePackageManifest>(
+            JsonSerializer.Serialize(manifest))!;
+        reopenedManifest.FinalPipelineQuality!.Accounting.Rejections
+            .Should().NotBeSameAs(quality.Accounting.Rejections);
+        var report = new DurableStorageQualityReport(quality, 100, VolatileTailUnknown: false);
+
+        Action validate = () => DurableStorageQualityRules.Validate(report, reopenedManifest);
+        validate.Should().NotThrow();
+
+        var forgedAccounting = quality.Accounting with
+        {
+            Offered = 100, Rejected = 0, Admitted = 100, Committed = 100, UnknownCommitOutcome = 0,
+            Rejections = new Dictionary<string, long>(),
+        };
+        var forged = report with
+        {
+            FinalPipelineQuality = quality with { Accounting = forgedAccounting, UnknownCommitOutcome = false },
+        };
+        Action selfConsistent = () => DurableStorageQualityRules.Validate(forged);
+        selfConsistent.Should().NotThrow();
+        Action substituteSnapshot = () => DurableStorageQualityRules.Validate(forged, reopenedManifest);
+        substituteSnapshot.Should().Throw<DurableStorageExperimentException>()
+            .Which.Code.Should().Be("QualitySnapshotMismatch");
+
+        Action changeReason = () => DurableStorageQualityRules.Validate(report with
+        {
+            FinalPipelineQuality = quality with
+            {
+                Accounting = quality.Accounting with
+                {
+                    Rejections = new Dictionary<string, long> { ["other"] = 3 },
+                },
+            },
+        }, reopenedManifest);
+        changeReason.Should().Throw<DurableStorageExperimentException>()
+            .Which.Code.Should().Be("QualitySnapshotMismatch");
+
+        Action hideUnknownTail = () => DurableStorageQualityRules.Validate(
+            report, reopenedManifest with { VolatileTailUnknown = true });
+        hideUnknownTail.Should().Throw<DurableStorageExperimentException>()
+            .Which.Code.Should().Be("QualitySnapshotMismatch");
+    }
+
+    private static DurableCounterQualityReport CreateUncertainQuality()
+        => new DurableCounterQuery([], new DurableCounterPipelineLimits(
+            BatchMaxAge: TimeSpan.FromMilliseconds(100))).Quality(new DurableCounterAccounting(
+                Offered: 107, Rejected: 3, Admitted: 104,
+                InCopy: 0, Queued: 0, ActiveBatch: 0, Committed: 97,
+                FailedAfterAdmission: 0, AbandonedKnown: 0, UnknownCommitOutcome: 7,
+                OwnedRecords: 0, OwnedBytes: 0, PeakOwnedRecords: 64, PeakOwnedBytes: 262_144,
+                AdmissionCancelled: false, Rejections: new Dictionary<string, long> { ["invalid"] = 3 }));
 
     private string WriteManifest(
         bool executionEnabled = false,

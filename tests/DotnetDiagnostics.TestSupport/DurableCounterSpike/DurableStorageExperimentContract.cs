@@ -86,27 +86,37 @@ internal sealed record DurableStorageAdapterCreateRequest(
     DurableCounterPipelineLimits Limits,
     IDurableStorageFaultController Faults);
 
+internal sealed record DurableStorageOpenRequest(
+    string PackageRoot,
+    DurableStoragePackageManifest Manifest,
+    DurableCounterPipelineLimits Limits);
+
 internal interface IDurableCounterStorageAdapterFactory
 {
     DurableStorageAdapterIdentity Identity { get; }
 
     IDurableCounterStorageAdapter Create(DurableStorageAdapterCreateRequest request);
-}
 
-internal interface IDurableCounterStorageAdapter : IDurableCounterSink, IAsyncDisposable
-{
-    DurableStorageAdapterIdentity Identity { get; }
-
-    IDurableCounterReadonlyStore Reader { get; }
-
-    ValueTask<DurableStoragePreSealResult> FinalizePreSealAsync(CancellationToken cancellationToken);
+    IDurableCounterReadonlyStore OpenReadonly(DurableStorageOpenRequest request);
 
     ValueTask<DurableStorageRecoveryResult> RecoverAsync(
         DurableStorageRecoveryRequest request,
         CancellationToken cancellationToken);
 }
 
-internal interface IDurableCounterReadonlyStore
+internal interface IDurableCounterStorageAdapter : IDurableCounterSink, IAsyncDisposable
+{
+    DurableStorageAdapterIdentity Identity { get; }
+
+    /// <summary>Owned and disposed by the adapter; callers must not dispose this borrowed reader.</summary>
+    IDurableCounterReadonlyStore Reader { get; }
+
+    ValueTask<DurableStoragePreSealResult> FinalizePreSealAsync(
+        DurableCounterQualityReport finalPipelineQuality,
+        CancellationToken cancellationToken);
+}
+
+internal interface IDurableCounterReadonlyStore : IAsyncDisposable
 {
     ValueTask<IReadOnlyList<DurableCounterSummaryRow>> SummaryAsync(CancellationToken cancellationToken);
 
@@ -117,7 +127,84 @@ internal interface IDurableCounterReadonlyStore
         int pageSize,
         CancellationToken cancellationToken);
 
-    ValueTask<DurableCounterQualityReport> QualityAsync(CancellationToken cancellationToken);
+    ValueTask<DurableStorageQualityReport> QualityAsync(CancellationToken cancellationToken);
+}
+
+internal sealed record DurableStorageQualityReport(
+    DurableCounterQualityReport? FinalPipelineQuality,
+    long RetainedRecords,
+    bool VolatileTailUnknown);
+
+internal static class DurableStorageQualityRules
+{
+    internal static void Validate(DurableStorageQualityReport report)
+    {
+        if (report.RetainedRecords < 0)
+        {
+            throw new DurableStorageExperimentException("InvalidRetainedCount", "Retained record count cannot be negative.");
+        }
+        if (report.VolatileTailUnknown)
+        {
+            if (report.FinalPipelineQuality is not null)
+            {
+                throw new DurableStorageExperimentException(
+                    "RecoveryQualityOverclaim",
+                    "Recovery cannot claim terminal pipeline accounting for the derived capture.");
+            }
+            return;
+        }
+        var quality = report.FinalPipelineQuality
+            ?? throw new DurableStorageExperimentException(
+                "MissingFinalQuality",
+                "A finalized capture must preserve the host's terminal pipeline quality.");
+        var accounting = quality.Accounting;
+        if (!accounting.IsCleanQuiescent
+            || accounting.Offered < 0 || accounting.Rejected < 0 || accounting.Admitted < 0
+            || accounting.Committed < 0 || accounting.FailedAfterAdmission < 0
+            || accounting.AbandonedKnown < 0 || accounting.UnknownCommitOutcome < 0
+            || quality.UnknownCommitOutcome != (accounting.UnknownCommitOutcome > 0)
+            || (Int128)accounting.Offered != (Int128)accounting.Rejected + accounting.Admitted
+            || (Int128)accounting.Admitted != (Int128)accounting.Committed + accounting.FailedAfterAdmission
+                + accounting.AbandonedKnown + accounting.UnknownCommitOutcome)
+        {
+            throw new DurableStorageExperimentException(
+                "InvalidFinalQuality",
+                "Terminal quality must preserve quiescent pipeline accounting and commit uncertainty.");
+        }
+        if (report.RetainedRecords < accounting.Committed
+            || (Int128)report.RetainedRecords > (Int128)accounting.Committed + accounting.UnknownCommitOutcome)
+        {
+            throw new DurableStorageExperimentException(
+                "RetainedCountMismatch",
+                "Retained records must include known commits and cannot exceed known plus uncertain commits.");
+        }
+    }
+
+    internal static void Validate(DurableStorageQualityReport report, DurableStoragePackageManifest manifest)
+    {
+        Validate(report);
+        if (report.VolatileTailUnknown != manifest.VolatileTailUnknown
+            || !MatchesSnapshot(report.FinalPipelineQuality, manifest.FinalPipelineQuality))
+        {
+            throw new DurableStorageExperimentException(
+                "QualitySnapshotMismatch",
+                "Fresh-reader quality must preserve the host-validated manifest snapshot.");
+        }
+    }
+
+    private static bool MatchesSnapshot(DurableCounterQualityReport? actual, DurableCounterQualityReport? expected)
+    {
+        if (actual is null || expected is null)
+        {
+            return actual is null && expected is null;
+        }
+        // Record equality compares dictionary references; compare rejection entries by value.
+        return actual with { Accounting = expected.Accounting } == expected
+            && actual.Accounting with { Rejections = expected.Accounting.Rejections } == expected.Accounting
+            && actual.Accounting.Rejections.Count == expected.Accounting.Rejections.Count
+            && actual.Accounting.Rejections.All(entry =>
+                expected.Accounting.Rejections.TryGetValue(entry.Key, out var value) && value == entry.Value);
+    }
 }
 
 internal sealed record DurableStoragePreSealResult(
@@ -204,7 +291,8 @@ internal sealed record DurableStoragePackageManifest(
     IReadOnlyList<DurableStorageMember> Members,
     string? DerivedFromCaptureId,
     string? RecoveryReason,
-    bool VolatileTailUnknown);
+    bool VolatileTailUnknown,
+    DurableCounterQualityReport? FinalPipelineQuality);
 
 internal sealed record DurableStoragePackageSeal(
     string SealVersion,
