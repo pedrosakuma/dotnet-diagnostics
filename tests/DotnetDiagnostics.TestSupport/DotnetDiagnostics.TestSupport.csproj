@@ -13,4 +13,8 @@
     <PackageReference Include="xunit" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="../../src/DotnetDiagnostics.Core/DotnetDiagnostics.Core.csproj" />
+  </ItemGroup>
+
 </Project>
