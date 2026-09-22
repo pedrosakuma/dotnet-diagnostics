@@ -65,7 +65,9 @@ you're using, then reach for the cross-cutting references.
 | [`runtime-version-compat-matrix.md`](./runtime-version-compat-matrix.md) | Which **target-process** .NET runtimes (6/7/8/9/10) are officially supported vs. CI-validated vs. untested, and the `CrossVersionTargetTests` suite backing it |
 | [`hotpaths/`](./hotpaths/README.md) | CPU/allocation profiling of each collector's *own* code (companion to `resource-boundedness.md`, which bounds memory rather than CPU) |
 | [`ci-nuget-cache.md`](./ci-nuget-cache.md) | A/B measurement of NuGet cache policy on hosted CI runners (`ci.yml`/`kind-integration.yml`) and the resulting `setup-dotnet` built-in cache decision |
-| [`design/`](./design/) | Feature design docs (security/UX/capability-gate tradeoffs) for shipped, higher-risk surfaces — currently method-parameter capture and unified ephemeral-process capture |
+| [`design/`](./design/) | Feature designs and RFCs covering evidence, security, UX and capability-gate tradeoffs; each document declares its implementation status |
+| [`design/durable-capture-rfc.md`](./design/durable-capture-rfc.md) | Discussion draft: local durable capture packages, bounded acquisition, replay limits and storage alternatives; no shipping API changes |
+| [`design/durable-capture-contract.md`](./design/durable-capture-contract.md) | Reviewed DC1 contract for an internal one-artifact lifecycle spike; identity/versioning, immutable publication/recovery and budgets; public API placement remains proposed |
 | [`research/`](./research/README.md) | Point-in-time spikes and prototypes (feasibility studies, protocol migration assessments, tool-budget measurements) — read the linked issue for current status, since a spike's verdict can be superseded later |
 
 ### MCP server (`dotnet-diagnostics-mcp`)
