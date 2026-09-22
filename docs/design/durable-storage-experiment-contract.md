@@ -97,6 +97,12 @@ unknown reset state, and encoded length. Candidate implementations may choose
 physical types and indexes but may not remove, reinterpret, or silently derive
 these logical fields.
 
+The prospective version-support, read-only reopen, derived reindex/conversion,
+and v1-to-v2 evidence requirements are specified in the
+[durable schema compatibility policy proposal](durable-schema-compatibility-policy.md).
+The current adapters' exact version/identity checks do not yet demonstrate
+backward compatibility.
+
 `IDurableCounterSink.CommitAsync` receives at most the frozen 64 records and
 262,144 owned bytes. Each item contains the typed record and the same bounded
 encoded memory owned by the pipeline. That memory is valid only until the
