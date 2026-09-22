@@ -1,0 +1,71 @@
+{
+  "schema": "durable-monitored-comparison-proposal/1",
+  "status": "draft-requires-independent-review-and-explicit-adoption",
+  "tracking": { "parent": 999, "comparison": 1003, "productionDecision": 1006 },
+  "executable": false,
+  "executionAuthorized": false,
+  "base": {
+    "revision": 3,
+    "path": "durable-capture-comparison-protocol.json",
+    "sha256": "faaced68f26a53b7841713d4b1fe1044ce0dd3b277bbac2a9c6f9b6a09f498dd",
+    "historicalReadinessFlagsAreNotExecutionPermission": true
+  },
+  "inheritUnchanged": [
+    "scope", "recordSemantics", "fixture", "durabilityProfile",
+    "cases", "liveProfile", "contextCost", "freeze"
+  ],
+  "inheritValuesWithNamedSemanticOverrides": ["limits", "decision", "execution"],
+  "precedence": "Only the explicit storage-enforcement, monitored-eligibility and monitoring-abort semantics below override the baseline. All inherited numeric values, comparisons, case ordering and attempt policies remain unchanged.",
+  "semanticOverrides": {
+    "aggregateStoragePeak": "observed-threshold-and-abort-not-point-of-growth-proof",
+    "activeHistoryAndWorkspaceGrowth": "same-numeric-limits-with-declared-transient-growth-uncertainty",
+    "exactQuiescentFinalLimitsPreserved": true,
+    "eligibilityRequiresCompleteMonitoringAndNoUnresolvedThresholdAlarm": true,
+    "ambiguousSweepExcess": "inconclusive-not-candidate-violation",
+    "confirmedStorageViolationRequiresAttributedQuiescentEvidence": true,
+    "recommendationScope": "monitored-scope-only",
+    "originalHardAggregateGuaranteeEstablished": false,
+    "productionApproval": false
+  },
+  "monitoring": {
+    "pollTargetMs": 100,
+    "maximumActiveStageGapMs": 1000,
+    "maximumTrackedIdentitiesPerSweep": 4096,
+    "maximumObservedPathUtf8Bytes": 4096,
+    "maximumSummaryUtf8Bytes": 1024,
+    "maximumSummaryRecordsPerExecution": 2048,
+    "identityAndCombinedOutputFeasibilityEvidenceRequiredBeforeAdoption": true,
+    "evidenceUsesExistingStdoutBudget": true,
+    "instrumentationCostIncluded": true,
+    "monitorOwner": "harness-in-every-arm",
+    "unequalObservationWorkIsDeclaredScopeLimitation": true,
+    "intrinsicEnginePerformanceClaimed": false,
+    "discoveryDomain": [
+      "declared-private-package-recovery-history-evidence-roots",
+      "open-descriptors-of-verified-owned-live-workers-and-harness"
+    ],
+    "knownChargedClassesOutsideDomainMustBeCoveredBeforeExecution": true,
+    "intentionalKillBoundary": {
+      "preKillObservationAtDeclaredBarrierRequired": true,
+      "confirmedDeathAndQuiescentSurvivingRootInventoryRequired": true,
+      "monitorReferencesReleasedBeforeKill": true,
+      "expectedDescriptorTableDisappearanceIsIncompleteByItself": false,
+      "unexpectedLossOfVisibilityRemainsIncomplete": true
+    },
+    "rootOnlyScanSufficient": false,
+    "nonAtomicSweepsAreInstantaneousPeaks": false,
+    "unobservedTransientPeaks": "unknown",
+    "incompleteCoverageEligible": false,
+    "incompleteMonitoringStopsCampaign": true,
+    "observedExcessStopsCampaign": true,
+    "ambiguousAbortAutomaticallyBlamesCandidate": false
+  },
+  "adoption": {
+    "independentReviewRequired": true,
+    "maintainerAdoptionRequired": true,
+    "completeSuccessorProtocolAndValidatorRequired": true,
+    "runnerAndMonitorEvidenceRequired": true,
+    "resolvedManifestRequired": true,
+    "separateExecutionAuthorizationRequired": true
+  }
+}
