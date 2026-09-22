@@ -16,11 +16,11 @@ The foundation adds the minimum shared contract needed for independent adapter
 work:
 
 - `IDurableCounterStorageAdapterFactory` owns adapter identity, version,
-  configuration schema, and commit-acknowledgement meaning;
+  configuration schema, commit-acknowledgement meaning, fresh read-only opens,
+  and explicit recovery into new capture/artifact IDs;
 - `IDurableCounterStorageAdapter` implements the existing bounded
   `IDurableCounterSink`, exposes the fixed read-only typed views, completes
-  query/index files before sealing, and performs explicit recovery into new
-  capture/artifact IDs;
+  query/index files before sealing;
 - `IDurableCounterReadonlyStore` exposes only bounded `summary`, exclusive-
   cursor `series`, and `quality` projections;
 - package manifest, member, pre-seal, seal, recovery, and error records are
@@ -30,6 +30,63 @@ work:
 
 No factory is registered yet. Adapter lookup is exact and an unknown ID fails;
 there is no fallback or success-shaped no-op.
+
+The common adapter preparation base references the already centrally pinned
+`Microsoft.Data.Sqlite` package from TestSupport only. This does not add a
+production dependency or register a backend.
+
+### Independent reader and recovery lifetime
+
+Fresh opens and recovery are factory operations, not operations that require
+creating a new writer. `OpenReadonly` receives the package root, manifest and
+shared pipeline/query limits
+only after the host has validated the immutable seal, member hashes and current
+authorization and acquired a bounded reader lease. The factory must validate
+its own identity/schema expectations and open only declared member paths; it
+must not initialize a database or create auxiliary files.
+
+Readers implement `IAsyncDisposable` so connections and retained buffers have
+an explicit bounded lifetime. The caller disposes readers returned by
+`OpenReadonly`; the host owns the lease and must hold it until reader disposal
+completes. An adapter owns and disposes its `Reader` in its own `DisposeAsync`;
+callers borrow that reader and must not dispose it separately.
+Adapter-owned `Reader` access remains unavailable
+during acquisition; it becomes usable only after pre-seal finalization.
+Unsealed packages are not ordinary opens: host validation must return a
+recovery-required error before invoking the reader factory. These host duties
+remain part of the runner gate, not a claim that this foundation enforces them.
+
+Factory recovery does not create or mutate a source writer. It writes only to
+the explicitly new recovery staging root, returning new IDs and provenance.
+The host owns exclusive leases, source/seal validation, final publication and
+physical quotas. No recovery implementation exists in this foundation.
+
+### Quality is not reconstructed from retained rows
+
+After drain completes and ownership is quiescent, the host passes the exact
+DC4 `DurableCounterQualityReport` to `FinalizePreSealAsync` and persists it as
+`FinalPipelineQuality` in the manifest covered by the seal. Adapter finalization
+and host publication must share the protocol's finalization deadline, not each
+receive a fresh time allowance. Sink `FinalizeAsync` is the preceding sink
+completion step, not permission to publish a seal or query an active writer.
+
+Storage quality wraps this unchanged report with `RetainedRecords` and
+`VolatileTailUnknown`. Normal finalized captures preserve the host snapshot
+including rejections, cancellation and commit uncertainty; adapters cannot
+infer those values from committed rows. Fresh readers use the host-validated
+manifest snapshot and validate it with `Validate(report, manifest)`, including
+rejection entries by value rather than dictionary identity. Commit uncertainty
+does not erase admission conservation: known commits are a lower bound on
+retained rows, and known plus uncertain commits are the upper bound.
+The inner DC4 report is compared to the original oracle;
+no fixture or oracle hash changes for the storage envelope.
+
+Explicitly recovered packages have `FinalPipelineQuality = null` and
+`VolatileTailUnknown = true`, plus their independently counted retained rows.
+They do not invent zero offered/rejected/abandoned counts or treat recovered
+row count as the old admission total. The source package still preserves any
+historical quality it contained, but it is not relabeled as terminal accounting
+for the new derived capture.
 
 ## Fixed logical schema and sink ownership
 
