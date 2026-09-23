@@ -70,16 +70,25 @@ internal static class PrevalidationProtocol
     internal const string AddendumCommit = "9a049681562e1c995a9fec43a632e6b69918d315";
     internal const string HistoricalReportPath = "docs/evidence/dc5/monitored-readiness-dbeb8cd.md";
     internal const string HistoricalReportSha256 = "18c22eddacdfa9dc2d3b2308264f42a139e7e311c8df57bc43e6cd0a129622bb";
-    internal const string SummarySchema = "durable-prevalidation-sweep-summary/2";
+    internal const string SummarySchema = "durable-prevalidation-sweep-summary/3";
     internal const string CoverageSchema = "durable-prevalidation-coverage/2";
     internal const string ReportSchema = "durable-prevalidation-report/2";
     internal static string LegacyContextSummaryFieldMapSha256 { get; } = MonitoredFile.HashBytes(
         System.Text.Encoding.UTF8.GetBytes(MonitoredSweepSummaryEncoding.FieldMap
             + "ci=CurrentContextIdentities\ncr=CurrentContextRootedIdentities\nrh=RetainedHistoryBytes\n"));
+    private const string FailureContextFieldMap =
+        "ci=CurrentContextIdentities\ncr=CurrentContextRootedIdentities\nrh=RetainedHistoryBytes\n"
+        + "ec=FirstErrorCode(first sweep error;1-64 ASCII token;null when complete;remaining errors counted by er)\n";
+    internal static string PreviousContextSummaryFieldMapSha256 { get; } = MonitoredFile.HashBytes(
+        System.Text.Encoding.UTF8.GetBytes(MonitoredSweepSummaryEncoding.FieldMap
+            + FailureContextFieldMap));
     internal static string ContextSummaryFieldMapSha256 { get; } = MonitoredFile.HashBytes(
         System.Text.Encoding.UTF8.GetBytes(MonitoredSweepSummaryEncoding.FieldMap
-            + "ci=CurrentContextIdentities\ncr=CurrentContextRootedIdentities\nrh=RetainedHistoryBytes\n"
-            + "ec=FirstErrorCode(first sweep error;1-64 ASCII token;null when complete;remaining errors counted by er)\n"));
+            + FailureContextFieldMap
+            + "nc=FirstDescriptorFailure([role,operation,error,fd];role=0:harness,1:diagnostic,2:target;"
+            + "operation=1:first-open,2:first-fdinfo,3:second-open,4:second-fdinfo;"
+            + "open-error=errno[1,4095],fdinfo-error=Int32-HResult;fd=nonnegative-Int32;"
+            + "first descriptor failure independently of ec;null when absent;no PID or path)\n"));
     internal static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true,
@@ -147,7 +156,8 @@ internal static class PrevalidationProtocol
             "PrevalidationFrozenInputMismatch");
         Require(manifest.Probes.SequenceEqual(Plan()) && manifest.Bounds == Bounds(), "PrevalidationPlanOrBounds");
         Require(manifest.ContextSummaryFieldMapSha256 == ContextSummaryFieldMapSha256
-            || allowLegacyInspection && manifest.ContextSummaryFieldMapSha256 == LegacyContextSummaryFieldMapSha256,
+            || allowLegacyInspection && (manifest.ContextSummaryFieldMapSha256 == LegacyContextSummaryFieldMapSha256
+                || manifest.ContextSummaryFieldMapSha256 == PreviousContextSummaryFieldMapSha256),
             "PrevalidationContextEncodingMismatch");
         Require(PrevalidationLayout.DeriveSuiteIdentityBound() <= Bounds().SuiteIdentities,
             "PrevalidationSuiteGeometry");

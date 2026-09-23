@@ -129,14 +129,14 @@ internal static class PrevalidationLayout
     }
 
     internal static void CreateHistoryFixtures(string root, int slots, CancellationToken cancellationToken)
-        => CreateHistoryFixturesCore(root, slots, null, cancellationToken);
+        => CreateHistoryFixturesCore(root, slots, null, null, cancellationToken);
 
     internal static void CreateHistoryFixturesForComponent(string root, int slots,
-        Action fixtureWritten, CancellationToken cancellationToken)
-        => CreateHistoryFixturesCore(root, slots, fixtureWritten, cancellationToken);
+        Action fixtureWritten, CancellationToken cancellationToken, Action? fixtureClosed = null)
+        => CreateHistoryFixturesCore(root, slots, fixtureWritten, fixtureClosed, cancellationToken);
 
     private static void CreateHistoryFixturesCore(string root, int slots, Action? fixtureWritten,
-        CancellationToken cancellationToken)
+        Action? fixtureClosed, CancellationToken cancellationToken)
     {
         if (!OperatingSystem.IsLinux())
         {
@@ -162,6 +162,7 @@ internal static class PrevalidationLayout
                     stream.Flush(flushToDisk: true);
                     fixtureWritten?.Invoke();
                 }
+                fixtureClosed?.Invoke();
                 MonitoredFile.MakeReadOnly(path);
             }
             File.SetUnixFileMode(directory, UnixFileMode.UserRead | UnixFileMode.UserExecute);

@@ -130,6 +130,11 @@ internal sealed class PinnedProcessDescriptor : IDisposable
     public void Dispose() => Handle.Dispose();
 }
 
+internal sealed record DescriptorObservationFailure(int Operation, int Error, int Descriptor)
+{
+    internal int[] Encode(MonitoredProcessRole role) => [(int)role, Operation, Error, Descriptor];
+}
+
 internal static class LinuxProcessDescriptorObserver
 {
     private const int OpenPath = 0x200000;
@@ -139,22 +144,34 @@ internal static class LinuxProcessDescriptorObserver
         int processId,
         string descriptorPath,
         int maximumPathUtf8Bytes)
+        => OpenCoherentCore(processId, descriptorPath, maximumPathUtf8Bytes, null, null);
+
+    internal static PinnedProcessDescriptor OpenCoherentForComponent(
+        int processId, string descriptorPath, int maximumPathUtf8Bytes,
+        Action<int>? beforeOperation, Func<int, int?>? openError = null)
+        => OpenCoherentCore(processId, descriptorPath, maximumPathUtf8Bytes, beforeOperation, openError);
+
+    private static PinnedProcessDescriptor OpenCoherentCore(
+        int processId, string descriptorPath, int maximumPathUtf8Bytes,
+        Action<int>? beforeOperation, Func<int, int?>? openError)
     {
         SafeFileHandle? pinned = null;
         try
         {
-            pinned = OpenPathHandle(descriptorPath);
+            beforeOperation?.Invoke(1);
+            pinned = OpenPathHandle(descriptorPath, 1, openError?.Invoke(1));
             var first = CaptureSnapshot(
                 pinned,
                 processId,
                 Path.GetFileName(descriptorPath),
-                maximumPathUtf8Bytes);
-            using var verification = OpenPathHandle(descriptorPath);
+                maximumPathUtf8Bytes, 2, beforeOperation);
+            beforeOperation?.Invoke(3);
+            using var verification = OpenPathHandle(descriptorPath, 3, openError?.Invoke(3));
             var second = CaptureSnapshot(
                 verification,
                 processId,
                 Path.GetFileName(descriptorPath),
-                maximumPathUtf8Bytes);
+                maximumPathUtf8Bytes, 4, beforeOperation);
             ValidateCoherent(first, second);
             return new PinnedProcessDescriptor(pinned, first);
         }
@@ -183,7 +200,9 @@ internal static class LinuxProcessDescriptorObserver
         SafeFileHandle handle,
         int processId,
         string descriptor,
-        int maximumPathUtf8Bytes)
+        int maximumPathUtf8Bytes,
+        int flagsOperation,
+        Action<int>? beforeOperation)
     {
         var pinnedPath = $"/proc/self/fd/{handle.DangerousGetHandle().ToInt64().ToString(CultureInfo.InvariantCulture)}";
         var target = new FileInfo(pinnedPath).LinkTarget;
@@ -199,7 +218,8 @@ internal static class LinuxProcessDescriptorObserver
                 "ObservedPathLimitExceeded",
                 "A pinned process descriptor target exceeded the bounded UTF-8 path limit.");
         }
-        var flags = ReadTargetDescriptorFlags(processId, descriptor);
+        beforeOperation?.Invoke(flagsOperation);
+        var flags = ReadTargetDescriptorFlags(processId, descriptor, flagsOperation);
         var identity = LinuxAnyHandleIdentityObserver.Observe(handle);
         DurableStorageNativeObservation? metadata = null;
         try
@@ -213,19 +233,24 @@ internal static class LinuxProcessDescriptorObserver
         return new PinnedDescriptorSnapshot(target, flags, identity, metadata);
     }
 
-    private static SafeFileHandle OpenPathHandle(string path)
+    private static SafeFileHandle OpenPathHandle(string path, int operation, int? injectedError)
     {
-        var descriptor = Open(path, OpenPath | OpenCloseOnExec);
+        var descriptor = injectedError is null ? Open(path, OpenPath | OpenCloseOnExec) : -1;
+        var error = injectedError ?? Marshal.GetLastPInvokeError();
         if (descriptor < 0)
         {
             throw new DurableStorageExperimentException(
                 "DescriptorObservationUnavailable",
-                $"Could not pin a process descriptor; open(O_PATH) failed with errno {Marshal.GetLastPInvokeError()}.");
+                "Could not pin a process descriptor; open(O_PATH) failed.")
+            {
+                DescriptorFailure = new(operation, error,
+                    int.Parse(Path.GetFileName(path), CultureInfo.InvariantCulture)),
+            };
         }
         return new SafeFileHandle(descriptor, ownsHandle: true);
     }
 
-    private static int ReadTargetDescriptorFlags(int processId, string descriptor)
+    private static int ReadTargetDescriptorFlags(int processId, string descriptor, int operation)
     {
         var path = $"/proc/{processId.ToString(CultureInfo.InvariantCulture)}/fdinfo/{descriptor}";
         try
@@ -245,7 +270,11 @@ internal static class LinuxProcessDescriptorObserver
         {
             throw new DurableStorageExperimentException(
                 $"DescriptorFlags{exception.GetType().Name}",
-                "Could not read flags for a pinned process descriptor.");
+                "Could not read flags for a pinned process descriptor.")
+            {
+                DescriptorFailure = new(operation, exception.HResult,
+                    int.Parse(descriptor, CultureInfo.InvariantCulture)),
+            };
         }
         throw new DurableStorageExperimentException(
             "DescriptorFlagsUnavailable",
@@ -651,6 +680,8 @@ internal sealed record MonitoredSweepSummary(
     public long? RetainedHistoryBytes { get; init; }
     [JsonPropertyName("ec"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? FirstErrorCode { get; init; }
+    [JsonPropertyName("nc"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int[]? FirstDescriptorFailure { get; init; }
 }
 
 internal static class MonitoredSweepSummaryEncoding
@@ -745,6 +776,7 @@ internal static class MonitoredSweepSummaryEncoding
 
     internal static byte[] EncodeLine(MonitoredSweepSummary summary)
     {
+        ValidateDescriptorFailure(summary);
         PrevalidationProtocol.Require(summary.FirstErrorCode is null
             || IsBoundedToken(summary.FirstErrorCode, MaximumAlarmUtf8Bytes),
             "PrevalidationErrorCodeEncodingLimit");
@@ -755,6 +787,17 @@ internal static class MonitoredSweepSummaryEncoding
         payload.CopyTo(framed, 0);
         framed[^1] = (byte)'\n';
         return framed;
+    }
+
+    internal static void ValidateDescriptorFailure(MonitoredSweepSummary summary)
+    {
+        var context = summary.FirstDescriptorFailure;
+        PrevalidationProtocol.Require(context is null
+            || context.Length == 4 && context[0] is >= 0 and <= 2
+                && context[1] is >= 1 and <= 4 && context[3] >= 0
+                && (context[1] is 2 or 4 || context[2] is > 0 and <= 4095)
+                && !summary.Complete && summary.ErrorCount > 0 && summary.FirstErrorCode is not null,
+            "PrevalidationDescriptorContextMismatch");
     }
 }
 
@@ -1072,6 +1115,7 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
     internal long SummaryBytes => _writer.Bytes;
     internal int MaximumSummaryRecordBytes => _writer.MaximumObservedRecordBytes;
     internal Task<string> TerminalIssue => _terminalIssue.Task;
+    internal Action<string, int>? BeforeDescriptorOperationForComponent { private get; set; }
 
     internal void RegisterGeometryFixtureOwner(MonitoredProcessIdentity owner)
     {
@@ -1315,6 +1359,7 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
     {
         var started = Stopwatch.GetTimestamp();
         var errors = new List<string>(8);
+        int[]? firstDescriptorFailure = null;
         var observations = new Dictionary<ApparentFileIdentity, ObservedIdentity>();
         string boundary;
         bool active;
@@ -1339,7 +1384,8 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
                 observations,
                 errors,
                 ref runtimeOnlyExcludedBytes,
-                ref runtimeOnlyExcludedCount);
+                ref runtimeOnlyExcludedCount,
+                ref firstDescriptorFailure);
         }
         if (_prevalidationScope?.CurrentHistoryRoot is { } retainedRoot)
         {
@@ -1533,6 +1579,7 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
             RetainedHistoryBytes = _prevalidationScope is null ? null : retainedHistoryBytes,
             FirstErrorCode = _prevalidationScope is null || complete ? null
                 : PrevalidationFailureCodes.Normalize(errors.FirstOrDefault() ?? "UnclassifiedChargedResource"),
+            FirstDescriptorFailure = _prevalidationScope is null ? null : firstDescriptorFailure,
         };
         var identityEvidence = _includeIdentityEvidence
             ? observations.Select(static pair => new MonitoredObservedIdentityEvidence(
@@ -1657,7 +1704,8 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
         Dictionary<ApparentFileIdentity, ObservedIdentity> observations,
         List<string> errors,
         ref long runtimeOnlyExcludedBytes,
-        ref int runtimeOnlyExcludedCount)
+        ref int runtimeOnlyExcludedCount,
+        ref int[]? firstDescriptorFailure)
     {
         if (!LinuxProcessIdentity.Matches(tracked.Identity))
         {
@@ -1694,10 +1742,12 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
             }
             try
             {
-                using var pinned = LinuxProcessDescriptorObserver.OpenCoherent(
-                    tracked.Identity.ProcessId,
-                    descriptor,
-                    _attribution.MaximumObservedPathUtf8Bytes);
+                using var pinned = BeforeDescriptorOperationForComponent is { } beforeOperation
+                    ? LinuxProcessDescriptorObserver.OpenCoherentForComponent(
+                        tracked.Identity.ProcessId, descriptor, _attribution.MaximumObservedPathUtf8Bytes,
+                        phase => beforeOperation(descriptor, phase))
+                    : LinuxProcessDescriptorObserver.OpenCoherent(
+                        tracked.Identity.ProcessId, descriptor, _attribution.MaximumObservedPathUtf8Bytes);
                 var target = pinned.Snapshot.Target;
                 var flags = pinned.Snapshot.Flags;
                 if (IsSimpleRuntimeOnlyTarget(target))
@@ -1792,6 +1842,10 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
                 or UnauthorizedAccessException
                 or DurableStorageExperimentException)
             {
+                if (exception is DurableStorageExperimentException { DescriptorFailure: { } failure })
+                {
+                    firstDescriptorFailure ??= failure.Encode(tracked.Identity.Role);
+                }
                 errors.Add(exception is DurableStorageExperimentException storage
                     ? storage.Code
                     : $"DescriptorObservation{exception.GetType().Name}");

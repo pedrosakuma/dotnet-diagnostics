@@ -224,9 +224,10 @@ not change the frozen protocol's allowance. Stderr exhaustion is reported as
 
 Summary records remain at most 1,024 bytes **including newline**. The original
 maximum-width encoding remains 854 bytes. The prevalidation extension adds
-`ci`, `cr`, `rh`, and `ec`, with a separate manifest-pinned field-map hash; its
-maximum-width component fixture is **983 bytes including LF** (all numeric
-fields at maximum width, 64-byte boundary, alarm, and error tokens). `ec` is
+`ci`, `cr`, `rh`, `ec`, and `nc`, with a separate manifest-pinned field-map hash;
+its maximum-width component fixture is **1,017 bytes including LF** (all numeric
+fields at maximum width, 64-byte boundary, alarm, and error tokens, and the
+four-integer native context). Without `nc` it remains 983 bytes. `ec` is
 the first error code of that sweep, not a threshold alarm. Complete sweeps
 omit it; `er` continues to count all sweep errors. Incomplete sweeps caused
 solely by unclassified identities use `UnclassifiedChargedResource`, with the
@@ -243,12 +244,26 @@ This correction responds to the preserved
 change that report, infer its missing cause, authorize another attempt, or
 change the frozen addendum/protocol.
 
-- `durable-prevalidation-sweep-summary/2` adds only the null-ignored `ec`
+- `durable-prevalidation-sweep-summary/2` introduced the null-ignored `ec`
   field to the prevalidation extension. Codes use the existing 1–64-character
   ASCII token alphabet (letters, digits, `-_.:`), never paths or exception
   messages. An invalid internally generated code fails closed as
   `PrevalidationErrorCodeEncodingLimit`, rather than truncating a message.
   The original scored field map and 854-byte encoding remain unchanged.
+- `durable-prevalidation-sweep-summary/3` adds null-ignored `nc`, retaining
+  only the first descriptor-operation failure per sweep, independently of
+  `ec` (which may name an earlier root error). Its fixed numeric tuple is
+  `[role, operation, error, fd]`: role 0/1/2 means harness/diagnostic/target;
+  operation 1/3 means first/second native `open(O_PATH | O_CLOEXEC)` and error
+  is the immediately captured errno, 1–4095; operation 2/4 means first/second
+  managed `/proc/.../fdinfo` flags read and error is the **signed Int32
+  HResult**, not an inferred errno. The descriptor is a nonnegative Int32,
+  not a PID, pathname, identity inventory or exception message. The maximum
+  extension is 34 bytes (`,"nc":[2,4,-2147483648,2147483647]`), leaving seven
+  bytes of the 1,024-byte budget. Complete/errorless records cannot carry it;
+  malformed tuple lengths, operations, roles and native errno ranges fail
+  encoding and inspection. Later descriptor contexts are not retained;
+  their errors still contribute to `er`. No completion rule changes.
 - `durable-prevalidation-coverage/2` keeps `failureCode` as the primary
   failure, adds its `failureStage`, and adds nullable
   `secondaryFailures: { firstCode, firstStage, count }`.
@@ -278,7 +293,8 @@ change the frozen addendum/protocol.
   `partial-unsealed-not-readiness-evidence`, never readiness or approval.
 - The refreshed context field-map hash rejects old manifests for **every new
   admission/execution**. Inspection alone accepts the original hash with
-  `/1` report/coverage schemas. Legacy missing causality stays unknown; the
+  `/1` report/coverage schemas and the previous `ec`-only hash with unchanged
+  `/2` report/coverage schemas. Legacy missing causality stays unknown; the
   inspector does not reinterpret an old cleanup label as the original cause.
   Mixing old/new field-map and result versions is rejected. The manifest
   envelope stays `/1`: its existing pinned field-map member identifies the
@@ -302,8 +318,18 @@ real coordinator descriptor population was tested. Separate deterministic
 tests persist a missing-root cause, restore complete individual sweeps, and
 verify the original sticky failure still gates the entry. These establish
 causal evidence retention and controlled overlap, **not the cause of the
-historical fixture failure**; descriptor churn remains an unconfirmed
-hypothesis. Genuine incompleteness still stops a future authorized suite.
+historical fixture failure**. New component-only callbacks additionally
+release the real fixture writer while the observer is between enumeration
+and first pin, or between first and second pin, and block the next fixture
+until the failure is captured. Both yield native `ENOENT` in controlled
+components. A full self/coordinator sweep likewise retains the failure when
+a concurrent owned 512-byte output writer closes between pins; the summary
+writer and unrelated host descriptors remain monitored, without exemptions.
+Direct tests cover closure at both flags reads, native `dup2` reuse, unlinked
+files, injected `EACCES`/`EIO`, pin disposal, and invalid causal contexts.
+The controlled native results do not reconstruct either historical attempt's
+missing errno. See the [component investigation](../evidence/dc5/descriptor-observer-component.md)
+for the retained negative evidence and remaining feasibility block.
 
 Cleanup first signals **every verified eligible identity**, even if the
 deadline was already cancelled or another signal failed. It then checks all

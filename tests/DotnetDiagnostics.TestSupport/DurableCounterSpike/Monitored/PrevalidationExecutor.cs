@@ -786,6 +786,7 @@ internal static class PrevalidationExecutor
 
     internal static void ValidateSummaryFailure(MonitoredSweepSummary summary)
     {
+        MonitoredSweepSummaryEncoding.ValidateDescriptorFailure(summary);
         PrevalidationFailureCodes.Validate(summary.FirstErrorCode, null);
         PrevalidationProtocol.Require(summary.ErrorCount >= 0 && summary.UnclassifiedCount >= 0
             && (summary.Complete
