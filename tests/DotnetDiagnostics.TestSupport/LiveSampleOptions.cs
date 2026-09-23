@@ -7,6 +7,8 @@ namespace DotnetDiagnostics.TestSupport;
 /// </summary>
 public sealed record LiveSampleOptions
 {
+    internal Func<System.Diagnostics.Process, Task>? ProcessStarted { get; init; }
+
     /// <summary>Extra environment variables layered on top of the harness defaults
     /// (<c>DOTNET_NOLOGO=1</c>, <c>ASPNETCORE_ENVIRONMENT=Development</c>). Overrides win.</summary>
     public IReadOnlyDictionary<string, string>? Environment { get; init; }
