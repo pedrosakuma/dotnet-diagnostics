@@ -7,7 +7,11 @@ internal sealed record PrevalidationMonitorRequest(string Operation, MonitoredPr
     string? Boundary = null, bool Active = false);
 
 internal sealed record PrevalidationMonitorReply(bool Incomplete, string? Alarm, int Records, long Bytes,
-    int MaximumIdentities, long MaximumBytes, MonitoredSweepSummary? Summary);
+    int MaximumIdentities, long MaximumBytes, MonitoredSweepSummary? Summary)
+{
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public SampledLossMeasurement? SampledLoss { get; init; }
+}
 
 internal static class PrevalidationMonitorControl
 {
@@ -100,10 +104,11 @@ internal static class PrevalidationMonitorControl
     internal static PrevalidationMonitorReply Snapshot(MonitoredStorageMonitor monitor,
         MonitoredSweepSummary? summary = null)
         => new(monitor.IsIncomplete, monitor.TerminalAlarm, monitor.SummaryRecords, monitor.SummaryBytes,
-            monitor.MaximumCurrentContextIdentities, monitor.MaximumObservedSweepBytes, summary);
+            monitor.MaximumCurrentContextIdentities, monitor.MaximumObservedSweepBytes, summary)
+            { SampledLoss = monitor.LossTotals };
 }
 
-internal sealed class PrevalidationMonitorClient(CancellationToken cancellationToken)
+internal sealed class PrevalidationMonitorClient(CancellationToken cancellationToken, bool sampledLoss = false)
 {
     private int _requests;
     internal PrevalidationMonitorReply State { get; private set; } = new(false, null, 0, 0, 0, 0, null);
@@ -117,6 +122,10 @@ internal sealed class PrevalidationMonitorClient(CancellationToken cancellationT
         var line = PrevalidationMonitorControl.ReadLineAsync(Console.In, cancellationToken).GetAwaiter().GetResult();
         State = JsonSerializer.Deserialize<PrevalidationMonitorReply>(line, PrevalidationProtocol.Json)
             ?? throw PrevalidationProtocol.Error("PrevalidationControlReply", "Missing authoritative monitor reply.");
+        PrevalidationProtocol.Require((State.SampledLoss is not null) == sampledLoss
+            && (State.Summary is null || (State.Summary.SampledLoss is not null) == sampledLoss),
+            "SampledLossAuthorityPolicyMismatch");
+        State.SampledLoss?.Validate();
         if (State.Summary is { } summary) PrevalidationExecutor.ValidateSummaryFailure(summary);
         PrevalidationProtocol.Require(!State.Incomplete && State.Alarm is null,
             State.Alarm ?? "PrevalidationMonitoringIncomplete");
@@ -141,7 +150,8 @@ internal sealed class MonitoredExecutionMonitor : IAsyncDisposable
         {
             PrevalidationProtocol.Require(context.Prevalidation is null, "PrevalidationMonitorOwnerMissing");
             _local = new(context.Attribution, context.Encoding, path, budget,
-                context.ComponentEvidence.DerivedMaximumSimultaneousIdentitiesEnforced);
+                context.ComponentEvidence.DerivedMaximumSimultaneousIdentitiesEnforced,
+                sampledLoss: context.UsesSampledLoss);
         }
         else
         {
@@ -152,6 +162,7 @@ internal sealed class MonitoredExecutionMonitor : IAsyncDisposable
     }
 
     internal bool IsIncomplete => _local?.IsIncomplete ?? _remote!.State.Incomplete;
+    internal SampledLossMeasurement? LossTotals => _local is not null ? _local.LossTotals : _remote!.State.SampledLoss;
     internal string? TerminalAlarm => _local is not null ? _local.TerminalAlarm : _remote!.State.Alarm;
     internal int SummaryRecords => _local?.SummaryRecords ?? _remote!.State.Records - _initialRecords;
     internal long SummaryBytes => _local?.SummaryBytes ?? _remote!.State.Bytes - _initialBytes;

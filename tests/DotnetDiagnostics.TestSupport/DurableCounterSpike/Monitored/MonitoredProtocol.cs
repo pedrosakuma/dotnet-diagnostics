@@ -598,7 +598,11 @@ internal sealed record MonitoredRunManifest(
     string HistoryRoot,
     string WorkspaceRoot,
     string OutputRoot,
-    string AuthorizationReceipt) : IMonitoredExecutionManifest;
+    string AuthorizationReceipt) : IMonitoredExecutionManifest
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public SampledLossBinding? SampledLoss { get; init; }
+}
 
 internal sealed record MonitoredAuthorizationReceipt(
     string Schema,
@@ -759,11 +763,17 @@ internal static class MonitoredRunManifestValidator
         var manifestHash = MonitoredFile.HashBytes(manifestBytes);
         var manifest = JsonSerializer.Deserialize<MonitoredRunManifest>(manifestBytes, JsonOptions)
             ?? throw Error("InvalidMonitoredManifest", "The monitored run manifest was empty.");
-        if (!string.Equals(manifest.Schema, MonitoredProtocolVersions.ManifestSchema, StringComparison.Ordinal))
+        if (!string.Equals(manifest.Schema, manifest.SampledLoss is null ? MonitoredProtocolVersions.ManifestSchema
+            : SampledLossProtocol.CampaignManifestSchema, StringComparison.Ordinal))
         {
             throw Error(
                 "UnsupportedMonitoredManifestSchema",
                 "Revision-3 foundation manifests cannot authorize monitored execution.");
+        }
+        if (manifest.SampledLoss is { } sampled)
+        {
+            SampledLossProtocol.ValidateBinding(sampled, root);
+            SampledLossProtocol.ValidateReadiness(manifest);
         }
 
         RequireSafeIdentity(manifest.CampaignId, nameof(manifest.CampaignId), allowSlash: false);
@@ -814,7 +824,8 @@ internal static class MonitoredRunManifestValidator
         ValidateAttribution(manifest, attribution);
         ValidateEncoding(encoding);
         ValidateComponentEvidence(manifest.SourceCommits, manifest.AttributionMapSha256, encoding, component,
-            MonitoredAdmissionStage.ScoredCampaign);
+            manifest.SampledLoss is null ? MonitoredAdmissionStage.ScoredCampaign
+                : MonitoredAdmissionStage.PrevalidationComponentProof);
 
         var evidenceRoot = MonitoredPathRules.ResolveAbsoluteDirectory(manifest.EvidenceRoot, mustExist: true);
         var evidenceMode = File.GetUnixFileMode(evidenceRoot);
@@ -870,7 +881,7 @@ internal static class MonitoredRunManifestValidator
             requireAuthorization ? "immutable-parent-authorization" : "authorization-not-requested",
         };
         var summary = new MonitoredManifestValidation(
-            MonitoredProtocolVersions.ManifestSchema,
+            manifest.Schema,
             Ready: requireAuthorization,
             manifestHash,
             authorizationHash,
@@ -1003,7 +1014,7 @@ internal static class MonitoredRunManifestValidator
     private static void ValidateHost(MonitoredHostFacts declared, string evidenceRoot)
         => ValidateCurrentHost(declared, evidenceRoot);
 
-    private static bool StableHostFactsMatch(
+    internal static bool StableHostFactsMatch(
         MonitoredHostFacts declared,
         MonitoredHostFacts actual)
     {
@@ -1404,7 +1415,8 @@ internal static class MonitoredRunManifestValidator
         var receipt = DeserializeBounded<MonitoredAuthorizationReceipt>(receiptPath);
         if (!string.Equals(
                 receipt.Schema,
-                MonitoredProtocolVersions.AuthorizationSchema,
+                manifest.SampledLoss is null ? MonitoredProtocolVersions.AuthorizationSchema
+                    : "durable-sampled-campaign-authorization/1",
                 StringComparison.Ordinal)
             || !string.Equals(receipt.CampaignId, manifest.CampaignId, StringComparison.Ordinal)
             || !string.Equals(receipt.ManifestSha256, manifestHash, StringComparison.Ordinal)

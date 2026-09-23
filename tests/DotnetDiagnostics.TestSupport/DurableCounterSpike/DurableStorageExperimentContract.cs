@@ -600,4 +600,6 @@ internal sealed class DurableStorageExperimentException : Exception
 
     internal string Code { get; }
     internal Monitored.DescriptorObservationFailure? DescriptorFailure { get; init; }
+    internal Monitored.DescriptorCoherenceProof? CoherenceProof { get; init; }
+    internal bool KnownUnlinkedDescriptor { get; set; }
 }

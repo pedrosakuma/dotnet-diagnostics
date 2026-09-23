@@ -6,6 +6,10 @@ authorization or a report of real-workload execution. Component tests do not
 establish actual-worker feasibility. The addendum, revision-4 JSON, and
 historical blocked-readiness report are not rewritten by this implementation.
 
+The separately versioned [prospective sampled-loss protocol](durable-capture-sampled-loss-protocol.md)
+adds opt-in manifests and reviewed sealed-readiness admission. The strict
+defaults and historical semantics documented below remain unchanged.
+
 ## Separate admissions and commands
 
 The benchmark executable's `durable-capture-spike` command has four public

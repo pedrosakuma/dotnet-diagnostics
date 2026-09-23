@@ -89,7 +89,8 @@ internal static class PrevalidationLayout
         var root = ContextRoot(manifest, probe);
         return new(manifest.RuntimeBinary, manifest.ToolBinary, manifest.SampleBinary,
             manifest.SourceCommits, manifest.FixtureManifest.Sha256,
-            Path.Combine(root, "history"), Path.Combine(root, "workspace"), Path.Combine(root, "outputs"));
+            Path.Combine(root, "history"), Path.Combine(root, "workspace"), Path.Combine(root, "outputs"))
+            { SampledLoss = manifest.SampledLoss };
     }
 
     internal static string ExecutionRoot(PrevalidationManifest manifest, PrevalidationProbe probe)

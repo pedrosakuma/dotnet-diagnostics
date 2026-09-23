@@ -9,7 +9,7 @@ using Xunit.Abstractions;
 
 namespace DotnetDiagnostics.Core.Tests.DurableCounterSpike.Monitored;
 
-public sealed class MonitoredRunnerTests : IDisposable
+public sealed partial class MonitoredRunnerTests : IDisposable
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly ITestOutputHelper _output;

@@ -1,0 +1,72 @@
+{
+  "schema": "durable-sampled-loss-protocol/1",
+  "revision": 5,
+  "status": "prospective-requires-new-prevalidation-and-independent-review",
+  "inherits": {
+    "comparisonRevision3Sha256": "faaced68f26a53b7841713d4b1fe1044ce0dd3b277bbac2a9c6f9b6a09f498dd",
+    "monitoredRevision4Sha256": "e37c44917f738f8d798399258961aa28548b0f4df351111cec047b29c0a50e71",
+    "prevalidationAddendumSha256": "b825cb4a15b66d6b1ac4a245ffffb22e192f5bcb5625e65087b1cf0b51374bb5"
+  },
+  "policy": "explicit-descriptor-sampling-loss/1",
+  "admission": {
+    "nativePin": { "operations": [1, 3], "errno": 2 },
+    "fdFlags": { "operations": [2, 4], "hresults": [-2147024894, -2147024893], "types": ["FileNotFoundException", "DirectoryNotFoundException"] },
+    "coherenceChange": {
+      "operation": 5,
+      "proofMask": { "identityChanged": 1, "flagsChanged": 2, "targetChanged": 4, "allowed": [1, 2, 3, 4, 5, 6, 7] },
+      "required": "two successfully captured valid linked regular-file snapshots; exact owning PID/start-time/role still matches; metadata identities match; both paths classifiable under existing ownership/dependency rules; no observed deleted or zero-link target; no runtime-proof bypass",
+      "unknownOrUnavailableMetadata": "hard-failure",
+      "contextErrorSlot": "validated change mask, not native errno or managed HResult; sampled schema only"
+    },
+    "knownDeletedOrUnlinked": "hard-failure-not-admitted",
+    "processIdentity": "exact-before-and-after-observation-required-except-owned-intentional-handoff",
+    "otherErrors": "hard-failure",
+    "lossRateThreshold": null,
+    "rationale": "No census or unknown-byte upper bound is claimed. A post-observation quality threshold would not establish either. Every enumerated candidate and every classified loss is reported, including unknown bytes and types."
+  },
+  "accounting": {
+    "roles": ["harness", "diagnostic", "target"],
+    "perRole": ["enumeratedCandidates", "successfullyClassified", "nativePinEnoentLoss", "mappedFdFlagsNotFoundLoss", "provenCoherenceChangeLoss"],
+    "maximumProcesses": 4,
+    "maximumCandidatesPerProcessPerSweep": 4096,
+    "maximumCandidatesPerSweep": 16384,
+    "maximumSummaryRecords": 2048,
+    "maximumCandidatesPerEntry": 33554432,
+    "firstLossContext": ["role", "operation", "errorOrCoherenceProofMask", "fd"],
+    "unknownBytesAndTypes": "not-measured-never-zero",
+    "completeFlag": "false-if-any-loss-or-hard-error",
+    "sampledAdmissible": "explicit-new-policy-and-no-hard-error-or-alarm",
+    "hardErrorsTakePrecedence": true
+  },
+  "unchanged": {
+    "prevalidationEntries": 8,
+    "comparisonExecutions": 35,
+    "attemptsPerEntry": 1,
+    "entrySeconds": 120,
+    "prevalidationSuiteSeconds": 1200,
+    "comparisonSeconds": 4200,
+    "pollMilliseconds": 100,
+    "maximumGapMilliseconds": 1000,
+    "summaryRecords": 2048,
+    "summaryLfUtf8Bytes": 1024,
+    "stdoutBytes": 8388608,
+    "stderrBytes": 8388608,
+    "authorityFrameLfUtf8Bytes": 2048,
+    "authorityFramesPerEntry": 256,
+    "workerControlRecords": 64,
+    "descriptorOnlyIdentities": 32,
+    "contextRootedIdentities": 539,
+    "contextIdentities": 571,
+    "suiteIdentities": 4096,
+    "derivedPrevalidationLayoutIdentities": 2506,
+    "packageBytes": 268435456,
+    "retainedHistoryBytes": 2147483648,
+    "suiteBytes": 3221225472,
+    "retainedPackages": 64,
+    "allOtherInheritedRequirements": "unchanged: workload/order/providers/durations/offered populations/95-percent floor/requests/RSS/decision rule/drain/publication/reopen/exact package and retained-root inventories/cleanup"
+  },
+  "storageClaim": "non-atomic observed sampled maxima only; unknown lost bytes/types; no descriptor census and no instantaneous aggregate storage guarantee",
+  "finalChecks": "quiescent complete root inventory and exact package/history/suite limits remain mandatory; boundary descriptor samples may lose known candidates but root enumeration, ownership and cleanup never receive a loss exemption",
+  "readiness": "new policy-bound manifest, source and binary inventory, host, runtime environment, compact context map, sealed all-eight raw coverage and independent review bound to the exact prospective campaign; no feasibility boolean substitution",
+  "legacy": "strict default and frozen documents unchanged; old artifacts inspection-only and never upgraded"
+}
