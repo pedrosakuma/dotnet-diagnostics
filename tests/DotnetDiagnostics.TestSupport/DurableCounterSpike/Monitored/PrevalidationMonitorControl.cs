@@ -117,6 +117,7 @@ internal sealed class PrevalidationMonitorClient(CancellationToken cancellationT
         var line = PrevalidationMonitorControl.ReadLineAsync(Console.In, cancellationToken).GetAwaiter().GetResult();
         State = JsonSerializer.Deserialize<PrevalidationMonitorReply>(line, PrevalidationProtocol.Json)
             ?? throw PrevalidationProtocol.Error("PrevalidationControlReply", "Missing authoritative monitor reply.");
+        if (State.Summary is { } summary) PrevalidationExecutor.ValidateSummaryFailure(summary);
         PrevalidationProtocol.Require(!State.Incomplete && State.Alarm is null,
             State.Alarm ?? "PrevalidationMonitoringIncomplete");
         return State;

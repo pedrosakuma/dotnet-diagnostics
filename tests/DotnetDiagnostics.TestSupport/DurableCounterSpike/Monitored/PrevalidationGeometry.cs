@@ -103,10 +103,11 @@ internal static class PrevalidationGeometry
             {
                 CurrentContextIdentities = int.MaxValue, CurrentContextRootedIdentities = int.MaxValue,
                 RetainedHistoryBytes = long.MaxValue,
+                FirstErrorCode = new string('e', 64),
             };
             PrevalidationProtocol.Require(MonitoredSweepSummaryEncoding.EncodeLine(widest).Length <= 1_024,
                 "PrevalidationSummaryWidth");
-            var coverage = new PrevalidationCoverage("durable-prevalidation-coverage/1", probe.Ordinal, probe.Id,
+            var coverage = new PrevalidationCoverage(PrevalidationProtocol.CoverageSchema, probe.Ordinal, probe.Id,
                 "coverage-observed", null, true, 64, CountFixtureFiles(context.Prevalidation!.CurrentHistoryRoot!),
                 measured.Summary.CurrentContextIdentities,
                 measured.Summary.ObservedSweepBytes, null, null, "synthetic-inventory-and-encoding-only",

@@ -224,11 +224,86 @@ not change the frozen protocol's allowance. Stderr exhaustion is reported as
 
 Summary records remain at most 1,024 bytes **including newline**. The original
 maximum-width encoding remains 854 bytes. The prevalidation extension adds
-`ci`, `cr`, and `rh`, with a separate manifest-pinned field-map hash; its
-maximum-width component fixture is **911 bytes**. All file observations remain
+`ci`, `cr`, `rh`, and `ec`, with a separate manifest-pinned field-map hash; its
+maximum-width component fixture is **983 bytes including LF** (all numeric
+fields at maximum width, 64-byte boundary, alarm, and error tokens). `ec` is
+the first error code of that sweep, not a threshold alarm. Complete sweeps
+omit it; `er` continues to count all sweep errors. Incomplete sweeps caused
+solely by unclassified identities use `UnclassifiedChargedResource`, with the
+existing `uc` count. Additional error codes are not retained; their count
+remains explicit. All file observations remain
 non-atomic. Prevalidation gap checks include sweep time throughout the entry,
 including startup and cleanup; poll target is 100 ms and the completion-gap
 limit remains 1,000 ms.
+
+### Bounded causal evidence and compatibility
+
+This correction responds to the preserved
+[first-attempt failure](../evidence/dc5/prevalidation-765e56c.md). It does not
+change that report, infer its missing cause, authorize another attempt, or
+change the frozen addendum/protocol.
+
+- `durable-prevalidation-sweep-summary/2` adds only the null-ignored `ec`
+  field to the prevalidation extension. Codes use the existing 1–64-character
+  ASCII token alphabet (letters, digits, `-_.:`), never paths or exception
+  messages. An invalid internally generated code fails closed as
+  `PrevalidationErrorCodeEncodingLimit`, rather than truncating a message.
+  The original scored field map and 854-byte encoding remain unchanged.
+- `durable-prevalidation-coverage/2` keeps `failureCode` as the primary
+  failure, adds its `failureStage`, and adds nullable
+  `secondaryFailures: { firstCode, firstStage, count }`.
+  `durable-prevalidation-report/2` also exposes primary `failureCode` and
+  the same nullable secondary structure for admission/suite finalization.
+  The first failed entry's primary code is also the report's primary.
+  Entry cleanup/disposal/evidence-finalization failures cannot overwrite it.
+  Admission and suite monitor disposal are handled separately from their
+  primary failures.
+- Stage names are a closed ASCII vocabulary (at most 21 bytes), separate
+  from the 64-byte code: admission, admission disposal, fixture preparation,
+  harness, entry cleanup, monitor disposal, evidence finalization, suite
+  finalization/disposal/freezing, worker, coverage, entry, and suite stop.
+  The serialized names use hyphens as defined by `PrevalidationFailureCodes`.
+  Thus the same `IOException` in cleanup and disposal is distinguishable,
+  and a full-width valid code is never replaced merely to fit a stage prefix.
+  Missing, unknown, or mismatched primary stages fail result inspection.
+- Secondary retention keeps **only the first secondary code**, plus a
+  saturating positive 32-bit count of all secondary failure detections.
+  `count - 1` is the number whose codes are omitted; at `int.MaxValue` the
+  count is a lower bound. Repeated detection of sticky incompleteness counts
+  as another detection, not proof of another underlying cause or a failed
+  process termination. No array, path dump, or new evidence file is added.
+- `durable-prevalidation-evidence-validation/2` exposes the report's
+  primary/secondary evidence and stages and the first failed probe's coverage, including
+  its separate secondary evidence. A partial classification remains
+  `partial-unsealed-not-readiness-evidence`, never readiness or approval.
+- The refreshed context field-map hash rejects old manifests for **every new
+  admission/execution**. Inspection alone accepts the original hash with
+  `/1` report/coverage schemas. Legacy missing causality stays unknown; the
+  inspector does not reinterpret an old cleanup label as the original cause.
+  Mixing old/new field-map and result versions is rejected. The manifest
+  envelope stays `/1`: its existing pinned field-map member identifies the
+  extension, and its hash continues to bind authorization.
+
+All limits remain unchanged: 1,024 bytes including LF, 2,048 summaries per
+entry, the shared 8 MiB stdout budget, and 2,048-byte control frames. The
+maximum-width control reply is tested with the new full-width error token.
+There are no new suite files; the 2,506-identity derivation remains unchanged.
+Successful later sweeps, quiescent cleanup, and null threshold alarms cannot
+erase earlier monitor incompleteness. No descriptor-loss or observation-gap
+condition is ignored or reclassified.
+
+The controlled fixture component test creates **one four-file, 512-byte
+slot**, not a shortened O1 or live workload. A component-only callback holds
+each actual fixture writer handle open while a separate task runs the real
+descriptor pin/coherence observer and root monitor. It checks retained-history
+observations of 512, 1,024, 1,536 and 2,048 bytes, then the final inventory.
+It does not register unrelated VSTest-host descriptors or claim the complete
+real coordinator descriptor population was tested. Separate deterministic
+tests persist a missing-root cause, restore complete individual sweeps, and
+verify the original sticky failure still gates the entry. These establish
+causal evidence retention and controlled overlap, **not the cause of the
+historical fixture failure**; descriptor churn remains an unconfirmed
+hypothesis. Genuine incompleteness still stops a future authorized suite.
 
 Cleanup first signals **every verified eligible identity**, even if the
 deadline was already cancelled or another signal failed. It then checks all
@@ -239,6 +314,74 @@ and unknown identity state are not absence. Exit races are rechecked after
 process-handle or exact-signal failure. Explicit errors and all unconfirmed
 identities are retained in bounded `cleanup.json` evidence. The coordinator's
 outer cleanup runs even if harness I/O/finally fails.
+
+Cleanup evidence now uses `durable-prevalidation-cleanup/2`. Error strings
+include the operation (`signal`, `confirm`, or `confirmation-wait`), a bounded
+code, and for I/O failures the exact eight-hex-digit `HResult` (`hr-...`).
+Permission failures also retain an immediate inner `IOException` HResult
+(`iohr-...`) when present. No message, path, or exception chain is serialized.
+At most **16 distinct errors of 128 ASCII bytes each** are inserted;
+`additionalErrorCount` counts detections not retained after that cap, saturating
+at `int.MaxValue` (then a lower bound). Repeated retained errors are deduplicated.
+Already recorded errors are never cleared even if later observations establish
+quiescence. Either retained errors or a nonzero overflow count still fails
+the cleanup gate. The existing five-owned-identity limit is also enforced on
+the cleanup input. These fields use the existing cleanup slot, with no change
+to the 2,506-identity derivation or entry deadline. Legacy `/1` cleanup is
+accepted only with legacy report inspection.
+
+### Narrow proc-stat disappearance correction
+
+The earlier component assertion reporting `confirm:IOException` did **not**
+retain errno/HResult. Its particular cause remains unknown; later passing
+tests do not establish that it was unrelated to these changes. Neither that
+failure nor the historical prevalidation fixture failure is reclassified.
+
+There is, however, a separately verified open-to-read disappearance mechanism:
+an owned shell can exit and be reaped after its `/proc/<pid>/stat` file is
+opened but before it is read. The deterministic component test opens that
+file, releases and waits for that exact shell, then reads the still-open
+handle. On the validation host it observed **.NET 10.0.12,
+`IOException.HResult == 3`**, recorded in the test's TRX output.
+The same test separately reopens the path after reap and verifies
+`DirectoryNotFoundException.HResult == 0x80070003`. HResults are therefore
+**not uniformly raw errno**; the raw-3 branch requires the exact
+`System.IO.IOException` type, not a subclass. Typed negative tests reject a
+derived IOException carrying 3.
+
+This matches the checked [.NET 10.0.12 Unix I/O mapping source][unix-io-errors]:
+`ESRCH` reaches `GetIOException`, which passes **raw errno** as the exception
+HResult. It is not Windows `HRESULT_FROM_WIN32(3)` (`0x80070003`).
+The checked [Linux procfs source][linux-proc-base] shows that
+`proc_pid_make_inode` retains the task's `struct pid` reference in the inode;
+`proc_single_show` returns `-ESRCH` when that referenced task is gone.
+
+The cleanup reader now explicitly pins the opened stat file for its one
+bounded read (at most 4,096 bytes, with a one-byte overflow sentinel). A
+successful read still compares the captured Linux start time and recognizes
+zombie/dead states. Opening a reused numeric PID sees the replacement's start
+time and cannot authorize its termination. An already opened proc inode does
+not switch to a replacement numeric PID, so read-time raw `ESRCH` establishes
+that the referenced task is absent; no extra directory handle or pidfd is
+needed for this **observation**. The existing exact PID/start-time signaling
+checks are unchanged.
+
+Only this fixed proc-stat operation recognizes mapped missing-file or
+missing-directory exceptions (the existing absence behavior), or exact
+`IOException` with raw `ESRCH`, during open/read as absence.
+It does not retry or catch arbitrary I/O as success. Read-time missing-file
+and missing-directory cases remain distinguished by their mapped types;
+permission errors (including their inner errno), `EIO`, generic I/O,
+Windows-style HResults on plain IOException, malformed stat data, and over-limit data fail
+closed and remain evidence. This does **not** change descriptor observation
+or tolerate any descriptor loss, monitoring gap, or incomplete sweep.
+Deterministic typed-error tests cover both open/read phases, unchanged
+start-time/zombie checks, retained errors after eventual quiescence, and the
+insertion-time diagnostic cap. The normal live owned-shell path is also
+checked without a race-reproduction loop.
+
+[unix-io-errors]: https://github.com/dotnet/runtime/blob/v10.0.12/src/libraries/Common/src/Interop/Unix/Interop.IOErrors.cs
+[linux-proc-base]: https://github.com/torvalds/linux/blob/v6.8/fs/proc/base.c
 
 An unconfirmed tree is **not frozen, hashed, or sealed**. It remains explicitly
 partial and potentially writable; no immutability is claimed. The geometry

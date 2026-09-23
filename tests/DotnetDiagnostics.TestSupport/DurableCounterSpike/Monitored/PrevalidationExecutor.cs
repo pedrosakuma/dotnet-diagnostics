@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace DotnetDiagnostics.Core.Tests.DurableCounterSpike.Monitored;
 
@@ -17,11 +18,55 @@ internal sealed record PrevalidationCoverage(string Schema, int Ordinal, string 
     string? FailureCode, bool MonitoringComplete, int DeclaredFixtureSlots, int? ObservedFixtureFiles,
     int? MaximumContextIdentities, long? MaximumSuiteBytes, long? SourceOffered,
     long? SourceCommitted, string? SourceCoverage, IReadOnlyList<string> RequiredBoundaries,
-    bool CampaignAdmissionGranted = false);
+    bool CampaignAdmissionGranted = false)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? FailureStage { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public PrevalidationSecondaryFailures? SecondaryFailures { get; init; }
+}
 
 internal sealed record PrevalidationReport(string Schema, string Scope, string SuiteId, string ManifestSha256,
     string HistoricalReportSha256, string Status, int DerivedSuiteIdentityBound,
-    IReadOnlyList<PrevalidationCoverage> Probes, string Limitation, bool CampaignAdmissionGranted = false);
+    IReadOnlyList<PrevalidationCoverage> Probes, string Limitation, bool CampaignAdmissionGranted = false)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? FailureCode { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? FailureStage { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public PrevalidationSecondaryFailures? SecondaryFailures { get; init; }
+}
+
+internal sealed record PrevalidationSecondaryFailures(string FirstCode, string FirstStage, int Count)
+{
+    internal static PrevalidationSecondaryFailures Add(PrevalidationSecondaryFailures? previous, string code, string stage)
+        => previous is null ? new(PrevalidationFailureCodes.Normalize(code), stage, 1)
+            : previous with { Count = previous.Count == int.MaxValue ? int.MaxValue : previous.Count + 1 };
+}
+
+internal static class PrevalidationFailureCodes
+{
+    internal static string Normalize(string code)
+        => MonitoredSweepSummaryEncoding.IsBoundedToken(code, 64) ? code : "PrevalidationErrorCodeEncodingLimit";
+
+    internal static void Validate(string? primary, PrevalidationSecondaryFailures? secondary)
+        => PrevalidationProtocol.Require((primary is null
+                || MonitoredSweepSummaryEncoding.IsBoundedToken(primary, 64))
+            && (secondary is null || primary is not null && secondary.Count > 0
+                && MonitoredSweepSummaryEncoding.IsBoundedToken(secondary.FirstCode, 64)
+                && IsStage(secondary.FirstStage)),
+            "PrevalidationFailureEvidenceInvalid");
+
+    internal static bool IsStage(string? stage) => stage is "admission" or "admission-dispose"
+        or "entry" or "fixture-preparation" or "harness" or "entry-cleanup" or "monitor-dispose"
+        or "evidence-finalization" or "suite-finalization" or "suite-dispose" or "suite-freeze"
+        or "worker" or "coverage" or "suite-stop";
+
+    internal static void ValidateStage(string? code, string? stage)
+        => PrevalidationProtocol.Require(code is null ? stage is null : IsStage(stage),
+            "PrevalidationFailureStageInvalid");
+}
 
 internal sealed record PrevalidationSeal(string Schema, string SuiteId, string ManifestSha256,
     string ReportSha256, IReadOnlyList<MonitoredSealedArtifact> Artifacts);
@@ -46,13 +91,15 @@ internal static class PrevalidationExecutor
             new PrevalidationStartReceipt("durable-prevalidation-start/1", manifest.SuiteId,
                 validated.ManifestSha256, validated.AuthorizationSha256, manifest.HistoricalReport.Sha256,
                 suiteStarted, coordinator));
+        MonitoredStorageMonitor? admissionMonitor = null;
+        PrevalidationReport? admissionFailure = null;
         try
         {
             using var admissionDeadline = CancellationTokenSource.CreateLinkedTokenSource(suiteDeadline.Token);
             var remainingAdmission = TimeSpan.FromSeconds(120) - suiteWatch.Elapsed;
             PrevalidationProtocol.Require(remainingAdmission > TimeSpan.Zero, "PrevalidationAdmissionDeadline");
             admissionDeadline.CancelAfter(remainingAdmission);
-            await using var monitor = new MonitoredStorageMonitor(validated.Attribution, validated.Encoding,
+            var monitor = admissionMonitor = new MonitoredStorageMonitor(validated.Attribution, validated.Encoding,
                 Path.Combine(manifest.PrivateRoot, "admission-monitor.jsonl"),
                 new BoundedOutputBudget(1_048_576, 1_024, 64, 64), 571,
                 prevalidationScope: new PrevalidationObservationScope([], coordinator));
@@ -64,16 +111,41 @@ internal static class PrevalidationExecutor
             RequireSweep(await monitor.ObserveBoundaryAsync("suite-control-inputs-pinned", true, admissionDeadline.Token)
                 .ConfigureAwait(false));
             await monitor.StopAsync().ConfigureAwait(false);
-            PrevalidationProtocol.Require(!monitor.IsIncomplete && monitor.TerminalAlarm is null
-                && suiteWatch.Elapsed < TimeSpan.FromSeconds(120), "PrevalidationAdmissionIncomplete");
+            RequireMonitor(monitor);
+            PrevalidationProtocol.Require(suiteWatch.Elapsed < TimeSpan.FromSeconds(120),
+                "PrevalidationAdmissionDeadline");
         }
         catch (Exception exception) when (IsReportable(exception))
         {
-            WriteImmutable(Path.Combine(manifest.PrivateRoot, "partial.json"),
-                new PrevalidationReport("durable-prevalidation-report/1", PrevalidationProtocol.Scope,
+            admissionFailure = RecordFailure(
+                new PrevalidationReport(PrevalidationProtocol.ReportSchema, PrevalidationProtocol.Scope,
                     manifest.SuiteId, validated.ManifestSha256, manifest.HistoricalReport.Sha256,
-                    $"partial-unsealed:Admission-{Code(exception)}", PrevalidationLayout.DeriveSuiteIdentityBound(),
-                    manifest.Probes.Select(NotRun).ToArray(), "Admission failed before the first probe."));
+                    "partial-unsealed:Admission", PrevalidationLayout.DeriveSuiteIdentityBound(),
+                    manifest.Probes.Select(NotRun).ToArray(), "Admission failed before the first probe."),
+                admissionMonitor?.TerminalAlarm ?? Code(exception), "admission");
+            if (admissionMonitor?.TerminalAlarm is { } cause && cause != Code(exception))
+            {
+                admissionFailure = RecordFailure(admissionFailure, Code(exception), "admission");
+            }
+        }
+        finally
+        {
+            if (admissionMonitor is not null)
+            {
+                try { await admissionMonitor.DisposeAsync().ConfigureAwait(false); }
+                catch (Exception exception) when (IsReportable(exception))
+                {
+                    admissionFailure = RecordFailure(admissionFailure ?? new PrevalidationReport(
+                        PrevalidationProtocol.ReportSchema, PrevalidationProtocol.Scope, manifest.SuiteId,
+                        validated.ManifestSha256, manifest.HistoricalReport.Sha256, "partial-unsealed:Admission",
+                        PrevalidationLayout.DeriveSuiteIdentityBound(), manifest.Probes.Select(NotRun).ToArray(),
+                        "Admission writer finalization failed before the first probe."), Code(exception), "admission-dispose");
+                }
+            }
+        }
+        if (admissionFailure is not null)
+        {
+            WriteImmutable(Path.Combine(manifest.PrivateRoot, "partial.json"), admissionFailure);
             return 3;
         }
         MonitoredFile.MakeReadOnly(Path.Combine(manifest.PrivateRoot, "admission-monitor.jsonl"));
@@ -96,6 +168,7 @@ internal static class PrevalidationExecutor
             MonitoredStorageMonitor? monitor = null;
             var ownership = new PrevalidationOwnedProcessLedger();
             var contextRoot = PrevalidationLayout.ContextRoot(manifest, probe);
+            var entryStage = "fixture-preparation";
             try
             {
                 PrevalidationLayout.CreateDirectories(manifest, probe);
@@ -115,8 +188,8 @@ internal static class PrevalidationExecutor
                     PrevalidationLayout.HistoryRoot(manifest, probe), probe.FixtureSlots, entryDeadline.Token);
                 RequireSweep(await monitor.ObserveBoundaryAsync("fixtures-complete", true, entryDeadline.Token)
                     .ConfigureAwait(false));
-                PrevalidationProtocol.Require(!monitor.IsIncomplete && monitor.TerminalAlarm is null,
-                    "PrevalidationFixtureMonitoringIncomplete");
+                RequireMonitor(monitor);
+                entryStage = "harness";
                 var requestPath = Path.Combine(contextRoot, "harness-request.json");
                 WriteImmutable(requestPath, new PrevalidationHarnessRequest("durable-prevalidation-harness/1",
                     validated.RepositoryRoot, validated.ManifestPath, validated.ManifestSha256, probe.Ordinal, coordinator));
@@ -124,12 +197,13 @@ internal static class PrevalidationExecutor
                     .ConfigureAwait(false);
                 RequireSweep(await monitor.ObserveBoundaryAsync("harness-exit-quiescent", false, entryDeadline.Token)
                     .ConfigureAwait(false));
-                PrevalidationProtocol.Require(!monitor.IsIncomplete && monitor.TerminalAlarm is null,
-                    "PrevalidationCoordinatorMonitoringIncomplete");
+                RequireMonitor(monitor);
                 coverage = PrevalidationProtocol.Read<PrevalidationCoverage>(Path.Combine(contextRoot, "harness-result.json"));
                 PrevalidationProtocol.Require(coverage.Ordinal == probe.Ordinal && coverage.ProbeId == probe.Id
-                    && coverage.Schema == "durable-prevalidation-coverage/1" && !coverage.CampaignAdmissionGranted,
+                    && coverage.Schema == PrevalidationProtocol.CoverageSchema && !coverage.CampaignAdmissionGranted,
                     "PrevalidationHarnessResultMismatch");
+                PrevalidationFailureCodes.Validate(coverage.FailureCode, coverage.SecondaryFailures);
+                PrevalidationFailureCodes.ValidateStage(coverage.FailureCode, coverage.FailureStage);
                 coverage = coverage with
                 {
                     MaximumSuiteBytes = Math.Max(coverage.MaximumSuiteBytes ?? 0, monitor.MaximumObservedSweepBytes),
@@ -140,7 +214,11 @@ internal static class PrevalidationExecutor
             }
             catch (Exception exception) when (IsReportable(exception))
             {
-                coverage = Failed(probe, Code(exception));
+                coverage = Failed(probe, monitor?.TerminalAlarm ?? Code(exception), entryStage);
+                if (monitor?.TerminalAlarm is { } cause && cause != Code(exception))
+                {
+                    coverage = RecordFailure(coverage, Code(exception), entryStage);
+                }
             }
             var quiescent = false;
             try
@@ -157,21 +235,21 @@ internal static class PrevalidationExecutor
                 quiescent = result.Quiescent;
                 WriteCleanupEvidence(Path.Combine(contextRoot, "cleanup.json"), result);
                 PrevalidationProtocol.Require(quiescent, "PrevalidationOwnedProcessesUnconfirmed");
-                PrevalidationProtocol.Require(result.Errors.Count == 0, "PrevalidationCleanupErrors");
+                PrevalidationProtocol.Require(result.Errors.Count == 0 && result.AdditionalErrorCount == 0,
+                    "PrevalidationCleanupErrors");
                 if (monitor is not null)
                 {
                     monitor.RemoveConfirmedCleanup(identities);
                     RequireSweep(await monitor.ObserveBoundaryAsync("owned-cleanup-quiescent", false, cleanup.Token)
                         .ConfigureAwait(false));
                     await monitor.StopAsync().ConfigureAwait(false);
-                    PrevalidationProtocol.Require(!monitor.IsIncomplete && monitor.TerminalAlarm is null,
-                        "PrevalidationFinalMonitoringIncomplete");
+                    RequireMonitor(monitor);
                 }
                 PrevalidationProtocol.Require(Stopwatch.GetTimestamp() <= deadlineTimestamp, "PrevalidationCleanupDeadline");
             }
             catch (Exception exception) when (IsReportable(exception))
             {
-                coverage = Failed(probe, $"Cleanup-{Code(exception)}");
+                coverage = RecordFailure(coverage, Code(exception), "entry-cleanup");
                 partialRequired = true;
             }
             finally
@@ -184,7 +262,7 @@ internal static class PrevalidationExecutor
                     }
                     catch (Exception exception) when (IsReportable(exception))
                     {
-                        coverage = Failed(probe, $"MonitorFinalization-{Code(exception)}");
+                        coverage = RecordFailure(coverage, Code(exception), "monitor-dispose");
                         partialRequired = true;
                     }
                 }
@@ -209,31 +287,38 @@ internal static class PrevalidationExecutor
                 FreezeQuiescentContext(contextRoot, quiescent);
                 if (Stopwatch.GetTimestamp() > deadlineTimestamp)
                 {
-                    coverage = Failed(probe, "PrevalidationContextFinalizationDeadline");
+                    coverage = RecordFailure(coverage, "PrevalidationContextFinalizationDeadline", "evidence-finalization");
+                    partialRequired = true;
                 }
             }
             catch (Exception exception) when (IsReportable(exception))
             {
-                coverage = Failed(probe, $"EvidenceFinalization-{Code(exception)}");
+                coverage = RecordFailure(coverage, Code(exception), "evidence-finalization");
                 partialRequired = true;
             }
             outcomes.Add(coverage);
             stopped = !HasCoverage(coverage);
         }
-        var report = new PrevalidationReport("durable-prevalidation-report/1", PrevalidationProtocol.Scope,
+        var report = new PrevalidationReport(PrevalidationProtocol.ReportSchema, PrevalidationProtocol.Scope,
             manifest.SuiteId, validated.ManifestSha256, manifest.HistoricalReport.Sha256,
             outcomes.All(HasCoverage) ? "coverage-observed-awaiting-independent-review" : "stopped-incomplete",
             PrevalidationLayout.DeriveSuiteIdentityBound(), outcomes,
             "Host/build-specific non-atomic observations only. Between-sweep native transients remain unknown; "
-            + "F1/F2/F4/F5 still require component evidence and reviewed derivation. No comparison or backend approval.");
+            + "F1/F2/F4/F5 still require component evidence and reviewed derivation. No comparison or backend approval.")
+        {
+            FailureCode = outcomes.FirstOrDefault(static item => item.Outcome == "incomplete")?.FailureCode,
+            FailureStage = outcomes.FirstOrDefault(static item => item.Outcome == "incomplete")?.FailureStage,
+        };
         using var finalDeadline = CancellationTokenSource.CreateLinkedTokenSource(suiteDeadline.Token);
         finalDeadline.CancelAfter(TimeSpan.FromSeconds(120));
+        MonitoredStorageMonitor? finalMonitor = null;
+        var finalizationFailed = false;
         try
         {
             PrevalidationProtocol.Require(!partialRequired, "PrevalidationOwnedCleanupOrFreezeIncomplete");
             var finalScope = new PrevalidationObservationScope(
                 manifest.Probes.Select(probe => PrevalidationLayout.ContextRoot(manifest, probe)).ToArray(), coordinator);
-            await using var monitor = new MonitoredStorageMonitor(validated.Attribution, validated.Encoding,
+            var monitor = finalMonitor = new MonitoredStorageMonitor(validated.Attribution, validated.Encoding,
                 Path.Combine(manifest.PrivateRoot, "final-monitor.jsonl"), maximumEstablishedIdentities: 571,
                 prevalidationScope: finalScope);
             monitor.AddProcess(coordinator);
@@ -256,8 +341,24 @@ internal static class PrevalidationExecutor
         }
         catch (Exception exception) when (IsReportable(exception))
         {
-            WriteImmutable(Path.Combine(manifest.PrivateRoot, "partial.json"),
-                report with { Status = $"partial-unsealed:{Code(exception)}" });
+            report = RecordFailure(report, Code(exception), "suite-finalization") with { Status = "partial-unsealed:Finalization" };
+            finalizationFailed = true;
+        }
+        finally
+        {
+            if (finalMonitor is not null)
+            {
+                try { await finalMonitor.DisposeAsync().ConfigureAwait(false); }
+                catch (Exception exception) when (IsReportable(exception))
+                {
+                    report = RecordFailure(report, Code(exception), "suite-dispose") with { Status = "partial-unsealed:Finalization" };
+                    finalizationFailed = true;
+                }
+            }
+        }
+        if (finalizationFailed)
+        {
+            WriteImmutable(Path.Combine(manifest.PrivateRoot, "partial.json"), report);
             return 3;
         }
         try
@@ -269,7 +370,7 @@ internal static class PrevalidationExecutor
         {
             MonitoredFile.MakePrivateDirectory(manifest.PrivateRoot);
             WriteImmutable(Path.Combine(manifest.PrivateRoot, "partial.json"),
-                report with { Status = $"partial-unsealed:{Code(exception)}" });
+                RecordFailure(report, Code(exception), "suite-freeze") with { Status = "partial-unsealed:Freeze" });
             return 3;
         }
         return outcomes.All(HasCoverage) ? 0 : 3;
@@ -314,10 +415,14 @@ internal static class PrevalidationExecutor
                 deadline.Token).ConfigureAwait(false);
             // The authoritative log is still being written. Only the coordinator
             // projects it, after cleanup and closing the single writer.
-            coverage = new("durable-prevalidation-coverage/1", probe.Ordinal, probe.Id,
-                "worker-completed-awaiting-entry-observation", outcome.FailureCode, false,
+            coverage = new(PrevalidationProtocol.CoverageSchema, probe.Ordinal, probe.Id,
+                "worker-completed-awaiting-entry-observation",
+                outcome.FailureCode is null ? null : PrevalidationFailureCodes.Normalize(outcome.FailureCode), false,
                 probe.FixtureSlots, null, outcome.MaximumObservedIdentities, outcome.MaximumObservedSweepBytes,
-                null, null, null, []);
+                null, null, null, [])
+            {
+                FailureStage = outcome.FailureCode is null ? null : "worker",
+            };
         }
         if (probe.Ordinal != 8)
         {
@@ -517,8 +622,9 @@ internal static class PrevalidationExecutor
                     "PrevalidationSummaryWidth");
                 var summary = JsonSerializer.Deserialize<MonitoredSweepSummary>(line, PrevalidationProtocol.Json)
                     ?? throw PrevalidationProtocol.Error("PrevalidationSummaryMissing", "A monitoring record was empty.");
+                ValidateSummaryFailure(summary);
                 PrevalidationProtocol.Require(summary.Complete && summary.Alarm is null,
-                    "PrevalidationIncompleteObservation");
+                    summary.FirstErrorCode ?? summary.Alarm ?? "PrevalidationIncompleteObservation");
                 PrevalidationProtocol.Require(summary.CurrentContextIdentities is > 0 and <= 571
                     && summary.CurrentContextRootedIdentities is >= 0 and <= 539
                     && summary.IdentityCount is > 0 and <= 4_096
@@ -551,16 +657,20 @@ internal static class PrevalidationExecutor
                 && boundaries.Contains("harness-exit-quiescent") && boundaries.Contains("owned-cleanup-quiescent"))
             && HasFrozenSourceCoverage(probe, worker)
             && (probe.Workload != "F3" || ValidateFaultSource(outcome, root, probe));
-        return new("durable-prevalidation-coverage/1", probe.Ordinal, probe.Id,
+        return new(PrevalidationProtocol.CoverageSchema, probe.Ordinal, probe.Id,
             complete ? "coverage-observed" : "incomplete",
-            complete ? null : outcome.FailureCode ?? outcome.MonitoringAlarm ?? "RequiredCoverageMissing",
+            complete ? null : PrevalidationFailureCodes.Normalize(
+                outcome.FailureCode ?? outcome.MonitoringAlarm ?? "RequiredCoverageMissing"),
             complete, probe.FixtureSlots, probe.FixtureSlots * 4, outcome.MaximumObservedIdentities,
             outcome.MaximumObservedSweepBytes,
             probe.Candidate == "E" ? null : probe.Workload == "F3" ? complete ? 128 : null : worker?.Offered,
             probe.Candidate == "E" || probe.Workload == "F3" ? null : worker?.Committed,
             probe.Workload == "F3"
                 ? "f3-source-barrier-and-recovery-descriptor;committed-source-count-unavailable"
-                : worker?.SourceCoverage, required);
+                : worker?.SourceCoverage, required)
+        {
+            FailureStage = complete ? null : "coverage",
+        };
     }
 
     internal static bool HasFrozenSourceCoverage(PrevalidationProbe probe, MonitoredWorkerResult worker)
@@ -639,18 +749,55 @@ internal static class PrevalidationExecutor
 
     internal static bool HasCoverage(PrevalidationCoverage outcome)
         => outcome.Outcome == "coverage-observed" && outcome.MonitoringComplete
-            && outcome.FailureCode is null && !outcome.CampaignAdmissionGranted;
+            && outcome.FailureCode is null && outcome.FailureStage is null
+            && outcome.SecondaryFailures is null && !outcome.CampaignAdmissionGranted;
 
     private static PrevalidationCoverage NotRun(PrevalidationProbe probe)
-        => Failed(probe, "SuiteStopped") with { Outcome = "not-run", ObservedFixtureFiles = 0 };
+        => Failed(probe, "SuiteStopped", "suite-stop") with { Outcome = "not-run", ObservedFixtureFiles = 0 };
 
-    private static PrevalidationCoverage Failed(PrevalidationProbe probe, string code)
-        => new("durable-prevalidation-coverage/1", probe.Ordinal, probe.Id, "incomplete", code, false,
-            probe.FixtureSlots, null, null, null, null, null, null, []);
+    internal static PrevalidationCoverage Failed(PrevalidationProbe probe, string code, string stage = "entry")
+        => new(PrevalidationProtocol.CoverageSchema, probe.Ordinal, probe.Id, "incomplete",
+            PrevalidationFailureCodes.Normalize(code), false,
+            probe.FixtureSlots, null, null, null, null, null, null, []) { FailureStage = stage };
+
+    internal static PrevalidationCoverage RecordFailure(PrevalidationCoverage coverage, string code, string stage)
+        => coverage with
+        {
+            Outcome = "incomplete",
+            MonitoringComplete = false,
+            FailureCode = coverage.FailureCode ?? PrevalidationFailureCodes.Normalize(code),
+            FailureStage = coverage.FailureCode is null ? stage : coverage.FailureStage,
+            SecondaryFailures = coverage.FailureCode is null ? coverage.SecondaryFailures
+                : PrevalidationSecondaryFailures.Add(coverage.SecondaryFailures, code, stage),
+        };
+
+    internal static PrevalidationReport RecordFailure(PrevalidationReport report, string code, string stage)
+        => report with
+        {
+            FailureCode = report.FailureCode ?? PrevalidationFailureCodes.Normalize(code),
+            FailureStage = report.FailureCode is null ? stage : report.FailureStage,
+            SecondaryFailures = report.FailureCode is null ? report.SecondaryFailures
+                : PrevalidationSecondaryFailures.Add(report.SecondaryFailures, code, stage),
+        };
+
+    internal static void RequireMonitor(MonitoredStorageMonitor monitor)
+        => PrevalidationProtocol.Require(!monitor.IsIncomplete && monitor.TerminalAlarm is null,
+            monitor.TerminalAlarm ?? "PrevalidationMonitoringIncomplete");
+
+    internal static void ValidateSummaryFailure(MonitoredSweepSummary summary)
+    {
+        PrevalidationFailureCodes.Validate(summary.FirstErrorCode, null);
+        PrevalidationProtocol.Require(summary.ErrorCount >= 0 && summary.UnclassifiedCount >= 0
+            && (summary.Complete
+                ? summary.ErrorCount == 0 && summary.UnclassifiedCount == 0 && summary.FirstErrorCode is null
+                : summary.FirstErrorCode is not null && (summary.ErrorCount > 0 || summary.UnclassifiedCount > 0)),
+            "PrevalidationSummaryFailureMismatch");
+    }
 
     internal static void RequireSweep(MonitoredSweepResult result)
         => PrevalidationProtocol.Require(result.Summary.Complete && result.Summary.Alarm is null,
-            result.Errors.Count != 0 ? result.Errors[0] : result.Summary.Alarm ?? "PrevalidationMonitoringIncomplete");
+            result.Summary.FirstErrorCode ?? (result.Errors.Count != 0 ? PrevalidationFailureCodes.Normalize(result.Errors[0])
+                : result.Summary.Alarm ?? "PrevalidationMonitoringIncomplete"));
 
     internal static void WriteImmutable<T>(string path, T value)
     {
@@ -730,7 +877,8 @@ internal static class PrevalidationExecutor
         => exception is not (OutOfMemoryException or StackOverflowException or AccessViolationException);
 
     private static string Code(Exception exception)
-        => exception is DurableStorageExperimentException storage ? storage.Code : exception.GetType().Name;
+        => PrevalidationFailureCodes.Normalize(
+            exception is DurableStorageExperimentException storage ? storage.Code : exception.GetType().Name);
 }
 
 internal static class PrevalidationWorkerAdmission

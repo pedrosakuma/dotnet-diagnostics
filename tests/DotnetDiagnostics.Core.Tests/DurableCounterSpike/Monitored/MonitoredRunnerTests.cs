@@ -5,19 +5,25 @@ using System.Text.Json.Nodes;
 using DotnetDiagnostics.Core.Tests.DurableCounterSpike.Monitored;
 using DotnetDiagnostics.TestSupport;
 using FluentAssertions;
+using Xunit.Abstractions;
 
 namespace DotnetDiagnostics.Core.Tests.DurableCounterSpike.Monitored;
 
 public sealed class MonitoredRunnerTests : IDisposable
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private readonly ITestOutputHelper _output;
 
     private readonly string _workspace = Path.Combine(
         AppContext.BaseDirectory,
         "durable-monitored-runner",
         Guid.NewGuid().ToString("N"));
 
-    public MonitoredRunnerTests() => Directory.CreateDirectory(_workspace);
+    public MonitoredRunnerTests(ITestOutputHelper output)
+    {
+        _output = output;
+        Directory.CreateDirectory(_workspace);
+    }
 
     [Fact]
     public async Task SourceRecoveryStderrSharesExecutionBudgetAndReportsTheRightStream()
@@ -1342,12 +1348,446 @@ public sealed class MonitoredRunnerTests : IDisposable
             CurrentContextIdentities = int.MaxValue,
             CurrentContextRootedIdentities = int.MaxValue,
             RetainedHistoryBytes = long.MaxValue,
+            FirstErrorCode = new string('e', 64),
         };
         var bytes = MonitoredSweepSummaryEncoding.EncodeLine(expanded);
-        bytes.Length.Should().Be(911).And.BeLessThanOrEqualTo(1_024);
+        bytes.Length.Should().Be(983).And.BeLessThanOrEqualTo(1_024);
         bytes[^1].Should().Be((byte)'\n');
         var json = System.Text.Encoding.UTF8.GetString(bytes);
         json.Should().Contain("\"ci\":2147483647").And.Contain("\"cr\":2147483647");
+        json.Should().Contain("\"ec\":\"" + new string('e', 64) + "\"");
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("a/b")]
+    [InlineData("not a token")]
+    [InlineData("é")]
+    [InlineData("line\nbreak")]
+    [InlineData("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")]
+    public void PrevalidationRejectsUnboundedOrNonTokenCausalEvidence(string code)
+    {
+        Action encode = () => MonitoredSweepSummaryEncoding.EncodeLine(
+            MonitoredSweepSummaryEncoding.CreateWorstCaseFixture() with { FirstErrorCode = code });
+        encode.Should().Throw<DurableStorageExperimentException>();
+        PrevalidationFailureCodes.Normalize(code).Should().Be("PrevalidationErrorCodeEncodingLimit");
+        Action validate = () => PrevalidationFailureCodes.Validate(code, null);
+        validate.Should().Throw<DurableStorageExperimentException>();
+    }
+
+    [Fact]
+    public async Task PrevalidationPersistsFirstSweepCauseAndDoesNotResetItAfterACompleteSweep()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        var fixture = PrepareComponentExecution();
+        var missing = Path.Combine(fixture.Manifest.WorkspaceRoot, "missing-root");
+        var secondMissing = Path.Combine(fixture.Manifest.WorkspaceRoot, "second-missing-root");
+        var attribution = fixture.Attribution with
+        {
+            Roots = [.. fixture.Attribution.Roots, new MonitoredAttributionRoot("workspace", missing, true),
+                new MonitoredAttributionRoot("workspace", secondMissing, true)],
+        };
+        using var self = Process.GetCurrentProcess();
+        var scope = new PrevalidationObservationScope([],
+            MonitoredProcessIdentity.Capture(self, MonitoredProcessRole.Harness));
+        var path = Path.Combine(fixture.Manifest.OutputRoot, "causal-monitor.jsonl");
+        await using (var monitor = new MonitoredStorageMonitor(attribution, fixture.Encoding, path,
+            prevalidationScope: scope))
+        {
+            var failed = await monitor.ObserveBoundaryAsync("fixture-preparation", true, CancellationToken.None);
+            failed.Summary.FirstErrorCode.Should().Be("DeclaredRootMissing");
+            failed.Summary.ErrorCount.Should().Be(2);
+            Directory.CreateDirectory(missing);
+            Directory.CreateDirectory(secondMissing);
+            var later = await monitor.ObserveBoundaryAsync("fixtures-complete", true, CancellationToken.None);
+            later.Summary.Complete.Should().BeTrue();
+            later.Summary.FirstErrorCode.Should().BeNull();
+            Action gate = () => PrevalidationExecutor.RequireMonitor(monitor);
+            gate.Should().Throw<DurableStorageExperimentException>().Which.Code.Should().Be("DeclaredRootMissing");
+        }
+        var lines = File.ReadAllLines(path);
+        lines.Should().HaveCount(2);
+        var first = JsonSerializer.Deserialize<MonitoredSweepSummary>(lines[0], PrevalidationProtocol.Json)!;
+        first.FirstErrorCode.Should().Be("DeclaredRootMissing");
+        PrevalidationExecutor.ValidateSummaryFailure(first);
+        first.Complete.Should().BeFalse();
+        lines.Should().OnlyContain(line => System.Text.Encoding.UTF8.GetByteCount(line) + 1 <= 1_024);
+    }
+
+    [Fact]
+    public void PrevalidationPreservesPrimaryAndCountsAllLaterFailuresWithoutGrowingArrays()
+    {
+        var coverage = PrevalidationExecutor.Failed(PrevalidationProtocol.Plan()[0], "DescriptorObservationUnavailable");
+        coverage = PrevalidationExecutor.RecordFailure(coverage, "PrevalidationCleanupErrors", "entry-cleanup");
+        coverage = PrevalidationExecutor.RecordFailure(coverage, "IOException", "monitor-dispose");
+        coverage.FailureCode.Should().Be("DescriptorObservationUnavailable");
+        coverage.SecondaryFailures.Should().Be(new PrevalidationSecondaryFailures("PrevalidationCleanupErrors", "entry-cleanup", 2));
+        PrevalidationExecutor.HasCoverage(coverage).Should().BeFalse();
+        var saturated = coverage with
+        {
+            SecondaryFailures = new(new string('s', 64), "entry-cleanup", int.MaxValue),
+        };
+        var next = PrevalidationExecutor.RecordFailure(saturated, "AnotherFinalizationError", "monitor-dispose");
+        next.SecondaryFailures!.Count.Should().Be(int.MaxValue);
+        next.SecondaryFailures.FirstCode.Should().HaveLength(64);
+        var roundtrip = JsonSerializer.Deserialize<PrevalidationCoverage>(
+            JsonSerializer.Serialize(next, PrevalidationProtocol.Json), PrevalidationProtocol.Json);
+        roundtrip.Should().BeEquivalentTo(next);
+        PrevalidationFailureCodes.Validate(next.FailureCode, next.SecondaryFailures);
+        Action orphan = () => PrevalidationFailureCodes.Validate(null, new("CleanupError", "entry-cleanup", 1));
+        orphan.Should().Throw<DurableStorageExperimentException>();
+        Action zero = () => PrevalidationFailureCodes.Validate("Primary", new("CleanupError", "entry-cleanup", 0));
+        zero.Should().Throw<DurableStorageExperimentException>();
+    }
+
+    [Theory]
+    [InlineData("entry-cleanup")]
+    [InlineData("monitor-dispose")]
+    [InlineData("evidence-finalization")]
+    [InlineData("admission-dispose")]
+    [InlineData("suite-finalization")]
+    [InlineData("suite-dispose")]
+    [InlineData("suite-freeze")]
+    public void PrevalidationCausalStagesPreserveIdenticalFullWidthCodes(string secondaryStage)
+    {
+        var code = new string('c', 64);
+        var primary = PrevalidationExecutor.Failed(PrevalidationProtocol.Plan()[0], code, "fixture-preparation");
+        var outcome = PrevalidationExecutor.RecordFailure(primary, code, secondaryStage);
+        outcome.FailureCode.Should().Be(code);
+        outcome.FailureStage.Should().Be("fixture-preparation");
+        outcome.SecondaryFailures.Should().Be(new PrevalidationSecondaryFailures(code, secondaryStage, 1));
+        var json = JsonSerializer.Serialize(outcome, PrevalidationProtocol.Json);
+        var read = JsonSerializer.Deserialize<PrevalidationCoverage>(json, PrevalidationProtocol.Json)!;
+        PrevalidationFailureCodes.Validate(read.FailureCode, read.SecondaryFailures);
+        PrevalidationFailureCodes.ValidateStage(read.FailureCode, read.FailureStage);
+        read.Should().BeEquivalentTo(outcome);
+        Action invalid = () => PrevalidationFailureCodes.ValidateStage(code, "unbounded-or-unknown-stage");
+        invalid.Should().Throw<DurableStorageExperimentException>();
+    }
+
+    [Fact]
+    public void PrevalidationPinnedProcStatReapedAfterOpenHasVerifiedEsrchMapping()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        using var process = StartWaitingStub();
+        var identity = MonitoredProcessIdentity.Capture(process, MonitoredProcessRole.Diagnostic);
+        IOException? observed = null;
+        try
+        {
+            LinuxPrevalidationProcessOperations.Instance.IsOriginalAlive(identity).Should().BeTrue();
+            var alive = LinuxPrevalidationProcessOperations.IsOriginalAliveForComponent(identity, path =>
+            {
+                var pinned = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 1);
+                try
+                {
+                    process.StandardInput.WriteLine("release");
+                    process.StandardInput.Flush();
+                    process.WaitForExit(5_000).Should().BeTrue();
+                    return pinned;
+                }
+                catch
+                {
+                    pinned.Dispose();
+                    throw;
+                }
+            }, stream =>
+            {
+                try { return LinuxPrevalidationProcessOperations.ReadPinnedStat(stream); }
+                catch (IOException exception)
+                {
+                    observed = exception;
+                    _output.WriteLine($"Runtime={Environment.Version}; pinned proc/stat read after owned reap: "
+                        + $"type={exception.GetType().Name}; HResult={exception.HResult}; hex={exception.HResult:X8}");
+                    throw;
+                }
+            });
+            observed.Should().NotBeNull();
+            observed.Should().BeOfType<IOException>();
+            observed!.HResult.Should().Be(3);
+            alive.Should().BeFalse();
+            Action reopen = () => File.ReadAllText(FormattableString.Invariant($"/proc/{identity.ProcessId}/stat"));
+            var missing = reopen.Should().Throw<DirectoryNotFoundException>().Which;
+            missing.HResult.Should().Be(unchecked((int)0x80070003));
+            _output.WriteLine($"Fresh proc/stat open after owned reap: type={missing.GetType().Name}; "
+                + $"HResult={missing.HResult}; hex={missing.HResult:X8}");
+            LinuxPrevalidationProcessOperations.Instance.IsOriginalAlive(identity).Should().BeFalse();
+        }
+        finally { LinuxPrevalidationProcessOperations.Instance.Signal(identity); }
+    }
+
+    [Theory]
+    [InlineData("open", "missing-file", true)]
+    [InlineData("open", "missing-directory", true)]
+    [InlineData("open", "esrch", true)]
+    [InlineData("read", "esrch", true)]
+    [InlineData("open", "derived-io-esrch", false)]
+    [InlineData("read", "derived-io-esrch", false)]
+    [InlineData("read", "missing-file", true)]
+    [InlineData("read", "missing-directory", true)]
+    [InlineData("open", "permission", false)]
+    [InlineData("read", "permission", false)]
+    [InlineData("open", "eio", false)]
+    [InlineData("read", "eio", false)]
+    [InlineData("open", "generic-io", false)]
+    [InlineData("read", "generic-io", false)]
+    [InlineData("open", "windows-path-hresult", false)]
+    [InlineData("read", "windows-path-hresult", false)]
+    public void PrevalidationProcStatOnlyClassifiesPreciseAbsence(string phase, string kind, bool absent)
+    {
+        Exception failure = kind switch
+        {
+            "missing-file" => new FileNotFoundException("controlled"),
+            "missing-directory" => new DirectoryNotFoundException("controlled"),
+            "esrch" => new IOException("controlled", 3),
+            "derived-io-esrch" => new ControlledDerivedIOException(),
+            "permission" => new UnauthorizedAccessException("controlled", new IOException("controlled", 13)),
+            "eio" => new IOException("controlled", 5),
+            "windows-path-hresult" => new IOException("controlled", unchecked((int)0x80070003)),
+            _ => new IOException("controlled"),
+        };
+        using var pinned = new MemoryStream();
+        bool Observe() => LinuxPrevalidationProcessOperations.IsOriginalAliveForComponent(
+            new(123, 456, MonitoredProcessRole.Diagnostic),
+            _ => phase == "open" ? throw failure : pinned,
+            _ => throw failure);
+        if (absent) Observe().Should().BeFalse();
+        else
+        {
+            Action observe = () => Observe();
+            observe.Should().Throw<Exception>().Which.Should().BeSameAs(failure);
+        }
+        if (phase == "read") pinned.CanRead.Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("S", 456, true)]
+    [InlineData("S", 457, false)]
+    [InlineData("Z", 456, false)]
+    [InlineData("X", 456, false)]
+    public void PrevalidationPinnedProcStatRetainsStartTimeAndZombieChecks(string state, int start, bool alive)
+    {
+        var text = FormattableString.Invariant($"123 (component) {state} {string.Join(' ', Enumerable.Repeat("0", 18))} {start}");
+        LinuxPrevalidationProcessOperations.IsOriginalAliveForComponent(
+            new(123, 456, MonitoredProcessRole.Diagnostic),
+            _ => new MemoryStream(System.Text.Encoding.UTF8.GetBytes(text)),
+            LinuxPrevalidationProcessOperations.ReadPinnedStat).Should().Be(alive);
+    }
+
+    [Fact]
+    public void PrevalidationPinnedProcStatRejectsMalformedAndOversizeReads()
+    {
+        foreach (var text in new[] { "malformed", new string('x', 4_097) })
+        {
+            Action observe = () => LinuxPrevalidationProcessOperations.IsOriginalAliveForComponent(
+                new(123, 456, MonitoredProcessRole.Diagnostic),
+                _ => new MemoryStream(System.Text.Encoding.UTF8.GetBytes(text)),
+                LinuxPrevalidationProcessOperations.ReadPinnedStat);
+            observe.Should().Throw<DurableStorageExperimentException>();
+        }
+    }
+
+    [Fact]
+    public async Task PrevalidationCleanupRetainsIoEvidenceEvenWhenLaterQuiescent()
+    {
+        var calls = 0;
+        var signals = 0;
+        var result = await PrevalidationOwnership.StopAsync([new(123, 456, MonitoredProcessRole.Diagnostic)],
+            new ScriptedCleanupOperations(_ => ++calls == 1 ? throw new IOException("controlled", 5) : false,
+                _ => signals++, _ => Task.CompletedTask), CancellationToken.None);
+        signals.Should().Be(0);
+        result.Quiescent.Should().BeTrue();
+        result.Errors.Should().Equal("123:signal:IOException:hr-00000005");
+        result.AdditionalErrorCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task PrevalidationCleanupPermissionRetainsBothOuterAndInnerHResultsAndNeverSignals()
+    {
+        var signals = 0;
+        var result = await PrevalidationOwnership.StopAsync([new(123, 456, MonitoredProcessRole.Diagnostic)],
+            new ScriptedCleanupOperations(_ => throw new UnauthorizedAccessException("controlled",
+                    new IOException("controlled", 13)), _ => signals++, _ => Task.CompletedTask),
+            new CancellationToken(canceled: true));
+        signals.Should().Be(0);
+        result.Quiescent.Should().BeFalse();
+        result.Unconfirmed.Should().HaveCount(1);
+        result.Errors.Should().Equal(
+            "123:signal:UnauthorizedAccessException:hr-80070005:iohr-0000000D",
+            "123:confirm:UnauthorizedAccessException:hr-80070005:iohr-0000000D");
+    }
+
+    [Fact]
+    public async Task PrevalidationCleanupIoDiagnosticsHaveInsertionCapAndExplicitOverflow()
+    {
+        var failures = 0;
+        var rounds = 0;
+        using var deadline = new CancellationTokenSource();
+        var result = await PrevalidationOwnership.StopAsync([new(123, 456, MonitoredProcessRole.Diagnostic)],
+            new ScriptedCleanupOperations(_ => throw new IOException("controlled", 100 + ++failures),
+                _ => throw new InvalidOperationException("must not signal"), _ =>
+                {
+                    if (++rounds == 20) deadline.Cancel();
+                    return Task.CompletedTask;
+                }), deadline.Token);
+        result.Quiescent.Should().BeFalse();
+        result.Errors.Should().HaveCount(PrevalidationOwnership.MaximumCleanupErrors);
+        result.Errors.Should().OnlyContain(code => MonitoredSweepSummaryEncoding.IsBoundedToken(
+            code, PrevalidationOwnership.MaximumCleanupErrorBytes));
+        result.AdditionalErrorCount.Should().Be(failures - PrevalidationOwnership.MaximumCleanupErrors);
+        result.AdditionalErrorCount.Should().BeGreaterThan(0);
+        var read = JsonSerializer.Deserialize<PrevalidationCleanupResult>(
+            JsonSerializer.Serialize(result, PrevalidationProtocol.Json), PrevalidationProtocol.Json);
+        read.Should().BeEquivalentTo(result);
+    }
+
+    [Fact]
+    public void PrevalidationSummaryCannotHideAnIncompleteObservationOrInventSuccess()
+    {
+        var valid = MonitoredSweepSummaryEncoding.CreateWorstCaseFixture() with { FirstErrorCode = "RootFailure" };
+        PrevalidationExecutor.ValidateSummaryFailure(valid);
+        foreach (var invalid in new[]
+        {
+            valid with { FirstErrorCode = null },
+            valid with { Complete = true },
+            valid with { ErrorCount = -1 },
+            valid with { ErrorCount = 0, UnclassifiedCount = 0 },
+        })
+        {
+            Action validate = () => PrevalidationExecutor.ValidateSummaryFailure(invalid);
+            validate.Should().Throw<DurableStorageExperimentException>();
+        }
+    }
+
+    [Fact]
+    public void PrevalidationOldFieldMapIsInspectionOnlyAndCannotAuthorizeNewExecution()
+    {
+        var current = PrevalidationContractFixture();
+        var old = current with { ContextSummaryFieldMapSha256 = PrevalidationProtocol.LegacyContextSummaryFieldMapSha256 };
+        PrevalidationProtocol.ValidateShape(old, allowLegacyInspection: true);
+        Action admission = () => PrevalidationProtocol.ValidateShape(old);
+        admission.Should().Throw<DurableStorageExperimentException>()
+            .Which.Code.Should().Be("PrevalidationContextEncodingMismatch");
+        PrevalidationProtocol.ValidateShape(current);
+    }
+
+    [Fact]
+    public async Task PrevalidationTinyFixtureWritesAreObservedBeforeTheirHandlesClose()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        var fixture = PrepareComponentExecution();
+        using var self = Process.GetCurrentProcess();
+        var scope = new PrevalidationObservationScope([],
+            MonitoredProcessIdentity.Capture(self, MonitoredProcessRole.Harness),
+            CurrentHistoryRoot: fixture.Manifest.HistoryRoot);
+        var path = Path.Combine(fixture.Manifest.OutputRoot, "fixture-monitor.jsonl");
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var during = new List<MonitoredSweepSummary>(4);
+        await using (var monitor = new MonitoredStorageMonitor(fixture.Attribution, fixture.Encoding, path,
+            prevalidationScope: scope))
+        {
+            // Inventory-only component seam: do not exempt or classify the unrelated VSTest descriptors.
+            // Each real write holds its handle open until a separate observer task completes its sweep.
+            await Task.Run(() => PrevalidationLayout.CreateHistoryFixturesForComponent(
+                fixture.Manifest.HistoryRoot, 1, () =>
+                {
+                    var descriptor = Directory.GetFiles($"/proc/{self.Id}/fd").Single(path =>
+                        new FileInfo(path).LinkTarget?.StartsWith(fixture.Manifest.HistoryRoot + "/",
+                            StringComparison.Ordinal) == true);
+                    var sweep = Task.Run(async () =>
+                    {
+                        using var pinned = LinuxProcessDescriptorObserver.OpenCoherent(self.Id, descriptor, 4_096);
+                        (pinned.Snapshot.RegularFileMetadata?.Length).Should().Be(512);
+                        return await monitor.ObserveBoundaryAsync("fixture-write-open", true, deadline.Token);
+                    }, deadline.Token).GetAwaiter().GetResult();
+                    PrevalidationExecutor.RequireSweep(sweep);
+                    during.Add(sweep.Summary);
+                }, deadline.Token), deadline.Token);
+            var after = await monitor.ObserveBoundaryAsync("fixtures-complete", true, deadline.Token);
+            PrevalidationExecutor.RequireSweep(after);
+            PrevalidationExecutor.RequireMonitor(monitor);
+            after.Summary.RetainedHistoryBytes.Should().Be(2_048);
+        }
+        during.Select(item => item.RetainedHistoryBytes).Should().Equal(512L, 1_024L, 1_536L, 2_048L);
+        PrevalidationGeometry.CountFixtureFiles(fixture.Manifest.HistoryRoot).Should().Be(4);
+        File.ReadAllLines(path).Should().HaveCount(5);
+    }
+
+    [Theory]
+    [InlineData("Admission")]
+    [InlineData("Finalization")]
+    [InlineData("Entry")]
+    public void PrevalidationInspectionPreservesPrimaryAndSecondaryFailureSurfaces(string stage)
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        var manifest = PrevalidationContractFixture();
+        Directory.CreateDirectory(manifest.PrivateRoot);
+        var manifestPath = Path.Combine(_workspace, "inspection-manifest.json");
+        PrevalidationExecutor.WriteImmutable(manifestPath, manifest);
+        var outcomes = manifest.Probes.Select(probe => PrevalidationExecutor.Failed(probe, "SuiteStopped")
+            with { Outcome = "not-run", ObservedFixtureFiles = 0 }).ToArray();
+        if (stage == "Entry")
+        {
+            outcomes[0] = PrevalidationExecutor.RecordFailure(
+                PrevalidationExecutor.Failed(manifest.Probes[0], "DescriptorObservationUnavailable"),
+                "PrevalidationCleanupErrors", "entry-cleanup");
+        }
+        var report = new PrevalidationReport(PrevalidationProtocol.ReportSchema, PrevalidationProtocol.Scope,
+            manifest.SuiteId, MonitoredFile.HashFile(manifestPath), manifest.HistoricalReport.Sha256,
+            $"partial-unsealed:{stage}", PrevalidationLayout.DeriveSuiteIdentityBound(), outcomes, "component-only");
+        report = PrevalidationExecutor.RecordFailure(report, "DescriptorObservationUnavailable",
+            stage == "Entry" ? "entry" : "admission");
+        report = PrevalidationExecutor.RecordFailure(report, "IOException", "suite-dispose");
+        report = PrevalidationExecutor.RecordFailure(report, "PrevalidationFinalizationDeadline", "suite-finalization");
+        report.FailureCode.Should().Be("DescriptorObservationUnavailable");
+        report.SecondaryFailures.Should().Be(new PrevalidationSecondaryFailures("IOException", "suite-dispose", 2));
+        PrevalidationExecutor.WriteImmutable(Path.Combine(manifest.PrivateRoot, "partial.json"), report);
+        var inspection = PrevalidationReportValidation.Validate(manifestPath);
+        inspection.FailureCode.Should().Be(report.FailureCode);
+        inspection.FailureStage.Should().Be(report.FailureStage);
+        inspection.SecondaryFailures.Should().Be(report.SecondaryFailures);
+        inspection.CampaignAdmissionGranted.Should().BeFalse();
+        if (stage == "Entry")
+        {
+            inspection.FirstFailedProbe!.FailureCode.Should().Be(report.FailureCode);
+            inspection.FirstFailedProbe.SecondaryFailures.Should().Be(new PrevalidationSecondaryFailures(
+                "PrevalidationCleanupErrors", "entry-cleanup", 1));
+        }
+        Action overwritten = () => PrevalidationReportValidation.ValidateReport(manifest,
+            MonitoredFile.HashFile(manifestPath), report with { FailureCode = null });
+        overwritten.Should().Throw<DurableStorageExperimentException>();
+    }
+
+    [Fact]
+    public void PrevalidationHistoricalInspectionKeepsMissingCausalityUnknown()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        var manifest = PrevalidationContractFixture() with
+        {
+            ContextSummaryFieldMapSha256 = PrevalidationProtocol.LegacyContextSummaryFieldMapSha256,
+        };
+        Directory.CreateDirectory(manifest.PrivateRoot);
+        var manifestPath = Path.Combine(_workspace, "historical-manifest.json");
+        PrevalidationExecutor.WriteImmutable(manifestPath, manifest);
+        var outcomes = manifest.Probes.Select(probe => PrevalidationExecutor.Failed(probe, "SuiteStopped")
+            with { Schema = "durable-prevalidation-coverage/1", Outcome = "not-run", FailureStage = null }).ToArray();
+        outcomes[0] = outcomes[0] with
+        {
+            Outcome = "incomplete", FailureCode = "Cleanup-PrevalidationFinalMonitoringIncomplete",
+        };
+        var report = new PrevalidationReport("durable-prevalidation-report/1", PrevalidationProtocol.Scope,
+            manifest.SuiteId, MonitoredFile.HashFile(manifestPath), manifest.HistoricalReport.Sha256,
+            "partial-unsealed:PrevalidationOwnedCleanupOrFreezeIncomplete",
+            PrevalidationLayout.DeriveSuiteIdentityBound(), outcomes, "synthetic legacy compatibility fixture");
+        PrevalidationExecutor.WriteImmutable(Path.Combine(manifest.PrivateRoot, "partial.json"), report);
+        var inspection = PrevalidationReportValidation.Validate(manifestPath);
+        inspection.FailureCode.Should().BeNull();
+        inspection.SecondaryFailures.Should().BeNull();
+        inspection.FirstFailedProbe!.FailureCode.Should().Be(outcomes[0].FailureCode);
+        inspection.Status.Should().Be("partial-unsealed-not-readiness-evidence");
+        inspection.CampaignAdmissionGranted.Should().BeFalse();
+        Action mixedSchema = () => PrevalidationReportValidation.ValidateReport(manifest,
+            MonitoredFile.HashFile(manifestPath), report with { Schema = PrevalidationProtocol.ReportSchema });
+        mixedSchema.Should().Throw<DurableStorageExperimentException>();
     }
 
     [Fact]
@@ -1545,16 +1985,20 @@ public sealed class MonitoredRunnerTests : IDisposable
         var manifest = PrevalidationContractFixture();
         var hash = HashText("component-report");
         var outcomes = manifest.Probes.Select(probe => new PrevalidationCoverage(
-            "durable-prevalidation-coverage/1", probe.Ordinal, probe.Id,
+            PrevalidationProtocol.CoverageSchema, probe.Ordinal, probe.Id,
             probe.Ordinal == 1 ? "incomplete" : "not-run", "component-stop", false,
-            probe.FixtureSlots, null, null, null, null, null, null, [])).ToArray();
-        var report = new PrevalidationReport("durable-prevalidation-report/1", PrevalidationProtocol.Scope,
+            probe.FixtureSlots, null, null, null, null, null, null, []) { FailureStage = "entry" }).ToArray();
+        var report = new PrevalidationReport(PrevalidationProtocol.ReportSchema, PrevalidationProtocol.Scope,
             manifest.SuiteId, hash, manifest.HistoricalReport.Sha256, "stopped-incomplete",
-            PrevalidationLayout.DeriveSuiteIdentityBound(), outcomes, "component-only");
+            PrevalidationLayout.DeriveSuiteIdentityBound(), outcomes, "component-only")
+        {
+            FailureCode = "component-stop",
+            FailureStage = "entry",
+        };
         PrevalidationReportValidation.ValidateReport(manifest, hash, report);
         outcomes[1] = outcomes[1] with
         {
-            Outcome = "coverage-observed", FailureCode = null, MonitoringComplete = true,
+            Outcome = "coverage-observed", FailureCode = null, FailureStage = null, MonitoringComplete = true,
             ObservedFixtureFiles = 252, MaximumContextIdentities = 300, MaximumSuiteBytes = 512,
         };
         Action resumed = () => PrevalidationReportValidation.ValidateReport(manifest, hash, report);
@@ -1672,6 +2116,7 @@ public sealed class MonitoredRunnerTests : IDisposable
         {
             CurrentContextIdentities = int.MaxValue, CurrentContextRootedIdentities = int.MaxValue,
             RetainedHistoryBytes = long.MaxValue,
+            FirstErrorCode = new string('e', 64),
         };
         var reply = new PrevalidationMonitorReply(false, new string('a', 64), int.MaxValue, long.MaxValue,
             int.MaxValue, long.MaxValue, summary);
@@ -1866,7 +2311,7 @@ public sealed class MonitoredRunnerTests : IDisposable
         signals.Should().Equal(3, 2, 1);
         result.Quiescent.Should().BeFalse();
         result.Unconfirmed.Should().BeEquivalentTo(identities);
-        result.Errors.Should().Contain("confirmation-wait:IOException");
+        result.Errors.Should().Contain("confirmation-wait:IOException:hr-80131620");
     }
 
     [Fact]
@@ -1890,6 +2335,8 @@ public sealed class MonitoredRunnerTests : IDisposable
         start.ArgumentList.Add("read release");
         return Process.Start(start)!;
     }
+
+    private sealed class ControlledDerivedIOException() : IOException("controlled", 3);
 
     private sealed class ScriptedCleanupOperations(
         Func<MonitoredProcessIdentity, bool> alive, Action<MonitoredProcessIdentity> signal,

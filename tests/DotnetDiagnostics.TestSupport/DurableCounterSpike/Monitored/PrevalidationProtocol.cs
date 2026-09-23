@@ -70,10 +70,16 @@ internal static class PrevalidationProtocol
     internal const string AddendumCommit = "9a049681562e1c995a9fec43a632e6b69918d315";
     internal const string HistoricalReportPath = "docs/evidence/dc5/monitored-readiness-dbeb8cd.md";
     internal const string HistoricalReportSha256 = "18c22eddacdfa9dc2d3b2308264f42a139e7e311c8df57bc43e6cd0a129622bb";
-    internal const string SummarySchema = "durable-prevalidation-sweep-summary/1";
-    internal static string ContextSummaryFieldMapSha256 { get; } = MonitoredFile.HashBytes(
+    internal const string SummarySchema = "durable-prevalidation-sweep-summary/2";
+    internal const string CoverageSchema = "durable-prevalidation-coverage/2";
+    internal const string ReportSchema = "durable-prevalidation-report/2";
+    internal static string LegacyContextSummaryFieldMapSha256 { get; } = MonitoredFile.HashBytes(
         System.Text.Encoding.UTF8.GetBytes(MonitoredSweepSummaryEncoding.FieldMap
             + "ci=CurrentContextIdentities\ncr=CurrentContextRootedIdentities\nrh=RetainedHistoryBytes\n"));
+    internal static string ContextSummaryFieldMapSha256 { get; } = MonitoredFile.HashBytes(
+        System.Text.Encoding.UTF8.GetBytes(MonitoredSweepSummaryEncoding.FieldMap
+            + "ci=CurrentContextIdentities\ncr=CurrentContextRootedIdentities\nrh=RetainedHistoryBytes\n"
+            + "ec=FirstErrorCode(first sweep error;1-64 ASCII token;null when complete;remaining errors counted by er)\n"));
     internal static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true,
@@ -130,7 +136,7 @@ internal static class PrevalidationProtocol
         }
     }
 
-    internal static void ValidateShape(PrevalidationManifest manifest)
+    internal static void ValidateShape(PrevalidationManifest manifest, bool allowLegacyInspection = false)
     {
         Require(manifest.Schema == ManifestSchema && manifest.Scope == Scope, "PrevalidationSchemaMismatch");
         Require(manifest.SuiteId.StartsWith("pv-", StringComparison.Ordinal)
@@ -140,7 +146,8 @@ internal static class PrevalidationProtocol
             && manifest.ProtocolSha256 == MonitoredProtocolVersions.SuccessorProtocolSha256,
             "PrevalidationFrozenInputMismatch");
         Require(manifest.Probes.SequenceEqual(Plan()) && manifest.Bounds == Bounds(), "PrevalidationPlanOrBounds");
-        Require(manifest.ContextSummaryFieldMapSha256 == ContextSummaryFieldMapSha256,
+        Require(manifest.ContextSummaryFieldMapSha256 == ContextSummaryFieldMapSha256
+            || allowLegacyInspection && manifest.ContextSummaryFieldMapSha256 == LegacyContextSummaryFieldMapSha256,
             "PrevalidationContextEncodingMismatch");
         Require(PrevalidationLayout.DeriveSuiteIdentityBound() <= Bounds().SuiteIdentities,
             "PrevalidationSuiteGeometry");
