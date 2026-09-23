@@ -216,15 +216,16 @@ internal static class LinuxProcessDescriptorObserver
     {
         if (first.Identity != second.Identity
             || first.Flags != second.Flags
-            || !string.Equals(first.Target, second.Target, StringComparison.Ordinal))
+            || !string.Equals(first.Target, second.Target, StringComparison.Ordinal)
+            || first.RegularFileMetadata?.LinkCount != second.RegularFileMetadata?.LinkCount)
         {
             var proof = sampledOwner is null ? null : new DescriptorCoherenceProof(sampledOwner, first, second);
             throw new DurableStorageExperimentException(
                 "DescriptorIdentityChangedDuringObservation",
-                "A process descriptor changed target, flags, or native identity while it was being pinned.")
+                "A process descriptor changed target, flags, native identity, or link count while it was being pinned.")
             {
                 CoherenceProof = proof,
-                DescriptorFailure = proof is null ? null : new(5, proof.Changes, descriptor),
+                DescriptorFailure = proof is null || proof.Changes == 0 ? null : new(5, proof.Changes, descriptor),
             };
         }
     }
