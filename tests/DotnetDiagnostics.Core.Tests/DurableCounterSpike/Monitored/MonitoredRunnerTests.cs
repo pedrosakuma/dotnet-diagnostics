@@ -1352,6 +1352,11 @@ public sealed class MonitoredRunnerTests : IDisposable
         };
         var bytes = MonitoredSweepSummaryEncoding.EncodeLine(expanded);
         bytes.Length.Should().Be(983).And.BeLessThanOrEqualTo(1_024);
+        var native = MonitoredSweepSummaryEncoding.EncodeLine(expanded with
+        {
+            FirstDescriptorFailure = [2, 4, int.MinValue, int.MaxValue],
+        });
+        native.Length.Should().Be(1_017).And.BeLessThanOrEqualTo(1_024);
         bytes[^1].Should().Be((byte)'\n');
         var json = System.Text.Encoding.UTF8.GetString(bytes);
         json.Should().Contain("\"ci\":2147483647").And.Contain("\"cr\":2147483647");
@@ -1667,8 +1672,290 @@ public sealed class MonitoredRunnerTests : IDisposable
         Action admission = () => PrevalidationProtocol.ValidateShape(old);
         admission.Should().Throw<DurableStorageExperimentException>()
             .Which.Code.Should().Be("PrevalidationContextEncodingMismatch");
+        var previous = current with
+        {
+            ContextSummaryFieldMapSha256 = PrevalidationProtocol.PreviousContextSummaryFieldMapSha256,
+        };
+        PrevalidationProtocol.ValidateShape(previous, allowLegacyInspection: true);
+        Action previousAdmission = () => PrevalidationProtocol.ValidateShape(previous);
+        previousAdmission.Should().Throw<DurableStorageExperimentException>()
+            .Which.Code.Should().Be("PrevalidationContextEncodingMismatch");
         PrevalidationProtocol.ValidateShape(current);
     }
+
+    [Theory]
+    [InlineData(1, false)]
+    [InlineData(2, false)]
+    [InlineData(3, false)]
+    [InlineData(4, false)]
+    [InlineData(1, true)]
+    [InlineData(2, true)]
+    [InlineData(3, true)]
+    [InlineData(4, true)]
+    public void DescriptorObserverClosedDescriptorRetainsExactOperation(int operation, bool unlinked)
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        var path = Path.Combine(_workspace, "descriptor-close");
+        using var writer = File.OpenWrite(path);
+        if (unlinked) File.Delete(path);
+        var fd = checked((int)writer.SafeFileHandle.DangerousGetHandle());
+        var descriptor = $"/proc/{Environment.ProcessId}/fd/{fd}";
+        Directory.GetFiles($"/proc/{Environment.ProcessId}/fd").Should().Contain(descriptor);
+        Action observe = () => LinuxProcessDescriptorObserver.OpenCoherentForComponent(
+            Environment.ProcessId, descriptor, 4_096,
+            phase => { if (phase == operation) writer.Dispose(); }).Dispose();
+        var error = observe.Should().Throw<DurableStorageExperimentException>().Which;
+        error.DescriptorFailure.Should().NotBeNull();
+        error.DescriptorFailure!.Operation.Should().Be(operation);
+        error.DescriptorFailure.Descriptor.Should().Be(fd);
+        if (operation is 1 or 3)
+        {
+            error.Code.Should().Be("DescriptorObservationUnavailable");
+            error.DescriptorFailure.Error.Should().Be(2);
+        }
+        else
+        {
+            error.Code.Should().Be("DescriptorFlagsFileNotFoundException");
+            error.DescriptorFailure.Error.Should().Be(unchecked((int)0x80070002));
+        }
+        PersistDescriptorProof(error);
+        Directory.GetFiles($"/proc/{Environment.ProcessId}/fd")
+            .Should().NotContain(candidate => new FileInfo(candidate).LinkTarget == path
+                || new FileInfo(candidate).LinkTarget == path + " (deleted)");
+    }
+
+    [Theory]
+    [InlineData(1, 13)]
+    [InlineData(3, 13)]
+    [InlineData(1, 5)]
+    [InlineData(3, 5)]
+    public void DescriptorObserverInjectedNativeErrorsAreNotTreatedAsDisappearance(int operation, int errno)
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        using var writer = File.OpenWrite(Path.Combine(_workspace, "descriptor-injected-error"));
+        var fd = checked((int)writer.SafeFileHandle.DangerousGetHandle());
+        Action observe = () => LinuxProcessDescriptorObserver.OpenCoherentForComponent(
+            Environment.ProcessId, $"/proc/{Environment.ProcessId}/fd/{fd}", 4_096,
+            null, phase => phase == operation ? errno : null).Dispose();
+        var error = observe.Should().Throw<DurableStorageExperimentException>().Which;
+        error.Code.Should().Be("DescriptorObservationUnavailable");
+        error.DescriptorFailure.Should().Be(new DescriptorObservationFailure(operation, errno, fd));
+        PersistDescriptorProof(error);
+        Directory.GetFiles($"/proc/{Environment.ProcessId}/fd")
+            .Count(candidate => new FileInfo(candidate).LinkTarget == writer.Name).Should().Be(1);
+    }
+
+    [Fact]
+    public void DescriptorObserverRejectsRealFdReuseBetweenPins()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        using var first = File.OpenWrite(Path.Combine(_workspace, "descriptor-original"));
+        using var replacement = File.OpenWrite(Path.Combine(_workspace, "descriptor-replacement"));
+        var fd = checked((int)first.SafeFileHandle.DangerousGetHandle());
+        Action observe = () => LinuxProcessDescriptorObserver.OpenCoherentForComponent(
+            Environment.ProcessId, $"/proc/{Environment.ProcessId}/fd/{fd}", 4_096, phase =>
+            {
+                if (phase == 3)
+                {
+                    DuplicateDescriptor(checked((int)replacement.SafeFileHandle.DangerousGetHandle()), fd)
+                        .Should().Be(fd);
+                }
+            }).Dispose();
+        observe.Should().Throw<DurableStorageExperimentException>().Which.Code
+            .Should().Be("DescriptorIdentityChangedDuringObservation");
+    }
+
+    [Fact]
+    public void DescriptorObserverSelfEnumerationFiltersItsDirectoryButClosedExplicitPinFails()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        var root = $"/proc/{Environment.ProcessId}/fd";
+        string? enumerationDescriptor = null;
+        foreach (var descriptor in Directory.EnumerateFileSystemEntries(root))
+        {
+            if (new FileInfo(descriptor).LinkTarget == root)
+            {
+                enumerationDescriptor.Should().BeNull();
+                enumerationDescriptor = descriptor;
+            }
+        }
+        enumerationDescriptor.Should().NotBeNull();
+        Directory.GetFiles(root).Should().NotContain(enumerationDescriptor!);
+        Action observe = () => LinuxProcessDescriptorObserver.OpenCoherent(
+            Environment.ProcessId, enumerationDescriptor!, 4_096).Dispose();
+        var error = observe.Should().Throw<DurableStorageExperimentException>().Which;
+        error.DescriptorFailure!.Operation.Should().Be(1);
+        error.DescriptorFailure.Error.Should().Be(2);
+        PersistDescriptorProof(error);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(3)]
+    public async Task DescriptorObserverTinyFixtureActuallyClosesDuringObservation(int operation)
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        var root = Path.Combine(_workspace, "concurrent-fixtures");
+        Directory.CreateDirectory(root);
+        using var opened = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        using var closed = new ManualResetEventSlim();
+        using var finish = new ManualResetEventSlim();
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var writes = 0;
+        var closes = 0;
+        var writer = Task.Run(() => PrevalidationLayout.CreateHistoryFixturesForComponent(root, 1,
+            () =>
+            {
+                if (Interlocked.Increment(ref writes) != 1) return;
+                opened.Set();
+                release.Wait(deadline.Token);
+            }, deadline.Token, () =>
+            {
+                if (Interlocked.Increment(ref closes) != 1) return;
+                closed.Set();
+                finish.Wait(deadline.Token);
+            }), deadline.Token);
+        try
+        {
+            opened.Wait(deadline.Token);
+            var descriptor = Directory.GetFiles($"/proc/{Environment.ProcessId}/fd").Single(path =>
+                new FileInfo(path).LinkTarget?.StartsWith(root + "/", StringComparison.Ordinal) == true);
+            Action observe = () => LinuxProcessDescriptorObserver.OpenCoherentForComponent(
+                Environment.ProcessId, descriptor, 4_096, phase =>
+                {
+                    if (phase != operation) return;
+                    release.Set();
+                    closed.Wait(deadline.Token);
+                }).Dispose();
+            var error = observe.Should().Throw<DurableStorageExperimentException>().Which;
+            error.DescriptorFailure!.Operation.Should().Be(operation);
+            error.DescriptorFailure.Error.Should().Be(2);
+            PersistDescriptorProof(error);
+        }
+        finally
+        {
+            release.Set();
+            finish.Set();
+            await writer;
+        }
+        PrevalidationGeometry.CountFixtureFiles(root).Should().Be(4);
+    }
+
+    [Fact]
+    public async Task DescriptorObserverCoordinatorSweepPersistsNativeFailureAndRemainsIncomplete()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        var fixture = PrepareComponentExecution();
+        using var self = Process.GetCurrentProcess();
+        var identity = MonitoredProcessIdentity.Capture(self, MonitoredProcessRole.Harness);
+        var path = Path.Combine(fixture.Manifest.OutputRoot, "native-failure-monitor.jsonl");
+        using var coordinatorWrite = File.OpenWrite(Path.Combine(fixture.Manifest.OutputRoot, "coordinator-write"));
+        coordinatorWrite.Write(new byte[512]);
+        coordinatorWrite.Flush();
+        var fd = checked((int)coordinatorWrite.SafeFileHandle.DangerousGetHandle());
+        var descriptor = $"/proc/{self.Id}/fd/{fd}";
+        using var release = new ManualResetEventSlim();
+        using var closed = new ManualResetEventSlim();
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var owner = Task.Run(() =>
+        {
+            release.Wait(deadline.Token);
+            coordinatorWrite.Dispose();
+            closed.Set();
+        }, deadline.Token);
+        try
+        {
+            await using var monitor = new MonitoredStorageMonitor(fixture.Attribution, fixture.Encoding, path,
+                prevalidationScope: new PrevalidationObservationScope([], identity));
+            monitor.BeforeDescriptorOperationForComponent = (candidate, phase) =>
+            {
+                if (candidate != descriptor || phase != 3) return;
+                release.Set();
+                closed.Wait(deadline.Token);
+            };
+            monitor.AddProcess(identity);
+            var result = await monitor.ObserveBoundaryAsync("native-proof", true, deadline.Token);
+            result.Summary.Complete.Should().BeFalse();
+            result.Summary.FirstDescriptorFailure.Should().NotBeNull();
+            result.Summary.FirstDescriptorFailure.Should().Equal(0, 3, 2, fd);
+            monitor.IsIncomplete.Should().BeTrue();
+            Action require = () => PrevalidationExecutor.RequireSweep(result);
+            require.Should().Throw<DurableStorageExperimentException>();
+        }
+        finally
+        {
+            release.Set();
+            await owner;
+        }
+        var raw = File.ReadAllBytes(path);
+        raw.Length.Should().BeLessThanOrEqualTo(1_024);
+        var summary = JsonSerializer.Deserialize<MonitoredSweepSummary>(raw, PrevalidationProtocol.Json)!;
+        PrevalidationExecutor.ValidateSummaryFailure(summary);
+        summary.FirstDescriptorFailure.Should().HaveCount(4);
+        _output.WriteLine(System.Text.Encoding.UTF8.GetString(raw));
+    }
+
+    [Theory]
+    [InlineData(new int[] { })]
+    [InlineData(new[] { 0, 1, 2 })]
+    [InlineData(new[] { 0, 1, 2, 3, 4 })]
+    [InlineData(new[] { 3, 1, 2, 3 })]
+    [InlineData(new[] { 0, 5, 2, 3 })]
+    [InlineData(new[] { 0, 1, 0, 3 })]
+    [InlineData(new[] { 0, 3, 4096, 3 })]
+    [InlineData(new[] { 0, 1, 2, -1 })]
+    public void DescriptorObserverRejectsInvalidNativeContext(int[] context)
+    {
+        var summary = MonitoredSweepSummaryEncoding.CreateWorstCaseFixture() with
+        {
+            FirstErrorCode = "DescriptorObservationUnavailable", FirstDescriptorFailure = context,
+        };
+        Action encode = () => MonitoredSweepSummaryEncoding.EncodeLine(summary);
+        encode.Should().Throw<DurableStorageExperimentException>();
+        Action inspect = () => PrevalidationExecutor.ValidateSummaryFailure(summary);
+        inspect.Should().Throw<DurableStorageExperimentException>();
+    }
+
+    [Fact]
+    public void DescriptorObserverContextCannotBeAttachedToCompleteOrErrorlessSummary()
+    {
+        var valid = MonitoredSweepSummaryEncoding.CreateWorstCaseFixture() with
+        {
+            FirstErrorCode = "DescriptorObservationUnavailable", FirstDescriptorFailure = [0, 1, 2, 3],
+        };
+        foreach (var summary in new[]
+        {
+            valid with { Complete = true }, valid with { ErrorCount = 0 },
+            valid with { FirstErrorCode = null },
+        })
+        {
+            Action encode = () => MonitoredSweepSummaryEncoding.EncodeLine(summary);
+            encode.Should().Throw<DurableStorageExperimentException>();
+            Action inspect = () => PrevalidationExecutor.ValidateSummaryFailure(summary);
+            inspect.Should().Throw<DurableStorageExperimentException>();
+        }
+    }
+
+    private void PersistDescriptorProof(DurableStorageExperimentException exception)
+    {
+        var summary = MonitoredSweepSummaryEncoding.CreateWorstCaseFixture() with
+        {
+            FirstErrorCode = exception.Code,
+            FirstDescriptorFailure = exception.DescriptorFailure!.Encode(MonitoredProcessRole.Harness),
+        };
+        var bytes = MonitoredSweepSummaryEncoding.EncodeLine(summary);
+        var path = Path.Combine(_workspace, "descriptor-proof.jsonl");
+        File.WriteAllBytes(path, bytes);
+        var persisted = JsonSerializer.Deserialize<MonitoredSweepSummary>(
+            File.ReadAllBytes(path), PrevalidationProtocol.Json)!;
+        PrevalidationExecutor.ValidateSummaryFailure(persisted);
+        persisted.FirstDescriptorFailure.Should().Equal(summary.FirstDescriptorFailure);
+        _output.WriteLine(System.Text.Encoding.UTF8.GetString(bytes));
+    }
+
+    [System.Runtime.InteropServices.DllImport("libc", EntryPoint = "dup2", SetLastError = true)]
+    private static extern int DuplicateDescriptor(int source, int destination);
 
     [Fact]
     public async Task PrevalidationTinyFixtureWritesAreObservedBeforeTheirHandlesClose()
@@ -2117,6 +2404,7 @@ public sealed class MonitoredRunnerTests : IDisposable
             CurrentContextIdentities = int.MaxValue, CurrentContextRootedIdentities = int.MaxValue,
             RetainedHistoryBytes = long.MaxValue,
             FirstErrorCode = new string('e', 64),
+            FirstDescriptorFailure = [2, 4, int.MinValue, int.MaxValue],
         };
         var reply = new PrevalidationMonitorReply(false, new string('a', 64), int.MaxValue, long.MaxValue,
             int.MaxValue, long.MaxValue, summary);

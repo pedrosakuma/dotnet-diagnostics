@@ -599,4 +599,5 @@ internal sealed class DurableStorageExperimentException : Exception
         : base(message) => Code = code;
 
     internal string Code { get; }
+    internal Monitored.DescriptorObservationFailure? DescriptorFailure { get; init; }
 }
