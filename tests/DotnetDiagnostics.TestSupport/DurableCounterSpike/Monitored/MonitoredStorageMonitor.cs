@@ -641,7 +641,15 @@ internal sealed record MonitoredSweepSummary(
     [property: JsonPropertyName("hc")] long HarnessCpuTicks,
     [property: JsonPropertyName("hr")] long HarnessPeakRssBytes,
     [property: JsonPropertyName("mc")] long MonitorCpuTicks,
-    [property: JsonPropertyName("ma")] long MonitorAllocatedBytes);
+    [property: JsonPropertyName("ma")] long MonitorAllocatedBytes)
+{
+    [JsonPropertyName("ci"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? CurrentContextIdentities { get; init; }
+    [JsonPropertyName("cr"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? CurrentContextRootedIdentities { get; init; }
+    [JsonPropertyName("rh"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? RetainedHistoryBytes { get; init; }
+}
 
 internal static class MonitoredSweepSummaryEncoding
 {
@@ -980,6 +988,10 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
     private bool _incomplete;
     private string? _terminalAlarm;
     private readonly bool _includeIdentityEvidence;
+    private readonly PrevalidationObservationScope? _prevalidationScope;
+    private int _maximumCurrentContextIdentities;
+    private MonitoredProcessIdentity? _geometryFixtureOwner;
+    private readonly long[] _retiredCpuTicks = new long[3];
 
     internal MonitoredStorageMonitor(
         MonitoredAttributionMap attribution,
@@ -987,7 +999,8 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
         string evidencePath,
         BoundedOutputBudget? combinedOutputBudget = null,
         int? maximumEstablishedIdentities = null,
-        bool includeIdentityEvidence = false)
+        bool includeIdentityEvidence = false,
+        PrevalidationObservationScope? prevalidationScope = null)
     {
         LinuxStatxHandleMetadataObserver.EnsureSupportedPlatform(OperatingSystem.IsLinux());
         _attribution = attribution;
@@ -995,6 +1008,7 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
             attribution,
             maximumEstablishedIdentities);
         _includeIdentityEvidence = includeIdentityEvidence;
+        _prevalidationScope = prevalidationScope;
         _writer = new BoundedJsonLineWriter(
             evidencePath,
             encoding.MaximumSummaryUtf8Bytes,
@@ -1042,6 +1056,8 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
     }
 
     internal int MaximumIdentityCount => _maximumIdentityCount;
+    internal int MaximumCurrentContextIdentities => _prevalidationScope is null
+        ? _maximumIdentityCount : _maximumCurrentContextIdentities;
     internal int MaximumDescriptorOnlyIdentityCount => _maximumDescriptorOnlyIdentityCount;
     internal long MaximumObservedSweepBytes => _maximumObservedSweepBytes;
     internal double MaximumObservedGapMilliseconds => _maximumObservedGapMilliseconds;
@@ -1051,6 +1067,18 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
     internal long SummaryBytes => _writer.Bytes;
     internal int MaximumSummaryRecordBytes => _writer.MaximumObservedRecordBytes;
     internal Task<string> TerminalIssue => _terminalIssue.Task;
+
+    internal void RegisterGeometryFixtureOwner(MonitoredProcessIdentity owner)
+    {
+        PrevalidationProtocol.Require(_prevalidationScope?.GeometryFixtures == true
+            && owner.Role == MonitoredProcessRole.Harness && LinuxProcessIdentity.Matches(owner),
+            "PrevalidationGeometryOwnerMismatch");
+        lock (_gate)
+        {
+            PrevalidationProtocol.Require(_geometryFixtureOwner is null, "PrevalidationGeometryOwnerReuse");
+            _geometryFixtureOwner = owner;
+        }
+    }
 
     internal void AddProcess(MonitoredProcessIdentity identity)
     {
@@ -1088,12 +1116,54 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
         }
     }
 
+    internal async Task PrepareTerminationAsync(MonitoredProcessIdentity identity,
+        CancellationToken cancellationToken)
+    {
+        // Drain the current sweep (and its pinned handles) before releasing a
+        // process to exit. The authoritative periodic loop is never restarted.
+        await _sweepGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            MarkIntentionalTermination(identity);
+        }
+        finally
+        {
+            _sweepGate.Release();
+        }
+    }
+
+    internal async Task KillOwnedAsync(MonitoredProcessIdentity identity, CancellationToken cancellationToken)
+    {
+        await _sweepGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            MarkIntentionalTermination(identity);
+            using var process = Process.GetProcessById(identity.ProcessId);
+            OwnedProcessTerminator.KillExact(process, identity);
+            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+            ConfirmTerminatedAndRemove(identity);
+        }
+        finally
+        {
+            _sweepGate.Release();
+        }
+    }
+
+    internal async Task ConfirmTerminatedAsync(MonitoredProcessIdentity identity, CancellationToken cancellationToken)
+    {
+        await _sweepGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try { ConfirmTerminatedAndRemove(identity); }
+        finally { _sweepGate.Release(); }
+    }
+
     internal void ConfirmTerminatedAndRemove(MonitoredProcessIdentity identity)
     {
         lock (_gate)
         {
             var tracked = RequireTracked(identity);
-            if (!tracked.IntentionalTermination || LinuxProcessIdentity.Matches(identity))
+            if (!tracked.IntentionalTermination || (_prevalidationScope is null
+                ? LinuxProcessIdentity.Matches(identity)
+                : LinuxPrevalidationProcessOperations.Instance.IsOriginalAlive(identity)))
             {
                 MarkIncomplete("IntentionalTerminationNotConfirmed");
                 throw Error(
@@ -1101,6 +1171,38 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
                     "A tracked process cannot be removed before exact-identity death is confirmed.");
             }
             _processes.Remove(identity.ProcessId);
+            if (_prevalidationScope is not null)
+            {
+                _retiredCpuTicks[(int)identity.Role] += tracked.LastCpuTicks;
+            }
+        }
+    }
+
+    internal void MarkOwnedCleanup(IReadOnlyList<MonitoredProcessIdentity> identities)
+    {
+        lock (_gate)
+        {
+            foreach (var identity in identities)
+            {
+                if (_processes.TryGetValue(identity.ProcessId, out var tracked) && tracked.Identity == identity)
+                {
+                    tracked.IntentionalTermination = true;
+                }
+            }
+        }
+    }
+
+    internal void RemoveConfirmedCleanup(IReadOnlyList<MonitoredProcessIdentity> identities)
+    {
+        lock (_gate)
+        {
+            foreach (var identity in identities)
+            {
+                if (_processes.TryGetValue(identity.ProcessId, out var tracked) && tracked.Identity == identity)
+                {
+                    ConfirmTerminatedAndRemove(identity);
+                }
+            }
         }
     }
 
@@ -1165,7 +1267,8 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
         try
         {
             var result = Sweep(observationKind);
-            await _writer.WriteAsync(result.Summary, cancellationToken).ConfigureAwait(false);
+            await _writer.WriteAsync(result.Summary,
+                _prevalidationScope is null ? cancellationToken : CancellationToken.None).ConfigureAwait(false);
             return result;
         }
         catch (DurableStorageExperimentException exception)
@@ -1233,6 +1336,20 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
                 ref runtimeOnlyExcludedBytes,
                 ref runtimeOnlyExcludedCount);
         }
+        if (_prevalidationScope?.CurrentHistoryRoot is { } retainedRoot)
+        {
+            try
+            {
+                if (Directory.EnumerateDirectories(retainedRoot).Take(65).Count() > 64)
+                {
+                    errors.Add("RetainedHistorySlotLimitExceeded");
+                }
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                errors.Add("RetainedHistoryEnumerationIncomplete");
+            }
+        }
 
         long packageBytes = 0;
         long recoveryBytes = 0;
@@ -1259,6 +1376,7 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
                     historyBytes = checked(historyBytes + observation.Length);
                     break;
                 case "workspace":
+                case "completed-context":
                     workspaceBytes = checked(workspaceBytes + observation.Length);
                     break;
                 case "evidence":
@@ -1277,10 +1395,16 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
         }
 
         var observedBytes = checked(packageBytes + recoveryBytes + historyBytes + workspaceBytes + evidenceBytes);
+        var retainedHistoryBytes = observations.Values.Where(static item =>
+            item.InRetainedHistory && item.Role != "completed-context").Sum(static item => item.Length);
         _maximumObservedSweepBytes = Math.Max(_maximumObservedSweepBytes, observedBytes);
         _maximumIdentityCount = Math.Max(_maximumIdentityCount, observations.Count);
         var descriptorOnlyIdentityCount = observations.Values.Count(static item =>
             item.SeenInDescriptor && !item.SeenInRoot);
+        var current = observations.Values.Where(static item => item.Role != "completed-context").ToArray();
+        var currentCount = _prevalidationScope is null ? observations.Count : current.Length;
+        var currentRootedCount = current.Count(static item => item.SeenInRoot);
+        _maximumCurrentContextIdentities = Math.Max(_maximumCurrentContextIdentities, currentCount);
         _maximumDescriptorOnlyIdentityCount = Math.Max(
             _maximumDescriptorOnlyIdentityCount,
             descriptorOnlyIdentityCount);
@@ -1288,7 +1412,7 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
         {
             errors.Add("TrackedIdentityLimitExceeded");
         }
-        else if (observations.Count > _maximumEstablishedIdentities)
+        else if (currentCount > _maximumEstablishedIdentities)
         {
             errors.Add("EstablishedIdentityGeometryExceeded");
         }
@@ -1296,12 +1420,17 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
         {
             errors.Add("DescriptorOnlyIdentityLimitExceeded");
         }
+        if (_prevalidationScope is not null && currentRootedCount > MonitoredRunnerGeometry.MaximumRootedIdentities)
+        {
+            errors.Add("CurrentContextRootedGeometryExceeded");
+        }
 
         var processMetrics = ObserveProcessMetrics(processes, errors);
         var completed = Stopwatch.GetTimestamp();
         var gap = _previousCompletedTimestamp == 0
             ? 0
-            : Stopwatch.GetElapsedTime(_previousCompletedTimestamp, started).TotalMilliseconds;
+            : Stopwatch.GetElapsedTime(_previousCompletedTimestamp,
+                _prevalidationScope is null ? started : completed).TotalMilliseconds;
         _previousCompletedTimestamp = completed;
         _maximumObservedGapMilliseconds = Math.Max(_maximumObservedGapMilliseconds, gap);
         if (string.Equals(observationKind, "periodic", StringComparison.Ordinal))
@@ -1317,7 +1446,9 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
                 periodicGap);
             _periodicSummaryRecords++;
         }
-        if (active && gap > MaximumActiveGap.TotalMilliseconds)
+        if ((active || _prevalidationScope is not null) && (gap > MaximumActiveGap.TotalMilliseconds
+            || _prevalidationScope is not null
+                && Stopwatch.GetElapsedTime(started, completed) > MaximumActiveGap))
         {
             errors.Add("MaximumActiveStageGapExceeded");
         }
@@ -1325,9 +1456,13 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
         var alarm = DetermineAlarm(
             packageBytes,
             recoveryBytes,
-            historyBytes,
+            _prevalidationScope is null ? historyBytes : retainedHistoryBytes,
             workspaceBytes,
             processMetrics);
+        if (_prevalidationScope is not null && observedBytes > WorkspaceThresholdBytes)
+        {
+            alarm = "ObservedSuiteWorkspaceThresholdExceeded";
+        }
         if (alarm is not null
             && !MonitoredSweepSummaryEncoding.IsBoundedToken(
                 alarm,
@@ -1386,7 +1521,12 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
             processMetrics.HarnessCpuTicks,
             processMetrics.HarnessPeakRssBytes,
             Interlocked.Read(ref _monitorCpuTicks),
-            Interlocked.Read(ref _monitorAllocatedBytes));
+            Interlocked.Read(ref _monitorAllocatedBytes))
+        {
+            CurrentContextIdentities = _prevalidationScope is null ? null : currentCount,
+            CurrentContextRootedIdentities = _prevalidationScope is null ? null : currentRootedCount,
+            RetainedHistoryBytes = _prevalidationScope is null ? null : retainedHistoryBytes,
+        };
         var identityEvidence = _includeIdentityEvidence
             ? observations.Select(static pair => new MonitoredObservedIdentityEvidence(
                     pair.Key.Value,
@@ -1443,12 +1583,8 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
     {
         try
         {
-            while (true)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                await SweepAndWriteAsync(cancellationToken, observationKind: "periodic").ConfigureAwait(false);
-                await Task.Delay(PollInterval, cancellationToken).ConfigureAwait(false);
-            }
+            await RunPeriodicLoopAsync(token => SweepAndWriteAsync(token, observationKind: "periodic"),
+                Task.Delay, cancellationToken).ConfigureAwait(false);
         }
         catch (DurableStorageExperimentException exception)
         {
@@ -1456,6 +1592,17 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
             {
                 MarkIncomplete(exception.Code);
             }
+        }
+    }
+
+    internal static async Task RunPeriodicLoopAsync(Func<CancellationToken, Task> observe,
+        Func<TimeSpan, CancellationToken, Task> delay, CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await observe(cancellationToken).ConfigureAwait(false);
+            await delay(PollInterval, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -1559,7 +1706,35 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
                 var deleted = target.EndsWith(" (deleted)", StringComparison.Ordinal);
                 var normalizedTarget = deleted ? target[..^" (deleted)".Length] : target;
                 var role = ClassifyPath(normalizedTarget);
-                if (!writable && IsReadOnlyDependency(normalizedTarget))
+                var descriptorFixture = false;
+                if (_prevalidationScope?.DescriptorFixtures?.TryGetValue(native.Identity, out var fixture) == true
+                    && fixture.Owner == tracked.Identity && fixture.Target == target
+                    && fixture.Length == native.Length && native.LinkCount == 0 && deleted)
+                {
+                    role = "workspace";
+                    descriptorFixture = true;
+                }
+                // The coordinator can classify creation itself without waiting for the child's
+                // evidence file. This is the fixed geometry owner/name/size tuple, not a native
+                // temp exemption; the child's proof also preserves the pinned inode identities.
+                if (_geometryFixtureOwner == tracked.Identity
+                    && PrevalidationGeometry.IsDeclaredDescriptorTarget(target)
+                    && native.LinkCount == 0 && native.Length == 512 && deleted)
+                {
+                    role = "workspace";
+                    descriptorFixture = true;
+                }
+                if (_prevalidationScope is not null && role == "completed-context"
+                    && (!observations.TryGetValue(native.Identity, out var prior) || !prior.SeenInRoot))
+                {
+                    role = null;
+                }
+                if (_prevalidationScope is not null && role == "completed-context" && writable)
+                {
+                    errors.Add("WritableCompletedContextDescriptor");
+                }
+                if (!writable && IsReadOnlyDependency(normalizedTarget)
+                    && (_prevalidationScope is null || !deleted && native.LinkCount == 1))
                 {
                     continue;
                 }
@@ -1592,6 +1767,10 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
                         errors.Add(classification.FailureCode ?? "RuntimeOnlyClassificationFailed");
                     }
                 }
+                if (_prevalidationScope is not null && (native.LinkCount == 0 || deleted) && !descriptorFixture)
+                {
+                    errors.Add("UnclassifiedUnlinkedDescriptor");
+                }
                 AddObservation(
                     observations,
                     native,
@@ -1599,7 +1778,8 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
                     charged: true,
                     isUnlinked: native.LinkCount == 0 || deleted,
                     seenInRoot: false,
-                    seenInDescriptor: true);
+                    seenInDescriptor: true,
+                    inRetainedHistory: IsRetainedHistoryPath(normalizedTarget));
             }
             catch (Exception exception) when (exception is IOException
                 or UnauthorizedAccessException
@@ -1650,7 +1830,8 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
                 charged,
                 isUnlinked,
                 seenInRoot: true,
-                seenInDescriptor: false);
+                seenInDescriptor: false,
+                inRetainedHistory: IsRetainedHistoryPath(path));
         }
         catch (Exception exception) when (exception is IOException
             or UnauthorizedAccessException
@@ -1669,7 +1850,8 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
         bool charged,
         bool isUnlinked,
         bool seenInRoot,
-        bool seenInDescriptor)
+        bool seenInDescriptor,
+        bool inRetainedHistory = false)
     {
         if (observations.TryGetValue(native.Identity, out var existing))
         {
@@ -1679,6 +1861,7 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
             existing.Role = PreferRole(existing.Role, role);
             existing.SeenInRoot |= seenInRoot;
             existing.SeenInDescriptor |= seenInDescriptor;
+            existing.InRetainedHistory |= inRetainedHistory;
             return;
         }
         observations.Add(
@@ -1689,16 +1872,20 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
                 charged,
                 isUnlinked,
                 seenInRoot,
-                seenInDescriptor));
+                seenInDescriptor)
+            {
+                InRetainedHistory = inRetainedHistory,
+            });
     }
 
     private ProcessMetricTotals ObserveProcessMetrics(
         IReadOnlyList<TrackedProcess> tracked,
         List<string> errors)
     {
-        long diagnosticCpu = 0;
-        long targetCpu = 0;
-        long harnessCpu = 0;
+        long diagnosticCpu = _retiredCpuTicks[(int)MonitoredProcessRole.Diagnostic];
+        long targetCpu = _retiredCpuTicks[(int)MonitoredProcessRole.Target];
+        long harnessCpu = _retiredCpuTicks[(int)MonitoredProcessRole.Harness];
+        long harnessRss = 0;
         foreach (var item in tracked)
         {
             if (!LinuxProcessIdentity.Matches(item.Identity))
@@ -1709,25 +1896,27 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
             {
                 using var process = Process.GetProcessById(item.Identity.ProcessId);
                 process.Refresh();
+                item.LastCpuTicks = Math.Max(item.LastCpuTicks, process.TotalProcessorTime.Ticks - item.InitialCpuTicks);
                 switch (item.Identity.Role)
                 {
                     case MonitoredProcessRole.Diagnostic:
                         diagnosticCpu = checked(
                             diagnosticCpu
-                            + Math.Max(0, process.TotalProcessorTime.Ticks - item.InitialCpuTicks));
+                            + item.LastCpuTicks);
                         _diagnosticPeakRss = Math.Max(_diagnosticPeakRss, process.WorkingSet64);
                         break;
                     case MonitoredProcessRole.Target:
                         targetCpu = checked(
                             targetCpu
-                            + Math.Max(0, process.TotalProcessorTime.Ticks - item.InitialCpuTicks));
+                            + item.LastCpuTicks);
                         _targetPeakRss = Math.Max(_targetPeakRss, process.WorkingSet64);
                         break;
                     case MonitoredProcessRole.Harness:
                         harnessCpu = checked(
                             harnessCpu
-                            + Math.Max(0, process.TotalProcessorTime.Ticks - item.InitialCpuTicks));
-                        _harnessPeakRss = Math.Max(_harnessPeakRss, process.WorkingSet64);
+                            + item.LastCpuTicks);
+                        harnessRss = checked(harnessRss + process.WorkingSet64);
+                        _harnessPeakRss = Math.Max(_harnessPeakRss, harnessRss);
                         break;
                 }
             }
@@ -1781,6 +1970,10 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
         return null;
     }
 
+    private bool IsRetainedHistoryPath(string path)
+        => _prevalidationScope?.CurrentHistoryRoot is { } root
+            && Path.IsPathRooted(path) && MonitoredPathRules.IsContained(root, path);
+
     private string? ClassifyPath(string path)
     {
         if (!Path.IsPathRooted(path))
@@ -1788,6 +1981,11 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
             return null;
         }
         var full = Path.GetFullPath(path);
+        if (_prevalidationScope?.CompletedRoots.Any(root =>
+                MonitoredPathRules.IsContained(root, full)) == true)
+        {
+            return "completed-context";
+        }
         var containingRoot = _attribution.Roots
             .Where(root => MonitoredPathRules.IsContained(root.Path, full))
             .OrderByDescending(static root => root.Path.Length)
@@ -1882,6 +2080,7 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
     {
         internal MonitoredProcessIdentity Identity { get; } = identity;
         internal long InitialCpuTicks { get; } = initialCpuTicks;
+        internal long LastCpuTicks { get; set; }
         internal bool IntentionalTermination { get; set; }
     }
 
@@ -1899,6 +2098,7 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
         internal bool IsUnlinked { get; set; } = isUnlinked;
         internal bool SeenInRoot { get; set; } = seenInRoot;
         internal bool SeenInDescriptor { get; set; } = seenInDescriptor;
+        internal bool InRetainedHistory { get; set; }
     }
 
     private sealed record ProcessMetricTotals(

@@ -598,7 +598,7 @@ internal sealed record MonitoredRunManifest(
     string HistoryRoot,
     string WorkspaceRoot,
     string OutputRoot,
-    string AuthorizationReceipt);
+    string AuthorizationReceipt) : IMonitoredExecutionManifest;
 
 internal sealed record MonitoredAuthorizationReceipt(
     string Schema,
@@ -732,9 +732,9 @@ internal sealed record MonitoredValidatedManifest(
 
 internal static class MonitoredRunManifestValidator
 {
-    private static readonly string[] PackageDirectoryNames = ["package", "package-staging"];
-    private static readonly string[] RecoveryDirectoryNames = ["recovery", "recovery-staging"];
-    private static readonly string[] RuntimeOnlyDescriptorTargets = ["/dev/null", "/dev/urandom"];
+    internal static readonly string[] PackageDirectoryNames = ["package", "package-staging"];
+    internal static readonly string[] RecoveryDirectoryNames = ["recovery", "recovery-staging"];
+    internal static readonly string[] RuntimeOnlyDescriptorTargets = ["/dev/null", "/dev/urandom"];
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -813,7 +813,8 @@ internal static class MonitoredRunManifestValidator
         var component = DeserializeBounded<MonitoredComponentEvidence>(componentPath);
         ValidateAttribution(manifest, attribution);
         ValidateEncoding(encoding);
-        ValidateComponentEvidence(manifest, encoding, component);
+        ValidateComponentEvidence(manifest.SourceCommits, manifest.AttributionMapSha256, encoding, component,
+            MonitoredAdmissionStage.ScoredCampaign);
 
         var evidenceRoot = MonitoredPathRules.ResolveAbsoluteDirectory(manifest.EvidenceRoot, mustExist: true);
         var evidenceMode = File.GetUnixFileMode(evidenceRoot);
@@ -923,7 +924,7 @@ internal static class MonitoredRunManifestValidator
         }
     }
 
-    private static void ValidateCommits(MonitoredSourceCommits commits)
+    internal static void ValidateCommits(MonitoredSourceCommits commits)
     {
         foreach (var (name, value) in new[]
         {
@@ -938,7 +939,7 @@ internal static class MonitoredRunManifestValidator
         }
     }
 
-    private static void ValidateBinary(MonitoredBinaryIdentity identity, string name)
+    internal static void ValidateBinary(MonitoredBinaryIdentity identity, string name)
     {
         ArgumentNullException.ThrowIfNull(identity);
         var path = MonitoredPathRules.ResolveExistingFile(identity.Path);
@@ -1058,7 +1059,7 @@ internal static class MonitoredRunManifestValidator
                     StringComparison.Ordinal));
     }
 
-    private static void ValidateClock(MonitoredClockDefinition clock)
+    internal static void ValidateClock(MonitoredClockDefinition clock)
     {
         if (!string.Equals(clock.MonotonicClock, "System.Diagnostics.Stopwatch", StringComparison.Ordinal)
             || clock.StopwatchFrequency != System.Diagnostics.Stopwatch.Frequency
@@ -1200,7 +1201,7 @@ internal static class MonitoredRunManifestValidator
         ValidateBinary(runtimeProof.RuntimeNativeBinary, "RuntimeNativeBinary");
     }
 
-    private static void ValidateEncoding(MonitoredEvidenceEncoding encoding)
+    internal static void ValidateEncoding(MonitoredEvidenceEncoding encoding)
     {
         if (!string.Equals(
                 encoding.Schema,
@@ -1229,11 +1230,17 @@ internal static class MonitoredRunManifestValidator
         }
     }
 
-    private static void ValidateComponentEvidence(
-        MonitoredRunManifest manifest,
+    internal static void ValidateComponentEvidence(
+        MonitoredSourceCommits commits,
+        string attributionMapSha256,
         MonitoredEvidenceEncoding encoding,
-        MonitoredComponentEvidence evidence)
+        MonitoredComponentEvidence evidence,
+        MonitoredAdmissionStage stage)
     {
+        if (stage is not (MonitoredAdmissionStage.PrevalidationComponentProof or MonitoredAdmissionStage.ScoredCampaign))
+        {
+            throw Error("UnsupportedAdmissionStage", "Component evidence requires an explicit supported admission stage.");
+        }
         if (!string.Equals(
                 evidence.Schema,
                 MonitoredProtocolVersions.ComponentEvidenceSchema,
@@ -1241,15 +1248,15 @@ internal static class MonitoredRunManifestValidator
             || !string.Equals(evidence.Platform, "Linux", StringComparison.Ordinal)
             || !string.Equals(
                 evidence.RunnerCommit,
-                manifest.SourceCommits.RunnerCommit,
+                commits.RunnerCommit,
                 StringComparison.Ordinal)
             || !string.Equals(
                 evidence.MonitorCommit,
-                manifest.SourceCommits.MonitorCommit,
+                commits.MonitorCommit,
                 StringComparison.Ordinal)
             || !string.Equals(
                 evidence.AttributionMapSha256,
-                manifest.AttributionMapSha256,
+                attributionMapSha256,
                 StringComparison.Ordinal)
             || !string.Equals(
                 evidence.SummarySchema,
@@ -1271,7 +1278,8 @@ internal static class MonitoredRunManifestValidator
             || evidence.RepresentativeMaximumDescriptorOnlyIdentitiesObserved < 0
             || evidence.RepresentativeMaximumDescriptorOnlyIdentitiesObserved
                 > evidence.MaximumDescriptorOnlyIdentitiesEnforced
-            || !evidence.DescriptorOnlyCampaignFeasibilityEstablished
+            || (stage == MonitoredAdmissionStage.ScoredCampaign
+                && !evidence.DescriptorOnlyCampaignFeasibilityEstablished)
             || evidence.MaximumSummaryUtf8BytesObserved is < 1 or > 1_024
             || evidence.WorstCaseSummaryUtf8Bytes
                 < evidence.MaximumSummaryUtf8BytesObserved

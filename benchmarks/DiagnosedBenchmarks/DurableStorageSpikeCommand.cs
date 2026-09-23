@@ -15,6 +15,10 @@ internal static class DurableStorageSpikeCommand
         "monitored-run",
         "monitored-worker",
         "monitored-component-evidence",
+        "prevalidation-plan",
+        "prevalidation-validate",
+        "prevalidation-run",
+        "prevalidation-inspect",
     ];
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
@@ -68,6 +72,41 @@ internal static class DurableStorageSpikeCommand
                     return RunMonitoredWorker(args[1..]);
                 case "monitored-component-evidence":
                     return CreateMonitorComponentEvidence(args[1..]);
+                case "prevalidation-plan":
+                    Console.WriteLine(JsonSerializer.Serialize(new
+                    {
+                        schema = PrevalidationProtocol.PlanSchema,
+                        scope = PrevalidationProtocol.Scope,
+                        addendumCommit = PrevalidationProtocol.AddendumCommit,
+                        addendumSha256 = PrevalidationProtocol.AddendumSha256,
+                        protocolSha256 = MonitoredProtocolVersions.SuccessorProtocolSha256,
+                        historicalReportSha256 = PrevalidationProtocol.HistoricalReportSha256,
+                        probes = PrevalidationProtocol.Plan(),
+                        bounds = PrevalidationProtocol.Bounds(),
+                        derivedSuiteIdentityBound = PrevalidationLayout.DeriveSuiteIdentityBound(),
+                        runtimeEnvironmentSha256 = PrevalidationProtocol.RuntimeEnvironmentHash(),
+                        summarySchema = PrevalidationProtocol.SummarySchema,
+                        contextSummaryFieldMapSha256 = PrevalidationProtocol.ContextSummaryFieldMapSha256,
+                    }, JsonOptions));
+                    return 0;
+                case "prevalidation-validate":
+                case "prevalidation-run":
+                    return RunPrevalidation(command, args[1..]);
+                case "prevalidation-worker":
+                    return MonitoredWorkerExecutor.RunAsync(RequireOption(args, "--descriptor"), prevalidation: true)
+                        .GetAwaiter().GetResult();
+                case "prevalidation-harness":
+                    return PrevalidationExecutor.RunHarnessAsync(RequireOption(args, "--descriptor"))
+                        .GetAwaiter().GetResult();
+                case "prevalidation-admission":
+                    Console.WriteLine(JsonSerializer.Serialize(PrevalidationProtocol.Validate(
+                        RequireOption(args, "--repository-root"), RequireOption(args, "--manifest")),
+                        PrevalidationProtocol.Json));
+                    return 0;
+                case "prevalidation-inspect":
+                    Console.WriteLine(JsonSerializer.Serialize(PrevalidationReportValidation.Validate(
+                        RequireOption(args, "--manifest")), PrevalidationProtocol.Json));
+                    return 0;
                 default:
                     Console.Error.WriteLine($"Unknown durable-capture-spike command '{command}'.");
                     PrintHelp(Console.Error);
@@ -85,6 +124,31 @@ internal static class DurableStorageSpikeCommand
             Console.Error.WriteLine($"InvalidManifestJson: {exception.Message}");
             return 2;
         }
+    }
+
+    private static string RequireOption(string[] args, string name)
+        => ReadOption(args, name) ?? throw new DurableStorageExperimentException(
+            "MissingArgument", $"The prevalidation route requires {name}.");
+
+    private static int RunPrevalidation(string command, string[] args)
+    {
+        var root = RequireOption(args, "--repository-root");
+        var manifest = RequireOption(args, "--manifest");
+        if (command == "prevalidation-run")
+        {
+            return PrevalidationExecutor.RunAsync(root, manifest, CancellationToken.None).GetAwaiter().GetResult();
+        }
+        var validated = PrevalidationAdmission.ValidateAsync(root, manifest, CancellationToken.None).GetAwaiter().GetResult();
+        Console.WriteLine(JsonSerializer.Serialize(new
+        {
+            scope = PrevalidationProtocol.Scope,
+            validated.ManifestSha256,
+            stage = "prevalidation-component-proof-and-authorization",
+            campaignAdmissionGranted = false,
+            entries = 8,
+            derivedSuiteIdentityBound = PrevalidationLayout.DeriveSuiteIdentityBound(),
+        }, JsonOptions));
+        return 0;
     }
 
     private static int CreateMonitoredPlan(string[] args)
@@ -251,7 +315,12 @@ internal static class DurableStorageSpikeCommand
         writer.WriteLine("  monitored-run --manifest <path> --repository-root <path>");
         writer.WriteLine("  monitored-worker --descriptor <path>");
         writer.WriteLine("  monitored-component-evidence --output <path> --runner-commit <sha> --monitor-commit <sha> --attribution <path>");
+        writer.WriteLine("  prevalidation-plan");
+        writer.WriteLine("  prevalidation-validate --manifest <path> --repository-root <path>");
+        writer.WriteLine("  prevalidation-run --manifest <path> --repository-root <path>");
+        writer.WriteLine("  prevalidation-inspect --manifest <path>");
         writer.WriteLine();
         writer.WriteLine("Revision-3 execution remains closed. Monitored revision-4 execution requires a fully resolved manifest and immutable parent authorization receipt.");
+        writer.WriteLine("Prevalidation is a separate eight-entry, unscored authorization. It never grants campaign admission.");
     }
 }

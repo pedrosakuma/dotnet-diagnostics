@@ -362,10 +362,15 @@ internal static class MonitoredWorkerExecutor
         RespectRequiredConstructorParameters = true,
     };
 
-    internal static async Task<int> RunAsync(string descriptorPath)
+    internal static async Task<int> RunAsync(string descriptorPath, bool prevalidation = false)
     {
         try
         {
+            if (prevalidation)
+            {
+                PrevalidationProtocol.Require(await Console.In.ReadLineAsync().ConfigureAwait(false)
+                    == "prevalidation-start", "PrevalidationWorkerStartRelease");
+            }
             var resolvedDescriptorPath = MonitoredPathRules.ResolveExistingFile(descriptorPath);
             var descriptor = JsonSerializer.Deserialize<MonitoredWorkerDescriptor>(
                 MonitoredFile.ReadBounded(
@@ -373,34 +378,43 @@ internal static class MonitoredWorkerExecutor
                     1_048_576),
                 JsonOptions)
                 ?? throw Error("InvalidWorkerDescriptor", "The worker descriptor was empty.");
-            ValidateDescriptor(descriptor);
-            var validated = MonitoredRunManifestValidator.Validate(
-                descriptor.RepositoryRoot,
-                descriptor.ManifestPath,
-                requireAuthorization: true);
-            if (!string.Equals(
-                    validated.ManifestSha256,
-                    descriptor.ManifestSha256,
-                    StringComparison.Ordinal))
+            ValidateDescriptor(descriptor, prevalidation);
+            IMonitoredExecutionManifest settings;
+            if (prevalidation)
             {
-                throw Error(
-                    "WorkerManifestHashMismatch",
-                    "The worker descriptor does not identify the validated resolved manifest.");
+                settings = PrevalidationWorkerAdmission.Validate(descriptor, resolvedDescriptorPath);
             }
-            var expected = validated.Manifest.Plan.Executions.SingleOrDefault(
-                execution => execution.Ordinal == descriptor.Execution.Ordinal)
-                ?? throw Error("UnknownWorkerExecution", "The worker execution ordinal is not in the frozen plan.");
-            if (expected != descriptor.Execution)
+            else
             {
-                throw Error(
-                    "WorkerExecutionMismatch",
-                    "The worker descriptor changed a frozen execution entry.");
+                var validated = MonitoredRunManifestValidator.Validate(
+                    descriptor.RepositoryRoot,
+                    descriptor.ManifestPath,
+                    requireAuthorization: true);
+                if (!string.Equals(
+                        validated.ManifestSha256,
+                        descriptor.ManifestSha256,
+                        StringComparison.Ordinal))
+                {
+                    throw Error(
+                        "WorkerManifestHashMismatch",
+                        "The worker descriptor does not identify the validated resolved manifest.");
+                }
+                var expected = validated.Manifest.Plan.Executions.SingleOrDefault(
+                    execution => execution.Ordinal == descriptor.Execution.Ordinal)
+                    ?? throw Error("UnknownWorkerExecution", "The worker execution ordinal is not in the frozen plan.");
+                if (expected != descriptor.Execution)
+                {
+                    throw Error(
+                        "WorkerExecutionMismatch",
+                        "The worker descriptor changed a frozen execution entry.");
+                }
+                ValidateDescriptorOwnership(
+                    descriptor,
+                    resolvedDescriptorPath,
+                    validated,
+                    expected);
+                settings = validated.Manifest;
             }
-            ValidateDescriptorOwnership(
-                descriptor,
-                resolvedDescriptorPath,
-                validated,
-                expected);
 
             using var self = Process.GetCurrentProcess();
             var identity = MonitoredProcessIdentity.Capture(self, MonitoredProcessRole.Diagnostic);
@@ -413,8 +427,8 @@ internal static class MonitoredWorkerExecutor
             var startedCpu = self.TotalProcessorTime;
             var result = descriptor.Mode switch
             {
-                MonitoredWorkerMode.Execute => await ExecuteAsync(descriptor, validated.Manifest).ConfigureAwait(false),
-                MonitoredWorkerMode.Recover => await RecoverAsync(descriptor, validated.Manifest).ConfigureAwait(false),
+                MonitoredWorkerMode.Execute => await ExecuteAsync(descriptor, settings).ConfigureAwait(false),
+                MonitoredWorkerMode.Recover => await RecoverAsync(descriptor, settings).ConfigureAwait(false),
                 _ => throw Error("UnsupportedWorkerMode", "The worker mode is unsupported."),
             };
             self.Refresh();
@@ -451,7 +465,7 @@ internal static class MonitoredWorkerExecutor
 
     private static async Task<MonitoredWorkerResult> ExecuteAsync(
         MonitoredWorkerDescriptor descriptor,
-        MonitoredRunManifest manifest)
+        IMonitoredExecutionManifest manifest)
     {
         Directory.CreateDirectory(descriptor.ExecutionRoot);
         return descriptor.Execution.Candidate switch
@@ -538,7 +552,7 @@ internal static class MonitoredWorkerExecutor
 
     private static async Task<MonitoredWorkerResult> ExecuteCandidateAsync(
         MonitoredWorkerDescriptor descriptor,
-        MonitoredRunManifest manifest,
+        IMonitoredExecutionManifest manifest,
         IDurableCounterStorageAdapterFactory factory)
     {
         if (string.Equals(descriptor.Execution.CaseId, "F5", StringComparison.Ordinal))
@@ -876,7 +890,7 @@ internal static class MonitoredWorkerExecutor
 
     private static async Task<MonitoredWorkerResult> ExecuteLiveAsync(
         MonitoredWorkerDescriptor descriptor,
-        MonitoredRunManifest manifest,
+        IMonitoredExecutionManifest manifest,
         IDurableCounterStorageAdapterFactory? factory)
     {
         if (descriptor.Execution.CaseId is not ("P1" or "L1" or "L2" or "L3"))
@@ -885,6 +899,7 @@ internal static class MonitoredWorkerExecutor
         }
 
         using var startupDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var prevalidation = descriptor.Schema == PrevalidationProtocol.WorkerSchema;
         var sample = await LiveSampleProcess.StartPublishedAsync(
             "CoreClrSample",
             new LiveSampleOptions
@@ -894,6 +909,14 @@ internal static class MonitoredWorkerExecutor
                 ReadinessPath = "/",
                 DiagnosticTimeout = TimeSpan.FromSeconds(10),
                 HttpTimeout = TimeSpan.FromSeconds(10),
+                ProcessStarted = prevalidation ? async process =>
+                {
+                    var started = MonitoredProcessIdentity.Capture(process, MonitoredProcessRole.Target);
+                    MonitoredWorkerEventWriter.Write(new MonitoredWorkerEvent("process",
+                        ProcessId: started.ProcessId, ProcessStartTimeTicks: started.LinuxStartTimeTicks,
+                        ProcessRole: "target"));
+                    await MonitoredWorkerControl.ObserveBoundaryAsync("live-target-startup", true).ConfigureAwait(false);
+                } : null,
             },
             startupDeadline.Token).ConfigureAwait(false);
         var sampleIdentity = MonitoredProcessIdentity.Capture(sample.Process, MonitoredProcessRole.Target);
@@ -909,11 +932,14 @@ internal static class MonitoredWorkerExecutor
                     "SampleBinaryIdentityMismatch",
                     "The live worker launched a sample binary other than the manifest-pinned binary.");
             }
-            MonitoredWorkerEventWriter.Write(new MonitoredWorkerEvent(
-                "process",
-                ProcessId: sampleIdentity.ProcessId,
-                ProcessStartTimeTicks: sampleIdentity.LinuxStartTimeTicks,
-                ProcessRole: "target"));
+            if (!prevalidation)
+            {
+                MonitoredWorkerEventWriter.Write(new MonitoredWorkerEvent(
+                    "process",
+                    ProcessId: sampleIdentity.ProcessId,
+                    ProcessStartTimeTicks: sampleIdentity.LinuxStartTimeTicks,
+                    ProcessRole: "target"));
+            }
             targetReported = true;
 
             if (factory is not null)
@@ -1101,7 +1127,7 @@ internal static class MonitoredWorkerExecutor
 
     private static async Task<MonitoredWorkerResult> RecoverAsync(
         MonitoredWorkerDescriptor descriptor,
-        MonitoredRunManifest manifest)
+        IMonitoredExecutionManifest manifest)
     {
         if (descriptor.Execution.CaseId is not ("F2" or "F3" or "F4")
             || descriptor.Execution.Candidate is not ("A" or "B")
@@ -1734,11 +1760,11 @@ internal static class MonitoredWorkerExecutor
         return "CandidateHardGateFailed";
     }
 
-    private static void ValidateDescriptor(MonitoredWorkerDescriptor descriptor)
+    private static void ValidateDescriptor(MonitoredWorkerDescriptor descriptor, bool prevalidation)
     {
         if (!string.Equals(
                 descriptor.Schema,
-                MonitoredProtocolVersions.WorkerDescriptorSchema,
+                prevalidation ? PrevalidationProtocol.WorkerSchema : MonitoredProtocolVersions.WorkerDescriptorSchema,
                 StringComparison.Ordinal)
             || !MonitoredFile.IsSha256(descriptor.ManifestSha256)
             || !Path.IsPathRooted(descriptor.RepositoryRoot)
@@ -1764,6 +1790,17 @@ internal static class MonitoredWorkerExecutor
         MonitoredWorkerDescriptor descriptor,
         string descriptorPath,
         MonitoredValidatedManifest validated,
+        MonitoredExecutionSpec execution)
+    {
+        ValidateDescriptorPaths(descriptor, descriptorPath,
+            MonitoredExecutionContext.FromCampaign(validated), execution);
+        ValidateReceipts(validated, execution, descriptor.ExecutionRoot);
+    }
+
+    internal static void ValidateDescriptorPaths(
+        MonitoredWorkerDescriptor descriptor,
+        string descriptorPath,
+        MonitoredExecutionContext validated,
         MonitoredExecutionSpec execution)
     {
         EnsureReadOnly(descriptorPath, "WorkerDescriptorMutable");
@@ -1803,7 +1840,6 @@ internal static class MonitoredWorkerExecutor
                 "Worker paths must exactly match the harness-owned execution, workspace, and history roots.");
         }
 
-        ValidateReceipts(validated, execution, expectedExecutionRoot);
         if (descriptor.Mode == MonitoredWorkerMode.Execute)
         {
             if (descriptor.SourcePackageRoot is not null
@@ -2089,7 +2125,7 @@ internal static class MonitoredPackagePublisher
 
     internal static async Task<MonitoredPackagePublishResult> PublishAsync(
         MonitoredWorkerDescriptor descriptor,
-        MonitoredRunManifest runManifest,
+        IMonitoredExecutionManifest runManifest,
         IDurableCounterStorageAdapterFactory factory,
         DurableStoragePreSealResult preSeal,
         DurableCounterAccounting accounting,
@@ -2108,7 +2144,7 @@ internal static class MonitoredPackagePublisher
             descriptor.ArtifactId,
             DateTimeOffset.UtcNow,
             factory.Identity,
-            runManifest.Plan.ProtocolJsonSha256,
+            MonitoredProtocolVersions.SuccessorProtocolSha256,
             runManifest.FixtureManifestSha256,
             runManifest.SourceCommits.PipelineCommit,
             preSeal.CanonicalMembers.Concat(preSeal.QueryMembers).ToArray(),
@@ -2165,7 +2201,7 @@ internal static class MonitoredPackagePublisher
 
     internal static async Task<MonitoredPackagePublishResult> PublishRecoveredAsync(
         MonitoredWorkerDescriptor descriptor,
-        MonitoredRunManifest runManifest,
+        IMonitoredExecutionManifest runManifest,
         IDurableCounterStorageAdapterFactory factory,
         DurableStorageRecoveryResult recovery,
         Stopwatch finalizationDeadline)
@@ -2177,7 +2213,7 @@ internal static class MonitoredPackagePublisher
             descriptor.ArtifactId,
             DateTimeOffset.UtcNow,
             factory.Identity,
-            runManifest.Plan.ProtocolJsonSha256,
+            MonitoredProtocolVersions.SuccessorProtocolSha256,
             runManifest.FixtureManifestSha256,
             runManifest.SourceCommits.PipelineCommit,
             recovery.RecoveredMembers,

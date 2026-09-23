@@ -100,14 +100,14 @@ internal sealed record MonitoredCampaignSeal(
 
 internal interface IMonitoredWorkerLauncher
 {
-    Process Start(MonitoredRunManifest manifest, string descriptorPath);
+    Process Start(IMonitoredExecutionManifest manifest, string descriptorPath);
 }
 
 internal sealed class MonitoredToolWorkerLauncher : IMonitoredWorkerLauncher
 {
     internal static MonitoredToolWorkerLauncher Instance { get; } = new();
 
-    public Process Start(MonitoredRunManifest manifest, string descriptorPath)
+    public Process Start(IMonitoredExecutionManifest manifest, string descriptorPath)
         => MonitoredCampaignRunner.StartToolWorker(manifest, descriptorPath);
 }
 
@@ -175,7 +175,7 @@ internal static class MonitoredCampaignRunner
                         ? remainingCampaign
                         : TimeSpan.FromSeconds(execution.MaximumSeconds));
                 outcome = await RunExecutionAsync(
-                    validated,
+                    MonitoredExecutionContext.FromCampaign(validated),
                     execution,
                     MonitoredToolWorkerLauncher.Instance,
                     TimeSpan.FromSeconds(execution.MaximumSeconds),
@@ -255,15 +255,15 @@ internal static class MonitoredCampaignRunner
         TimeSpan workerDeadline,
         CancellationToken cancellationToken)
         => RunExecutionAsync(
-            validated,
+            MonitoredExecutionContext.FromCampaign(validated),
             execution,
             launcher,
             workerDeadline,
             monitorHarnessProcess: false,
             cancellationToken: cancellationToken);
 
-    private static async Task<MonitoredCaseOutcome> RunExecutionAsync(
-        MonitoredValidatedManifest validated,
+    internal static async Task<MonitoredCaseOutcome> RunExecutionAsync(
+        MonitoredExecutionContext validated,
         MonitoredExecutionSpec execution,
         IMonitoredWorkerLauncher launcher,
         TimeSpan workerDeadline,
@@ -283,17 +283,20 @@ internal static class MonitoredCampaignRunner
         SetPrivateDirectory(historyRoot);
 
         var attemptReceiptPath = Path.Combine(outputRoot, "attempt-start.json");
-        MonitoredFile.WriteNewJson(
-            attemptReceiptPath,
-            new MonitoredAttemptReceipt(
-                "durable-monitored-attempt-start/1",
-                execution.Ordinal,
-                execution.CaseId,
-                execution.Candidate,
-                Attempt: 1,
-                DateTimeOffset.UtcNow,
-                validated.ManifestSha256));
-        MonitoredFile.MakeReadOnly(attemptReceiptPath);
+        if (validated.Prevalidation is null)
+        {
+            MonitoredFile.WriteNewJson(
+                attemptReceiptPath,
+                new MonitoredAttemptReceipt(
+                    "durable-monitored-attempt-start/1",
+                    execution.Ordinal,
+                    execution.CaseId,
+                    execution.Candidate,
+                    Attempt: 1,
+                    DateTimeOffset.UtcNow,
+                    validated.ManifestSha256));
+            MonitoredFile.MakeReadOnly(attemptReceiptPath);
+        }
 
         var descriptor = CreateDescriptor(
             validated,
@@ -311,10 +314,13 @@ internal static class MonitoredCampaignRunner
         MonitoredFile.WriteNewJson(descriptorPath, descriptor);
         MonitoredFile.MakeReadOnly(descriptorPath);
         var executionEvidenceBudget = new BoundedOutputBudget(
-            validated.Encoding.MaximumStdoutUtf8Bytes,
+            validated.Encoding.MaximumStdoutUtf8Bytes - (validated.Prevalidation is null ? 0
+                : PrevalidationMonitorControl.ReservedSummaryBytes + PrevalidationMonitorControl.ReservedControlBytes),
             validated.Encoding.MaximumSummaryRecordsPerExecution,
             MonitoredRunnerGeometry.MaximumBoundarySummariesPerExecution,
             MonitoredRunnerGeometry.MaximumWorkerControlRecordsPerExecution);
+        var stderrBudget = new BoundedOutputBudget(
+            validated.Encoding.MaximumStderrUtf8Bytes - (validated.Prevalidation is null ? 0 : 65_536));
 
         var first = await RunOwnedWorkerAsync(
             validated,
@@ -324,6 +330,7 @@ internal static class MonitoredCampaignRunner
             logPrefix: "worker",
             expectKillBarrier: execution.CaseId is "F2" or "F3" or "F4",
             executionEvidenceBudget,
+            stderrBudget,
             launcher,
             workerDeadline,
             monitorHarnessProcess,
@@ -362,6 +369,7 @@ internal static class MonitoredCampaignRunner
                 logPrefix: "recovery-worker",
                 expectKillBarrier: false,
                 executionEvidenceBudget,
+                stderrBudget,
                 launcher,
                 workerDeadline,
                 monitorHarnessProcess,
@@ -408,42 +416,54 @@ internal static class MonitoredCampaignRunner
                 checked(first.SummaryBytes + (ReferenceEquals(first, final) ? 0 : final.SummaryBytes)),
                 Math.Max(first.MaximumObservedIdentities, final.MaximumObservedIdentities),
                 Math.Max(first.MaximumObservedSweepBytes, final.MaximumObservedSweepBytes),
-                ReferenceEquals(first, final)
+                ReferenceEquals(first, final) || validated.Prevalidation is not null
                     ? [first.MonitorEvidencePath]
                     : [first.MonitorEvidencePath, final.MonitorEvidencePath],
                 workerResult));
     }
 
     private static async Task<OwnedWorkerRun> RunOwnedWorkerAsync(
-        MonitoredValidatedManifest validated,
+        MonitoredExecutionContext validated,
         MonitoredWorkerDescriptor descriptor,
         string descriptorPath,
         string outputRoot,
         string logPrefix,
         bool expectKillBarrier,
         BoundedOutputBudget combinedOutputBudget,
+        BoundedOutputBudget stderrBudget,
         IMonitoredWorkerLauncher launcher,
         TimeSpan workerDeadline,
         bool monitorHarnessProcess,
         CancellationToken cancellationToken)
     {
+        var monitorPath = validated.Prevalidation is null
+            ? Path.Combine(outputRoot, $"{logPrefix}-monitor.jsonl")
+            : Path.Combine(Path.GetDirectoryName(validated.Prevalidation.OwnershipPath!)!, "coordinator-monitor.jsonl");
+        await using var monitor = new MonitoredExecutionMonitor(validated, monitorPath, combinedOutputBudget);
         var process = launcher.Start(validated.Manifest, descriptorPath);
         var workerIdentity = MonitoredProcessIdentity.Capture(process, MonitoredProcessRole.Diagnostic);
-        var monitorPath = Path.Combine(outputRoot, $"{logPrefix}-monitor.jsonl");
-        await using var monitor = new MonitoredStorageMonitor(
-            validated.Attribution,
-            validated.Encoding,
-            monitorPath,
-            combinedOutputBudget,
-            validated.ComponentEvidence.DerivedMaximumSimultaneousIdentitiesEnforced);
-        if (monitorHarnessProcess)
+        if (monitorHarnessProcess && validated.Prevalidation is null)
         {
             var harnessIdentity = MonitoredProcessIdentity.Capture(
                 Process.GetCurrentProcess(),
                 MonitoredProcessRole.Harness);
             monitor.AddProcess(harnessIdentity);
         }
-        monitor.AddProcess(workerIdentity);
+        try
+        {
+            monitor.AddProcess(workerIdentity);
+            if (validated.Prevalidation is not null)
+            {
+                await process.StandardInput.WriteLineAsync("prevalidation-start").ConfigureAwait(false);
+                await process.StandardInput.FlushAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch
+        {
+            LinuxPrevalidationProcessOperations.Instance.Signal(workerIdentity);
+            process.Dispose();
+            throw;
+        }
         _ = monitor.StartAsync();
 
         var events = Channel.CreateBounded<MonitoredWorkerEvent>(new BoundedChannelOptions(256)
@@ -465,6 +485,7 @@ internal static class MonitoredCampaignRunner
             process.StandardError.BaseStream,
             stderrPath,
             validated.Encoding.MaximumStderrUtf8Bytes,
+            stderrBudget,
             cancellationToken);
         var exitTask = process.WaitForExitAsync(cancellationToken);
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -664,11 +685,7 @@ internal static class MonitoredCampaignRunner
                             $"pre-kill-{workerEvent.Barrier}",
                             activeStorageStage: true,
                             deadline.Token).ConfigureAwait(false);
-                        await monitor.StopAsync().ConfigureAwait(false);
-                        monitor.MarkIntentionalTermination(workerIdentity);
-                        OwnedProcessTerminator.KillExact(process, workerIdentity);
-                        await process.WaitForExitAsync(deadline.Token).ConfigureAwait(false);
-                        monitor.ConfirmTerminatedAndRemove(workerIdentity);
+                        await monitor.KillOwnedAsync(process, workerIdentity, deadline.Token).ConfigureAwait(false);
                         var postKill = await monitor.ObserveBoundaryAsync(
                             "post-kill-quiescent-root-inventory",
                             activeStorageStage: false,
@@ -708,7 +725,7 @@ internal static class MonitoredCampaignRunner
             }
         }
         catch (OperationCanceledException) when (deadline.IsCancellationRequested
-            && !cancellationToken.IsCancellationRequested)
+            && !cancellationToken.IsCancellationRequested && validated.Prevalidation is null)
         {
             await monitor.StopAsync().ConfigureAwait(false);
             if (LinuxProcessIdentity.Matches(workerIdentity))
@@ -729,7 +746,7 @@ internal static class MonitoredCampaignRunner
         {
             events.Writer.TryComplete();
             await monitor.StopAsync().ConfigureAwait(false);
-            if (!process.HasExited && LinuxProcessIdentity.Matches(workerIdentity))
+            if (validated.Prevalidation is null && !process.HasExited && LinuxProcessIdentity.Matches(workerIdentity))
             {
                 monitor.MarkIntentionalTermination(workerIdentity);
                 OwnedProcessTerminator.KillExact(process, workerIdentity);
@@ -738,7 +755,7 @@ internal static class MonitoredCampaignRunner
                     CancellationToken.None).ConfigureAwait(false);
                 monitor.ConfirmTerminatedAndRemove(workerIdentity);
             }
-            foreach (var target in trackedTargets)
+            foreach (var target in validated.Prevalidation is null ? trackedTargets : [])
             {
                 if (!LinuxProcessIdentity.Matches(target))
                 {
@@ -752,8 +769,10 @@ internal static class MonitoredCampaignRunner
                     CancellationToken.None).ConfigureAwait(false);
                 monitor.ConfirmTerminatedAndRemove(target);
             }
-            await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false);
-            foreach (var path in new[] { monitorPath, stdoutPath, stderrPath })
+            await Task.WhenAll(stdoutTask, stderrTask).WaitAsync(
+                validated.Prevalidation is null ? CancellationToken.None : cancellationToken).ConfigureAwait(false);
+            foreach (var path in validated.Prevalidation is null
+                ? new[] { monitorPath, stdoutPath, stderrPath } : new[] { stdoutPath, stderrPath })
             {
                 if (File.Exists(path))
                 {
@@ -853,7 +872,7 @@ internal static class MonitoredCampaignRunner
             monitor.TerminalAlarm,
             monitor.SummaryRecords,
             monitor.SummaryBytes,
-            monitor.MaximumIdentityCount,
+            monitor.MaximumCurrentContextIdentities,
             monitor.MaximumObservedSweepBytes,
             Path.GetRelativePath(validated.CampaignRoot, monitorPath)
                 .Replace(Path.DirectorySeparatorChar, '/'),
@@ -868,7 +887,7 @@ internal static class MonitoredCampaignRunner
         Process worker,
         MonitoredProcessIdentity workerIdentity,
         List<MonitoredProcessIdentity> trackedTargets,
-        MonitoredStorageMonitor monitor,
+        MonitoredExecutionMonitor monitor,
         CancellationToken cancellationToken)
     {
         await monitor.StopAsync().ConfigureAwait(false);
@@ -916,7 +935,7 @@ internal static class MonitoredCampaignRunner
     }
 
     private static MonitoredWorkerDescriptor CreateDescriptor(
-        MonitoredValidatedManifest validated,
+        MonitoredExecutionContext validated,
         MonitoredExecutionSpec execution,
         string outputRoot,
         string packageWorkspace,
@@ -936,7 +955,9 @@ internal static class MonitoredCampaignRunner
             ? Path.Combine(packageHistory, "package")
             : packageHistory;
         return new MonitoredWorkerDescriptor(
-            MonitoredProtocolVersions.WorkerDescriptorSchema,
+            validated.Prevalidation is null
+                ? MonitoredProtocolVersions.WorkerDescriptorSchema
+                : PrevalidationProtocol.WorkerSchema,
             mode,
             validated.RepositoryRoot,
             validated.ManifestPath,
@@ -945,8 +966,12 @@ internal static class MonitoredCampaignRunner
             outputRoot,
             stagingRoot,
             packageRoot,
-            $"capture-{execution.Ordinal:D2}-{execution.Candidate.ToLowerInvariant()}-{suffix}",
-            $"artifact-{execution.Ordinal:D2}-{execution.Candidate.ToLowerInvariant()}-{suffix}",
+            validated.Prevalidation is null
+                ? $"capture-{execution.Ordinal:D2}-{execution.Candidate.ToLowerInvariant()}-{suffix}"
+                : PrevalidationLayout.OwnedIdentity(Path.GetFileName(validated.CampaignRoot), execution, mode, "capture"),
+            validated.Prevalidation is null
+                ? $"artifact-{execution.Ordinal:D2}-{execution.Candidate.ToLowerInvariant()}-{suffix}"
+                : PrevalidationLayout.OwnedIdentity(Path.GetFileName(validated.CampaignRoot), execution, mode, "artifact"),
             sourcePackageRoot,
             sourceCaptureId,
             sourceArtifactId,
@@ -955,7 +980,7 @@ internal static class MonitoredCampaignRunner
     }
 
     internal static Process StartToolWorker(
-        MonitoredRunManifest manifest,
+        IMonitoredExecutionManifest manifest,
         string descriptorPath)
     {
         var startInfo = new ProcessStartInfo
@@ -970,10 +995,16 @@ internal static class MonitoredCampaignRunner
         };
         startInfo.ArgumentList.Add(manifest.ToolBinary.Path);
         startInfo.ArgumentList.Add("durable-capture-spike");
-        startInfo.ArgumentList.Add("monitored-worker");
+        startInfo.ArgumentList.Add(manifest is PrevalidationExecutionSettings
+            ? "prevalidation-worker" : "monitored-worker");
         startInfo.ArgumentList.Add("--descriptor");
         startInfo.ArgumentList.Add(descriptorPath);
         startInfo.Environment["DOTNET_NOLOGO"] = "1";
+        if (manifest is PrevalidationExecutionSettings)
+        {
+            startInfo.Environment["PATH"] = Path.GetDirectoryName(manifest.RuntimeBinary.Path)
+                + Path.PathSeparator + Environment.GetEnvironmentVariable("PATH");
+        }
         return Process.Start(startInfo)
             ?? throw Error("WorkerLaunchFailed", "The monitored diagnostic worker could not be launched.");
     }
@@ -1024,10 +1055,11 @@ internal static class MonitoredCampaignRunner
         output.Flush(flushToDisk: true);
     }
 
-    private static async Task CaptureRawAsync(
+    internal static async Task CaptureRawAsync(
         Stream input,
         string path,
         int maximumBytes,
+        BoundedOutputBudget combinedBudget,
         CancellationToken cancellationToken)
     {
         await using var output = new FileStream(
@@ -1049,6 +1081,15 @@ internal static class MonitoredCampaignRunner
             if (read > maximumBytes - total)
             {
                 throw Error("WorkerStderrLimit", "Worker stderr exceeded its bounded geometry.");
+            }
+            try
+            {
+                combinedBudget.Consume(read);
+            }
+            catch (DurableStorageExperimentException exception)
+                when (exception.Code == "CombinedOutputLimit")
+            {
+                throw Error("WorkerStderrLimit", "Combined source/recovery stderr exceeded its shared execution budget.");
             }
             await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
             total += read;
@@ -1154,8 +1195,14 @@ internal static class MonitoredCampaignRunner
         MonitoredValidatedManifest validated,
         MonitoredExecutionSpec execution,
         MonitoredCaseOutcome outcome)
+        => WriteOutcome(MonitoredExecutionContext.FromCampaign(validated), execution, outcome);
+
+    private static MonitoredCaseOutcome WriteOutcome(
+        MonitoredExecutionContext validated,
+        MonitoredExecutionSpec execution,
+        MonitoredCaseOutcome outcome)
     {
-        var path = OutcomePath(validated, execution.Ordinal);
+        var path = Path.Combine(validated.Manifest.OutputRoot, $"{execution.Ordinal:D2}-outcome.json");
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         MonitoredFile.WriteNewJson(path, outcome);
         MonitoredFile.MakeReadOnly(path);

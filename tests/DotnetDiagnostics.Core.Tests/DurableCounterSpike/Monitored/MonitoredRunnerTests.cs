@@ -19,6 +19,25 @@ public sealed class MonitoredRunnerTests : IDisposable
 
     public MonitoredRunnerTests() => Directory.CreateDirectory(_workspace);
 
+    [Fact]
+    public async Task SourceRecoveryStderrSharesExecutionBudgetAndReportsTheRightStream()
+    {
+        var budget = new BoundedOutputBudget(8);
+        using var source = new MemoryStream(new byte[5]);
+        using var recovery = new MemoryStream(new byte[3]);
+        await MonitoredCampaignRunner.CaptureRawAsync(
+            source, Path.Combine(_workspace, "source-stderr"), 8, budget, CancellationToken.None);
+        await MonitoredCampaignRunner.CaptureRawAsync(
+            recovery, Path.Combine(_workspace, "recovery-stderr"), 8, budget, CancellationToken.None);
+        budget.UsedBytes.Should().Be(8);
+        using var excess = new MemoryStream(new byte[1]);
+        Func<Task> capture = () => MonitoredCampaignRunner.CaptureRawAsync(
+            excess, Path.Combine(_workspace, "excess-stderr"), 8, budget, CancellationToken.None);
+        (await capture.Should().ThrowAsync<DurableStorageExperimentException>())
+            .Which.Code.Should().Be("WorkerStderrLimit");
+        budget.UsedBytes.Should().Be(8);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_workspace))
@@ -1192,6 +1211,710 @@ public sealed class MonitoredRunnerTests : IDisposable
         MonitoredDecisionEngine.LiveScreensPass("A", outcomes).Should().BeFalse();
     }
 
+    [Fact]
+    public void PrevalidationPlanIsSeparateFixedAndUnscored()
+    {
+        var plan = PrevalidationProtocol.Plan();
+        plan.Select(static item => item.Id).Should().Equal(
+            "PV-O1-A", "PV-O1-B", "PV-LIVE-E", "PV-LIVE-A", "PV-LIVE-B",
+            "PV-F3-A", "PV-F3-B", "PV-GEOMETRY");
+        plan.Select(static item => item.Ordinal).Should().Equal(Enumerable.Range(1, 8));
+        plan.Select(static item => item.FixtureSlots).Should().Equal(63, 63, 64, 63, 63, 63, 63, 64);
+        plan.Should().OnlyContain(static item => item.Execution.MaximumSeconds == 120
+            && item.Execution.MaximumAttempts == 1);
+        PrevalidationLayout.DeriveSuiteIdentityBound().Should().Be(2_506).And.BeLessThan(4_096);
+        MonitoredExecutionPlanner.Expand().Should().HaveCount(35);
+    }
+
+    [Fact]
+    public void PrevalidationCannotTurnComponentProofIntoCampaignReadiness()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+        var fixture = PrepareComponentExecution();
+        var evidence = fixture.ComponentEvidence with { DescriptorOnlyCampaignFeasibilityEstablished = false };
+        Action prevalidation = () => MonitoredRunManifestValidator.ValidateComponentEvidence(
+            fixture.Manifest.SourceCommits, fixture.Manifest.AttributionMapSha256, fixture.Encoding,
+            evidence, MonitoredAdmissionStage.PrevalidationComponentProof);
+        prevalidation.Should().NotThrow();
+        Action scored = () => MonitoredRunManifestValidator.ValidateComponentEvidence(
+            fixture.Manifest.SourceCommits, fixture.Manifest.AttributionMapSha256, fixture.Encoding,
+            evidence, MonitoredAdmissionStage.ScoredCampaign);
+        scored.Should().Throw<DurableStorageExperimentException>()
+            .Which.Code.Should().Be("MonitorComponentEvidenceInsufficient");
+        evidence.DescriptorOnlyCampaignFeasibilityEstablished.Should().BeFalse();
+        Action unsafeComponent = () => MonitoredRunManifestValidator.ValidateComponentEvidence(
+            fixture.Manifest.SourceCommits, fixture.Manifest.AttributionMapSha256, fixture.Encoding,
+            evidence with { SourceRecoverySharedCancellationObserved = false },
+            MonitoredAdmissionStage.PrevalidationComponentProof);
+        unsafeComponent.Should().Throw<DurableStorageExperimentException>();
+    }
+
+    [Theory]
+    [InlineData("order")]
+    [InlineData("scope")]
+    [InlineData("attempts")]
+    [InlineData("time")]
+    [InlineData("context")]
+    [InlineData("suite")]
+    [InlineData("addendum")]
+    [InlineData("schema")]
+    [InlineData("namespace")]
+    public void PrevalidationRejectsContractDrift(string field)
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+        var manifest = PrevalidationContractFixture();
+        PrevalidationProtocol.ValidateShape(manifest);
+        var changed = field switch
+        {
+            "order" => manifest with { Probes = manifest.Probes.Reverse().ToArray() },
+            "scope" => manifest with { Scope = "campaign" },
+            "attempts" => manifest with { Bounds = manifest.Bounds with { Attempts = 2 } },
+            "time" => manifest with { Bounds = manifest.Bounds with { EntrySeconds = 121 } },
+            "context" => manifest with { Bounds = manifest.Bounds with { ContextIdentities = 4_096 } },
+            "suite" => manifest with { Bounds = manifest.Bounds with { SuiteBytes = 4_294_967_296 } },
+            "addendum" => manifest with { AddendumSha256 = new string('a', 64) },
+            "schema" => manifest with { Schema = MonitoredProtocolVersions.ManifestSchema },
+            "namespace" => manifest with { SuiteId = "campaign-test" },
+            _ => throw new InvalidOperationException(),
+        };
+        Action action = () => PrevalidationProtocol.ValidateShape(changed);
+        action.Should().Throw<DurableStorageExperimentException>();
+    }
+
+    [Theory]
+    [InlineData("manifest")]
+    [InlineData("schema")]
+    [InlineData("scope")]
+    [InlineData("attempts")]
+    [InlineData("suite")]
+    [InlineData("review")]
+    public void PrevalidationAuthorizationCannotBeReusedOrPromoted(string field)
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+        var manifest = PrevalidationContractFixture();
+        var hash = HashText("component-test-only-manifest");
+        var receipt = new PrevalidationAuthorization("durable-prevalidation-authorization/1",
+            PrevalidationProtocol.Scope, manifest.SuiteId, hash, PrevalidationProtocol.AddendumSha256,
+            manifest.ImplementationAcceptance.Sha256, manifest.HistoricalReport.Sha256,
+            "component-test-only", DateTimeOffset.UtcNow, 8, 1, true);
+        PrevalidationProtocol.ValidateAuthorization(manifest, hash, receipt);
+        var changed = field switch
+        {
+            "manifest" => receipt with { ManifestSha256 = new string('b', 64) },
+            "schema" => receipt with { Schema = MonitoredProtocolVersions.AuthorizationSchema },
+            "scope" => receipt with { Scope = "scored-campaign" },
+            "attempts" => receipt with { Attempts = 2 },
+            "suite" => receipt with { SuiteId = "pv-new-id-does-not-reset-authorization" },
+            "review" => receipt with { AcceptanceSha256 = new string('c', 64) },
+            _ => throw new InvalidOperationException(),
+        };
+        Action action = () => PrevalidationProtocol.ValidateAuthorization(manifest, hash, changed);
+        action.Should().Throw<DurableStorageExperimentException>();
+    }
+
+    [Theory]
+    [InlineData("""{"schema":"a","schema":"b"}""")]
+    [InlineData("""{"schema":"a","unexpected":true}""")]
+    public void PrevalidationJsonIsClosedAndRejectsDuplicateMembers(string json)
+    {
+        var path = Path.Combine(_workspace, $"{Guid.NewGuid():N}.json");
+        File.WriteAllText(path, json);
+        Action action = () => PrevalidationProtocol.Read<PrevalidationAdoption>(path);
+        action.Should().Throw<Exception>();
+    }
+
+    [Fact]
+    public void PrevalidationSummaryKeepsBothScopesWithinNewlineInclusiveLimit()
+    {
+        var original = MonitoredSweepSummaryEncoding.CreateWorstCaseFixture();
+        MonitoredSweepSummaryEncoding.EncodeLine(original).Length.Should().Be(854);
+        var expanded = original with
+        {
+            CurrentContextIdentities = int.MaxValue,
+            CurrentContextRootedIdentities = int.MaxValue,
+            RetainedHistoryBytes = long.MaxValue,
+        };
+        var bytes = MonitoredSweepSummaryEncoding.EncodeLine(expanded);
+        bytes.Length.Should().Be(911).And.BeLessThanOrEqualTo(1_024);
+        bytes[^1].Should().Be((byte)'\n');
+        var json = System.Text.Encoding.UTF8.GetString(bytes);
+        json.Should().Contain("\"ci\":2147483647").And.Contain("\"cr\":2147483647");
+    }
+
+    [Fact]
+    public async Task PrevalidationTinyInventoryChargesPriorRootsWithoutSpendingCurrentContextIdentities()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+        var fixture = PrepareComponentExecution();
+        var previous = Path.Combine(fixture.Manifest.HistoryRoot, "previous");
+        Directory.CreateDirectory(previous);
+        File.WriteAllBytes(Path.Combine(previous, "old.bin"), [1, 2, 3]);
+        File.WriteAllBytes(Path.Combine(fixture.Manifest.WorkspaceRoot, "current.bin"), [4, 5]);
+        using var self = Process.GetCurrentProcess();
+        var scope = new PrevalidationObservationScope([previous],
+            MonitoredProcessIdentity.Capture(self, MonitoredProcessRole.Harness));
+        await using var monitor = new MonitoredStorageMonitor(fixture.Attribution, fixture.Encoding,
+            Path.Combine(fixture.Manifest.OutputRoot, "tiny-monitor.jsonl"), maximumEstablishedIdentities: 2,
+            prevalidationScope: scope);
+        // No VSTest process is registered in this deterministic inventory-only component test.
+        var sweep = monitor.Sweep();
+        sweep.Summary.Complete.Should().BeTrue();
+        sweep.Summary.IdentityCount.Should().Be(3);
+        sweep.Summary.CurrentContextIdentities.Should().Be(2);
+        sweep.Summary.CurrentContextRootedIdentities.Should().Be(2);
+        sweep.Summary.ObservedSweepBytes.Should().Be(5);
+        File.WriteAllBytes(Path.Combine(fixture.Manifest.WorkspaceRoot, "over-limit.bin"), [6]);
+        var over = monitor.Sweep();
+        over.Summary.Complete.Should().BeFalse();
+        over.Errors.Should().Contain("EstablishedIdentityGeometryExceeded");
+    }
+
+    [Fact]
+    public void PrevalidationTinyFixturesAreImmutableInventoryNotPackagesAndCannotBeRetried()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+        var root = Path.Combine(_workspace, "tiny-history");
+        Directory.CreateDirectory(root);
+        PrevalidationLayout.CreateHistoryFixtures(root, 1, CancellationToken.None);
+        PrevalidationGeometry.CountFixtureFiles(root).Should().Be(4);
+        var files = Directory.GetFiles(root, "*", SearchOption.AllDirectories);
+        files.Should().HaveCount(4);
+        files.Should().OnlyContain(path => new FileInfo(path).Length == 512);
+        files.Should().OnlyContain(path => (File.GetUnixFileMode(path) & UnixFileMode.UserWrite) == 0);
+        Action retry = () => PrevalidationLayout.CreateHistoryFixtures(root, 1, CancellationToken.None);
+        retry.Should().Throw<DurableStorageExperimentException>()
+            .Which.Code.Should().Be("PrevalidationFixtureSlotReuse");
+        Directory.GetFiles(root, "*", SearchOption.AllDirectories).Should().HaveCount(4);
+    }
+
+    [Fact]
+    public async Task PrevalidationUnsealedSourceIsChargedButNotRetainedHistory()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+        var fixture = PrepareComponentExecution();
+        var source = Path.Combine(fixture.Manifest.WorkspaceRoot, "package-staging");
+        var recovery = Path.Combine(fixture.Manifest.HistoryRoot, "recovery");
+        Directory.CreateDirectory(source);
+        Directory.CreateDirectory(recovery);
+        File.WriteAllBytes(Path.Combine(source, "source.bin"), [1, 2, 3]);
+        File.WriteAllBytes(Path.Combine(recovery, "recovered.bin"), [4, 5, 6, 7, 8]);
+        using var self = Process.GetCurrentProcess();
+        var scope = new PrevalidationObservationScope([],
+            MonitoredProcessIdentity.Capture(self, MonitoredProcessRole.Harness),
+            CurrentHistoryRoot: fixture.Manifest.HistoryRoot);
+        await using var monitor = new MonitoredStorageMonitor(fixture.Attribution, fixture.Encoding,
+            Path.Combine(fixture.Manifest.OutputRoot, "tiny-history-monitor.jsonl"),
+            maximumEstablishedIdentities: 571, prevalidationScope: scope);
+        var sweep = monitor.Sweep();
+        sweep.Summary.Complete.Should().BeTrue();
+        sweep.Summary.PackageBytes.Should().Be(3);
+        sweep.Summary.RecoveryBytes.Should().Be(5);
+        sweep.Summary.RetainedHistoryBytes.Should().Be(5);
+        sweep.Summary.ObservedSweepBytes.Should().Be(8);
+    }
+
+    [Fact]
+    public void PrevalidationInternalRoutesRejectUnregisteredProcesses()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+        Action unregistered = () => PrevalidationOwnership.RequireRegisteredSelf(
+            Path.Combine(_workspace, "no-owned-processes.jsonl"), MonitoredProcessRole.Diagnostic);
+        unregistered.Should().Throw<DurableStorageExperimentException>()
+            .Which.Code.Should().Be("PrevalidationUnregisteredInvocation");
+    }
+
+    [Fact]
+    public void PrevalidationMissingBoundariesDoNotBecomeCoverageFromPassingHelpers()
+    {
+        var probe = PrevalidationProtocol.Plan()[0];
+        var worker = CompleteWorker(probe.Execution, RequestMetrics(1)) with
+        {
+            ScheduledSourceOffers = 50_000, AttemptedSourceOffers = 50_000,
+        };
+        var outcome = new MonitoredCaseOutcome(probe.Ordinal, probe.Workload, probe.Candidate,
+            "pass", null, null, true, null, 0, 0, 1, 1, [], worker);
+        var coverage = PrevalidationExecutor.ProjectCoverage(probe, outcome, _workspace);
+        PrevalidationExecutor.HasCoverage(coverage).Should().BeFalse();
+        coverage.CampaignAdmissionGranted.Should().BeFalse();
+        coverage.FailureCode.Should().Be("RequiredCoverageMissing");
+    }
+
+    [Theory]
+    [InlineData("normal")]
+    [InlineData("control")]
+    [InlineData("cancel")]
+    [InlineData("wrong-exit-boundary")]
+    public async Task PrevalidationScriptedHarnessUsesExitHandshakeAndExactOwnedCleanup(string behavior)
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+        var manifest = PrevalidationContractFixture();
+        var component = PrepareComponentExecution();
+        Directory.CreateDirectory(manifest.PrivateRoot);
+        var probe = manifest.Probes[0];
+        PrevalidationLayout.CreateDirectories(manifest, probe);
+        var attribution = component.Attribution with
+        {
+            Roots = [new MonitoredAttributionRoot("evidence", manifest.PrivateRoot, true)],
+        };
+        var validated = new PrevalidationValidated(manifest, component.RepositoryRoot,
+            component.ManifestPath, component.ManifestSha256, component.AuthorizationSha256,
+            attribution, component.Encoding, component.ComponentEvidence);
+        await using var monitor = new MonitoredStorageMonitor(attribution, component.Encoding,
+            Path.Combine(PrevalidationLayout.ContextRoot(manifest, probe), "component-monitor.jsonl"));
+        using var cancellation = new CancellationTokenSource();
+        MonitoredProcessIdentity? started = null;
+        Process Launch(ProcessStartInfo unused)
+        {
+            var start = new ProcessStartInfo("/bin/sh")
+            {
+                UseShellExecute = false, RedirectStandardInput = true,
+                RedirectStandardOutput = true, RedirectStandardError = true,
+            };
+            start.ArgumentList.Add("-c");
+            start.ArgumentList.Add(behavior switch
+            {
+                "control" => "printf '{\"operation\":\"boundary\",\"boundary\":\"component-authority\",\"process\":null,\"active\":false}\\n'; read reply; printf 'prevalidation-harness-exit\\n'; read release; test \"$release\" = prevalidation-release-exit",
+                "normal" => "printf 'prevalidation-harness-exit\\n'; read release; test \"$release\" = prevalidation-release-exit",
+                "cancel" => "read release",
+                _ => "printf 'wrong\\n'; read release",
+            });
+            var process = Process.Start(start)!;
+            started = MonitoredProcessIdentity.Capture(process, MonitoredProcessRole.Harness);
+            if (behavior == "cancel")
+            {
+                cancellation.Cancel();
+            }
+            return process;
+        }
+        // This explicit scripted seam never launches the benchmark harness or any O1/live/F3 workload.
+        // Its monitor tracks the owned shell, not the VSTest host.
+        Func<Task> run = () => PrevalidationExecutor.RunHarnessProcessForComponentAsync(
+            validated, probe, monitor, Launch, cancellation.Token);
+        if (behavior is "normal" or "control")
+        {
+            await run.Should().NotThrowAsync();
+        }
+        else
+        {
+            await run.Should().ThrowAsync<Exception>();
+        }
+        started.Should().NotBeNull();
+        // An expired cleanup token still signals, but does not promise synchronous reaping.
+        using (var confirmation = new CancellationTokenSource(TimeSpan.FromSeconds(2)))
+        {
+            var cleanup = await PrevalidationOwnership.StopAsync([started!],
+                LinuxPrevalidationProcessOperations.Instance, confirmation.Token);
+            cleanup.Quiescent.Should().BeTrue();
+        }
+        PrevalidationOwnership.Read(Path.Combine(PrevalidationLayout.ContextRoot(manifest, probe), "ownership.jsonl"))
+            .Should().ContainSingle().Which.Should().Be(started);
+        if (behavior == "control") monitor.SummaryRecords.Should().Be(1);
+    }
+
+    [Fact]
+    public void PrevalidationReportRequiresRemainingEntriesNotRunAfterFirstFailure()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+        var manifest = PrevalidationContractFixture();
+        var hash = HashText("component-report");
+        var outcomes = manifest.Probes.Select(probe => new PrevalidationCoverage(
+            "durable-prevalidation-coverage/1", probe.Ordinal, probe.Id,
+            probe.Ordinal == 1 ? "incomplete" : "not-run", "component-stop", false,
+            probe.FixtureSlots, null, null, null, null, null, null, [])).ToArray();
+        var report = new PrevalidationReport("durable-prevalidation-report/1", PrevalidationProtocol.Scope,
+            manifest.SuiteId, hash, manifest.HistoricalReport.Sha256, "stopped-incomplete",
+            PrevalidationLayout.DeriveSuiteIdentityBound(), outcomes, "component-only");
+        PrevalidationReportValidation.ValidateReport(manifest, hash, report);
+        outcomes[1] = outcomes[1] with
+        {
+            Outcome = "coverage-observed", FailureCode = null, MonitoringComplete = true,
+            ObservedFixtureFiles = 252, MaximumContextIdentities = 300, MaximumSuiteBytes = 512,
+        };
+        Action resumed = () => PrevalidationReportValidation.ValidateReport(manifest, hash, report);
+        resumed.Should().Throw<DurableStorageExperimentException>()
+            .Which.Code.Should().Be("PrevalidationOutcomeOrderMismatch");
+        Action approval = () => PrevalidationReportValidation.ValidateReport(manifest, hash,
+            report with { CampaignAdmissionGranted = true });
+        approval.Should().Throw<DurableStorageExperimentException>();
+    }
+
+    [Fact]
+    public void PrevalidationPreservesFrozenO1SourceToleranceWithoutShorteningTheSchedule()
+    {
+        var probe = PrevalidationProtocol.Plan()[0];
+        var worker = CompleteWorker(probe.Execution, RequestMetrics(1)) with
+        {
+            ScheduledSourceOffers = 50_000, AttemptedSourceOffers = 47_500, AchievedSourceOfferRatio = 0.95,
+        };
+        PrevalidationExecutor.HasFrozenSourceCoverage(probe, worker).Should().BeTrue();
+        PrevalidationExecutor.HasFrozenSourceCoverage(probe,
+            worker with { ScheduledSourceOffers = 10, AttemptedSourceOffers = 10, AchievedSourceOfferRatio = 1 })
+            .Should().BeFalse();
+        PrevalidationExecutor.HasFrozenSourceCoverage(probe,
+            worker with { AttemptedSourceOffers = 47_499, AchievedSourceOfferRatio = 0.94998 })
+            .Should().BeFalse();
+    }
+
+    [Fact]
+    public void PrevalidationStockBaselinePreservesUnavailableRawTicksWithoutInventingCoverage()
+    {
+        var probe = PrevalidationProtocol.Plan()[2];
+        var worker = CompleteWorker(probe.Execution, RequestMetrics(1)) with
+        {
+            SourceTicks = null,
+            SourceCoverage = "shipping-eventpipe-counter-collector-first-latest-max;raw-tick-counts-unavailable",
+            TargetStartedAt = DateTimeOffset.UtcNow,
+            CounterSessionStartedAt = DateTimeOffset.UtcNow,
+            CounterCollectionSeconds = 34,
+        };
+        PrevalidationExecutor.HasFrozenSourceCoverage(probe, worker).Should().BeTrue();
+        PrevalidationExecutor.HasFrozenSourceCoverage(probe, worker with { SourceKeys = 0 }).Should().BeFalse();
+        PrevalidationExecutor.HasFrozenSourceCoverage(probe, worker with { SourceTicks = 1 }).Should().BeFalse();
+        PrevalidationExecutor.HasFrozenSourceCoverage(PrevalidationProtocol.Plan()[3], worker).Should().BeFalse();
+    }
+
+    [Fact]
+    public void PrevalidationSingleDescriptorFixtureHasTheDeclaredNativeIdentityAndLength()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+        using var fixture = PrevalidationGeometry.CreateDescriptorFixture(0);
+        var native = LinuxStatxHandleMetadataObserver.Instance.Observe(fixture.SafeFileHandle);
+        native.Length.Should().Be(512);
+        native.LinkCount.Should().Be(0);
+        var target = new FileInfo($"/proc/self/fd/{fixture.SafeFileHandle.DangerousGetHandle().ToInt64()}").LinkTarget;
+        target.Should().Be("/memfd:dc5-pv-geometry-00 (deleted)");
+        PrevalidationGeometry.IsDeclaredDescriptorTarget(target!).Should().BeTrue();
+        PrevalidationGeometry.IsDeclaredDescriptorTarget("/memfd:sqlite-temp (deleted)").Should().BeFalse();
+        PrevalidationGeometry.IsDeclaredDescriptorTarget("/memfd:dc5-pv-geometry-32 (deleted)").Should().BeFalse();
+    }
+
+    [Fact]
+    public void PrevalidationCaptureIdentitiesStayInsideTheSuiteNamespace()
+    {
+        var suiteId = "pv-" + new string('s', 61);
+        var identities = PrevalidationProtocol.Plan().Take(7).SelectMany(probe =>
+            new[] { MonitoredWorkerMode.Execute, MonitoredWorkerMode.Recover }.SelectMany(mode =>
+                new[] { "capture", "artifact" }.Select(kind =>
+                    PrevalidationLayout.OwnedIdentity(suiteId, probe.Execution, mode, kind)))).ToArray();
+        identities.Should().HaveCount(28).And.OnlyHaveUniqueItems();
+        identities.Should().OnlyContain(value => value.StartsWith(suiteId + "-", StringComparison.Ordinal)
+            && value.Length <= 128);
+    }
+
+    [Fact]
+    public async Task PrevalidationSinglePeriodicLoopFitsFullVirtual120SecondsAndAllBoundaryHeadroom()
+    {
+        var budget = new BoundedOutputBudget(2_048L * 1_024, 2_048, 64, 64);
+        using var deadline = new CancellationTokenSource();
+        var elapsed = TimeSpan.Zero;
+        var periodic = 0;
+        Task Observe(CancellationToken token)
+        {
+            token.ThrowIfCancellationRequested();
+            periodic++;
+            budget.ConsumeSummary(1_024, boundary: false);
+            return Task.CompletedTask;
+        }
+        Task Delay(TimeSpan interval, CancellationToken token)
+        {
+            interval.Should().Be(TimeSpan.FromMilliseconds(100));
+            token.Should().Be(deadline.Token);
+            elapsed += interval;
+            if (elapsed > TimeSpan.FromSeconds(120)) deadline.Cancel();
+            return Task.CompletedTask;
+        }
+        Func<Task> loop = () => MonitoredStorageMonitor.RunPeriodicLoopAsync(Observe, Delay, deadline.Token);
+        await loop.Should().ThrowAsync<OperationCanceledException>();
+        periodic.Should().Be(PrevalidationMonitorControl.MaximumPeriodicRecords).And.Be(1_201);
+        for (var index = 0; index < 64; index++) budget.ConsumeSummary(1_024, boundary: true);
+        budget.SummaryRecords.Should().Be(PrevalidationMonitorControl.FullWindowRecords).And.Be(1_265);
+        budget.SummaryBytes.Should().Be(1_295_360).And.BeLessThan(2_097_152);
+        PrevalidationMonitorControl.FullWindowOutputBytes.Should().Be(2_876_736).And.BeLessThan(8_388_608);
+        // Each of the 64 worker controls needs at most three authority operations;
+        // two launches and two exit/status pairs still fit the shared frame budget.
+        (64 * 3 + 2 + 4).Should().BeLessThan(PrevalidationMonitorControl.MaximumFrames);
+    }
+
+    [Fact]
+    public async Task PrevalidationControlFramesAreBoundedAndWorstSummaryReplyFits()
+    {
+        var summary = MonitoredSweepSummaryEncoding.CreateWorstCaseFixture() with
+        {
+            CurrentContextIdentities = int.MaxValue, CurrentContextRootedIdentities = int.MaxValue,
+            RetainedHistoryBytes = long.MaxValue,
+        };
+        var reply = new PrevalidationMonitorReply(false, new string('a', 64), int.MaxValue, long.MaxValue,
+            int.MaxValue, long.MaxValue, summary);
+        var encoded = PrevalidationMonitorControl.Encode(reply);
+        encoded.Should().NotContain("\n");
+        System.Text.Encoding.UTF8.GetByteCount(encoded).Should().BeLessThan(2_048);
+        var roundtrip = await PrevalidationMonitorControl.ReadLineAsync(new StringReader(encoded + "\n"),
+            CancellationToken.None);
+        roundtrip.Should().Be(encoded);
+        Func<Task> oversized = () => PrevalidationMonitorControl.ReadLineAsync(
+            new StringReader(new string('x', 2_048) + "\n"), CancellationToken.None);
+        await oversized.Should().ThrowAsync<DurableStorageExperimentException>();
+        Func<Task> truncated = () => PrevalidationMonitorControl.ReadLineAsync(new StringReader(encoded),
+            CancellationToken.None);
+        await truncated.Should().ThrowAsync<DurableStorageExperimentException>();
+    }
+
+    [Theory]
+    [InlineData(true, false, false)]
+    [InlineData(true, true, false)]
+    [InlineData(false, true, false)]
+    [InlineData(false, false, true)]
+    public async Task PrevalidationCleanupSignalsAllBeforeSharedDeadlineConfirmation(
+        bool initiallyCancelled, bool firstSignalFails, bool firstIdentityUnknown)
+    {
+        var identities = Enumerable.Range(1, 3)
+            .Select(pid => new MonitoredProcessIdentity(pid, (ulong)pid, MonitoredProcessRole.Diagnostic)).ToArray();
+        using var deadline = new CancellationTokenSource();
+        if (initiallyCancelled) deadline.Cancel();
+        var signals = new List<int>();
+        var delays = 0;
+        var operations = new ScriptedCleanupOperations(
+            identity => identity.ProcessId == 3 && firstIdentityUnknown
+                ? throw new UnauthorizedAccessException("controlled identity failure") : true,
+            identity =>
+            {
+                signals.Add(identity.ProcessId);
+                if (identity.ProcessId == 3 && firstSignalFails)
+                    throw new IOException("controlled signal failure");
+            },
+            token =>
+            {
+                signals.Should().Equal(firstIdentityUnknown ? [2, 1] : [3, 2, 1]);
+                token.Should().Be(deadline.Token);
+                delays++;
+                deadline.Cancel();
+                return Task.FromCanceled(token);
+            });
+        var result = await PrevalidationOwnership.StopAsync(identities, operations, deadline.Token);
+        signals.Should().Equal(firstIdentityUnknown ? [2, 1] : [3, 2, 1]);
+        delays.Should().Be(initiallyCancelled ? 0 : 1);
+        result.Quiescent.Should().BeFalse();
+        result.Unconfirmed.Should().BeEquivalentTo(identities);
+        result.Errors.Any().Should().Be(firstSignalFails || firstIdentityUnknown);
+    }
+
+    [LinuxOnlyFact]
+    public async Task PrevalidationExpiredCleanupSignalsEveryRealOwnedStubWithoutPerProcessWaits()
+    {
+        using var first = StartWaitingStub();
+        using var second = StartWaitingStub();
+        using var third = StartWaitingStub();
+        var children = new[] { first, second, third };
+        var identities = children.Select(process =>
+            MonitoredProcessIdentity.Capture(process, MonitoredProcessRole.Diagnostic)).ToArray();
+        try
+        {
+            var result = await PrevalidationOwnership.StopAsync(identities,
+                LinuxPrevalidationProcessOperations.Instance, new CancellationToken(canceled: true));
+            result.Errors.Should().BeEmpty();
+            // Test teardown reaps the already-signalled stubs; this is not an executor wait extension.
+            await Task.WhenAll(children.Select(process => process.WaitForExitAsync()))
+                .WaitAsync(TimeSpan.FromSeconds(2));
+            children.Should().OnlyContain(process => process.HasExited);
+            var confirmed = await PrevalidationOwnership.StopAsync(identities,
+                LinuxPrevalidationProcessOperations.Instance, new CancellationToken(canceled: true));
+            confirmed.Quiescent.Should().BeTrue();
+            confirmed.Unconfirmed.Should().BeEmpty();
+        }
+        finally
+        {
+            foreach (var identity in identities) LinuxPrevalidationProcessOperations.Instance.Signal(identity);
+        }
+    }
+
+    [LinuxOnlyFact]
+    public async Task PrevalidationReusedPidIsNeverSignalledAndExitedOriginalIsAlreadyQuiescent()
+    {
+        using var process = StartWaitingStub();
+        var identity = MonitoredProcessIdentity.Capture(process, MonitoredProcessRole.Target);
+        try
+        {
+            var reused = identity with { LinuxStartTimeTicks = identity.LinuxStartTimeTicks + 1 };
+            var result = await PrevalidationOwnership.StopAsync([reused],
+                LinuxPrevalidationProcessOperations.Instance, new CancellationToken(canceled: true));
+            result.Quiescent.Should().BeTrue();
+            process.HasExited.Should().BeFalse();
+            LinuxPrevalidationProcessOperations.Instance.Signal(identity);
+            await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(2));
+            // Covers disappearance between initial ownership observation and acquiring a process handle.
+            LinuxPrevalidationProcessOperations.Instance.Signal(identity);
+            LinuxPrevalidationProcessOperations.Instance.IsOriginalAlive(identity).Should().BeFalse();
+        }
+        finally { LinuxPrevalidationProcessOperations.Instance.Signal(identity); }
+    }
+
+    [LinuxOnlyFact]
+    public void PrevalidationUnconfirmedCleanupCannotFreezeOrSealMutableEvidence()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        var root = Path.Combine(_workspace, "partial-mutable");
+        Directory.CreateDirectory(root);
+        var path = Path.Combine(root, "still-writable.bin");
+        File.WriteAllText(path, "component");
+        var original = File.GetUnixFileMode(path);
+        Action freeze = () => PrevalidationExecutor.FreezeQuiescentContext(root, quiescent: false);
+        freeze.Should().Throw<DurableStorageExperimentException>().Which.Code
+            .Should().Be("PrevalidationMutableContextNotFrozen");
+        File.GetUnixFileMode(path).Should().Be(original);
+        File.Exists(Path.Combine(root, "seal.json")).Should().BeFalse();
+        File.AppendAllText(path, "-still-writable");
+    }
+
+    [LinuxOnlyFact]
+    public async Task PrevalidationAuthoritativeOwnerTracksAndReleasesSourceBeforeRecovery()
+    {
+        var fixture = PrepareComponentExecution();
+        using var coordinator = StartWaitingStub();
+        using var harness = StartWaitingStub();
+        using var worker = StartWaitingStub();
+        using var target = StartWaitingStub();
+        using var recovery = StartWaitingStub();
+        var harnessId = MonitoredProcessIdentity.Capture(harness, MonitoredProcessRole.Harness);
+        var workerId = MonitoredProcessIdentity.Capture(worker, MonitoredProcessRole.Diagnostic);
+        var targetId = MonitoredProcessIdentity.Capture(target, MonitoredProcessRole.Target);
+        var recoveryId = MonitoredProcessIdentity.Capture(recovery, MonitoredProcessRole.Diagnostic);
+        var coordinatorId = MonitoredProcessIdentity.Capture(coordinator, MonitoredProcessRole.Harness);
+        var identities = new[] { harnessId, workerId, targetId, recoveryId };
+        var journal = Path.Combine(fixture.Manifest.OutputRoot, "ownership.jsonl");
+        var scope = new PrevalidationObservationScope([], coordinatorId, journal);
+        await using var monitor = new MonitoredStorageMonitor(fixture.Attribution, fixture.Encoding,
+            Path.Combine(fixture.Manifest.OutputRoot, "owner-monitor.jsonl"), prevalidationScope: scope);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        try
+        {
+            monitor.AddProcess(coordinatorId);
+            monitor.AddProcess(harnessId);
+            PrevalidationOwnership.Append(journal, harnessId);
+            await PrevalidationMonitorControl.DispatchAsync(new("register", workerId), monitor, journal, deadline.Token);
+            await PrevalidationMonitorControl.DispatchAsync(new("register", targetId), monitor, journal, deadline.Token);
+            var before = await PrevalidationMonitorControl.DispatchAsync(
+                new("boundary", Boundary: "component-source", Active: true), monitor, journal, deadline.Token);
+            before.Summary!.Complete.Should().BeTrue();
+            harness.Refresh();
+            coordinator.Refresh();
+            before.Summary.HarnessPeakRssBytes.Should().Be(harness.WorkingSet64 + coordinator.WorkingSet64);
+            before.Summary.DiagnosticPeakRssBytes.Should().BePositive();
+            before.Summary.TargetPeakRssBytes.Should().BePositive();
+            await PrevalidationMonitorControl.DispatchAsync(new("kill", workerId), monitor, journal, deadline.Token);
+            var post = await PrevalidationMonitorControl.DispatchAsync(
+                new("boundary", Boundary: "post-kill-quiescent-root-inventory"), monitor, journal, deadline.Token);
+            post.Summary!.Complete.Should().BeTrue();
+            post.Summary.DiagnosticCpuTicks.Should().BeGreaterThanOrEqualTo(before.Summary.DiagnosticCpuTicks);
+            await PrevalidationMonitorControl.DispatchAsync(new("register", recoveryId), monitor, journal, deadline.Token);
+            var recovered = await PrevalidationMonitorControl.DispatchAsync(
+                new("boundary", Boundary: "component-recovery", Active: true), monitor, journal, deadline.Token);
+            recovered.Summary!.Complete.Should().BeTrue();
+            recovered.Records.Should().Be(3);
+            PrevalidationOwnership.Read(journal).Should().Equal(identities);
+            monitor.IsIncomplete.Should().BeFalse();
+        }
+        finally
+        {
+            MonitoredProcessIdentity[] all = [coordinatorId, .. identities];
+            monitor.MarkOwnedCleanup(all);
+            var result = await PrevalidationOwnership.StopAsync(all,
+                LinuxPrevalidationProcessOperations.Instance, deadline.Token);
+            result.Quiescent.Should().BeTrue();
+            monitor.RemoveConfirmedCleanup(all);
+        }
+    }
+
+    [Fact]
+    public async Task PrevalidationConfirmationFailureRetainsEveryUnconfirmedIdentityAfterAllSignals()
+    {
+        var identities = Enumerable.Range(1, 3)
+            .Select(pid => new MonitoredProcessIdentity(pid, (ulong)pid, MonitoredProcessRole.Diagnostic)).ToArray();
+        var signals = new List<int>();
+        var operations = new ScriptedCleanupOperations(_ => true, identity => signals.Add(identity.ProcessId),
+            _ => throw new IOException("controlled aggregate wait failure"));
+        var result = await PrevalidationOwnership.StopAsync(identities, operations, CancellationToken.None);
+        signals.Should().Equal(3, 2, 1);
+        result.Quiescent.Should().BeFalse();
+        result.Unconfirmed.Should().BeEquivalentTo(identities);
+        result.Errors.Should().Contain("confirmation-wait:IOException");
+    }
+
+    [Fact]
+    public void PrevalidationJournalFailureDoesNotLoseInMemoryOwnership()
+    {
+        var ledger = new PrevalidationOwnedProcessLedger();
+        var identity = new MonitoredProcessIdentity(123, 456, MonitoredProcessRole.Diagnostic);
+        Action register = () => ledger.Register(_workspace, identity);
+        register.Should().Throw<UnauthorizedAccessException>();
+        ledger.Identities.Should().ContainSingle().Which.Should().Be(identity);
+    }
+
+    private static Process StartWaitingStub()
+    {
+        var start = new ProcessStartInfo("/bin/sh")
+        {
+            UseShellExecute = false, RedirectStandardInput = true,
+            RedirectStandardOutput = true, RedirectStandardError = true,
+        };
+        start.ArgumentList.Add("-c");
+        start.ArgumentList.Add("read release");
+        return Process.Start(start)!;
+    }
+
+    private sealed class ScriptedCleanupOperations(
+        Func<MonitoredProcessIdentity, bool> alive, Action<MonitoredProcessIdentity> signal,
+        Func<CancellationToken, Task> delay) : IPrevalidationProcessOperations
+    {
+        public bool IsOriginalAlive(MonitoredProcessIdentity identity) => alive(identity);
+        public void Signal(MonitoredProcessIdentity identity) => signal(identity);
+        public Task DelayAsync(CancellationToken cancellationToken) => delay(cancellationToken);
+    }
+
+    private PrevalidationManifest PrevalidationContractFixture()
+    {
+        var fixture = PrepareComponentExecution();
+        var manifest = fixture.Manifest;
+        var artifact = new MonitoredBinaryIdentity(fixture.ManifestPath, fixture.ManifestSha256);
+        return new(PrevalidationProtocol.ManifestSchema, PrevalidationProtocol.Scope, "pv-component-test",
+            Path.Combine(_workspace, "pv-component-test"), PrevalidationProtocol.AddendumCommit,
+            PrevalidationProtocol.AddendumSha256, MonitoredProtocolVersions.SuccessorProtocolSha256,
+            PrevalidationProtocol.Plan(), PrevalidationProtocol.Bounds(), manifest.SourceCommits,
+            manifest.RuntimeBinary, manifest.ToolBinary, manifest.SampleBinary, [manifest.ToolBinary],
+            manifest.NativeBinaries, artifact, manifest.Host, manifest.Clock, artifact, artifact,
+            artifact, artifact, artifact, artifact, manifest.AuthorizationReceipt, PrevalidationProtocol.RuntimeEnvironmentHash(),
+            PrevalidationProtocol.ContextSummaryFieldMapSha256);
+    }
+
     private static IReadOnlyList<MonitoredCaseOutcome> LiveP95Outcomes(
         IReadOnlyList<double> baselines,
         IReadOnlyList<double> increases)
@@ -1646,7 +2369,7 @@ public sealed class MonitoredRunnerTests : IDisposable
         internal List<MonitoredWorkerDescriptor> Descriptors { get; } = [];
         internal List<MonitoredProcessIdentity> Identities { get; } = [];
 
-        public Process Start(MonitoredRunManifest manifest, string descriptorPath)
+        public Process Start(IMonitoredExecutionManifest manifest, string descriptorPath)
         {
             var descriptor = JsonSerializer.Deserialize<MonitoredWorkerDescriptor>(
                 File.ReadAllBytes(descriptorPath),

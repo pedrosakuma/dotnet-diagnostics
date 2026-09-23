@@ -102,6 +102,10 @@ public sealed class LiveSampleProcess : IAsyncDisposable
 
         await CompleteStartupAsync(async () =>
         {
+            if (options.ProcessStarted is not null)
+            {
+                await options.ProcessStarted(process).ConfigureAwait(false);
+            }
             // Keep the existing line readers, but retain their completion for owned cleanup.
             sample._stdout = Task.Run(async () =>
             {
