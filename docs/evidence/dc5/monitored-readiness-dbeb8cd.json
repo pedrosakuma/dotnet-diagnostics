@@ -1,0 +1,377 @@
+{
+  "schema": "dc5-monitored-readiness-report/1",
+  "status": "readiness-blocked",
+  "recommendation": "inconclusive-no-comparison",
+  "implementationCommit": "dbeb8cdb0cce663143d3ce7b831f69dc8cf7b75e",
+  "campaignStarted": false,
+  "authorizationIssued": false,
+  "scoredAttempts": 0,
+  "sourceArtifacts": {
+    "planSha256": "c364a505b16841f9ff601733f64229db1ce489075aa66eddae272917cb1e6ec2",
+    "manifestSha256": "b1a2e8649e9fdb1d4b5fb4612b0a10c9c5d3991c8d81516f16abd8089b3eda2c",
+    "componentEvidenceSha256": "3bbb6b9fdd71ff316d0e9dfe7683d5c259728c144e86b4a221624eabe4f1031f",
+    "evidenceEncodingSha256": "961c0cc2e8b922281f446b75147213ad8485efb6b55fe859d8951e03fb1cd4ba"
+  },
+  "binaryIdentities": {
+    "runtime": {
+      "name": "dotnet",
+      "sha256": "01d89e0a0191052bfea616cd4ce624c8faf13b05bbddf7f64499c23e2a9d9269"
+    },
+    "tool": {
+      "name": "DiagnosedBenchmarks.dll",
+      "sha256": "2699c71a66f3ed467fcca67526546efd04939331af4917bfb68c15c50457cfe5"
+    },
+    "sample": {
+      "name": "CoreClrSample.dll",
+      "sha256": "c00ea26e25d8cffe9b867a96c3961c8c285be56f4946f770251a21b85f09fb16"
+    },
+    "sqlite": {
+      "name": "libe_sqlite3.so",
+      "sha256": "b0f5c48026fedcf9f05cf31c6fadf9e1e001ca59cd85aa68b8b6814e52c18a07"
+    },
+    "coreclr": {
+      "name": "libcoreclr.so",
+      "sha256": "df5cfe7ba5abf7931f4836726f2fbb0d47dc32caa45d3c209ddf7ccd25c32f4c"
+    },
+    "core": {
+      "name": "DotnetDiagnostics.Core.dll",
+      "sha256": "dc87c9c41b979c18fae75b909b036a2d481d8bfd53868921a947c918eb0a5664"
+    },
+    "testSupport": {
+      "name": "DotnetDiagnostics.TestSupport.dll",
+      "sha256": "85675683f9f539ca4bc7438a7a0a931c5597ebf073c05d2b11cc8681744732d0"
+    }
+  },
+  "componentEvidence": {
+    "schema": "durable-monitored-component-evidence/3",
+    "observedAt": "2026-09-23T11:00:19.3944159+00:00",
+    "platform": "Linux",
+    "runnerCommit": "dbeb8cdb0cce663143d3ce7b831f69dc8cf7b75e",
+    "monitorCommit": "dbeb8cdb0cce663143d3ce7b831f69dc8cf7b75e",
+    "attributionMapSha256": "3ecbd6b73ce3432a574552b00592acafd782f24708829bf667fd2e8df6be8f1f",
+    "summarySchema": "durable-monitored-sweep-summary/1",
+    "summaryFieldMapSha256": "b9f829d0b5643d51e683e752642de6c14fae0274e6ec5b8fde13dda902abd30a",
+    "derivedMaximumSimultaneousIdentitiesEnforced": 571,
+    "derivedMaximumRootedIdentities": 539,
+    "maximumDescriptorOnlyIdentitiesEnforced": 32,
+    "representativeMaximumRootedIdentitiesObserved": 5,
+    "representativeMaximumDescriptorOnlyIdentitiesObserved": 0,
+    "descriptorOnlyCampaignFeasibilityEstablished": false,
+    "maximumSummaryUtf8BytesObserved": 397,
+    "worstCaseSummaryUtf8Bytes": 854,
+    "worstCaseSummarySha256": "7bf19025f677493126925bb53b05c4e4c8bdfb9274c0e1165f2a7055132af3e0",
+    "worstCaseSummaryRelativePath": "worst-case-monitor-summary.jsonl",
+    "maximumWorkerControlUtf8BytesObserved": 979,
+    "derivedMaximumSummaryRecordsRequired": 1265,
+    "maximumSummaryRecordsEncoded": 2048,
+    "derivedMaximumCombinedSummaryControlBytes": 2159808,
+    "sourceRecoveryObservedSummaryRecords": 8,
+    "sourceRecoveryObservedSummaryBytes": 2844,
+    "sourceRecoveryObservedControlRecords": 2,
+    "sourceRecoveryObservedControlBytes": 478,
+    "sourceRecoverySharedBudgetExhaustionObserved": true,
+    "sourceRecoverySharedCancellationObserved": true,
+    "periodicSummariesObserved": 4,
+    "maximumPeriodicGapMillisecondsObserved": 132.6788,
+    "maximumObservedSweepBytes": 2473,
+    "positiveMonitoringComplete": true,
+    "managedProcessObserved": true,
+    "runtimeMemoryClassificationObserved": true,
+    "runtimeMemoryExcludedBytes": 33627447296,
+    "rootFileObserved": true,
+    "writableDescriptorOutsideRootRejected": true,
+    "openUnlinkedDescriptorRejected": true,
+    "processIdentityReuseRejected": true,
+    "killHandoffReleasedObserverReferences": true,
+    "representativeCandidatePackageInventoriesObserved": true,
+    "representativeMaximumFinalPackageFilesObserved": 4,
+    "representativeMaximumTransientPackageFilesObserved": 4,
+    "representativeSqliteWalShmObserved": true,
+    "outputLimitEnforced": true,
+    "identityLimitEnforced": true,
+    "rawEvidenceFiles": 30,
+    "evidenceSha256": "10981f5f8d028d545a4992cdd3883bb76ff5e5f11b84fd96b4cd5bae17f675d0"
+  },
+  "planDisposition": [
+    {
+      "ordinal": 1,
+      "caseId": "P0",
+      "candidate": "shared",
+      "disposition": "not-run",
+      "attempts": 0,
+      "reason": "MonitorComponentEvidenceInsufficient"
+    },
+    {
+      "ordinal": 2,
+      "caseId": "P1",
+      "candidate": "E",
+      "disposition": "not-run",
+      "attempts": 0,
+      "reason": "MonitorComponentEvidenceInsufficient"
+    },
+    {
+      "ordinal": 3,
+      "caseId": "Q1",
+      "candidate": "A",
+      "disposition": "not-run",
+      "attempts": 0,
+      "reason": "MonitorComponentEvidenceInsufficient"
+    },
+    {
+      "ordinal": 4,
+      "caseId": "Q1",
+      "candidate": "B",
+      "disposition": "not-run",
+      "attempts": 0,
+      "reason": "MonitorComponentEvidenceInsufficient"
+    },
+    {
+      "ordinal": 5,
+      "caseId": "Q2",
+      "candidate": "B",
+      "disposition": "not-run",
+      "attempts": 0,
+      "reason": "MonitorComponentEvidenceInsufficient"
+    },
+    {
+      "ordinal": 6,
+      "caseId": "Q2",
+      "candidate": "A",
+      "disposition": "not-run",
+      "attempts": 0,
+      "reason": "MonitorComponentEvidenceInsufficient"
+    },
+    {
+      "ordinal": 7,
+      "caseId": "N1",
+      "candidate": "A",
+      "disposition": "not-run",
+      "attempts": 0,
+      "reason": "MonitorComponentEvidenceInsufficient"
+    },
+    {
+      "ordinal": 8,
+      "caseId": "N1",
+      "candidate": "B",
+      "disposition": "not-run",
+      "attempts": 0,
+      "reason": "MonitorComponentEvidenceInsufficient"
+    },
+    {
+      "ordinal": 9,
+      "caseId": "B1",
+      "candidate": "B",
+      "disposition": "not-run",
+      "attempts": 0,
+      "reason": "MonitorComponentEvidenceInsufficient"
+    },
+    {
+      "ordinal": 10,
+      "caseId": "B1",
+      "candidate": "A",
+      "disposition": "not-run",
+      "attempts": 0,
+      "reason": "MonitorComponentEvidenceInsufficient"
+    },
+    {
+      "ordinal": 11,
+      "caseId": "M1",
+      "candidate": "A",
+      "disposition": "not-run",
+      "attempts": 0,
+      "reason": "MonitorComponentEvidenceInsufficient"
+    },
+    {
+      "ordinal": 12,
+      "caseId": "M1",
+      "candidate": "B",
+      "disposition": "not-run",
+      "attempts": 0,
+      "reason": "MonitorComponentEvidenceInsufficient"
+    },
+    {
+      "ordinal": 13,
+      "caseId": "O1",
+      "candidate": "B",
+      "disposition": "not-run",
+      "attempts": 0,
+      "reason": "MonitorComponentEvidenceInsufficient"
+    },
+    {
+      "ordinal": 14,
+      "caseId": "O1",
+      "candidate": "A",
+      "disposition": "not-run",
+      "attempts": 0,
+      "reason": "MonitorComponentEvidenceInsufficient"
+    },
+    {
+      "ordinal": 15,
+      "caseId": "C1",
+      "candidate": "A",
+      "disposition": "not-run",
+      "attempts": 0,
+      "reason": "MonitorComponentEvidenceInsufficient"
+    },
+    {
+      "ordinal": 16,
+      "caseId": "C1",
+      "candidate": "B",
+      "disposition": "not-run",
+      "attempts": 0,
+      "reason": "MonitorComponentEvidenceInsufficient"
+    },
+    {
+      "ordinal": 17,
+      "caseId": "F1",
+      "candidate": "B",
+      "disposition": "not-run",
+      "attempts": 0,
+      "reason": "MonitorComponentEvidenceInsufficient"
+    },
+    {
+      "ordinal": 18,
+      "caseId": "F1",
+      "candidate": "A",
+      "disposition": "not-run",
+      "attempts": 0,
+      "reason": "MonitorComponentEvidenceInsufficient"
+    },
+    {
+      "ordinal": 19,
+      "caseId": "F2",
+      "candidate": "A",
+      "disposition": "not-run",
+      "attempts": 0,
+      "reason": "MonitorComponentEvidenceInsufficient"
+    },
+    {
+      "ordinal": 20,
+      "caseId": "F2",
+      "candidate": "B",
+      "disposition": "not-run",
+      "attempts": 0,
+      "reason": "MonitorComponentEvidenceInsufficient"
+    },
+    {
+      "ordinal": 21,
+      "caseId": "F3",
+      "candidate": "B",
+      "disposition": "not-run",
+      "attempts": 0,
+      "reason": "MonitorComponentEvidenceInsufficient"
+    },
+    {
+      "ordinal": 22,
+      "caseId": "F3",
+      "candidate": "A",
+      "disposition": "not-run",
+      "attempts": 0,
+      "reason": "MonitorComponentEvidenceInsufficient"
+    },
+    {
+      "ordinal": 23,
+      "caseId": "F4",
+      "candidate": "A",
+      "disposition": "not-run",
+      "attempts": 0,
+      "reason": "MonitorComponentEvidenceInsufficient"
+    },
+    {
+      "ordinal": 24,
+      "caseId": "F4",
+      "candidate": "B",
+      "disposition": "not-run",
+      "attempts": 0,
+      "reason": "MonitorComponentEvidenceInsufficient"
+    },
+    {
+      "ordinal": 25,
+      "caseId": "F5",
+      "candidate": "B",
+      "disposition": "not-run",
+      "attempts": 0,
+      "reason": "MonitorComponentEvidenceInsufficient"
+    },
+    {
+      "ordinal": 26,
+      "caseId": "F5",
+      "candidate": "A",
+      "disposition": "not-run",
+      "attempts": 0,
+      "reason": "MonitorComponentEvidenceInsufficient"
+    },
+    {
+      "ordinal": 27,
+      "caseId": "L1",
+      "candidate": "E",
+      "disposition": "not-run",
+      "attempts": 0,
+      "reason": "MonitorComponentEvidenceInsufficient"
+    },
+    {
+      "ordinal": 28,
+      "caseId": "L1",
+      "candidate": "A",
+      "disposition": "not-run",
+      "attempts": 0,
+      "reason": "MonitorComponentEvidenceInsufficient"
+    },
+    {
+      "ordinal": 29,
+      "caseId": "L1",
+      "candidate": "B",
+      "disposition": "not-run",
+      "attempts": 0,
+      "reason": "MonitorComponentEvidenceInsufficient"
+    },
+    {
+      "ordinal": 30,
+      "caseId": "L2",
+      "candidate": "B",
+      "disposition": "not-run",
+      "attempts": 0,
+      "reason": "MonitorComponentEvidenceInsufficient"
+    },
+    {
+      "ordinal": 31,
+      "caseId": "L2",
+      "candidate": "E",
+      "disposition": "not-run",
+      "attempts": 0,
+      "reason": "MonitorComponentEvidenceInsufficient"
+    },
+    {
+      "ordinal": 32,
+      "caseId": "L2",
+      "candidate": "A",
+      "disposition": "not-run",
+      "attempts": 0,
+      "reason": "MonitorComponentEvidenceInsufficient"
+    },
+    {
+      "ordinal": 33,
+      "caseId": "L3",
+      "candidate": "A",
+      "disposition": "not-run",
+      "attempts": 0,
+      "reason": "MonitorComponentEvidenceInsufficient"
+    },
+    {
+      "ordinal": 34,
+      "caseId": "L3",
+      "candidate": "B",
+      "disposition": "not-run",
+      "attempts": 0,
+      "reason": "MonitorComponentEvidenceInsufficient"
+    },
+    {
+      "ordinal": 35,
+      "caseId": "L3",
+      "candidate": "E",
+      "disposition": "not-run",
+      "attempts": 0,
+      "reason": "MonitorComponentEvidenceInsufficient"
+    }
+  ]
+}
