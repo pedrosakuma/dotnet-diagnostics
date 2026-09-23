@@ -31,14 +31,22 @@ internal sealed record PrevalidationManifest(
     MonitoredBinaryIdentity Attribution, MonitoredBinaryIdentity Encoding,
     MonitoredBinaryIdentity ComponentEvidence, MonitoredBinaryIdentity Adoption,
     MonitoredBinaryIdentity ImplementationAcceptance, MonitoredBinaryIdentity HistoricalReport,
-    string AuthorizationReceipt, string RuntimeEnvironmentSha256, string ContextSummaryFieldMapSha256);
+    string AuthorizationReceipt, string RuntimeEnvironmentSha256, string ContextSummaryFieldMapSha256)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public SampledLossBinding? SampledLoss { get; init; }
+}
 
 internal sealed record PrevalidationAcceptance(
     string Schema, string Scope, string AddendumSha256, string Reviewer,
     MonitoredSourceCommits SourceCommits, string BinaryInventorySha256,
     string ComponentEvidenceSha256, string AttributionSha256, string EncodingSha256,
     int DerivedSuiteIdentities, bool CallPathsReviewed, bool TwoLevelAccountingReviewed,
-    bool CleanupReviewed, bool NegativeAdmissionsReviewed);
+    bool CleanupReviewed, bool NegativeAdmissionsReviewed)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? SampledProtocolSha256 { get; init; }
+}
 
 internal sealed record PrevalidationAdoption(string Schema, string AddendumSha256, string Maintainer,
     DateTimeOffset AdoptedAt, string Scope);
@@ -57,7 +65,10 @@ internal sealed record PrevalidationExecutionSettings(
     MonitoredBinaryIdentity RuntimeBinary, MonitoredBinaryIdentity ToolBinary,
     MonitoredBinaryIdentity SampleBinary, MonitoredSourceCommits SourceCommits,
     string FixtureManifestSha256, string HistoryRoot, string WorkspaceRoot, string OutputRoot)
-    : IMonitoredExecutionManifest;
+    : IMonitoredExecutionManifest
+{
+    public SampledLossBinding? SampledLoss { get; init; }
+}
 
 internal static class PrevalidationProtocol
 {
@@ -91,6 +102,7 @@ internal static class PrevalidationProtocol
             + "first descriptor failure independently of ec;null when absent;no PID or path)\n"));
     internal static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
     {
+        Converters = { new SampledSweepConverter() },
         WriteIndented = true,
         PropertyNameCaseInsensitive = false,
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
@@ -125,7 +137,7 @@ internal static class PrevalidationProtocol
             ?? throw Error("PrevalidationEmptyArtifact", "A required prevalidation artifact was empty.");
     }
 
-    private static void RejectDuplicateMembers(JsonElement element)
+    internal static void RejectDuplicateMembers(JsonElement element)
     {
         if (element.ValueKind == JsonValueKind.Object)
         {
@@ -147,7 +159,15 @@ internal static class PrevalidationProtocol
 
     internal static void ValidateShape(PrevalidationManifest manifest, bool allowLegacyInspection = false)
     {
-        Require(manifest.Schema == ManifestSchema && manifest.Scope == Scope, "PrevalidationSchemaMismatch");
+        Require(manifest.Schema == (manifest.SampledLoss is null ? ManifestSchema
+            : SampledLossProtocol.PrevalidationManifestSchema) && manifest.Scope == Scope, "PrevalidationSchemaMismatch");
+        if (manifest.SampledLoss is { } sampled)
+        {
+            SampledLossProtocol.ValidateBinding(sampled);
+            Require(sampled.Readiness is null && sampled.ManagedBinaries.SequenceEqual(manifest.ManagedBinaries)
+                && sampled.RuntimeEnvironmentSha256 == manifest.RuntimeEnvironmentSha256,
+                "SampledPrevalidationBindingMismatch");
+        }
         Require(manifest.SuiteId.StartsWith("pv-", StringComparison.Ordinal)
             && !manifest.SuiteId.Contains("..", StringComparison.Ordinal)
             && MonitoredSweepSummaryEncoding.IsBoundedToken(manifest.SuiteId, 64), "PrevalidationNamespace");
@@ -155,8 +175,9 @@ internal static class PrevalidationProtocol
             && manifest.ProtocolSha256 == MonitoredProtocolVersions.SuccessorProtocolSha256,
             "PrevalidationFrozenInputMismatch");
         Require(manifest.Probes.SequenceEqual(Plan()) && manifest.Bounds == Bounds(), "PrevalidationPlanOrBounds");
-        Require(manifest.ContextSummaryFieldMapSha256 == ContextSummaryFieldMapSha256
-            || allowLegacyInspection && (manifest.ContextSummaryFieldMapSha256 == LegacyContextSummaryFieldMapSha256
+        Require(manifest.ContextSummaryFieldMapSha256 == (manifest.SampledLoss is null
+                ? ContextSummaryFieldMapSha256 : SampledLossProtocol.ContextMapSha256)
+            || manifest.SampledLoss is null && allowLegacyInspection && (manifest.ContextSummaryFieldMapSha256 == LegacyContextSummaryFieldMapSha256
                 || manifest.ContextSummaryFieldMapSha256 == PreviousContextSummaryFieldMapSha256),
             "PrevalidationContextEncodingMismatch");
         Require(PrevalidationLayout.DeriveSuiteIdentityBound() <= Bounds().SuiteIdentities,
@@ -176,6 +197,7 @@ internal static class PrevalidationProtocol
         Require(manifest.RuntimeEnvironmentSha256 == RuntimeEnvironmentHash(),
             "PrevalidationRuntimeEnvironmentChanged");
         var repository = Path.GetFullPath(repositoryRoot);
+        if (manifest.SampledLoss is { } sampled) SampledLossProtocol.ValidateBinding(sampled, repository);
         Require(MonitoredFile.HashFile(MonitoredPathRules.ResolveRepositoryFile(repository, AddendumPath))
             == AddendumSha256, "PrevalidationAddendumChanged");
         MonitoredSuccessorProtocolValidator.Validate(repository, MonitoredProtocolVersions.SuccessorProtocolPath);
@@ -215,8 +237,10 @@ internal static class PrevalidationProtocol
             MonitoredPathRules.ResolveRepositoryFile(repository, HistoricalReportPath)),
             "PrevalidationHistoricalReportMismatch");
         var adoption = Read<PrevalidationAdoption>(manifest.Adoption.Path);
-        Require(adoption.Schema == "durable-prevalidation-adoption/1"
-            && adoption.AddendumSha256 == AddendumSha256 && adoption.Scope == Scope
+        Require(adoption.Schema == (manifest.SampledLoss is null ? "durable-prevalidation-adoption/1"
+                : "durable-sampled-prevalidation-adoption/1")
+            && adoption.AddendumSha256 == (manifest.SampledLoss is null ? AddendumSha256
+                : SampledLossProtocol.ProtocolSha256) && adoption.Scope == Scope
             && !string.IsNullOrWhiteSpace(adoption.Maintainer) && adoption.AdoptedAt != default,
             "PrevalidationAdoptionMissing");
         var attribution = Read<MonitoredAttributionMap>(manifest.Attribution.Path);
@@ -228,7 +252,9 @@ internal static class PrevalidationProtocol
             manifest.SourceCommits, manifest.Attribution.Sha256, encoding, component,
             MonitoredAdmissionStage.PrevalidationComponentProof);
         var acceptance = Read<PrevalidationAcceptance>(manifest.ImplementationAcceptance.Path);
-        Require(acceptance.Schema == "durable-prevalidation-implementation-acceptance/1"
+        Require(acceptance.Schema == (manifest.SampledLoss is null ? "durable-prevalidation-implementation-acceptance/1"
+                : "durable-sampled-prevalidation-implementation-acceptance/1")
+            && acceptance.SampledProtocolSha256 == manifest.SampledLoss?.ProtocolSha256
             && acceptance.Scope == Scope && acceptance.AddendumSha256 == AddendumSha256
             && acceptance.SourceCommits == manifest.SourceCommits
             && acceptance.BinaryInventorySha256 == BinaryInventoryHash(manifest)
@@ -252,7 +278,8 @@ internal static class PrevalidationProtocol
 
     internal static void ValidateAuthorization(PrevalidationManifest manifest, string hash,
         PrevalidationAuthorization authorization)
-        => Require(authorization.Schema == "durable-prevalidation-authorization/1"
+        => Require(authorization.Schema == (manifest.SampledLoss is null ? "durable-prevalidation-authorization/1"
+                : "durable-sampled-prevalidation-authorization/1")
             && authorization.Scope == Scope && authorization.SuiteId == manifest.SuiteId
             && authorization.ManifestSha256 == hash && authorization.AddendumSha256 == AddendumSha256
             && authorization.AcceptanceSha256 == manifest.ImplementationAcceptance.Sha256
@@ -314,7 +341,7 @@ internal static class PrevalidationProtocol
         => MonitoredFile.HashBytes(JsonSerializer.SerializeToUtf8Bytes(
             Binaries(manifest).OrderBy(static item => item.Path, StringComparer.Ordinal).ToArray(), Json));
 
-    private static void ValidateManagedInventory(PrevalidationManifest manifest)
+    internal static void ValidateManagedInventory(PrevalidationManifest manifest)
     {
         var groups = Binaries(manifest).GroupBy(static item => Path.GetFullPath(item.Path), StringComparer.Ordinal);
         var declared = new Dictionary<string, string>(StringComparer.Ordinal);

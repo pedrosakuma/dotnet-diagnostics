@@ -21,6 +21,12 @@ internal sealed record PrevalidationCoverage(string Schema, int Ordinal, string 
     bool CampaignAdmissionGranted = false)
 {
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public SampledLossMeasurement? SampledLoss { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public SampledLossPopulation? ObservationPopulation => SampledLossPopulation.From(SampledLoss);
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool SampledAdmissible { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? FailureStage { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public PrevalidationSecondaryFailures? SecondaryFailures { get; init; }
@@ -102,7 +108,8 @@ internal static class PrevalidationExecutor
             var monitor = admissionMonitor = new MonitoredStorageMonitor(validated.Attribution, validated.Encoding,
                 Path.Combine(manifest.PrivateRoot, "admission-monitor.jsonl"),
                 new BoundedOutputBudget(1_048_576, 1_024, 64, 64), 571,
-                prevalidationScope: new PrevalidationObservationScope([], coordinator));
+                prevalidationScope: new PrevalidationObservationScope([], coordinator),
+                sampledLoss: manifest.SampledLoss is not null);
             monitor.AddProcess(coordinator);
             RequireSweep(await monitor.ObserveBoundaryAsync("suite-coordinator-admission", true, admissionDeadline.Token)
                 .ConfigureAwait(false));
@@ -180,7 +187,7 @@ internal static class PrevalidationExecutor
                 monitor = new MonitoredStorageMonitor(context.Attribution, validated.Encoding,
                     Path.Combine(contextRoot, "coordinator-monitor.jsonl"), budget, 571,
                     includeIdentityEvidence: probe.Ordinal == 8,
-                    prevalidationScope: context.Prevalidation);
+                    prevalidationScope: context.Prevalidation, sampledLoss: context.UsesSampledLoss);
                 monitor.AddProcess(coordinator);
                 monitor.SetStage("fixture-preparation", activeStorageStage: true);
                 _ = monitor.StartAsync();
@@ -281,6 +288,10 @@ internal static class PrevalidationExecutor
                     {
                         MaximumSuiteBytes = monitor.MaximumObservedSweepBytes,
                         MaximumContextIdentities = monitor.MaximumCurrentContextIdentities,
+                        SampledLoss = monitor.LossTotals,
+                        MonitoringComplete = coverage.MonitoringComplete && (monitor.LossTotals?.Lost ?? 0) == 0,
+                        SampledAdmissible = manifest.SampledLoss is not null && !monitor.IsIncomplete
+                            && monitor.TerminalAlarm is null && coverage.FailureCode is null,
                     };
                 }
                 WriteCoverage(manifest, probe, coverage);
@@ -320,7 +331,7 @@ internal static class PrevalidationExecutor
                 manifest.Probes.Select(probe => PrevalidationLayout.ContextRoot(manifest, probe)).ToArray(), coordinator);
             var monitor = finalMonitor = new MonitoredStorageMonitor(validated.Attribution, validated.Encoding,
                 Path.Combine(manifest.PrivateRoot, "final-monitor.jsonl"), maximumEstablishedIdentities: 571,
-                prevalidationScope: finalScope);
+                prevalidationScope: finalScope, sampledLoss: manifest.SampledLoss is not null);
             monitor.AddProcess(coordinator);
             RequireSweep(await monitor.ObserveBoundaryAsync("suite-final-enumeration", false, finalDeadline.Token)
                 .ConfigureAwait(false));
@@ -401,7 +412,8 @@ internal static class PrevalidationExecutor
         var context = PrevalidationLayout.Context(validated, probe, request.Coordinator);
         context = context with
         {
-            Prevalidation = context.Prevalidation! with { Monitor = new PrevalidationMonitorClient(deadline.Token) },
+            Prevalidation = context.Prevalidation! with
+                { Monitor = new PrevalidationMonitorClient(deadline.Token, context.UsesSampledLoss) },
         };
         PrevalidationCoverage coverage;
         if (probe.Ordinal == 8)
@@ -608,6 +620,7 @@ internal static class PrevalidationExecutor
         MonitoredCaseOutcome outcome, string root, bool requireEntryCompletion = false)
     {
         var boundaries = new HashSet<string>(StringComparer.Ordinal);
+        SampledLossMeasurement? losses = outcome.SampledLoss is null ? null : SampledLossMeasurement.Empty();
         var totalRecords = 0;
         foreach (var relative in outcome.MonitoringEvidenceFiles)
         {
@@ -623,7 +636,11 @@ internal static class PrevalidationExecutor
                 var summary = JsonSerializer.Deserialize<MonitoredSweepSummary>(line, PrevalidationProtocol.Json)
                     ?? throw PrevalidationProtocol.Error("PrevalidationSummaryMissing", "A monitoring record was empty.");
                 ValidateSummaryFailure(summary);
-                PrevalidationProtocol.Require(summary.Complete && summary.Alarm is null,
+                PrevalidationProtocol.Require((summary.SampledLoss is null) == (losses is null),
+                    "SampledLossCoveragePolicyMismatch");
+                if (summary.SampledLoss is { } measured)
+                    losses = SampledLossMeasurement.Merge(losses!, measured);
+                PrevalidationProtocol.Require(SampledLossProtocol.Admissible(summary) && summary.Alarm is null,
                     summary.FirstErrorCode ?? summary.Alarm ?? "PrevalidationIncompleteObservation");
                 PrevalidationProtocol.Require(summary.CurrentContextIdentities is > 0 and <= 571
                     && summary.CurrentContextRootedIdentities is >= 0 and <= 539
@@ -645,7 +662,7 @@ internal static class PrevalidationExecutor
         }
         var required = RequiredBoundaries(probe);
         var worker = outcome.Worker;
-        var complete = outcome.MonitoringComplete && outcome.MonitoringAlarm is null
+        var complete = (outcome.MonitoringComplete || outcome.SampledAdmissible) && outcome.MonitoringAlarm is null
             && outcome.FailureCode is null && outcome.Outcome == "pass" && worker is not null
             && outcome.Ordinal == probe.Ordinal && outcome.CaseId == probe.Workload
             && outcome.Candidate == probe.Candidate
@@ -661,7 +678,7 @@ internal static class PrevalidationExecutor
             complete ? "coverage-observed" : "incomplete",
             complete ? null : PrevalidationFailureCodes.Normalize(
                 outcome.FailureCode ?? outcome.MonitoringAlarm ?? "RequiredCoverageMissing"),
-            complete, probe.FixtureSlots, probe.FixtureSlots * 4, outcome.MaximumObservedIdentities,
+            complete && (losses?.Lost ?? 0) == 0, probe.FixtureSlots, probe.FixtureSlots * 4, outcome.MaximumObservedIdentities,
             outcome.MaximumObservedSweepBytes,
             probe.Candidate == "E" ? null : probe.Workload == "F3" ? complete ? 128 : null : worker?.Offered,
             probe.Candidate == "E" || probe.Workload == "F3" ? null : worker?.Committed,
@@ -670,6 +687,8 @@ internal static class PrevalidationExecutor
                 : worker?.SourceCoverage, required)
         {
             FailureStage = complete ? null : "coverage",
+            SampledLoss = losses,
+            SampledAdmissible = complete && losses is not null,
         };
     }
 
@@ -748,7 +767,8 @@ internal static class PrevalidationExecutor
     }
 
     internal static bool HasCoverage(PrevalidationCoverage outcome)
-        => outcome.Outcome == "coverage-observed" && outcome.MonitoringComplete
+        => outcome.Outcome == "coverage-observed" && (outcome.MonitoringComplete
+                || outcome.SampledAdmissible && outcome.SampledLoss is not null)
             && outcome.FailureCode is null && outcome.FailureStage is null
             && outcome.SecondaryFailures is null && !outcome.CampaignAdmissionGranted;
 
@@ -765,6 +785,7 @@ internal static class PrevalidationExecutor
         {
             Outcome = "incomplete",
             MonitoringComplete = false,
+            SampledAdmissible = false,
             FailureCode = coverage.FailureCode ?? PrevalidationFailureCodes.Normalize(code),
             FailureStage = coverage.FailureCode is null ? stage : coverage.FailureStage,
             SecondaryFailures = coverage.FailureCode is null ? coverage.SecondaryFailures
@@ -788,6 +809,11 @@ internal static class PrevalidationExecutor
     {
         MonitoredSweepSummaryEncoding.ValidateDescriptorFailure(summary);
         PrevalidationFailureCodes.Validate(summary.FirstErrorCode, null);
+        if (summary.SampledLoss is not null)
+        {
+            SampledLossProtocol.ValidateSummary(summary);
+            return;
+        }
         PrevalidationProtocol.Require(summary.ErrorCount >= 0 && summary.UnclassifiedCount >= 0
             && (summary.Complete
                 ? summary.ErrorCount == 0 && summary.UnclassifiedCount == 0 && summary.FirstErrorCode is null
@@ -796,7 +822,7 @@ internal static class PrevalidationExecutor
     }
 
     internal static void RequireSweep(MonitoredSweepResult result)
-        => PrevalidationProtocol.Require(result.Summary.Complete && result.Summary.Alarm is null,
+        => PrevalidationProtocol.Require(SampledLossProtocol.Admissible(result.Summary) && result.Summary.Alarm is null,
             result.Summary.FirstErrorCode ?? (result.Errors.Count != 0 ? PrevalidationFailureCodes.Normalize(result.Errors[0])
                 : result.Summary.Alarm ?? "PrevalidationMonitoringIncomplete"));
 

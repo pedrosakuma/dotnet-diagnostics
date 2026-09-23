@@ -19,6 +19,9 @@ internal static class DurableStorageSpikeCommand
         "prevalidation-validate",
         "prevalidation-run",
         "prevalidation-inspect",
+        "sampled-loss-plan",
+        "sampled-loss-campaign-binding",
+        "sampled-loss-readiness-validate",
     ];
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
@@ -88,6 +91,33 @@ internal static class DurableStorageSpikeCommand
                         summarySchema = PrevalidationProtocol.SummarySchema,
                         contextSummaryFieldMapSha256 = PrevalidationProtocol.ContextSummaryFieldMapSha256,
                     }, JsonOptions));
+                    return 0;
+                case "sampled-loss-plan":
+                    Console.WriteLine(JsonSerializer.Serialize(new
+                    {
+                        policy = SampledLossProtocol.Policy,
+                        protocol = SampledLossProtocol.Path,
+                        protocolSha256 = SampledLossProtocol.ProtocolSha256,
+                        summarySchema = SampledLossProtocol.SummarySchema,
+                        contextSummaryFieldMap = SampledLossProtocol.FieldMap,
+                        contextSummaryFieldMapSha256 = SampledLossProtocol.ContextMapSha256,
+                        maximumSummaryLfUtf8Bytes = MonitoredSweepSummaryEncoding.EncodeLine(
+                            SampledLossProtocol.WorstCaseSummary()).Length,
+                        prevalidationManifestSchema = SampledLossProtocol.PrevalidationManifestSchema,
+                        campaignManifestSchema = SampledLossProtocol.CampaignManifestSchema,
+                        runtimeEnvironmentSha256 = PrevalidationProtocol.RuntimeEnvironmentHash(),
+                        probes = PrevalidationProtocol.Plan(), bounds = PrevalidationProtocol.Bounds(),
+                        campaignPlan = MonitoredExecutionPlanner.Expand(),
+                        campaignAdmissionGranted = false,
+                    }, JsonOptions));
+                    return 0;
+                case "sampled-loss-campaign-binding":
+                    Console.WriteLine(SampledLossProtocol.CampaignBindingHash(
+                        PrevalidationProtocol.Read<MonitoredRunManifest>(RequireOption(args, "--manifest"))));
+                    return 0;
+                case "sampled-loss-readiness-validate":
+                    Console.WriteLine(JsonSerializer.Serialize(SampledLossProtocol.ValidateReadiness(
+                        PrevalidationProtocol.Read<MonitoredRunManifest>(RequireOption(args, "--manifest"))), JsonOptions));
                     return 0;
                 case "prevalidation-validate":
                 case "prevalidation-run":
@@ -319,8 +349,12 @@ internal static class DurableStorageSpikeCommand
         writer.WriteLine("  prevalidation-validate --manifest <path> --repository-root <path>");
         writer.WriteLine("  prevalidation-run --manifest <path> --repository-root <path>");
         writer.WriteLine("  prevalidation-inspect --manifest <path>");
+        writer.WriteLine("  sampled-loss-plan");
+        writer.WriteLine("  sampled-loss-campaign-binding --manifest <path>");
+        writer.WriteLine("  sampled-loss-readiness-validate --manifest <path>");
         writer.WriteLine();
         writer.WriteLine("Revision-3 execution remains closed. Monitored revision-4 execution requires a fully resolved manifest and immutable parent authorization receipt.");
         writer.WriteLine("Prevalidation is a separate eight-entry, unscored authorization. It never grants campaign admission.");
+        writer.WriteLine("Prospective sampled manifests use the same validate/run routes, but require their new policy, receipts, and independently reviewed sealed eight-entry readiness before a campaign.");
     }
 }

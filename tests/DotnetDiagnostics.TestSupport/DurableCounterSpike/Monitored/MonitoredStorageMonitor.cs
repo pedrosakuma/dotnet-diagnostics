@@ -135,6 +135,23 @@ internal sealed record DescriptorObservationFailure(int Operation, int Error, in
     internal int[] Encode(MonitoredProcessRole role) => [(int)role, Operation, Error, Descriptor];
 }
 
+internal sealed record DescriptorCoherenceProof(
+    MonitoredProcessIdentity Owner, PinnedDescriptorSnapshot First, PinnedDescriptorSnapshot Second)
+{
+    internal int Changes => (First.Identity != Second.Identity ? 1 : 0)
+        | (First.Flags != Second.Flags ? 2 : 0)
+        | (!string.Equals(First.Target, Second.Target, StringComparison.Ordinal) ? 4 : 0);
+
+    internal bool Valid => Changes is >= 1 and <= 7 && ValidSnapshot(First) && ValidSnapshot(Second);
+
+    private static bool ValidSnapshot(PinnedDescriptorSnapshot snapshot)
+        => !string.IsNullOrWhiteSpace(snapshot.Target) && Path.IsPathFullyQualified(snapshot.Target)
+            && !snapshot.Target.EndsWith(" (deleted)", StringComparison.Ordinal)
+            && snapshot.Flags >= 0 && !string.IsNullOrWhiteSpace(snapshot.Identity.Value)
+            && snapshot.RegularFileMetadata is { LinkCount: 1, Length: >= 0 } native
+            && native.Identity == snapshot.Identity;
+}
+
 internal static class LinuxProcessDescriptorObserver
 {
     private const int OpenPath = 0x200000;
@@ -143,40 +160,49 @@ internal static class LinuxProcessDescriptorObserver
     internal static PinnedProcessDescriptor OpenCoherent(
         int processId,
         string descriptorPath,
-        int maximumPathUtf8Bytes)
-        => OpenCoherentCore(processId, descriptorPath, maximumPathUtf8Bytes, null, null);
+        int maximumPathUtf8Bytes, MonitoredProcessIdentity? sampledOwner = null)
+        => OpenCoherentCore(processId, descriptorPath, maximumPathUtf8Bytes, null, null, sampledOwner);
 
     internal static PinnedProcessDescriptor OpenCoherentForComponent(
         int processId, string descriptorPath, int maximumPathUtf8Bytes,
-        Action<int>? beforeOperation, Func<int, int?>? openError = null)
-        => OpenCoherentCore(processId, descriptorPath, maximumPathUtf8Bytes, beforeOperation, openError);
+        Action<int>? beforeOperation, Func<int, int?>? openError = null,
+        MonitoredProcessIdentity? sampledOwner = null)
+        => OpenCoherentCore(processId, descriptorPath, maximumPathUtf8Bytes, beforeOperation, openError, sampledOwner);
 
     private static PinnedProcessDescriptor OpenCoherentCore(
         int processId, string descriptorPath, int maximumPathUtf8Bytes,
-        Action<int>? beforeOperation, Func<int, int?>? openError)
+        Action<int>? beforeOperation, Func<int, int?>? openError, MonitoredProcessIdentity? sampledOwner)
     {
         SafeFileHandle? pinned = null;
+        var knownUnlinked = false;
         try
         {
+            if (sampledOwner is not null && (sampledOwner.ProcessId != processId
+                || !LinuxProcessIdentity.Matches(sampledOwner)))
+                throw PrevalidationProtocol.Error("UnexpectedProcessIdentityLoss",
+                    "The sampled descriptor owner no longer matches its exact process identity.");
             beforeOperation?.Invoke(1);
             pinned = OpenPathHandle(descriptorPath, 1, openError?.Invoke(1));
             var first = CaptureSnapshot(
                 pinned,
                 processId,
                 Path.GetFileName(descriptorPath),
-                maximumPathUtf8Bytes, 2, beforeOperation);
+                maximumPathUtf8Bytes, 2, beforeOperation, value => knownUnlinked |= value);
             beforeOperation?.Invoke(3);
             using var verification = OpenPathHandle(descriptorPath, 3, openError?.Invoke(3));
             var second = CaptureSnapshot(
                 verification,
                 processId,
                 Path.GetFileName(descriptorPath),
-                maximumPathUtf8Bytes, 4, beforeOperation);
-            ValidateCoherent(first, second);
+                maximumPathUtf8Bytes, 4, beforeOperation, value => knownUnlinked |= value);
+            ValidateCoherent(first, second, sampledOwner,
+                int.Parse(Path.GetFileName(descriptorPath), CultureInfo.InvariantCulture));
             return new PinnedProcessDescriptor(pinned, first);
         }
-        catch
+        catch (Exception exception)
         {
+            if (exception is DurableStorageExperimentException storage)
+                storage.KnownUnlinkedDescriptor = knownUnlinked;
             pinned?.Dispose();
             throw;
         }
@@ -184,15 +210,22 @@ internal static class LinuxProcessDescriptorObserver
 
     internal static void ValidateCoherent(
         PinnedDescriptorSnapshot first,
-        PinnedDescriptorSnapshot second)
+        PinnedDescriptorSnapshot second,
+        MonitoredProcessIdentity? sampledOwner = null,
+        int descriptor = -1)
     {
         if (first.Identity != second.Identity
             || first.Flags != second.Flags
             || !string.Equals(first.Target, second.Target, StringComparison.Ordinal))
         {
+            var proof = sampledOwner is null ? null : new DescriptorCoherenceProof(sampledOwner, first, second);
             throw new DurableStorageExperimentException(
                 "DescriptorIdentityChangedDuringObservation",
-                "A process descriptor changed target, flags, or native identity while it was being pinned.");
+                "A process descriptor changed target, flags, or native identity while it was being pinned.")
+            {
+                CoherenceProof = proof,
+                DescriptorFailure = proof is null ? null : new(5, proof.Changes, descriptor),
+            };
         }
     }
 
@@ -202,7 +235,8 @@ internal static class LinuxProcessDescriptorObserver
         string descriptor,
         int maximumPathUtf8Bytes,
         int flagsOperation,
-        Action<int>? beforeOperation)
+        Action<int>? beforeOperation,
+        Action<bool> observeUnlinked)
     {
         var pinnedPath = $"/proc/self/fd/{handle.DangerousGetHandle().ToInt64().ToString(CultureInfo.InvariantCulture)}";
         var target = new FileInfo(pinnedPath).LinkTarget;
@@ -218,6 +252,7 @@ internal static class LinuxProcessDescriptorObserver
                 "ObservedPathLimitExceeded",
                 "A pinned process descriptor target exceeded the bounded UTF-8 path limit.");
         }
+        observeUnlinked(target.EndsWith(" (deleted)", StringComparison.Ordinal));
         beforeOperation?.Invoke(flagsOperation);
         var flags = ReadTargetDescriptorFlags(processId, descriptor, flagsOperation);
         var identity = LinuxAnyHandleIdentityObserver.Observe(handle);
@@ -225,6 +260,7 @@ internal static class LinuxProcessDescriptorObserver
         try
         {
             metadata = LinuxStatxHandleMetadataObserver.Instance.Observe(handle);
+            observeUnlinked(metadata.Value.LinkCount == 0);
         }
         catch (DurableStorageExperimentException exception)
             when (exception.Code == "UnsupportedFileKind")
@@ -682,12 +718,14 @@ internal sealed record MonitoredSweepSummary(
     public string? FirstErrorCode { get; init; }
     [JsonPropertyName("nc"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int[]? FirstDescriptorFailure { get; init; }
+    [JsonPropertyName("sl"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public SampledLossMeasurement? SampledLoss { get; init; }
 }
 
 internal static class MonitoredSweepSummaryEncoding
 {
     private static readonly JsonSerializerOptions JsonOptions =
-        new(JsonSerializerDefaults.Web);
+        new(JsonSerializerDefaults.Web) { Converters = { new SampledSweepConverter() } };
 
     internal const string Schema = "durable-monitored-sweep-summary/1";
     internal const int MaximumBoundaryUtf8Bytes = 64;
@@ -794,8 +832,10 @@ internal static class MonitoredSweepSummaryEncoding
         var context = summary.FirstDescriptorFailure;
         PrevalidationProtocol.Require(context is null
             || context.Length == 4 && context[0] is >= 0 and <= 2
-                && context[1] is >= 1 and <= 4 && context[3] >= 0
-                && (context[1] is 2 or 4 || context[2] is > 0 and <= 4095)
+                && context[3] >= 0
+                && (context[1] is 1 or 3 && context[2] is > 0 and <= 4095
+                    || context[1] is 2 or 4
+                    || summary.SampledLoss is not null && context[1] == 5 && context[2] is >= 1 and <= 7)
                 && !summary.Complete && summary.ErrorCount > 0 && summary.FirstErrorCode is not null,
             "PrevalidationDescriptorContextMismatch");
     }
@@ -917,7 +957,8 @@ internal interface IMonitoredSummaryWriter : IAsyncDisposable
 
 internal sealed class BoundedJsonLineWriter : IMonitoredSummaryWriter
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+        { Converters = { new SampledSweepConverter() } };
     private readonly FileStream _stream;
     private readonly int _maximumRecordBytes;
     private readonly int _maximumRecords;
@@ -1040,6 +1081,9 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
     private int _maximumCurrentContextIdentities;
     private MonitoredProcessIdentity? _geometryFixtureOwner;
     private readonly long[] _retiredCpuTicks = new long[3];
+    private readonly bool _sampledLoss;
+    private SampledLossMeasurement? _lossTotals;
+    internal SampledLossMeasurement? LossTotals => _lossTotals;
 
     internal MonitoredStorageMonitor(
         MonitoredAttributionMap attribution,
@@ -1048,7 +1092,8 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
         BoundedOutputBudget? combinedOutputBudget = null,
         int? maximumEstablishedIdentities = null,
         bool includeIdentityEvidence = false,
-        PrevalidationObservationScope? prevalidationScope = null)
+        PrevalidationObservationScope? prevalidationScope = null,
+        bool sampledLoss = false)
     {
         LinuxStatxHandleMetadataObserver.EnsureSupportedPlatform(OperatingSystem.IsLinux());
         _attribution = attribution;
@@ -1057,6 +1102,8 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
             maximumEstablishedIdentities);
         _includeIdentityEvidence = includeIdentityEvidence;
         _prevalidationScope = prevalidationScope;
+        _sampledLoss = sampledLoss;
+        _lossTotals = sampledLoss ? SampledLossMeasurement.Empty() : null;
         _writer = new BoundedJsonLineWriter(
             evidencePath,
             encoding.MaximumSummaryUtf8Bytes,
@@ -1070,7 +1117,8 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
         MonitoredAttributionMap attribution,
         IMonitoredSummaryWriter writer,
         int? maximumEstablishedIdentities = null,
-        bool includeIdentityEvidence = false)
+        bool includeIdentityEvidence = false,
+        bool sampledLoss = false)
     {
         LinuxStatxHandleMetadataObserver.EnsureSupportedPlatform(OperatingSystem.IsLinux());
         _attribution = attribution;
@@ -1078,6 +1126,8 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
             attribution,
             maximumEstablishedIdentities);
         _includeIdentityEvidence = includeIdentityEvidence;
+        _sampledLoss = sampledLoss;
+        _lossTotals = sampledLoss ? SampledLossMeasurement.Empty() : null;
         _writer = writer;
     }
 
@@ -1133,6 +1183,8 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
     {
         lock (_gate)
         {
+            if (_sampledLoss && (_processes.Count >= 4 || !Enum.IsDefined(identity.Role)))
+                throw Error("SampledProcessLimit", "Sampled observation permits at most four owned processes.");
             if (_processes.TryGetValue(identity.ProcessId, out var existing)
                 && existing.Identity != identity)
             {
@@ -1359,6 +1411,7 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
     {
         var started = Stopwatch.GetTimestamp();
         var errors = new List<string>(8);
+        var loss = _sampledLoss ? SampledLossMeasurement.Empty() : null;
         int[]? firstDescriptorFailure = null;
         var observations = new Dictionary<ApparentFileIdentity, ObservedIdentity>();
         string boundary;
@@ -1385,7 +1438,8 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
                 errors,
                 ref runtimeOnlyExcludedBytes,
                 ref runtimeOnlyExcludedCount,
-                ref firstDescriptorFailure);
+                ref firstDescriptorFailure,
+                ref loss);
         }
         if (_prevalidationScope?.CurrentHistoryRoot is { } retainedRoot)
         {
@@ -1522,12 +1576,13 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
             errors.Add("MonitorAlarmEncodingLimitExceeded");
             alarm = "MonitorAlarmEncodingLimitExceeded";
         }
-        var complete = errors.Count == 0 && unclassified == 0;
-        if (!complete || alarm is not null)
+        var hardIncomplete = errors.Count != 0 || unclassified != 0;
+        var complete = !hardIncomplete && (loss is null || loss.Lost == 0);
+        if (hardIncomplete || alarm is not null)
         {
             lock (_gate)
             {
-                if (!complete)
+                if (hardIncomplete)
                 {
                     MarkIncomplete(errors.FirstOrDefault() ?? "UnclassifiedChargedResource");
                 }
@@ -1577,10 +1632,16 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
             CurrentContextIdentities = _prevalidationScope is null ? null : currentCount,
             CurrentContextRootedIdentities = _prevalidationScope is null ? null : currentRootedCount,
             RetainedHistoryBytes = _prevalidationScope is null ? null : retainedHistoryBytes,
-            FirstErrorCode = _prevalidationScope is null || complete ? null
+            FirstErrorCode = (_prevalidationScope is null && !_sampledLoss) || !hardIncomplete ? null
                 : PrevalidationFailureCodes.Normalize(errors.FirstOrDefault() ?? "UnclassifiedChargedResource"),
-            FirstDescriptorFailure = _prevalidationScope is null ? null : firstDescriptorFailure,
+            FirstDescriptorFailure = _prevalidationScope is null && !_sampledLoss ? null : firstDescriptorFailure,
+            SampledLoss = loss,
         };
+        if (loss is not null)
+        {
+            SampledLossProtocol.ValidateSummary(summary);
+            _lossTotals = SampledLossMeasurement.Merge(_lossTotals!, loss);
+        }
         var identityEvidence = _includeIdentityEvidence
             ? observations.Select(static pair => new MonitoredObservedIdentityEvidence(
                     pair.Key.Value,
@@ -1705,7 +1766,8 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
         List<string> errors,
         ref long runtimeOnlyExcludedBytes,
         ref int runtimeOnlyExcludedCount,
-        ref int[]? firstDescriptorFailure)
+        ref int[]? firstDescriptorFailure,
+        ref SampledLossMeasurement? loss)
     {
         if (!LinuxProcessIdentity.Matches(tracked.Identity))
         {
@@ -1720,7 +1782,9 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
         string[] descriptors;
         try
         {
-            descriptors = Directory.GetFiles(fdRoot);
+            descriptors = _sampledLoss
+                ? Directory.EnumerateFiles(fdRoot).Take(_attribution.MaximumTrackedIdentitiesPerSweep + 1).ToArray()
+                : Directory.GetFiles(fdRoot);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -1732,6 +1796,8 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
             errors.Add("DescriptorIdentityLimitExceeded");
             return;
         }
+        var offset = (int)tracked.Identity.Role * 5;
+        if (loss is not null) loss.Counts[offset] = checked(loss.Counts[offset] + descriptors.Length);
 
         foreach (var descriptor in descriptors)
         {
@@ -1742,16 +1808,19 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
             }
             try
             {
+                var errorsBefore = errors.Count;
                 using var pinned = BeforeDescriptorOperationForComponent is { } beforeOperation
                     ? LinuxProcessDescriptorObserver.OpenCoherentForComponent(
                         tracked.Identity.ProcessId, descriptor, _attribution.MaximumObservedPathUtf8Bytes,
-                        phase => beforeOperation(descriptor, phase))
+                        phase => beforeOperation(descriptor, phase), sampledOwner: _sampledLoss ? tracked.Identity : null)
                     : LinuxProcessDescriptorObserver.OpenCoherent(
-                        tracked.Identity.ProcessId, descriptor, _attribution.MaximumObservedPathUtf8Bytes);
+                        tracked.Identity.ProcessId, descriptor, _attribution.MaximumObservedPathUtf8Bytes,
+                        _sampledLoss ? tracked.Identity : null);
                 var target = pinned.Snapshot.Target;
                 var flags = pinned.Snapshot.Flags;
                 if (IsSimpleRuntimeOnlyTarget(target))
                 {
+                    if (loss is not null) loss.Counts[offset + 1]++;
                     continue;
                 }
                 if (pinned.Snapshot.RegularFileMetadata is not { } native)
@@ -1791,8 +1860,9 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
                     errors.Add("WritableCompletedContextDescriptor");
                 }
                 if (!writable && IsReadOnlyDependency(normalizedTarget)
-                    && (_prevalidationScope is null || !deleted && native.LinkCount == 1))
+                    && (_prevalidationScope is null && !_sampledLoss || !deleted && native.LinkCount == 1))
                 {
+                    if (loss is not null && errors.Count == errorsBefore) loss.Counts[offset + 1]++;
                     continue;
                 }
                 if (role is null && !writable)
@@ -1817,6 +1887,7 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
                         runtimeOnlyExcludedBytes = checked(
                             runtimeOnlyExcludedBytes + native.Length);
                         runtimeOnlyExcludedCount++;
+                        if (loss is not null && errors.Count == errorsBefore) loss.Counts[offset + 1]++;
                         continue;
                     }
                     if (classification.ProofAttempted)
@@ -1824,7 +1895,7 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
                         errors.Add(classification.FailureCode ?? "RuntimeOnlyClassificationFailed");
                     }
                 }
-                if (_prevalidationScope is not null && (native.LinkCount == 0 || deleted) && !descriptorFixture)
+                if ((_prevalidationScope is not null || _sampledLoss) && (native.LinkCount == 0 || deleted) && !descriptorFixture)
                 {
                     errors.Add("UnclassifiedUnlinkedDescriptor");
                 }
@@ -1837,11 +1908,25 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
                     seenInRoot: false,
                     seenInDescriptor: true,
                     inRetainedHistory: IsRetainedHistoryPath(normalizedTarget));
+                if (loss is not null && errors.Count == errorsBefore && role is not null)
+                    loss.Counts[offset + 1]++;
             }
             catch (Exception exception) when (exception is IOException
                 or UnauthorizedAccessException
                 or DurableStorageExperimentException)
             {
+                var lossKind = loss is null ? 0 : SampledLossProtocol.Classify(exception, tracked.Identity);
+                if (lossKind == 4 && exception is DurableStorageExperimentException { CoherenceProof: { } proof }
+                    && (!IsClassifiableCoherenceSnapshot(proof.First, observations)
+                        || !IsClassifiableCoherenceSnapshot(proof.Second, observations)))
+                    lossKind = 0;
+                if (lossKind != 0 && LinuxProcessIdentity.Matches(tracked.Identity))
+                {
+                    loss!.Counts[offset + lossKind]++;
+                    loss = loss with { FirstLoss = loss.FirstLoss
+                        ?? ((DurableStorageExperimentException)exception).DescriptorFailure!.Encode(tracked.Identity.Role) };
+                    continue;
+                }
                 if (exception is DurableStorageExperimentException { DescriptorFailure: { } failure })
                 {
                     firstDescriptorFailure ??= failure.Encode(tracked.Identity.Role);
@@ -1851,6 +1936,21 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
                     : $"DescriptorObservation{exception.GetType().Name}");
             }
         }
+        if (_sampledLoss && !tracked.IntentionalTermination && !LinuxProcessIdentity.Matches(tracked.Identity))
+            errors.Add("UnexpectedProcessIdentityLoss");
+    }
+
+    private bool IsClassifiableCoherenceSnapshot(PinnedDescriptorSnapshot snapshot,
+        Dictionary<ApparentFileIdentity, ObservedIdentity> observations)
+    {
+        if (_attribution.RuntimeOnlyDescriptorProofs.Any(proof => proof.DescriptorTarget == snapshot.Target)
+            || snapshot.Target.StartsWith("/memfd:", StringComparison.Ordinal))
+            return false;
+        var role = ClassifyPath(snapshot.Target);
+        var writable = (snapshot.Flags & 3) != 0;
+        if (_prevalidationScope is not null && role == "completed-context")
+            return !writable && observations.TryGetValue(snapshot.Identity, out var prior) && prior.SeenInRoot;
+        return role is not null || !writable && IsReadOnlyDependency(snapshot.Target);
     }
 
     private void ObservePath(
@@ -1951,6 +2051,8 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
         {
             if (!LinuxProcessIdentity.Matches(item.Identity))
             {
+                if (_sampledLoss && !item.IntentionalTermination)
+                    errors.Add("UnexpectedProcessIdentityLoss");
                 continue;
             }
             try

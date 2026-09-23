@@ -75,7 +75,15 @@ internal sealed record MonitoredCaseOutcome(
     int? MaximumObservedIdentities,
     long? MaximumObservedSweepBytes,
     IReadOnlyList<string> MonitoringEvidenceFiles,
-    MonitoredWorkerResult? Worker);
+    MonitoredWorkerResult? Worker)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public SampledLossMeasurement? SampledLoss { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public SampledLossPopulation? ObservationPopulation => SampledLossPopulation.From(SampledLoss);
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool SampledAdmissible { get; init; }
+}
 
 internal sealed record MonitoredCampaignDecision(
     string Recommendation,
@@ -96,7 +104,15 @@ internal sealed record MonitoredCampaignSeal(
     int EnumeratedOutcomes,
     IReadOnlyList<string> OutcomeSha256,
     IReadOnlyList<MonitoredSealedArtifact> Artifacts,
-    MonitoredCampaignDecision Decision);
+    MonitoredCampaignDecision Decision)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public SampledLossMeasurement? SampledLoss { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ObservationPolicy { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public SampledLossPopulation? ObservationPopulation => SampledLossPopulation.From(SampledLoss);
+}
 
 internal interface IMonitoredWorkerLauncher
 {
@@ -213,7 +229,7 @@ internal static class MonitoredCampaignRunner
                         Worker: null));
             }
             outcomes.Add(outcome);
-            stopCampaign = !outcome.MonitoringComplete
+            stopCampaign = !(outcome.MonitoringComplete || outcome.SampledAdmissible)
                 || outcome.MonitoringAlarm is not null
                 || outcome.FailureCode is "ContainmentViolation"
                     or "OwnedProcessIdentityMismatch"
@@ -225,7 +241,8 @@ internal static class MonitoredCampaignRunner
         {
             throw Error("OutcomeEnumerationIncomplete", "Campaign sealing requires all 35 outcomes, including not-run entries.");
         }
-        var decision = MonitoredDecisionEngine.Decide(outcomes);
+        var decision = MonitoredDecisionEngine.Decide(outcomes,
+            validated.Manifest.SampledLoss is null ? null : validated.Manifest);
         var outcomeHashes = outcomes
             .OrderBy(static outcome => outcome.Ordinal)
             .Select(outcome => MonitoredFile.HashFile(OutcomePath(validated, outcome.Ordinal)))
@@ -242,7 +259,15 @@ internal static class MonitoredCampaignRunner
                 outcomes.Count,
                 outcomeHashes,
                 sealedArtifacts,
-                decision));
+                decision)
+            {
+                ObservationPolicy = validated.Manifest.SampledLoss?.Policy,
+                SampledLoss = validated.Manifest.SampledLoss is null ? null
+                    : outcomes.Where(static outcome => outcome.SampledLoss is not null)
+                        .Aggregate(SampledLossMeasurement.Empty(), static (sum, outcome) =>
+                            SampledLossMeasurement.Merge(sum, outcome.SampledLoss!,
+                                35 * SampledLossMeasurement.MaximumCandidatesPerEntry)),
+            });
         MonitoredFile.MakeReadOnly(campaignSealPath);
         FreezeCampaignDirectories(validated.CampaignRoot);
         return decision.CompleteEvidence ? 0 : 3;
@@ -377,6 +402,9 @@ internal static class MonitoredCampaignRunner
         }
 
         var workerResult = final.Result;
+        var losses = first.SampledLoss is null ? null
+            : ReferenceEquals(first, final) || validated.Prevalidation is not null ? final.SampledLoss
+            : SampledLossMeasurement.Merge(first.SampledLoss, final.SampledLoss!);
         var monitorComplete = first.MonitoringComplete
             && final.MonitoringComplete
             && Math.Max(first.MaximumObservedIdentities, final.MaximumObservedIdentities)
@@ -410,7 +438,7 @@ internal static class MonitoredCampaignRunner
                 outcome,
                 failureCode,
                 failureMessage,
-                monitorComplete,
+                monitorComplete && (losses?.Lost ?? 0) == 0,
                 alarm,
                 checked(first.SummaryRecords + (ReferenceEquals(first, final) ? 0 : final.SummaryRecords)),
                 checked(first.SummaryBytes + (ReferenceEquals(first, final) ? 0 : final.SummaryBytes)),
@@ -419,7 +447,11 @@ internal static class MonitoredCampaignRunner
                 ReferenceEquals(first, final) || validated.Prevalidation is not null
                     ? [first.MonitorEvidencePath]
                     : [first.MonitorEvidencePath, final.MonitorEvidencePath],
-                workerResult));
+                workerResult)
+            {
+                SampledLoss = losses,
+                SampledAdmissible = validated.UsesSampledLoss && monitorComplete && alarm is null,
+            });
     }
 
     private static async Task<OwnedWorkerRun> RunOwnedWorkerAsync(
@@ -525,7 +557,7 @@ internal static class MonitoredCampaignRunner
                             trackedTargets,
                             monitor,
                             deadline.Token).ConfigureAwait(false);
-                        finalSweepComplete = postAbort.Summary.Complete;
+                        finalSweepComplete = SampledLossProtocol.Admissible(postAbort.Summary);
                         finalSweepAlarm = postAbort.Summary.Alarm;
                         terminatedForMonitor = true;
                         break;
@@ -564,7 +596,7 @@ internal static class MonitoredCampaignRunner
                             "pre-target-termination",
                             activeStorageStage: false,
                             deadline.Token).ConfigureAwait(false);
-                        if (!preTermination.Summary.Complete || preTermination.Summary.Alarm is not null)
+                        if (!SampledLossProtocol.Admissible(preTermination.Summary) || preTermination.Summary.Alarm is not null)
                         {
                             var postAbort = await AbortOwnedProcessesAsync(
                                 process,
@@ -572,7 +604,7 @@ internal static class MonitoredCampaignRunner
                                 trackedTargets,
                                 monitor,
                                 deadline.Token).ConfigureAwait(false);
-                            finalSweepComplete = postAbort.Summary.Complete;
+                            finalSweepComplete = SampledLossProtocol.Admissible(postAbort.Summary);
                             finalSweepAlarm = postAbort.Summary.Alarm;
                             terminatedForMonitor = true;
                             break;
@@ -595,7 +627,7 @@ internal static class MonitoredCampaignRunner
                             "pre-worker-termination",
                             activeStorageStage: false,
                             deadline.Token).ConfigureAwait(false);
-                        if (!preWorkerTermination.Summary.Complete
+                        if (!SampledLossProtocol.Admissible(preWorkerTermination.Summary)
                             || preWorkerTermination.Summary.Alarm is not null)
                         {
                             var postAbort = await AbortOwnedProcessesAsync(
@@ -604,7 +636,7 @@ internal static class MonitoredCampaignRunner
                                 trackedTargets,
                                 monitor,
                                 deadline.Token).ConfigureAwait(false);
-                            finalSweepComplete = postAbort.Summary.Complete;
+                            finalSweepComplete = SampledLossProtocol.Admissible(postAbort.Summary);
                             finalSweepAlarm = postAbort.Summary.Alarm;
                             terminatedForMonitor = true;
                             break;
@@ -659,7 +691,7 @@ internal static class MonitoredCampaignRunner
                             boundaryName,
                             workerEvent.ActiveStorageStage == true,
                             deadline.Token).ConfigureAwait(false);
-                        if (!boundary.Summary.Complete || boundary.Summary.Alarm is not null)
+                        if (!SampledLossProtocol.Admissible(boundary.Summary) || boundary.Summary.Alarm is not null)
                         {
                             var postAbort = await AbortOwnedProcessesAsync(
                                 process,
@@ -667,7 +699,7 @@ internal static class MonitoredCampaignRunner
                                 trackedTargets,
                                 monitor,
                                 deadline.Token).ConfigureAwait(false);
-                            finalSweepComplete = postAbort.Summary.Complete;
+                            finalSweepComplete = SampledLossProtocol.Admissible(postAbort.Summary);
                             finalSweepAlarm = postAbort.Summary.Alarm;
                             terminatedForMonitor = true;
                             break;
@@ -690,9 +722,9 @@ internal static class MonitoredCampaignRunner
                             "post-kill-quiescent-root-inventory",
                             activeStorageStage: false,
                             deadline.Token).ConfigureAwait(false);
-                        finalSweepComplete = preKill.Summary.Complete
+                        finalSweepComplete = SampledLossProtocol.Admissible(preKill.Summary)
                             && preKill.Summary.Alarm is null
-                            && postKill.Summary.Complete;
+                            && SampledLossProtocol.Admissible(postKill.Summary);
                         finalSweepAlarm = postKill.Summary.Alarm;
                         killedAtBarrier = true;
                         break;
@@ -720,7 +752,7 @@ internal static class MonitoredCampaignRunner
                     "worker-exit-quiescent",
                     activeStorageStage: false,
                     deadline.Token).ConfigureAwait(false);
-                finalSweepComplete = finalSweep.Summary.Complete;
+                finalSweepComplete = SampledLossProtocol.Admissible(finalSweep.Summary);
                 finalSweepAlarm = finalSweep.Summary.Alarm;
             }
         }
@@ -880,7 +912,7 @@ internal static class MonitoredCampaignRunner
             finalSweepAlarm,
             acknowledgements,
             workerFailureCode,
-            workerFailureMessage);
+            workerFailureMessage) { SampledLoss = monitor.LossTotals };
     }
 
     private static async Task<MonitoredSweepResult> AbortOwnedProcessesAsync(
@@ -1315,12 +1347,34 @@ internal static class MonitoredCampaignRunner
         string? WorkerFailureMessage)
     {
         internal bool MonitoringComplete => !MonitoringIncomplete;
+        internal SampledLossMeasurement? SampledLoss { get; init; }
     }
 }
 
 internal static class MonitoredDecisionEngine
 {
-    internal static MonitoredCampaignDecision Decide(IReadOnlyList<MonitoredCaseOutcome> outcomes)
+    internal static MonitoredCampaignDecision Decide(IReadOnlyList<MonitoredCaseOutcome> outcomes,
+        MonitoredRunManifest? sampledCampaign = null)
+    {
+        var sampledReadinessValidated = sampledCampaign is not null;
+        if (sampledReadinessValidated)
+        {
+            SampledLossProtocol.ValidateReadiness(sampledCampaign!);
+            if (outcomes.Any(static outcome => outcome.SampledLoss is null))
+                return Inconclusive("The prospective sampled policy is missing from one or more outcomes.");
+            foreach (var outcome in outcomes) outcome.SampledLoss!.Validate();
+        }
+        else if (outcomes.Any(static outcome => outcome.SampledLoss is not null || outcome.SampledAdmissible))
+        {
+            return Inconclusive("Sampled evidence cannot enter the strict decision gate.");
+        }
+        var decision = DecideCore(outcomes, sampledReadinessValidated);
+        return sampledReadinessValidated ? decision with { Scope = "sampled-loss-policy/1-conditional-no-product-decision" }
+            : decision;
+    }
+
+    private static MonitoredCampaignDecision DecideCore(IReadOnlyList<MonitoredCaseOutcome> outcomes,
+        bool sampledReadinessValidated)
     {
         if (outcomes.Count != 35
             || outcomes.Any(static outcome => outcome.Outcome is "not-run"
@@ -1328,7 +1382,8 @@ internal static class MonitoredDecisionEngine
                 or "inconclusive-source"
                 or "inconclusive-unknown"
                 or "invalid-injection")
-            || outcomes.Any(static outcome => !outcome.MonitoringComplete))
+            || outcomes.Any(outcome => !outcome.MonitoringComplete
+                && !(sampledReadinessValidated && outcome.SampledAdmissible)))
         {
             return new MonitoredCampaignDecision(
                 "inconclusive",

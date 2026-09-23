@@ -9,6 +9,7 @@ internal enum MonitoredAdmissionStage
 // Execution mechanics do not carry a campaign admission or a decision.
 internal interface IMonitoredExecutionManifest
 {
+    SampledLossBinding? SampledLoss => null;
     MonitoredBinaryIdentity RuntimeBinary { get; }
     MonitoredBinaryIdentity ToolBinary { get; }
     MonitoredBinaryIdentity SampleBinary { get; }
@@ -30,6 +31,7 @@ internal sealed record MonitoredExecutionContext(
     MonitoredComponentEvidence ComponentEvidence,
     PrevalidationObservationScope? Prevalidation = null)
 {
+    internal bool UsesSampledLoss => Manifest.SampledLoss is not null;
     internal static MonitoredExecutionContext FromCampaign(MonitoredValidatedManifest validated)
         => new(validated.Manifest, validated.RepositoryRoot, validated.ManifestPath,
             validated.ManifestSha256, validated.CampaignRoot, validated.Attribution,

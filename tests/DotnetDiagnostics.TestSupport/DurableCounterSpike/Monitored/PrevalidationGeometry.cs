@@ -105,13 +105,19 @@ internal static class PrevalidationGeometry
                 RetainedHistoryBytes = long.MaxValue,
                 FirstErrorCode = new string('e', 64),
             };
+            if (context.UsesSampledLoss) widest = SampledLossProtocol.WorstCaseSummary();
             PrevalidationProtocol.Require(MonitoredSweepSummaryEncoding.EncodeLine(widest).Length <= 1_024,
                 "PrevalidationSummaryWidth");
             var coverage = new PrevalidationCoverage(PrevalidationProtocol.CoverageSchema, probe.Ordinal, probe.Id,
                 "coverage-observed", null, true, 64, CountFixtureFiles(context.Prevalidation!.CurrentHistoryRoot!),
                 measured.Summary.CurrentContextIdentities,
                 measured.Summary.ObservedSweepBytes, null, null, "synthetic-inventory-and-encoding-only",
-                ["geometry-539-rooted-32-descriptor-only"]);
+                ["geometry-539-rooted-32-descriptor-only"])
+            {
+                MonitoringComplete = (monitor.LossTotals?.Lost ?? 0) == 0,
+                SampledLoss = monitor.LossTotals,
+                SampledAdmissible = context.UsesSampledLoss,
+            };
             await JsonSerializer.SerializeAsync(resultSlot, coverage, PrevalidationProtocol.Json, cancellationToken)
                 .ConfigureAwait(false);
             await resultSlot.FlushAsync(cancellationToken).ConfigureAwait(false);
