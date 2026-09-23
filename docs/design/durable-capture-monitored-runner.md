@@ -139,6 +139,10 @@ caller-provided `ready=true` override. Resolving this blocker requires
 independently reviewed real-worker evidence and a corresponding reviewed
 artifact-generation change before any campaign run.
 
+The [real-worker prevalidation proposal](durable-capture-real-worker-prevalidation.md)
+defines a prospective, separately gated way to gather that evidence. It is
+not adopted or executable merely because the document exists.
+
 The manifest records `MonitoredHostFactsReader` values from the execution host.
 On cgroup v2, the reader resolves the process's `0::` membership through the
 actual cgroup2 mount root and mount point from `/proc/self/mountinfo`. It reads
