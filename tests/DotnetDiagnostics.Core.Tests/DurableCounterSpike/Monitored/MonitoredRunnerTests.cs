@@ -1,0 +1,1822 @@
+using System.Security.Cryptography;
+using System.Diagnostics;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using DotnetDiagnostics.Core.Tests.DurableCounterSpike.Monitored;
+using DotnetDiagnostics.TestSupport;
+using FluentAssertions;
+
+namespace DotnetDiagnostics.Core.Tests.DurableCounterSpike.Monitored;
+
+public sealed class MonitoredRunnerTests : IDisposable
+{
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    private readonly string _workspace = Path.Combine(
+        AppContext.BaseDirectory,
+        "durable-monitored-runner",
+        Guid.NewGuid().ToString("N"));
+
+    public MonitoredRunnerTests() => Directory.CreateDirectory(_workspace);
+
+    public void Dispose()
+    {
+        if (Directory.Exists(_workspace))
+        {
+            if (OperatingSystem.IsLinux())
+            {
+                foreach (var directory in Directory.EnumerateDirectories(
+                             _workspace,
+                             "*",
+                             SearchOption.AllDirectories))
+                {
+                    File.SetUnixFileMode(
+                        directory,
+                        UnixFileMode.UserRead
+                            | UnixFileMode.UserWrite
+                            | UnixFileMode.UserExecute);
+                }
+                foreach (var file in Directory.EnumerateFiles(
+                             _workspace,
+                             "*",
+                             SearchOption.AllDirectories))
+                {
+                    File.SetUnixFileMode(
+                        file,
+                        UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                }
+            }
+            Directory.Delete(_workspace, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ExecutionPlanExpandsTheExactFrozen35Entries()
+    {
+        var executions = MonitoredExecutionPlanner.Expand();
+
+        executions.Should().HaveCount(35);
+        executions.Select(static item => item.Ordinal).Should().Equal(Enumerable.Range(1, 35));
+        executions.Take(2).Select(static item => (item.CaseId, item.Candidate))
+            .Should().Equal(("P0", "shared"), ("P1", "E"));
+        executions.Skip(2).Take(8).Select(static item => (item.CaseId, item.Candidate))
+            .Should().Equal(
+                ("Q1", "A"), ("Q1", "B"),
+                ("Q2", "B"), ("Q2", "A"),
+                ("N1", "A"), ("N1", "B"),
+                ("B1", "B"), ("B1", "A"));
+        executions.Skip(26).Select(static item => (item.CaseId, item.Candidate))
+            .Should().Equal(
+                ("L1", "E"), ("L1", "A"), ("L1", "B"),
+                ("L2", "B"), ("L2", "E"), ("L2", "A"),
+                ("L3", "A"), ("L3", "B"), ("L3", "E"));
+        executions.Should().OnlyContain(static item =>
+            item.MaximumAttempts == 1 && item.MaximumSeconds == 120);
+    }
+
+    [Fact]
+    public void SuccessorValidatorRejectsMonitoringOrInheritedProtocolDrift()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var published = MonitoredSuccessorProtocolValidator.Validate(
+            repositoryRoot,
+            MonitoredProtocolVersions.SuccessorProtocolPath);
+        published.ProtocolSha256.Should().Be(MonitoredProtocolVersions.SuccessorProtocolSha256);
+
+        var validPath = WriteSuccessorProtocol(repositoryRoot, mutate: null);
+        Action valid = () => MonitoredSuccessorProtocolValidator.ValidateShape(
+            repositoryRoot,
+            Path.GetRelativePath(repositoryRoot, validPath).Replace(Path.DirectorySeparatorChar, '/'));
+        valid.Should().NotThrow();
+
+        var monitoringDrift = WriteSuccessorProtocol(repositoryRoot, root =>
+        {
+            root["monitoring"]!["pollTargetMs"] = 101;
+        });
+        Action changedMonitor = () => MonitoredSuccessorProtocolValidator.ValidateShape(
+            repositoryRoot,
+            Path.GetRelativePath(repositoryRoot, monitoringDrift).Replace(Path.DirectorySeparatorChar, '/'));
+        changedMonitor.Should().Throw<DurableStorageExperimentException>()
+            .Which.Code.Should().Be("MonitoringContractDrift");
+
+        var caseDrift = WriteSuccessorProtocol(repositoryRoot, root =>
+        {
+            root["cases"]![0]!["records"] = 1_023;
+        });
+        Action changedCase = () => MonitoredSuccessorProtocolValidator.ValidateShape(
+            repositoryRoot,
+            Path.GetRelativePath(repositoryRoot, caseDrift).Replace(Path.DirectorySeparatorChar, '/'));
+        changedCase.Should().Throw<DurableStorageExperimentException>()
+            .Which.Code.Should().Be("InheritedProtocolDrift");
+    }
+
+    [LinuxOnlyFact]
+    public void ResolvedManifestRequiresArtifactEvidenceAndParentAuthorizationNotReadyBoolean()
+    {
+        var fixture = WriteResolvedManifest(authorizationApproved: true);
+
+        var validated = MonitoredRunManifestValidator.Validate(
+            fixture.RepositoryRoot,
+            fixture.ManifestPath,
+            requireAuthorization: true);
+
+        validated.Summary.Ready.Should().BeTrue();
+        validated.Summary.PlannedExecutions.Should().Be(35);
+        validated.Authorization.SingleCampaignOnly.Should().BeTrue();
+
+        var rejected = WriteResolvedManifest(authorizationApproved: false);
+        Action validateRejected = () => MonitoredRunManifestValidator.Validate(
+            rejected.RepositoryRoot,
+            rejected.ManifestPath,
+            requireAuthorization: true);
+        validateRejected.Should().Throw<DurableStorageExperimentException>()
+            .Which.Code.Should().Be("ExecutionAuthorizationInvalid");
+    }
+
+    [LinuxOnlyFact]
+    public void ResolvedManifestRejectsMutableAuthorizationAndComponentRunnerMismatch()
+    {
+        var mutable = WriteResolvedManifest(authorizationApproved: true);
+        var mutableManifest = JsonSerializer.Deserialize<MonitoredRunManifest>(
+            File.ReadAllBytes(mutable.ManifestPath),
+            JsonOptions)
+            ?? throw new InvalidOperationException("Could not deserialize the test manifest.");
+        if (!OperatingSystem.IsLinux())
+        {
+            throw new PlatformNotSupportedException("Monitored artifacts are Linux-only.");
+        }
+        File.SetUnixFileMode(
+            mutableManifest.AuthorizationReceipt,
+            UnixFileMode.UserRead | UnixFileMode.UserWrite);
+
+        Action validateMutable = () => MonitoredRunManifestValidator.Validate(
+            mutable.RepositoryRoot,
+            mutable.ManifestPath,
+            requireAuthorization: true);
+        validateMutable.Should().Throw<DurableStorageExperimentException>()
+            .Which.Code.Should().Be("ExecutionAuthorizationMutable");
+
+        var mismatched = WriteResolvedManifest(authorizationApproved: true);
+        var manifestNode = JsonNode.Parse(File.ReadAllText(mismatched.ManifestPath))!.AsObject();
+        manifestNode["sourceCommits"]!["runnerCommit"] = CommitIdentity("different-runner");
+        File.WriteAllText(
+            mismatched.ManifestPath,
+            manifestNode.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+
+        Action validateMismatch = () => MonitoredRunManifestValidator.Validate(
+            mismatched.RepositoryRoot,
+            mismatched.ManifestPath,
+            requireAuthorization: true);
+        validateMismatch.Should().Throw<DurableStorageExperimentException>()
+            .Which.Code.Should().Be("MonitorComponentEvidenceInsufficient");
+    }
+
+    [LinuxOnlyFact]
+    public void CgroupFactsResolveMembershipDirectoryAndAllMountedAncestors()
+    {
+        var cgroupMount = Path.Combine(_workspace, "cgroup2");
+        var parent = Path.Combine(cgroupMount, "parent");
+        var membership = Path.Combine(parent, "init.scope");
+        Directory.CreateDirectory(membership);
+        File.WriteAllText(Path.Combine(membership, "memory.max"), "max\n");
+        File.WriteAllText(Path.Combine(membership, "memory.current"), "1024\n");
+        File.WriteAllText(Path.Combine(membership, "cpu.max"), "max 100000\n");
+        File.WriteAllText(Path.Combine(membership, "cpuset.cpus.effective"), "0-3\n");
+        File.WriteAllText(Path.Combine(parent, "memory.max"), "2048\n");
+        File.WriteAllText(Path.Combine(parent, "memory.current"), "512\n");
+        File.WriteAllText(Path.Combine(parent, "cpu.max"), "200000 100000\n");
+        File.WriteAllText(Path.Combine(parent, "cpuset.cpus.effective"), "0-7\n");
+        var procCgroup = Path.Combine(_workspace, "self.cgroup");
+        var mountInfo = Path.Combine(_workspace, "self.mountinfo");
+        File.WriteAllText(procCgroup, "0::/parent/init.scope\n");
+        File.WriteAllText(
+            mountInfo,
+            $"29 23 0:26 / {cgroupMount} rw,nosuid,nodev,noexec,relatime - cgroup2 cgroup rw\n");
+
+        var facts = MonitoredHostFactsReader.ReadCgroupFacts(procCgroup, mountInfo);
+
+        facts.Version.Should().Be("v2");
+        facts.MembershipPath.Should().Be("/parent/init.scope");
+        facts.MountRoot.Should().Be("/");
+        facts.MountPoint.Should().Be(cgroupMount);
+        facts.MembershipAndAncestors.Select(static level => level.HierarchyPath)
+            .Should().Equal("/parent/init.scope", "/parent", "/");
+        facts.MembershipAndAncestors[0].MemoryMax.Should().Be("max");
+        facts.MembershipAndAncestors[1].CpuMax.Should().Be("200000 100000");
+        facts.MembershipAndAncestors[2].MemoryMax.Should().BeNull();
+        facts.EffectiveAvailableMemoryBytes.Should().Be(1_536);
+    }
+
+    [LinuxOnlyFact]
+    public async Task MonitorAccountsRootAndOpenUnlinkedFileAndRejectsIdentityReuse()
+    {
+        var root = Path.Combine(_workspace, "monitor");
+        var history = Path.Combine(root, "history");
+        var workspace = Path.Combine(root, "workspace");
+        var outputs = Path.Combine(root, "outputs");
+        Directory.CreateDirectory(history);
+        Directory.CreateDirectory(workspace);
+        Directory.CreateDirectory(outputs);
+        await File.WriteAllBytesAsync(Path.Combine(workspace, "root.bin"), new byte[128]);
+        var unlinkedPath = Path.Combine(_workspace, "unlinked.bin");
+        await using var unlinked = new FileStream(
+            unlinkedPath,
+            FileMode.CreateNew,
+            FileAccess.ReadWrite,
+            FileShare.ReadWrite | FileShare.Delete);
+        await unlinked.WriteAsync(new byte[256]);
+        await unlinked.FlushAsync();
+        File.Delete(unlinkedPath);
+
+        var attribution = Attribution(root, history, workspace, outputs);
+        var encoding = EncodingContract();
+        await using var monitor = new MonitoredStorageMonitor(
+            attribution,
+            encoding,
+            Path.Combine(outputs, "monitor.jsonl"));
+        using var selfProcess = System.Diagnostics.Process.GetCurrentProcess();
+        var self = MonitoredProcessIdentity.Capture(selfProcess, MonitoredProcessRole.Harness);
+        monitor.AddProcess(self);
+
+        var sweep = await monitor.ObserveBoundaryAsync(
+            "component-observation",
+            activeStorageStage: true,
+            CancellationToken.None);
+
+        sweep.Summary.WorkspaceBytes.Should().BeGreaterThanOrEqualTo(128);
+        sweep.Summary.OpenUnlinkedBytes.Should().BeGreaterThanOrEqualTo(256);
+        sweep.Summary.IdentityCount.Should().BeLessThanOrEqualTo(4_096);
+        (JsonSerializer.SerializeToUtf8Bytes(sweep.Summary).Length + 1)
+            .Should().BeLessThanOrEqualTo(1_024);
+        Action reused = () => monitor.AddProcess(self with
+        {
+            LinuxStartTimeTicks = self.LinuxStartTimeTicks + 1,
+        });
+        reused.Should().Throw<DurableStorageExperimentException>()
+            .Which.Code.Should().Be("ProcessIdentityAmbiguous");
+    }
+
+    [LinuxOnlyFact]
+    public async Task ReadOnlyDescriptorOutsideRootsCannotBeClassifiedByDirectoryName()
+    {
+        var root = Path.Combine(_workspace, "containment-monitor");
+        var history = Path.Combine(root, "history");
+        var workspace = Path.Combine(root, "workspace");
+        var outputs = Path.Combine(root, "outputs");
+        Directory.CreateDirectory(history);
+        Directory.CreateDirectory(workspace);
+        Directory.CreateDirectory(outputs);
+        var outsideDirectory = Path.Combine(_workspace, "outside", "package");
+        Directory.CreateDirectory(outsideDirectory);
+        var outsidePath = Path.Combine(outsideDirectory, "unowned.bin");
+        await File.WriteAllBytesAsync(outsidePath, new byte[64]);
+        await using var outside = File.OpenRead(outsidePath);
+
+        await using var monitor = new MonitoredStorageMonitor(
+            Attribution(
+                root,
+                history,
+                workspace,
+                outputs,
+                includeTestHostDependencies: false),
+            EncodingContract(),
+            Path.Combine(outputs, "monitor.jsonl"));
+        using var selfProcess = Process.GetCurrentProcess();
+        monitor.AddProcess(MonitoredProcessIdentity.Capture(
+            selfProcess,
+            MonitoredProcessRole.Harness));
+
+        var sweep = await monitor.ObserveBoundaryAsync(
+            "out-of-root-readonly",
+            activeStorageStage: true,
+            CancellationToken.None);
+
+        sweep.Errors.Should().Contain("UnclassifiedReadOnlyDescriptor");
+        sweep.Summary.PackageBytes.Should().Be(0);
+        sweep.Summary.Complete.Should().BeFalse();
+    }
+
+    [LinuxOnlyFact]
+    public async Task MissingDeclaredRootMakesObservationIncomplete()
+    {
+        var root = Path.Combine(_workspace, "missing-root-monitor");
+        var history = Path.Combine(root, "history");
+        var workspace = Path.Combine(root, "workspace");
+        var outputs = Path.Combine(root, "outputs");
+        Directory.CreateDirectory(workspace);
+        Directory.CreateDirectory(outputs);
+        await using var monitor = new MonitoredStorageMonitor(
+            Attribution(root, history, workspace, outputs),
+            EncodingContract(),
+            Path.Combine(outputs, "monitor.jsonl"));
+
+        var sweep = await monitor.ObserveBoundaryAsync(
+            "missing-declared-root",
+            activeStorageStage: false,
+            CancellationToken.None);
+
+        sweep.Errors.Should().Contain("DeclaredRootMissing");
+        sweep.Summary.Complete.Should().BeFalse();
+    }
+
+    [Fact]
+    public void DescriptorCoherenceRejectsTargetFlagsAndIdentityMismatch()
+    {
+        var first = new PinnedDescriptorSnapshot(
+            "/tmp/pinned",
+            2,
+            new ApparentFileIdentity("linux:one"),
+            new DurableStorageNativeObservation(
+                new ApparentFileIdentity("linux:one"),
+                128,
+                1));
+        Action changedTarget = () => LinuxProcessDescriptorObserver.ValidateCoherent(
+            first,
+            first with { Target = "/tmp/reused" });
+        Action changedFlags = () => LinuxProcessDescriptorObserver.ValidateCoherent(
+            first,
+            first with { Flags = 0 });
+        Action changedIdentity = () => LinuxProcessDescriptorObserver.ValidateCoherent(
+            first,
+            first with
+            {
+                Identity = new ApparentFileIdentity("linux:two"),
+            });
+
+        changedTarget.Should().Throw<DurableStorageExperimentException>()
+            .Which.Code.Should().Be("DescriptorIdentityChangedDuringObservation");
+        changedFlags.Should().Throw<DurableStorageExperimentException>()
+            .Which.Code.Should().Be("DescriptorIdentityChangedDuringObservation");
+        changedIdentity.Should().Throw<DurableStorageExperimentException>()
+            .Which.Code.Should().Be("DescriptorIdentityChangedDuringObservation");
+    }
+
+    [LinuxOnlyFact]
+    public async Task PeriodicGapMetricExcludesLaterBoundaryOnlyDelay()
+    {
+        var root = Path.Combine(_workspace, "periodic-gap-monitor");
+        Directory.CreateDirectory(root);
+        var monitorPath = Path.Combine(root, "monitor.jsonl");
+        await using var monitor = new MonitoredStorageMonitor(
+            new MonitoredAttributionMap(
+                MonitoredProtocolVersions.AttributionSchema,
+                [new("workspace", root, true)],
+                ["package", "package-staging"],
+                ["recovery", "recovery-staging"],
+                [AppContext.BaseDirectory],
+                ["/dev/null", "/dev/urandom"],
+                [],
+                4_096,
+                4_096,
+                32),
+            EncodingContract(),
+            monitorPath);
+        monitor.SetStage("periodic-active", activeStorageStage: true);
+        _ = monitor.StartAsync();
+        await Task.Delay(TimeSpan.FromMilliseconds(260));
+        await monitor.StopAsync();
+        var periodicGap = monitor.MaximumPeriodicGapMilliseconds;
+        await Task.Delay(TimeSpan.FromMilliseconds(1_050));
+        await monitor.ObserveBoundaryAsync(
+            "post-periodic-boundary",
+            activeStorageStage: false,
+            CancellationToken.None);
+
+        monitor.PeriodicSummaryRecords.Should().BeGreaterThanOrEqualTo(2);
+        periodicGap.Should().BeLessThan(1_000);
+        monitor.MaximumPeriodicGapMilliseconds.Should().Be(periodicGap);
+        monitor.MaximumObservedGapMilliseconds.Should().BeGreaterThan(1_000);
+    }
+
+    [Theory]
+    [InlineData("post-monitor-abort-quiescent-root-inventory", true)]
+    [InlineData("", false)]
+    [InlineData("+", false)]
+    [InlineData("<", false)]
+    [InlineData("'", false)]
+    [InlineData("\u00e9", false)]
+    [InlineData("\n", false)]
+    public void SummaryTokensCannotExpandThroughJsonEscaping(string value, bool accepted)
+    {
+        MonitoredSweepSummaryEncoding.IsBoundedToken(value, 64).Should().Be(accepted);
+        MonitoredSweepSummaryEncoding.IsBoundedToken(new string('a', 65), 64)
+            .Should().BeFalse();
+    }
+
+    [Fact]
+    public void CompactWorstCaseSummaryHasPinnedMappingAndRealHeadroom()
+    {
+        var line = MonitoredSweepSummaryEncoding.EncodeLine(
+            MonitoredSweepSummaryEncoding.CreateWorstCaseFixture());
+        var json = JsonDocument.Parse(line.AsMemory(0, line.Length - 1));
+
+        line.Length.Should().BeLessThanOrEqualTo(960);
+        MonitoredSweepSummaryEncoding.FieldMapSha256.Should().HaveLength(64);
+        json.RootElement.TryGetProperty("observedSweepBytes", out _).Should().BeTrue();
+        json.RootElement.TryGetProperty("maximumObservedSweepBytes", out _).Should().BeTrue();
+        json.RootElement.TryGetProperty("diagnosticPeakRssBytes", out _).Should().BeFalse();
+    }
+
+    [LinuxOnlyFact]
+    public async Task ComponentEvidenceUsesOwnedChildKillHandoffAndEnforcedGeometry()
+    {
+        var output = Path.Combine(_workspace, "component-evidence.json");
+        var attributionPath = Path.Combine(_workspace, "component-attribution.json");
+        var root = Path.Combine(_workspace, "component-attribution-root");
+        Directory.CreateDirectory(root);
+        MonitoredFile.WriteNewJson(
+            attributionPath,
+            Attribution(
+                root,
+                Path.Combine(root, "history"),
+                Path.Combine(root, "workspace"),
+                Path.Combine(root, "outputs")));
+
+        var evidence = await MonitoredComponentEvidenceGenerator.GenerateAsync(
+            output,
+            CommitIdentity("runner"),
+            CommitIdentity("monitor"),
+            attributionPath,
+            CancellationToken.None);
+
+        evidence.PositiveMonitoringComplete.Should().BeTrue();
+        evidence.ManagedProcessObserved.Should().BeTrue();
+        evidence.RuntimeMemoryClassificationObserved.Should().BeTrue();
+        evidence.RuntimeMemoryExcludedBytes.Should().BeGreaterThan(0);
+        evidence.RootFileObserved.Should().BeTrue();
+        evidence.WritableDescriptorOutsideRootRejected.Should().BeTrue();
+        evidence.OpenUnlinkedDescriptorRejected.Should().BeTrue();
+        evidence.ProcessIdentityReuseRejected.Should().BeTrue();
+        evidence.KillHandoffReleasedObserverReferences.Should().BeTrue();
+        evidence.SourceRecoverySharedBudgetExhaustionObserved.Should().BeTrue();
+        evidence.SourceRecoverySharedCancellationObserved.Should().BeTrue();
+        evidence.SourceRecoveryObservedSummaryRecords.Should().BeGreaterThanOrEqualTo(4);
+        evidence.SourceRecoveryObservedSummaryBytes.Should().BeGreaterThan(0);
+        evidence.SourceRecoveryObservedControlRecords.Should().Be(2);
+        evidence.SourceRecoveryObservedControlBytes.Should().BeGreaterThan(0);
+        evidence.OutputLimitEnforced.Should().BeTrue();
+        evidence.IdentityLimitEnforced.Should().BeTrue();
+        evidence.DerivedMaximumSimultaneousIdentitiesEnforced.Should()
+            .Be(MonitoredRunnerGeometry.MaximumSimultaneousIdentities);
+        evidence.DerivedMaximumRootedIdentities.Should()
+            .Be(MonitoredRunnerGeometry.MaximumRootedIdentities);
+        evidence.MaximumDescriptorOnlyIdentitiesEnforced.Should()
+            .Be(MonitoredRunnerGeometry.MaximumOwnedWritableDescriptorOnlyFiles);
+        evidence.DescriptorOnlyCampaignFeasibilityEstablished.Should().BeFalse();
+        evidence.RepresentativeMaximumRootedIdentitiesObserved.Should().BeGreaterThan(0);
+        evidence.RepresentativeMaximumDescriptorOnlyIdentitiesObserved.Should()
+            .BeLessThanOrEqualTo(MonitoredRunnerGeometry.MaximumOwnedWritableDescriptorOnlyFiles);
+        evidence.DerivedMaximumSummaryRecordsRequired.Should()
+            .Be(MonitoredRunnerGeometry.MaximumRequiredSummaryRecords);
+        evidence.MaximumSummaryRecordsEncoded.Should().Be(2_048);
+        evidence.DerivedMaximumCombinedSummaryControlBytes.Should()
+            .BeLessThanOrEqualTo(8_388_608);
+        evidence.MaximumSummaryUtf8BytesObserved.Should().BeLessThan(1_024);
+        evidence.WorstCaseSummaryUtf8Bytes.Should().BeLessThanOrEqualTo(1_024);
+        evidence.WorstCaseSummaryUtf8Bytes.Should()
+            .BeGreaterThanOrEqualTo(evidence.MaximumSummaryUtf8BytesObserved);
+        evidence.PeriodicSummariesObserved.Should().BeGreaterThanOrEqualTo(2);
+        evidence.MaximumPeriodicGapMillisecondsObserved.Should().BeLessThanOrEqualTo(1_000);
+        evidence.RepresentativeCandidatePackageInventoriesObserved.Should().BeTrue(
+            "both package inventories must close within the four-file geometry; observed final max {0}, transient max {1}, SQLite WAL/SHM {2}",
+            evidence.RepresentativeMaximumFinalPackageFilesObserved,
+            evidence.RepresentativeMaximumTransientPackageFilesObserved,
+            evidence.RepresentativeSqliteWalShmObserved);
+        evidence.RepresentativeMaximumFinalPackageFilesObserved.Should().Be(4);
+        evidence.RepresentativeSqliteWalShmObserved.Should().BeTrue();
+        evidence.RawEvidenceFiles.Should().BeGreaterThan(10);
+        MonitoredFile.IsReadOnlyTree(evidence.RawEvidenceRoot, 4_096, 4_096)
+            .Should().BeTrue();
+        MonitoredFile.HashTreeInventory(evidence.RawEvidenceRoot, 4_096, 4_096).Sha256
+            .Should().Be(evidence.EvidenceSha256);
+        File.Exists(output).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task BoundedEvidenceWriterRejectsRecordCountAndByteOverflow()
+    {
+        var path = Path.Combine(_workspace, "bounded.jsonl");
+        await using var writer = new BoundedJsonLineWriter(
+            path,
+            maximumRecordBytes: 64,
+            maximumRecords: 1,
+            maximumBytes: 65);
+        await writer.WriteAsync(new { value = "one" }, CancellationToken.None);
+
+        Func<Task> second = async () =>
+            await writer.WriteAsync(new { value = "two" }, CancellationToken.None);
+
+        (await second.Should().ThrowAsync<DurableStorageExperimentException>())
+            .Which.Code.Should().Be("MonitorSummaryCountLimit");
+    }
+
+    [Fact]
+    public async Task BoundedEvidenceWriterCountsNewlineInsideRecordAndStreamLimits()
+    {
+        var emptyBytes = JsonSerializer.SerializeToUtf8Bytes(new { value = string.Empty }).Length;
+        var exactLine = new { value = new string('x', 63 - emptyBytes) };
+        var acceptedPath = Path.Combine(_workspace, "exact-line.jsonl");
+        await using (var accepted = new BoundedJsonLineWriter(
+            acceptedPath,
+            maximumRecordBytes: 64,
+            maximumRecords: 1,
+            maximumBytes: 64))
+        {
+            await accepted.WriteAsync(exactLine, CancellationToken.None);
+            accepted.Bytes.Should().Be(64);
+            accepted.MaximumObservedRecordBytes.Should().Be(64);
+        }
+
+        var rejectedPath = Path.Combine(_workspace, "oversized-line.jsonl");
+        await using var rejected = new BoundedJsonLineWriter(
+            rejectedPath,
+            maximumRecordBytes: 64,
+            maximumRecords: 1,
+            maximumBytes: 64);
+        var oversized = new { value = new string('x', 64 - emptyBytes) };
+        Func<Task> write = async () =>
+            await rejected.WriteAsync(oversized, CancellationToken.None);
+        (await write.Should().ThrowAsync<DurableStorageExperimentException>())
+            .Which.Code.Should().Be("MonitorSummaryRecordLimit");
+    }
+
+    [Fact]
+    public async Task MonitorSummariesAndWorkerStdoutShareOneOutputBudget()
+    {
+        var path = Path.Combine(_workspace, "combined-budget.jsonl");
+        var budget = new BoundedOutputBudget(32);
+        budget.ConsumeControl(20);
+        await using var writer = new BoundedJsonLineWriter(
+            path,
+            maximumRecordBytes: 64,
+            maximumRecords: 2,
+            maximumBytes: 64,
+            budget);
+
+        Func<Task> write = async () =>
+            await writer.WriteAsync(new { value = "one" }, CancellationToken.None);
+
+        (await write.Should().ThrowAsync<DurableStorageExperimentException>())
+            .Which.Code.Should().Be("CombinedOutputLimit");
+    }
+
+    [Fact]
+    public async Task SourceAndRecoveryMonitorsShareTheSummaryRecordLimit()
+    {
+        var budget = new BoundedOutputBudget(1_024, maximumSummaryRecords: 1);
+        await using var source = new BoundedJsonLineWriter(
+            Path.Combine(_workspace, "source-monitor.jsonl"),
+            maximumRecordBytes: 64,
+            maximumRecords: 2,
+            maximumBytes: 128,
+            budget);
+        await using var recovery = new BoundedJsonLineWriter(
+            Path.Combine(_workspace, "recovery-monitor.jsonl"),
+            maximumRecordBytes: 64,
+            maximumRecords: 2,
+            maximumBytes: 128,
+            budget);
+        await source.WriteAsync(new { value = "source" }, CancellationToken.None);
+
+        Func<Task> writeRecovery = async () =>
+            await recovery.WriteAsync(new { value = "recovery" }, CancellationToken.None);
+
+        (await writeRecovery.Should().ThrowAsync<DurableStorageExperimentException>())
+            .Which.Code.Should().Be("MonitorSummaryCountLimit");
+    }
+
+    [LinuxOnlyFact]
+    public async Task MonitorDisposalReleasesWriterWhenPeriodicObservationFaults()
+    {
+        var root = Path.Combine(_workspace, "dispose-monitor");
+        Directory.CreateDirectory(root);
+        var writer = new FaultingSummaryWriter();
+        var monitor = new MonitoredStorageMonitor(
+            Attribution(
+                root,
+                Path.Combine(root, "history"),
+                Path.Combine(root, "workspace"),
+                Path.Combine(root, "outputs")),
+            writer);
+        _ = monitor.StartAsync();
+        await writer.WriteAttempted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Func<Task> dispose = async () => await monitor.DisposeAsync();
+
+        (await dispose.Should().ThrowAsync<InvalidOperationException>())
+            .Which.Message.Should().Be("component writer failure");
+        writer.Disposed.Should().BeTrue();
+    }
+
+    [LinuxOnlyFact]
+    public async Task ExactProcessTerminatorRefusesStaleStartTime()
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = "/bin/sh",
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        startInfo.ArgumentList.Add("-c");
+        startInfo.ArgumentList.Add("exec sleep 30");
+        using var child = Process.Start(startInfo)
+            ?? throw new InvalidOperationException("Could not start owned child.");
+        var identity = MonitoredProcessIdentity.Capture(child, MonitoredProcessRole.Diagnostic);
+        try
+        {
+            Action staleKill = () => OwnedProcessTerminator.KillExact(
+                child,
+                identity with { LinuxStartTimeTicks = identity.LinuxStartTimeTicks + 1 });
+
+            staleKill.Should().Throw<DurableStorageExperimentException>()
+                .Which.Code.Should().Be("OwnedProcessIdentityMismatch");
+            child.HasExited.Should().BeFalse();
+        }
+        finally
+        {
+            OwnedProcessTerminator.KillExact(child, identity);
+            await child.WaitForExitAsync();
+        }
+    }
+
+    [Fact]
+    public void WorkerBoundaryRequiresExactReleaseToken()
+    {
+        Action wrong = () => MonitoredWorkerControl.ValidateBoundaryRelease(
+            "after-drain",
+            "release:before-drain");
+
+        wrong.Should().Throw<DurableStorageExperimentException>()
+            .Which.Code.Should().Be("BoundaryReleaseMismatch");
+        MonitoredWorkerControl.ValidateBoundaryRelease(
+            "after-drain",
+            "release:after-drain");
+    }
+
+    [LinuxOnlyFact]
+    public async Task HarnessLifecycleDrivesKillRecoveryHandshakeAndResultHandoff()
+    {
+        var validated = PrepareComponentExecution();
+        var execution = validated.Manifest.Plan.Executions.Single(item =>
+            item.CaseId == "F3" && item.Candidate == "A");
+        var launcher = new ScriptedWorkerLauncher(ScriptedWorkerBehavior.SuccessfulRecovery);
+
+        var outcome = await MonitoredCampaignRunner.RunExecutionForComponentAsync(
+            validated,
+            execution,
+            launcher,
+            TimeSpan.FromSeconds(3),
+            CancellationToken.None);
+
+        outcome.Outcome.Should().Be(
+            "pass",
+            "failure code {0}, monitor alarm {1}, monitoring complete {2}, worker outcome {3}",
+            outcome.FailureCode,
+            outcome.MonitoringAlarm,
+            outcome.MonitoringComplete,
+            outcome.Worker?.Outcome);
+        outcome.MonitoringComplete.Should().BeTrue();
+        outcome.Worker.Should().NotBeNull();
+        outcome.Worker!.RecoveryInvariantSatisfied.Should().BeTrue();
+        outcome.Worker.RecoveredRecords.Should().Be(128);
+        launcher.Descriptors.Select(static item => item.Mode)
+            .Should().Equal(MonitoredWorkerMode.Execute, MonitoredWorkerMode.Recover);
+        launcher.Descriptors[1].ConfirmedAcknowledgements.Should().Equal(
+            Enumerable.Range(1, 64).Select(static value => (long)value));
+        launcher.Descriptors[1].KnownOfferedSequences.Should().HaveCount(128);
+        launcher.Identities.Should().OnlyContain(static identity =>
+            !LinuxProcessIdentity.Matches(identity));
+        outcome.MonitoringEvidenceFiles.Should().HaveCount(2);
+        var sourceMonitor = Path.Combine(
+            validated.CampaignRoot,
+            outcome.MonitoringEvidenceFiles[0].Replace('/', Path.DirectorySeparatorChar));
+        var sourceEvidence = File.ReadAllText(sourceMonitor);
+        sourceEvidence.Should().Contain("pre-kill-AfterCommitBeforeAcknowledgement");
+        sourceEvidence.Should().Contain("post-kill-quiescent-root-inventory");
+    }
+
+    [LinuxOnlyFact]
+    public async Task HarnessLifecycleCancelsRecoveryAndCleansBothOwnedWorkers()
+    {
+        var validated = PrepareComponentExecution();
+        var execution = validated.Manifest.Plan.Executions.Single(item =>
+            item.CaseId == "F3" && item.Candidate == "A");
+        using var cancellation = new CancellationTokenSource();
+        var launcher = new ScriptedWorkerLauncher(
+            ScriptedWorkerBehavior.HangRecovery,
+            cancellation.Cancel);
+
+        Func<Task> run = async () => await MonitoredCampaignRunner.RunExecutionForComponentAsync(
+            validated,
+            execution,
+            launcher,
+            TimeSpan.FromSeconds(5),
+            cancellation.Token);
+
+        await run.Should().ThrowAsync<OperationCanceledException>();
+        launcher.Descriptors.Select(static item => item.Mode)
+            .Should().Equal(MonitoredWorkerMode.Execute, MonitoredWorkerMode.Recover);
+        launcher.Identities.Should().OnlyContain(static identity =>
+            !LinuxProcessIdentity.Matches(identity));
+    }
+
+    [LinuxOnlyFact]
+    public async Task HarnessLifecycleDoesNotPromoteWrongReleaseToSuccess()
+    {
+        var validated = PrepareComponentExecution();
+        var execution = validated.Manifest.Plan.Executions.Single(item =>
+            item.CaseId == "F3" && item.Candidate == "A");
+        var launcher = new ScriptedWorkerLauncher(ScriptedWorkerBehavior.WrongRecoveryRelease);
+
+        var outcome = await MonitoredCampaignRunner.RunExecutionForComponentAsync(
+            validated,
+            execution,
+            launcher,
+            TimeSpan.FromSeconds(3),
+            CancellationToken.None);
+
+        outcome.Outcome.Should().NotBe("pass");
+        outcome.Worker.Should().BeNull();
+        launcher.Identities.Should().OnlyContain(static identity =>
+            !LinuxProcessIdentity.Matches(identity));
+    }
+
+    [LinuxOnlyFact]
+    public async Task HarnessLifecycleRejectsUndeclaredBarrierAndUnexpectedSuccessfulExit()
+    {
+        var barrierValidated = PrepareComponentExecution();
+        var q1 = barrierValidated.Manifest.Plan.Executions.Single(item =>
+            item.CaseId == "Q1" && item.Candidate == "A");
+        var barrierLauncher = new ScriptedWorkerLauncher(
+            ScriptedWorkerBehavior.UndeclaredBarrier);
+
+        Func<Task> barrier = async () =>
+            await MonitoredCampaignRunner.RunExecutionForComponentAsync(
+                barrierValidated,
+                q1,
+                barrierLauncher,
+                TimeSpan.FromSeconds(3),
+                CancellationToken.None);
+
+        (await barrier.Should().ThrowAsync<DurableStorageExperimentException>())
+            .Which.Code.Should().Be("UnexpectedKillBarrier");
+        barrierLauncher.Identities.Should().OnlyContain(static identity =>
+            !LinuxProcessIdentity.Matches(identity));
+
+        var exitValidated = PrepareComponentExecution();
+        var exitExecution = exitValidated.Manifest.Plan.Executions.Single(item =>
+            item.CaseId == "Q1" && item.Candidate == "A");
+        var exitLauncher = new ScriptedWorkerLauncher(
+            ScriptedWorkerBehavior.UnexpectedSuccessfulExit);
+
+        Func<Task> exit = async () =>
+            await MonitoredCampaignRunner.RunExecutionForComponentAsync(
+                exitValidated,
+                exitExecution,
+                exitLauncher,
+                TimeSpan.FromSeconds(3),
+                CancellationToken.None);
+
+        (await exit.Should().ThrowAsync<DurableStorageExperimentException>())
+            .Which.Code.Should().Be("MissingWorkerResult");
+        exitLauncher.Identities.Should().OnlyContain(static identity =>
+            !LinuxProcessIdentity.Matches(identity));
+    }
+
+    [Fact]
+    public void RecoveryRequiresAcknowledgementsCompleteBatchesAndBarrierSpecificRows()
+    {
+        var offered = Enumerable.Range(1, 128).Select(static value => (long)value).ToArray();
+        var acknowledged = offered[..64];
+
+        MonitoredRecoveryInvariant.Validate("F2", acknowledged, offered, acknowledged)
+            .Should().BeTrue();
+        MonitoredRecoveryInvariant.Validate("F3", acknowledged, offered, offered)
+            .Should().BeTrue();
+        MonitoredRecoveryInvariant.Validate("F3", acknowledged, offered, acknowledged)
+            .Should().BeFalse();
+        MonitoredRecoveryInvariant.Validate("F4", [], offered, offered)
+            .Should().BeTrue();
+        MonitoredRecoveryInvariant.Validate("F2", acknowledged, offered, offered)
+            .Should().BeFalse();
+        MonitoredRecoveryInvariant.Validate("F3", acknowledged, offered, offered[..65])
+            .Should().BeFalse();
+        MonitoredRecoveryInvariant.Validate("F4", [], offered, [])
+            .Should().BeFalse();
+    }
+
+    [Fact]
+    public void FinalizationAndReopenUseIndependentDeadlines()
+    {
+        MonitoredDeadlineRules.WithinFinalizationAndReopenBudgets(
+                TimeSpan.FromSeconds(9.9),
+                TimeSpan.FromSeconds(1.9))
+            .Should().BeTrue();
+        MonitoredDeadlineRules.WithinFinalizationAndReopenBudgets(
+                TimeSpan.FromSeconds(10.1),
+                TimeSpan.FromSeconds(0.1))
+            .Should().BeFalse();
+        MonitoredDeadlineRules.WithinFinalizationAndReopenBudgets(
+                TimeSpan.FromSeconds(0.1),
+                TimeSpan.FromSeconds(2.1))
+            .Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ReopenMeasurementPlacesBoundarySweepsOutsideTheScoredOperation()
+    {
+        var stages = new List<string>();
+
+        var elapsed = await MonitoredReopenMeasurement.MeasureAsync(
+            () =>
+            {
+                stages.Add("pre-sweep-complete");
+                return Task.CompletedTask;
+            },
+            () =>
+            {
+                stages.Add("seal-members-validated");
+                stages.Add("reader-opened");
+                stages.Add("typed-query-materialized-and-size-checked");
+                return Task.CompletedTask;
+            },
+            () =>
+            {
+                stages.Add("post-sweep");
+                return Task.CompletedTask;
+            });
+
+        stages.Should().Equal(
+            "pre-sweep-complete",
+            "seal-members-validated",
+            "reader-opened",
+            "typed-query-materialized-and-size-checked",
+            "post-sweep");
+        elapsed.Should().BeGreaterThanOrEqualTo(TimeSpan.Zero);
+    }
+
+    [Theory]
+    [InlineData("A")]
+    [InlineData("B")]
+    public async Task CandidatePackagePublicationPerformsImmutableFreshReopen(string candidate)
+    {
+        var fixture = WriteResolvedManifest(authorizationApproved: true);
+        var manifest = JsonSerializer.Deserialize<MonitoredRunManifest>(
+            File.ReadAllBytes(fixture.ManifestPath),
+            JsonOptions)!;
+        var execution = MonitoredExecutionPlanner.Expand().Single(item =>
+            item.CaseId == "Q1" && item.Candidate == candidate);
+        var staging = Path.Combine(_workspace, $"publish-{candidate}-staging");
+        var package = Path.Combine(_workspace, $"publish-{candidate}-package");
+        Directory.CreateDirectory(staging);
+        var descriptor = new MonitoredWorkerDescriptor(
+            MonitoredProtocolVersions.WorkerDescriptorSchema,
+            MonitoredWorkerMode.Execute,
+            fixture.RepositoryRoot,
+            fixture.ManifestPath,
+            HashFile(fixture.ManifestPath),
+            execution,
+            Path.Combine(_workspace, $"publish-{candidate}-execution"),
+            staging,
+            package,
+            $"capture-{candidate}",
+            $"artifact-{candidate}",
+            null,
+            null,
+            null,
+            null,
+            null);
+        Directory.CreateDirectory(descriptor.ExecutionRoot);
+        var limits = new DurableCounterPipelineLimits(
+            BatchMaxAge: TimeSpan.FromMilliseconds(100));
+        var factory = MonitoredAdapterRegistry.Require(candidate);
+        var adapter = factory.Create(new DurableStorageAdapterCreateRequest(
+            descriptor.CaptureId,
+            descriptor.ArtifactId,
+            staging,
+            P1Configuration(),
+            limits,
+            NoDurableStorageFaults.Instance));
+        await using var pipeline = new DurableCounterPipeline(
+            limits,
+            new DurableCounterGlobalBudget(limits),
+            adapter);
+        foreach (var observation in DurableCounterFixture.GenerateQ1().Take(64))
+        {
+            pipeline.TryWrite(observation).Status.Should().Be(DurableCounterOfferStatus.Accepted);
+        }
+        var drain = await pipeline.DrainAsync(TimeSpan.FromSeconds(5));
+        drain.CompletedWithinTimeout.Should().BeTrue();
+        var finalization = Stopwatch.StartNew();
+        (await pipeline.FinalizeAsync(TimeSpan.FromSeconds(5))).Should().BeTrue();
+        var accounting = pipeline.GetAccounting();
+        var quality = new DurableCounterQuery([], limits).Quality(accounting);
+        var preSeal = await adapter.FinalizePreSealAsync(quality, CancellationToken.None);
+        await adapter.DisposeAsync();
+
+        var published = await MonitoredPackagePublisher.PublishAsync(
+            descriptor,
+            manifest,
+            factory,
+            preSeal,
+            accounting,
+            volatileTailUnknown: false,
+            derivedFromCaptureId: null,
+            recoveryReason: null,
+            finalization,
+            logicalCommittedBytes: 64 * 512,
+            observeBoundary: static (_, _) => Task.CompletedTask);
+        try
+        {
+            var summary = await published.Reader.SummaryAsync(CancellationToken.None);
+            summary.Sum(static item => item.RetainedCount).Should().Be(64);
+            MonitoredFile.IsReadOnlyTree(package, 4_096, 4_096).Should().BeTrue();
+            published.ReopenAndFirstQuery.Should().BeLessThanOrEqualTo(TimeSpan.FromSeconds(2));
+        }
+        finally
+        {
+            await published.Reader.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public void PersistentReceiptCannotBeReplaced()
+    {
+        var path = Path.Combine(_workspace, "attempt-start.json");
+        MonitoredFile.WriteNewJson(path, new { attempt = 1 });
+        var original = File.ReadAllBytes(path);
+
+        Action replace = () => MonitoredFile.WriteNewJson(path, new { attempt = 2 });
+
+        replace.Should().Throw<DurableStorageExperimentException>()
+            .Which.Code.Should().Be("ArtifactAlreadyExists");
+        File.ReadAllBytes(path).Should().Equal(original);
+    }
+
+    [Theory]
+    [InlineData("A")]
+    [InlineData("B")]
+    public async Task ConcurrentCaptureProbeUsesActualCandidateWriterLifecycles(string candidate)
+    {
+        var limits = new DurableCounterPipelineLimits(
+            BatchMaxAge: TimeSpan.FromMilliseconds(100));
+        var factory = MonitoredAdapterRegistry.Require(candidate);
+        var firstRoot = Path.Combine(_workspace, $"f5-{candidate}-first");
+        var secondRoot = Path.Combine(_workspace, $"f5-{candidate}-second");
+        Directory.CreateDirectory(firstRoot);
+        Directory.CreateDirectory(secondRoot);
+        await using var first = factory.Create(new DurableStorageAdapterCreateRequest(
+            $"capture-{candidate}-first",
+            $"artifact-{candidate}-first",
+            firstRoot,
+            P1Configuration(),
+            limits,
+            NoDurableStorageFaults.Instance));
+        var result = await MonitoredConcurrentCaptureGate.ProbeAsync(
+            limits,
+            first,
+            () => factory.Create(new DurableStorageAdapterCreateRequest(
+                $"capture-{candidate}-second",
+                $"artifact-{candidate}-second",
+                secondRoot,
+                P1Configuration(),
+                limits,
+                NoDurableStorageFaults.Instance)));
+
+        result.Rejected.Should().BeTrue();
+        result.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(1));
+    }
+
+    [Fact]
+    public async Task ScheduledOfferPacingUsesTheDeclaredIntervalWithoutGrace()
+    {
+        var now = TimeSpan.Zero;
+        var limits = new DurableCounterPipelineLimits(
+            BatchMaxAge: TimeSpan.FromMilliseconds(1));
+        var evidence = new MonitoredSourceAdmissionEvidence();
+        await using var pipeline = new DurableCounterPipeline(
+            limits,
+            new DurableCounterGlobalBudget(limits),
+            new RecordingCounterSink());
+
+        var complete = await MonitoredWorkerExecutor.OfferScheduledAsync(
+            pipeline,
+            records: 10,
+            perSecond: 10,
+            offers: [],
+            evidence,
+            duration: TimeSpan.FromSeconds(1),
+            elapsed: () => now,
+            delay: value =>
+            {
+                now += value;
+                return Task.CompletedTask;
+            });
+
+        complete.ScheduledOffers.Should().Be(10);
+        complete.AttemptedOffers.Should().Be(10);
+        complete.AchievedOfferRatio.Should().Be(1);
+        complete.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(1));
+
+        now = TimeSpan.Zero;
+        var truncatedEvidence = new MonitoredSourceAdmissionEvidence();
+        await using var truncatedPipeline = new DurableCounterPipeline(
+            limits,
+            new DurableCounterGlobalBudget(limits),
+            new RecordingCounterSink());
+        var truncated = await MonitoredWorkerExecutor.OfferScheduledAsync(
+            truncatedPipeline,
+            records: 10,
+            perSecond: 10,
+            offers: [],
+            truncatedEvidence,
+            duration: TimeSpan.FromSeconds(1),
+            elapsed: () => now,
+            delay: value =>
+            {
+                now += value + TimeSpan.FromSeconds(1);
+                return Task.CompletedTask;
+            });
+
+        truncated.ScheduledOffers.Should().Be(10);
+        truncated.AttemptedOffers.Should().Be(1);
+        truncated.AchievedOfferRatio.Should().Be(0.1);
+    }
+
+    [Fact]
+    public void RequestMetricsUseOneScheduledMeasurementPopulation()
+    {
+        var population = new MonitoredRequestPopulation(
+            TimeSpan.FromSeconds(12),
+            TimeSpan.FromSeconds(42),
+            maximumRetainedSamples: 1_000);
+        population.RecordScheduled(TimeSpan.FromSeconds(11), skipped: false);
+        population.RecordCompleted(TimeSpan.FromSeconds(11), 11, success: true);
+        population.RecordScheduled(TimeSpan.FromSeconds(12), skipped: false);
+        population.RecordCompleted(TimeSpan.FromSeconds(12), 12, success: true);
+        population.RecordScheduled(TimeSpan.FromSeconds(41.999), skipped: true);
+        population.RecordScheduled(TimeSpan.FromSeconds(42), skipped: false);
+        population.RecordCompleted(TimeSpan.FromSeconds(42), 42, success: false);
+        population.RecordSchedulingStopped(TimeSpan.FromSeconds(44));
+        population.RecordEpisodeCompleted(TimeSpan.FromSeconds(44.5));
+
+        var result = population.Snapshot();
+
+        result.Scheduled.Should().Be(2);
+        result.SkippedAtConcurrencyLimit.Should().Be(1);
+        result.Completed.Should().Be(1);
+        result.Succeeded.Should().Be(1);
+        result.Failed.Should().Be(0);
+        result.RetainedSamples.Should().Be(1);
+        result.P50Milliseconds.Should().Be(12);
+        result.P95Milliseconds.Should().Be(12);
+        result.EpisodeScheduled.Should().Be(4);
+        result.EpisodeCompleted.Should().Be(3);
+        result.EpisodeSucceeded.Should().Be(2);
+        result.EpisodeFailed.Should().Be(1);
+    }
+
+    [Fact]
+    public void LiveSourceTimestampConversionAdmitsTheWholeCollectionWindow()
+    {
+        var counter = new DotnetDiagnostics.Core.Counters.CounterValue(
+            "System.Runtime",
+            "cpu-usage",
+            "CPU Usage",
+            1,
+            DotnetDiagnostics.Core.Counters.CounterKind.Mean);
+
+        MonitoredWorkerExecutor.TryCreateLiveObservation(
+                counter,
+                sourceMilliseconds: 100,
+                out var early)
+            .Should().BeTrue();
+        MonitoredWorkerExecutor.TryCreateLiveObservation(
+                counter,
+                sourceMilliseconds: 33_900,
+                out var late)
+            .Should().BeTrue();
+        MonitoredWorkerExecutor.TryCreateLiveObservation(
+                counter,
+                sourceMilliseconds: double.NaN,
+                out _)
+            .Should().BeFalse();
+
+        early.SourceTimeTicks.Should().Be(TimeSpan.FromMilliseconds(100).Ticks);
+        late.SourceTimeTicks.Should().Be(TimeSpan.FromMilliseconds(33_900).Ticks);
+    }
+
+    [LinuxOnlyFact]
+    public async Task BaselineLiveCaptureUsesShippingCollectorAndDoesNotInventRawTickCounts()
+    {
+        using var current = Process.GetCurrentProcess();
+
+        var capture = await MonitoredWorkerExecutor.CollectLiveTicksAsync(
+            current.Id,
+            pipeline: null,
+            TimeSpan.FromSeconds(2),
+            CancellationToken.None);
+
+        capture.Coverage.Should().StartWith("shipping-eventpipe-counter-collector");
+        capture.SourceTicks.Should().BeNull();
+        capture.MalformedPayloads.Should().BeNull();
+        capture.AdmissionInvalid.Should().BeNull();
+        capture.RejectedNewKeys.Should().BeNull();
+        capture.OtherRejected.Should().BeNull();
+        capture.SourceKeys.Should().BeGreaterThan(0);
+    }
+
+    [Fact]
+    public void CompleteEvidenceWithNoEligibleCandidateIsConclusiveOnlyAboutInconclusiveness()
+    {
+        var requests = new MonitoredRequestMetrics(
+            Scheduled: 100,
+            SkippedAtConcurrencyLimit: 0,
+            Completed: 100,
+            Succeeded: 100,
+            Failed: 0,
+            RetainedSamples: 100,
+            P50Milliseconds: 1,
+            P95Milliseconds: 2,
+            EpisodeScheduled: 100,
+            EpisodeSkippedAtConcurrencyLimit: 0,
+            EpisodeCompleted: 100,
+            EpisodeSucceeded: 100,
+            EpisodeFailed: 0,
+            SchedulingElapsedSeconds: 44,
+            EpisodeElapsedSeconds: 44);
+        var outcomes = MonitoredExecutionPlanner.Expand()
+            .Select(execution => new MonitoredCaseOutcome(
+                execution.Ordinal,
+                execution.CaseId,
+                execution.Candidate,
+                execution.CaseId == "Q1" && execution.Candidate is "A" or "B"
+                    ? "fail"
+                    : "pass",
+                FailureCode: null,
+                FailureMessage: null,
+                MonitoringComplete: true,
+                MonitoringAlarm: null,
+                MonitorSummaryRecords: 1,
+                MonitorSummaryBytes: 1,
+                MaximumObservedIdentities: 1,
+                MaximumObservedSweepBytes: 1,
+                MonitoringEvidenceFiles: ["monitor.jsonl"],
+                Worker: CompleteWorker(execution, requests)))
+            .ToArray();
+
+        var decision = MonitoredDecisionEngine.Decide(outcomes);
+
+        decision.Recommendation.Should().Be("inconclusive");
+        decision.CompleteEvidence.Should().BeTrue();
+        decision.Scope.Should().Be("monitored-scope-only");
+    }
+
+    [Fact]
+    public void LiveP95ScreenPassesWhenIndependentMedianAllowanceExceedsOldBlockAllowance()
+    {
+        var outcomes = LiveP95Outcomes(
+            baselines: [100, 120, 140],
+            increases: [17, 1, 30]);
+
+        MonitoredDecisionEngine.LiveScreensPass("A", outcomes).Should().BeTrue();
+    }
+
+    [Fact]
+    public void LiveP95ScreenFailsWhenOldBlockAllowanceWouldHavePassed()
+    {
+        var outcomes = LiveP95Outcomes(
+            baselines: [100, 120, 140],
+            increases: [1, 30, 20]);
+
+        MonitoredDecisionEngine.LiveScreensPass("A", outcomes).Should().BeFalse();
+    }
+
+    private static IReadOnlyList<MonitoredCaseOutcome> LiveP95Outcomes(
+        IReadOnlyList<double> baselines,
+        IReadOnlyList<double> increases)
+    {
+        var liveCases = new[] { "L1", "L2", "L3" };
+        var baselineP95 = liveCases
+            .Select((caseId, index) => (caseId, value: baselines[index]))
+            .ToDictionary(static item => item.caseId, static item => item.value, StringComparer.Ordinal);
+        var candidateP95 = liveCases
+            .Select((caseId, index) => (caseId, value: baselines[index] + increases[index]))
+            .ToDictionary(static item => item.caseId, static item => item.value, StringComparer.Ordinal);
+        return MonitoredExecutionPlanner.Expand()
+            .Select(execution =>
+            {
+                var p95 = execution.CaseId.StartsWith('L')
+                    ? execution.Candidate == "E"
+                        ? baselineP95[execution.CaseId]
+                        : candidateP95[execution.CaseId]
+                    : 2;
+                return new MonitoredCaseOutcome(
+                    execution.Ordinal,
+                    execution.CaseId,
+                    execution.Candidate,
+                    "pass",
+                    null,
+                    null,
+                    true,
+                    null,
+                    1,
+                    1,
+                    1,
+                    1,
+                    ["monitor.jsonl"],
+                    CompleteWorker(execution, RequestMetrics(p95)));
+            })
+            .ToArray();
+    }
+
+    private static MonitoredWorkerResult CompleteWorker(
+        MonitoredExecutionSpec execution,
+        MonitoredRequestMetrics requests)
+        => new(
+            MonitoredProtocolVersions.WorkerResultSchema,
+            execution.Ordinal,
+            execution.CaseId,
+            execution.Candidate,
+            "pass",
+            FailureCode: null,
+            FailureMessage: null,
+            Offered: 128,
+            Admitted: 128,
+            Rejected: 0,
+            Committed: 128,
+            FailedAfterAdmission: 0,
+            UnknownCommitOutcome: 0,
+            SourceMalformedPayloads: 0,
+            SourceAdmissionInvalid: 0,
+            SourceRejectedNewKeys: 0,
+            SourceAdmissionRejected: 0,
+            LogicalCommittedBytes: 128,
+            PackageFinalBytes: 128,
+            OfferSeconds: 1,
+            DrainSeconds: 1,
+            FinalizationSeconds: 1,
+            ReopenAndFirstQuerySeconds: 1,
+            DiagnosticCpuSeconds: 1,
+            StorageFaultTriggered: execution.CaseId.StartsWith('F'),
+            ConcurrentCaptureRejected: execution.CaseId == "F5",
+            RecoveryInvariantSatisfied: true,
+            RecoveredRecords: 128,
+            Requests: requests,
+            SourceTicks: 1,
+            SourceKeys: 1,
+            ScheduledSourceOffers: null,
+            AttemptedSourceOffers: null,
+            AchievedSourceOfferRatio: null,
+            SourceCoverage: "test",
+            TargetStartedAt: null,
+            CounterSessionStartedAt: null,
+            CounterCollectionSeconds: null,
+            HasDurablePackage: execution.Candidate != "E",
+            RecommendationScope: "monitored-scope-only");
+
+    private static MonitoredRequestMetrics RequestMetrics(double p95)
+        => new(
+            Scheduled: 600,
+            SkippedAtConcurrencyLimit: 0,
+            Completed: 600,
+            Succeeded: 600,
+            Failed: 0,
+            RetainedSamples: 600,
+            P50Milliseconds: p95 / 2,
+            P95Milliseconds: p95,
+            EpisodeScheduled: 880,
+            EpisodeSkippedAtConcurrencyLimit: 0,
+            EpisodeCompleted: 880,
+            EpisodeSucceeded: 880,
+            EpisodeFailed: 0,
+            SchedulingElapsedSeconds: 44,
+            EpisodeElapsedSeconds: 44);
+
+    private MonitoredValidatedManifest PrepareComponentExecution()
+    {
+        var fixture = WriteResolvedManifest(authorizationApproved: true);
+        var validated = MonitoredRunManifestValidator.Validate(
+            fixture.RepositoryRoot,
+            fixture.ManifestPath,
+            requireAuthorization: true);
+        foreach (var directory in new[]
+        {
+            validated.CampaignRoot,
+            validated.Manifest.HistoryRoot,
+            validated.Manifest.WorkspaceRoot,
+            validated.Manifest.OutputRoot,
+        })
+        {
+            Directory.CreateDirectory(directory);
+            MonitoredFile.MakePrivateDirectory(directory);
+        }
+        return validated;
+    }
+
+    private ManifestFixture WriteResolvedManifest(bool authorizationApproved)
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var fixturePath = Path.Combine(
+            repositoryRoot,
+            "tests/DotnetDiagnostics.Core.Tests/DurableCounterSpike/durable-counter-fixture-manifest.json");
+        using var fixtureDocument = JsonDocument.Parse(File.ReadAllBytes(fixturePath));
+        var fixture = fixtureDocument.RootElement;
+
+        var evidenceRoot = Path.Combine(_workspace, $"evidence-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(evidenceRoot);
+        MonitoredFile.MakePrivateDirectory(evidenceRoot);
+        var campaignId = $"campaign-{Guid.NewGuid():N}";
+        var campaignRoot = Path.Combine(evidenceRoot, campaignId);
+        var history = Path.Combine(campaignRoot, "history");
+        var workspace = Path.Combine(campaignRoot, "workspace");
+        var outputs = Path.Combine(campaignRoot, "outputs");
+        var attributionPath = Path.Combine(_workspace, $"{Guid.NewGuid():N}-attribution.json");
+        var encodingPath = Path.Combine(_workspace, $"{Guid.NewGuid():N}-encoding.json");
+        var componentPath = Path.Combine(_workspace, $"{Guid.NewGuid():N}-component.json");
+        var authorizationPath = Path.Combine(_workspace, $"{Guid.NewGuid():N}-authorization.json");
+        var manifestPath = Path.Combine(_workspace, $"{Guid.NewGuid():N}-manifest.json");
+        var attribution = Attribution(
+            evidenceRoot,
+            history,
+            workspace,
+            outputs,
+            includeTestHostDependencies: false);
+        var encoding = EncodingContract();
+        MonitoredFile.WriteNewJson(attributionPath, attribution);
+        MonitoredFile.WriteNewJson(encodingPath, encoding);
+
+        var commits = new MonitoredSourceCommits(
+            CommitIdentity("protocol"),
+            CommitIdentity("pipeline"),
+            CommitIdentity("adapter"),
+            CommitIdentity("runner"),
+            CommitIdentity("monitor"));
+        var rawEvidenceRoot = Path.Combine(_workspace, $"{Guid.NewGuid():N}-component-raw");
+        Directory.CreateDirectory(rawEvidenceRoot);
+        File.WriteAllBytes(Path.Combine(rawEvidenceRoot, "proof.bin"), [1]);
+        var worstCaseSummary = MonitoredSweepSummaryEncoding.EncodeLine(
+            MonitoredSweepSummaryEncoding.CreateWorstCaseFixture());
+        const string worstCaseRelativePath = "worst-case-monitor-summary.jsonl";
+        File.WriteAllBytes(
+            Path.Combine(rawEvidenceRoot, worstCaseRelativePath),
+            worstCaseSummary);
+        MonitoredPackagePublisher.MakeImmutable(rawEvidenceRoot);
+        var rawInventory = MonitoredFile.HashTreeInventory(rawEvidenceRoot, 4_096, 4_096);
+        var component = new MonitoredComponentEvidence(
+            MonitoredProtocolVersions.ComponentEvidenceSchema,
+            DateTimeOffset.UtcNow,
+            "Linux",
+            commits.RunnerCommit,
+            commits.MonitorCommit,
+            HashFile(attributionPath),
+            MonitoredSweepSummaryEncoding.Schema,
+            MonitoredSweepSummaryEncoding.FieldMapSha256,
+            DerivedMaximumSimultaneousIdentitiesEnforced:
+                MonitoredRunnerGeometry.MaximumSimultaneousIdentities,
+            DerivedMaximumRootedIdentities:
+                MonitoredRunnerGeometry.MaximumRootedIdentities,
+            MaximumDescriptorOnlyIdentitiesEnforced:
+                MonitoredRunnerGeometry.MaximumOwnedWritableDescriptorOnlyFiles,
+            RepresentativeMaximumRootedIdentitiesObserved: 8,
+            RepresentativeMaximumDescriptorOnlyIdentitiesObserved: 2,
+            DescriptorOnlyCampaignFeasibilityEstablished: true,
+            MaximumSummaryUtf8BytesObserved: 700,
+            WorstCaseSummaryUtf8Bytes: worstCaseSummary.Length,
+            WorstCaseSummarySha256: MonitoredFile.HashBytes(worstCaseSummary),
+            WorstCaseSummaryRelativePath: worstCaseRelativePath,
+            MaximumWorkerControlUtf8BytesObserved: 900,
+            DerivedMaximumSummaryRecordsRequired:
+                MonitoredRunnerGeometry.MaximumRequiredSummaryRecords,
+            MaximumSummaryRecordsEncoded: 2_048,
+            DerivedMaximumCombinedSummaryControlBytes: checked(
+                MonitoredRunnerGeometry.MaximumMonitorSummaryBytes
+                + MonitoredRunnerGeometry.MaximumWorkerControlRecordsPerExecution * 900L),
+            SourceRecoveryObservedSummaryRecords: 4,
+            SourceRecoveryObservedSummaryBytes: 2_800,
+            SourceRecoveryObservedControlRecords: 2,
+            SourceRecoveryObservedControlBytes: 1_800,
+            SourceRecoverySharedBudgetExhaustionObserved: true,
+            SourceRecoverySharedCancellationObserved: true,
+            PeriodicSummariesObserved: 3,
+            MaximumPeriodicGapMillisecondsObserved: 100,
+            MaximumObservedSweepBytes: 128,
+            PositiveMonitoringComplete: true,
+            ManagedProcessObserved: true,
+            RuntimeMemoryClassificationObserved: true,
+            RuntimeMemoryExcludedBytes: 1,
+            RootFileObserved: true,
+            WritableDescriptorOutsideRootRejected: true,
+            OpenUnlinkedDescriptorRejected: true,
+            ProcessIdentityReuseRejected: true,
+            KillHandoffReleasedObserverReferences: true,
+            RepresentativeCandidatePackageInventoriesObserved: true,
+            RepresentativeMaximumFinalPackageFilesObserved: 4,
+            RepresentativeMaximumTransientPackageFilesObserved: 6,
+            RepresentativeSqliteWalShmObserved: true,
+            OutputLimitEnforced: true,
+            IdentityLimitEnforced: true,
+            RawEvidenceRoot: rawEvidenceRoot,
+            RawEvidenceFiles: rawInventory.FileCount,
+            EvidenceSha256: rawInventory.Sha256);
+        MonitoredFile.WriteNewJson(componentPath, component);
+        var protocolRelative = MonitoredProtocolVersions.SuccessorProtocolPath;
+        var protocolHash = MonitoredProtocolVersions.SuccessorProtocolSha256;
+
+        var runtime = Environment.ProcessPath
+            ?? throw new InvalidOperationException("Test process path was unavailable.");
+        var tool = typeof(MonitoredRunnerTests).Assembly.Location;
+        var sample = SampleLocator.LocateSampleDll("CoreClrSample")
+            ?? throw new InvalidOperationException("CoreClrSample build output is required.");
+        var plan = MonitoredExecutionPlanner.CreatePlan(repositoryRoot, protocolRelative);
+        var manifest = new MonitoredRunManifest(
+            MonitoredProtocolVersions.ManifestSchema,
+            campaignId,
+            plan,
+            Path.GetRelativePath(repositoryRoot, fixturePath).Replace(Path.DirectorySeparatorChar, '/'),
+            HashFile(fixturePath),
+            fixture.GetProperty("q1InputSha256").GetString()!,
+            fixture.GetProperty("q1OracleSha256").GetString()!,
+            fixture.GetProperty("q2InputSha256").GetString()!,
+            fixture.GetProperty("q2OracleSha256").GetString()!,
+            commits,
+            Identity(runtime),
+            Identity(tool),
+            Identity(sample),
+            [Identity(runtime), attribution.RuntimeOnlyDescriptorProofs[0].RuntimeNativeBinary],
+            MonitoredHostFactsReader.Read(evidenceRoot),
+            new MonitoredClockDefinition(
+                "System.Diagnostics.Stopwatch",
+                System.Diagnostics.Stopwatch.Frequency,
+                "TraceEvent.TimeStampRelativeMSec",
+                "checked(round(relativeMilliseconds*10000)) to 100ns ticks",
+                "MidpointRounding.AwayFromZero"),
+            attributionPath,
+            HashFile(attributionPath),
+            encodingPath,
+            HashFile(encodingPath),
+            componentPath,
+            HashFile(componentPath),
+            evidenceRoot,
+            history,
+            workspace,
+            outputs,
+            authorizationPath);
+        MonitoredFile.WriteNewJson(manifestPath, manifest);
+        var manifestHash = HashFile(manifestPath);
+        MonitoredFile.WriteNewJson(
+            authorizationPath,
+            new MonitoredAuthorizationReceipt(
+                MonitoredProtocolVersions.AuthorizationSchema,
+                campaignId,
+                manifestHash,
+                protocolHash,
+                commits.RunnerCommit,
+                commits.MonitorCommit,
+                "independent-test-reviewer",
+                DateTimeOffset.UtcNow,
+                ExecutionConditionallyAuthorized: authorizationApproved,
+                RunnerReadinessApproved: authorizationApproved,
+                SingleCampaignOnly: true));
+        MonitoredFile.MakeReadOnly(authorizationPath);
+        return new ManifestFixture(repositoryRoot, manifestPath);
+    }
+
+    private string WriteSuccessorProtocol(
+        string repositoryRoot,
+        Action<JsonObject>? mutate)
+    {
+        var baseline = JsonNode.Parse(File.ReadAllText(Path.Combine(
+            repositoryRoot,
+            MonitoredProtocolVersions.BaselineProtocolPath)))!.AsObject();
+        var proposal = JsonNode.Parse(File.ReadAllText(Path.Combine(
+            repositoryRoot,
+            MonitoredProtocolVersions.ProposalPath)))!.AsObject();
+        var successor = new JsonObject
+        {
+            ["revision"] = 4,
+            ["status"] = "adopted-awaiting-runner-readiness",
+            ["tracking"] = new JsonObject
+            {
+                ["issue"] = 1_008,
+                ["parent"] = 999,
+                ["dc4"] = 1_009,
+                ["dc5"] = 1_003,
+                ["proposal"] = 1_022,
+            },
+        };
+        foreach (var name in new[]
+        {
+            "scope",
+            "limits",
+            "recordSemantics",
+            "fixture",
+            "durabilityProfile",
+            "cases",
+            "liveProfile",
+            "execution",
+            "contextCost",
+        })
+        {
+            successor[name] = baseline[name]!.DeepClone();
+        }
+        var decision = baseline["decision"]!.DeepClone().AsObject();
+        decision["recommendationScope"] = "monitored-scope-only";
+        successor["decision"] = decision;
+        successor["monitoring"] = proposal["monitoring"]!.DeepClone();
+        successor["storageSemantics"] = proposal["semanticOverrides"]!.DeepClone();
+        successor["baseline"] = new JsonObject
+        {
+            ["revision"] = 3,
+            ["path"] = "durable-capture-comparison-protocol.json",
+            ["sha256"] = MonitoredProtocolVersions.BaselineProtocolSha256,
+        };
+        var freeze = baseline["freeze"]!.DeepClone().AsObject();
+        var requiredIdentities = freeze["requiredIdentities"]!.AsArray();
+        requiredIdentities.Add("runnerCommit");
+        requiredIdentities.Add("monitorCommit");
+        requiredIdentities.Add("monitorComponentEvidenceSha256");
+        requiredIdentities.Add("attributionMapSha256");
+        requiredIdentities.Add("evidenceEncodingSha256");
+        successor["freeze"] = freeze;
+        successor["readiness"] = new JsonObject
+        {
+            ["maintainerAdopted"] = true,
+            ["executionConditionallyAuthorized"] = true,
+            ["runnerReadinessRequired"] = true,
+            ["independentRunnerReviewRequired"] = true,
+            ["anyExecutionPerformed"] = false,
+        };
+        mutate?.Invoke(successor);
+        var path = Path.Combine(_workspace, $"{Guid.NewGuid():N}-successor.json");
+        File.WriteAllText(path, successor.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        return path;
+    }
+
+    private static MonitoredAttributionMap Attribution(
+        string evidence,
+        string history,
+        string workspace,
+        string outputs,
+        bool includeTestHostDependencies = true)
+        => new(
+            MonitoredProtocolVersions.AttributionSchema,
+            [
+                new("history", history, true),
+                new("workspace", workspace, true),
+                new("outputs", outputs, true),
+                new("evidence", evidence, true),
+            ],
+            ["package", "package-staging"],
+            ["recovery", "recovery-staging"],
+            includeTestHostDependencies
+                ?
+                [
+                    Path.GetDirectoryName(Environment.ProcessPath!)!,
+                    AppContext.BaseDirectory,
+                    "/usr",
+                    "/etc",
+                ]
+                : [Path.GetDirectoryName(Environment.ProcessPath!)!],
+            ["/dev/null", "/dev/urandom"],
+            [LinuxRuntimeMemoryClassifier.DiscoverCurrentProcessProof()],
+            4_096,
+            4_096,
+            MonitoredRunnerGeometry.MaximumOwnedWritableDescriptorOnlyFiles);
+
+    private static MonitoredEvidenceEncoding EncodingContract()
+        => new(
+            MonitoredProtocolVersions.EvidenceEncodingSchema,
+            "json-lines",
+            "UTF-8 without BOM",
+            MonitoredSweepSummaryEncoding.Schema,
+            MonitoredSweepSummaryEncoding.FieldMapSha256,
+            1_024,
+            2_048,
+            8_388_608,
+            8_388_608,
+            false,
+            false);
+
+    private static MonitoredBinaryIdentity Identity(string path)
+        => new(Path.GetFullPath(path), HashFile(path));
+
+    private static string HashFile(string path)
+    {
+        using var stream = File.OpenRead(path);
+        return Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+    }
+
+    private static string HashText(string value)
+        => Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(value)))
+            .ToLowerInvariant();
+
+    private static string CommitIdentity(string value) => HashText(value)[..40];
+
+    private static JsonElement P1Configuration()
+    {
+        using var document = JsonDocument.Parse("""{"profile":"P1"}""");
+        return document.RootElement.Clone();
+    }
+
+    private static string FindRepositoryRoot()
+    {
+        var current = new DirectoryInfo(AppContext.BaseDirectory);
+        while (current is not null && !File.Exists(Path.Combine(current.FullName, "global.json")))
+        {
+            current = current.Parent;
+        }
+        return current?.FullName
+            ?? throw new InvalidOperationException("Could not locate repository root.");
+    }
+
+    private enum ScriptedWorkerBehavior
+    {
+        SuccessfulRecovery,
+        HangRecovery,
+        WrongRecoveryRelease,
+        UndeclaredBarrier,
+        UnexpectedSuccessfulExit,
+    }
+
+    private sealed class ScriptedWorkerLauncher(
+        ScriptedWorkerBehavior behavior,
+        Action? onRecoveryStarted = null) : IMonitoredWorkerLauncher
+    {
+        internal List<MonitoredWorkerDescriptor> Descriptors { get; } = [];
+        internal List<MonitoredProcessIdentity> Identities { get; } = [];
+
+        public Process Start(MonitoredRunManifest manifest, string descriptorPath)
+        {
+            var descriptor = JsonSerializer.Deserialize<MonitoredWorkerDescriptor>(
+                File.ReadAllBytes(descriptorPath),
+                JsonOptions)
+                ?? throw new InvalidOperationException("Could not read scripted worker descriptor.");
+            Descriptors.Add(descriptor);
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = "/bin/bash",
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WorkingDirectory = descriptor.ExecutionRoot,
+            };
+            startInfo.ArgumentList.Add("-c");
+            startInfo.ArgumentList.Add(Script(descriptor));
+            if (descriptor.Mode == MonitoredWorkerMode.Recover
+                && behavior == ScriptedWorkerBehavior.SuccessfulRecovery)
+            {
+                var result = ScriptedResult(descriptor);
+                startInfo.Environment["RESULT_PATH"] = Path.Combine(
+                    descriptor.ExecutionRoot,
+                    "worker-result.json");
+                startInfo.Environment["RESULT_JSON"] = JsonSerializer.Serialize(
+                    result,
+                    JsonOptions);
+            }
+            var process = Process.Start(startInfo)
+                ?? throw new InvalidOperationException("Could not start scripted worker.");
+            Identities.Add(MonitoredProcessIdentity.Capture(
+                process,
+                MonitoredProcessRole.Diagnostic));
+            if (descriptor.Mode == MonitoredWorkerMode.Recover)
+            {
+                onRecoveryStarted?.Invoke();
+            }
+            return process;
+        }
+
+        private string Script(MonitoredWorkerDescriptor descriptor)
+        {
+            const string identity = """
+                read -r -a stat_fields < "/proc/$$/stat"
+                pid=$$
+                start="${stat_fields[21]}"
+                printf '{"type":"process","processId":%s,"processStartTimeTicks":%s,"processRole":"diagnostic"}\n' "$pid" "$start"
+                """;
+            if (behavior == ScriptedWorkerBehavior.UnexpectedSuccessfulExit)
+            {
+                return identity + '\n' + """
+                    read -r -t 0.2 ignored || true
+                    exit 0
+                    """;
+            }
+            if (behavior == ScriptedWorkerBehavior.UndeclaredBarrier)
+            {
+                return identity + '\n' + """
+                    printf '{"type":"barrier","stage":"AfterCommitBeforeAcknowledgement","activeStorageStage":true,"barrier":"AfterCommitBeforeAcknowledgement","batchOrdinal":2,"firstSequence":65,"lastSequence":128}\n'
+                    IFS= read -r ignored
+                    exit 31
+                    """;
+            }
+            if (descriptor.Mode == MonitoredWorkerMode.Execute)
+            {
+                return identity + '\n' + """
+                    printf '{"type":"ack","firstSequence":1,"lastSequence":64}\n'
+                    printf '{"type":"barrier","stage":"AfterCommitBeforeAcknowledgement","activeStorageStage":true,"barrier":"AfterCommitBeforeAcknowledgement","batchOrdinal":2,"firstSequence":65,"lastSequence":128}\n'
+                    IFS= read -r ignored
+                    exit 31
+                    """;
+            }
+            if (behavior == ScriptedWorkerBehavior.HangRecovery)
+            {
+                return identity + '\n' + """
+                    IFS= read -r ignored
+                    exit 32
+                    """;
+            }
+            if (behavior == ScriptedWorkerBehavior.WrongRecoveryRelease)
+            {
+                return identity + '\n' + """
+                    printf '{"type":"boundary","stage":"component-recovery-boundary","activeStorageStage":false}\n'
+                    IFS= read -r release || exit 21
+                    [[ "$release" == "release:wrong-boundary" ]] || exit 22
+                    exit 0
+                    """;
+            }
+            return identity + '\n' + """
+                printf '{"type":"boundary","stage":"component-recovery-boundary","activeStorageStage":false}\n'
+                IFS= read -r release || exit 21
+                [[ "$release" == "release:component-recovery-boundary" ]] || exit 22
+                printf '%s' "$RESULT_JSON" > "$RESULT_PATH"
+                printf '{"type":"process-terminating","processId":%s,"processStartTimeTicks":%s,"processRole":"diagnostic"}\n' "$pid" "$start"
+                IFS= read -r release || exit 23
+                expected="release:process-termination:$pid:$start"
+                [[ "$release" == "$expected" ]] || exit 24
+                printf '{"type":"completed"}\n'
+                exit 0
+                """;
+        }
+
+        private static MonitoredWorkerResult ScriptedResult(
+            MonitoredWorkerDescriptor descriptor)
+            => new(
+                MonitoredProtocolVersions.WorkerResultSchema,
+                descriptor.Execution.Ordinal,
+                descriptor.Execution.CaseId,
+                descriptor.Execution.Candidate,
+                "pass",
+                FailureCode: null,
+                FailureMessage: null,
+                Offered: 128,
+                Admitted: 128,
+                Rejected: 0,
+                Committed: 128,
+                FailedAfterAdmission: 0,
+                UnknownCommitOutcome: 0,
+                SourceMalformedPayloads: 0,
+                SourceAdmissionInvalid: 0,
+                SourceRejectedNewKeys: 0,
+                SourceAdmissionRejected: 0,
+                LogicalCommittedBytes: 65_536,
+                PackageFinalBytes: 1_024,
+                OfferSeconds: 0.01,
+                DrainSeconds: 0.01,
+                FinalizationSeconds: 0.01,
+                ReopenAndFirstQuerySeconds: 0.01,
+                DiagnosticCpuSeconds: 0.01,
+                StorageFaultTriggered: true,
+                ConcurrentCaptureRejected: false,
+                RecoveryInvariantSatisfied: true,
+                RecoveredRecords: 128,
+                Requests: null,
+                SourceTicks: 128,
+                SourceKeys: 8,
+                ScheduledSourceOffers: null,
+                AttemptedSourceOffers: null,
+                AchievedSourceOfferRatio: null,
+                SourceCoverage: "component-scripted-worker",
+                TargetStartedAt: null,
+                CounterSessionStartedAt: null,
+                CounterCollectionSeconds: null,
+                HasDurablePackage: false,
+                RecommendationScope: "monitored-scope-only");
+    }
+
+    private sealed record ManifestFixture(string RepositoryRoot, string ManifestPath);
+
+    private sealed class FaultingSummaryWriter : IMonitoredSummaryWriter
+    {
+        internal TaskCompletionSource WriteAttempted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal bool Disposed { get; private set; }
+        public int Records => 0;
+        public long Bytes => 0;
+        public int MaximumObservedRecordBytes => 0;
+
+        public ValueTask WriteAsync<T>(T value, CancellationToken cancellationToken)
+        {
+            WriteAttempted.TrySetResult();
+            throw new InvalidOperationException("component writer failure");
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            Disposed = true;
+            return ValueTask.CompletedTask;
+        }
+    }
+}
