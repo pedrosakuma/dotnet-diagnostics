@@ -38,7 +38,7 @@ or production approval follows from this attempt.
   null. The later `fixtures-complete` and `owned-cleanup-quiescent`
   observations are individually complete, but do not erase the monitor's
   earlier incomplete state.
-- The eight entry observations report at most 266 current-context identities,
+- The eight first-entry sweep records report at most 266 current-context identities,
   179,212 observed suite bytes and a maximum completion gap of 174.9775 ms.
   These are observations, not instantaneous upper bounds or successful
   full-entry coverage. No resource-threshold alarm was recorded.
@@ -46,10 +46,13 @@ or production approval follows from this attempt.
   result was created. The attempt stopped before the real workload.
 - `cleanup.json` records `quiescent: true`, no unconfirmed identities and no
   errors. The coordinator had exited before the preservation snapshot.
-- The aggregate failure is
-  `Cleanup-PrevalidationFinalMonitoringIncomplete`. Here the prefix does
-  **not** establish failed process termination: the cleanup-stage check
-  rejects the monitor's sticky incomplete state.
+- The first-entry failure code is
+  `Cleanup-PrevalidationFinalMonitoringIncomplete`; the suite status is
+  `partial-unsealed:PrevalidationOwnedCleanupOrFreezeIncomplete`.
+  Neither label establishes failed process termination. The pre-harness
+  fixture-monitoring gate first rejected the sticky incomplete state; the
+  cleanup-stage check then rejected the same state and overwrote the original
+  entry failure code.
 - `prevalidation-inspect` returned exit 0 with
   `partial-unsealed-not-readiness-evidence`, eight outcomes, zero sealed
   artifacts and `campaignAdmissionGranted: false`. A successful inspection
@@ -59,14 +62,15 @@ or production approval follows from this attempt.
 ## Root-cause limit
 
 The compact observation stream preserves error counts, but not the underlying
-error codes for these incomplete sweeps. The aggregate cleanup-stage failure
-also does not retain the original fixture-stage error. Consequently, this
+error codes for these incomplete sweeps. Neither the final entry failure code
+nor the suite status retains the original fixture-stage error. Consequently, this
 attempt establishes an observation failure during fixture construction, **not
 its exact cause**.
 
 Descriptor churn during concurrent fixture creation is a hypothesis, not a
 confirmed diagnosis. No repeat was used to investigate it. A correction must
-first preserve bounded causal error evidence and exercise the relevant
+first preserve bounded causal error evidence and the original failure code,
+then exercise the relevant
 fixture/observer lifecycle with component tests. It must not silently ignore
 incomplete observations, raise limits, or classify this attempt as successful.
 Any further real suite requires a prospective reviewed change and fresh
@@ -95,6 +99,12 @@ Raw artifacts remain private. The separate preservation inventory contains
 path, each formatted as `path<TAB>decimal byte length<TAB>file SHA-256<LF>`.
 This inventory is a post-exit preservation snapshot, **not a protocol seal**.
 No private absolute paths or binary payloads are published here.
+
+A subsequent independent read-only review reproduced all published hashes,
+the complete 268-file inventory and the reported outcomes. It also confirmed
+the two evidence limitations above: sweep error codes were not persisted,
+and the cleanup-stage failure replaced the first-entry failure code.
+This review verifies the partial report, not real-worker feasibility.
 
 | Identity | SHA-256 |
 | --- | --- |
