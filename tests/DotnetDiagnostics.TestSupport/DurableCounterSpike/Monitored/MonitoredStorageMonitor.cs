@@ -649,6 +649,8 @@ internal sealed record MonitoredSweepSummary(
     public int? CurrentContextRootedIdentities { get; init; }
     [JsonPropertyName("rh"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public long? RetainedHistoryBytes { get; init; }
+    [JsonPropertyName("ec"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? FirstErrorCode { get; init; }
 }
 
 internal static class MonitoredSweepSummaryEncoding
@@ -743,6 +745,9 @@ internal static class MonitoredSweepSummaryEncoding
 
     internal static byte[] EncodeLine(MonitoredSweepSummary summary)
     {
+        PrevalidationProtocol.Require(summary.FirstErrorCode is null
+            || IsBoundedToken(summary.FirstErrorCode, MaximumAlarmUtf8Bytes),
+            "PrevalidationErrorCodeEncodingLimit");
         var payload = JsonSerializer.SerializeToUtf8Bytes(
             summary,
             JsonOptions);
@@ -1526,6 +1531,8 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
             CurrentContextIdentities = _prevalidationScope is null ? null : currentCount,
             CurrentContextRootedIdentities = _prevalidationScope is null ? null : currentRootedCount,
             RetainedHistoryBytes = _prevalidationScope is null ? null : retainedHistoryBytes,
+            FirstErrorCode = _prevalidationScope is null || complete ? null
+                : PrevalidationFailureCodes.Normalize(errors.FirstOrDefault() ?? "UnclassifiedChargedResource"),
         };
         var identityEvidence = _includeIdentityEvidence
             ? observations.Select(static pair => new MonitoredObservedIdentityEvidence(
@@ -2045,6 +2052,7 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
     private void MarkIncomplete(string code)
     {
         _incomplete = true;
+        if (_prevalidationScope is not null) code = PrevalidationFailureCodes.Normalize(code);
         var terminal = _terminalAlarm ?? code;
         _terminalAlarm = terminal;
         _terminalIssue.TrySetResult(terminal);
@@ -2052,6 +2060,7 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
 
     private void MarkAlarm(string code)
     {
+        if (_prevalidationScope is not null) code = PrevalidationFailureCodes.Normalize(code);
         var terminal = _terminalAlarm ?? code;
         _terminalAlarm = terminal;
         _terminalIssue.TrySetResult(terminal);

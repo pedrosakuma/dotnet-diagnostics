@@ -129,6 +129,14 @@ internal static class PrevalidationLayout
     }
 
     internal static void CreateHistoryFixtures(string root, int slots, CancellationToken cancellationToken)
+        => CreateHistoryFixturesCore(root, slots, null, cancellationToken);
+
+    internal static void CreateHistoryFixturesForComponent(string root, int slots,
+        Action fixtureWritten, CancellationToken cancellationToken)
+        => CreateHistoryFixturesCore(root, slots, fixtureWritten, cancellationToken);
+
+    private static void CreateHistoryFixturesCore(string root, int slots, Action? fixtureWritten,
+        CancellationToken cancellationToken)
     {
         if (!OperatingSystem.IsLinux())
         {
@@ -152,6 +160,7 @@ internal static class PrevalidationLayout
                 {
                     stream.Write(content);
                     stream.Flush(flushToDisk: true);
+                    fixtureWritten?.Invoke();
                 }
                 MonitoredFile.MakeReadOnly(path);
             }
@@ -162,6 +171,8 @@ internal static class PrevalidationLayout
 
 internal static class PrevalidationOwnership
 {
+    internal const int MaximumCleanupErrors = 16;
+    internal const int MaximumCleanupErrorBytes = 128;
     internal static void RequireRegisteredSelf(string path, MonitoredProcessRole role)
     {
         using var self = Process.GetCurrentProcess();
@@ -201,7 +212,17 @@ internal static class PrevalidationOwnership
         IReadOnlyList<MonitoredProcessIdentity> identities,
         IPrevalidationProcessOperations operations, CancellationToken cancellationToken)
     {
+        PrevalidationProtocol.Require(identities.Count <= 5, "PrevalidationOwnershipCountLimit");
         var errors = new List<string>();
+        var additionalErrors = 0;
+        void RecordError(string error)
+        {
+            PrevalidationProtocol.Require(MonitoredSweepSummaryEncoding.IsBoundedToken(error, MaximumCleanupErrorBytes),
+                "PrevalidationCleanupErrorEncodingLimit");
+            if (errors.Contains(error, StringComparer.Ordinal)) return;
+            if (errors.Count < MaximumCleanupErrors) errors.Add(error);
+            else if (additionalErrors < int.MaxValue) additionalErrors++;
+        }
         var pending = identities.Distinct().Reverse().ToList();
         // Cancellation limits confirmation, never the signal-all pass.
         foreach (var identity in pending)
@@ -215,7 +236,7 @@ internal static class PrevalidationOwnership
             }
             catch (Exception exception) when (IsProcessError(exception))
             {
-                errors.Add($"{identity.ProcessId}:signal:{ErrorCode(exception)}");
+                RecordError(FormattableString.Invariant($"{identity.ProcessId}:signal:{ErrorCode(exception)}"));
             }
         }
         do
@@ -231,11 +252,7 @@ internal static class PrevalidationOwnership
                 }
                 catch (Exception exception) when (IsProcessError(exception))
                 {
-                    var error = $"{identity.ProcessId}:confirm:{ErrorCode(exception)}";
-                    if (!errors.Contains(error, StringComparer.Ordinal))
-                    {
-                        errors.Add(error);
-                    }
+                    RecordError(FormattableString.Invariant($"{identity.ProcessId}:confirm:{ErrorCode(exception)}"));
                 }
             }
             if (pending.Count == 0 || cancellationToken.IsCancellationRequested)
@@ -252,19 +269,33 @@ internal static class PrevalidationOwnership
             }
             catch (Exception exception) when (IsProcessError(exception))
             {
-                errors.Add($"confirmation-wait:{ErrorCode(exception)}");
+                RecordError($"confirmation-wait:{ErrorCode(exception)}");
                 break;
             }
         } while (true);
-        return new("durable-prevalidation-cleanup/1", pending.Count == 0, pending, errors);
+        return new("durable-prevalidation-cleanup/2", pending.Count == 0, pending, errors, additionalErrors);
     }
 
     private static bool IsProcessError(Exception exception) => exception is IOException
         or UnauthorizedAccessException or InvalidOperationException or ArgumentException
         or System.ComponentModel.Win32Exception or DurableStorageExperimentException;
 
-    private static string ErrorCode(Exception exception) => exception is DurableStorageExperimentException storage
-        ? storage.Code : exception.GetType().Name;
+    private static string ErrorCode(Exception exception)
+    {
+        var code = PrevalidationFailureCodes.Normalize(exception is DurableStorageExperimentException storage
+            ? storage.Code : exception.GetType().Name);
+        if (exception is IOException)
+        {
+            return FormattableString.Invariant($"{code}:hr-{exception.HResult:X8}");
+        }
+        if (exception is UnauthorizedAccessException)
+        {
+            return exception.InnerException is IOException inner
+                ? FormattableString.Invariant($"{code}:hr-{exception.HResult:X8}:iohr-{inner.HResult:X8}")
+                : FormattableString.Invariant($"{code}:hr-{exception.HResult:X8}");
+        }
+        return code;
+    }
 }
 
 internal sealed class PrevalidationOwnedProcessLedger
@@ -283,7 +314,7 @@ internal sealed class PrevalidationOwnedProcessLedger
 }
 
 internal sealed record PrevalidationCleanupResult(string Schema, bool Quiescent,
-    IReadOnlyList<MonitoredProcessIdentity> Unconfirmed, IReadOnlyList<string> Errors);
+    IReadOnlyList<MonitoredProcessIdentity> Unconfirmed, IReadOnlyList<string> Errors, int AdditionalErrorCount = 0);
 
 internal interface IPrevalidationProcessOperations
 {
@@ -297,13 +328,32 @@ internal sealed class LinuxPrevalidationProcessOperations : IPrevalidationProces
     internal static readonly LinuxPrevalidationProcessOperations Instance = new();
 
     public bool IsOriginalAlive(MonitoredProcessIdentity identity)
+        => IsOriginalAliveForComponent(identity,
+            static path => new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite,
+                bufferSize: 1), ReadPinnedStat);
+
+    internal static bool IsOriginalAliveForComponent(MonitoredProcessIdentity identity,
+        Func<string, Stream> openStat, Func<Stream, string> readStat)
     {
+        PrevalidationProtocol.Require(identity.ProcessId > 0, "InvalidProcessIdentity");
+        Stream pinned;
+        try
+        {
+            pinned = openStat(FormattableString.Invariant($"/proc/{identity.ProcessId}/stat"));
+        }
+        catch (Exception exception) when (IsProcStatAbsent(exception))
+        {
+            return false;
+        }
+        using var owned = pinned;
         string stat;
         try
         {
-            stat = File.ReadAllText($"/proc/{identity.ProcessId}/stat");
+            stat = readStat(pinned);
         }
-        catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
+        // Linux proc_single_show returns ESRCH after the pinned inode's task is reaped.
+        // .NET Unix IO preserves this raw errno (3) in IOException.HResult, not HRESULT_FROM_WIN32(3).
+        catch (IOException exception) when (IsProcStatAbsent(exception))
         {
             return false;
         }
@@ -316,6 +366,24 @@ internal sealed class LinuxPrevalidationProcessOperations : IPrevalidationProces
         var start = ulong.Parse(fields[19], System.Globalization.CultureInfo.InvariantCulture);
         // A reused PID is not ours; a zombie cannot execute or hold writable descriptors.
         return start == identity.LinuxStartTimeTicks && fields[0] is not ("Z" or "X");
+    }
+
+    private static bool IsProcStatAbsent(Exception exception)
+        => exception is FileNotFoundException or DirectoryNotFoundException
+            || exception.GetType() == typeof(IOException) && exception.HResult == 3;
+
+    internal static string ReadPinnedStat(Stream stream)
+    {
+        Span<byte> bytes = stackalloc byte[4_097];
+        var count = 0;
+        while (count < bytes.Length)
+        {
+            var read = stream.Read(bytes[count..]);
+            if (read == 0) break;
+            count += read;
+        }
+        PrevalidationProtocol.Require(count <= 4_096, "ProcessIdentityStatWidth");
+        return System.Text.Encoding.UTF8.GetString(bytes[..count]);
     }
 
     public void Signal(MonitoredProcessIdentity identity)

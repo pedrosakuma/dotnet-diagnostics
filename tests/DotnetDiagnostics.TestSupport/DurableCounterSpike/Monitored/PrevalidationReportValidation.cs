@@ -1,7 +1,13 @@
 namespace DotnetDiagnostics.Core.Tests.DurableCounterSpike.Monitored;
 
 internal sealed record PrevalidationEvidenceValidation(string Schema, string SuiteId, string Status,
-    int Outcomes, int SealedArtifacts, bool CampaignAdmissionGranted);
+    int Outcomes, int SealedArtifacts, bool CampaignAdmissionGranted)
+{
+    public string? FailureCode { get; init; }
+    public string? FailureStage { get; init; }
+    public PrevalidationSecondaryFailures? SecondaryFailures { get; init; }
+    public PrevalidationCoverage? FirstFailedProbe { get; init; }
+}
 
 internal static class PrevalidationReportValidation
 {
@@ -9,7 +15,7 @@ internal static class PrevalidationReportValidation
     {
         PrevalidationProtocol.EnsureImmutable(manifestPath);
         var manifest = PrevalidationProtocol.Read<PrevalidationManifest>(manifestPath);
-        PrevalidationProtocol.ValidateShape(manifest);
+        PrevalidationProtocol.ValidateShape(manifest, allowLegacyInspection: true);
         var manifestHash = MonitoredFile.HashFile(manifestPath);
         var sealPath = Path.Combine(manifest.PrivateRoot, "seal.json");
         var partialPath = Path.Combine(manifest.PrivateRoot, "partial.json");
@@ -19,8 +25,14 @@ internal static class PrevalidationReportValidation
             ValidateReport(manifest, manifestHash, partial);
             PrevalidationProtocol.Require(partial.Status.StartsWith("partial-unsealed:", StringComparison.Ordinal),
                 "PrevalidationPartialStatusMismatch");
-            return new("durable-prevalidation-evidence-validation/1", manifest.SuiteId,
-                "partial-unsealed-not-readiness-evidence", partial.Probes.Count, 0, false);
+            return new("durable-prevalidation-evidence-validation/2", manifest.SuiteId,
+                "partial-unsealed-not-readiness-evidence", partial.Probes.Count, 0, false)
+            {
+                FailureCode = partial.FailureCode,
+                FailureStage = partial.FailureStage,
+                SecondaryFailures = partial.SecondaryFailures,
+                FirstFailedProbe = partial.Probes.FirstOrDefault(static item => item.Outcome == "incomplete"),
+            };
         }
         PrevalidationProtocol.EnsureImmutable(sealPath);
         var seal = PrevalidationProtocol.Read<PrevalidationSeal>(sealPath, 16_777_216);
@@ -56,8 +68,14 @@ internal static class PrevalidationReportValidation
         PrevalidationProtocol.Require(report.Status == (report.Probes.All(PrevalidationExecutor.HasCoverage)
             ? "coverage-observed-awaiting-independent-review" : "stopped-incomplete"),
             "PrevalidationReportStatusMismatch");
-        return new("durable-prevalidation-evidence-validation/1", manifest.SuiteId, report.Status,
-            report.Probes.Count, seal.Artifacts.Count, false);
+        return new("durable-prevalidation-evidence-validation/2", manifest.SuiteId, report.Status,
+            report.Probes.Count, seal.Artifacts.Count, false)
+        {
+            FailureCode = report.FailureCode,
+            FailureStage = report.FailureStage,
+            SecondaryFailures = report.SecondaryFailures,
+            FirstFailedProbe = report.Probes.FirstOrDefault(static item => item.Outcome == "incomplete"),
+        };
     }
 
     private static void ValidateControlCopies(PrevalidationManifest manifest, string manifestHash)
@@ -91,22 +109,59 @@ internal static class PrevalidationReportValidation
 
     internal static void ValidateReport(PrevalidationManifest manifest, string manifestHash, PrevalidationReport report)
     {
-        PrevalidationProtocol.Require(report.Schema == "durable-prevalidation-report/1"
+        var legacy = manifest.ContextSummaryFieldMapSha256 == PrevalidationProtocol.LegacyContextSummaryFieldMapSha256;
+        PrevalidationProtocol.Require(report.Schema == (legacy
+                ? "durable-prevalidation-report/1" : PrevalidationProtocol.ReportSchema)
             && report.Scope == PrevalidationProtocol.Scope && report.SuiteId == manifest.SuiteId
             && report.ManifestSha256 == manifestHash && !report.CampaignAdmissionGranted
             && report.HistoricalReportSha256 == manifest.HistoricalReport.Sha256
             && report.DerivedSuiteIdentityBound == PrevalidationLayout.DeriveSuiteIdentityBound()
             && report.Probes.Count == 8, "PrevalidationReportMismatch");
+        PrevalidationFailureCodes.Validate(report.FailureCode, report.SecondaryFailures);
+        if (legacy)
+        {
+            PrevalidationProtocol.Require(report.FailureCode is null && report.FailureStage is null
+                && report.SecondaryFailures is null,
+                "PrevalidationLegacyFailureEvidenceMismatch");
+        }
+        else
+        {
+            PrevalidationFailureCodes.ValidateStage(report.FailureCode, report.FailureStage);
+            var first = report.Probes.FirstOrDefault(static item => item.Outcome == "incomplete");
+            PrevalidationProtocol.Require(first is null
+                    ? report.Status.StartsWith("partial-unsealed:", StringComparison.Ordinal)
+                        || report.FailureCode is null && report.SecondaryFailures is null
+                    : report.FailureCode == first.FailureCode && report.FailureStage == first.FailureStage,
+                "PrevalidationPrimaryFailureMismatch");
+            PrevalidationProtocol.Require(!report.Status.StartsWith("partial-unsealed:", StringComparison.Ordinal)
+                || report.FailureCode is not null, "PrevalidationPartialFailureMissing");
+        }
         var stopped = false;
         for (var index = 0; index < 8; index++)
         {
             var probe = manifest.Probes[index];
             var outcome = report.Probes[index];
-            PrevalidationProtocol.Require(outcome.Schema == "durable-prevalidation-coverage/1"
+            PrevalidationProtocol.Require(outcome.Schema == (legacy
+                    ? "durable-prevalidation-coverage/1" : PrevalidationProtocol.CoverageSchema)
                 && outcome.Ordinal == probe.Ordinal && outcome.ProbeId == probe.Id
                 && outcome.DeclaredFixtureSlots == probe.FixtureSlots && !outcome.CampaignAdmissionGranted
                 && outcome.Outcome is "coverage-observed" or "incomplete" or "not-run"
                 && (!stopped || outcome.Outcome == "not-run"), "PrevalidationOutcomeOrderMismatch");
+            PrevalidationFailureCodes.Validate(outcome.FailureCode, outcome.SecondaryFailures);
+            if (legacy)
+            {
+                PrevalidationProtocol.Require(outcome.SecondaryFailures is null && outcome.FailureStage is null,
+                    "PrevalidationLegacyFailureEvidenceMismatch");
+            }
+            else
+            {
+                PrevalidationFailureCodes.ValidateStage(outcome.FailureCode, outcome.FailureStage);
+                PrevalidationProtocol.Require(outcome.Outcome == "coverage-observed"
+                    ? PrevalidationExecutor.HasCoverage(outcome)
+                    : !outcome.MonitoringComplete && outcome.FailureCode is not null
+                        && (outcome.Outcome != "not-run" || outcome.SecondaryFailures is null),
+                    "PrevalidationOutcomeFailureMismatch");
+            }
             if (PrevalidationExecutor.HasCoverage(outcome))
             {
                 PrevalidationProtocol.Require(outcome.ObservedFixtureFiles == probe.FixtureSlots * 4
@@ -128,8 +183,10 @@ internal static class PrevalidationReportValidation
             var probe = manifest.Probes[outcome.Ordinal - 1];
             var cleanup = PrevalidationProtocol.Read<PrevalidationCleanupResult>(
                 Path.Combine(PrevalidationLayout.ContextRoot(manifest, probe), "cleanup.json"));
-            PrevalidationProtocol.Require(cleanup.Schema == "durable-prevalidation-cleanup/1"
-                && cleanup.Quiescent && cleanup.Errors.Count == 0 && cleanup.Unconfirmed.Count == 0,
+            PrevalidationProtocol.Require(cleanup.Schema == (report.Schema == "durable-prevalidation-report/1"
+                    ? "durable-prevalidation-cleanup/1" : "durable-prevalidation-cleanup/2")
+                && cleanup.Quiescent && cleanup.Errors.Count == 0 && cleanup.AdditionalErrorCount == 0
+                && cleanup.Unconfirmed.Count == 0,
                 "PrevalidationCleanupEvidenceIncomplete");
             var history = PrevalidationLayout.HistoryRoot(manifest, probe);
             for (var slot = 0; slot < probe.FixtureSlots; slot++)
@@ -176,6 +233,11 @@ internal static class PrevalidationReportValidation
                     .Select(line => System.Text.Json.JsonSerializer.Deserialize<MonitoredSweepSummary>(
                         line, PrevalidationProtocol.Json))
                     .ToArray();
+                foreach (var summary in summaries)
+                {
+                    PrevalidationProtocol.Require(summary is not null, "PrevalidationSummaryMissing");
+                    PrevalidationExecutor.ValidateSummaryFailure(summary!);
+                }
                 PrevalidationProtocol.Require(summaries.Length is > 0 and <= 2_048
                     && summaries.All(item => item is { Complete: true, Alarm: null,
                         CurrentContextIdentities: > 0 and <= 571, CurrentContextRootedIdentities: <= 539,
