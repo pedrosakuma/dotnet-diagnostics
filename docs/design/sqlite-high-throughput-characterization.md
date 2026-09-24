@@ -1,7 +1,9 @@
-# SQLite structured-record capacity characterization — prospective prototype v1
+# SQLite structured-record capacity characterization — research protocol
 
-**Status: plan + experimental code + component tests only. No capacity measurements
-authorized or executed by this change.** Review this protocol, numerical bounds,
+**Status: the initial 96-cell matrix and the separately admitted 48-cell
+revision-2 follow-up have completed.** See the
+[measured evidence and limits](../evidence/sqlite-capacity/README.md).
+Further runs still require prospective review of the protocol, numerical bounds,
 schema, units, source patch and component evidence before any `cell` invocation.
 Issue #1041 requested characterization first, not an invented production SLO.
 SQLite was selected for simplicity, **not proven throughput**. The whole DC5
@@ -315,7 +317,7 @@ separately binds implementation/host logic not present in this structural hash.
 No historical v7 protocol hash changes.
 
 The experimental route has `describe`, `component` (32 fixed records, 1,000
-schedule, 100-ms maximum source window), and **future-use** `cell` operations.
+schedule, 100-ms maximum source window), and research-only `cell` operations.
 The latter two require a fresh case directory, profile, rate, mode and exact
 reviewed protocol digest. A matching hash is drift detection, **not human
 authorization or permission to run**. Internal `worker`/`verify` entrypoints are

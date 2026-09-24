@@ -1,0 +1,35 @@
+{
+  "checks": [
+    {
+      "run": "01",
+      "measured": 96,
+      "warmups": 8,
+      "artifactHashes": 312,
+      "binaryRuntimeIdentities": 458,
+      "independentDatabaseTraversals": 52,
+      "workspaceBytes": 1215788309,
+      "evidenceIntegrity": "accepted",
+      "capacityOutcome": "mixed: retain explicit overload/cap results, not all lossless",
+      "manifestSha256": "6217b60138603ae69e89fd302316ef1d7f805aeed3af454ff2d903305bd9275c",
+      "resultSha256": "34aee06458f1e8d64073bb81149d60dc4d1d6d5c4b9780907180f032d25b4a8a",
+      "inventorySha256": "03f1def5916e3ed6c0cc22d9665e9d11232421c895a8b8a1faeceb3216ca8078"
+    },
+    {
+      "run": "02",
+      "measured": 48,
+      "warmups": 8,
+      "artifactHashes": 168,
+      "binaryRuntimeIdentities": 458,
+      "independentDatabaseTraversals": 28,
+      "workspaceBytes": 1701902784,
+      "evidenceIntegrity": "accepted",
+      "capacityOutcome": "mixed: retain explicit overload/cap results, not all lossless",
+      "manifestSha256": "55b5a1fb9497da9064dbd44976e0a01783f37e7b6322c64aeecf0f6028629e41",
+      "resultSha256": "5dd0af81afa1f0769d1fe7b5ef6ed6ff6bd7a91094f542bd429f40f979b0a8b3",
+      "inventorySha256": "0856403ec37cd98d21c59f80314dd14ff567b8b94ac4811a47c95db7131274b9"
+    }
+  ],
+  "verifier": "Independent Python sqlite3 immutable read-only streaming SHA-256 traversal",
+  "verifierScriptSha256": "47e01d8cedc5dde869e59b3856f9d8bc5083113a33f66f87c1b303a9272ca7d2",
+  "run01IndependentCheckerCaveat": "The earlier independent-verification.json used success-only assertions for 33 capacity-negative outcomes and labeled acceptance failed. Those outcomes are valid measured limits, not evidence-integrity failures. That original report is retained unchanged."
+}
