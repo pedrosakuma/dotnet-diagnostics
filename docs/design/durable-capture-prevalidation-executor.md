@@ -243,6 +243,32 @@ limit remains 1,000 ms.
 
 ### Bounded causal evidence and compatibility
 
+Root observations do not inherit descriptor-loss admission, including under
+[revision 6](durable-capture-observed-unlinked-protocol.md). The current root
+walker first collects pathname strings, then opens each file and reads native
+metadata. `PathObservationFileNotFoundException` means a subsequent file-open
+observation failed; the summary retains neither that pathname nor the exception
+message. A stage label is the last acknowledged stage, not a stack trace.
+An existing file after cleanup cannot identify a previously missing leaf.
+
+An anchored directory descriptor plus `openat` can preserve access across a
+rename of an already-pinned ancestor. It does not prevent a leaf from being
+unlinked between enumeration and open, and atomic replacement can resolve the
+same name to a different native identity. Pinning a leaf beforehand preserves
+the inode, but a later zero-link root observation still fails the existing
+root rules. Neither approach alone proves a lossless enumeration.
+
+The bounded `RootObservation` component tests distinguish these interleavings,
+including one transaction through the actual B derived-index implementation,
+whose DELETE journal disappears at commit. They are not historical filename
+identification or workload-feasibility evidence. The root callback is an
+internal component-only seam, not a manifest option or runtime exemption.
+Current sweep/kill coordination does not serialize native index transactions
+against root enumeration. Excluding journals, monitor output, or publication
+files would omit charged resources. Allowing root-path losses or suspending
+mutations throughout enumeration would require an explicit material design
+decision; these tests implement neither and change no final inventory gate.
+
 This correction responds to the preserved
 [first-attempt failure](../evidence/dc5/prevalidation-765e56c.md). It does not
 change that report, infer its missing cause, authorize another attempt, or
