@@ -1,6 +1,8 @@
 # RFC: local durable diagnostic captures
 
-**Status:** Discussion draft; not an approved implementation or shipping API.
+**Status:** SQLite-only direction, single-release delivery and indexed post-fact
+analysis requirements selected on 2026-09-24. Detailed coverage, implementation
+go/no-go and shipping API remain unapproved.
 
 **Date:** 2026-09-21
 
@@ -111,6 +113,7 @@ bounded and rebuildable; files do not become persistent agent memory.
 | Bounded ownership | Record, queue, batch, package, temporary-space and concurrent-capture budgets are explicit. |
 | Honest recovery | Accepted, committed, finalized and evidence-complete are different concepts. Unknown crash-tail losses remain unknown. |
 | Selective access | Query by supported time/key/grouping with bounded output; do not replay every record into model context. |
+| Indexed post-fact analysis | Retain the structured data and indexes needed by declared historical queries in SQLite; normal analysis must not depend on reopening a native trace or the target process. |
 | Preserved boundaries | File retention does not bypass authorization, redaction, capability gates or sensitive-value opt-ins. |
 | Versioned interpretation | Readers know which schemas and measurement representations they understand; unsupported versions fail explicitly. |
 | Measured choice | No engine or I/O technique is assumed cheaper without equivalent-fidelity, equivalent-durability measurements. |
@@ -121,8 +124,10 @@ bounded and rebuildable; files do not become persistent agent memory.
 
 Small owned records enter bounded admission queues. One logical writer per
 package uses prepared statements and bounded transactions. Secondary analytical
-indexes are built after acquisition where feasible. Large native traces/dumps
-remain separate optional files.
+indexes are built after acquisition where feasible and before sealing when
+required by declared queries. Dumps can remain separately authorized native
+files. Native trace retention/export is explicit opt-in; it is not the canonical
+representation or a prerequisite for the declared SQLite-backed analysis.
 
 Benefits include transactional recovery and an existing query engine. Costs
 include row encoding, page/index maintenance, commit I/O and provider dependency.
@@ -165,9 +170,10 @@ Serialize a supported subset of the bounded artifacts already held in memory,
 with provenance, quality, capabilities and a manifest. Reopening restores
 artifact-based queries but not live reaccess or previously omitted evidence.
 
-This is a smaller continuity feature and a possible first phase, not a solution
-to missing temporal information. Do not claim every current artifact is
-automatically portable or serializable.
+This is a smaller continuity capability and a possible internal implementation
+milestone, not a separately planned first release or a solution to missing
+temporal information. Do not claim every current artifact is automatically
+portable or serializable.
 
 ### D. Memory-mapped access
 
@@ -183,8 +189,9 @@ read access, not a prerequisite for durable capture.
 ## 5. Package and interpretation contract
 
 The logical package contains a versioned manifest, one or more retained
-representations, and optional separately authorized native files. Physical
-layout and the final storage engine remain subject to the decision process.
+representations, and optional separately authorized native files. SQLite-only
+is the selected architectural direction for normalized retained evidence
+(section 9); physical layout and production guarantees remain decision gates.
 
 The manifest must describe:
 
@@ -301,7 +308,10 @@ writer must never dereference an already-reused parser event.
 
 ### Publication and read-only boundaries
 
-For the first prototype, build the declared minimal indexes before sealing.
+For the selected delivery, build the indexes required by declared historical
+queries before sealing. Index design must follow the supported filters,
+groupings and time ranges, rather than merely storing an opaque snapshot or
+a pointer to an external trace and calling it queryable persistence.
 A sealed canonical file is immutable: do not build indexes, append recovery
 notes or change manifest rows inside it during ordinary reopen. A future lazy
 index must be a separate bounded derived cache keyed by capture integrity,
@@ -371,6 +381,11 @@ No performance thresholds or engine winner are established by this RFC.
 Before executing a comparison, freeze numeric budgets appropriate to the
 supported workload/host classes; record failures instead of tuning until green.
 
+The revision-7 comparison concluded inconclusively. The methodology below is
+retained as design history, not authorization for another campaign. The later
+maintainer selection in section 9 is based on simplicity, not measured parity
+or superiority.
+
 Compare A and B using the same retained record representation, quotas,
 redaction, durability target and query set. Include C as a continuity baseline
 where applicable, not as a fidelity-equivalent temporal alternative.
@@ -410,7 +425,88 @@ proposals, peer challenges, corrections and dissent from `gpt-5.6-sol`,
 not a storage experiment or an extension of the frozen advisory evaluation.
 Model agreement is advisory, not maintainer approval or empirical validation.
 
-### Recommended direction
+### Maintainer decision: SQLite-only direction (2026-09-24)
+
+The maintainer selected **A, direct SQLite**, as the architectural direction,
+based on simplicity and maintainability, and confirmed that this is separate
+from the inconclusive experiment. The
+[revision-7 outcome report](../evidence/dc5/campaign-v7-observation-outcome.md)
+preserves the four incomplete campaigns and their limitations.
+
+The rationale is fewer custom persistence mechanisms: normalized records and
+their indexes use one transactional engine. B also uses SQLite, but adds
+canonical record files, framing and interrupted-record recovery, index
+reconstruction, and consistency/publication rules across representations.
+No measured benefit currently justifies those additional responsibilities.
+SQLite still requires bounded admission, batching, schema compatibility,
+retention, recovery and package-publication code; it does not remove them.
+
+This is **not evidence of equal performance or an A benchmark victory**.
+No critical defect inherent to the SQLite approach was identified in the
+obtained evidence, but incomplete coverage does not establish the absence of
+such defects. The unresolved component failure remains disclosed.
+
+Retain DC5's result as inconclusive and stop the current A/B experiment.
+Defer B unless a concrete requirement or measured bottleneck justifies
+reconsideration; do not introduce an automatic fallback or parallel production
+formats. "SQLite-only" does not promise one physical file throughout capture:
+journals, temporary files and separately authorized native artifacts still
+need explicit ownership, accounting and publication rules.
+
+This records the storage-direction decision within **DC6 (#1006)**. The
+delivery requirements below further constrain that decision. Neither approves
+the detailed capture/query matrix, journal/sync policy, numeric quotas,
+durability guarantees, compatibility window or public operation names.
+The schema-compatibility demonstration and explicit production go/no-go remain
+required before unblocking DC7-DC9. No production implementation or merge is
+authorized by this decision.
+
+### Delivery requirements: one release, indexed post-fact analysis (2026-09-24)
+
+The maintainer requires **one public feature release**, implemented through
+multiple bounded tasks and independently reviewed changes. Internal milestones
+are not separate customer-facing releases. Contention may be the first
+integration exercise, but a contention-only or continuity-only release is not
+the selected delivery plan.
+
+The planning target is durable support across the capture families. Before
+implementation, inventory each capture/artifact kind and its historical query
+views, retained fields and granularity, SQL layout and indexes, quality/limits,
+native dependencies and authorization. The agreed matrix is a release gate:
+any missing entry or necessary exception must be explicit, not silently
+deferred to a later release.
+
+Post-fact investigation is the primary use case. For each supported view,
+SQLite must retain sufficient structured evidence for bounded indexed queries
+after the target exits and the client restarts. Copying only an existing
+summary, top-N list or opaque payload is not sufficient when that view needs
+detail those representations omit. Conversely, persistence must not invent
+unobserved detail or promise lossless, unlimited event retention. The matrix
+must make those distinctions and define finite acquisition/storage limits.
+
+Native `.nettrace` retention/export is a separate explicit opt-in for
+interoperability or deeper external analysis, not the default durable format.
+Supported SQLite-backed queries must work with trace retention disabled.
+This does not prohibit EventPipe as the acquisition transport, require
+retaining every runtime event, or remove an existing explicitly requested
+trace-export operation. If an acquisition backend genuinely needs a temporary
+native file, account for it and its cleanup separately; it is not a retained
+dependency of the normal historical queries.
+
+Dumps may remain native associated artifacts, with their existing explicit
+capability/authorization boundaries. Dump-dependent views must disclose that
+dependency rather than claiming the SQLite package alone can reproduce them.
+
+Core, CLI and MCP may be developed in successive or parallel tasks after their
+shared contracts stabilize, but the single release requires the agreed
+capture/query matrix, compatibility, recovery, retention and host integration
+gates together. These requirements do not reopen the A/B experiment, mandate
+a new raw-capture default or approve production implementation before DC6.
+
+### Original prototype recommendation (historical)
+
+The sequence below records the earlier proposal; the single-release
+requirements above supersede its staged public-delivery interpretation.
 
 Use **A as the first prototype candidate**, keeping **B as a meaningful
 comparator**, not a straw man. SQLite is attractive because the problem needs
@@ -436,18 +532,19 @@ steps. A lifecycle spike need not become a separately shipped C product.
 
 ### Decisions still open
 
-- First publicly shipped capability: continuity-only versus counter series.
+- Exact capture/query coverage matrix for the single public release, including
+  retained granularity, required indexes and explicit native-file exceptions.
 - Exact reopen/list/delete/recovery placement within existing typed tools,
   resources and host commands; temporary-handle lifetime and disposal.
 - Canonical schema/layout, version migration and recovery publication identity.
-- A versus B for each supported workload; journal/sync mode and native artifact
-  publication protocol.
+- SQLite journal/sync mode, supported workload scope and native artifact
+  publication protocol; the architectural direction itself is now selected.
 - Per-record, stream, package, historical-store, temporary-space and host-wide
   quotas, scheduling policy and finite shutdown behavior.
 - Numeric observer-effect/loss/latency acceptance budgets, approved before
   running experiments rather than chosen to fit a preferred result.
-- Optional external derived indexes after MVP; minimal package-owned indexes
-  are built before sealing in the proposed first prototype.
+- Optional external derived indexes after the initial release; package-owned
+  indexes required for the approved historical queries are built before sealing.
 
 There are no new command/parameter names or production defaults to adopt from
 this RFC. Implementation issues should be scoped separately after review.
