@@ -505,6 +505,13 @@ a new raw-capture default or approve production implementation before DC6.
 
 ### Original prototype recommendation (historical)
 
+The subsequent [SQLite capacity characterization](../evidence/sqlite-capacity/README.md)
+completed 96 initial cases and a separately reviewed 48-case batching follow-up.
+It establishes a limited synthetic operating envelope with explicit overload
+and dictionary limits, not production viability or actual collector demand.
+Issue #1041 and DC6 remain open for live demand/impact calibration and the
+complete single-release capture/query coverage matrix.
+
 The sequence below records the earlier proposal; the single-release
 requirements above supersede its staged public-delivery interpretation.
 
