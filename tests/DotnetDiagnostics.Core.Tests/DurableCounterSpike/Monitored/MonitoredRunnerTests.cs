@@ -2229,6 +2229,7 @@ public sealed partial class MonitoredRunnerTests : IDisposable
     [Theory]
     [InlineData("normal")]
     [InlineData("control")]
+    [InlineData("worker-exit")]
     [InlineData("cancel")]
     [InlineData("wrong-exit-boundary")]
     public async Task PrevalidationScriptedHarnessUsesExitHandshakeAndExactOwnedCleanup(string behavior)
@@ -2251,11 +2252,11 @@ public sealed partial class MonitoredRunnerTests : IDisposable
             attribution, component.Encoding, component.ComponentEvidence);
         await using var monitor = new MonitoredStorageMonitor(attribution, component.Encoding,
             Path.Combine(PrevalidationLayout.ContextRoot(manifest, probe), "component-monitor.jsonl"));
-        using var cancellation = new CancellationTokenSource();
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         MonitoredProcessIdentity? started = null;
         Process Launch(ProcessStartInfo unused)
         {
-            var start = new ProcessStartInfo("/bin/sh")
+            var start = new ProcessStartInfo(behavior == "worker-exit" ? "/bin/bash" : "/bin/sh")
             {
                 UseShellExecute = false, RedirectStandardInput = true,
                 RedirectStandardOutput = true, RedirectStandardError = true,
@@ -2265,6 +2266,29 @@ public sealed partial class MonitoredRunnerTests : IDisposable
             {
                 "control" => "printf '{\"operation\":\"boundary\",\"boundary\":\"component-authority\",\"process\":null,\"active\":false}\\n'; read reply; printf 'prevalidation-harness-exit\\n'; read release; test \"$release\" = prevalidation-release-exit",
                 "normal" => "printf 'prevalidation-harness-exit\\n'; read release; test \"$release\" = prevalidation-release-exit",
+                "worker-exit" => """
+                    coproc WORKER {
+                        read -r -a fields < "/proc/$BASHPID/stat"
+                        printf '%s %s\n' "$BASHPID" "${fields[21]}"
+                        read -r release
+                        test "$release" = exit
+                    }
+                    child=$WORKER_PID
+                    input=${WORKER[1]}
+                    read -r pid ticks <&"${WORKER[0]}"
+                    printf '{"operation":"register","process":{"processId":%s,"linuxStartTimeTicks":%s,"role":1}}\n' "$pid" "$ticks"
+                    read -r reply || exit 41
+                    printf '{"operation":"exit","process":{"processId":%s,"linuxStartTimeTicks":%s,"role":1}}\n' "$pid" "$ticks"
+                    read -r reply || exit 42
+                    printf 'exit\n' >&"$input"
+                    wait "$child" || exit 43
+                    printf '{"operation":"boundary","boundary":"after-controlled-worker-exit","active":false}\n'
+                    read -r reply || exit 44
+                    [[ "$reply" == *after-controlled-worker-exit* ]] || exit 45
+                    printf 'prevalidation-harness-exit\n'
+                    read -r release || exit 46
+                    test "$release" = prevalidation-release-exit
+                    """,
                 "cancel" => "read release",
                 _ => "printf 'wrong\\n'; read release",
             });
@@ -2280,7 +2304,7 @@ public sealed partial class MonitoredRunnerTests : IDisposable
         // Its monitor tracks the owned shell, not the VSTest host.
         Func<Task> run = () => PrevalidationExecutor.RunHarnessProcessForComponentAsync(
             validated, probe, monitor, Launch, cancellation.Token);
-        if (behavior is "normal" or "control")
+        if (behavior is "normal" or "control" or "worker-exit")
         {
             await run.Should().NotThrowAsync();
         }
@@ -2296,9 +2320,10 @@ public sealed partial class MonitoredRunnerTests : IDisposable
                 LinuxPrevalidationProcessOperations.Instance, confirmation.Token);
             cleanup.Quiescent.Should().BeTrue();
         }
-        PrevalidationOwnership.Read(Path.Combine(PrevalidationLayout.ContextRoot(manifest, probe), "ownership.jsonl"))
-            .Should().ContainSingle().Which.Should().Be(started);
-        if (behavior == "control") monitor.SummaryRecords.Should().Be(1);
+        var owners = PrevalidationOwnership.Read(Path.Combine(PrevalidationLayout.ContextRoot(manifest, probe), "ownership.jsonl"));
+        owners.Should().HaveCount(behavior == "worker-exit" ? 2 : 1).And.Contain(started!);
+        owners.Should().OnlyContain(owner => !LinuxPrevalidationProcessOperations.Instance.IsOriginalAlive(owner));
+        if (behavior is "control" or "worker-exit") monitor.SummaryRecords.Should().Be(1);
     }
 
     [Fact]
@@ -3143,7 +3168,8 @@ public sealed partial class MonitoredRunnerTests : IDisposable
     private sealed class ScriptedWorkerLauncher(
         ScriptedWorkerBehavior behavior,
         Action? onRecoveryStarted = null,
-        bool awaitIdentityEvent = false) : IMonitoredWorkerLauncher
+        bool awaitIdentityEvent = false,
+        int recoveryExitCode = 0) : IMonitoredWorkerLauncher
     {
         internal List<MonitoredWorkerDescriptor> Descriptors { get; } = [];
         internal List<MonitoredProcessIdentity> Identities { get; } = [];
@@ -3177,6 +3203,8 @@ public sealed partial class MonitoredRunnerTests : IDisposable
                 startInfo.Environment["RESULT_JSON"] = JsonSerializer.Serialize(
                     result,
                     JsonOptions);
+                startInfo.Environment["RECOVERY_EXIT_CODE"] =
+                    recoveryExitCode.ToString(System.Globalization.CultureInfo.InvariantCulture);
             }
             var process = Process.Start(startInfo)
                 ?? throw new InvalidOperationException("Could not start scripted worker.");
@@ -3254,7 +3282,7 @@ public sealed partial class MonitoredRunnerTests : IDisposable
                 expected="release:process-termination:$pid:$start"
                 [[ "$release" == "$expected" ]] || exit 24
                 printf '{"type":"completed"}\n'
-                exit 0
+                exit "$RECOVERY_EXIT_CODE"
                 """;
         }
 

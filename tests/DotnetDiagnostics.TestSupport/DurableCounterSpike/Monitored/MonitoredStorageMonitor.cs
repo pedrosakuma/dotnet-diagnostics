@@ -1274,6 +1274,41 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
         }
     }
 
+    internal async Task ReleaseAndWaitForExitAsync(MonitoredProcessIdentity identity,
+        Func<Task> release, CancellationToken cancellationToken)
+    {
+        await _sweepGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!LinuxPrevalidationProcessOperations.Instance.IsOriginalAlive(identity))
+            {
+                throw Error("UnexpectedProcessIdentityLoss",
+                    "An already-dead or replaced owner cannot acquire an intentional termination handoff.");
+            }
+            using var process = Process.GetProcessById(identity.ProcessId);
+            MarkIntentionalTermination(identity);
+            // Keep the owner registered and exclude sweeps through the release,
+            // native teardown and confirmed exit, just as for the owned kill path.
+            await release().ConfigureAwait(false);
+            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+            ConfirmTerminatedAndRemove(identity);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or OperationCanceledException
+            or InvalidOperationException or DurableStorageExperimentException
+            or System.ComponentModel.Win32Exception)
+        {
+            lock (_gate)
+                MarkIncomplete(exception is DurableStorageExperimentException storage
+                    ? storage.Code : "ProcessExitHandoffFailed");
+            throw;
+        }
+        finally
+        {
+            _sweepGate.Release();
+        }
+    }
+
     internal async Task KillOwnedAsync(MonitoredProcessIdentity identity, CancellationToken cancellationToken)
     {
         await _sweepGate.WaitAsync(cancellationToken).ConfigureAwait(false);
