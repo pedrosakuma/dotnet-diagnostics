@@ -123,6 +123,27 @@ invalidate an already-written seal. Shared suite controls counted inside the
 geometry observation are conservatively counted again in the bound above.
 No path is silently truncated to fit this derivation.
 
+Geometry construction creates every rooted pathname (including the proof and
+result slots) before opening the 32 anonymous descriptor fixtures. An
+authoritative `geometry-rooted-fixtures-complete` boundary observes all 539
+rooted identities and drains any earlier traversal before those descriptors
+are created. The proof is then written through its already-open rooted slot.
+The final boundary still measures exactly 539 rooted plus 32 descriptor-only
+identities, with all 64 retained-history slots present. Construction remains
+visible to the same uninterrupted periodic monitor and entry deadline; no
+whole-fixture lock or new control operation is needed.
+
+This ordering prevents the fixture itself from opening a new linked file
+after a sweep has traversed its directory while all 32 anonymous fixtures are
+held. Such a file is legitimately descriptor-only for that sweep, and a 33rd
+identity must still fail. Neither linked-path attribution nor a known fixture
+name overrides observed root membership. Cleanup remains exact, and a later
+clean sweep never clears an earlier sticky failure.
+History validation bounds the slot enumeration at 64 and each slot's strict
+traversal at four files of 512 bytes, all read-only. Directory entries are not
+mistaken for file identities; the required geometry population remains 256
+history files, not a larger file allowance.
+
 The eight active package/recovery positions are the existing runner's reviewed
 layout derivation, not a newly asserted instantaneous native-file theorem.
 Candidate A uses `canonical/counters.db`, its native SQLite lifecycle, and
