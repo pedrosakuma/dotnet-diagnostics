@@ -29,7 +29,7 @@ internal static class CapacityProtocol
 
     // Exact UTF-8, LF-separated text below is part of the prospective protocol digest.
     internal const string Configuration = """
-        {"protocol":"sqlite-capacity-prototype/1","profiles":["Numeric","RepeatedStacks","NovelStacks","Activity"],"rates":[1000,10000,50000,100000],"windowSeconds":10,"repetitions":3,"warmupRecords":32,"queueRecords":4096,"recordReservationBytes":512,"batchRecords":256,"batchBytes":131072,"batchAgeMilliseconds":100,"stackLimit":16384,"frameLimit":65536,"dictionaryBytes":8388608,"logicalBytes":100663296,"packageBytes":268435456,"workspaceBytes":3221225472,"diagnosticRssBytes":536870912,"caseSeconds":60,"outputBytes":65536,"queryRepetitions":5,"journal":"wal","synchronous":2,"indexes":"after-capture","seed":0}
+        {"protocol":"sqlite-capacity-prototype/2","profiles":["Numeric","RepeatedStacks","NovelStacks","Activity"],"rates":[1000,10000,50000,100000],"windowSeconds":10,"repetitions":3,"warmupRecords":32,"queueRecords":4096,"recordReservationBytes":512,"batchRecords":256,"batchBytes":131072,"batchAgeMilliseconds":100,"batchFill":"available-before-age-check","stackLimit":16384,"frameLimit":65536,"dictionaryBytes":8388608,"logicalBytes":100663296,"packageBytes":268435456,"workspaceBytes":3221225472,"diagnosticRssBytes":536870912,"caseSeconds":60,"outputBytes":65536,"queryRepetitions":5,"journal":"wal","synchronous":2,"indexes":"after-capture","seed":0}
         """;
 
     internal const string Schema = """
