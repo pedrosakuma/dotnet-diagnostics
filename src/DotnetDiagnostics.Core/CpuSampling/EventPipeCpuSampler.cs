@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using DotnetDiagnostics.Core.CaptureRecording;
 using System.Diagnostics.Tracing;
 using System.Globalization;
 using DotnetDiagnostics.Core.Artifacts;
@@ -103,6 +104,7 @@ public sealed class EventPipeCpuSampler : ICpuSampler
         var exportPath = exportTrace ? ResolveExportPath(processId) : null;
         var tracePath = exportPath ?? Path.Combine(Path.GetTempPath(), $"diagnosticsmcp-{processId}-{Guid.NewGuid():N}.nettrace");
         var startedAt = DateTimeOffset.UtcNow;
+        var observationSink = CaptureRecordingContext.Current;
         var totalStopwatch = Stopwatch.StartNew();
 
         try
@@ -118,6 +120,7 @@ public sealed class EventPipeCpuSampler : ICpuSampler
                 topN,
                 sourceResolution,
                 methodInstantiationResolution,
+                observationSink,
                 cancellationToken);
             // Rank self-time (exclusive) across the WHOLE merged tree, not the inclusive-capped
             // TopHotspots — the true global leaf can sit outside the inclusive top-N on a deep stack.
@@ -246,6 +249,7 @@ public sealed class EventPipeCpuSampler : ICpuSampler
         int topN,
         SourceResolutionOptions? sourceResolution,
         MethodInstantiationResolutionOptions? methodInstantiationResolution,
+        ICaptureObservationSink? observationSink,
         CancellationToken cancellationToken)
     {
         var symbolicationStopwatch = Stopwatch.StartNew();
@@ -253,6 +257,7 @@ public sealed class EventPipeCpuSampler : ICpuSampler
         try
         {
             using var traceLog = new TraceLog(etlxPath);
+            observationSink?.ReportSourceLoss("sample.cpu.eventpipe", traceLog.EventsLost);
             var symbolicationDuration = symbolicationStopwatch.Elapsed;
             var process = traceLog.Processes.LastProcessWithID(pid);
             if (process is null)
@@ -335,6 +340,13 @@ public sealed class EventPipeCpuSampler : ICpuSampler
                 }
 
                 // stack is leaf→root; reverse to root→leaf for tree traversal.
+                if (observationSink is not null)
+                {
+                    SamplerObservationProjection.Sample(observationSink, "sample.cpu.eventpipe", "trace-relative-seconds",
+                        traceEvent.TimeStampRelativeMSec / 1000, traceEvent.ThreadID,
+                        stackFrames.Select(f => new SamplerObservationProjection.Frame(f.Module, f.Display)),
+                        additional: [CaptureObservationField.String("evidence", "sample-profiler-thread-sample-not-proven-on-cpu")]);
+                }
                 stackFrames.Reverse();
 
                 var leafKey = stackFrames[^1].Key;

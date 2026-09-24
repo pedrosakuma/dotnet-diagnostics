@@ -576,6 +576,7 @@ public sealed class PerfSchedOffCpuSampler : IOffCpuSampler
         CancellationToken cancellationToken = default)
     {
         var builder = OffCpuAggregator.CreateBuilder();
+        DotnetDiagnostics.Core.CaptureRecording.CaptureRecordingContext.Current?.ReportSourceLoss("sample.off-cpu.perf", null);
         Action<OffCpuSpan> onSpan = syscallIndex is null
             ? builder.AddSpan
             : span => builder.AddSpan(EnrichWithSyscall(span, syscallIndex));

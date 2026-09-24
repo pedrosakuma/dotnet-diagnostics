@@ -1,4 +1,5 @@
 using System.Diagnostics.Tracing;
+using DotnetDiagnostics.Core.CaptureRecording;
 using DotnetDiagnostics.Core.Dump;
 using DotnetDiagnostics.Core.Memory;
 using DotnetDiagnostics.Core.Internal;
@@ -77,11 +78,12 @@ public sealed class EventPipeAllocationSampler
 
         var tracePath = Path.Combine(Path.GetTempPath(), $"diagnosticsmcp-alloc-{processId}-{Guid.NewGuid():N}.nettrace");
         var startedAt = DateTimeOffset.UtcNow;
+        var observationSink = CaptureRecordingContext.Current;
 
         try
         {
             await CollectTraceAsync(processId, tracePath, duration, cancellationToken).ConfigureAwait(false);
-            var (summary, artifact) = Aggregate(tracePath, processId, startedAt, duration, topN);
+            var (summary, artifact) = Aggregate(tracePath, processId, startedAt, duration, topN, observationSink);
             return new AllocationSampleResult(summary, artifact);
         }
         finally
@@ -89,6 +91,20 @@ public sealed class EventPipeAllocationSampler
             TryDelete(tracePath);
         }
     }
+
+    internal static void EmitAllocationObservation(
+        ICaptureObservationSink sink, int threadId, double relativeMilliseconds, string typeName, long sampledBytes,
+        HeapKind kind, IReadOnlyList<(string Key, string Module, string Display)> frames)
+        => SamplerObservationProjection.Sample(sink, "sample.allocation.eventpipe", "trace-relative-seconds",
+            relativeMilliseconds / 1000, threadId,
+            frames.Select(f => new SamplerObservationProjection.Frame(f.Module, f.Display)),
+            sampledBytes, "allocation-tick-estimated-bytes", additional:
+            [
+                CaptureObservationField.String("allocatedType", typeName),
+                CaptureObservationField.String("heapKind", kind.ToString()),
+                CaptureObservationField.Int64("allocationTicks", 1),
+                CaptureObservationField.Null("actualAllocationCount"),
+            ]);
 
     private async Task CollectTraceAsync(int pid, string outputPath, TimeSpan duration, CancellationToken ct)
     {
@@ -131,12 +147,14 @@ public sealed class EventPipeAllocationSampler
         int pid,
         DateTimeOffset startedAt,
         TimeSpan duration,
-        int topN)
+        int topN,
+        ICaptureObservationSink? observationSink)
     {
         var etlxPath = TraceLog.CreateFromEventPipeDataFile(tracePath);
         try
         {
             using var traceLog = new TraceLog(etlxPath);
+            observationSink?.ReportSourceLoss("sample.allocation.eventpipe", traceLog.EventsLost);
             var process = traceLog.Processes.LastProcessWithID(pid);
             if (process is null)
             {
@@ -223,6 +241,9 @@ public sealed class EventPipeAllocationSampler
                     }
 
                     // stack is leaf→root; reverse to root→leaf for tree traversal.
+                    if (observationSink is not null)
+                        EmitAllocationObservation(observationSink, traceEvent.ThreadID, traceEvent.TimeStampRelativeMSec,
+                            typeName, bytes, kind, stackFrames);
                     stackFrames.Reverse();
                     if (stackFrames.Count > 0)
                     {
@@ -237,6 +258,11 @@ public sealed class EventPipeAllocationSampler
                         }
                         siteAcc.Add(bytes, kind);
                     }
+                }
+                else if (observationSink is not null)
+                {
+                    EmitAllocationObservation(observationSink, traceEvent.ThreadID, traceEvent.TimeStampRelativeMSec,
+                        typeName, bytes, kind, []);
                 }
             }
 

@@ -410,9 +410,11 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
         string? modulePath = null,
         JitMapResult? jitMap = null,
         long? sampleBudget = null,
+        string observationCategory = "sample.cpu.perf",
+        long? samplePeriod = null,
         CancellationToken cancellationToken = default)
     {
-        var builder = new PerfScriptAggregationBuilder(methodMap, moduleName, modulePath);
+        var builder = new PerfScriptAggregationBuilder(methodMap, moduleName, modulePath, observationCategory, samplePeriod);
         var symbolizer = new PerfJitFrameSymbolizer(jitMap);
         var parseResult = await PerfScriptParser.ParseAsync(
             reader,

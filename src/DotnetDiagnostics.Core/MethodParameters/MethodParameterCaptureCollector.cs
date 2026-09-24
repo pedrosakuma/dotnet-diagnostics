@@ -199,7 +199,8 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
                 requestRundown: false,
                 circularBufferMB: 256);
             using var source = new EventPipeEventSource(session.EventStream);
-            var observer = new ParameterCaptureObserver(_redactor, uniqueResolvedMethods, request.MaxEvents, _lifecycleHooks);
+            var observationSink = DotnetDiagnostics.Core.CaptureRecording.CaptureRecordingContext.Current;
+            var observer = new ParameterCaptureObserver(_redactor, uniqueResolvedMethods, request.MaxEvents, _lifecycleHooks, observationSink);
             var processingTask = Task.Run(() =>
             {
                 source.Dynamic.All += traceEvent =>
@@ -216,6 +217,10 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
                 catch (Exception ex)
                 {
                     _logger.LogDebug(ex, "Method-parameter EventPipe source terminated for pid {Pid}.", processId);
+                }
+                finally
+                {
+                    observationSink?.ReportSourceLoss("sample.method-params", source.EventsLost);
                 }
             }, CancellationToken.None);
 
@@ -668,11 +673,12 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
         }
     }
 
-    private sealed class ParameterCaptureObserver(
+    internal sealed class ParameterCaptureObserver(
         SensitiveDataRedactor redactor,
         IReadOnlyList<ResolvedMethodIdentity> resolvedMethods,
         int maxEvents,
-        MethodParameterCaptureLifecycleHooks? lifecycleHooks)
+        MethodParameterCaptureLifecycleHooks? lifecycleHooks,
+        DotnetDiagnostics.Core.CaptureRecording.ICaptureObservationSink? observationSink)
     {
         private readonly object _gate = new();
         private readonly Dictionary<Guid, string> _failureByRequestId = new();
@@ -719,34 +725,13 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
                         }
                         break;
                     case "CapturedParameter/Start":
-                        FlushPending(traceEvent.ThreadID);
-                        if (HasReachedCaptureLimit())
-                        {
-                            _captureLimitReached = true;
-                            _droppedCount++;
-                            break;
-                        }
-
-                        _pendingByThread[traceEvent.ThreadID] = new PendingInvocation(
-                            Interlocked.Increment(ref _sequence),
-                            DateTimeOffset.UtcNow,
-                            ResolveMethodIdentity(traceEvent),
-                            new List<CapturedParameterValue>());
+                        if (TryBeginInvocation(traceEvent.ThreadID))
+                            AddPendingInvocation(traceEvent.ThreadID, ResolveMethodIdentity(traceEvent));
                         break;
                     case "CapturedParameter":
-                        if (_pendingByThread.TryGetValue(traceEvent.ThreadID, out var pending))
-                        {
-                            var parameter = RenderParameter(traceEvent);
-                            if (parameter.Redacted)
-                            {
-                                _redactedCount++;
-                            }
-                            if (parameter.Truncated)
-                            {
-                                _truncatedCount++;
-                            }
-                            pending.Parameters.Add(parameter);
-                        }
+                        if (_pendingByThread.ContainsKey(traceEvent.ThreadID))
+                            AddParameter(traceEvent.ThreadID, Payload(traceEvent, "parameterName", 2),
+                                Payload(traceEvent, "parameterType", 3), Payload(traceEvent, "parameterValue", 5));
                         break;
                 }
             }
@@ -846,11 +831,50 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
 
         private bool HasReachedCaptureLimit() => _events.Count + _pendingByThread.Count >= _maxEvents;
 
-        private void FlushPending(int threadId)
+        internal void AddParameter(int threadId, string name, string typeName, string rawValue)
+        {
+            if (_pendingByThread.TryGetValue(threadId, out var pending))
+                AddParameter(pending, RenderParameter(name, typeName, rawValue));
+        }
+
+        private void AddParameter(PendingInvocation pending, CapturedParameterValue parameter)
+        {
+            if (parameter.Redacted) _redactedCount++;
+            if (parameter.Truncated) _truncatedCount++;
+            pending.Parameters.Add(parameter);
+        }
+
+        internal void BeginInvocation(int threadId, ResolvedMethodIdentity method)
+        {
+            if (TryBeginInvocation(threadId)) AddPendingInvocation(threadId, method);
+        }
+
+        private bool TryBeginInvocation(int threadId)
+        {
+            FlushPending(threadId);
+            if (HasReachedCaptureLimit())
+            {
+                _captureLimitReached = true;
+                _droppedCount++;
+                return false;
+            }
+            return true;
+        }
+
+        private void AddPendingInvocation(int threadId, ResolvedMethodIdentity method)
+        {
+            _pendingByThread[threadId] = new PendingInvocation(
+                Interlocked.Increment(ref _sequence), DateTimeOffset.UtcNow, method, new List<CapturedParameterValue>());
+        }
+
+        internal void FlushPending(int threadId)
         {
             if (_pendingByThread.Remove(threadId, out var pending))
             {
-                _events.Add(new MethodParameterInvocation(pending.Sequence, pending.TimestampUtc, pending.Method, pending.Parameters.ToArray()));
+                var invocation = new MethodParameterInvocation(pending.Sequence, pending.TimestampUtc, pending.Method, pending.Parameters.ToArray());
+                _events.Add(invocation);
+                if (observationSink is not null && resolvedMethods.Contains(pending.Method))
+                    DotnetDiagnostics.Core.CaptureRecording.SamplerObservationProjection.Invocation(observationSink, threadId, invocation);
             }
         }
 
@@ -866,16 +890,13 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
             return matched ?? new ResolvedMethodIdentity(moduleName, Guid.Empty.ToString("D"), typeName, methodName, 0, 0, Array.Empty<string>());
         }
 
-        private CapturedParameterValue RenderParameter(TraceEvent traceEvent)
+        private CapturedParameterValue RenderParameter(string name, string typeName, string rawValue)
         {
-            var name = Payload(traceEvent, "parameterName", 2);
-            var typeName = Payload(traceEvent, "parameterType", 3);
             if (string.IsNullOrWhiteSpace(typeName))
             {
                 typeName = "System.Object";
             }
 
-            var rawValue = Payload(traceEvent, "parameterValue", 5);
             var notes = new List<string>();
             var truncated = false;
             var bytes = Encoding.UTF8.GetByteCount(rawValue);
