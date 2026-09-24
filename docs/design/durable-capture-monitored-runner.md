@@ -52,6 +52,25 @@ Production execution always includes harness monitoring. These component
 results establish handshake, termination, recovery handoff, and cancellation
 behavior, not production-configured harness descriptor feasibility.
 
+## Workload and adapter configuration
+
+M1 changes only the producer pipeline's owned-buffer reservation ceiling to
+262,144 bytes. The global budget and pipeline both receive that reduced limit;
+the held writer, 4,096 immediate offers, and five-second feeder deadline are
+unchanged. Adapter creation uses the frozen default batch/query configuration
+for both A and B, including 64 records / 262,144 owned bytes per batch,
+100 ms batch age, 100-row pages, 128 keys, and 1 MiB results. Passing M1's
+producer-only override as factory options is invalid for A's exact-limit
+guard; that guard is not relaxed.
+
+Synthetic, F5 (including its second writer), and durable live arms share the
+same adapter-request builder. Configuration-only component tests cover all
+35 plan entries without executing their workloads. Separate 65-offer component
+tests check that M1 admits only 64 held 4,096-byte reservations for either
+adapter while the default pipeline admits all 65; these are not campaign
+measurements or readiness evidence. Frozen protocols and workload thresholds
+are unchanged.
+
 ## Readiness artifact preparation
 
 Prepare artifacts in this order. Every identity must be a resolved value;
