@@ -1424,6 +1424,11 @@ internal static class MonitoredDecisionEngine
                 outcome.Candidate == "E" && outcome.CaseId.StartsWith('L'))
             .Select(static outcome => outcome.Worker!.Requests!)
             .ToArray();
+        if (outcomes.Any(static outcome => outcome.CaseId.StartsWith('L')
+            && !BoundedLiveRequestLoad.HasCompleteSchedule(outcome.Worker?.Requests)))
+        {
+            return Inconclusive("One or more live request schedules do not cover the frozen measurement and episode populations.");
+        }
         if (liveBaselines.Length != 3
             || liveBaselines.Any(static item =>
                 item.Scheduled == 0 || item.Succeeded < 0.95 * item.Scheduled)
@@ -1493,7 +1498,9 @@ internal static class MonitoredDecisionEngine
                 outcome.CaseId == caseId && outcome.Candidate == "E").Worker?.Requests;
             var current = outcomes.Single(outcome =>
                 outcome.CaseId == caseId && outcome.Candidate == candidate).Worker?.Requests;
-            if (baseline is null || current is null || baseline.Scheduled == 0)
+            if (baseline is null || current is null
+                || !BoundedLiveRequestLoad.HasCompleteSchedule(baseline)
+                || !BoundedLiveRequestLoad.HasCompleteSchedule(current))
             {
                 return false;
             }

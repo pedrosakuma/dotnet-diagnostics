@@ -211,7 +211,23 @@ collection. Candidate E invokes the unmodified shipping
 `EventPipeCounterCollector`; raw tick and admission counts unavailable from
 its returned aggregate are recorded as unavailable, not invented. All scored
 request counts and latency samples use the same requests scheduled in
-`[12s,42s)`; separately named whole-episode counters cover the rest. The Core
+`[12s,42s)`; separately named whole-episode counters cover the rest.
+The schedule starts at zero and advances by 50 ms: nominal slots 240-839
+belong to the measurement population (600), and slots 0-879 cover the
+44-second episode (880). Timer delivery jitter across 12 or 42 seconds
+does not move a request between cohorts, nor does completion after 42 seconds.
+Early timer wakes are rechecked before dispatch. Actual monotonic elapsed
+time still stops dispatch at 44 seconds and supplies scheduling/episode
+durations; HTTP latency remains actual send-to-completion time, not nominal
+slot age. A scheduler stall reaching the stop leaves unserved slots absent,
+not manufactured as concurrency skips or filled by a replay after the stop.
+Only an actual two-in-flight limit records a concurrency skip, which remains
+unmet scheduled demand. The worker and campaign decision require the complete
+600/880 schedule and actual duration evidence before applying the unchanged
+success, error-rate, and latency screens. The 1,000-task/sample retention
+limits remain enforced. Historical measurements are not reclassified.
+
+The Core
 counter extractor supplies kind, interval, display-scale, and value semantics.
 EventPipe relative timestamps use checked, midpoint-away-from-zero conversion
 to 100 ns ticks; malformed payloads, invalid pipeline records, rejected new
