@@ -2,6 +2,7 @@ using System.Diagnostics.Tracing;
 using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
+using DotnetDiagnostics.Core.CaptureRecording;
 using DotnetDiagnostics.Core.Internal;
 using DotnetDiagnostics.Core.Security;
 using Microsoft.Diagnostics.NETCore.Client;
@@ -79,7 +80,8 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector
 
         var normalizedSourceFilters = NormalizeSourceFilters(sources);
         var providerArguments = BuildProviderArguments(normalizedSourceFilters, includeHttpDestination);
-        var retention = new ActivityRetentionState(maxActivities, traceId, maxMatchedActivities);
+        var recording = CaptureRecordingContext.Current;
+        var retention = new ActivityRetentionState(maxActivities, traceId, maxMatchedActivities, recording, _redactor);
         var destinations = includeHttpDestination && MatchesAnyFilter("System.Net.Http", normalizedSourceFilters)
             ? new HttpDestinationCorrelationState(retention.Retention.AppliedTraceId) : null;
 
@@ -112,13 +114,13 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector
                         return;
                     }
                     if (!IsActivityStopEvent(traceEvent.EventName) ||
-                        !TryCreateActivity(traceEvent, normalizedSourceFilters, collectionStartedAt, out var activity))
+                        !TryCreateActivity(traceEvent, normalizedSourceFilters, out var activity, out var hasStartTime))
                     {
                         return;
                     }
 
                     destinations?.ObserveStop(activity);
-                    retention.Observe(activity);
+                    retention.Observe(activity, recording is null ? null : new DateTimeOffset(traceEvent.TimeStamp.ToUniversalTime()), hasStartTime);
                     ActivityObserved?.Invoke();
                 };
 
@@ -171,10 +173,11 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector
     private static bool TryCreateActivity(
         TraceEvent traceEvent,
         List<string>? sourceFilters,
-        DateTimeOffset collectionStartedAt,
-        out CapturedActivity activity)
+        out CapturedActivity activity,
+        out bool hasStartTime)
     {
         activity = default!;
+        hasStartTime = false;
 
         var sourceName = FirstNonEmpty(
             FormatString(traceEvent.PayloadByName("ActivitySourceName")),
@@ -191,14 +194,29 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector
         }
 
         var arguments = DiagnosticSourcePayloadParser.ExtractArguments(traceEvent.PayloadByName("Arguments"));
+        return TryCreateActivity(sourceName, operationName, arguments, traceEvent.TimeStamp.ToUniversalTime(),
+            sourceFilters, out activity, out hasStartTime);
+    }
+
+    internal static bool TryCreateActivity(string sourceName, string operationName,
+        IReadOnlyDictionary<string, string> arguments, DateTime timestamp, List<string>? sourceFilters,
+        out CapturedActivity activity, out bool hasStartTime)
+    {
+        activity = default!;
+        hasStartTime = false;
+        if (string.IsNullOrWhiteSpace(sourceName) || string.IsNullOrWhiteSpace(operationName)
+            || !MatchesAnyFilter(sourceName, sourceFilters))
+            return false;
         var traceId = NullIfEmpty(GetArgument(arguments, "TraceId"));
         var spanId = NullIfEmpty(GetArgument(arguments, "SpanId"));
         var parentSpanId = NormalizeParentSpanId(GetArgument(arguments, "ParentSpanId"));
-        var startedAt = ParseStartedAt(arguments) ?? traceEvent.TimeStamp.ToUniversalTime();
+        var parsedStart = ParseStartedAt(arguments);
+        hasStartTime = parsedStart.HasValue;
+        var startedAt = parsedStart ?? timestamp;
         var duration = ParseDuration(arguments);
         var stoppedAt = duration is { } capturedDuration
             ? startedAt + capturedDuration
-            : new DateTimeOffset(traceEvent.TimeStamp.ToUniversalTime(), TimeSpan.Zero);
+            : new DateTimeOffset(timestamp, TimeSpan.Zero);
         var id = ComposeActivityId(traceId, spanId) ?? ComposeFallbackId(sourceName, operationName, startedAt);
         var parentId = ComposeActivityId(traceId, parentSpanId);
 

@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using DotnetDiagnostics.Core.CaptureRecording;
+using F = DotnetDiagnostics.Core.CaptureRecording.CaptureObservationField;
 using System.Diagnostics.Tracing;
 using System.Text;
 using DotnetDiagnostics.Core.Internal;
@@ -78,9 +80,10 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
         var startedAt = DateTimeOffset.UtcNow;
         var notes = new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
         var observedEventNames = new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
-        var workerSamples = new FixedCapacityQueue<CountSample>(MaxTimelineSamples);
-        var iocpSamples = new FixedCapacityQueue<CountSample>(MaxTimelineSamples);
-        var hillClimbing = new FixedCapacityQueue<ThreadPoolHillClimbingSample>(MaxTimelineSamples);
+        var recording = CaptureRecordingContext.Current;
+        var workerSamples = CreateCountQueue(MaxTimelineSamples, "worker", recording);
+        var iocpSamples = CreateCountQueue(MaxTimelineSamples, "iocp", recording);
+        var hillClimbing = CreateAdjustmentQueue(MaxTimelineSamples, recording);
         var workItemOrigins = new ConcurrentDictionary<string, int>(StringComparer.Ordinal);
         ThreadPoolEffectiveSettings? effectiveSettings = null;
         double? latestThroughput = null;
@@ -93,6 +96,7 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
 
         var processingTask = Task.Run(() =>
         {
+            long? sourceLoss = null;
             try
             {
                 using var source = new EventPipeEventSource(session.EventStream);
@@ -162,6 +166,8 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
                                 || TryReadDoubleByIndex(traceEvent, 3, out throughput))
                             {
                                 latestThroughput = throughput;
+                                recording?.TryAppend(new("threadpool.throughput", timestamp, traceEvent.ThreadID, eventName,
+                                    [F.Double("throughput", throughput), F.String("provenance", ThreadPoolEvidence.RuntimeObserved)]));
                             }
 
                             break;
@@ -210,6 +216,8 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
                                 || TryReadDoubleByIndex(traceEvent, 0, out throughput))
                             {
                                 latestThroughput = throughput;
+                                recording?.TryAppend(new("threadpool.throughput", timestamp, traceEvent.ThreadID, eventName,
+                                    [F.Double("throughput", throughput), F.String("provenance", ThreadPoolEvidence.RuntimeObserved)]));
                             }
 
                             if (newCount is int concreteNewCount)
@@ -234,6 +242,8 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
                         {
                             Interlocked.Increment(ref totalEnqueueEvents);
                             var origin = ExtractWorkItemOrigin(traceEvent, notes);
+                            recording?.TryAppend(new("threadpool.work", timestamp, traceEvent.ThreadID, "enqueue",
+                                [F.String("origin", origin)]));
                             if (!string.IsNullOrWhiteSpace(origin))
                             {
                                 workItemOrigins.AddOrUpdate(origin, 1, static (_, count) => count + 1);
@@ -246,6 +256,13 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
                             if (TryReadEffectiveSettings(traceEvent, out var updatedSettings))
                             {
                                 effectiveSettings = updatedSettings;
+                                recording?.TryAppend(new("threadpool.settings", timestamp, traceEvent.ThreadID, eventName,
+                                [
+                                    F.Int64("workerMinThreads", updatedSettings.WorkerMinThreads),
+                                    F.Int64("workerMaxThreads", updatedSettings.WorkerMaxThreads),
+                                    F.Int64("iocpMinThreads", updatedSettings.IocpMinThreads),
+                                    F.Int64("iocpMaxThreads", updatedSettings.IocpMaxThreads),
+                                ]));
                             }
 
                             break;
@@ -254,6 +271,7 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
                         case "ThreadPoolDequeue":
                         {
                             Interlocked.Increment(ref totalDequeueEvents);
+                            recording?.TryAppend(new("threadpool.work", timestamp, traceEvent.ThreadID, "dequeue", []));
                             break;
                         }
                     }
@@ -261,11 +279,16 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
 
                 source.Process();
                 detectedTransportLossEvents = source.EventsLost;
+                sourceLoss = source.EventsLost;
             }
             catch (Exception ex)
             {
                 Interlocked.Increment(ref processingFailures);
                 _logger.LogDebug(ex, "EventPipe threadpool source ended for pid {Pid}.", processId);
+            }
+            finally
+            {
+                EventPipeCollectionRunner.ReportSourceLoss(recording, sourceLoss);
             }
         }, cancellationToken);
 
@@ -938,15 +961,23 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
         }
     }
 
+    internal static FixedCapacityQueue<CountSample> CreateCountQueue(int capacity, string kind, ICaptureObservationSink? sink)
+        => new(capacity, sink is null ? null : sample => RuntimeObservationProjection.ThreadCount(sink, kind, sample));
+
+    internal static FixedCapacityQueue<ThreadPoolHillClimbingSample> CreateAdjustmentQueue(int capacity, ICaptureObservationSink? sink)
+        => new(capacity, sink is null ? null : sample => RuntimeObservationProjection.HillClimbing(sink, sample));
+
     internal sealed class FixedCapacityQueue<T>
     {
         private readonly int _capacity;
         private readonly Queue<T> _items;
+        private readonly Action<T>? _observe;
 
-        public FixedCapacityQueue(int capacity)
+        public FixedCapacityQueue(int capacity, Action<T>? observe = null)
         {
             _capacity = capacity;
             _items = new Queue<T>(capacity);
+            _observe = observe;
         }
 
         public int DroppedCount { get; private set; }
@@ -955,6 +986,7 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
 
         public void Enqueue(T item)
         {
+            _observe?.Invoke(item);
             if (_items.Count >= _capacity)
             {
                 _items.Dequeue();

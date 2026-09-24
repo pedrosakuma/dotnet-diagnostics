@@ -1,3 +1,6 @@
+using DotnetDiagnostics.Core.CaptureRecording;
+using DotnetDiagnostics.Core.Security;
+
 namespace DotnetDiagnostics.Core.Activities;
 
 /// <summary>Single-writer bounded stop-event retention, shared by the callback and deterministic tests.</summary>
@@ -9,8 +12,11 @@ internal sealed class ActivityRetentionState
     private int _matching;
     private int _nonMatching;
     private int _dropped;
+    private readonly ICaptureObservationSink? _sink;
+    private readonly SensitiveDataRedactor? _redactor;
 
-    internal ActivityRetentionState(int maxActivities, string? traceId, int maxMatchedActivities)
+    internal ActivityRetentionState(int maxActivities, string? traceId, int maxMatchedActivities,
+        ICaptureObservationSink? sink = null, SensitiveDataRedactor? redactor = null)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(maxActivities, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(maxMatchedActivities, 1);
@@ -26,6 +32,8 @@ internal sealed class ActivityRetentionState
 
         _cap = _traceId is null ? maxActivities : maxMatchedActivities;
         _activities = new List<CapturedActivity>(Math.Min(_cap, 256));
+        _sink = sink;
+        _redactor = sink is null ? null : redactor ?? new SensitiveDataRedactor();
     }
 
     internal IReadOnlyList<CapturedActivity> Activities => _activities;
@@ -33,7 +41,7 @@ internal sealed class ActivityRetentionState
     internal ActivityRetention Retention => new(
         _traceId, _cap, ObservedActivities, _matching, _activities.Count, _dropped, _nonMatching);
 
-    internal void Observe(CapturedActivity activity)
+    internal void Observe(CapturedActivity activity, DateTimeOffset? observedStopAt = null, bool hasStartTime = true)
     {
         if (_traceId is not null && !string.Equals(_traceId, activity.TraceId, StringComparison.OrdinalIgnoreCase))
         {
@@ -42,6 +50,7 @@ internal sealed class ActivityRetentionState
         }
 
         _matching++;
+        if (_sink is not null) RuntimeObservationProjection.Activity(_sink, activity, _redactor!, observedStopAt, hasStartTime);
         if (_activities.Count < _cap)
         {
             _activities.Add(activity);

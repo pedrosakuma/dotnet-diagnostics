@@ -1,7 +1,9 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.Tracing;
 using System.Globalization;
+using DotnetDiagnostics.Core.CaptureRecording;
 using DotnetDiagnostics.Core.Internal;
+using DotnetDiagnostics.Core.Security;
 using Microsoft.Diagnostics.NETCore.Client;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Extensions.Logging;
@@ -120,9 +122,12 @@ public sealed class EventPipeCounterCollector : ICounterCollector
         var notes = new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
         var acceptedMeterSeriesCount = 0;
         int? targetProcessorCount = null;
+        var recording = CaptureRecordingContext.Current;
+        var redactor = recording is null ? null : new SensitiveDataRedactor();
 
         var processingTask = Task.Run(() =>
         {
+            long? sourceLoss = null;
             try
             {
                 using var source = new EventPipeEventSource(session.EventStream);
@@ -137,7 +142,9 @@ public sealed class EventPipeCounterCollector : ICounterCollector
                             instrumentMetadata,
                             latestMeters,
                             ref acceptedMeterSeriesCount,
-                            notes);
+                            notes,
+                            recording,
+                            redactor);
                         return;
                     }
 
@@ -157,24 +164,28 @@ public sealed class EventPipeCounterCollector : ICounterCollector
                         return;
                     }
 
-                    var payload = ExtractCounterPayload(traceEvent);
+                    var payload = ExtractCounterPayload(traceEvent, out var valueAvailable);
                     if (payload is null)
                     {
                         return;
                     }
 
-                    var key = $"{traceEvent.ProviderName}/{payload.Name}";
                     var value = payload with { Provider = traceEvent.ProviderName };
-                    latestCounters[key] = value;
-                    firstCounters.TryAdd(key, value);
-                    TrackMaxCounter(maxCounters, key, value);
+                    ObserveCounter(value, latestCounters, firstCounters, maxCounters, recording,
+                        recording is null ? null : new DateTimeOffset(traceEvent.TimeStamp.ToUniversalTime()),
+                        recording is null ? null : traceEvent.TimeStampRelativeMSec, redactor, valueAvailable);
                 };
 
                 source.Process();
+                sourceLoss = source.EventsLost;
             }
             catch (Exception ex)
             {
                 _logger.LogDebug(ex, "EventPipe source ended for pid {Pid}.", processId);
+            }
+            finally
+            {
+                EventPipeCollectionRunner.ReportSourceLoss(recording, sourceLoss);
             }
         }, cancellationToken);
 
@@ -222,6 +233,21 @@ public sealed class EventPipeCounterCollector : ICounterCollector
         };
     }
 
+    internal static void ObserveCounter(CounterValue value,
+        ConcurrentDictionary<string, CounterValue> latest,
+        ConcurrentDictionary<string, CounterValue> first,
+        ConcurrentDictionary<string, CounterValue> maximum,
+        ICaptureObservationSink? sink = null, DateTimeOffset? timestamp = null, double? relativeMilliseconds = null,
+        SensitiveDataRedactor? redactor = null, bool valueAvailable = true)
+    {
+        var key = $"{value.Provider}/{value.Name}";
+        latest[key] = value;
+        var firstObserved = first.TryAdd(key, value);
+        if (sink is not null) RuntimeObservationProjection.Counter(sink, value, timestamp, relativeMilliseconds, firstObserved,
+            redactor ?? new SensitiveDataRedactor(), valueAvailable);
+        TrackMaxCounter(maximum, key, value);
+    }
+
     private static void HandleMetricsEvent(
         TraceEvent traceEvent,
         string? metricsSessionId,
@@ -229,7 +255,9 @@ public sealed class EventPipeCounterCollector : ICounterCollector
         ConcurrentDictionary<int, InstrumentMetadata> instrumentMetadata,
         ConcurrentDictionary<string, MeterInstrumentValue> latestMeters,
         ref int acceptedMeterSeriesCount,
-        ConcurrentDictionary<string, byte> notes)
+        ConcurrentDictionary<string, byte> notes,
+        ICaptureObservationSink? recording,
+        SensitiveDataRedactor? redactor)
     {
         if (metricsSessionId is null || !BelongsToMetricsSession(traceEvent, metricsSessionId))
         {
@@ -251,20 +279,11 @@ public sealed class EventPipeCounterCollector : ICounterCollector
             case "HistogramValuePublished":
                 if (TryExtractMeterValue(traceEvent, instrumentMetadata, out var key, out var meterValue))
                 {
-                    if (latestMeters.TryAdd(key, meterValue))
-                    {
-                        if (acceptedMeterSeriesCount < maxInstrumentTimeSeries)
-                        {
-                            acceptedMeterSeriesCount++;
-                            return;
-                        }
-
-                        latestMeters.TryRemove(key, out _);
-                        notes.TryAdd($"TimeSeriesLimitReached: capped at {maxInstrumentTimeSeries} series.", 0);
-                        return;
-                    }
-
-                    latestMeters[key] = meterValue;
+                    ObserveMeter(key, meterValue, latestMeters, maxInstrumentTimeSeries, ref acceptedMeterSeriesCount,
+                        notes, recording, recording is null ? null : new DateTimeOffset(traceEvent.TimeStamp.ToUniversalTime()),
+                        recording is null ? null : traceEvent.TimeStampRelativeMSec, redactor,
+                        recording is null || traceEvent.EventName != "HistogramValuePublished" || traceEvent.PayloadValue(7) is not null,
+                        recording is null || traceEvent.EventName != "HistogramValuePublished" || traceEvent.PayloadValue(8) is not null);
                 }
                 break;
 
@@ -292,6 +311,28 @@ public sealed class EventPipeCounterCollector : ICounterCollector
                 }
                 break;
         }
+    }
+
+    internal static void ObserveMeter(string key, MeterInstrumentValue meterValue,
+        ConcurrentDictionary<string, MeterInstrumentValue> latestMeters, int maxInstrumentTimeSeries,
+        ref int acceptedMeterSeriesCount, ConcurrentDictionary<string, byte> notes, ICaptureObservationSink? sink,
+        DateTimeOffset? timestamp, double? relativeMilliseconds, SensitiveDataRedactor? redactor,
+        bool histogramCountAvailable = true, bool histogramSumAvailable = true)
+    {
+        if (latestMeters.TryAdd(key, meterValue))
+        {
+            if (acceptedMeterSeriesCount >= maxInstrumentTimeSeries)
+            {
+                latestMeters.TryRemove(key, out _);
+                notes.TryAdd($"TimeSeriesLimitReached: capped at {maxInstrumentTimeSeries} series.", 0);
+                return;
+            }
+            acceptedMeterSeriesCount++;
+        }
+        else latestMeters[key] = meterValue;
+        if (sink is not null)
+            RuntimeObservationProjection.Meter(sink, meterValue, timestamp, relativeMilliseconds,
+                redactor ?? new SensitiveDataRedactor(), maxInstrumentTimeSeries, histogramCountAvailable, histogramSumAvailable);
     }
 
     private static bool BelongsToMetricsSession(TraceEvent traceEvent, string metricsSessionId)
@@ -473,8 +514,9 @@ public sealed class EventPipeCounterCollector : ICounterCollector
             value,
             (_, existing) => value.Value > existing.Value ? value : existing);
 
-    private static CounterValue? ExtractCounterPayload(TraceEvent traceEvent)
+    private static CounterValue? ExtractCounterPayload(TraceEvent traceEvent, out bool valueAvailable)
     {
+        valueAvailable = false;
         if (traceEvent.PayloadValue(0) is not IDictionary<string, object> outer)
         {
             return null;
@@ -485,7 +527,15 @@ public sealed class EventPipeCounterCollector : ICounterCollector
             return null;
         }
 
-        return ExtractCounterPayload(traceEvent.ProviderName, data);
+        return ExtractCounterPayload(traceEvent.ProviderName, data, out valueAvailable);
+    }
+
+    internal static CounterValue? ExtractCounterPayload(string providerName, IDictionary<string, object> data,
+        out bool valueAvailable)
+    {
+        valueAvailable = data.TryGetValue("Mean", out var mean) ? mean is not null
+            : data.TryGetValue("Increment", out var increment) && increment is not null;
+        return ExtractCounterPayload(providerName, data);
     }
 
     internal static CounterValue? ExtractCounterPayload(
