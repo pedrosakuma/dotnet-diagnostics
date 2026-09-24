@@ -25,7 +25,8 @@ public sealed record CaptureRecordQuery(
     long AfterRecordId = 0, int PageSize = 100);
 
 public sealed record CaptureRecordEntry(long RecordId, CaptureRecord Record);
-public sealed record CaptureRecordPage(IReadOnlyList<CaptureRecordEntry> Records, long? NextAfterRecordId);
+public sealed record CaptureRecordPage(
+    IReadOnlyList<CaptureRecordEntry> Records, long? NextAfterRecordId, long AccountedBytes = 0);
 /// <summary>Version identifies the producer's representation; Kind is bound to the owning artifact.</summary>
 public sealed record CaptureSnapshot(int Version, ReadOnlyMemory<byte> Utf8Json, string? Kind = null);
 public sealed record CaptureArtifactInfo(string ArtifactId, string Kind, string Name);
@@ -89,6 +90,7 @@ public sealed record CaptureStoreOptions
     public int StringCacheEntries { get; init; } = 1024;
     public long StringCacheBytes { get; init; } = 1024 * 1024;
     public int MaxQueryPageSize { get; init; } = 1000;
+    public int MaxQueryPageBytes { get; init; } = 1024 * 1024;
     public int MaxCatalogPageSize { get; init; } = 100;
 
     internal void Validate()
@@ -103,7 +105,8 @@ public sealed record CaptureStoreOptions
             MaxActiveWriters is < 1 or > 2 || MaxSnapshotBytes is < 1 or > 8 * 1024 * 1024 ||
             MaxArtifacts is < 1 or > 64 || StringCacheEntries is < 0 or > 4096 ||
             StringCacheBytes is < 0 or > 4 * 1024 * 1024 ||
-            MaxQueryPageSize is < 1 or > 1000 || MaxCatalogPageSize is < 1 or > 100)
+            MaxQueryPageSize is < 1 or > 1000 || MaxQueryPageBytes is < 1024 or > 16 * 1024 * 1024 ||
+            MaxCatalogPageSize is < 1 or > 100)
             throw new CaptureStoreException(CaptureErrorCode.InvalidInput, "Capture limits are outside supported finite bounds.");
     }
 }

@@ -184,6 +184,22 @@ pagination (`AfterRecordId`, `NextAfterRecordId`) ordered by record ID.
 Each call has finite page and field/string bounds. `ReadSnapshot` checks
 length before materializing its BLOB. No API returns an unbounded full-capture
 record list.
+Record pages also enforce `MaxQueryPageBytes` (default 1 MiB, configurable from
+1 KiB through 16 MiB), independently of the row cap. The reader fully
+materializes and validates one candidate at a time instead of retaining all
+1,000 possible rows before applying the byte limit. It measures each candidate
+with the fixed source-generated compact UTF-8 representation, including JSON
+escaping, plus a comma and a conservative 128-byte page-envelope reservation.
+`CaptureRecordPage.AccountedBytes` exposes this accounting. Hosts adding their
+own envelopes, indentation, converters, or alternative representations must
+budget that additional wire encoding separately.
+
+When the byte budget stops a page, `NextAfterRecordId` identifies the last
+returned record; the omitted candidate is therefore returned by a subsequent
+page rather than lost. A single record too large for the configured page
+budget fails with `CapacityExceeded`, not an empty page/unchanged continuation
+loop. Memory also includes one bounded lookahead record and its serialized
+measurement, but not an unbounded retained result list.
 
 ## Producer admission, writer, and quality
 
@@ -221,6 +237,12 @@ remain persisted even if a later package monitor or snapshot write fails.
 Source loss is a separate nullable count supplied by the producer; unavailable
 source loss is never invented as zero. In-flight metric reads are observational
 and need not be an atomic multi-counter snapshot.
+Invalid/unpaired UTF-16 in any occurrence string and NaN/positive or negative
+infinity in either the numeric dimension or a floating-point field return
+`false` from `TryAppend` and increment `RecordRejected`. They are rejected
+before SQLite conversion/insertion, not replaced with U+FFFD, SQL NULL, zero,
+or a truncated value. Consequently they make the sealed quality incomplete;
+genuinely missing/null values remain independently representable.
 
 `IsComplete` requires known zero source loss, zero losses/pending, and no
 interruption/unknown tail. Sealing does **not** imply completeness: a sealed
@@ -258,6 +280,7 @@ universal safety limits or performance recommendations**:
 | Artifacts per capture | 64 |
 | String-cache entries / accounted bytes | 1,024 / 1 MiB |
 | Record page / catalog page | 1,000 / 100 maximum |
+| Record-page compact UTF-8 byte accounting | 1 MiB |
 | Serialized manifest/seal file | 128 KiB each |
 | Capture/owner/artifact metadata text | 1 KiB UTF-8 per value |
 

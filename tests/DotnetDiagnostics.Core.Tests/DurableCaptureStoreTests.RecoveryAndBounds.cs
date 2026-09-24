@@ -9,6 +9,101 @@ namespace DotnetDiagnostics.Core.Tests;
 public sealed partial class DurableCaptureStoreTests
 {
     [Fact]
+    public async Task QueryByteBudget_CountsJsonEscapes_AndPaginatesWithoutLosingRecords()
+    {
+        var options = new CaptureStoreOptions { MaxQueryPageBytes = 64 * 1024 };
+        await using var writer = await Store(options).CreateAsync(new("query-bytes"), Owner);
+        var artifact = writer.AddArtifact("test", "test");
+        for (var i = 0; i < 7; i++)
+            Assert.True(writer.TryAppend(artifact, new(Name: new string('\u0001', 6000),
+                NumericValue: i, Fields: [new("unicode", CaptureFieldKind.Text, StringValue: "é🙂")])));
+        await writer.CompleteAsync();
+        using var reader = await Store(options).OpenAsync(writer.Reference.CaptureId, Owner);
+        var ids = new HashSet<long>();
+        long after = 0;
+        while (true)
+        {
+            var page = reader.Query(new(artifact, AfterRecordId: after, PageSize: 1000));
+            Assert.Single(page.Records);
+            Assert.InRange(page.AccountedBytes, 1, options.MaxQueryPageBytes);
+            var actualUtf8 = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(page, CaptureJsonContext.Default.CaptureRecordPage);
+            Assert.True(actualUtf8.Length <= page.AccountedBytes);
+            Assert.True(actualUtf8.Length <= options.MaxQueryPageBytes);
+            Assert.True(ids.Add(page.Records[0].RecordId));
+            if (page.NextAfterRecordId is null) break;
+            Assert.True(page.NextAfterRecordId > after);
+            after = page.NextAfterRecordId.Value;
+        }
+        Assert.Equal(7, ids.Count);
+    }
+
+    [Fact]
+    public async Task QueryByteBudget_SingleOversizedOccurrenceFailsInsteadOfReturningAnEmptyLoop()
+    {
+        await using var writer = await Store().CreateAsync(new("large-query-record"), Owner);
+        var artifact = writer.AddArtifact("test", "test");
+        Assert.True(writer.TryAppend(artifact, new(Name: new string('x', 2000))));
+        await writer.CompleteAsync();
+        using (var limited = await Store(new CaptureStoreOptions { MaxQueryPageBytes = 1024 })
+            .OpenAsync(writer.Reference.CaptureId, Owner))
+            Assert.Equal(CaptureErrorCode.CapacityExceeded,
+                Assert.Throws<CaptureStoreException>(() => limited.Query(new(artifact))).Code);
+        using var reader = await Store().OpenAsync(writer.Reference.CaptureId, Owner);
+        Assert.Single(reader.Query(new(artifact)).Records);
+    }
+
+    [Theory]
+    [InlineData(double.NaN)]
+    [InlineData(double.PositiveInfinity)]
+    [InlineData(double.NegativeInfinity)]
+    public async Task NonfiniteDoubles_AreCountedRejections_NotSqliteNullCoercions(double value)
+    {
+        await using var writer = await Store().CreateAsync(new("nonfinite"), Owner);
+        var artifact = writer.AddArtifact("test", "test");
+        Assert.False(writer.TryAppend(artifact, new(NumericValue: value)));
+        Assert.False(writer.TryAppend(artifact, new(Fields:
+            [new("value", CaptureFieldKind.FloatingPoint, DoubleValue: value)])));
+        Assert.True(writer.TryAppend(artifact, new(NumericValue: null,
+            Fields: [new("genuinely-null", CaptureFieldKind.Null)])));
+        writer.SetSourceRejected(0);
+        var info = await writer.CompleteAsync();
+        Assert.Equal(2, info.Quality.RecordRejected);
+        Assert.True(info.Quality.IsIncomplete);
+        AssertConservation(info.Quality);
+        using var reader = await Store().OpenAsync(info.CaptureId, Owner);
+        var record = Assert.Single(reader.Query(new(artifact)).Records).Record;
+        Assert.Null(record.NumericValue);
+        Assert.Equal("genuinely-null", Assert.Single(record.Fields!).Name);
+        Assert.Equal(CaptureFieldKind.Null, record.Fields![0].Kind);
+    }
+
+    [Theory]
+    [InlineData(0xD800)]
+    [InlineData(0xDC00)]
+    public async Task UnpairedUtf16_InEveryStringSlot_IsRejectedBeforeSqliteConversion(int codePoint)
+    {
+        var invalid = new string((char)codePoint, 1);
+        await using var writer = await Store().CreateAsync(new("unicode"), Owner);
+        Assert.Equal(CaptureErrorCode.InvalidInput,
+            Assert.Throws<CaptureStoreException>(() => writer.AddArtifact(invalid, "bad-kind")).Code);
+        var artifact = writer.AddArtifact("test", "test");
+        CaptureRecord[] invalidRecords =
+        [
+            new(Category: invalid), new(Name: invalid), new(Unit: invalid),
+            new(Fields: [new(invalid, CaptureFieldKind.Null)]),
+            new(Fields: [new("text", CaptureFieldKind.Text, StringValue: invalid)]),
+            new(Fields: [new("unit", CaptureFieldKind.Null, Unit: invalid)])
+        ];
+        foreach (var record in invalidRecords) Assert.False(writer.TryAppend(artifact, record));
+        Assert.True(writer.TryAppend(artifact, new(Name: "valid-🙂")));
+        var info = await writer.CompleteAsync();
+        Assert.Equal(6, info.Quality.RecordRejected);
+        AssertConservation(info.Quality);
+        using var reader = await Store().OpenAsync(info.CaptureId, Owner);
+        Assert.Equal("valid-🙂", Assert.Single(reader.Query(new(artifact)).Records).Record.Name);
+    }
+
+    [Fact]
     public async Task StoreMarker_IsPrivateExactAndRequired_ReadNeverCreatesOrRepairsIt()
     {
         var store = Store();

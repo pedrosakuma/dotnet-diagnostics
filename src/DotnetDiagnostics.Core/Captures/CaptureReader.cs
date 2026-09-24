@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 
 namespace DotnetDiagnostics.Core.Captures;
@@ -70,6 +71,9 @@ public sealed class CaptureReader : IDisposable
             WHERE {string.Join(" AND ", conditions)} ORDER BY o.id LIMIT $limit;
             """;
         var entries = new List<CaptureRecordEntry>(query.PageSize);
+        // Reserve the fixed page envelope, continuation ID, and accounting property. Entries are
+        // measured with the fixed source-generated compact UTF-8 representation, including escapes.
+        long accountedBytes = 128;
         var more = false;
         using (var reader = command.ExecuteReader())
         {
@@ -81,12 +85,23 @@ public sealed class CaptureReader : IDisposable
                     Long(reader, 2), Text(reader, 3), Text(reader, 4),
                     reader.IsDBNull(5) ? null : reader.GetDouble(5), Long(reader, 6), Text(reader, 7));
                 _ = ValidateDimensions(record);
-                entries.Add(new(reader.GetInt64(0), record));
+                var id = reader.GetInt64(0);
+                record = record with { Fields = ReadFields(id, record) };
+                var entry = new CaptureRecordEntry(id, record);
+                var entryBytes = JsonSerializer.SerializeToUtf8Bytes(entry, CaptureJsonContext.Default.CaptureRecordEntry).LongLength + 1;
+                if (entryBytes > _options.MaxQueryPageBytes - accountedBytes)
+                {
+                    if (entries.Count == 0)
+                        throw CapturePackage.Error(CaptureErrorCode.CapacityExceeded,
+                            "One occurrence exceeds MaxQueryPageBytes; increase the configured query byte budget.");
+                    more = true;
+                    break;
+                }
+                accountedBytes += entryBytes;
+                entries.Add(entry);
             }
         }
-        for (var i = 0; i < entries.Count; i++)
-            entries[i] = entries[i] with { Record = entries[i].Record with { Fields = ReadFields(entries[i].RecordId, entries[i].Record) } };
-        return new(entries.AsReadOnly(), more ? entries[^1].RecordId : null);
+        return new(entries.AsReadOnly(), more ? entries[^1].RecordId : null, accountedBytes);
     }
 
     private System.Collections.ObjectModel.ReadOnlyCollection<CaptureField> ReadFields(long recordId, CaptureRecord record)
