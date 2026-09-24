@@ -427,6 +427,18 @@ Model agreement is advisory, not maintainer approval or empirical validation.
 
 ### Maintainer decision: SQLite-only direction (2026-09-24)
 
+**Implementation GO, 2026-09-24:** after reviewing the synthetic capacity
+results and their limitations, the maintainer authorized end-to-end SQLite
+implementation across Core, CLI and MCP, followed by varied integrated smoke
+scenarios. This supersedes the earlier production-implementation hold below;
+it is not release approval or a claim that all workloads are lossless.
+Additional numeric-only microbenchmarks are not a prerequisite to development.
+Representative string payloads/cardinality, real demand/bursts, target impact,
+compatibility, recovery, explicit incompleteness and the complete capture/query
+coverage matrix are implementation acceptance and single-release gates.
+Native trace retention remains opt-in; native dump dependencies remain explicit.
+The historical A/B evidence and all measured capacity results remain unchanged.
+
 The maintainer selected **A, direct SQLite**, as the architectural direction,
 based on simplicity and maintainability, and confirmed that this is separate
 from the inconclusive experiment. The

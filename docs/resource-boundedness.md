@@ -43,6 +43,20 @@ implications:
 
 ## Per-collector reference
 
+### Managed capture package lifecycle boundary
+
+The artifact-root `captures/` subtree is reserved for durable capture packages.
+Generic artifact listing, file access, deletion and the raw-artifact TTL reaper
+must not expose or mutate package members. Capture-specific operations own their
+authorization, reader/writer leases, retention and deletion instead. A private
+`.capture-store` marker preserves this boundary when a CLI command re-roots to
+a package directory or reaches it through a symlink alias.
+
+This reservation is not a filesystem quota or protection from an operator who
+can directly modify the storage directory. It prevents ordinary diagnostic file
+operations from bypassing the managed package lifecycle. Capture implementation
+and release acceptance are tracked separately in #1001, #1007 and #1005.
+
 ### Pure efficiency refactors — no data loss at any cap
 
 | Collector | What changed | Result vs. before |
