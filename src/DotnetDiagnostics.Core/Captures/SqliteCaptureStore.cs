@@ -281,16 +281,51 @@ public sealed class SqliteCaptureStore
         var root = Path.GetFullPath(_root.Root);
         var captures = Path.Combine(root, "captures");
         CapturePackage.RejectLinks(captures);
-        if (!create) return captures;
+        if (!create)
+        {
+            if (Directory.Exists(captures)) ValidateStoreMarker(Path.Combine(captures, ".capture-store"));
+            return captures;
+        }
         captures = SafeArtifactPath.ResolveCaptureDirectory(root, "captures");
         var marker = Path.Combine(captures, ".capture-store");
         CapturePackage.RejectLinks(marker);
         if (!File.Exists(marker))
         {
-            try { using var created = SafeArtifactPath.CreateRestrictedFile(marker); }
-            catch (IOException) when (File.Exists(marker)) { /* Another store initialized the reserved subtree. */ }
+            FileStream? created;
+            try { created = SafeArtifactPath.CreateRestrictedFile(marker); }
+            catch (IOException) when (File.Exists(marker)) { created = null; }
+            if (created is not null)
+            {
+                using (created)
+                {
+                    created.Write("dotnet-diagnostics-captures/1"u8);
+                    created.Flush(flushToDisk: true);
+                }
+            }
         }
+        ValidateStoreMarker(marker);
         return captures;
+    }
+
+    private static void ValidateStoreMarker(string marker)
+    {
+        CapturePackage.RejectLinks(marker);
+        FileStream stream;
+        try { stream = new FileStream(marker, FileMode.Open, FileAccess.Read, FileShare.Read); }
+        catch (IOException ex) when (File.Exists(marker))
+        {
+            throw CapturePackage.Error(CaptureErrorCode.Busy, "Capture store marker is being initialized or is unavailable.", ex);
+        }
+        using (stream)
+        {
+            ReadOnlySpan<byte> expected = "dotnet-diagnostics-captures/1"u8;
+            if (stream.Length != expected.Length)
+                throw CapturePackage.Error(CaptureErrorCode.UnsupportedFormat, "Capture store marker has unsupported contents.");
+            Span<byte> content = stackalloc byte[expected.Length];
+            stream.ReadExactly(content);
+            if (!content.SequenceEqual(expected))
+                throw CapturePackage.Error(CaptureErrorCode.UnsupportedFormat, "Capture store marker has unsupported contents.");
+        }
     }
 
     private string PackagePath(string id)

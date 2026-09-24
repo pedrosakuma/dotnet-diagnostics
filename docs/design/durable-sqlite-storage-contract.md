@@ -30,6 +30,10 @@ CaptureRecordPage page = reader.Query(new(artifactId, PageSize: 100));
 `CreateAsync`, `OpenAsync`, `ListAsync`, `DeleteAsync`, and `RecoverAsync` all
 take the current `CaptureAccess`. `AllOwners=true` is an explicit privilege
 supplied by trusted host code; no stored permission field grants privilege.
+The MCP host supplies `BearerPrincipal.OwnershipKey`, not a display name, and
+maps explicit root/`*` authority to the bypass flag. CLI callers use a stable
+local owner key under local OS authority. Per-kind/view MCP scopes remain
+independent host checks, not stored package permissions.
 Normal callers see only their owner in catalog results and cannot open,
 delete, or recover another owner's package. Recovery creates a package owned
 by the **current** caller, including an explicitly privileged caller.
@@ -77,6 +81,14 @@ The standard SQLite engine is an explicit transitive runtime dependency of
 the centrally pinned `Microsoft.Data.Sqlite` package; it is not a collector
 native dependency. Failure to load that engine fails storage initialization
 instead of silently succeeding in memory.
+The private marker contains exactly the UTF-8 bytes
+`dotnet-diagnostics-captures/1`, without a newline. Creation writes and flushes
+the marker before any package/admission/writer-slot files are created;
+concurrent initializers must acquire its shared read lease and verify its
+bounded contents before proceeding. Normal reads never create or repair the
+marker. Reads reject a missing marker in an existing store; incompatible
+contents reject both reads and creation. Generic artifact tools use the marker
+to protect re-rooted paths.
 
 Package readers hold shared `FileStream` leases on the existing `.lease`;
 writers, recovery, and deletion require an exclusive lease. Admission is

@@ -9,6 +9,44 @@ namespace DotnetDiagnostics.Core.Tests;
 public sealed partial class DurableCaptureStoreTests
 {
     [Fact]
+    public async Task StoreMarker_IsPrivateExactAndRequired_ReadNeverCreatesOrRepairsIt()
+    {
+        var store = Store();
+        await using var writer = await store.CreateAsync(new("marker"), Owner);
+        var marker = Path.Combine(_root, "captures", ".capture-store");
+        Assert.Equal("dotnet-diagnostics-captures/1", await File.ReadAllTextAsync(marker));
+        if (!OperatingSystem.IsWindows())
+            Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(marker));
+        await writer.CompleteAsync();
+        var before = Hashes(Package(writer.Reference.CaptureId));
+        File.Delete(marker);
+        await Error(CaptureErrorCode.NotFound, () => store.OpenAsync(writer.Reference.CaptureId, Owner));
+        await Error(CaptureErrorCode.NotFound, () => store.ListAsync(Owner));
+        Assert.False(File.Exists(marker));
+        Assert.Equal(before, Hashes(Package(writer.Reference.CaptureId)));
+        await File.WriteAllTextAsync(marker, "unknown-marker");
+        await Error(CaptureErrorCode.UnsupportedFormat, () => store.OpenAsync(writer.Reference.CaptureId, Owner));
+        await Error(CaptureErrorCode.UnsupportedFormat, () => store.CreateAsync(new("must-not-repair"), Owner));
+        Assert.Equal("unknown-marker", await File.ReadAllTextAsync(marker));
+    }
+
+    [Fact]
+    public async Task StoreMarkerInitializationLease_BlocksPackageAndControlCreation()
+    {
+        Directory.CreateDirectory(Path.Combine(_root, "captures"));
+        var marker = Path.Combine(_root, "captures", ".capture-store");
+        using (var initializing = new FileStream(marker, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+        {
+            await Error(CaptureErrorCode.Busy, () => Store().CreateAsync(new("wait-for-marker"), Owner));
+            Assert.Single(Directory.EnumerateFileSystemEntries(Path.Combine(_root, "captures")));
+            initializing.Write("dotnet-diagnostics-captures/1"u8);
+            initializing.Flush(flushToDisk: true);
+        }
+        await using var writer = await Store().CreateAsync(new("initialized"), Owner);
+        await writer.CompleteAsync();
+    }
+
+    [Fact]
     public async Task SealedState_DoesNotInventKnownZeroSourceLoss()
     {
         await using var writer = await Store().CreateAsync(new("unknown-source"), Owner);
