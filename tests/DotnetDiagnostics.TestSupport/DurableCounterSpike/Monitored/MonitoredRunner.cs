@@ -532,7 +532,6 @@ internal static class MonitoredCampaignRunner
         var trackedTargets = new List<MonitoredProcessIdentity>(1);
         var killedAtBarrier = false;
         var terminatedForMonitor = false;
-        var workerTerminationAnnounced = false;
         MonitoredProcessIdentity? confirmedTargetTermination = null;
         var finalSweepComplete = false;
         string? finalSweepAlarm = null;
@@ -652,12 +651,13 @@ internal static class MonitoredCampaignRunner
                             terminatedForMonitor = true;
                             break;
                         }
-                        monitor.MarkIntentionalTermination(workerIdentity);
-                        workerTerminationAnnounced = true;
                         var workerRelease = FormattableString.Invariant(
                             $"release:process-termination:{workerIdentity.ProcessId}:{workerIdentity.LinuxStartTimeTicks}");
-                        await process.StandardInput.WriteLineAsync(workerRelease).ConfigureAwait(false);
-                        await process.StandardInput.FlushAsync(deadline.Token).ConfigureAwait(false);
+                        await monitor.ReleaseAndWaitForExitAsync(process, workerIdentity, async () =>
+                        {
+                            await process.StandardInput.WriteLineAsync(workerRelease).ConfigureAwait(false);
+                            await process.StandardInput.FlushAsync(deadline.Token).ConfigureAwait(false);
+                        }, deadline.Token).ConfigureAwait(false);
                         break;
                     case "process-terminated" when workerEvent.ProcessRole == "target":
                         var terminatedTarget = RequireTrackedTarget(workerEvent, trackedTargets);
@@ -757,10 +757,6 @@ internal static class MonitoredCampaignRunner
             if (!killedAtBarrier && !terminatedForMonitor)
             {
                 await exitTask.WaitAsync(deadline.Token).ConfigureAwait(false);
-                if (workerTerminationAnnounced)
-                {
-                    monitor.ConfirmTerminatedAndRemove(workerIdentity);
-                }
                 var finalSweep = await monitor.ObserveBoundaryAsync(
                     "worker-exit-quiescent",
                     activeStorageStage: false,

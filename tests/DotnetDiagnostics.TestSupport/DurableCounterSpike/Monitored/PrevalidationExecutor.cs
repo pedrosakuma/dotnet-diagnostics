@@ -539,7 +539,6 @@ internal static class PrevalidationExecutor
                 await terminal.ConfigureAwait(false);
                 pending.Remove(terminal);
             }
-            monitor.ConfirmTerminatedAndRemove(identity);
             PrevalidationProtocol.Require(process.ExitCode is 0 or 3, "PrevalidationHarnessUnexpectedExit");
         }
         finally
@@ -577,14 +576,23 @@ internal static class PrevalidationExecutor
             }
             var request = JsonSerializer.Deserialize<PrevalidationMonitorRequest>(line, PrevalidationProtocol.Json)
                 ?? throw PrevalidationProtocol.Error("PrevalidationControlMissing", "Missing monitor request.");
-            var reply = await PrevalidationMonitorControl.DispatchAsync(request, monitor, ownership, cancellationToken, ledger)
+            var reply = await PrevalidationMonitorControl.DispatchAsync(request, monitor, ownership,
+                cancellationToken, ledger, releaseExit: async () =>
+                {
+                    await process.StandardInput.WriteLineAsync(PrevalidationMonitorControl.Encode(
+                        PrevalidationMonitorControl.Snapshot(monitor))).ConfigureAwait(false);
+                    await process.StandardInput.FlushAsync(cancellationToken).ConfigureAwait(false);
+                })
                 .ConfigureAwait(false);
+            if (request.Operation == "exit") continue;
             await process.StandardInput.WriteLineAsync(PrevalidationMonitorControl.Encode(reply)).ConfigureAwait(false);
             await process.StandardInput.FlushAsync(cancellationToken).ConfigureAwait(false);
         }
-        await monitor.PrepareTerminationAsync(identity, cancellationToken).ConfigureAwait(false);
-        await process.StandardInput.WriteLineAsync("prevalidation-release-exit").ConfigureAwait(false);
-        await process.StandardInput.FlushAsync(cancellationToken).ConfigureAwait(false);
+        await monitor.ReleaseAndWaitForExitAsync(identity, async () =>
+        {
+            await process.StandardInput.WriteLineAsync("prevalidation-release-exit").ConfigureAwait(false);
+            await process.StandardInput.FlushAsync(cancellationToken).ConfigureAwait(false);
+        }, cancellationToken).ConfigureAwait(false);
         var extra = await process.StandardOutput.ReadAsync(new char[1].AsMemory(), cancellationToken)
             .ConfigureAwait(false);
         PrevalidationProtocol.Require(extra == 0, "PrevalidationUnexpectedHarnessOutput");

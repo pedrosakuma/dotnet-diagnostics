@@ -15,6 +15,20 @@ adds a separately hash/schema-bound root-loss population for current mutable
 activity. Its artifact guide lists the fresh metadata routes and receipts.
 All quiescent inventories and legacy inspection remain strict.
 
+Planned worker and harness exit uses the same sweep-gated lifetime rule as
+owned target termination: verify the registered PID/start-time is still live,
+drain the current sweep, send the existing exit release, await actual process
+exit, and remove the exact owner before another sweep. Merely marking an
+intentional exit does not prevent a subsequent sweep from entering `/proc`
+during native teardown. The prevalidation coordinator retains this authority:
+its internal `exit` control replies under the gate and finishes confirmation
+before serving the harness's subsequent status request. No extra worker
+control, background task, ownership exemption, or timeout is introduced.
+Existing entry deadlines, polling-gap alarms and final exact inventories
+still apply. Cancellation, release failure, unexpected death, EACCES and
+result/exit-code disagreement remain failures. Component handoff tests do
+not establish readiness or retroactively change campaign evidence.
+
 ## Separate admissions and commands
 
 The benchmark executable's `durable-capture-spike` command has four public

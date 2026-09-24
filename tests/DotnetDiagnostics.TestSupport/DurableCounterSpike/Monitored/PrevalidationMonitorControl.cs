@@ -56,7 +56,7 @@ internal static class PrevalidationMonitorControl
 
     internal static async Task<PrevalidationMonitorReply> DispatchAsync(PrevalidationMonitorRequest request,
         MonitoredStorageMonitor monitor, string ownershipPath, CancellationToken cancellationToken,
-        PrevalidationOwnedProcessLedger? ownership = null)
+        PrevalidationOwnedProcessLedger? ownership = null, Func<Task>? releaseExit = null)
     {
         MonitoredSweepSummary? summary = null;
         switch (request.Operation)
@@ -92,6 +92,10 @@ internal static class PrevalidationMonitorControl
                 break;
             case "kill" when request.Process is not null:
                 await monitor.KillOwnedAsync(request.Process, cancellationToken).ConfigureAwait(false);
+                break;
+            case "exit" when request.Process is not null && releaseExit is not null:
+                await monitor.ReleaseAndWaitForExitAsync(request.Process, releaseExit, cancellationToken)
+                    .ConfigureAwait(false);
                 break;
             case "status":
                 break;
@@ -220,6 +224,25 @@ internal sealed class MonitoredExecutionMonitor : IAsyncDisposable
 
     internal Task StartAsync() => _local?.StartAsync() ?? Task.CompletedTask;
     internal Task StopAsync() => _local?.StopAsync() ?? Task.CompletedTask;
+
+    internal async Task ReleaseAndWaitForExitAsync(System.Diagnostics.Process process,
+        MonitoredProcessIdentity identity, Func<Task> release, CancellationToken cancellationToken)
+    {
+        PrevalidationProtocol.Require(process.Id == identity.ProcessId, "OwnedProcessIdentityMismatch");
+        if (_local is not null)
+        {
+            await _local.ReleaseAndWaitForExitAsync(identity, release, cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            // The coordinator replies while holding its sweep gate, then waits
+            // for this exact worker's exit before serving the status fence.
+            _remote!.Send(new("exit", identity));
+            await release().ConfigureAwait(false);
+            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+            _remote.Send(new("status"));
+        }
+    }
 
     internal async Task KillOwnedAsync(System.Diagnostics.Process process, MonitoredProcessIdentity identity,
         CancellationToken cancellationToken)
