@@ -1,4 +1,5 @@
 using System.Diagnostics.Tracing;
+using DotnetDiagnostics.Core.CaptureRecording;
 using System.Globalization;
 using DotnetDiagnostics.Core.Internal;
 using Microsoft.Diagnostics.NETCore.Client;
@@ -61,6 +62,7 @@ public sealed class EventPipeInFlightRequestCollector : IInFlightRequestCollecto
         int maxRequests = 100,
         CancellationToken cancellationToken = default)
     {
+        var observationSink = CaptureRecordingContext.Current;
         if (processId <= 0)
         {
             throw new ArgumentOutOfRangeException(nameof(processId), "Process id must be positive.");
@@ -100,7 +102,7 @@ public sealed class EventPipeInFlightRequestCollector : IInFlightRequestCollecto
         var notes = new HashSet<string>(StringComparer.Ordinal);
 
         long requestsStarted = 0, requestsCompleted = 0;
-        var pending = new OldestPendingRequestTracker(maxRequests);
+        var pending = new OldestPendingRequestTracker(maxRequests, observationSink);
 
         var processingTask = Task.Run(() =>
         {
@@ -122,7 +124,7 @@ public sealed class EventPipeInFlightRequestCollector : IInFlightRequestCollecto
                             requestsStarted++;
                             pending.Track(requestEvent.Key, requestEvent.PendingRequest!);
                         }
-                        else if (pending.Remove(requestEvent.Key))
+                        else if (pending.Remove(requestEvent.Key, new DateTimeOffset(traceEvent.TimeStamp.ToUniversalTime(), TimeSpan.Zero)))
                         {
                             requestsCompleted++;
                         }
@@ -134,9 +136,11 @@ public sealed class EventPipeInFlightRequestCollector : IInFlightRequestCollecto
                 };
 
                 source.Process();
+                observationSink?.ReportSourceLoss(ProviderName, source.EventsLost);
             }
             catch (Exception ex)
             {
+                observationSink?.ReportSourceLoss(ProviderName, null);
                 _logger.LogDebug(ex, "In-flight request EventPipe source ended for pid {Pid}.", processId);
             }
         }, cancellationToken);
@@ -176,7 +180,22 @@ public sealed class EventPipeInFlightRequestCollector : IInFlightRequestCollecto
         var longRunningCount = inFlight.Count(static request => request.IsLongRunning);
         var oldestElapsedMs = inFlight.Count > 0 ? inFlight[0].ElapsedMs : 0;
         var trimmed = inFlight.Take(maxRequests).ToList();
+        foreach (var request in trimmed)
+        {
+            observationSink?.TryAppend(ProviderObservationProjection.Create(
+                "requests.state", capturedAt, null, request.Method,
+                ("provider", ProviderName), ("traceId", request.TraceId), ("spanId", request.SpanId),
+                ("method", request.Method), ("path", request.Path), ("startedAtUtc", request.StartedAt),
+                ("elapsedMs", request.ElapsedMs), ("isLongRunning", request.IsLongRunning),
+                ("state", "tracked-in-flight-at-window-close"), ("droppedStarts", pending.DroppedCount),
+                ("maxRequests", maxRequests)));
+        }
 
+        observationSink?.TryAppend(ProviderObservationProjection.Create(
+            "requests.retention.aggregate", capturedAt, null, "requests",
+            ("provider", ProviderName), ("requestsStarted", requestsStarted), ("requestsCompleted", requestsCompleted),
+            ("inFlightCount", inFlight.Count), ("droppedStarts", pending.DroppedCount), ("maxRequests", maxRequests),
+            ("correlation", "tracked-subset; last-start-wins; counts are not proof of unique operations")));
         if (requestsStarted == 0)
         {
             notes.Add("No ASP.NET Core requests started during the window. Confirm the target hosts an ASP.NET Core app and that traffic flows during collection — EventPipe sessions take ~500 ms–1 s to start, so begin collection before (or while) the load runs.");
@@ -308,11 +327,13 @@ public sealed class EventPipeInFlightRequestCollector : IInFlightRequestCollecto
     internal sealed class OldestPendingRequestTracker
     {
         private readonly int _capacity;
+        private readonly ICaptureObservationSink? _observationSink;
         private readonly Dictionary<string, PendingRequest> _pending = new(StringComparer.Ordinal);
 
-        public OldestPendingRequestTracker(int capacity)
+        public OldestPendingRequestTracker(int capacity, ICaptureObservationSink? observationSink = null)
         {
             _capacity = capacity;
+            _observationSink = observationSink;
         }
 
         public int DroppedCount { get; private set; }
@@ -322,12 +343,14 @@ public sealed class EventPipeInFlightRequestCollector : IInFlightRequestCollecto
             if (_pending.ContainsKey(key))
             {
                 _pending[key] = request;
+                RecordStart(key, request, "replaced-existing-start");
                 return;
             }
 
             if (_pending.Count < _capacity)
             {
                 _pending[key] = request;
+                RecordStart(key, request, "tracked");
                 return;
             }
 
@@ -339,11 +362,36 @@ public sealed class EventPipeInFlightRequestCollector : IInFlightRequestCollecto
             }
 
             _pending.Remove(newest.Key);
+            _observationSink?.TryAppend(ProviderObservationProjection.Create(
+                "requests.transition", null, null, newest.Value.Method,
+                ("provider", ProviderName), ("key", newest.Key), ("traceId", newest.Value.TraceId),
+                ("spanId", newest.Value.SpanId), ("method", newest.Value.Method), ("path", newest.Value.Path),
+                ("transition", "evicted-by-older-start"), ("startedAtUtc", newest.Value.StartedAt),
+                ("triggerRequestStartedAtUtc", request.StartedAt), ("maxRequests", _capacity)));
             _pending[key] = request;
             DroppedCount++;
+            RecordStart(key, request, "tracked-after-newer-start-eviction");
         }
 
         public bool Remove(string key) => _pending.Remove(key);
+
+        internal bool Remove(string key, DateTimeOffset timestamp)
+        {
+            if (!_pending.Remove(key, out var request)) return false;
+            _observationSink?.TryAppend(ProviderObservationProjection.Create(
+                "requests.transition", timestamp, null, request.Method,
+                ("provider", ProviderName), ("key", key), ("traceId", request.TraceId),
+                ("spanId", request.SpanId), ("method", request.Method), ("path", request.Path),
+                ("transition", "removed-by-stop"), ("correlation", "last-start-wins; not proof of unique operation")));
+            return true;
+        }
+
+        private void RecordStart(string key, PendingRequest request, string disposition) =>
+            _observationSink?.TryAppend(ProviderObservationProjection.Create(
+                "requests.transition", request.StartedAt, null, request.Method,
+                ("provider", ProviderName), ("key", key), ("traceId", request.TraceId),
+                ("spanId", request.SpanId), ("method", request.Method), ("path", request.Path),
+                ("transition", disposition), ("maxRequests", _capacity), ("droppedStarts", DroppedCount)));
 
         public IReadOnlyCollection<PendingRequest> GetPending() => _pending.Values;
     }

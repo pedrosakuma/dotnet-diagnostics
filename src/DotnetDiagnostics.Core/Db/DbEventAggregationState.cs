@@ -1,15 +1,17 @@
 using System.Globalization;
 
 using DotnetDiagnostics.Core.Internal;
+using DotnetDiagnostics.Core.CaptureRecording;
 
 namespace DotnetDiagnostics.Core.Db;
 
-internal sealed class DbEventAggregationState
+internal sealed class DbEventAggregationState(ICaptureObservationSink? observationSink = null)
 {
     private const int NPlusOneThreshold = 10;
     internal const int MaxTrackedPendingCommands = 2048;
     internal const int MaxTrackedCommandAggregates = 256;
     internal const int MaxTrackedNPlusOneIncidents = 256;
+    internal const int MaxRecordedCommandIdentities = 65536;
     private static readonly TimeSpan PendingCommandTtl = TimeSpan.FromMinutes(2);
     internal const string OverflowCommandTextHash = "(overflow)";
     private const string OverflowCommandText = "(overflow: additional distinct command shapes omitted)";
@@ -20,6 +22,7 @@ internal sealed class DbEventAggregationState
     private readonly Dictionary<string, MutableNPlusOne> _nPlusOne = new(StringComparer.Ordinal);
     private readonly Dictionary<string, MutableConnectionPoolStats> _connectionPools = new(StringComparer.Ordinal);
     private readonly HashSet<string> _notes = new(StringComparer.Ordinal);
+    private readonly HashSet<string>? _recordedCommandIdentities = observationSink is null ? null : new(StringComparer.Ordinal);
     private MutableCommandAggregate? _overflowAggregate;
     private int _expiredPendingCommands;
     private int _evictedPendingCommands;
@@ -33,6 +36,15 @@ internal sealed class DbEventAggregationState
 
     public void SetPendingCommand(string providerObjectKey, PendingCommand pending)
     {
+        if (_recordedCommandIdentities is { } identities)
+        {
+            // SqlClient IDs can be reused. Preserve the legacy snapshot, but do not label
+            // an ambiguous last-start-wins match as a durable command completion.
+            pending = pending with
+            {
+                CapturePairingUncertain = identities.Count >= MaxRecordedCommandIdentities || !identities.Add(providerObjectKey),
+            };
+        }
         ExpirePendingCommands(pending.StartedAt);
         if (!_pendingCommandsByProviderAndObjectId.ContainsKey(providerObjectKey))
         {
@@ -46,21 +58,35 @@ internal sealed class DbEventAggregationState
         _pendingCommandsByProviderAndObjectId[providerObjectKey] = pending;
     }
 
-    public bool TryCompletePendingCommand(string providerObjectKey, DateTimeOffset stoppedAt)
+    public bool TryCompletePendingCommand(string providerObjectKey, DateTimeOffset stoppedAt, long? threadId = null)
     {
         ExpirePendingCommands(stoppedAt);
         if (!_pendingCommandsByProviderAndObjectId.Remove(providerObjectKey, out var pending))
         {
+            if (_recordedCommandIdentities is { Count: < MaxRecordedCommandIdentities } identities)
+                identities.Add(providerObjectKey);
             return false;
         }
 
-        CompleteCommand(pending, stoppedAt, Math.Max(0, (stoppedAt - pending.StartedAt).TotalMilliseconds));
+        if (observationSink is not null && stoppedAt < pending.StartedAt)
+            pending = pending with { CapturePairingUncertain = true };
+        CompleteCommand(pending, stoppedAt, Math.Max(0, (stoppedAt - pending.StartedAt).TotalMilliseconds), threadId);
         return true;
     }
 
-    public void CompleteCommand(PendingCommand pending, DateTimeOffset stoppedAt, double durationMs)
+    public void CompleteCommand(PendingCommand pending, DateTimeOffset stoppedAt, double durationMs, long? threadId = null)
     {
         TotalCommands++;
+        observationSink?.TryAppend(ProviderObservationProjection.Create(
+            pending.CapturePairingUncertain ? "db.command.ambiguous-aggregate-input" : "db.command.completion",
+            stoppedAt, threadId, pending.CommandTextSanitized,
+            ("provider", pending.Provider), ("commandTextSanitized", pending.CommandTextSanitized),
+            ("commandTextHash", pending.CommandTextHash), ("connectionStringSanitized", pending.ConnectionStringSanitized),
+            ("scopeId", pending.ScopeId), ("startedAtUtc", pending.CapturePairingUncertain || pending.CaptureTimingUnavailable ? null : pending.StartedAt),
+            ("durationMs", pending.CapturePairingUncertain || pending.CaptureTimingUnavailable ? null : durationMs),
+            ("timingUnavailable", pending.CaptureTimingUnavailable),
+            ("correlation", pending.CapturePairingUncertain ? "ambiguous-or-identity-capacity; snapshot uses last-start-wins" : "provider-parser"),
+            ("maxRecordedCommandIdentities", MaxRecordedCommandIdentities)));
 
         var aggregate = GetOrCreateAggregate(pending, stoppedAt);
         aggregate.AddObservation(pending.Provider, durationMs, pending.StartedAt, stoppedAt);
@@ -81,11 +107,27 @@ internal sealed class DbEventAggregationState
         return stats;
     }
 
+    internal void RecordPoolCounter(string provider, string name, double value, DateTimeOffset timestamp, long threadId)
+    {
+        GetOrAddPoolStats(provider).ObserveCounter(name, value);
+        observationSink?.TryAppend(ProviderObservationProjection.Create(
+            "db.pool.counter.aggregate", timestamp, threadId, name,
+            ("provider", provider), ("value", value), ("unit", null)));
+    }
+
     public void AddNote(string note) => _notes.Add(note);
+    internal void ReportSourceLoss(long? count) => observationSink?.ReportSourceLoss("db", count);
 
     public DbSnapshot BuildSnapshot(int processId, DateTimeOffset startedAt, TimeSpan duration)
     {
         ExpirePendingCommands(startedAt + duration);
+        observationSink?.TryAppend(ProviderObservationProjection.Create(
+            "db.retention.aggregate", null, null, "db",
+            ("expiredPendingCommands", _expiredPendingCommands), ("evictedPendingCommands", _evictedPendingCommands),
+            ("overflowedCommandShapes", _overflowedCommandShapes), ("overflowedNPlusOneKeys", _overflowedNPlusOneKeys),
+            ("unfinishedCommands", _pendingCommandsByProviderAndObjectId.Count),
+            ("recordedCommandIdentities", _recordedCommandIdentities?.Count),
+            ("maxRecordedCommandIdentities", MaxRecordedCommandIdentities)));
 
         var byCommand = _aggregates.Values
             .Select(static aggregate => aggregate.ToRecord())
@@ -231,7 +273,11 @@ internal sealed record PendingCommand(
     string CommandTextSanitized,
     string ConnectionStringSanitized,
     string ScopeId,
-    DateTimeOffset StartedAt);
+    DateTimeOffset StartedAt)
+{
+    internal bool CapturePairingUncertain { get; init; }
+    internal bool CaptureTimingUnavailable { get; init; }
+}
 
 internal sealed class MutableCommandAggregate
 {

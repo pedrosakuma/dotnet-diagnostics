@@ -1,4 +1,5 @@
 using System.Diagnostics.Tracing;
+using DotnetDiagnostics.Core.CaptureRecording;
 using System.Globalization;
 using DotnetDiagnostics.Core.Internal;
 using Microsoft.Diagnostics.NETCore.Client;
@@ -30,6 +31,7 @@ public sealed class EventPipeEventSourceCollector : IEventSourceCollector
         int maxEvents = 200,
         CancellationToken cancellationToken = default)
     {
+        var observationSink = CaptureRecordingContext.Current;
         ArgumentException.ThrowIfNullOrWhiteSpace(providerName);
 
         if (duration <= TimeSpan.Zero)
@@ -100,18 +102,20 @@ public sealed class EventPipeEventSourceCollector : IEventSourceCollector
                         }
                     }
 
-                    captured.Add(new CapturedEvent(
+                    RetainEvent(captured, maxEvents, providerName, new CapturedEvent(
                         Timestamp: new DateTimeOffset(traceEvent.TimeStamp.ToUniversalTime(), TimeSpan.Zero),
                         Provider: traceEvent.ProviderName,
                         EventName: traceEvent.EventName,
                         Level: traceEvent.Level.ToString(),
-                        Payload: payload));
+                        Payload: payload), observationSink);
                 };
 
                 source.Process();
+                observationSink?.ReportSourceLoss(providerName, source.EventsLost);
             }
             catch (Exception ex)
             {
+                observationSink?.ReportSourceLoss(providerName, null);
                 _logger.LogDebug(ex, "EventPipe custom source ended for pid {Pid} provider {Provider}.", processId, providerName);
             }
         }, cancellationToken);
@@ -129,6 +133,10 @@ public sealed class EventPipeEventSourceCollector : IEventSourceCollector
                 .ConfigureAwait(false);
         }
 
+        observationSink?.TryAppend(ProviderObservationProjection.Create(
+            "event-source.retention.aggregate", null, null, providerName,
+            ("provider", providerName), ("totalEvents", total), ("retainedEvents", captured.Count),
+            ("maxEvents", maxEvents), ("unretainedEvents", total - captured.Count)));
         return new EventSourceCapture(
             ProcessId: processId,
             Provider: providerName,
@@ -136,5 +144,23 @@ public sealed class EventPipeEventSourceCollector : IEventSourceCollector
             Duration: duration,
             TotalEvents: total,
             Events: captured);
+    }
+
+    internal static void RetainEvent(
+        List<CapturedEvent> captured, int maxEvents, string providerName, CapturedEvent observation, ICaptureObservationSink? sink)
+    {
+        if (captured.Count >= maxEvents || !string.Equals(providerName, observation.Provider, StringComparison.Ordinal)) return;
+        captured.Add(observation);
+        if (sink is null) return;
+        const int maxPayloadFields = 256;
+        var fields = new List<CaptureObservationField>(Math.Min(observation.Payload.Count, maxPayloadFields) + 3)
+        {
+            CaptureObservationField.String("provider", observation.Provider),
+            CaptureObservationField.String("level", observation.Level),
+            CaptureObservationField.Int64("omittedPayloadFields", Math.Max(0, observation.Payload.Count - maxPayloadFields)),
+        };
+        foreach (var field in observation.Payload.Take(maxPayloadFields))
+            fields.Add(CaptureObservationField.String("payload." + field.Key, field.Value));
+        sink.TryAppend(new CaptureObservation("event-source.event", observation.Timestamp, null, observation.EventName, fields));
     }
 }

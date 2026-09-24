@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Diagnostics.Tracing;
+using DotnetDiagnostics.Core.CaptureRecording;
 using System.Globalization;
 using DotnetDiagnostics.Core.Internal;
 using Microsoft.Diagnostics.NETCore.Client;
@@ -40,6 +41,7 @@ public sealed class EventPipeCrashGuardCollector : ICrashGuardCollector
         int maxRecent = 100,
         CancellationToken cancellationToken = default)
     {
+        var observationSink = CaptureRecordingContext.Current;
         if (duration <= TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(nameof(duration), "Duration must be positive.");
@@ -215,7 +217,7 @@ public sealed class EventPipeCrashGuardCollector : ICrashGuardCollector
             .ThenBy(c => c.ExceptionType, StringComparer.Ordinal)
             .ToList();
 
-        return new CrashGuardSnapshot(
+        var snapshot = new CrashGuardSnapshot(
             ProcessId: processId,
             StartedAt: startedAt,
             Duration: DateTimeOffset.UtcNow - startedAt,
@@ -228,6 +230,45 @@ public sealed class EventPipeCrashGuardCollector : ICrashGuardCollector
             FinalException: finalException,
             Notes: notes.Keys.OrderBy(static note => note, StringComparer.Ordinal).ToList())
         { RecentCap = maxRecent, Observation = observation };
+        RecordRetainedEvidence(observationSink, snapshot, finalEvidence.InferredFromExit);
+        return snapshot;
+    }
+
+    internal static void RecordRetainedEvidence(ICaptureObservationSink? sink, CrashGuardSnapshot snapshot, bool inferredFromExit)
+    {
+        if (sink is null) return;
+        sink.ReportSourceLoss(RuntimeProvider, snapshot.Observation?.EventsLost);
+        sink.TryAppend(ProviderObservationProjection.Create(
+            "crashguard.retention.aggregate", null, null, "crashguard",
+            ("provider", RuntimeProvider), ("processExited", snapshot.ProcessExited), ("exitCode", snapshot.ExitCode),
+            ("totalExceptions", snapshot.TotalExceptions), ("retainedExceptions", snapshot.Exceptions.Count),
+            ("recentCap", snapshot.RecentCap), ("finalInferredFromExit", inferredFromExit),
+            ("unhandledExceptionObserved", snapshot.UnhandledExceptionObserved),
+            ("streamCompleted", snapshot.Observation?.StreamCompleted), ("drainCompleted", snapshot.Observation?.DrainCompleted),
+            ("eventsLost", snapshot.Observation?.EventsLost), ("processingError", snapshot.Observation?.ProcessingError),
+            ("shutdownError", snapshot.Observation?.ShutdownError),
+            ("explicitCrashEventObserved", snapshot.Observation?.ExplicitCrashEventObserved),
+            ("exitObservedDuringWindow", snapshot.Observation?.ExitObservedDuringWindow)));
+        for (var index = 0; index < snapshot.Exceptions.Count; index++)
+            RecordRetainedException(sink, snapshot.Exceptions[index], index, "retained");
+        if (snapshot.FinalException is { } final)
+            RecordRetainedException(sink, final, -1, inferredFromExit ? "final-inferred-from-exit" : "final-evidence");
+        if (snapshot.Observation?.LastObservedException is { } last)
+            RecordRetainedException(sink, last, -2, "last-observed-not-proof-of-termination");
+    }
+
+    private static void RecordRetainedException(ICaptureObservationSink sink, CrashGuardExceptionEvent exception, int index, string role)
+    {
+        sink.TryAppend(ProviderObservationProjection.Create(
+            "crashguard.retained-evidence", exception.Timestamp, exception.ThreadId, exception.EventName,
+            ("provider", RuntimeProvider), ("exceptionType", exception.ExceptionType),
+            ("exceptionMessage", exception.ExceptionMessage), ("hResult", exception.ExceptionHResult),
+            ("isUnhandled", exception.IsUnhandled), ("role", role), ("evidenceIndex", index),
+            ("managedFrameCount", exception.ManagedStack.Count)));
+        for (var frame = 0; frame < exception.ManagedStack.Count; frame++)
+            sink.TryAppend(ProviderObservationProjection.Create(
+                "crashguard.retained-frame", exception.Timestamp, exception.ThreadId, exception.ManagedStack[frame],
+                ("provider", RuntimeProvider), ("evidenceIndex", index), ("role", role), ("frameIndex", frame)));
     }
 
     private static void RecordException(
