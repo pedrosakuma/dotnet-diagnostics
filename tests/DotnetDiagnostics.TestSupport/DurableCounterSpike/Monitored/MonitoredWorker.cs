@@ -967,7 +967,8 @@ internal static class MonitoredWorkerExecutor
                     activeStorageStage: false).ConfigureAwait(false);
             }
 
-            Stage("live-warmup", active: false);
+            Stage("live-warmup", active: DescriptorObservationPolicy.IsUnifiedActive(manifest.SampledLoss)
+                && factory is not null);
             var requests = new BoundedLiveRequestLoad(sample.BaseUrl);
             var loadTask = requests.RunAsync(TimeSpan.FromSeconds(44), CancellationToken.None);
             await Task.Delay(TimeSpan.FromSeconds(10)).ConfigureAwait(false);

@@ -264,7 +264,9 @@ internal static class MonitoredCampaignRunner
                 ObservationPolicy = validated.Manifest.SampledLoss?.Policy,
                 SampledLoss = validated.Manifest.SampledLoss is null ? null
                     : outcomes.Where(static outcome => outcome.SampledLoss is not null)
-                        .Aggregate(SampledLossMeasurement.Empty(), static (sum, outcome) =>
+                        .Aggregate(SampledLossMeasurement.Empty(
+                            unifiedActive: DescriptorObservationPolicy.IsUnifiedActive(validated.Manifest.SampledLoss)),
+                            static (sum, outcome) =>
                             SampledLossMeasurement.Merge(sum, outcome.SampledLoss!,
                                 35 * SampledLossMeasurement.MaximumCandidatesPerEntry)),
             });
@@ -438,7 +440,7 @@ internal static class MonitoredCampaignRunner
                 outcome,
                 failureCode,
                 failureMessage,
-                monitorComplete && (losses?.Lost ?? 0) == 0,
+                monitorComplete && losses?.HasLoss != true,
                 alarm,
                 checked(first.SummaryRecords + (ReferenceEquals(first, final) ? 0 : final.SummaryRecords)),
                 checked(first.SummaryBytes + (ReferenceEquals(first, final) ? 0 : final.SummaryBytes)),
@@ -471,7 +473,10 @@ internal static class MonitoredCampaignRunner
         var monitorPath = validated.Prevalidation is null
             ? Path.Combine(outputRoot, $"{logPrefix}-monitor.jsonl")
             : Path.Combine(Path.GetDirectoryName(validated.Prevalidation.OwnershipPath!)!, "coordinator-monitor.jsonl");
-        await using var monitor = new MonitoredExecutionMonitor(validated, monitorPath, combinedOutputBudget);
+        await using var monitor = new MonitoredExecutionMonitor(validated, monitorPath, combinedOutputBudget,
+            Path.GetDirectoryName(descriptor.PackageStagingRoot));
+        if (DescriptorObservationPolicy.IsUnifiedActive(validated.Manifest.SampledLoss))
+            monitor.SetStage(descriptor.Mode == MonitoredWorkerMode.Execute ? "worker-preparation" : "recovery", true);
         var process = launcher.Start(validated.Manifest, descriptorPath);
         var workerIdentity = MonitoredProcessIdentity.Capture(process, MonitoredProcessRole.Diagnostic);
         if (monitorHarnessProcess && validated.Prevalidation is null)
@@ -1372,7 +1377,9 @@ internal static class MonitoredDecisionEngine
         var decision = DecideCore(outcomes, sampledReadinessValidated);
         return sampledReadinessValidated ? decision with
         {
-            Scope = DescriptorObservationPolicy.IsObservedUnlinked(sampledCampaign!.SampledLoss)
+            Scope = DescriptorObservationPolicy.IsUnifiedActive(sampledCampaign!.SampledLoss)
+                ? "unified-active-policy/1-conditional-no-product-decision"
+                : DescriptorObservationPolicy.IsObservedUnlinked(sampledCampaign!.SampledLoss)
                 ? "observed-unlinked-policy/1-conditional-no-product-decision"
                 : "sampled-loss-policy/1-conditional-no-product-decision",
         }

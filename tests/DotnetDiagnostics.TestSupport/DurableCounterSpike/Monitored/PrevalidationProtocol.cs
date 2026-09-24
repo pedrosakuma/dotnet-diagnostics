@@ -160,7 +160,8 @@ internal static class PrevalidationProtocol
     internal static void ValidateShape(PrevalidationManifest manifest, bool allowLegacyInspection = false)
     {
         Require(manifest.Schema == DescriptorObservationPolicy.Select(manifest.SampledLoss, ManifestSchema,
-            SampledLossProtocol.PrevalidationManifestSchema, ObservedUnlinkedProtocol.PrevalidationManifestSchema)
+            SampledLossProtocol.PrevalidationManifestSchema, ObservedUnlinkedProtocol.PrevalidationManifestSchema,
+            UnifiedActiveProtocol.PrevalidationManifestSchema)
             && manifest.Scope == Scope, "PrevalidationSchemaMismatch");
         if (manifest.SampledLoss is { } sampled)
         {
@@ -177,7 +178,8 @@ internal static class PrevalidationProtocol
             "PrevalidationFrozenInputMismatch");
         Require(manifest.Probes.SequenceEqual(Plan()) && manifest.Bounds == Bounds(), "PrevalidationPlanOrBounds");
         Require(manifest.ContextSummaryFieldMapSha256 == DescriptorObservationPolicy.Select(manifest.SampledLoss,
-                ContextSummaryFieldMapSha256, SampledLossProtocol.ContextMapSha256, ObservedUnlinkedProtocol.ContextMapSha256)
+                ContextSummaryFieldMapSha256, SampledLossProtocol.ContextMapSha256, ObservedUnlinkedProtocol.ContextMapSha256,
+                UnifiedActiveProtocol.ContextMapSha256)
             || manifest.SampledLoss is null && allowLegacyInspection && (manifest.ContextSummaryFieldMapSha256 == LegacyContextSummaryFieldMapSha256
                 || manifest.ContextSummaryFieldMapSha256 == PreviousContextSummaryFieldMapSha256),
             "PrevalidationContextEncodingMismatch");
@@ -264,7 +266,7 @@ internal static class PrevalidationProtocol
     internal static void ValidateAdoption(PrevalidationManifest manifest, PrevalidationAdoption adoption)
         => Require(adoption.Schema == DescriptorObservationPolicy.Select(manifest.SampledLoss,
                 "durable-prevalidation-adoption/1", "durable-sampled-prevalidation-adoption/1",
-                ObservedUnlinkedProtocol.AdoptionSchema)
+                ObservedUnlinkedProtocol.AdoptionSchema, UnifiedActiveProtocol.AdoptionSchema)
             && adoption.AddendumSha256 == (manifest.SampledLoss?.ProtocolSha256 ?? AddendumSha256)
             && adoption.Scope == Scope && !string.IsNullOrWhiteSpace(adoption.Maintainer)
             && adoption.AdoptedAt != default, "PrevalidationAdoptionMissing");
@@ -272,7 +274,8 @@ internal static class PrevalidationProtocol
     internal static void ValidateAcceptance(PrevalidationManifest manifest, PrevalidationAcceptance acceptance)
         => Require(acceptance.Schema == DescriptorObservationPolicy.Select(manifest.SampledLoss,
                 "durable-prevalidation-implementation-acceptance/1",
-                "durable-sampled-prevalidation-implementation-acceptance/1", ObservedUnlinkedProtocol.AcceptanceSchema)
+                "durable-sampled-prevalidation-implementation-acceptance/1", ObservedUnlinkedProtocol.AcceptanceSchema,
+                UnifiedActiveProtocol.AcceptanceSchema)
             && acceptance.SampledProtocolSha256 == manifest.SampledLoss?.ProtocolSha256
             && acceptance.Scope == Scope && acceptance.AddendumSha256 == AddendumSha256
             && acceptance.SourceCommits == manifest.SourceCommits
@@ -290,7 +293,7 @@ internal static class PrevalidationProtocol
         PrevalidationAuthorization authorization)
         => Require(authorization.Schema == DescriptorObservationPolicy.Select(manifest.SampledLoss,
                 "durable-prevalidation-authorization/1", "durable-sampled-prevalidation-authorization/1",
-                ObservedUnlinkedProtocol.PrevalidationAuthorizationSchema)
+                ObservedUnlinkedProtocol.PrevalidationAuthorizationSchema, UnifiedActiveProtocol.PrevalidationAuthorizationSchema)
             && authorization.Scope == Scope && authorization.SuiteId == manifest.SuiteId
             && authorization.ManifestSha256 == hash && authorization.AddendumSha256 == AddendumSha256
             && authorization.AcceptanceSha256 == manifest.ImplementationAcceptance.Sha256

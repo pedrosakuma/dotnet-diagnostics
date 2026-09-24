@@ -109,7 +109,7 @@ internal static class PrevalidationMonitorControl
 }
 
 internal sealed class PrevalidationMonitorClient(CancellationToken cancellationToken, bool sampledLoss = false,
-    bool observedUnlinked = false)
+    bool observedUnlinked = false, bool unifiedActive = false)
 {
     private int _requests;
     internal PrevalidationMonitorReply State { get; private set; } = new(false, null, 0, 0, 0, 0, null);
@@ -131,6 +131,10 @@ internal sealed class PrevalidationMonitorClient(CancellationToken cancellationT
             && (State.Summary is null
                 || (State.Summary.SampledLoss?.ObservedUnlinked is not null) == observedUnlinked),
             "ObservedUnlinkedAuthorityPolicyMismatch");
+        PrevalidationProtocol.Require((!unifiedActive || observedUnlinked)
+            && (State.SampledLoss?.RootSampling is not null) == unifiedActive
+            && (State.Summary is null || (State.Summary.SampledLoss?.RootSampling is not null) == unifiedActive),
+            "UnifiedActiveAuthorityPolicyMismatch");
         State.SampledLoss?.Validate();
         if (State.Summary is { } summary)
         {
@@ -155,7 +159,8 @@ internal sealed class MonitoredExecutionMonitor : IAsyncDisposable
     private readonly long _initialBytes;
     private readonly TaskCompletionSource<string> _unusedTerminal = new();
 
-    internal MonitoredExecutionMonitor(MonitoredExecutionContext context, string path, BoundedOutputBudget budget)
+    internal MonitoredExecutionMonitor(MonitoredExecutionContext context, string path, BoundedOutputBudget budget,
+        string? activeWorkspace = null)
     {
         _remote = context.Prevalidation?.Monitor;
         if (_remote is null)
@@ -164,7 +169,12 @@ internal sealed class MonitoredExecutionMonitor : IAsyncDisposable
             _local = new(context.Attribution, context.Encoding, path, budget,
                 context.ComponentEvidence.DerivedMaximumSimultaneousIdentitiesEnforced,
                 sampledLoss: context.UsesSampledLoss,
-                observedUnlinked: context.Manifest.SampledLoss?.Policy == ObservedUnlinkedProtocol.Policy);
+                observedUnlinked: DescriptorObservationPolicy.IsObservedUnlinked(context.Manifest.SampledLoss),
+                unifiedActive: DescriptorObservationPolicy.IsUnifiedActive(context.Manifest.SampledLoss),
+                activeOwnedRoots: DescriptorObservationPolicy.IsUnifiedActive(context.Manifest.SampledLoss)
+                    && activeWorkspace is not null ? [activeWorkspace] : null,
+                activeOwnedFiles: DescriptorObservationPolicy.IsUnifiedActive(context.Manifest.SampledLoss)
+                    ? UnifiedActiveProtocol.MutableWorkerStreams(System.IO.Path.GetDirectoryName(path)!) : null);
         }
         else
         {

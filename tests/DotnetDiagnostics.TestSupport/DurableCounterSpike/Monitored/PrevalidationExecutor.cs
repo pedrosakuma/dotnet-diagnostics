@@ -110,7 +110,8 @@ internal static class PrevalidationExecutor
                 new BoundedOutputBudget(1_048_576, 1_024, 64, 64), 571,
                 prevalidationScope: new PrevalidationObservationScope([], coordinator),
                 sampledLoss: manifest.SampledLoss is not null,
-                observedUnlinked: manifest.SampledLoss?.Policy == ObservedUnlinkedProtocol.Policy);
+                observedUnlinked: DescriptorObservationPolicy.IsObservedUnlinked(manifest.SampledLoss),
+                unifiedActive: DescriptorObservationPolicy.IsUnifiedActive(manifest.SampledLoss));
             monitor.AddProcess(coordinator);
             RequireSweep(await monitor.ObserveBoundaryAsync("suite-coordinator-admission", true, admissionDeadline.Token)
                 .ConfigureAwait(false));
@@ -189,7 +190,13 @@ internal static class PrevalidationExecutor
                     Path.Combine(contextRoot, "coordinator-monitor.jsonl"), budget, 571,
                     includeIdentityEvidence: probe.Ordinal == 8,
                     prevalidationScope: context.Prevalidation, sampledLoss: context.UsesSampledLoss,
-                    observedUnlinked: context.Manifest.SampledLoss?.Policy == ObservedUnlinkedProtocol.Policy);
+                    observedUnlinked: DescriptorObservationPolicy.IsObservedUnlinked(context.Manifest.SampledLoss),
+                    unifiedActive: DescriptorObservationPolicy.IsUnifiedActive(context.Manifest.SampledLoss),
+                    activeOwnedRoots: DescriptorObservationPolicy.IsUnifiedActive(context.Manifest.SampledLoss)
+                        ? [context.Manifest.WorkspaceRoot] : null,
+                    activeOwnedFiles: DescriptorObservationPolicy.IsUnifiedActive(context.Manifest.SampledLoss)
+                        ? UnifiedActiveProtocol.MutableEntryStreams(contextRoot,
+                            PrevalidationLayout.ExecutionRoot(manifest, probe)) : null);
                 monitor.AddProcess(coordinator);
                 monitor.SetStage("fixture-preparation", activeStorageStage: true);
                 _ = monitor.StartAsync();
@@ -291,7 +298,7 @@ internal static class PrevalidationExecutor
                         MaximumSuiteBytes = monitor.MaximumObservedSweepBytes,
                         MaximumContextIdentities = monitor.MaximumCurrentContextIdentities,
                         SampledLoss = monitor.LossTotals,
-                        MonitoringComplete = coverage.MonitoringComplete && (monitor.LossTotals?.Lost ?? 0) == 0,
+                        MonitoringComplete = coverage.MonitoringComplete && monitor.LossTotals?.HasLoss != true,
                         SampledAdmissible = manifest.SampledLoss is not null && !monitor.IsIncomplete
                             && monitor.TerminalAlarm is null && coverage.FailureCode is null,
                     };
@@ -334,7 +341,8 @@ internal static class PrevalidationExecutor
             var monitor = finalMonitor = new MonitoredStorageMonitor(validated.Attribution, validated.Encoding,
                 Path.Combine(manifest.PrivateRoot, "final-monitor.jsonl"), maximumEstablishedIdentities: 571,
                 prevalidationScope: finalScope, sampledLoss: manifest.SampledLoss is not null,
-                observedUnlinked: manifest.SampledLoss?.Policy == ObservedUnlinkedProtocol.Policy);
+                observedUnlinked: DescriptorObservationPolicy.IsObservedUnlinked(manifest.SampledLoss),
+                unifiedActive: DescriptorObservationPolicy.IsUnifiedActive(manifest.SampledLoss));
             monitor.AddProcess(coordinator);
             RequireSweep(await monitor.ObserveBoundaryAsync("suite-final-enumeration", false, finalDeadline.Token)
                 .ConfigureAwait(false));
@@ -418,7 +426,8 @@ internal static class PrevalidationExecutor
             Prevalidation = context.Prevalidation! with
             {
                 Monitor = new PrevalidationMonitorClient(deadline.Token, context.UsesSampledLoss,
-                    observedUnlinked: context.Manifest.SampledLoss?.Policy == ObservedUnlinkedProtocol.Policy),
+                    observedUnlinked: DescriptorObservationPolicy.IsObservedUnlinked(context.Manifest.SampledLoss),
+                    unifiedActive: DescriptorObservationPolicy.IsUnifiedActive(context.Manifest.SampledLoss)),
             },
         };
         PrevalidationCoverage coverage;
@@ -626,7 +635,8 @@ internal static class PrevalidationExecutor
         MonitoredCaseOutcome outcome, string root, bool requireEntryCompletion = false)
     {
         var boundaries = new HashSet<string>(StringComparer.Ordinal);
-        SampledLossMeasurement? losses = outcome.SampledLoss is null ? null : SampledLossMeasurement.Empty();
+        SampledLossMeasurement? losses = outcome.SampledLoss is null ? null : SampledLossMeasurement.Empty(
+            unifiedActive: outcome.SampledLoss.RootSampling is not null);
         var totalRecords = 0;
         foreach (var relative in outcome.MonitoringEvidenceFiles)
         {
@@ -689,7 +699,7 @@ internal static class PrevalidationExecutor
             complete ? "coverage-observed" : "incomplete",
             complete ? null : PrevalidationFailureCodes.Normalize(
                 outcome.FailureCode ?? outcome.MonitoringAlarm ?? "RequiredCoverageMissing"),
-            complete && (losses?.Lost ?? 0) == 0, probe.FixtureSlots, probe.FixtureSlots * 4, outcome.MaximumObservedIdentities,
+            complete && losses?.HasLoss != true, probe.FixtureSlots, probe.FixtureSlots * 4, outcome.MaximumObservedIdentities,
             outcome.MaximumObservedSweepBytes,
             probe.Candidate == "E" ? null : probe.Workload == "F3" ? complete ? 128 : null : worker?.Offered,
             probe.Candidate == "E" || probe.Workload == "F3" ? null : worker?.Committed,

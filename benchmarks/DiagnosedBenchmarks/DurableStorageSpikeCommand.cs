@@ -25,6 +25,9 @@ internal static class DurableStorageSpikeCommand
         "observed-unlinked-plan",
         "observed-unlinked-campaign-binding",
         "observed-unlinked-readiness-validate",
+        "unified-active-plan",
+        "unified-active-campaign-binding",
+        "unified-active-readiness-validate",
     ];
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
@@ -117,6 +120,54 @@ internal static class DurableStorageSpikeCommand
                 case "sampled-loss-campaign-binding":
                     Console.WriteLine(SampledLossProtocol.CampaignBindingHash(
                         PrevalidationProtocol.Read<MonitoredRunManifest>(RequireOption(args, "--manifest"))));
+                    return 0;
+                case "unified-active-plan":
+                    Console.WriteLine(JsonSerializer.Serialize(new
+                    {
+                        policy = UnifiedActiveProtocol.Policy,
+                        protocol = UnifiedActiveProtocol.Path,
+                        protocolSha256 = UnifiedActiveProtocol.ProtocolSha256,
+                        inheritedObservedUnlinkedProtocolSha256 = ObservedUnlinkedProtocol.ProtocolSha256,
+                        inheritedSampledProtocolSha256 = SampledLossProtocol.ProtocolSha256,
+                        inheritedMonitoredProtocolSha256 = MonitoredProtocolVersions.SuccessorProtocolSha256,
+                        inheritedPrevalidationAddendumSha256 = PrevalidationProtocol.AddendumSha256,
+                        summarySchema = UnifiedActiveProtocol.SummarySchema,
+                        contextSummaryFieldMap = UnifiedActiveProtocol.FieldMap,
+                        contextSummaryFieldMapSha256 = UnifiedActiveProtocol.ContextMapSha256,
+                        maximumSummaryLfUtf8Bytes = MonitoredSweepSummaryEncoding.EncodeLine(
+                            UnifiedActiveProtocol.WorstCaseSummary()).Length,
+                        summaryWidthFixture = JsonSerializer.SerializeToElement(
+                            UnifiedActiveProtocol.WorstCaseSummary(), PrevalidationProtocol.Json),
+                        maximumAllowedSummaryLfUtf8Bytes = 1_024,
+                        independentScalarSummaryLfUtf8BytesUpperBound = 1_023,
+                        maximumAuthorityFrameLfUtf8Bytes = System.Text.Encoding.UTF8.GetByteCount(
+                            PrevalidationMonitorControl.Encode(UnifiedActiveProtocol.WorstCaseAuthorityReply())) + 1,
+                        independentScalarAuthorityFrameLfUtf8BytesUpperBound = 1_695,
+                        maximumAllowedAuthorityFrameLfUtf8Bytes = PrevalidationMonitorControl.MaximumFrameBytes,
+                        maximumKnownFileCandidatesPerSweep = 4_096,
+                        maximumDirectoryWorkPerSweep = 4_096,
+                        maximumRootCounterPerEntry = 8_388_608,
+                        prevalidationManifestSchema = UnifiedActiveProtocol.PrevalidationManifestSchema,
+                        adoptionSchema = UnifiedActiveProtocol.AdoptionSchema,
+                        implementationAcceptanceSchema = UnifiedActiveProtocol.AcceptanceSchema,
+                        prevalidationAuthorizationSchema = UnifiedActiveProtocol.PrevalidationAuthorizationSchema,
+                        campaignManifestSchema = UnifiedActiveProtocol.CampaignManifestSchema,
+                        readinessSchema = UnifiedActiveProtocol.ReadinessSchema,
+                        campaignAuthorizationSchema = UnifiedActiveProtocol.CampaignAuthorizationSchema,
+                        runtimeEnvironmentSha256 = PrevalidationProtocol.RuntimeEnvironmentHash(),
+                        probes = PrevalidationProtocol.Plan(), bounds = PrevalidationProtocol.Bounds(),
+                        campaignPlan = MonitoredExecutionPlanner.Expand(),
+                        readinessAvailable = false,
+                        campaignAdmissionGranted = false,
+                    }, JsonOptions));
+                    return 0;
+                case "unified-active-campaign-binding":
+                    Console.WriteLine(UnifiedActiveProtocol.CampaignBindingHash(
+                        PrevalidationProtocol.Read<MonitoredRunManifest>(RequireOption(args, "--manifest"))));
+                    return 0;
+                case "unified-active-readiness-validate":
+                    Console.WriteLine(JsonSerializer.Serialize(UnifiedActiveProtocol.ValidateReadiness(
+                        PrevalidationProtocol.Read<MonitoredRunManifest>(RequireOption(args, "--manifest"))), JsonOptions));
                     return 0;
                 case "observed-unlinked-plan":
                     Console.WriteLine(JsonSerializer.Serialize(new
@@ -401,6 +452,9 @@ internal static class DurableStorageSpikeCommand
         writer.WriteLine("  observed-unlinked-plan");
         writer.WriteLine("  observed-unlinked-campaign-binding --manifest <path>");
         writer.WriteLine("  observed-unlinked-readiness-validate --manifest <path>");
+        writer.WriteLine("  unified-active-plan");
+        writer.WriteLine("  unified-active-campaign-binding --manifest <path>");
+        writer.WriteLine("  unified-active-readiness-validate --manifest <path>");
         writer.WriteLine("  sampled-loss-campaign-binding --manifest <path>");
         writer.WriteLine("  sampled-loss-readiness-validate --manifest <path>");
         writer.WriteLine();
