@@ -59,8 +59,10 @@ internal static class PrevalidationAdmission
                 throw PrevalidationProtocol.Error("PrevalidationAdmissionRejected",
                     System.Text.Encoding.UTF8.GetString(stderr.ToArray()));
             }
-            return JsonSerializer.Deserialize<PrevalidationValidated>(stdout.ToArray(), PrevalidationProtocol.Json)
+            var validated = JsonSerializer.Deserialize<PrevalidationValidated>(stdout.ToArray(), PrevalidationProtocol.Json)
                 ?? throw PrevalidationProtocol.Error("PrevalidationAdmissionEmpty", "Admission produced no validated context.");
+            PrevalidationProtocol.ValidateShape(validated.Manifest);
+            return validated;
         }
         finally
         {
