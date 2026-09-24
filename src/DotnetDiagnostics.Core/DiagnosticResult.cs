@@ -22,6 +22,10 @@ public sealed record DiagnosticResult<T>(
     /// </summary>
     public T? Data { get; init; }
 
+    /// <summary>Durable capture metadata, present only when persistence was explicitly requested.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public Captures.CaptureInfo? Capture { get; init; }
+
     /// <summary>
     /// Engine-derived, salient <b>signal groupings</b> ("vector") cross-referenced from the collected
     /// data (see <see cref="DotnetDiagnostics.Core.Signals.SignalGroup"/>). Diagnosis-agnostic: they
