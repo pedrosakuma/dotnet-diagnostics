@@ -44,26 +44,39 @@ internal static class PrevalidationGeometry
         PrevalidationProbe probe, MonitoredExecutionContext context, CancellationToken cancellationToken)
     {
         var root = PrevalidationLayout.ContextRoot(validated.Manifest, probe);
+        await using var monitor = new MonitoredExecutionMonitor(context, string.Empty,
+            new BoundedOutputBudget(PrevalidationMonitorControl.ReservedSummaryBytes));
+        return await RunCoreAsync(root, context.Prevalidation!.CurrentHistoryRoot!, probe,
+            monitor.ObserveBoundaryAsync, () => monitor.LossTotals, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal static Task<PrevalidationCoverage> RunForComponentAsync(string root, string historyRoot,
+        MonitoredStorageMonitor monitor, CancellationToken cancellationToken, Action<int>? fixtureCreated = null)
+        => RunCoreAsync(root, historyRoot, PrevalidationProtocol.Plan()[7],
+            async (boundary, active, token) =>
+            {
+                var reply = await PrevalidationMonitorControl.DispatchAsync(
+                    new("boundary", Boundary: boundary, Active: active), monitor,
+                    Path.Combine(root, "ownership.jsonl"), token).ConfigureAwait(false);
+                return new(reply.Summary
+                    ?? throw PrevalidationProtocol.Error("PrevalidationBoundaryMissing", "Missing boundary reply."),
+                    [], []);
+            }, () => monitor.LossTotals, cancellationToken, fixtureCreated);
+
+    private static async Task<PrevalidationCoverage> RunCoreAsync(string root, string historyRoot,
+        PrevalidationProbe probe, Func<string, bool, CancellationToken, Task<MonitoredSweepResult>> observe,
+        Func<SampledLossMeasurement?> losses, CancellationToken cancellationToken,
+        Action<int>? fixtureCreated = null)
+    {
         var streams = new List<FileStream>(32);
         using var self = Process.GetCurrentProcess();
         var identity = MonitoredProcessIdentity.Capture(self, MonitoredProcessRole.Harness);
         var proofs = new Dictionary<ApparentFileIdentity, PrevalidationDescriptorFixture>();
         try
         {
-            for (var index = 0; index < 32; index++)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                var stream = CreateDescriptorFixture(index);
-                streams.Add(stream);
-                var native = LinuxStatxHandleMetadataObserver.Instance.Observe(stream.SafeFileHandle);
-                proofs.Add(native.Identity, new(identity,
-                    FormattableString.Invariant($"/memfd:dc5-pv-geometry-{index:D2} (deleted)"), 512));
-            }
-            PrevalidationExecutor.WriteImmutable(Path.Combine(root, "geometry-descriptor-proof.json"),
-                new PrevalidationDescriptorProof("durable-prevalidation-descriptor-fixtures/1", identity,
-                    "charged-owned-anonymous-inventory-fixtures-not-native-exemptions",
-                    proofs.Select(static pair => new PrevalidationDescriptorProofEntry(
-                        pair.Key.Value, pair.Value.Target, pair.Value.Length)).ToArray()));
+            var proofPath = Path.Combine(root, "geometry-descriptor-proof.json");
+            await using var proofSlot = new FileStream(proofPath,
+                FileMode.CreateNew, FileAccess.Write, FileShare.Read);
             await using var resultSlot = new FileStream(Path.Combine(root, "harness-result.json"),
                 FileMode.CreateNew, FileAccess.Write, FileShare.Read);
             using (File.Open(Path.Combine(root, "coverage.json"), FileMode.CreateNew, FileAccess.Write, FileShare.Read))
@@ -72,9 +85,7 @@ internal static class PrevalidationGeometry
             using (File.Open(Path.Combine(root, "cleanup.json"), FileMode.CreateNew, FileAccess.Write, FileShare.Read))
             {
             }
-            await using var monitor = new MonitoredExecutionMonitor(context, string.Empty,
-                new BoundedOutputBudget(PrevalidationMonitorControl.ReservedSummaryBytes));
-            var before = await monitor.ObserveBoundaryAsync("geometry-before-padding", true, cancellationToken)
+            var before = await observe("geometry-before-padding", true, cancellationToken)
                 .ConfigureAwait(false);
             PrevalidationExecutor.RequireSweep(before);
             var current = before.Summary.CurrentContextRootedIdentities
@@ -93,7 +104,33 @@ internal static class PrevalidationGeometry
                 }
                 MonitoredFile.MakeReadOnly(path);
             }
-            var measured = await monitor.ObserveBoundaryAsync("geometry-539-rooted-32-descriptor-only",
+            // Drain any traversal predating the new paths before filling the descriptor-only
+            // allowance. A linked file missed by that traversal is correctly descriptor-only.
+            var rooted = await observe("geometry-rooted-fixtures-complete", true, cancellationToken)
+                .ConfigureAwait(false);
+            PrevalidationExecutor.RequireSweep(rooted);
+            PrevalidationProtocol.Require(rooted.Summary.CurrentContextRootedIdentities == 539
+                && rooted.Summary.DescriptorOnlyIdentityCount == 0, "PrevalidationGeometryRootedPopulation");
+            for (var index = 0; index < 32; index++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var stream = CreateDescriptorFixture(index);
+                streams.Add(stream);
+                var native = LinuxStatxHandleMetadataObserver.Instance.Observe(stream.SafeFileHandle);
+                proofs.Add(native.Identity, new(identity,
+                    FormattableString.Invariant($"/memfd:dc5-pv-geometry-{index:D2} (deleted)"), 512));
+                fixtureCreated?.Invoke(index);
+            }
+            await JsonSerializer.SerializeAsync(proofSlot,
+                new PrevalidationDescriptorProof("durable-prevalidation-descriptor-fixtures/1", identity,
+                    "charged-owned-anonymous-inventory-fixtures-not-native-exemptions",
+                    proofs.Select(static pair => new PrevalidationDescriptorProofEntry(
+                        pair.Key.Value, pair.Value.Target, pair.Value.Length)).ToArray()),
+                PrevalidationProtocol.Json, cancellationToken).ConfigureAwait(false);
+            proofSlot.Flush(flushToDisk: true);
+            await proofSlot.DisposeAsync().ConfigureAwait(false);
+            MonitoredFile.MakeReadOnly(proofPath);
+            var measured = await observe("geometry-539-rooted-32-descriptor-only",
                 true, cancellationToken).ConfigureAwait(false);
             PrevalidationExecutor.RequireSweep(measured);
             PrevalidationProtocol.Require(measured.Summary.CurrentContextRootedIdentities == 539
@@ -105,22 +142,24 @@ internal static class PrevalidationGeometry
                 RetainedHistoryBytes = long.MaxValue,
                 FirstErrorCode = new string('e', 64),
             };
-            if (context.UsesSampledLoss) widest = SampledLossProtocol.WorstCaseSummary();
-            if (context.Manifest.SampledLoss?.Policy == ObservedUnlinkedProtocol.Policy)
+            if (measured.Summary.SampledLoss is not null) widest = SampledLossProtocol.WorstCaseSummary();
+            if (measured.Summary.SampledLoss?.ObservedUnlinked is not null)
                 widest = ObservedUnlinkedProtocol.WorstCaseSummary();
-            if (DescriptorObservationPolicy.IsUnifiedActive(context.Manifest.SampledLoss))
+            if (measured.Summary.SampledLoss?.RootSampling is not null)
                 widest = UnifiedActiveProtocol.WorstCaseSummary();
             PrevalidationProtocol.Require(MonitoredSweepSummaryEncoding.EncodeLine(widest).Length <= 1_024,
                 "PrevalidationSummaryWidth");
+            var fixtureFiles = CountFixtureFiles(historyRoot);
+            PrevalidationProtocol.Require(fixtureFiles == 256, "PrevalidationGeometryHistoryPopulation");
             var coverage = new PrevalidationCoverage(PrevalidationProtocol.CoverageSchema, probe.Ordinal, probe.Id,
-                "coverage-observed", null, true, 64, CountFixtureFiles(context.Prevalidation!.CurrentHistoryRoot!),
+                "coverage-observed", null, true, 64, fixtureFiles,
                 measured.Summary.CurrentContextIdentities,
                 measured.Summary.ObservedSweepBytes, null, null, "synthetic-inventory-and-encoding-only",
                 ["geometry-539-rooted-32-descriptor-only"])
             {
-                MonitoringComplete = monitor.LossTotals?.HasLoss != true,
-                SampledLoss = monitor.LossTotals,
-                SampledAdmissible = context.UsesSampledLoss,
+                MonitoringComplete = losses()?.HasLoss != true,
+                SampledLoss = losses(),
+                SampledAdmissible = measured.Summary.SampledLoss is not null,
             };
             await JsonSerializer.SerializeAsync(resultSlot, coverage, PrevalidationProtocol.Json, cancellationToken)
                 .ConfigureAwait(false);
@@ -137,9 +176,26 @@ internal static class PrevalidationGeometry
     }
 
     internal static int CountFixtureFiles(string historyRoot)
-        => MonitoredPathRules.EnumerateFilesRejectingLinks(historyRoot, 256, 4_096).Count(path =>
-            Path.GetFileName(path).StartsWith("fixture-", StringComparison.Ordinal)
-            && new FileInfo(path).Length == 512);
+    {
+        var root = MonitoredPathRules.ResolveAbsoluteDirectory(historyRoot, mustExist: true);
+        var slots = Directory.EnumerateFileSystemEntries(root).Take(65).ToArray();
+        PrevalidationProtocol.Require(slots.Length <= 64, "PrevalidationFixtureSlotLimit");
+        var count = 0;
+        foreach (var slot in slots)
+        {
+            // The traversal bound includes directories, not just files. Bound each slot
+            // separately so 64 directories do not consume the 256-file population.
+            var files = MonitoredPathRules.EnumerateFilesRejectingLinks(slot, 4, 4_096);
+            PrevalidationProtocol.Require(files.Count == 4
+                && Enumerable.Range(0, 4).All(index => files.Contains(
+                    Path.Combine(slot, $"fixture-{index}.bin"), StringComparer.Ordinal))
+                && files.All(static path => new FileInfo(path).Length == 512),
+                "PrevalidationFixtureFilePopulation");
+            foreach (var file in files) PrevalidationProtocol.EnsureImmutable(file);
+            count += files.Count;
+        }
+        return count;
+    }
 
     internal static void ValidateObservation(PrevalidationDescriptorProof proof, MonitoredSweepResult observation,
         MonitoredProcessIdentity owner)
