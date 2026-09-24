@@ -10,6 +10,11 @@ The separately versioned [prospective sampled-loss protocol](durable-capture-sam
 adds opt-in manifests and reviewed sealed-readiness admission. The strict
 defaults and historical semantics documented below remain unchanged.
 
+The [revision-7 unified active sampling protocol](durable-capture-unified-active-sampling-protocol.md)
+adds a separately hash/schema-bound root-loss population for current mutable
+activity. Its artifact guide lists the fresh metadata routes and receipts.
+All quiescent inventories and legacy inspection remain strict.
+
 ## Separate admissions and commands
 
 The benchmark executable's `durable-capture-spike` command has four public
