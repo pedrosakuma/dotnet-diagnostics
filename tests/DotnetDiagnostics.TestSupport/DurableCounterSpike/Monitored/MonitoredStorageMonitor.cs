@@ -1279,6 +1279,12 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
         await _sweepGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            if (!LinuxPrevalidationProcessOperations.Instance.IsOriginalAlive(identity))
+            {
+                MarkIncomplete("UnexpectedProcessIdentityLoss");
+                throw Error("UnexpectedProcessIdentityLoss",
+                    "An already-dead or replaced owner cannot acquire an intentional termination handoff.");
+            }
             MarkIntentionalTermination(identity);
             using var process = Process.GetProcessById(identity.ProcessId);
             OwnedProcessTerminator.KillExact(process, identity);

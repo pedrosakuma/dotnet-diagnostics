@@ -326,7 +326,8 @@ internal static class MonitoredWorkerControl
         }
     }
 
-    internal static async Task AnnounceProcessTerminationAsync(MonitoredProcessIdentity identity)
+    internal static async Task AnnounceProcessTerminationAsync(MonitoredProcessIdentity identity,
+        CancellationToken cancellationToken = default)
     {
         MonitoredWorkerEventWriter.Write(new MonitoredWorkerEvent(
             "process-terminating",
@@ -335,7 +336,10 @@ internal static class MonitoredWorkerControl
             ProcessRole: identity.Role.ToString().ToLowerInvariant()));
         var expected = FormattableString.Invariant(
             $"release:process-termination:{identity.ProcessId}:{identity.LinuxStartTimeTicks}");
-        var response = await Console.In.ReadLineAsync().ConfigureAwait(false);
+        // Console.In can implement ReadLineAsync synchronously. Bound the handoff
+        // even when the harness never replies; failure ends this owned worker.
+        var response = await Task.Run(() => Console.In.ReadLineAsync(), CancellationToken.None)
+            .WaitAsync(cancellationToken).ConfigureAwait(false);
         if (!string.Equals(response, expected, StringComparison.Ordinal))
         {
             throw new DurableStorageExperimentException(
@@ -347,6 +351,7 @@ internal static class MonitoredWorkerControl
 
 internal static class MonitoredWorkerExecutor
 {
+    internal const string LiveReadinessPath = "/weatherforecast";
     private static readonly string[] LiveCounterProviderNames =
     [
         "System.Runtime",
@@ -900,13 +905,14 @@ internal static class MonitoredWorkerExecutor
 
         using var startupDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         var prevalidation = descriptor.Schema == PrevalidationProtocol.WorkerSchema;
+        MonitoredProcessIdentity? reportedTarget = null;
         var sample = await LiveSampleProcess.StartPublishedAsync(
             "CoreClrSample",
             new LiveSampleOptions
             {
                 WaitForHttpReady = true,
                 HarvestListeningUrl = true,
-                ReadinessPath = "/",
+                ReadinessPath = LiveReadinessPath,
                 DiagnosticTimeout = TimeSpan.FromSeconds(10),
                 HttpTimeout = TimeSpan.FromSeconds(10),
                 ProcessStarted = prevalidation ? async process =>
@@ -915,12 +921,20 @@ internal static class MonitoredWorkerExecutor
                     MonitoredWorkerEventWriter.Write(new MonitoredWorkerEvent("process",
                         ProcessId: started.ProcessId, ProcessStartTimeTicks: started.LinuxStartTimeTicks,
                         ProcessRole: "target"));
+                    reportedTarget = started;
                     await MonitoredWorkerControl.ObserveBoundaryAsync("live-target-startup", true).ConfigureAwait(false);
                 } : null,
+                BeforeTermination = async token =>
+                {
+                    if (reportedTarget is not { } identity) return;
+                    await MonitoredWorkerControl.AnnounceProcessTerminationAsync(identity, token).ConfigureAwait(false);
+                    MonitoredWorkerEventWriter.Write(new MonitoredWorkerEvent(
+                        "process-terminated", ProcessId: identity.ProcessId,
+                        ProcessStartTimeTicks: identity.LinuxStartTimeTicks, ProcessRole: "target"));
+                },
             },
             startupDeadline.Token).ConfigureAwait(false);
         var sampleIdentity = MonitoredProcessIdentity.Capture(sample.Process, MonitoredProcessRole.Target);
-        var targetReported = false;
         IDurableCounterStorageAdapter? adapter = null;
         DurableCounterPipeline? pipeline = null;
         MonitoredPackagePublishResult? package = null;
@@ -940,7 +954,7 @@ internal static class MonitoredWorkerExecutor
                     ProcessStartTimeTicks: sampleIdentity.LinuxStartTimeTicks,
                     ProcessRole: "target"));
             }
-            targetReported = true;
+            reportedTarget = sampleIdentity;
 
             if (factory is not null)
             {
@@ -1101,27 +1115,20 @@ internal static class MonitoredWorkerExecutor
         }
         finally
         {
-            if (pipeline is not null)
+            try
             {
-                await pipeline.DisposeAsync().ConfigureAwait(false);
+                if (pipeline is not null)
+                {
+                    await pipeline.DisposeAsync().ConfigureAwait(false);
+                }
+                if (adapter is not null)
+                {
+                    await adapter.DisposeAsync().ConfigureAwait(false);
+                }
             }
-            if (adapter is not null)
+            finally
             {
-                await adapter.DisposeAsync().ConfigureAwait(false);
-            }
-            if (targetReported)
-            {
-                await MonitoredWorkerControl.AnnounceProcessTerminationAsync(sampleIdentity)
-                    .ConfigureAwait(false);
-            }
-            await sample.DisposeAsync().ConfigureAwait(false);
-            if (targetReported)
-            {
-                MonitoredWorkerEventWriter.Write(new MonitoredWorkerEvent(
-                    "process-terminated",
-                    ProcessId: sampleIdentity.ProcessId,
-                    ProcessStartTimeTicks: sampleIdentity.LinuxStartTimeTicks,
-                    ProcessRole: "target"));
+                await sample.DisposeAsync().ConfigureAwait(false);
             }
         }
     }

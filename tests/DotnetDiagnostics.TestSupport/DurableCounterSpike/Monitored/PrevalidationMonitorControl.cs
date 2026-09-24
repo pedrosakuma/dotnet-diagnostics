@@ -226,11 +226,8 @@ internal sealed class MonitoredExecutionMonitor : IAsyncDisposable
     {
         if (_local is not null)
         {
-            await _local.StopAsync().ConfigureAwait(false);
-            _local.MarkIntentionalTermination(identity);
-            OwnedProcessTerminator.KillExact(process, identity);
-            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-            _local.ConfirmTerminatedAndRemove(identity);
+            PrevalidationProtocol.Require(process.Id == identity.ProcessId, "OwnedProcessIdentityMismatch");
+            await _local.KillOwnedAsync(identity, cancellationToken).ConfigureAwait(false);
         }
         else
         {
