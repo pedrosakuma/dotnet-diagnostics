@@ -43,7 +43,10 @@ public sealed class SqliteCaptureStore
             lease = CapturePackage.AcquireLease(directory, exclusive: true);
             var info = new CaptureInfo(id, access.OwnerId, request.Name, request.GroupId, DateTimeOffset.UtcNow,
                 CaptureState.Recording, Array.Empty<CaptureArtifactInfo>(), new CaptureQuality(UnknownTail: true));
-            var manifest = new CaptureManifest(info, 1, 1, 1, 1, 1, 1, ["normalized-scalars-v1"], _options.MaxPackageBytes);
+            var format = CapturePackage.CurrentFormat;
+            var manifest = new CaptureManifest(info, format.PackageVersion, format.SchemaVersion, format.RecordVersion,
+                format.IndexVersion, format.WriterVersion, format.RequiredReaderVersion,
+                ["normalized-scalars-v1", "artifact-provenance-v1"], _options.MaxPackageBytes);
             CapturePackage.WriteJson(directory, CapturePackage.Manifest, manifest);
             using (SafeArtifactPath.CreateRestrictedFile(Path.Combine(directory, CapturePackage.Database))) { }
             using (var connection = CapturePackage.Connect(directory, immutable: false))
@@ -86,8 +89,9 @@ public sealed class SqliteCaptureStore
             CapturePackage.Authorize(manifest.Info, access);
             ValidateSeal(directory, manifest);
             connection = CapturePackage.Connect(directory, immutable: true);
-            CapturePackage.ValidateDatabase(connection);
-            var reader = new CaptureReader(connection, lease, manifest.Info, _options);
+            var format = CapturePackage.FormatOf(manifest);
+            CapturePackage.ValidateDatabase(connection, format);
+            var reader = new CaptureReader(connection, lease, manifest.Info, _options, format);
             connection = null;
             lease = null;
             return Task.FromResult(reader);
@@ -206,14 +210,16 @@ public sealed class SqliteCaptureStore
                 }
             }
             using var copy = CapturePackage.Connect(scratch, immutable: false);
-            CapturePackage.ValidateDatabase(copy);
-            using var recovered = new CaptureReader(copy, null, manifest.Info, _options);
+            var sourceFormat = CapturePackage.FormatOf(manifest);
+            CapturePackage.ValidateDatabase(copy, sourceFormat);
+            using var recovered = new CaptureReader(copy, null, manifest.Info, _options, sourceFormat);
             writer = await CreateAsync(new CaptureCreateRequest(manifest.Info.Name, manifest.Info.GroupId), access, cancellationToken).ConfigureAwait(false);
             writer.SetRecovery(captureId, hashes);
             writer.SetSourceRejected(manifest.Info.Quality.SourceRejected);
             foreach (var artifact in manifest.Info.Artifacts)
             {
                 var newId = writer.AddArtifact(artifact.Kind, artifact.Name);
+                if (artifact.Provenance is not null) writer.SetArtifactProvenance(newId, artifact.Provenance);
                 long after = 0;
                 while (true)
                 {

@@ -12,15 +12,19 @@ public sealed class CaptureReader : IDisposable
     private readonly object _gate = new();
     private bool _disposed;
 
-    internal CaptureReader(SqliteConnection connection, FileStream? lease, CaptureInfo info, CaptureStoreOptions options)
+    internal CaptureReader(SqliteConnection connection, FileStream? lease, CaptureInfo info, CaptureStoreOptions options,
+        CaptureFormatVersions? format = null)
     {
         _connection = connection;
         _lease = lease;
         Info = info;
         _options = options;
+        Format = format ?? CapturePackage.CurrentFormat;
     }
 
     public CaptureInfo Info { get; }
+    public CaptureFormatVersions Format { get; }
+    public CaptureReaderIdentity ExecutingReader { get; } = new("DotnetDiagnostics.Core.Captures.CaptureReader", 2);
 
     public CaptureRecordPage Query(CaptureRecordQuery query)
     {

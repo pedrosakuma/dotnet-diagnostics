@@ -29,7 +29,21 @@ public sealed record CaptureRecordPage(
     IReadOnlyList<CaptureRecordEntry> Records, long? NextAfterRecordId, long AccountedBytes = 0);
 /// <summary>Version identifies the producer's representation; Kind is bound to the owning artifact.</summary>
 public sealed record CaptureSnapshot(int Version, ReadOnlyMemory<byte> Utf8Json, string? Kind = null);
-public sealed record CaptureArtifactInfo(string ArtifactId, string Kind, string Name);
+/// <summary>Already available producer facts only. These fields confer no ownership or authorization.</summary>
+public sealed record CaptureArtifactProvenance(
+    int? ProcessId = null, string? ProducingTool = null, string? OriginalHandleOrigin = null,
+    DateTimeOffset? StartedAt = null, TimeSpan? Duration = null, DateTimeOffset? ProcessStartUtc = null,
+    string? RuntimeName = null, string? RuntimeVersion = null);
+
+public sealed record CaptureArtifactInfo(
+    string ArtifactId, string Kind, string Name, CaptureArtifactProvenance? Provenance = null);
+
+/// <summary>Source format axes. RequiredReaderVersion is not the identity of the executing reader.</summary>
+public sealed record CaptureFormatVersions(
+    int PackageVersion, int SchemaVersion, int RecordVersion, int IndexVersion,
+    int WriterVersion, int RequiredReaderVersion);
+
+public sealed record CaptureReaderIdentity(string Implementation, int Version);
 
 /// <summary>
 /// Offered = Persisted + RecordRejected + QueueRejected + StorageRejected + Pending.

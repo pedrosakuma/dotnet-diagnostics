@@ -73,7 +73,43 @@ public sealed class CaptureWriter : IAsyncDisposable
                 Interlocked.Exchange(ref _abort, 1);
                 throw CapturePackage.Translate(ex);
             }
+
             return artifact.ArtifactId;
+        }
+    }
+
+    /// <summary>Sets bounded, already-known producer facts without attaching to or enriching a process.</summary>
+    public void SetArtifactProvenance(string artifactId, CaptureArtifactProvenance provenance)
+    {
+        CapturePackage.ValidateId(artifactId);
+        CapturePackage.ValidateProvenance(provenance);
+        var canonical = provenance with
+        {
+            StartedAt = provenance.StartedAt?.ToUniversalTime(),
+            ProcessStartUtc = provenance.ProcessStartUtc?.ToUniversalTime()
+        };
+        lock (_gate)
+        {
+            EnsureActive();
+            if (!_artifacts.TryGetValue(artifactId, out var artifact))
+                throw CapturePackage.Error(CaptureErrorCode.InvalidInput, "Unknown artifact ID.");
+            var updated = artifact with { Provenance = canonical };
+            var manifest = _manifest with
+            {
+                Info = _manifest.Info with
+                {
+                    Artifacts = _manifest.Info.Artifacts.Select(a => a.ArtifactId == artifactId ? updated : a).ToArray()
+                }
+            };
+            try { CapturePackage.WriteJson(_directory, CapturePackage.Manifest, manifest); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or CaptureStoreException)
+            {
+                _failure = CapturePackage.Translate(ex);
+                Interlocked.Exchange(ref _abort, 1);
+                throw CapturePackage.Translate(ex);
+            }
+            _artifacts[artifactId] = updated;
+            _manifest = manifest;
         }
     }
 
@@ -317,7 +353,7 @@ public sealed class CaptureWriter : IAsyncDisposable
                 using (var connection = CapturePackage.Connect(_directory, immutable: false))
                 {
                     CapturePackage.Execute(connection, "PRAGMA synchronous=FULL; PRAGMA wal_checkpoint(TRUNCATE);");
-                    CapturePackage.ValidateDatabase(connection);
+                    CapturePackage.ValidateDatabase(connection, CapturePackage.CurrentFormat);
                 }
                 cancellationToken.ThrowIfCancellationRequested();
                 lock (_gate)

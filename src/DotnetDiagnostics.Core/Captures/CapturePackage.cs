@@ -20,6 +20,8 @@ internal static class CapturePackage
     internal const string Seal = "seal.json";
     internal const string Lease = ".lease";
     internal const int MetadataLimit = 128 * 1024;
+    internal static readonly CaptureFormatVersions CurrentFormat = new(2, 1, 1, 1, 2, 2);
+    private static readonly CaptureFormatVersions PreviousFormat = new(1, 1, 1, 1, 1, 1);
     internal static readonly UTF8Encoding Utf8 = new(false, true);
     private static readonly HashSet<string> Members = new(StringComparer.Ordinal)
     {
@@ -149,10 +151,13 @@ internal static class CapturePackage
     internal static CaptureManifest ReadManifest(string directory, string id)
     {
         var manifest = ReadJson<CaptureManifest>(Path.Combine(directory, Manifest));
-        if (manifest.PackageVersion != 1 || manifest.SchemaVersion != 1 || manifest.RecordVersion != 1 ||
-            manifest.IndexVersion != 1 || manifest.WriterVersion != 1 || manifest.ReaderVersion != 1 ||
-            manifest.RequiredFeatures is null || manifest.RequiredFeatures.Length != 1 ||
-            manifest.RequiredFeatures[0] != "normalized-scalars-v1")
+        var format = FormatOf(manifest);
+        var features = manifest.RequiredFeatures;
+        var supportedFeatures = format == PreviousFormat
+            ? features is { Length: 1 } && features[0] == "normalized-scalars-v1"
+            : features is { Length: 2 } && features.Contains("normalized-scalars-v1", StringComparer.Ordinal) &&
+              features.Contains("artifact-provenance-v1", StringComparer.Ordinal);
+        if (!IsSupportedFormat(format) || !supportedFeatures)
             throw Error(CaptureErrorCode.UnsupportedFormat, "Unsupported package/schema/record/index/writer/reader version or required feature.");
         if (manifest.Info is null || manifest.Info.CaptureId != id || manifest.Info.Artifacts is null ||
             manifest.Info.Artifacts.Count > 64 || manifest.Info.Quality is null ||
@@ -177,10 +182,34 @@ internal static class CapturePackage
             ValidateId(artifact.ArtifactId);
             ValidateText(artifact.Kind, 1024, nameof(artifact.Kind));
             ValidateText(artifact.Name, 1024, nameof(artifact.Name));
+            if (artifact.Provenance is not null)
+            {
+                if (format == PreviousFormat)
+                    throw Error(CaptureErrorCode.UnsupportedFormat, "Artifact provenance requires the v2 package representation.");
+                ValidateProvenance(artifact.Provenance);
+            }
             if (!ids.Add(artifact.ArtifactId))
                 throw Error(CaptureErrorCode.CorruptPackage, "Duplicate artifact identity.");
         }
         return manifest;
+    }
+
+    internal static CaptureFormatVersions FormatOf(CaptureManifest manifest) => new(
+        manifest.PackageVersion, manifest.SchemaVersion, manifest.RecordVersion,
+        manifest.IndexVersion, manifest.WriterVersion, manifest.ReaderVersion);
+
+    private static bool IsSupportedFormat(CaptureFormatVersions format) =>
+        format == CurrentFormat || format == PreviousFormat;
+
+    internal static void ValidateProvenance(CaptureArtifactProvenance provenance)
+    {
+        ArgumentNullException.ThrowIfNull(provenance);
+        if (provenance.ProcessId <= 0 || provenance.Duration < TimeSpan.Zero)
+            throw Error(CaptureErrorCode.InvalidInput, "Provenance process ID must be positive and duration nonnegative when supplied.");
+        ValidateText(provenance.ProducingTool, 1024, nameof(provenance.ProducingTool));
+        ValidateText(provenance.OriginalHandleOrigin, 1024, nameof(provenance.OriginalHandleOrigin));
+        ValidateText(provenance.RuntimeName, 1024, nameof(provenance.RuntimeName));
+        ValidateText(provenance.RuntimeVersion, 1024, nameof(provenance.RuntimeVersion));
     }
 
     internal static string Hash(string path)
@@ -231,23 +260,29 @@ internal static class CapturePackage
         command.ExecuteNonQuery();
     }
 
-    internal static void ValidateDatabase(SqliteConnection connection)
+    internal static void ValidateDatabase(SqliteConnection connection, CaptureFormatVersions? expectedFormat = null)
     {
-        try { ValidateDatabaseCore(connection); }
+        try { ValidateDatabaseCore(connection, expectedFormat); }
         catch (SqliteException ex)
         {
             throw Error(CaptureErrorCode.CorruptPackage, "Required SQLite schema is missing or corrupt.", ex);
         }
     }
 
-    private static void ValidateDatabaseCore(SqliteConnection connection)
+    private static void ValidateDatabaseCore(SqliteConnection connection, CaptureFormatVersions? expectedFormat)
     {
         using var command = connection.CreateCommand();
         command.CommandText = "SELECT package,schema_version,record_version,index_version,writer_version,reader_version FROM format;";
         using (var reader = command.ExecuteReader())
         {
-            if (!reader.Read() || Enumerable.Range(0, 6).Any(i => reader.GetInt32(i) != 1) || reader.Read())
+            if (!reader.Read())
+                throw Error(CaptureErrorCode.CorruptPackage, "SQLite format descriptor is missing.");
+            var format = new CaptureFormatVersions(reader.GetInt32(0), reader.GetInt32(1), reader.GetInt32(2),
+                reader.GetInt32(3), reader.GetInt32(4), reader.GetInt32(5));
+            if (!IsSupportedFormat(format))
                 throw Error(CaptureErrorCode.UnsupportedFormat, "SQLite format versions are unsupported.");
+            if (reader.Read() || expectedFormat is not null && format != expectedFormat)
+                throw Error(CaptureErrorCode.CorruptPackage, "SQLite and manifest format descriptors disagree or are duplicated.");
         }
         command.CommandText = "PRAGMA quick_check;";
         if (!string.Equals(command.ExecuteScalar() as string, "ok", StringComparison.Ordinal))
@@ -266,7 +301,7 @@ internal static class CapturePackage
 
     internal const string Schema = """
         CREATE TABLE format(package INTEGER NOT NULL,schema_version INTEGER NOT NULL,record_version INTEGER NOT NULL,index_version INTEGER NOT NULL,writer_version INTEGER NOT NULL,reader_version INTEGER NOT NULL);
-        INSERT INTO format VALUES(1,1,1,1,1,1);
+        INSERT INTO format VALUES(2,1,1,1,2,2);
         CREATE TABLE strings(id INTEGER PRIMARY KEY,value TEXT NOT NULL UNIQUE);
         CREATE TABLE artifacts(id TEXT PRIMARY KEY,kind TEXT NOT NULL,name TEXT NOT NULL);
         CREATE TABLE occurrences(
