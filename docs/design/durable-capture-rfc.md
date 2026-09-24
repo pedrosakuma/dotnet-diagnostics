@@ -1,6 +1,7 @@
 # RFC: local durable diagnostic captures
 
-**Status:** Discussion draft; not an approved implementation or shipping API.
+**Status:** SQLite-only architectural direction selected on 2026-09-24;
+production scope, implementation go/no-go and shipping API remain unapproved.
 
 **Date:** 2026-09-21
 
@@ -183,8 +184,9 @@ read access, not a prerequisite for durable capture.
 ## 5. Package and interpretation contract
 
 The logical package contains a versioned manifest, one or more retained
-representations, and optional separately authorized native files. Physical
-layout and the final storage engine remain subject to the decision process.
+representations, and optional separately authorized native files. SQLite-only
+is the selected architectural direction for normalized retained evidence
+(section 9); physical layout and production guarantees remain decision gates.
 
 The manifest must describe:
 
@@ -371,6 +373,11 @@ No performance thresholds or engine winner are established by this RFC.
 Before executing a comparison, freeze numeric budgets appropriate to the
 supported workload/host classes; record failures instead of tuning until green.
 
+The revision-7 comparison concluded inconclusively. The methodology below is
+retained as design history, not authorization for another campaign. The later
+maintainer selection in section 9 is based on simplicity, not measured parity
+or superiority.
+
 Compare A and B using the same retained record representation, quotas,
 redaction, durability target and query set. Include C as a continuity baseline
 where applicable, not as a fidelity-equivalent temporal alternative.
@@ -410,7 +417,42 @@ proposals, peer challenges, corrections and dissent from `gpt-5.6-sol`,
 not a storage experiment or an extension of the frozen advisory evaluation.
 Model agreement is advisory, not maintainer approval or empirical validation.
 
-### Recommended direction
+### Maintainer decision: SQLite-only direction (2026-09-24)
+
+The maintainer selected **A, direct SQLite**, as the architectural direction,
+based on simplicity and maintainability, and confirmed that this is separate
+from the inconclusive experiment. The
+[revision-7 outcome report](../evidence/dc5/campaign-v7-observation-outcome.md)
+preserves the four incomplete campaigns and their limitations.
+
+The rationale is fewer custom persistence mechanisms: normalized records and
+their indexes use one transactional engine. B also uses SQLite, but adds
+canonical record files, framing and interrupted-record recovery, index
+reconstruction, and consistency/publication rules across representations.
+No measured benefit currently justifies those additional responsibilities.
+SQLite still requires bounded admission, batching, schema compatibility,
+retention, recovery and package-publication code; it does not remove them.
+
+This is **not evidence of equal performance or an A benchmark victory**.
+No critical defect inherent to the SQLite approach was identified in the
+obtained evidence, but incomplete coverage does not establish the absence of
+such defects. The unresolved component failure remains disclosed.
+
+Retain DC5's result as inconclusive and stop the current A/B experiment.
+Defer B unless a concrete requirement or measured bottleneck justifies
+reconsideration; do not introduce an automatic fallback or parallel production
+formats. "SQLite-only" does not promise one physical file throughout capture:
+journals, temporary files and separately authorized native artifacts still
+need explicit ownership, accounting and publication rules.
+
+This records only the storage-direction decision within **DC6 (#1006)**.
+It does not approve a first shipping capability, journal/sync policy, numeric
+quotas, durability guarantees, compatibility window or public operation names.
+The schema-compatibility demonstration and explicit production go/no-go remain
+required before unblocking DC7-DC9. No production implementation or merge is
+authorized by this decision.
+
+### Original prototype recommendation (historical)
 
 Use **A as the first prototype candidate**, keeping **B as a meaningful
 comparator**, not a straw man. SQLite is attractive because the problem needs
@@ -440,8 +482,8 @@ steps. A lifecycle spike need not become a separately shipped C product.
 - Exact reopen/list/delete/recovery placement within existing typed tools,
   resources and host commands; temporary-handle lifetime and disposal.
 - Canonical schema/layout, version migration and recovery publication identity.
-- A versus B for each supported workload; journal/sync mode and native artifact
-  publication protocol.
+- SQLite journal/sync mode, supported workload scope and native artifact
+  publication protocol; the architectural direction itself is now selected.
 - Per-record, stream, package, historical-store, temporary-space and host-wide
   quotas, scheduling policy and finite shutdown behavior.
 - Numeric observer-effect/loss/latency acceptance budgets, approved before

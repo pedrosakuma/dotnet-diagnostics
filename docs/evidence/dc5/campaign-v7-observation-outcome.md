@@ -19,6 +19,16 @@ contract-preserving correction. A prospective change to observation semantics
 requires explicit adoption, new evidence and review. No production backend
 decision, merge or implementation authorization follows from this report.
 
+### Subsequent maintainer selection (2026-09-24)
+
+The maintainer subsequently selected direct SQLite as the architectural
+direction for simplicity and maintainability, explicitly separate from this
+inconclusive comparison. The
+[RFC decision record](../../design/durable-capture-rfc.md#maintainer-decision-sqlite-only-direction-2026-09-24)
+records the rationale and remaining DC6 production gates. This does not change
+any campaign outcome, establish performance equivalence, or authorize another
+campaign or production implementation.
+
 ## Actual progression
 
 All campaign names below refer to separate, preserved private evidence roots.
