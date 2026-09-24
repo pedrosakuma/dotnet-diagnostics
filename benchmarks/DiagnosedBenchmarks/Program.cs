@@ -1,6 +1,11 @@
 using BenchmarkDotNet.Running;
 using DiagnosedBenchmarks;
 
+if (args.Length > 0 && string.Equals(args[0], "experimental-sqlite-capacity", StringComparison.Ordinal))
+{
+    return SqliteCapacityCommand.Run(args[1..]);
+}
+
 if (args.Length > 0 && string.Equals(args[0], "loadgen", StringComparison.OrdinalIgnoreCase))
 {
     return await SampleLoadGenerator.RunAsync(args[1..]).ConfigureAwait(false);
