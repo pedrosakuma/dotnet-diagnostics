@@ -23,6 +23,7 @@ internal static class PrevalidationReportValidation
         {
             var partial = PrevalidationProtocol.Read<PrevalidationReport>(partialPath);
             ValidateReport(manifest, manifestHash, partial);
+            ValidateAvailablePolicySummaries(manifest);
             PrevalidationProtocol.Require(partial.Status.StartsWith("partial-unsealed:", StringComparison.Ordinal),
                 "PrevalidationPartialStatusMismatch");
             return new("durable-prevalidation-evidence-validation/2", manifest.SuiteId,
@@ -63,6 +64,7 @@ internal static class PrevalidationReportValidation
             "PrevalidationReportHashMismatch");
         var report = PrevalidationProtocol.Read<PrevalidationReport>(reportPath);
         ValidateReport(manifest, manifestHash, report);
+        ValidateAvailablePolicySummaries(manifest);
         ValidateControlCopies(manifest, manifestHash);
         ValidateRawCoverage(manifest, report);
         if (manifest.SampledLoss is not null)
@@ -149,6 +151,8 @@ internal static class PrevalidationReportValidation
                     && outcome.SampledAdmissible && outcome.MonitoringComplete == (outcome.SampledLoss.Lost == 0)
                 : outcome.SampledLoss is null && !outcome.SampledAdmissible,
                 "SampledLossCoveragePolicyMismatch");
+            DescriptorObservationPolicy.ValidateMeasurement(manifest.SampledLoss, outcome.SampledLoss,
+                required: outcome.Outcome == "coverage-observed");
             PrevalidationProtocol.Require(outcome.Schema == (legacy
                     ? "durable-prevalidation-coverage/1" : PrevalidationProtocol.CoverageSchema)
                 && outcome.Ordinal == probe.Ordinal && outcome.ProbeId == probe.Id
@@ -247,12 +251,16 @@ internal static class PrevalidationReportValidation
                 {
                     PrevalidationProtocol.Require(summary is not null, "PrevalidationSummaryMissing");
                     PrevalidationExecutor.ValidateSummaryFailure(summary!);
+                    DescriptorObservationPolicy.ValidateSummary(manifest.SampledLoss, summary!);
+                    if (DescriptorObservationPolicy.IsObservedUnlinked(manifest.SampledLoss))
+                        PrevalidationProtocol.Require(DescriptorObservationPolicy.SharedPackageBudgetFits(summary!),
+                            "ObservedUnlinkedSharedPackageLimit");
                 }
                 PrevalidationProtocol.Require(summaries.Length is > 0 and <= 2_048
                     && summaries.All(item => item is { Alarm: null,
                         CurrentContextIdentities: > 0 and <= 571, CurrentContextRootedIdentities: <= 539,
                         IdentityCount: <= 4_096, ObservedSweepBytes: <= 3_221_225_472 }
-                        && SampledLossProtocol.Admissible(item)
+                        && DescriptorObservationPolicy.Admissible(item)
                         && (item.SampledLoss is not null) == (manifest.SampledLoss is not null))
                     && summaries.Any(item => item?.Boundary == "fixtures-complete" && item.ObservationKind == "boundary")
                     && summaries.Any(item => item?.Boundary == "harness-exit-quiescent" && item.ObservationKind == "boundary")
@@ -262,7 +270,7 @@ internal static class PrevalidationReportValidation
                         && item.ObservationKind == "boundary");
                 PrevalidationProtocol.Require(measured is { Alarm: null,
                     CurrentContextRootedIdentities: 539, CurrentContextIdentities: 571,
-                    DescriptorOnlyIdentityCount: 32 } && SampledLossProtocol.Admissible(measured),
+                    DescriptorOnlyIdentityCount: 32 } && DescriptorObservationPolicy.Admissible(measured),
                     "PrevalidationGeometryMeasurementMissing");
                 if (manifest.SampledLoss is not null)
                 {
@@ -277,6 +285,7 @@ internal static class PrevalidationReportValidation
 
     internal static bool MeasurementsEqual(SampledLossMeasurement? left, SampledLossMeasurement? right)
         => left is null ? right is null : right is not null && left.Counts.SequenceEqual(right.Counts)
+            && left.ObservedUnlinked == right.ObservedUnlinked
             && (left.FirstLoss is null ? right.FirstLoss is null
                 : right.FirstLoss is not null && left.FirstLoss.SequenceEqual(right.FirstLoss));
 
@@ -294,9 +303,41 @@ internal static class PrevalidationReportValidation
                     "SampledLossSuiteSummaryWidth");
                 var summary = System.Text.Json.JsonSerializer.Deserialize<MonitoredSweepSummary>(
                     line, PrevalidationProtocol.Json);
+                if (summary is not null)
+                {
+                    DescriptorObservationPolicy.ValidateSummary(manifest.SampledLoss, summary);
+                    if (requireAdmission && DescriptorObservationPolicy.IsObservedUnlinked(manifest.SampledLoss))
+                        PrevalidationProtocol.Require(DescriptorObservationPolicy.SharedPackageBudgetFits(summary),
+                            "ObservedUnlinkedSharedPackageLimit");
+                }
                 PrevalidationProtocol.Require(summary?.SampledLoss is not null
-                    && (!requireAdmission || SampledLossProtocol.Admissible(summary)),
+                    && (!requireAdmission || DescriptorObservationPolicy.Admissible(summary)),
                     "SampledLossSuiteSummaryIncomplete");
+            }
+        }
+    }
+
+    private static void ValidateAvailablePolicySummaries(PrevalidationManifest manifest)
+    {
+        if (manifest.SampledLoss is null) return;
+        var paths = new[] { "admission-monitor.jsonl", "final-monitor.jsonl" }
+            .Select(name => Path.Combine(manifest.PrivateRoot, name))
+            .Concat(manifest.Probes.Select(probe =>
+                Path.Combine(PrevalidationLayout.ContextRoot(manifest, probe), "coordinator-monitor.jsonl")));
+        foreach (var path in paths.Where(File.Exists))
+        {
+            var bytes = MonitoredFile.ReadBounded(path, 2_048 * 1_024);
+            var lines = System.Text.Encoding.UTF8.GetString(bytes).Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            PrevalidationProtocol.Require(lines.Length <= 2_048 && (bytes.Length == 0 || bytes[^1] == '\n'),
+                "PrevalidationSummaryLimit");
+            foreach (var line in lines)
+            {
+                PrevalidationProtocol.Require(System.Text.Encoding.UTF8.GetByteCount(line) + 1 <= 1_024,
+                    "PrevalidationSummaryWidth");
+                var summary = System.Text.Json.JsonSerializer.Deserialize<MonitoredSweepSummary>(
+                    line, PrevalidationProtocol.Json);
+                PrevalidationProtocol.Require(summary is not null, "PrevalidationSummaryMissing");
+                DescriptorObservationPolicy.ValidateSummary(manifest.SampledLoss, summary!);
             }
         }
     }

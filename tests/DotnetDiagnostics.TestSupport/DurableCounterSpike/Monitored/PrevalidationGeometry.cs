@@ -106,6 +106,8 @@ internal static class PrevalidationGeometry
                 FirstErrorCode = new string('e', 64),
             };
             if (context.UsesSampledLoss) widest = SampledLossProtocol.WorstCaseSummary();
+            if (context.Manifest.SampledLoss?.Policy == ObservedUnlinkedProtocol.Policy)
+                widest = ObservedUnlinkedProtocol.WorstCaseSummary();
             PrevalidationProtocol.Require(MonitoredSweepSummaryEncoding.EncodeLine(widest).Length <= 1_024,
                 "PrevalidationSummaryWidth");
             var coverage = new PrevalidationCoverage(PrevalidationProtocol.CoverageSchema, probe.Ordinal, probe.Id,

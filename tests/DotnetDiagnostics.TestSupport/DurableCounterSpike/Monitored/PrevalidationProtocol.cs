@@ -159,11 +159,12 @@ internal static class PrevalidationProtocol
 
     internal static void ValidateShape(PrevalidationManifest manifest, bool allowLegacyInspection = false)
     {
-        Require(manifest.Schema == (manifest.SampledLoss is null ? ManifestSchema
-            : SampledLossProtocol.PrevalidationManifestSchema) && manifest.Scope == Scope, "PrevalidationSchemaMismatch");
+        Require(manifest.Schema == DescriptorObservationPolicy.Select(manifest.SampledLoss, ManifestSchema,
+            SampledLossProtocol.PrevalidationManifestSchema, ObservedUnlinkedProtocol.PrevalidationManifestSchema)
+            && manifest.Scope == Scope, "PrevalidationSchemaMismatch");
         if (manifest.SampledLoss is { } sampled)
         {
-            SampledLossProtocol.ValidateBinding(sampled);
+            DescriptorObservationPolicy.ValidateBinding(sampled);
             Require(sampled.Readiness is null && sampled.ManagedBinaries.SequenceEqual(manifest.ManagedBinaries)
                 && sampled.RuntimeEnvironmentSha256 == manifest.RuntimeEnvironmentSha256,
                 "SampledPrevalidationBindingMismatch");
@@ -175,8 +176,8 @@ internal static class PrevalidationProtocol
             && manifest.ProtocolSha256 == MonitoredProtocolVersions.SuccessorProtocolSha256,
             "PrevalidationFrozenInputMismatch");
         Require(manifest.Probes.SequenceEqual(Plan()) && manifest.Bounds == Bounds(), "PrevalidationPlanOrBounds");
-        Require(manifest.ContextSummaryFieldMapSha256 == (manifest.SampledLoss is null
-                ? ContextSummaryFieldMapSha256 : SampledLossProtocol.ContextMapSha256)
+        Require(manifest.ContextSummaryFieldMapSha256 == DescriptorObservationPolicy.Select(manifest.SampledLoss,
+                ContextSummaryFieldMapSha256, SampledLossProtocol.ContextMapSha256, ObservedUnlinkedProtocol.ContextMapSha256)
             || manifest.SampledLoss is null && allowLegacyInspection && (manifest.ContextSummaryFieldMapSha256 == LegacyContextSummaryFieldMapSha256
                 || manifest.ContextSummaryFieldMapSha256 == PreviousContextSummaryFieldMapSha256),
             "PrevalidationContextEncodingMismatch");
@@ -197,11 +198,13 @@ internal static class PrevalidationProtocol
         Require(manifest.RuntimeEnvironmentSha256 == RuntimeEnvironmentHash(),
             "PrevalidationRuntimeEnvironmentChanged");
         var repository = Path.GetFullPath(repositoryRoot);
-        if (manifest.SampledLoss is { } sampled) SampledLossProtocol.ValidateBinding(sampled, repository);
+        if (manifest.SampledLoss is { } sampled) DescriptorObservationPolicy.ValidateBinding(sampled, repository);
         Require(MonitoredFile.HashFile(MonitoredPathRules.ResolveRepositoryFile(repository, AddendumPath))
             == AddendumSha256, "PrevalidationAddendumChanged");
         MonitoredSuccessorProtocolValidator.Validate(repository, MonitoredProtocolVersions.SuccessorProtocolPath);
         MonitoredRunManifestValidator.ValidateCommits(manifest.SourceCommits);
+        if (DescriptorObservationPolicy.IsObservedUnlinked(manifest.SampledLoss))
+            ObservedUnlinkedProtocol.ValidateCommittedBuild(manifest.SourceCommits);
         MonitoredRunManifestValidator.ValidateClock(manifest.Clock);
         var root = MonitoredPathRules.ResolveAbsoluteDirectory(manifest.PrivateRoot, mustExist: true);
         Require(Path.GetFileName(root) == manifest.SuiteId, "PrevalidationPrivateRootName");
@@ -237,12 +240,7 @@ internal static class PrevalidationProtocol
             MonitoredPathRules.ResolveRepositoryFile(repository, HistoricalReportPath)),
             "PrevalidationHistoricalReportMismatch");
         var adoption = Read<PrevalidationAdoption>(manifest.Adoption.Path);
-        Require(adoption.Schema == (manifest.SampledLoss is null ? "durable-prevalidation-adoption/1"
-                : "durable-sampled-prevalidation-adoption/1")
-            && adoption.AddendumSha256 == (manifest.SampledLoss is null ? AddendumSha256
-                : SampledLossProtocol.ProtocolSha256) && adoption.Scope == Scope
-            && !string.IsNullOrWhiteSpace(adoption.Maintainer) && adoption.AdoptedAt != default,
-            "PrevalidationAdoptionMissing");
+        ValidateAdoption(manifest, adoption);
         var attribution = Read<MonitoredAttributionMap>(manifest.Attribution.Path);
         ValidateAttribution(manifest, attribution);
         var encoding = Read<MonitoredEvidenceEncoding>(manifest.Encoding.Path);
@@ -252,8 +250,29 @@ internal static class PrevalidationProtocol
             manifest.SourceCommits, manifest.Attribution.Sha256, encoding, component,
             MonitoredAdmissionStage.PrevalidationComponentProof);
         var acceptance = Read<PrevalidationAcceptance>(manifest.ImplementationAcceptance.Path);
-        Require(acceptance.Schema == (manifest.SampledLoss is null ? "durable-prevalidation-implementation-acceptance/1"
-                : "durable-sampled-prevalidation-implementation-acceptance/1")
+        ValidateAcceptance(manifest, acceptance);
+        var hash = MonitoredFile.HashFile(manifestPath);
+        EnsureImmutable(manifest.AuthorizationReceipt);
+        var authorization = Read<PrevalidationAuthorization>(manifest.AuthorizationReceipt);
+        ValidateAuthorization(manifest, hash, authorization);
+        MonitoredRunManifestValidator.ValidateCurrentHost(manifest.Host, root);
+        Require(watch.Elapsed < TimeSpan.FromSeconds(120), "PrevalidationAdmissionDeadline");
+        return new(manifest, repository, Path.GetFullPath(manifestPath), hash,
+            MonitoredFile.HashFile(manifest.AuthorizationReceipt), attribution, encoding, component);
+    }
+
+    internal static void ValidateAdoption(PrevalidationManifest manifest, PrevalidationAdoption adoption)
+        => Require(adoption.Schema == DescriptorObservationPolicy.Select(manifest.SampledLoss,
+                "durable-prevalidation-adoption/1", "durable-sampled-prevalidation-adoption/1",
+                ObservedUnlinkedProtocol.AdoptionSchema)
+            && adoption.AddendumSha256 == (manifest.SampledLoss?.ProtocolSha256 ?? AddendumSha256)
+            && adoption.Scope == Scope && !string.IsNullOrWhiteSpace(adoption.Maintainer)
+            && adoption.AdoptedAt != default, "PrevalidationAdoptionMissing");
+
+    internal static void ValidateAcceptance(PrevalidationManifest manifest, PrevalidationAcceptance acceptance)
+        => Require(acceptance.Schema == DescriptorObservationPolicy.Select(manifest.SampledLoss,
+                "durable-prevalidation-implementation-acceptance/1",
+                "durable-sampled-prevalidation-implementation-acceptance/1", ObservedUnlinkedProtocol.AcceptanceSchema)
             && acceptance.SampledProtocolSha256 == manifest.SampledLoss?.ProtocolSha256
             && acceptance.Scope == Scope && acceptance.AddendumSha256 == AddendumSha256
             && acceptance.SourceCommits == manifest.SourceCommits
@@ -266,20 +285,12 @@ internal static class PrevalidationProtocol
             && acceptance.CallPathsReviewed && acceptance.TwoLevelAccountingReviewed
             && acceptance.CleanupReviewed && acceptance.NegativeAdmissionsReviewed,
             "PrevalidationImplementationNotAccepted");
-        var hash = MonitoredFile.HashFile(manifestPath);
-        EnsureImmutable(manifest.AuthorizationReceipt);
-        var authorization = Read<PrevalidationAuthorization>(manifest.AuthorizationReceipt);
-        ValidateAuthorization(manifest, hash, authorization);
-        MonitoredRunManifestValidator.ValidateCurrentHost(manifest.Host, root);
-        Require(watch.Elapsed < TimeSpan.FromSeconds(120), "PrevalidationAdmissionDeadline");
-        return new(manifest, repository, Path.GetFullPath(manifestPath), hash,
-            MonitoredFile.HashFile(manifest.AuthorizationReceipt), attribution, encoding, component);
-    }
 
     internal static void ValidateAuthorization(PrevalidationManifest manifest, string hash,
         PrevalidationAuthorization authorization)
-        => Require(authorization.Schema == (manifest.SampledLoss is null ? "durable-prevalidation-authorization/1"
-                : "durable-sampled-prevalidation-authorization/1")
+        => Require(authorization.Schema == DescriptorObservationPolicy.Select(manifest.SampledLoss,
+                "durable-prevalidation-authorization/1", "durable-sampled-prevalidation-authorization/1",
+                ObservedUnlinkedProtocol.PrevalidationAuthorizationSchema)
             && authorization.Scope == Scope && authorization.SuiteId == manifest.SuiteId
             && authorization.ManifestSha256 == hash && authorization.AddendumSha256 == AddendumSha256
             && authorization.AcceptanceSha256 == manifest.ImplementationAcceptance.Sha256

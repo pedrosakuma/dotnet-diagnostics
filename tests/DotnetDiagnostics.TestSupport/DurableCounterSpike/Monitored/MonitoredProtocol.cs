@@ -763,8 +763,9 @@ internal static class MonitoredRunManifestValidator
         var manifestHash = MonitoredFile.HashBytes(manifestBytes);
         var manifest = JsonSerializer.Deserialize<MonitoredRunManifest>(manifestBytes, JsonOptions)
             ?? throw Error("InvalidMonitoredManifest", "The monitored run manifest was empty.");
-        if (!string.Equals(manifest.Schema, manifest.SampledLoss is null ? MonitoredProtocolVersions.ManifestSchema
-            : SampledLossProtocol.CampaignManifestSchema, StringComparison.Ordinal))
+        if (!string.Equals(manifest.Schema, DescriptorObservationPolicy.Select(manifest.SampledLoss,
+            MonitoredProtocolVersions.ManifestSchema, SampledLossProtocol.CampaignManifestSchema,
+            ObservedUnlinkedProtocol.CampaignManifestSchema), StringComparison.Ordinal))
         {
             throw Error(
                 "UnsupportedMonitoredManifestSchema",
@@ -772,8 +773,8 @@ internal static class MonitoredRunManifestValidator
         }
         if (manifest.SampledLoss is { } sampled)
         {
-            SampledLossProtocol.ValidateBinding(sampled, root);
-            SampledLossProtocol.ValidateReadiness(manifest);
+            DescriptorObservationPolicy.ValidateBinding(sampled, root);
+            DescriptorObservationPolicy.ValidateReadiness(manifest);
         }
 
         RequireSafeIdentity(manifest.CampaignId, nameof(manifest.CampaignId), allowSlash: false);
@@ -1415,8 +1416,8 @@ internal static class MonitoredRunManifestValidator
         var receipt = DeserializeBounded<MonitoredAuthorizationReceipt>(receiptPath);
         if (!string.Equals(
                 receipt.Schema,
-                manifest.SampledLoss is null ? MonitoredProtocolVersions.AuthorizationSchema
-                    : "durable-sampled-campaign-authorization/1",
+                DescriptorObservationPolicy.Select(manifest.SampledLoss, MonitoredProtocolVersions.AuthorizationSchema,
+                    "durable-sampled-campaign-authorization/1", ObservedUnlinkedProtocol.CampaignAuthorizationSchema),
                 StringComparison.Ordinal)
             || !string.Equals(receipt.CampaignId, manifest.CampaignId, StringComparison.Ordinal)
             || !string.Equals(receipt.ManifestSha256, manifestHash, StringComparison.Ordinal)

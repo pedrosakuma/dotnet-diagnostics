@@ -109,7 +109,8 @@ internal static class PrevalidationExecutor
                 Path.Combine(manifest.PrivateRoot, "admission-monitor.jsonl"),
                 new BoundedOutputBudget(1_048_576, 1_024, 64, 64), 571,
                 prevalidationScope: new PrevalidationObservationScope([], coordinator),
-                sampledLoss: manifest.SampledLoss is not null);
+                sampledLoss: manifest.SampledLoss is not null,
+                observedUnlinked: manifest.SampledLoss?.Policy == ObservedUnlinkedProtocol.Policy);
             monitor.AddProcess(coordinator);
             RequireSweep(await monitor.ObserveBoundaryAsync("suite-coordinator-admission", true, admissionDeadline.Token)
                 .ConfigureAwait(false));
@@ -187,7 +188,8 @@ internal static class PrevalidationExecutor
                 monitor = new MonitoredStorageMonitor(context.Attribution, validated.Encoding,
                     Path.Combine(contextRoot, "coordinator-monitor.jsonl"), budget, 571,
                     includeIdentityEvidence: probe.Ordinal == 8,
-                    prevalidationScope: context.Prevalidation, sampledLoss: context.UsesSampledLoss);
+                    prevalidationScope: context.Prevalidation, sampledLoss: context.UsesSampledLoss,
+                    observedUnlinked: context.Manifest.SampledLoss?.Policy == ObservedUnlinkedProtocol.Policy);
                 monitor.AddProcess(coordinator);
                 monitor.SetStage("fixture-preparation", activeStorageStage: true);
                 _ = monitor.StartAsync();
@@ -331,7 +333,8 @@ internal static class PrevalidationExecutor
                 manifest.Probes.Select(probe => PrevalidationLayout.ContextRoot(manifest, probe)).ToArray(), coordinator);
             var monitor = finalMonitor = new MonitoredStorageMonitor(validated.Attribution, validated.Encoding,
                 Path.Combine(manifest.PrivateRoot, "final-monitor.jsonl"), maximumEstablishedIdentities: 571,
-                prevalidationScope: finalScope, sampledLoss: manifest.SampledLoss is not null);
+                prevalidationScope: finalScope, sampledLoss: manifest.SampledLoss is not null,
+                observedUnlinked: manifest.SampledLoss?.Policy == ObservedUnlinkedProtocol.Policy);
             monitor.AddProcess(coordinator);
             RequireSweep(await monitor.ObserveBoundaryAsync("suite-final-enumeration", false, finalDeadline.Token)
                 .ConfigureAwait(false));
@@ -413,7 +416,10 @@ internal static class PrevalidationExecutor
         context = context with
         {
             Prevalidation = context.Prevalidation! with
-                { Monitor = new PrevalidationMonitorClient(deadline.Token, context.UsesSampledLoss) },
+            {
+                Monitor = new PrevalidationMonitorClient(deadline.Token, context.UsesSampledLoss,
+                    observedUnlinked: context.Manifest.SampledLoss?.Policy == ObservedUnlinkedProtocol.Policy),
+            },
         };
         PrevalidationCoverage coverage;
         if (probe.Ordinal == 8)
@@ -638,10 +644,15 @@ internal static class PrevalidationExecutor
                 ValidateSummaryFailure(summary);
                 PrevalidationProtocol.Require((summary.SampledLoss is null) == (losses is null),
                     "SampledLossCoveragePolicyMismatch");
+                PrevalidationProtocol.Require((summary.SampledLoss?.ObservedUnlinked is not null)
+                    == (outcome.SampledLoss?.ObservedUnlinked is not null), "ObservationPolicyMeasurementMismatch");
                 if (summary.SampledLoss is { } measured)
                     losses = SampledLossMeasurement.Merge(losses!, measured);
-                PrevalidationProtocol.Require(SampledLossProtocol.Admissible(summary) && summary.Alarm is null,
+                PrevalidationProtocol.Require(DescriptorObservationPolicy.Admissible(summary) && summary.Alarm is null,
                     summary.FirstErrorCode ?? summary.Alarm ?? "PrevalidationIncompleteObservation");
+                if (summary.SampledLoss?.ObservedUnlinked is not null)
+                    PrevalidationProtocol.Require(DescriptorObservationPolicy.SharedPackageBudgetFits(summary),
+                        "ObservedUnlinkedSharedPackageLimit");
                 PrevalidationProtocol.Require(summary.CurrentContextIdentities is > 0 and <= 571
                     && summary.CurrentContextRootedIdentities is >= 0 and <= 539
                     && summary.IdentityCount is > 0 and <= 4_096
@@ -822,7 +833,7 @@ internal static class PrevalidationExecutor
     }
 
     internal static void RequireSweep(MonitoredSweepResult result)
-        => PrevalidationProtocol.Require(SampledLossProtocol.Admissible(result.Summary) && result.Summary.Alarm is null,
+        => PrevalidationProtocol.Require(DescriptorObservationPolicy.Admissible(result.Summary) && result.Summary.Alarm is null,
             result.Summary.FirstErrorCode ?? (result.Errors.Count != 0 ? PrevalidationFailureCodes.Normalize(result.Errors[0])
                 : result.Summary.Alarm ?? "PrevalidationMonitoringIncomplete"));
 

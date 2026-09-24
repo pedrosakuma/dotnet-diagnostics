@@ -23,6 +23,8 @@ internal sealed record SampledLossPopulation(int EnumeratedCandidates, int Succe
 // never silently classified successes. Counts describe observations, not distinct resources.
 internal sealed record SampledLossMeasurement(int[] Counts, int[]? FirstLoss)
 {
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ObservedUnlinkedMeasurement? ObservedUnlinked { get; init; }
     internal const int MaximumCandidatesPerSweep = 4 * 4_096;
     internal const int MaximumCandidatesPerEntry = MaximumCandidatesPerSweep * 2_048;
     [JsonIgnore] public int Candidates => checked(Counts[0] + Counts[5] + Counts[10]);
@@ -54,18 +56,27 @@ internal sealed record SampledLossMeasurement(int[] Counts, int[]? FirstLoss)
             PrevalidationProtocol.Require(Counts[first[0] * 5 + (first[1] is 1 or 3 ? 2 : first[1] == 5 ? 4 : 3)] > 0,
                 "SampledLossContextPopulationMismatch");
         }
+        ObservedUnlinked?.Validate(maximum / 4, Classified);
     }
 
-    internal static SampledLossMeasurement Empty() => new(new int[15], null);
+    internal static SampledLossMeasurement Empty(bool observedUnlinked = false)
+        => new(new int[15], null) { ObservedUnlinked = observedUnlinked ? new(0, 0, 0) : null };
 
     internal static SampledLossMeasurement Merge(SampledLossMeasurement left, SampledLossMeasurement right,
         int maximum = MaximumCandidatesPerEntry)
     {
         left.Validate(maximum);
         right.Validate(maximum);
+        PrevalidationProtocol.Require((left.ObservedUnlinked is null) == (right.ObservedUnlinked is null)
+            || left.Candidates == 0 && left.ObservedUnlinked is null,
+            "ObservedUnlinkedMergePolicyMismatch");
         var result = new SampledLossMeasurement(
             left.Counts.Zip(right.Counts, static (a, b) => checked(a + b)).ToArray(),
-            left.FirstLoss ?? right.FirstLoss);
+            left.FirstLoss ?? right.FirstLoss)
+        {
+            ObservedUnlinked = right.ObservedUnlinked is { } observed
+                ? ObservedUnlinkedMeasurement.Merge(left.ObservedUnlinked ?? new(0, 0, 0), observed) : null,
+        };
         result.Validate(maximum);
         return result;
     }
@@ -154,6 +165,11 @@ internal static class SampledLossProtocol
     {
         var loss = summary.SampledLoss!;
         loss.Validate(SampledLossMeasurement.MaximumCandidatesPerSweep);
+        if (loss.ObservedUnlinked is { } observed)
+            PrevalidationProtocol.Require(observed.Identities <= summary.IdentityCount
+                && observed.NativeTemporaryBytes <= summary.WorkspaceBytes
+                && observed.NativeTemporaryBytes <= summary.OpenUnlinkedBytes
+                && summary.NonAtomic, "ObservedUnlinkedSummaryMismatch");
         PrevalidationProtocol.Require(summary.ObservationKind is "boundary" or "periodic"
             && MonitoredSweepSummaryEncoding.IsBoundedToken(summary.Boundary, 64)
             && (summary.Alarm is null || MonitoredSweepSummaryEncoding.IsBoundedToken(summary.Alarm, 64))
@@ -236,7 +252,11 @@ internal sealed class SampledSweepConverter : JsonConverter<MonitoredSweepSummar
         return copy;
     }
 
-    private sealed record Wire(int V, long[] N, double G, string?[] T, bool[] F, int[] L, int[]? X, int[]? Z);
+    private sealed record Wire(int V, long[] N, double G, string?[] T, bool[] F, int[] L, int[]? X, int[]? Z)
+    {
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public long[]? A { get; init; }
+    }
 
     public override MonitoredSweepSummary Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
@@ -251,12 +271,24 @@ internal sealed class SampledSweepConverter : JsonConverter<MonitoredSweepSummar
             return legacy;
         }
         PrevalidationProtocol.RejectDuplicateMembers(document.RootElement);
-        var wire = document.RootElement.Deserialize<Wire>(Legacy(options));
-        if (wire is not { V: 1, N.Length: 30, T.Length: 4, F.Length: 4, L: not null }
+        Wire? wire;
+        try
+        {
+            wire = document.RootElement.Deserialize<Wire>(Legacy(options));
+        }
+        catch (JsonException)
+        {
+            throw PrevalidationProtocol.Error("SampledLossWireShape", "Sampled sweep groups have invalid types.");
+        }
+        if (wire is not { V: 1 or 2, N.Length: 30, T.Length: 4, F.Length: 4, L: not null }
             || wire.T[0] is null || wire.T[1] is null)
         {
             throw PrevalidationProtocol.Error("SampledLossWireShape", "Sampled sweep groups are missing or malformed.");
         }
+        PrevalidationProtocol.Require(wire.V == 1
+            ? !document.RootElement.TryGetProperty("a", out _)
+            : wire.A is { Length: 3 } a && a[0] is >= 0 and <= 4_096
+                && a[1] is >= 0 and <= 4_096 && a[2] >= 0, "ObservedUnlinkedWireShape");
         var n = wire.N;
         int I(int index)
         {
@@ -273,10 +305,13 @@ internal sealed class SampledSweepConverter : JsonConverter<MonitoredSweepSummar
             CurrentContextRootedIdentities = n[28] == -1 ? null : I(28),
             RetainedHistoryBytes = n[29] == -1 ? null : n[29],
             FirstErrorCode = wire.T[3], FirstDescriptorFailure = wire.Z,
-            SampledLoss = new(wire.L, wire.X),
+            SampledLoss = new(wire.L, wire.X)
+            {
+                ObservedUnlinked = wire.A is { } values ? new((int)values[0], (int)values[1], values[2]) : null,
+            },
         };
         SampledLossProtocol.ValidateSummary(result);
-        PrevalidationProtocol.Require(wire.F[3] == SampledLossProtocol.Admissible(result),
+        PrevalidationProtocol.Require(wire.F[3] == DescriptorObservationPolicy.Admissible(result),
             "SampledLossWireAdmissionMismatch");
         return result;
     }
@@ -289,7 +324,7 @@ internal sealed class SampledSweepConverter : JsonConverter<MonitoredSweepSummar
             return;
         }
         SampledLossProtocol.ValidateSummary(s);
-        var wire = new Wire(1,
+        var wire = new Wire(loss.ObservedUnlinked is null ? 1 : 2,
             [s.Sequence, s.StartedTimestamp, s.CompletedTimestamp, s.ObservedSweepBytes, s.MaximumObservedSweepBytes,
                 s.PackageBytes, s.RecoveryBytes, s.HistoryBytes, s.WorkspaceBytes, s.EvidenceBytes, s.OpenUnlinkedBytes,
                 s.RuntimeOnlyExcludedBytes, s.IdentityCount, s.MaximumIdentityCount, s.DescriptorOnlyIdentityCount,
@@ -298,8 +333,12 @@ internal sealed class SampledSweepConverter : JsonConverter<MonitoredSweepSummar
                 s.HarnessCpuTicks, s.HarnessPeakRssBytes, s.MonitorCpuTicks, s.MonitorAllocatedBytes,
                 s.CurrentContextIdentities ?? -1, s.CurrentContextRootedIdentities ?? -1, s.RetainedHistoryBytes ?? -1],
             s.GapMilliseconds, [s.ObservationKind, s.Boundary, s.Alarm, s.FirstErrorCode],
-            [s.ActiveStorageStage, s.Complete, s.NonAtomic, SampledLossProtocol.Admissible(s)],
-            loss.Counts, loss.FirstLoss, s.FirstDescriptorFailure);
+            [s.ActiveStorageStage, s.Complete, s.NonAtomic, DescriptorObservationPolicy.Admissible(s)],
+            loss.Counts, loss.FirstLoss, s.FirstDescriptorFailure)
+        {
+            A = loss.ObservedUnlinked is { } observed
+                ? [observed.Identities, observed.NativeTemporaryIdentities, observed.NativeTemporaryBytes] : null,
+        };
         JsonSerializer.Serialize(writer, wire, Legacy(options));
     }
 }

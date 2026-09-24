@@ -118,14 +118,17 @@ internal sealed class PinnedProcessDescriptor : IDisposable
 {
     internal PinnedProcessDescriptor(
         SafeFileHandle handle,
-        PinnedDescriptorSnapshot snapshot)
+        PinnedDescriptorSnapshot snapshot,
+        PinnedDescriptorSnapshot secondSnapshot)
     {
         Handle = handle;
         Snapshot = snapshot;
+        SecondSnapshot = secondSnapshot;
     }
 
     internal SafeFileHandle Handle { get; }
     internal PinnedDescriptorSnapshot Snapshot { get; }
+    internal PinnedDescriptorSnapshot SecondSnapshot { get; }
 
     public void Dispose() => Handle.Dispose();
 }
@@ -197,7 +200,7 @@ internal static class LinuxProcessDescriptorObserver
                 maximumPathUtf8Bytes, 4, beforeOperation, value => knownUnlinked |= value);
             ValidateCoherent(first, second, sampledOwner,
                 int.Parse(Path.GetFileName(descriptorPath), CultureInfo.InvariantCulture));
-            return new PinnedProcessDescriptor(pinned, first);
+            return new PinnedProcessDescriptor(pinned, first, second);
         }
         catch (Exception exception)
         {
@@ -721,6 +724,8 @@ internal sealed record MonitoredSweepSummary(
     public int[]? FirstDescriptorFailure { get; init; }
     [JsonPropertyName("sl"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public SampledLossMeasurement? SampledLoss { get; init; }
+    [JsonIgnore]
+    public long NativeTemporaryBytes => SampledLoss?.ObservedUnlinked?.NativeTemporaryBytes ?? 0;
 }
 
 internal static class MonitoredSweepSummaryEncoding
@@ -1083,6 +1088,7 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
     private MonitoredProcessIdentity? _geometryFixtureOwner;
     private readonly long[] _retiredCpuTicks = new long[3];
     private readonly bool _sampledLoss;
+    private readonly bool _observedUnlinked;
     private SampledLossMeasurement? _lossTotals;
     internal SampledLossMeasurement? LossTotals => _lossTotals;
 
@@ -1094,7 +1100,8 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
         int? maximumEstablishedIdentities = null,
         bool includeIdentityEvidence = false,
         PrevalidationObservationScope? prevalidationScope = null,
-        bool sampledLoss = false)
+        bool sampledLoss = false,
+        bool observedUnlinked = false)
     {
         LinuxStatxHandleMetadataObserver.EnsureSupportedPlatform(OperatingSystem.IsLinux());
         _attribution = attribution;
@@ -1103,8 +1110,9 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
             maximumEstablishedIdentities);
         _includeIdentityEvidence = includeIdentityEvidence;
         _prevalidationScope = prevalidationScope;
-        _sampledLoss = sampledLoss;
-        _lossTotals = sampledLoss ? SampledLossMeasurement.Empty() : null;
+        _sampledLoss = sampledLoss || observedUnlinked;
+        _observedUnlinked = observedUnlinked;
+        _lossTotals = _sampledLoss ? SampledLossMeasurement.Empty(observedUnlinked) : null;
         _writer = new BoundedJsonLineWriter(
             evidencePath,
             encoding.MaximumSummaryUtf8Bytes,
@@ -1119,7 +1127,8 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
         IMonitoredSummaryWriter writer,
         int? maximumEstablishedIdentities = null,
         bool includeIdentityEvidence = false,
-        bool sampledLoss = false)
+        bool sampledLoss = false,
+        bool observedUnlinked = false)
     {
         LinuxStatxHandleMetadataObserver.EnsureSupportedPlatform(OperatingSystem.IsLinux());
         _attribution = attribution;
@@ -1127,8 +1136,9 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
             attribution,
             maximumEstablishedIdentities);
         _includeIdentityEvidence = includeIdentityEvidence;
-        _sampledLoss = sampledLoss;
-        _lossTotals = sampledLoss ? SampledLossMeasurement.Empty() : null;
+        _sampledLoss = sampledLoss || observedUnlinked;
+        _observedUnlinked = observedUnlinked;
+        _lossTotals = _sampledLoss ? SampledLossMeasurement.Empty(observedUnlinked) : null;
         _writer = writer;
     }
 
@@ -1412,7 +1422,7 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
     {
         var started = Stopwatch.GetTimestamp();
         var errors = new List<string>(8);
-        var loss = _sampledLoss ? SampledLossMeasurement.Empty() : null;
+        var loss = _sampledLoss ? SampledLossMeasurement.Empty(_observedUnlinked) : null;
         int[]? firstDescriptorFailure = null;
         var observations = new Dictionary<ApparentFileIdentity, ObservedIdentity>();
         string boundary;
@@ -1463,6 +1473,9 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
         long workspaceBytes = 0;
         long evidenceBytes = 0;
         long openUnlinkedBytes = 0;
+        long nativeTemporaryBytes = 0;
+        var classifiedUnlinkedIdentities = 0;
+        var nativeTemporaryIdentities = 0;
         var unclassified = 0;
         foreach (var observation in observations.Values)
         {
@@ -1485,6 +1498,11 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
                 case "completed-context":
                     workspaceBytes = checked(workspaceBytes + observation.Length);
                     break;
+                case "active-native-temporary":
+                    workspaceBytes = checked(workspaceBytes + observation.Length);
+                    nativeTemporaryBytes = checked(nativeTemporaryBytes + observation.Length);
+                    nativeTemporaryIdentities++;
+                    break;
                 case "evidence":
                 case "outputs":
                     evidenceBytes = checked(evidenceBytes + observation.Length);
@@ -1498,6 +1516,7 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
             {
                 openUnlinkedBytes = checked(openUnlinkedBytes + observation.Length);
             }
+            if (observation.ClassifiedUnlinked) classifiedUnlinkedIdentities++;
         }
 
         var observedBytes = checked(packageBytes + recoveryBytes + historyBytes + workspaceBytes + evidenceBytes);
@@ -1560,12 +1579,12 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
         }
 
         var alarm = DetermineAlarm(
-            packageBytes,
+            checked(packageBytes + nativeTemporaryBytes),
             recoveryBytes,
             _prevalidationScope is null ? historyBytes : retainedHistoryBytes,
             workspaceBytes,
             processMetrics);
-        if (_prevalidationScope is not null && observedBytes > WorkspaceThresholdBytes)
+        if ((_prevalidationScope is not null || _observedUnlinked) && observedBytes > WorkspaceThresholdBytes)
         {
             alarm = "ObservedSuiteWorkspaceThresholdExceeded";
         }
@@ -1594,6 +1613,9 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
             }
         }
 
+        if (_observedUnlinked)
+            loss = loss! with { ObservedUnlinked = new(classifiedUnlinkedIdentities,
+                nativeTemporaryIdentities, nativeTemporaryBytes) };
         var summary = new MonitoredSweepSummary(
             checked(++_sequence),
             observationKind,
@@ -1829,6 +1851,9 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
                     errors.Add("UnsupportedFileKind");
                     continue;
                 }
+                if (_observedUnlinked)
+                    native = ObservedUnlinkedDescriptorProof.ValidateNative(
+                        tracked.Identity, pinned.Snapshot, pinned.SecondSnapshot);
                 var writable = (flags & 3) != 0;
                 var deleted = target.EndsWith(" (deleted)", StringComparison.Ordinal);
                 var normalizedTarget = deleted ? target[..^" (deleted)".Length] : target;
@@ -1854,6 +1879,7 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
                 if (_prevalidationScope is not null && role == "completed-context"
                     && (!observations.TryGetValue(native.Identity, out var prior) || !prior.SeenInRoot))
                 {
+                    if (_observedUnlinked) errors.Add("UnclassifiedCompletedContextDescriptor");
                     role = null;
                 }
                 if (_prevalidationScope is not null && role == "completed-context" && writable)
@@ -1875,7 +1901,9 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
                     errors.Add("HardLinkRejected");
                     continue;
                 }
-                if (target.StartsWith("/memfd:", StringComparison.Ordinal))
+                if (target.StartsWith("/memfd:", StringComparison.Ordinal)
+                    || _observedUnlinked && _attribution.RuntimeOnlyDescriptorProofs.Any(
+                        proof => proof.DescriptorTarget == target))
                 {
                     var classification = LinuxRuntimeMemoryClassifier.Classify(
                         tracked.Identity,
@@ -1896,7 +1924,20 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
                         errors.Add(classification.FailureCode ?? "RuntimeOnlyClassificationFailed");
                     }
                 }
-                if ((_prevalidationScope is not null || _sampledLoss) && (native.LinkCount == 0 || deleted) && !descriptorFixture)
+                var positivelyObservedUnlinked = _observedUnlinked && descriptorFixture;
+                if (_observedUnlinked && !descriptorFixture
+                    && (native.LinkCount == 0 || deleted) && errors.Count == errorsBefore)
+                {
+                    ObservedUnlinkedDescriptorProof.ValidateUnlinked(
+                        tracked.Identity, pinned.Snapshot, pinned.SecondSnapshot);
+                    if (role is null && observations.TryGetValue(native.Identity, out var rooted) && rooted.SeenInRoot)
+                        role = rooted.Role;
+                    if (role is null && writable && tracked.Identity.Role == MonitoredProcessRole.Diagnostic)
+                        role = "active-native-temporary";
+                    positivelyObservedUnlinked = role is not null;
+                }
+                if ((_prevalidationScope is not null || _sampledLoss) && (native.LinkCount == 0 || deleted)
+                    && !descriptorFixture && !positivelyObservedUnlinked)
                 {
                     errors.Add("UnclassifiedUnlinkedDescriptor");
                 }
@@ -1908,7 +1949,8 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
                     isUnlinked: native.LinkCount == 0 || deleted,
                     seenInRoot: false,
                     seenInDescriptor: true,
-                    inRetainedHistory: IsRetainedHistoryPath(normalizedTarget));
+                    inRetainedHistory: IsRetainedHistoryPath(normalizedTarget),
+                    classifiedUnlinked: positivelyObservedUnlinked);
                 if (loss is not null && errors.Count == errorsBefore && role is not null)
                     loss.Counts[offset + 1]++;
             }
@@ -1939,6 +1981,15 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
         }
         if (_sampledLoss && !tracked.IntentionalTermination && !LinuxProcessIdentity.Matches(tracked.Identity))
             errors.Add("UnexpectedProcessIdentityLoss");
+        else if (_observedUnlinked && !tracked.IntentionalTermination)
+        {
+            try
+            {
+                if (!ObservedUnlinkedDescriptorProof.IsLiveOwner(tracked.Identity))
+                    errors.Add("UnexpectedProcessIdentityLoss");
+            }
+            catch (DurableStorageExperimentException exception) { errors.Add(exception.Code); }
+        }
     }
 
     private bool IsClassifiableCoherenceSnapshot(PinnedDescriptorSnapshot snapshot,
@@ -2013,7 +2064,8 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
         bool isUnlinked,
         bool seenInRoot,
         bool seenInDescriptor,
-        bool inRetainedHistory = false)
+        bool inRetainedHistory = false,
+        bool classifiedUnlinked = false)
     {
         if (observations.TryGetValue(native.Identity, out var existing))
         {
@@ -2024,6 +2076,7 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
             existing.SeenInRoot |= seenInRoot;
             existing.SeenInDescriptor |= seenInDescriptor;
             existing.InRetainedHistory |= inRetainedHistory;
+            existing.ClassifiedUnlinked |= classifiedUnlinked;
             return;
         }
         observations.Add(
@@ -2037,6 +2090,7 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
                 seenInDescriptor)
             {
                 InRetainedHistory = inRetainedHistory,
+                ClassifiedUnlinked = classifiedUnlinked,
             });
     }
 
@@ -2265,6 +2319,7 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
         internal bool SeenInRoot { get; set; } = seenInRoot;
         internal bool SeenInDescriptor { get; set; } = seenInDescriptor;
         internal bool InRetainedHistory { get; set; }
+        internal bool ClassifiedUnlinked { get; set; }
     }
 
     private sealed record ProcessMetricTotals(

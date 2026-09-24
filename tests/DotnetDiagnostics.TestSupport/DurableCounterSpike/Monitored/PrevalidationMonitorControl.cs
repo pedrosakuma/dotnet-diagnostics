@@ -108,7 +108,8 @@ internal static class PrevalidationMonitorControl
             { SampledLoss = monitor.LossTotals };
 }
 
-internal sealed class PrevalidationMonitorClient(CancellationToken cancellationToken, bool sampledLoss = false)
+internal sealed class PrevalidationMonitorClient(CancellationToken cancellationToken, bool sampledLoss = false,
+    bool observedUnlinked = false)
 {
     private int _requests;
     internal PrevalidationMonitorReply State { get; private set; } = new(false, null, 0, 0, 0, 0, null);
@@ -125,8 +126,19 @@ internal sealed class PrevalidationMonitorClient(CancellationToken cancellationT
         PrevalidationProtocol.Require((State.SampledLoss is not null) == sampledLoss
             && (State.Summary is null || (State.Summary.SampledLoss is not null) == sampledLoss),
             "SampledLossAuthorityPolicyMismatch");
+        PrevalidationProtocol.Require((!observedUnlinked || sampledLoss)
+            && (State.SampledLoss?.ObservedUnlinked is not null) == observedUnlinked
+            && (State.Summary is null
+                || (State.Summary.SampledLoss?.ObservedUnlinked is not null) == observedUnlinked),
+            "ObservedUnlinkedAuthorityPolicyMismatch");
         State.SampledLoss?.Validate();
-        if (State.Summary is { } summary) PrevalidationExecutor.ValidateSummaryFailure(summary);
+        if (State.Summary is { } summary)
+        {
+            PrevalidationExecutor.ValidateSummaryFailure(summary);
+            if (observedUnlinked)
+                PrevalidationProtocol.Require(DescriptorObservationPolicy.SharedPackageBudgetFits(summary),
+                    "ObservedUnlinkedSharedPackageLimit");
+        }
         PrevalidationProtocol.Require(!State.Incomplete && State.Alarm is null,
             State.Alarm ?? "PrevalidationMonitoringIncomplete");
         return State;
@@ -151,7 +163,8 @@ internal sealed class MonitoredExecutionMonitor : IAsyncDisposable
             PrevalidationProtocol.Require(context.Prevalidation is null, "PrevalidationMonitorOwnerMissing");
             _local = new(context.Attribution, context.Encoding, path, budget,
                 context.ComponentEvidence.DerivedMaximumSimultaneousIdentitiesEnforced,
-                sampledLoss: context.UsesSampledLoss);
+                sampledLoss: context.UsesSampledLoss,
+                observedUnlinked: context.Manifest.SampledLoss?.Policy == ObservedUnlinkedProtocol.Policy);
         }
         else
         {
