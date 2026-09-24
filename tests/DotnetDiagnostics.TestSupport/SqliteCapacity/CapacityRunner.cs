@@ -54,12 +54,7 @@ internal static class CapacityRunner
                     result.SampledQueueDepthPerSecond[second] = queue.Count;
                     previousSecond = second;
                 }
-                var tookRecord = queue.TryTake(out var record);
-                if (tookRecord)
-                {
-                    if (batch.Count == 0) oldest = sourceStart + record.Offered;
-                    batch.Add(record);
-                }
+                var tookRecord = FillAvailableBatch(queue, batch, sourceStart, ref oldest);
                 var age = Stopwatch.GetTimestamp() - oldest;
                 if (batch.Count != 0 && (batch.Count == CapacityProtocol.BatchRecords
                     || queue.IsDrained
@@ -103,6 +98,20 @@ internal static class CapacityRunner
         }
         CapacityProtocol.WriteReport(Path.Combine(root, "worker.json"), result);
         return result;
+    }
+
+    internal static bool FillAvailableBatch(CapacityQueue queue, List<CapacityRecord> batch,
+        long sourceStart, ref long oldest)
+    {
+        var tookRecord = false;
+        // An already-aged backlog must not force one FULL transaction per queued record.
+        while (batch.Count < CapacityProtocol.BatchRecords && queue.TryTake(out var record))
+        {
+            if (batch.Count == 0) oldest = sourceStart + record.Offered;
+            batch.Add(record);
+            tookRecord = true;
+        }
+        return tookRecord;
     }
 
     private static void Produce(CapacityQueue queue, CapacityResult result, CapacityProfile profile,

@@ -106,6 +106,54 @@ public sealed class SqliteCapacityTests : IDisposable
     }
 
     [Fact]
+    public void AlreadyAgedBacklogFillsBoundedBatchBeforeAgeFlush()
+    {
+        var queue = new CapacityQueue();
+        for (var index = 0; index <= CapacityProtocol.BatchRecords; index++)
+            Assert.True(queue.TryOffer(CapacityProtocol.Generate(CapacityProfile.Numeric, index, index, index)));
+        queue.Complete();
+        var batch = new List<CapacityRecord>();
+        long oldest = -1;
+        Assert.True(CapacityRunner.FillAvailableBatch(queue, batch, 0, ref oldest));
+        Assert.Equal(CapacityProtocol.BatchRecords, batch.Count);
+        Assert.Equal(0, oldest);
+        Assert.Equal(1, queue.Count);
+        Assert.False(queue.IsDrained);
+        batch.Clear();
+        Assert.True(CapacityRunner.FillAvailableBatch(queue, batch, 0, ref oldest));
+        Assert.Single(batch);
+        Assert.Equal(CapacityProtocol.BatchRecords, oldest);
+        Assert.True(queue.IsDrained);
+    }
+
+    [Fact]
+    public void FillingPartialBatchDoesNotRenewOldestOfferOrExceedBound()
+    {
+        var queue = new CapacityQueue();
+        var record = CapacityProtocol.Generate(CapacityProfile.Numeric, 0, 0, 20);
+        for (var index = 0; index < CapacityProtocol.BatchRecords; index++)
+            Assert.True(queue.TryOffer(record));
+        var batch = new List<CapacityRecord> { record };
+        long oldest = 7;
+        Assert.True(CapacityRunner.FillAvailableBatch(queue, batch, 100, ref oldest));
+        Assert.Equal(CapacityProtocol.BatchRecords, batch.Count);
+        Assert.Equal(7, oldest);
+        Assert.Equal(1, queue.Count);
+        Assert.False(CapacityRunner.FillAvailableBatch(queue, batch, 100, ref oldest));
+        Assert.Equal(1, queue.Count);
+    }
+
+    [Fact]
+    public void EmptyQueueLeavesPartialBatchAgeUnchanged()
+    {
+        var batch = new List<CapacityRecord> { CapacityProtocol.Generate(CapacityProfile.Numeric, 0, 0, 0) };
+        long oldest = 7;
+        Assert.False(CapacityRunner.FillAvailableBatch(new CapacityQueue(), batch, 100, ref oldest));
+        Assert.Equal(7, oldest);
+        Assert.Single(batch);
+    }
+
+    [Fact]
     public void LogicalCapAndOversizedBatchAreExplicitWithoutLargeFixtures()
     {
         var result = Result(CapacityProfile.Numeric);
@@ -192,6 +240,7 @@ public sealed class SqliteCapacityTests : IDisposable
     {
         using var configuration = JsonDocument.Parse(CapacityProtocol.Configuration);
         var json = configuration.RootElement;
+        Assert.Equal("available-before-age-check", json.GetProperty("batchFill").GetString());
         var bounds = new Dictionary<string, long>
         {
             ["queueRecords"] = CapacityProtocol.QueueRecords,

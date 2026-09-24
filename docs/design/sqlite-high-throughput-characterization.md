@@ -258,6 +258,41 @@ admit missing paths. Other inventory errors remain failures.
 
 ## Admission and execution boundary
 
+### Revision 2 follow-up: avoid aged-backlog singleton transactions
+
+The initial 96-cell execution exposed a batching cliff: once the oldest
+queued observation exceeded 100 ms, checking age after dequeuing one record
+could repeatedly commit one record per FULL transaction. Retained measurements
+include mean committed batch sizes of 1.25 (NovelStacks, 50k/s), 1.51 (Activity,
+50k/s), and 2.00 (Numeric, 100k/s, repetition 2), rather than approximately 256.
+This is a prototype batching limitation, not an intrinsic SQLite capacity.
+
+Revision 2 fills the available batch, up to the unchanged 256-record bound,
+before checking the unchanged oldest-offer timestamp. It neither waits for
+new arrivals nor renews the age budget. Queue/byte/dictionary limits, FULL
+durability, schemas, indexes, oracles and measurement windows are unchanged.
+The 100-ms threshold is a flush trigger, not a guarantee of commit latency.
+The protocol version and structural hash change explicitly; original results
+and source remain retained separately.
+
+A separately bound follow-up measures 48 cells: the eight pairs below,
+producer-only followed by SQLite, three repetitions, in the original
+rate/profile order. The other original matrix pairs are outside this
+prospective follow-up, not silently successful.
+
+| Profile | Rates (observations/s) | Purpose |
+|---|---|---|
+| Numeric | 50,000; 100,000 | Stable control and variable overload |
+| RepeatedStacks | 100,000 | Overload without novel dictionary entries |
+| NovelStacks | 50,000; 100,000 | Backlog and independent dictionary bound |
+| Activity | 10,000; 50,000; 100,000 | Stable control and attribute-row fan-out |
+
+Use a fresh 3-GiB workspace, the same eight component warmups, fresh source
+and binary identities and unchanged stop rules. Compare all matched original
+repetitions, including the Numeric outlier; do not pool revisions. Sequential,
+non-randomized runs on a shared host cannot attribute every timing difference
+to the correction.
+
 Before any measurements, a different-model review must approve this new plan
 and source patch. Record: source base + exact patch SHA-256, build/SDK identity
 (10.0.201), protocol hash, .NET runtime/provider/native SQLite versions,
