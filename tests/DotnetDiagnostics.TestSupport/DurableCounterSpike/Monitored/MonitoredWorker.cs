@@ -569,21 +569,13 @@ internal static class MonitoredWorkerExecutor
             "before-package-create-and-admission",
             activeStorageStage: true).ConfigureAwait(false);
         Directory.CreateDirectory(descriptor.PackageStagingRoot);
-        var limits = string.Equals(descriptor.Execution.CaseId, "M1", StringComparison.Ordinal)
-            ? Limits() with { OwnedBufferBytes = 262_144 }
-            : Limits();
+        var limits = PipelineLimitsForCase(descriptor.Execution.CaseId);
         var writerGate = descriptor.Execution.CaseId is "B1" or "M1"
             ? new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
             : null;
         var faultState = new WorkerFaultState(descriptor.Execution.CaseId);
         var faults = CreateFaultController(descriptor, faultState);
-        await using var adapter = factory.Create(new DurableStorageAdapterCreateRequest(
-            descriptor.CaptureId,
-            descriptor.ArtifactId,
-            descriptor.PackageStagingRoot,
-            P1Configuration(),
-            limits,
-            faults));
+        await using var adapter = factory.Create(CreateAdapterRequest(descriptor, faults));
         var global = new DurableCounterGlobalBudget(limits);
         await using var pipeline = new DurableCounterPipeline(
             limits,
@@ -861,25 +853,18 @@ internal static class MonitoredWorkerExecutor
         Directory.CreateDirectory(descriptor.PackageStagingRoot);
         var limits = Limits();
         var faults = NoDurableStorageFaults.Instance;
-        await using var adapter = factory.Create(new DurableStorageAdapterCreateRequest(
-            descriptor.CaptureId,
-            descriptor.ArtifactId,
-            descriptor.PackageStagingRoot,
-            P1Configuration(),
-            limits,
-            faults));
+        await using var adapter = factory.Create(CreateAdapterRequest(descriptor, faults));
         var secondRoot = Path.Combine(descriptor.ExecutionRoot, "f5-second-package-staging");
         Directory.CreateDirectory(secondRoot);
         var probe = await MonitoredConcurrentCaptureGate.ProbeAsync(
                 limits,
                 adapter,
-                () => factory.Create(new DurableStorageAdapterCreateRequest(
-                    $"{descriptor.CaptureId}-second",
-                    $"{descriptor.ArtifactId}-second",
-                    secondRoot,
-                    P1Configuration(),
-                    limits,
-                    faults)))
+                () => factory.Create(CreateAdapterRequest(descriptor with
+                {
+                    CaptureId = $"{descriptor.CaptureId}-second",
+                    ArtifactId = $"{descriptor.ArtifactId}-second",
+                    PackageStagingRoot = secondRoot,
+                }, faults)))
             .ConfigureAwait(false);
         await MonitoredWorkerControl.ObserveBoundaryAsync(
             "f5-after-drain",
@@ -962,13 +947,7 @@ internal static class MonitoredWorkerExecutor
                     "live-before-package-create-and-admission",
                     activeStorageStage: true).ConfigureAwait(false);
                 Directory.CreateDirectory(descriptor.PackageStagingRoot);
-                adapter = factory.Create(new DurableStorageAdapterCreateRequest(
-                    descriptor.CaptureId,
-                    descriptor.ArtifactId,
-                    descriptor.PackageStagingRoot,
-                    P1Configuration(),
-                    Limits(),
-                    NoDurableStorageFaults.Instance));
+                adapter = factory.Create(CreateAdapterRequest(descriptor, NoDurableStorageFaults.Instance));
                 pipeline = new DurableCounterPipeline(
                     Limits(),
                     new DurableCounterGlobalBudget(Limits()),
@@ -1966,6 +1945,23 @@ internal static class MonitoredWorkerExecutor
             throw Error("InvalidWorkerIdentity", $"Worker identity '{name}' is invalid.");
         }
     }
+
+    internal static DurableCounterPipelineLimits PipelineLimitsForCase(string caseId)
+        => string.Equals(caseId, "M1", StringComparison.Ordinal)
+            ? Limits() with { OwnedBufferBytes = 262_144 }
+            : Limits();
+
+    internal static DurableStorageAdapterCreateRequest CreateAdapterRequest(
+        MonitoredWorkerDescriptor descriptor,
+        IDurableStorageFaultController faults)
+        // M1 reduces producer-owned reservations, not the frozen adapter batch/query contract.
+        => new(
+            descriptor.CaptureId,
+            descriptor.ArtifactId,
+            descriptor.PackageStagingRoot,
+            P1Configuration(),
+            Limits(),
+            faults);
 
     private static DurableCounterPipelineLimits Limits()
         => new(BatchMaxAge: TimeSpan.FromMilliseconds(100));
