@@ -136,13 +136,16 @@ public sealed class CaptureReader : IDisposable
             try
             {
                 using var command = _connection.CreateCommand();
-                command.CommandText = "SELECT version,length(json),json FROM snapshots WHERE artifact_id=$id;";
+                command.CommandText = """
+                    SELECT s.version,length(s.json),s.json,a.kind
+                    FROM snapshots s JOIN artifacts a ON a.id=s.artifact_id WHERE s.artifact_id=$id;
+                    """;
                 command.Parameters.AddWithValue("$id", artifactId);
                 using var reader = command.ExecuteReader();
                 if (!reader.Read()) return null;
                 if (reader.GetInt64(1) > _options.MaxSnapshotBytes || reader.GetInt32(0) < 1)
                     throw CapturePackage.Error(CaptureErrorCode.CapacityExceeded, "Snapshot exceeds the configured read bound or has no valid version.");
-                return new(reader.GetInt32(0), (byte[])reader[2]);
+                return new(reader.GetInt32(0), (byte[])reader[2], reader.GetString(3));
             }
             catch (SqliteException ex) { throw CapturePackage.Translate(ex); }
         }

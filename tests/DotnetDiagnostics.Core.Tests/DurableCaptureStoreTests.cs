@@ -72,6 +72,7 @@ public sealed partial class DurableCaptureStoreTests : IDisposable
             Assert.Equal(0, Assert.Single(next.Records).Record.NumericValue);
             var snapshot = reader.ReadSnapshot(first)!;
             Assert.Equal(7, snapshot.Version);
+            Assert.Equal("events", snapshot.Kind);
             Assert.Equal("{\"view\":\"compatibility\"}", Encoding.UTF8.GetString(snapshot.Utf8Json.Span));
             Assert.Null(reader.ReadSnapshot(second));
         }
@@ -247,7 +248,7 @@ public sealed partial class DurableCaptureStoreTests : IDisposable
         Assert.Equal(before, recovered.SourceHashes!.OrderBy(static x => x.Key).ToDictionary());
         using var reader = await store.OpenAsync(recovered.CaptureId, Owner);
         Assert.Equal("committed", Assert.Single(reader.Query(new(recovered.Artifacts[0].ArtifactId)).Records).Record.Name);
-        Assert.NotNull(reader.ReadSnapshot(recovered.Artifacts[0].ArtifactId));
+        Assert.Equal("events", reader.ReadSnapshot(recovered.Artifacts[0].ArtifactId)!.Kind);
     }
 
     [Fact]

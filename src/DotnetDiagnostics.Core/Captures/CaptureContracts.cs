@@ -26,7 +26,8 @@ public sealed record CaptureRecordQuery(
 
 public sealed record CaptureRecordEntry(long RecordId, CaptureRecord Record);
 public sealed record CaptureRecordPage(IReadOnlyList<CaptureRecordEntry> Records, long? NextAfterRecordId);
-public sealed record CaptureSnapshot(int Version, ReadOnlyMemory<byte> Utf8Json);
+/// <summary>Version identifies the producer's representation; Kind is bound to the owning artifact.</summary>
+public sealed record CaptureSnapshot(int Version, ReadOnlyMemory<byte> Utf8Json, string? Kind = null);
 public sealed record CaptureArtifactInfo(string ArtifactId, string Kind, string Name);
 
 /// <summary>

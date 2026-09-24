@@ -161,7 +161,7 @@ public sealed class CaptureWriter : IAsyncDisposable
         lock (_gate)
         {
             EnsureActive();
-            if (!_artifacts.ContainsKey(artifactId))
+            if (!_artifacts.TryGetValue(artifactId, out var artifact))
                 throw CapturePackage.Error(CaptureErrorCode.InvalidInput, "Unknown artifact ID.");
             if (_snapshots.ContainsKey(artifactId))
                 throw CapturePackage.Error(CaptureErrorCode.InvalidInput, "A snapshot can only be set once per artifact.");
@@ -169,7 +169,7 @@ public sealed class CaptureWriter : IAsyncDisposable
             var retained = _snapshots.Values.Sum(static s => (long)s.Utf8Json.Length);
             if (utf8Json.Length > _options.MaxSnapshotBytes - retained || utf8Json.Length > _options.MaxLogicalBytes - _logicalBytes)
                 throw CapturePackage.Error(CaptureErrorCode.CapacityExceeded, "Capture snapshot or logical byte budget exhausted.");
-            _snapshots.Add(artifactId, new CaptureSnapshot(version, utf8Json.ToArray()));
+            _snapshots.Add(artifactId, new CaptureSnapshot(version, utf8Json.ToArray(), artifact.Kind));
             _logicalBytes += utf8Json.Length;
         }
     }

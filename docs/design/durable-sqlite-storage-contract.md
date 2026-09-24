@@ -168,6 +168,16 @@ of recorded occurrences. `SetSnapshot` accepts explicit UTF-8 JSON, not an
 arbitrary object or reflection serializer, and stores at most one snapshot
 per artifact. Snapshot versions belong to the producer/view contract; the
 store does not reinterpret their JSON.
+`CaptureSnapshot.Version` is the encoding representation version, independent
+of the package/schema versions. `CaptureSnapshot.Kind` is returned from the
+owning immutable `artifacts.kind` row, linked by `snapshots.artifact_id`; it is
+never guessed from CLR reflection or JSON contents. Store readers always
+populate it. A compatibility codec can therefore decode with
+`Decode(snapshot.Kind, snapshot.Version, snapshot.Utf8Json, maxBytes)`.
+The optional constructor default for `Kind` only preserves source compatibility
+for callers constructing their own snapshot DTOs; it does not omit durable
+kind metadata. Kind-specific encoding, decoding, supported views, and the
+known-type allowlist belong to the separate codec implementation.
 
 `Query` uses artifact-scoped filters, inclusive timestamp bounds, and keyset
 pagination (`AfterRecordId`, `NextAfterRecordId`) ordered by record ID.
