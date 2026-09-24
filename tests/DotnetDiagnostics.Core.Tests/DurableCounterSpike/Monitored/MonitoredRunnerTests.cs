@@ -3099,7 +3099,8 @@ public sealed partial class MonitoredRunnerTests : IDisposable
 
     private sealed class ScriptedWorkerLauncher(
         ScriptedWorkerBehavior behavior,
-        Action? onRecoveryStarted = null) : IMonitoredWorkerLauncher
+        Action? onRecoveryStarted = null,
+        bool awaitIdentityEvent = false) : IMonitoredWorkerLauncher
     {
         internal List<MonitoredWorkerDescriptor> Descriptors { get; } = [];
         internal List<MonitoredProcessIdentity> Identities { get; } = [];
@@ -3136,6 +3137,12 @@ public sealed partial class MonitoredRunnerTests : IDisposable
             }
             var process = Process.Start(startInfo)
                 ?? throw new InvalidOperationException("Could not start scripted worker.");
+            if (awaitIdentityEvent)
+            {
+                // This component's private /proc/stat read must finish before observation.
+                // Peek leaves the identity event for the runner; real launchers are unchanged.
+                process.StandardOutput.Peek().Should().BeGreaterThanOrEqualTo(0);
+            }
             Identities.Add(MonitoredProcessIdentity.Capture(
                 process,
                 MonitoredProcessRole.Diagnostic));

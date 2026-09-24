@@ -1089,6 +1089,10 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
     private readonly long[] _retiredCpuTicks = new long[3];
     private readonly bool _sampledLoss;
     private readonly bool _observedUnlinked;
+    private readonly bool _unifiedActive;
+    private readonly IReadOnlyList<string> _activeOwnedRoots;
+    private readonly IReadOnlyList<string> _activeOwnedFiles;
+    private bool _recoveryStarted;
     private SampledLossMeasurement? _lossTotals;
     internal SampledLossMeasurement? LossTotals => _lossTotals;
 
@@ -1101,7 +1105,10 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
         bool includeIdentityEvidence = false,
         PrevalidationObservationScope? prevalidationScope = null,
         bool sampledLoss = false,
-        bool observedUnlinked = false)
+        bool observedUnlinked = false,
+        bool unifiedActive = false,
+        IReadOnlyList<string>? activeOwnedRoots = null,
+        IReadOnlyList<string>? activeOwnedFiles = null)
     {
         LinuxStatxHandleMetadataObserver.EnsureSupportedPlatform(OperatingSystem.IsLinux());
         _attribution = attribution;
@@ -1110,9 +1117,12 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
             maximumEstablishedIdentities);
         _includeIdentityEvidence = includeIdentityEvidence;
         _prevalidationScope = prevalidationScope;
-        _sampledLoss = sampledLoss || observedUnlinked;
-        _observedUnlinked = observedUnlinked;
-        _lossTotals = _sampledLoss ? SampledLossMeasurement.Empty(observedUnlinked) : null;
+        _sampledLoss = sampledLoss || observedUnlinked || unifiedActive;
+        _observedUnlinked = observedUnlinked || unifiedActive;
+        _unifiedActive = unifiedActive;
+        _activeOwnedRoots = ValidateActiveRoots(activeOwnedRoots);
+        _activeOwnedFiles = ValidateActiveRoots(activeOwnedFiles, maximum: 16);
+        _lossTotals = _sampledLoss ? SampledLossMeasurement.Empty(_observedUnlinked, unifiedActive) : null;
         _writer = new BoundedJsonLineWriter(
             evidencePath,
             encoding.MaximumSummaryUtf8Bytes,
@@ -1128,7 +1138,10 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
         int? maximumEstablishedIdentities = null,
         bool includeIdentityEvidence = false,
         bool sampledLoss = false,
-        bool observedUnlinked = false)
+        bool observedUnlinked = false,
+        bool unifiedActive = false,
+        IReadOnlyList<string>? activeOwnedRoots = null,
+        IReadOnlyList<string>? activeOwnedFiles = null)
     {
         LinuxStatxHandleMetadataObserver.EnsureSupportedPlatform(OperatingSystem.IsLinux());
         _attribution = attribution;
@@ -1136,9 +1149,12 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
             attribution,
             maximumEstablishedIdentities);
         _includeIdentityEvidence = includeIdentityEvidence;
-        _sampledLoss = sampledLoss || observedUnlinked;
-        _observedUnlinked = observedUnlinked;
-        _lossTotals = _sampledLoss ? SampledLossMeasurement.Empty(observedUnlinked) : null;
+        _sampledLoss = sampledLoss || observedUnlinked || unifiedActive;
+        _observedUnlinked = observedUnlinked || unifiedActive;
+        _unifiedActive = unifiedActive;
+        _activeOwnedRoots = ValidateActiveRoots(activeOwnedRoots);
+        _activeOwnedFiles = ValidateActiveRoots(activeOwnedFiles, maximum: 16);
+        _lossTotals = _sampledLoss ? SampledLossMeasurement.Empty(_observedUnlinked, unifiedActive) : null;
         _writer = writer;
     }
 
@@ -1178,6 +1194,19 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
     internal Task<string> TerminalIssue => _terminalIssue.Task;
     internal Action<string, int>? BeforeDescriptorOperationForComponent { private get; set; }
     internal Action<string>? BeforeRootPathObservationForComponent { private get; set; }
+    internal Action<string>? BeforeRootDirectoryObservationForComponent { private get; set; }
+
+    private string[] ValidateActiveRoots(IReadOnlyList<string>? roots, int maximum = 4)
+    {
+        PrevalidationProtocol.Require(roots is null || _unifiedActive && roots.Count <= maximum,
+            "RootSamplingScopeInvalid");
+        var resolved = roots?.Select(Path.GetFullPath).ToArray() ?? [];
+        PrevalidationProtocol.Require(resolved.All(path =>
+            Encoding.UTF8.GetByteCount(path) <= _attribution.MaximumObservedPathUtf8Bytes
+            && _attribution.Roots.Any(root => root.Charged && MonitoredPathRules.IsContained(root.Path, path))),
+            "RootSamplingForeignRoot");
+        return resolved;
+    }
 
     internal void RegisterGeometryFixtureOwner(MonitoredProcessIdentity owner)
     {
@@ -1331,6 +1360,8 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
         {
             _boundary = boundary;
             _activeStorageStage = activeStorageStage;
+            if (_unifiedActive && boundary is "recovery" or "before-explicit-recovery")
+                _recoveryStarted = true;
         }
     }
 
@@ -1423,7 +1454,7 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
     {
         var started = Stopwatch.GetTimestamp();
         var errors = new List<string>(8);
-        var loss = _sampledLoss ? SampledLossMeasurement.Empty(_observedUnlinked) : null;
+        var loss = _sampledLoss ? SampledLossMeasurement.Empty(_observedUnlinked, _unifiedActive) : null;
         int[]? firstDescriptorFailure = null;
         var observations = new Dictionary<ApparentFileIdentity, ObservedIdentity>();
         string boundary;
@@ -1438,10 +1469,33 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
 
         var runtimeOnlyExcludedBytes = 0L;
         var runtimeOnlyExcludedCount = 0;
-        foreach (var root in _attribution.Roots.Where(static root => root.Charged))
+        var traversal = _unifiedActive ? new ActiveRootTraversal
+            { BeforeDirectoryForComponent = BeforeRootDirectoryObservationForComponent } : null;
+        var roots = _attribution.Roots.Where(static root => root.Charged);
+        if (_unifiedActive)
         {
-            ObserveRoot(root, observations, errors);
+            foreach (var root in roots)
+            {
+                try { MonitoredPathRules.ResolveAbsoluteDirectory(root.Path, mustExist: true); }
+                catch (Exception error) when (error is IOException or UnauthorizedAccessException
+                    or DurableStorageExperimentException)
+                {
+                    errors.Add(error is DurableStorageExperimentException storage
+                        ? storage.Code : $"RootEnumeration{error.GetType().Name}");
+                }
+            }
+            roots = roots.DistinctBy(static root => Path.GetFullPath(root.Path))
+                .Where(root => !_attribution.Roots.Any(other => other.Charged
+                    && !MonitoredPathRules.PathsEqual(root.Path, other.Path)
+                    && MonitoredPathRules.IsContained(other.Path, root.Path)));
         }
+        foreach (var root in roots)
+        {
+            if (traversal is null) ObserveRoot(root, observations, errors);
+            else ObserveUnifiedRoot(root, active && !UnifiedActiveProtocol.RequiresExactRoots(boundary),
+                traversal, observations, errors);
+        }
+        if (traversal is not null) loss = loss! with { RootSampling = traversal.Measurement };
         foreach (var process in processes)
         {
             ObserveProcess(
@@ -1598,7 +1652,7 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
             alarm = "MonitorAlarmEncodingLimitExceeded";
         }
         var hardIncomplete = errors.Count != 0 || unclassified != 0;
-        var complete = !hardIncomplete && (loss is null || loss.Lost == 0);
+        var complete = !hardIncomplete && (loss is null || !loss.HasLoss);
         if (hardIncomplete || alarm is not null)
         {
             lock (_gate)
@@ -1743,6 +1797,59 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
             await observe(cancellationToken).ConfigureAwait(false);
             await delay(PollInterval, cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    private void ObserveUnifiedRoot(MonitoredAttributionRoot root, bool active, ActiveRootTraversal traversal,
+        Dictionary<ApparentFileIdentity, ObservedIdentity> observations, List<string> errors)
+    {
+        var resolvedRoot = Path.GetFullPath(root.Path);
+        try
+        {
+            // A declared root is an ownership anchor, not a disappearing child branch.
+            MonitoredPathRules.ResolveAbsoluteDirectory(resolvedRoot, mustExist: true);
+            traversal.Observe(resolvedRoot, _attribution.MaximumObservedPathUtf8Bytes,
+                path => active && IsActiveOwnedPath(path),
+                path =>
+                {
+                    BeforeRootPathObservationForComponent?.Invoke(path);
+                    MonitoredPathRules.RejectLinks(resolvedRoot, path);
+                    using var handle = ActiveRootTraversal.OpenFile(path);
+                    var native = LinuxStatxHandleMetadataObserver.Instance.Observe(handle);
+                    PrevalidationProtocol.Require(native.Length >= 0 && !string.IsNullOrWhiteSpace(native.Identity.Value),
+                        "RootMetadataInvalid");
+                    PrevalidationProtocol.Require(native.LinkCount == 1,
+                        native.LinkCount == 0 ? "UnexpectedUnlinkedRootFile" : "HardLinkRejected");
+                    var role = ClassifyPath(path);
+                    PrevalidationProtocol.Require(role is not null, "RootSamplingForeignRoot");
+                    PrevalidationProtocol.Require(observations.ContainsKey(native.Identity)
+                        || observations.Count < _attribution.MaximumTrackedIdentitiesPerSweep,
+                        "TrackedIdentityLimitExceeded");
+                    AddObservation(observations, native, role!, root.Charged, false, true, false,
+                        inRetainedHistory: IsRetainedHistoryPath(path));
+                    return true;
+                },
+                error => errors.Add(error is DurableStorageExperimentException storage
+                    ? storage.Code : $"RootObservation{error.GetType().Name}"));
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException
+            or DurableStorageExperimentException)
+        {
+            errors.Add(error is DurableStorageExperimentException storage
+                ? storage.Code : $"RootEnumeration{error.GetType().Name}");
+        }
+    }
+
+    private bool IsActiveOwnedPath(string path)
+    {
+        if ((!_activeOwnedRoots.Any(root => MonitoredPathRules.IsContained(root, path))
+                && !_activeOwnedFiles.Any(file => MonitoredPathRules.PathsEqual(file, path)))
+            || _activeOwnedRoots.Any(root => MonitoredPathRules.PathsEqual(root, path))
+            || _attribution.Roots.Any(root => MonitoredPathRules.PathsEqual(root.Path, path))
+            || _prevalidationScope?.CompletedRoots.Any(root => MonitoredPathRules.IsContained(root, path)) == true)
+            return false;
+        // Source package bytes are immutable during recovery, including a killed staging tree.
+        return !_recoveryStarted || !path.Split(Path.DirectorySeparatorChar)
+            .Contains("package-staging", StringComparer.Ordinal);
     }
 
     private void ObserveRoot(

@@ -108,6 +108,8 @@ internal static class PrevalidationGeometry
             if (context.UsesSampledLoss) widest = SampledLossProtocol.WorstCaseSummary();
             if (context.Manifest.SampledLoss?.Policy == ObservedUnlinkedProtocol.Policy)
                 widest = ObservedUnlinkedProtocol.WorstCaseSummary();
+            if (DescriptorObservationPolicy.IsUnifiedActive(context.Manifest.SampledLoss))
+                widest = UnifiedActiveProtocol.WorstCaseSummary();
             PrevalidationProtocol.Require(MonitoredSweepSummaryEncoding.EncodeLine(widest).Length <= 1_024,
                 "PrevalidationSummaryWidth");
             var coverage = new PrevalidationCoverage(PrevalidationProtocol.CoverageSchema, probe.Ordinal, probe.Id,
@@ -116,7 +118,7 @@ internal static class PrevalidationGeometry
                 measured.Summary.ObservedSweepBytes, null, null, "synthetic-inventory-and-encoding-only",
                 ["geometry-539-rooted-32-descriptor-only"])
             {
-                MonitoringComplete = (monitor.LossTotals?.Lost ?? 0) == 0,
+                MonitoringComplete = monitor.LossTotals?.HasLoss != true,
                 SampledLoss = monitor.LossTotals,
                 SampledAdmissible = context.UsesSampledLoss,
             };

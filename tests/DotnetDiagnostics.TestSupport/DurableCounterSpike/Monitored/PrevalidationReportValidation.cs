@@ -148,7 +148,7 @@ internal static class PrevalidationReportValidation
             if (outcome.SampledLoss is { } measurement) measurement.Validate();
             PrevalidationProtocol.Require(manifest.SampledLoss is not null
                 ? outcome.Outcome != "coverage-observed" || outcome.SampledLoss is not null
-                    && outcome.SampledAdmissible && outcome.MonitoringComplete == (outcome.SampledLoss.Lost == 0)
+                    && outcome.SampledAdmissible && outcome.MonitoringComplete == !outcome.SampledLoss.HasLoss
                 : outcome.SampledLoss is null && !outcome.SampledAdmissible,
                 "SampledLossCoveragePolicyMismatch");
             DescriptorObservationPolicy.ValidateMeasurement(manifest.SampledLoss, outcome.SampledLoss,
@@ -274,7 +274,8 @@ internal static class PrevalidationReportValidation
                     "PrevalidationGeometryMeasurementMissing");
                 if (manifest.SampledLoss is not null)
                 {
-                    var totals = summaries.Aggregate(SampledLossMeasurement.Empty(),
+                    var totals = summaries.Aggregate(SampledLossMeasurement.Empty(
+                        unifiedActive: DescriptorObservationPolicy.IsUnifiedActive(manifest.SampledLoss)),
                         static (sum, item) => SampledLossMeasurement.Merge(sum, item!.SampledLoss!));
                     PrevalidationProtocol.Require(MeasurementsEqual(totals, outcome.SampledLoss),
                         "SampledLossRawPopulationMismatch");
@@ -286,6 +287,7 @@ internal static class PrevalidationReportValidation
     internal static bool MeasurementsEqual(SampledLossMeasurement? left, SampledLossMeasurement? right)
         => left is null ? right is null : right is not null && left.Counts.SequenceEqual(right.Counts)
             && left.ObservedUnlinked == right.ObservedUnlinked
+            && left.RootSampling == right.RootSampling
             && (left.FirstLoss is null ? right.FirstLoss is null
                 : right.FirstLoss is not null && left.FirstLoss.SequenceEqual(right.FirstLoss));
 

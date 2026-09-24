@@ -765,7 +765,7 @@ internal static class MonitoredRunManifestValidator
             ?? throw Error("InvalidMonitoredManifest", "The monitored run manifest was empty.");
         if (!string.Equals(manifest.Schema, DescriptorObservationPolicy.Select(manifest.SampledLoss,
             MonitoredProtocolVersions.ManifestSchema, SampledLossProtocol.CampaignManifestSchema,
-            ObservedUnlinkedProtocol.CampaignManifestSchema), StringComparison.Ordinal))
+            ObservedUnlinkedProtocol.CampaignManifestSchema, UnifiedActiveProtocol.CampaignManifestSchema), StringComparison.Ordinal))
         {
             throw Error(
                 "UnsupportedMonitoredManifestSchema",
@@ -1417,7 +1417,8 @@ internal static class MonitoredRunManifestValidator
         if (!string.Equals(
                 receipt.Schema,
                 DescriptorObservationPolicy.Select(manifest.SampledLoss, MonitoredProtocolVersions.AuthorizationSchema,
-                    "durable-sampled-campaign-authorization/1", ObservedUnlinkedProtocol.CampaignAuthorizationSchema),
+                    "durable-sampled-campaign-authorization/1", ObservedUnlinkedProtocol.CampaignAuthorizationSchema,
+                    UnifiedActiveProtocol.CampaignAuthorizationSchema),
                 StringComparison.Ordinal)
             || !string.Equals(receipt.CampaignId, manifest.CampaignId, StringComparison.Ordinal)
             || !string.Equals(receipt.ManifestSha256, manifestHash, StringComparison.Ordinal)

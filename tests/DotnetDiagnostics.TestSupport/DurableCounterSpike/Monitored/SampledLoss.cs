@@ -14,9 +14,12 @@ internal sealed record SampledLossReadiness(string Schema, MonitoredBinaryIdenti
 internal sealed record SampledLossPopulation(int EnumeratedCandidates, int SuccessfullyClassified,
     int LostObservations, double? LossRate, string LostBytesAndTypes)
 {
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public RootSamplingPopulation? RootSampling { get; init; }
     internal static SampledLossPopulation? From(SampledLossMeasurement? measurement)
         => measurement is null ? null : new(measurement.Candidates, measurement.Classified,
-            measurement.Lost, measurement.LossRate, "unknown-not-zero");
+            measurement.Lost, measurement.LossRate, "unknown-not-zero")
+            { RootSampling = RootSamplingPopulation.From(measurement.RootSampling) };
 }
 
 // Fifteen fixed counters, not one entry per descriptor. Residual candidates are hard failures,
@@ -25,6 +28,9 @@ internal sealed record SampledLossMeasurement(int[] Counts, int[]? FirstLoss)
 {
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public ObservedUnlinkedMeasurement? ObservedUnlinked { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public RootSamplingMeasurement? RootSampling { get; init; }
+    [JsonIgnore] public bool HasLoss => Lost != 0 || RootSampling?.HasLoss == true;
     internal const int MaximumCandidatesPerSweep = 4 * 4_096;
     internal const int MaximumCandidatesPerEntry = MaximumCandidatesPerSweep * 2_048;
     [JsonIgnore] public int Candidates => checked(Counts[0] + Counts[5] + Counts[10]);
@@ -57,25 +63,40 @@ internal sealed record SampledLossMeasurement(int[] Counts, int[]? FirstLoss)
                 "SampledLossContextPopulationMismatch");
         }
         ObservedUnlinked?.Validate(maximum / 4, Classified);
+        RootSampling?.Validate(maximum / 4);
+        PrevalidationProtocol.Require(RootSampling is null || ObservedUnlinked is not null,
+            "RootSamplingPolicyMismatch");
     }
 
-    internal static SampledLossMeasurement Empty(bool observedUnlinked = false)
-        => new(new int[15], null) { ObservedUnlinked = observedUnlinked ? new(0, 0, 0) : null };
+    internal static SampledLossMeasurement Empty(bool observedUnlinked = false, bool unifiedActive = false)
+        => new(new int[15], null)
+        {
+            ObservedUnlinked = observedUnlinked || unifiedActive ? new(0, 0, 0) : null,
+            RootSampling = unifiedActive ? new(0, 0, 0, 0) : null,
+        };
 
     internal static SampledLossMeasurement Merge(SampledLossMeasurement left, SampledLossMeasurement right,
         int maximum = MaximumCandidatesPerEntry)
     {
         left.Validate(maximum);
         right.Validate(maximum);
+        PrevalidationProtocol.Require(left.Counts.Zip(right.Counts,
+            (a, b) => (long)a + b <= maximum).All(static fits => fits), "SampledLossCounterInvalid");
+        PrevalidationProtocol.Require((long)left.Candidates + right.Candidates <= maximum,
+            "SampledLossCounterOverflow");
         PrevalidationProtocol.Require((left.ObservedUnlinked is null) == (right.ObservedUnlinked is null)
-            || left.Candidates == 0 && left.ObservedUnlinked is null,
+            || left.Candidates == 0 && left.ObservedUnlinked is null && left.RootSampling is null,
             "ObservedUnlinkedMergePolicyMismatch");
+        PrevalidationProtocol.Require((left.RootSampling is null) == (right.RootSampling is null),
+            "RootSamplingMergePolicyMismatch");
         var result = new SampledLossMeasurement(
             left.Counts.Zip(right.Counts, static (a, b) => checked(a + b)).ToArray(),
             left.FirstLoss ?? right.FirstLoss)
         {
             ObservedUnlinked = right.ObservedUnlinked is { } observed
                 ? ObservedUnlinkedMeasurement.Merge(left.ObservedUnlinked ?? new(0, 0, 0), observed) : null,
+            RootSampling = right.RootSampling is { } root
+                ? RootSamplingMeasurement.Merge(left.RootSampling ?? new(0, 0, 0, 0), root, maximum / 4) : null,
         };
         result.Validate(maximum);
         return result;
@@ -159,7 +180,8 @@ internal static class SampledLossProtocol
 
     private static bool IsAdmissible(MonitoredSweepSummary summary)
         => summary.ErrorCount == 0 && summary.UnclassifiedCount == 0 && summary.Alarm is null
-            && summary.SampledLoss!.Candidates == summary.SampledLoss.Classified + summary.SampledLoss.Lost;
+            && summary.SampledLoss!.Candidates == summary.SampledLoss.Classified + summary.SampledLoss.Lost
+            && summary.SampledLoss.RootSampling?.Accounted != false;
 
     internal static void ValidateSummary(MonitoredSweepSummary summary)
     {
@@ -190,10 +212,14 @@ internal static class SampledLossProtocol
             "SampledLossNegativeMeasurement");
         MonitoredSweepSummaryEncoding.ValidateDescriptorFailure(summary);
         PrevalidationProtocol.Require(summary.Complete ==
-            (summary.ErrorCount == 0 && summary.UnclassifiedCount == 0 && loss.Lost == 0)
+            (summary.ErrorCount == 0 && summary.UnclassifiedCount == 0 && !loss.HasLoss)
             && (summary.ErrorCount == 0 && summary.UnclassifiedCount == 0
                 ? summary.FirstErrorCode is null && loss.Candidates == loss.Classified + loss.Lost
+                    && loss.RootSampling?.Accounted != false
                 : summary.FirstErrorCode is not null), "SampledLossSummaryMismatch");
+        PrevalidationProtocol.Require(loss.RootSampling?.HasLoss != true
+            || summary.ActiveStorageStage && !UnifiedActiveProtocol.RequiresExactRoots(summary.Boundary),
+            "RootSamplingQuiescentLoss");
     }
 
     internal static string CampaignBindingHash(MonitoredRunManifest manifest)
@@ -256,6 +282,8 @@ internal sealed class SampledSweepConverter : JsonConverter<MonitoredSweepSummar
     {
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public long[]? A { get; init; }
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public int[]? Q { get; init; }
     }
 
     public override MonitoredSweepSummary Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
@@ -280,7 +308,7 @@ internal sealed class SampledSweepConverter : JsonConverter<MonitoredSweepSummar
         {
             throw PrevalidationProtocol.Error("SampledLossWireShape", "Sampled sweep groups have invalid types.");
         }
-        if (wire is not { V: 1 or 2, N.Length: 30, T.Length: 4, F.Length: 4, L: not null }
+        if (wire is not { V: 1 or 2 or 3, N.Length: 30, T.Length: 4, F.Length: 4, L: not null }
             || wire.T[0] is null || wire.T[1] is null)
         {
             throw PrevalidationProtocol.Error("SampledLossWireShape", "Sampled sweep groups are missing or malformed.");
@@ -289,6 +317,8 @@ internal sealed class SampledSweepConverter : JsonConverter<MonitoredSweepSummar
             ? !document.RootElement.TryGetProperty("a", out _)
             : wire.A is { Length: 3 } a && a[0] is >= 0 and <= 4_096
                 && a[1] is >= 0 and <= 4_096 && a[2] >= 0, "ObservedUnlinkedWireShape");
+        PrevalidationProtocol.Require(wire.V == 3 ? wire.Q is { Length: 4 }
+            : !document.RootElement.TryGetProperty("q", out _), "RootSamplingWireShape");
         var n = wire.N;
         int I(int index)
         {
@@ -308,6 +338,7 @@ internal sealed class SampledSweepConverter : JsonConverter<MonitoredSweepSummar
             SampledLoss = new(wire.L, wire.X)
             {
                 ObservedUnlinked = wire.A is { } values ? new((int)values[0], (int)values[1], values[2]) : null,
+                RootSampling = wire.Q is { } q ? new(q[0], q[1], q[2], q[3]) : null,
             },
         };
         SampledLossProtocol.ValidateSummary(result);
@@ -324,7 +355,7 @@ internal sealed class SampledSweepConverter : JsonConverter<MonitoredSweepSummar
             return;
         }
         SampledLossProtocol.ValidateSummary(s);
-        var wire = new Wire(loss.ObservedUnlinked is null ? 1 : 2,
+        var wire = new Wire(loss.RootSampling is not null ? 3 : loss.ObservedUnlinked is null ? 1 : 2,
             [s.Sequence, s.StartedTimestamp, s.CompletedTimestamp, s.ObservedSweepBytes, s.MaximumObservedSweepBytes,
                 s.PackageBytes, s.RecoveryBytes, s.HistoryBytes, s.WorkspaceBytes, s.EvidenceBytes, s.OpenUnlinkedBytes,
                 s.RuntimeOnlyExcludedBytes, s.IdentityCount, s.MaximumIdentityCount, s.DescriptorOnlyIdentityCount,
@@ -338,6 +369,8 @@ internal sealed class SampledSweepConverter : JsonConverter<MonitoredSweepSummar
         {
             A = loss.ObservedUnlinked is { } observed
                 ? [observed.Identities, observed.NativeTemporaryIdentities, observed.NativeTemporaryBytes] : null,
+            Q = loss.RootSampling is { } root
+                ? [root.KnownFileCandidates, root.ObservedFiles, root.LostFilePaths, root.LostDirectoryBranches] : null,
         };
         JsonSerializer.Serialize(writer, wire, Legacy(options));
     }

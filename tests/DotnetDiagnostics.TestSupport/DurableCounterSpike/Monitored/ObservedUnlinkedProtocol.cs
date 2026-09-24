@@ -66,17 +66,20 @@ internal static class ObservedUnlinkedProtocol
     }
 
     internal static PrevalidationEvidenceValidation ValidateReadiness(MonitoredRunManifest campaign)
+        => ValidateReadinessCore(campaign, unifiedActive: false);
+
+    internal static PrevalidationEvidenceValidation ValidateReadinessCore(MonitoredRunManifest campaign, bool unifiedActive)
     {
         var binding = campaign.SampledLoss ?? throw PrevalidationProtocol.Error(
             "ObservedUnlinkedReadinessMissing", "A prospective observed-unlinked campaign requires a policy binding.");
-        var campaignHash = CampaignBindingHash(campaign);
+        var campaignHash = unifiedActive ? UnifiedActiveProtocol.CampaignBindingHash(campaign) : CampaignBindingHash(campaign);
         PrevalidationProtocol.Require(binding.RuntimeEnvironmentSha256 == PrevalidationProtocol.RuntimeEnvironmentHash(),
             "ObservedUnlinkedEnvironmentChanged");
         var artifact = binding.Readiness ?? throw PrevalidationProtocol.Error(
             "ObservedUnlinkedReadinessMissing", "Fresh sealed all-eight coverage and independent review are required.");
         PrevalidationProtocol.VerifyArtifact(artifact);
         var receipt = PrevalidationProtocol.Read<SampledLossReadiness>(artifact.Path);
-        PrevalidationProtocol.Require(receipt.Schema == ReadinessSchema
+        PrevalidationProtocol.Require(receipt.Schema == (unifiedActive ? UnifiedActiveProtocol.ReadinessSchema : ReadinessSchema)
             && receipt.CampaignBindingSha256 == campaignHash
             && !string.IsNullOrWhiteSpace(receipt.Reviewer) && receipt.ReviewedAt != default,
             "ObservedUnlinkedReadinessBindingMismatch");
@@ -84,7 +87,8 @@ internal static class ObservedUnlinkedProtocol
         PrevalidationProtocol.VerifyArtifact(receipt.Seal);
         var manifest = PrevalidationProtocol.Read<PrevalidationManifest>(receipt.PrevalidationManifest.Path);
         PrevalidationProtocol.ValidateShape(manifest);
-        PrevalidationProtocol.Require(manifest.SampledLoss is { Policy: Policy } accepted
+        PrevalidationProtocol.Require(manifest.SampledLoss is { } accepted
+            && accepted.Policy == (unifiedActive ? UnifiedActiveProtocol.Policy : Policy)
             && accepted.ProtocolSha256 == binding.ProtocolSha256
             && accepted.ContextMapSha256 == binding.ContextMapSha256
             && manifest.SourceCommits == campaign.SourceCommits
@@ -199,20 +203,25 @@ internal static class ObservedUnlinkedProtocol
 // Dispatch is explicit: the frozen v5 validator and readiness route remain v5-only.
 internal static class DescriptorObservationPolicy
 {
-    internal static bool IsObservedUnlinked(SampledLossBinding? binding)
-        => binding?.Policy == ObservedUnlinkedProtocol.Policy;
+    internal static bool IsUnifiedActive(SampledLossBinding? binding)
+        => binding?.Policy == UnifiedActiveProtocol.Policy;
 
-    internal static string Select(SampledLossBinding? binding, string strict, string sampled, string observed)
-        => binding is null ? strict : IsObservedUnlinked(binding) ? observed : sampled;
+    internal static bool IsObservedUnlinked(SampledLossBinding? binding)
+        => binding?.Policy is ObservedUnlinkedProtocol.Policy or UnifiedActiveProtocol.Policy;
+
+    internal static string Select(SampledLossBinding? binding, string strict, string sampled, string observed, string unified)
+        => binding is null ? strict : IsUnifiedActive(binding) ? unified : IsObservedUnlinked(binding) ? observed : sampled;
 
     internal static void ValidateBinding(SampledLossBinding binding, string? repository = null)
     {
-        if (IsObservedUnlinked(binding)) ObservedUnlinkedProtocol.ValidateBinding(binding, repository);
+        if (IsUnifiedActive(binding)) UnifiedActiveProtocol.ValidateBinding(binding, repository);
+        else if (IsObservedUnlinked(binding)) ObservedUnlinkedProtocol.ValidateBinding(binding, repository);
         else SampledLossProtocol.ValidateBinding(binding, repository);
     }
 
     internal static PrevalidationEvidenceValidation ValidateReadiness(MonitoredRunManifest campaign)
-        => IsObservedUnlinked(campaign.SampledLoss) ? ObservedUnlinkedProtocol.ValidateReadiness(campaign)
+        => IsUnifiedActive(campaign.SampledLoss) ? UnifiedActiveProtocol.ValidateReadiness(campaign)
+            : IsObservedUnlinked(campaign.SampledLoss) ? ObservedUnlinkedProtocol.ValidateReadiness(campaign)
             : SampledLossProtocol.ValidateReadiness(campaign);
 
     internal static void ValidateMeasurement(SampledLossBinding? binding, SampledLossMeasurement? measurement,
@@ -224,7 +233,8 @@ internal static class DescriptorObservationPolicy
             return;
         }
         PrevalidationProtocol.Require(binding is not null
-            && (measurement.ObservedUnlinked is not null) == IsObservedUnlinked(binding),
+            && (measurement.ObservedUnlinked is not null) == IsObservedUnlinked(binding)
+            && (measurement.RootSampling is not null) == IsUnifiedActive(binding),
             "ObservationPolicyMeasurementMismatch");
         measurement.Validate();
     }
