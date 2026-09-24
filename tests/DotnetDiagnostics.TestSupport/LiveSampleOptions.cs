@@ -8,6 +8,7 @@ namespace DotnetDiagnostics.TestSupport;
 public sealed record LiveSampleOptions
 {
     internal Func<System.Diagnostics.Process, Task>? ProcessStarted { get; init; }
+    internal Func<CancellationToken, Task>? BeforeTermination { get; init; }
 
     /// <summary>Extra environment variables layered on top of the harness defaults
     /// (<c>DOTNET_NOLOGO=1</c>, <c>ASPNETCORE_ENVIRONMENT=Development</c>). Overrides win.</summary>

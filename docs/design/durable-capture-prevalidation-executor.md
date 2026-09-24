@@ -175,6 +175,26 @@ mandatory post-kill inventory and recovery launch. It does not stop/restart the
 periodic loop. Any resulting observation gap still fails the unchanged cadence
 check.
 
+Live-target startup failure and normal disposal use the same owned termination
+handoff. The worker's existing target-termination request causes the authority
+to drain the in-flight sweep, validate the still-live exact owner, signal it,
+confirm exit and remove it under the sweep gate before releasing the worker.
+An already-dead owner remains an unexpected-death failure; native permission
+and I/O errors are not reclassified. The later `process-terminated` event
+acknowledges that confirmed handoff, not a second registry removal.
+Startup cleanup installs the hook before readiness, so failure before
+`StartPublishedAsync` returns cannot silently kill an already-registered target.
+The handoff, exit and stdout/stderr drains share the existing five-second
+cleanup budget. Failed or timed-out cooperation still signals the owned child
+but remains a cleanup failure, never successful monitoring.
+
+HTTP startup checks the sample's existing `/weatherforecast` endpoint.
+`CoreClrSample` has no `/` endpoint; waiting for a successful `/` response
+cannot establish readiness. The ten-second startup deadline, live warmup,
+capture/request timing, source floor, observation policy and resource caps are
+unchanged. This is an implementation correction, not revised v7 semantics or
+permission to retry historical attempts.
+
 Harness RSS aggregates coordinator and harness against the unchanged 256 MiB
 allowance; diagnostic and target limits remain 512/768 MiB. Role CPU totals
 retain the last observed contribution of confirmed-dead processes rather than

@@ -533,6 +533,7 @@ internal static class MonitoredCampaignRunner
         var killedAtBarrier = false;
         var terminatedForMonitor = false;
         var workerTerminationAnnounced = false;
+        MonitoredProcessIdentity? confirmedTargetTermination = null;
         var finalSweepComplete = false;
         string? finalSweepAlarm = null;
         string? workerFailureCode = null;
@@ -614,7 +615,12 @@ internal static class MonitoredCampaignRunner
                             terminatedForMonitor = true;
                             break;
                         }
-                        monitor.MarkIntentionalTermination(terminatingTarget);
+                        using (var targetProcess = Process.GetProcessById(terminatingTarget.ProcessId))
+                        {
+                            await monitor.KillOwnedAsync(targetProcess, terminatingTarget, deadline.Token)
+                                .ConfigureAwait(false);
+                        }
+                        confirmedTargetTermination = terminatingTarget;
                         var processRelease = FormattableString.Invariant(
                             $"release:process-termination:{terminatingTarget.ProcessId}:{terminatingTarget.LinuxStartTimeTicks}");
                         await process.StandardInput.WriteLineAsync(processRelease).ConfigureAwait(false);
@@ -655,8 +661,10 @@ internal static class MonitoredCampaignRunner
                         break;
                     case "process-terminated" when workerEvent.ProcessRole == "target":
                         var terminatedTarget = RequireTrackedTarget(workerEvent, trackedTargets);
-                        monitor.ConfirmTerminatedAndRemove(terminatedTarget);
+                        PrevalidationProtocol.Require(confirmedTargetTermination == terminatedTarget,
+                            "IntentionalTerminationNotConfirmed");
                         trackedTargets.Remove(terminatedTarget);
+                        confirmedTargetTermination = null;
                         break;
                     case "process" when workerEvent.ProcessRole == "diagnostic":
                         if (workerEvent.ProcessId != workerIdentity.ProcessId
