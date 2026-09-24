@@ -1177,6 +1177,7 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
     internal int MaximumSummaryRecordBytes => _writer.MaximumObservedRecordBytes;
     internal Task<string> TerminalIssue => _terminalIssue.Task;
     internal Action<string, int>? BeforeDescriptorOperationForComponent { private get; set; }
+    internal Action<string>? BeforeRootPathObservationForComponent { private get; set; }
 
     internal void RegisterGeometryFixtureOwner(MonitoredProcessIdentity owner)
     {
@@ -1770,6 +1771,7 @@ internal sealed class MonitoredStorageMonitor : IAsyncDisposable
                     errors.Add("TrackedIdentityLimitExceeded");
                     return;
                 }
+                BeforeRootPathObservationForComponent?.Invoke(path);
                 ObservePath(path, root.Role, root.Charged, isUnlinked: false, observations, errors);
             }
         }
