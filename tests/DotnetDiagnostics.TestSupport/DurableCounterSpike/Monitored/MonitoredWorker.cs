@@ -1076,7 +1076,7 @@ internal static class MonitoredWorkerExecutor
                     && accounting.Committed == accounting.Offered;
             var pass = coverageValid
                 && commitsValid
-                && requestMetrics.Scheduled > 0
+                && BoundedLiveRequestLoad.HasCompleteSchedule(requestMetrics)
                 && requestMetrics.Completed > 0
                 && (factory is null
                     || package is not null
@@ -2650,22 +2650,38 @@ internal sealed class BoundedLiveRequestLoad
         {
             Timeout = Timeout.InfiniteTimeSpan,
         };
+        await RunAsync(client, duration, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal async Task RunAsync(
+        HttpClient client,
+        TimeSpan duration,
+        CancellationToken cancellationToken,
+        Func<TimeSpan>? elapsed = null,
+        Func<TimeSpan, CancellationToken, Task>? delay = null)
+    {
         var tasks = new List<Task>(MaximumRetainedSamples);
         var watch = Stopwatch.StartNew();
+        elapsed ??= () => watch.Elapsed;
+        delay ??= static (value, token) => Task.Delay(value, token);
         var interval = TimeSpan.FromMilliseconds(50);
         var next = TimeSpan.Zero;
-        while (watch.Elapsed < duration)
+        while (true)
         {
-            var delay = next - watch.Elapsed;
-            if (delay > TimeSpan.Zero)
-            {
-                await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
-            }
-            var scheduledAt = watch.Elapsed;
-            if (scheduledAt >= duration)
+            cancellationToken.ThrowIfCancellationRequested();
+            var dispatchedAt = elapsed();
+            if (dispatchedAt >= duration)
             {
                 break;
             }
+            var remaining = (next < duration ? next : duration) - dispatchedAt;
+            if (remaining > TimeSpan.Zero)
+            {
+                await delay(remaining, cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+            // Cohort membership follows the fixed slot, not timer delivery jitter.
+            var scheduledAt = next;
             var skipped = false;
             lock (_gate)
             {
@@ -2675,6 +2691,12 @@ internal sealed class BoundedLiveRequestLoad
                 }
                 else
                 {
+                    if (tasks.Count == MaximumRetainedSamples)
+                    {
+                        throw new DurableStorageExperimentException(
+                            "LiveRequestTaskLimit",
+                            "The live workload exceeded its 1,000-request retention budget.");
+                    }
                     _inFlight++;
                 }
             }
@@ -2684,18 +2706,19 @@ internal sealed class BoundedLiveRequestLoad
             {
                 continue;
             }
-            if (tasks.Count == MaximumRetainedSamples)
-            {
-                throw new DurableStorageExperimentException(
-                    "LiveRequestTaskLimit",
-                    "The live workload exceeded its 1,000-request retention budget.");
-            }
             tasks.Add(SendAsync(client, scheduledAt, cancellationToken));
         }
-        _population.RecordSchedulingStopped(watch.Elapsed);
+        _population.RecordSchedulingStopped(elapsed());
         await Task.WhenAll(tasks).ConfigureAwait(false);
-        _population.RecordEpisodeCompleted(watch.Elapsed);
+        _population.RecordEpisodeCompleted(elapsed());
     }
+
+    internal static bool HasCompleteSchedule(MonitoredRequestMetrics? metrics)
+        => metrics is { Scheduled: 600, EpisodeScheduled: 880 }
+            && double.IsFinite(metrics.SchedulingElapsedSeconds)
+            && metrics.SchedulingElapsedSeconds >= 44
+            && double.IsFinite(metrics.EpisodeElapsedSeconds)
+            && metrics.EpisodeElapsedSeconds >= metrics.SchedulingElapsedSeconds;
 
     internal double ElapsedSeconds => _population.Snapshot().SchedulingElapsedSeconds;
 

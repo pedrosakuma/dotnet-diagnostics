@@ -1154,22 +1154,7 @@ public sealed partial class MonitoredRunnerTests : IDisposable
     [Fact]
     public void CompleteEvidenceWithNoEligibleCandidateIsConclusiveOnlyAboutInconclusiveness()
     {
-        var requests = new MonitoredRequestMetrics(
-            Scheduled: 100,
-            SkippedAtConcurrencyLimit: 0,
-            Completed: 100,
-            Succeeded: 100,
-            Failed: 0,
-            RetainedSamples: 100,
-            P50Milliseconds: 1,
-            P95Milliseconds: 2,
-            EpisodeScheduled: 100,
-            EpisodeSkippedAtConcurrencyLimit: 0,
-            EpisodeCompleted: 100,
-            EpisodeSucceeded: 100,
-            EpisodeFailed: 0,
-            SchedulingElapsedSeconds: 44,
-            EpisodeElapsedSeconds: 44);
+        var requests = RequestMetrics(2);
         var outcomes = MonitoredExecutionPlanner.Expand()
             .Select(execution => new MonitoredCaseOutcome(
                 execution.Ordinal,
@@ -1215,6 +1200,60 @@ public sealed partial class MonitoredRunnerTests : IDisposable
             increases: [1, 30, 20]);
 
         MonitoredDecisionEngine.LiveScreensPass("A", outcomes).Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("E", 599, 880)]
+    [InlineData("E", 601, 880)]
+    [InlineData("A", 599, 880)]
+    [InlineData("A", 601, 880)]
+    [InlineData("B", 599, 880)]
+    [InlineData("B", 601, 880)]
+    [InlineData("E", 600, 879)]
+    [InlineData("A", 600, 879)]
+    [InlineData("B", 600, 879)]
+    [InlineData("B", 600, 881)]
+    public void LiveScheduleCoverageCannotBeAcceptedByWorkerOrCampaign(
+        string candidate, int scheduled, int episodeScheduled)
+    {
+        var requests = RequestMetrics(2) with
+        {
+            Scheduled = scheduled,
+            Completed = scheduled,
+            Succeeded = scheduled,
+            RetainedSamples = scheduled,
+            EpisodeScheduled = episodeScheduled,
+            EpisodeCompleted = episodeScheduled,
+            EpisodeSucceeded = episodeScheduled,
+        };
+        var outcomes = LiveP95Outcomes([2, 2, 2], [0, 0, 0])
+            .Select(outcome => outcome.CaseId == "L1" && outcome.Candidate == candidate
+                ? outcome with { Worker = outcome.Worker! with { Requests = requests } }
+                : outcome).ToArray();
+
+        BoundedLiveRequestLoad.HasCompleteSchedule(requests).Should().BeFalse();
+        MonitoredDecisionEngine.LiveScreensPass(candidate == "E" ? "A" : candidate, outcomes)
+            .Should().BeFalse();
+        var decision = MonitoredDecisionEngine.Decide(outcomes);
+        decision.CompleteEvidence.Should().BeFalse();
+        decision.Recommendation.Should().Be("inconclusive");
+    }
+
+    [Theory]
+    [InlineData(43.95, 44)]
+    [InlineData(44, 43.95)]
+    [InlineData(double.NaN, 44)]
+    [InlineData(44, double.NaN)]
+    [InlineData(double.PositiveInfinity, double.PositiveInfinity)]
+    [InlineData(44, double.PositiveInfinity)]
+    public void CompleteNominalCountsCannotReplaceActualElapsedEvidence(double scheduling, double episode)
+    {
+        var requests = RequestMetrics(2) with
+        {
+            SchedulingElapsedSeconds = scheduling,
+            EpisodeElapsedSeconds = episode,
+        };
+        BoundedLiveRequestLoad.HasCompleteSchedule(requests).Should().BeFalse();
     }
 
     [Fact]
@@ -2328,6 +2367,10 @@ public sealed partial class MonitoredRunnerTests : IDisposable
         PrevalidationExecutor.HasFrozenSourceCoverage(probe, worker).Should().BeTrue();
         PrevalidationExecutor.HasFrozenSourceCoverage(probe, worker with { SourceKeys = 0 }).Should().BeFalse();
         PrevalidationExecutor.HasFrozenSourceCoverage(probe, worker with { SourceTicks = 1 }).Should().BeFalse();
+        PrevalidationExecutor.HasFrozenSourceCoverage(probe,
+            worker with { Requests = worker.Requests! with { Scheduled = 599 } }).Should().BeFalse();
+        PrevalidationExecutor.HasFrozenSourceCoverage(probe,
+            worker with { Requests = worker.Requests! with { Scheduled = 601 } }).Should().BeFalse();
         PrevalidationExecutor.HasFrozenSourceCoverage(PrevalidationProtocol.Plan()[3], worker).Should().BeFalse();
     }
 
