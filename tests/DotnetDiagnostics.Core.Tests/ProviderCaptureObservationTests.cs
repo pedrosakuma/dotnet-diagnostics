@@ -403,6 +403,50 @@ public sealed class ProviderCaptureObservationTests
         Assert.Equal("Microsoft-Windows-DotNETRuntime", sink.LossSource);
     }
 
+    [Fact]
+    public void CrashGuard_CallbackAndRetainedEvidenceRedactSecretsAndBoundStackFrames()
+    {
+        var sink = new BoundedSink(140);
+        var stack = Enumerable.Repeat("at 服务.Run() Password=frame-secret", 130).ToArray();
+        EventPipeCrashGuardCollector.RecordCrashObservation(sink, Start, 7, "ExceptionThrown_V1", false,
+            "Exception", "Password=message-secret", null, stack, new SensitiveDataRedactor());
+        var occurrence = Assert.Single(sink.Records);
+        Assert.Equal("crashguard.exception.observed", occurrence.Category);
+        Assert.False(Field(occurrence, "explicitUnhandledEvent").Boolean);
+        Assert.Equal(2, Field(occurrence, "omittedStackFrames").Integer);
+        Assert.Equal(CaptureObservationValueKind.Null, Field(occurrence, "hResult").Kind);
+        Assert.Equal(128, occurrence.Fields.Count(f => f.Name.StartsWith("stack.", StringComparison.Ordinal)));
+        var exception = new CrashGuardExceptionEvent(Start, "Exception", "Password=message-secret", "0x1", 7,
+            "ExceptionThrown_V1", false, stack);
+        var snapshot = new CrashGuardSnapshot(1, Start, TimeSpan.FromSeconds(1), false, null, false,
+            1, [], [exception], null, []) { RecentCap = 1 };
+        EventPipeCrashGuardCollector.RecordRetainedEvidence(sink, snapshot, false);
+        Assert.Equal(128, sink.Records.Count(r => r.Category == "crashguard.retained-frame"));
+        Assert.Equal(2, Field(sink.Records.Single(r => r.Category == "crashguard.retained-evidence"), "omittedStackFrames").Integer);
+        Assert.All(sink.Records, record =>
+        {
+            Assert.DoesNotContain("frame-secret", record.Name ?? "");
+            Assert.DoesNotContain("secret", string.Join(" ", record.Fields.Select(f => f.Text)));
+        });
+        Assert.Contains("message-secret", snapshot.Exceptions[0].ExceptionMessage);
+        Assert.Equal(130, snapshot.Exceptions[0].ManagedStack.Count);
+    }
+
+    [Fact]
+    public void CrashGuard_PayloadlessExplicitEventKeepsUnknownsAndDoesNotRetryRejectedSink()
+    {
+        var sink = new BoundedSink(0);
+        EventPipeCrashGuardCollector.RecordCrashObservation(sink, Start, 7, "FailFast", true,
+            null, null, null, null, new SensitiveDataRedactor());
+        Assert.Equal(1, sink.Attempts);
+        Assert.Equal(1, sink.Rejections);
+        var record = sink.LastAttempt!;
+        Assert.True(Field(record, "explicitUnhandledEvent").Boolean);
+        Assert.False(Field(record, "stackAvailable").Boolean);
+        Assert.Equal(CaptureObservationValueKind.Null, Field(record, "exceptionType").Kind);
+        Assert.Equal(CaptureObservationValueKind.Null, Field(record, "message").Kind);
+    }
+
     private static CaptureObservationField Field(CaptureObservation observation, string name) =>
         Assert.Single(observation.Fields, field => field.Name == name);
 
