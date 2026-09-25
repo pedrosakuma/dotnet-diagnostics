@@ -2,6 +2,7 @@ using System.Text.Json;
 using DotnetDiagnostics.Core.CaptureRecording;
 using DotnetDiagnostics.Core.Captures;
 using DotnetDiagnostics.Core.Drilldown;
+using DotnetDiagnostics.Core.EventSources;
 
 namespace DotnetDiagnostics.Core.UseCases;
 
@@ -448,6 +449,14 @@ public sealed class DurableCaptureUseCases
     private void WriteSnapshot(CaptureWriter writer, string id, string kind, object artifact, CaptureRecordingNode? node)
     {
         var encoded = CaptureArtifactCodec.Encode(kind, artifact, _options.MaxSnapshotBytes);
+        if (artifact is EventSourceCapture)
+        {
+            // Bound and validate before cloning: arbitrary DTO enumerables must not turn the
+            // sanitizer's materialization into an unbounded allocation ahead of the codec cap.
+            var bounded = (EventSourceCapture)CaptureArtifactCodec.Decode(
+                kind, CaptureArtifactCodec.FormatVersion, encoded, _options.MaxSnapshotBytes);
+            encoded = CaptureArtifactCodec.Encode(kind, EventSourceDurableSanitizer.Sanitize(bounded), _options.MaxSnapshotBytes);
+        }
         writer.SetSnapshot(id, DurableCaptureSnapshotMetadata.Version,
             DurableCaptureSnapshotMetadata.Encode(kind, CaptureArtifactCodec.FormatVersion, encoded,
                 DurableCaptureSnapshotMetadata.Stream(node), _options.MaxSnapshotBytes));

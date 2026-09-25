@@ -77,13 +77,14 @@ internal static class DurableCaptureCompositionCodec
         {
             RequireProperties(child, "artifactId", "kind", "name", "parentArtifactId", "offered", "accepted",
                 "sourceRejected", "sourceReportsRejected", "sources", "error", "cancelled", "snapshotAvailable");
-            var id = Text(child, "artifactId");
+            var id = ResolveIdentity(capture, Text(child, "artifactId"));
             var childKind = Text(child, "kind");
             var name = Text(child, "name");
-            var parent = Text(child, "parentArtifactId");
-            if (id == artifactId || !ids.Add(id) || !capture.Artifacts.Any(a =>
-                a.ArtifactId == id && a.Kind == childKind && a.Name == name))
-                throw new InvalidDataException("Composition references are unavailable; open retained child artifacts individually.");
+            var parent = ResolveIdentity(capture, Text(child, "parentArtifactId"));
+            if (id == artifactId) throw new InvalidDataException("Composition cannot reference itself as a child.");
+            if (!ids.Add(id)) throw new InvalidDataException("Composition contains a duplicate child identity.");
+            if (!capture.Artifacts.Any(a => a.ArtifactId == id && a.Kind == childKind && a.Name == name))
+                throw new InvalidDataException("Composition child identity, kind or name differs from artifact metadata.");
             var offered = Nonnegative(child.GetProperty("offered"));
             var accepted = Nonnegative(child.GetProperty("accepted"));
             if (accepted > offered) throw new InvalidDataException("Invalid composition admission accounting.");
@@ -128,6 +129,19 @@ internal static class DurableCaptureCompositionCodec
     {
         if (value is { } known) writer.WriteNumber(name, known);
         else writer.WriteNull(name);
+    }
+
+    private static string ResolveIdentity(CaptureInfo capture, string reference)
+    {
+        CaptureArtifactInfo? found = null;
+        foreach (var artifact in capture.Artifacts)
+        {
+            if (artifact.ArtifactId != reference && artifact.SourceArtifactId != reference) continue;
+            if (found is not null) throw new InvalidDataException("Composition artifact identity is ambiguous.");
+            found = artifact;
+        }
+        return found?.ArtifactId
+            ?? throw new InvalidDataException("Composition references are unavailable; open retained child artifacts individually.");
     }
 
     private static string Text(JsonElement element, string property)

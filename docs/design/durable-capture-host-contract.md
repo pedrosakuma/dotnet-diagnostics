@@ -29,6 +29,12 @@ before returning. Snapshot rows are not counted as raw observations. Source loss
 reports sum across sessions, including repeated names; any unknown report remains
 unknown, and absence is never treated as zero.
 
+EventSource compatibility payloads are cloned through the shared durable
+sanitizer after bounded codec validation. Name-based credentials and default
+value patterns are redacted only in the durable copy; the original
+diagnostic result and original handle artifact are not mutated. Authorizing an
+unsafe provider does not authorize writing raw credentials into a package.
+
 Compatibility snapshots carry a separately versioned, bounded metadata wrapper.
 `OpenAsync` exposes `RecordStreamAvailable` and `RecordStream` (per-artifact
 admission counts and source-name loss). A snapshot alone does not declare a
@@ -111,8 +117,8 @@ interrupted capture with explicit group completion metadata. Unscoped multiple
 or mismatched registrations still fail rather than misattribute observations.
 Unknown returned-only DTOs also fail; there is no reflection serializer fallback.
 
-**Recovery limitation:** the current store regenerates artifact IDs while
-copying compatibility snapshots. Recovered individual child snapshots work,
-but old group references deliberately fail validation rather than guessing by
-name/PID or reading the source package. An explicit old-to-new artifact mapping
-is required in the storage recovery contract to reopen recovered group wrappers.
+Recovery regenerates artifact IDs while preserving the original ID in the
+bounded `SourceArtifactId` field. Group decoding resolves child and parent
+references through those explicit aliases, returning current destination IDs.
+It never guesses by name/PID or reads the source package. Missing or ambiguous
+aliases fail closed; recovery leaves the original wrapper bytes unchanged.

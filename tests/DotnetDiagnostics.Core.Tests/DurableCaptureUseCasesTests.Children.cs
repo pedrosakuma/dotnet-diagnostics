@@ -163,9 +163,13 @@ public sealed partial class DurableCaptureUseCasesTests
         Assert.Equal("TargetExited", metadata.Error!.Kind);
         Assert.True(metadata.Cancelled);
         Assert.True(metadata.SnapshotAvailable);
-        // Store recovery creates fresh IDs. Never resolve old group references by name or PID.
-        await Assert.ThrowsAsync<CaptureStoreException>(() =>
-            service.OpenAsync(recovered.CaptureId, recoveredRoot.ArtifactId, Owner));
+        var reopened = await service.OpenAsync(recovered.CaptureId, recoveredRoot.ArtifactId, Owner);
+        var currentChild = Assert.Single(reopened.Composition!.Children);
+        Assert.Equal(childInfo.ArtifactId, currentChild.ArtifactId);
+        Assert.Equal(recoveredRoot.ArtifactId, currentChild.ParentArtifactId);
+        Assert.Equal("TargetExited", currentChild.Error!.Kind);
+        Assert.Equal(metadata.ArtifactId, childInfo.SourceArtifactId);
+        Assert.NotEqual(metadata.ArtifactId, currentChild.ArtifactId);
     }
 
     [Fact]
@@ -261,5 +265,32 @@ public sealed partial class DurableCaptureUseCasesTests
                 "\"compositionVersion\":1,\"compositionVersion\":1,", StringComparison.Ordinal));
         Assert.Throws<InvalidDataException>(() => DurableCaptureCompositionCodec.Decode("batch", root.ArtifactId,
             new(DurableCaptureCompositionCodec.SnapshotVersion, duplicateJson), info, options));
+    }
+
+    [Fact]
+    public void CompositionResolvesOnlyExplicitRecoveryAliasesAndRejectsAmbiguousAliases()
+    {
+        var oldRoot = Guid.NewGuid().ToString("N");
+        var oldChild = Guid.NewGuid().ToString("N");
+        var root = new CaptureArtifactInfo(Guid.NewGuid().ToString("N"), "batch", "root", SourceArtifactId: oldRoot);
+        var child = new CaptureArtifactInfo(Guid.NewGuid().ToString("N"), "counters", "child", SourceArtifactId: oldChild);
+        var info = new CaptureInfo(Guid.NewGuid().ToString("N"), Owner.OwnerId, "batch", null,
+            At, CaptureState.Sealed, [root, child], new());
+        var composition = new DurableCaptureComposition([new(oldChild, "counters", "child", oldRoot,
+            0, 0, null, new Dictionary<string, long?>(), 0, null, false, true)]);
+        var bytes = DurableCaptureCompositionCodec.Encode("batch", composition, new CaptureStoreOptions().MaxSnapshotBytes);
+        var snapshot = new CaptureSnapshot(DurableCaptureCompositionCodec.SnapshotVersion, bytes);
+        var decoded = DurableCaptureCompositionCodec.Decode("batch", root.ArtifactId, snapshot, info, new());
+        Assert.Equal(child.ArtifactId, Assert.Single(decoded.Children).ArtifactId);
+        Assert.Equal(root.ArtifactId, decoded.Children[0].ParentArtifactId);
+        var missingAlias = info with { Artifacts = [root, child with { SourceArtifactId = null }] };
+        Assert.Throws<InvalidDataException>(() =>
+            DurableCaptureCompositionCodec.Decode("batch", root.ArtifactId, snapshot, missingAlias, new()));
+        var ambiguous = info with
+        {
+            Artifacts = [root, child, child with { ArtifactId = Guid.NewGuid().ToString("N") }],
+        };
+        Assert.Throws<InvalidDataException>(() =>
+            DurableCaptureCompositionCodec.Decode("batch", root.ArtifactId, snapshot, ambiguous, new()));
     }
 }
