@@ -34,6 +34,8 @@ public sealed record DurableCaptureHandleBinding(
 public sealed class DurableCaptureUseCases
 {
     private static readonly IReadOnlyList<string> RecordViews = Array.AsReadOnly<string>(["records"]);
+    private static readonly IReadOnlyList<string> CompositionViews = Array.AsReadOnly<string>(["children"]);
+    private static readonly IReadOnlyList<string> CompositionRecordViews = Array.AsReadOnly<string>(["children", "records"]);
     private readonly SqliteCaptureStore _store;
     private readonly IDiagnosticHandleStore _handles;
     private readonly CaptureStoreOptions _options;
@@ -367,7 +369,7 @@ public sealed class DurableCaptureUseCases
             {
                 composition = DurableCaptureCompositionCodec.Decode(artifact.Kind, artifactId, snapshot, reader.Info, _options);
                 decoded = composition;
-                views = recordsAvailable ? RecordViews : Array.Empty<string>();
+                views = recordsAvailable ? CompositionRecordViews : CompositionViews;
             }
             else
             {

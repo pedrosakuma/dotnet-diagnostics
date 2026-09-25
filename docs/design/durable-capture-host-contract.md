@@ -98,8 +98,13 @@ unchanged outside a recording invocation and reports child errors/cancellation
 inside one. Successful groups store a separately versioned reference snapshot,
 not a reflection-serialized aggregate. `OpenAsync(...).Composition` exposes the
 child references and bounded per-child admission/source/error metadata; select a
-child artifact for existing typed drilldown. A group handle has no dispatcher
-views. Source reports from repeated session names sum within each child; any
+child artifact for existing typed drilldown. Group handles advertise the
+reserved `children` view (plus `records` only when a root stream exists); hosts
+render `OpenResult.Composition` rather than invoking an existing typed dispatcher.
+`DescribeArtifactViewsAsync` recognizes this representation even when a group's
+kind is also an ordinary snapshot kind. Hosts must authorize all referenced
+descendants before exposing group content, including child error messages; a
+conservative check of all capture artifacts is acceptable. Source reports from repeated session names sum within each child; any
 unknown child contribution makes total source loss unknown.
 
 Core composed collectors can use

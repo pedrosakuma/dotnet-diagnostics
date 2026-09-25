@@ -51,7 +51,9 @@ public sealed partial class DurableCaptureUseCasesTests
         var root = info.Artifacts.Single(a => a.Name == "batch");
         var opened = await service.OpenAsync(info.CaptureId, root.ArtifactId, Owner);
         Assert.Equal("capture-group", opened.Handle.Kind);
-        Assert.Empty(opened.SupportedViews);
+        Assert.Equal(["children"], opened.SupportedViews);
+        Assert.Equal(["children"], await service.DescribeArtifactViewsAsync(info.CaptureId, root.ArtifactId, Owner));
+        await service.AuthorizeViewAsync(opened.Handle.Id, "children", Owner);
         Assert.False(opened.RecordStreamAvailable);
         await Assert.ThrowsAsync<CaptureStoreException>(() =>
             service.QueryRecordsAsync(info.CaptureId, new(root.ArtifactId), Owner));
@@ -208,6 +210,30 @@ public sealed partial class DurableCaptureUseCasesTests
         });
         Assert.Same(original, result);
         Assert.False(Directory.Exists(_root));
+    }
+
+    [Fact]
+    public async Task CompositionRepresentationIsDetectedEvenWhenKindAliasesAnOrdinarySnapshot()
+    {
+        var service = Service();
+        var result = await service.CaptureAsync("group", "counters", Owner, async _ =>
+        {
+            await service.RunChildAsync("counters", "child", _ =>
+                Task.FromResult(DiagnosticResult.Ok(Snapshot, "child")));
+            return DiagnosticResult.Ok(new object(), "group");
+        });
+        var info = result.Capture!;
+        Assert.False(result.IsError, result.Error?.Message);
+        var root = info.Artifacts.Single(a => a.Name == "group");
+        Assert.Equal("counters", root.Kind);
+        Assert.Equal(["children"], await service.DescribeArtifactViewsAsync(info.CaptureId, root.ArtifactId, Owner));
+        var opened = await service.OpenAsync(info.CaptureId, root.ArtifactId, Owner);
+        Assert.Equal("capture-group", opened.Handle.Kind);
+        await service.AuthorizeViewAsync(opened.Handle.Id, "children", Owner);
+        await Assert.ThrowsAsync<CaptureStoreException>(() =>
+            service.AuthorizeViewAsync(opened.Handle.Id, "children", new("bob")));
+        await Assert.ThrowsAsync<CaptureStoreException>(() =>
+            service.AuthorizeViewAsync(opened.Handle.Id, "summary", Owner));
     }
 
     [Theory]
