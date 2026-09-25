@@ -306,6 +306,11 @@ public sealed class CliDurableCaptureTests : IDisposable
         }
         using var fresh = Services();
         fresh.GetRequiredService<IDiagnosticHandleStore>().TryGetWithKind(oldHandle).Should().BeNull();
+        var (showExit, shown) = await ExecuteAsync(fresh,
+            ["captures", "show", "--capture-id", captureId, "--capture-root", _root, "--json"]);
+        showExit.Should().Be(0, shown.ToString());
+        fresh.GetRequiredService<IDiagnosticHandleStore>().TryGetLatestByKind("counters").Should().BeNull(
+            "describing persisted views must not manufacture or retain a temporary handle");
         var (queryExit, queried) = await ExecuteAsync(fresh,
             ["query", "--capture-id", captureId, "--artifact-id", artifactId,
                 "--capture-root", _root, "--view", "summary", "--json"]);

@@ -28,7 +28,7 @@ internal static partial class CliCommands
             {
                 try
                 {
-                    metadata = await CliDurableCaptures.DescribeMetadataAsync(options.CaptureRoot, capture, CancellationToken.None).ConfigureAwait(false);
+                    metadata = await CliDurableCaptures.For(services).DescribeMetadataAsync(options.CaptureRoot, capture, CancellationToken.None).ConfigureAwait(false);
                 }
                 catch (CaptureStoreException ex)
                 {
@@ -81,7 +81,7 @@ internal static partial class CliCommands
                     return BuildResult(DiagnosticResult.Ok(page, "Durable captures for the current local OS owner."), SerializeQuery);
                 case "show":
                     var info = await service.DescribeAsync(options.CaptureId!, access, cancellationToken).ConfigureAwait(false);
-                    var metadata = await CliDurableCaptures.DescribeMetadataAsync(options.CaptureRoot, info, cancellationToken).ConfigureAwait(false);
+                    var metadata = await CliDurableCaptures.For(services).DescribeMetadataAsync(options.CaptureRoot, info, cancellationToken).ConfigureAwait(false);
                     return BuildResult(DiagnosticResult.Ok(info, $"Capture {info.CaptureId}."), SerializeQuery) with
                     {
                         Capture = info,
