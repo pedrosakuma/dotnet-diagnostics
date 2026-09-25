@@ -186,6 +186,8 @@ public sealed class DurableCaptureTools(SqliteCaptureStore store, DurableCapture
                 if (!string.IsNullOrWhiteSpace(view) &&
                     !string.Equals(view.Trim(), "children", StringComparison.OrdinalIgnoreCase))
                     return (null, Invalid("Composition artifacts support only view='children'; select a child artifact for typed snapshot views."));
+                await _captures.AuthorizeViewAsync(opened.Handle.Id, "children",
+                    access!, cancellationToken).ConfigureAwait(false);
                 return (null, Bound(DiagnosticResult.Ok<object>(
                     opened.Composition, "Composition references and source quality, not raw observations; select a child artifact to drill down.")
                     with
@@ -258,7 +260,7 @@ public sealed class DurableCaptureTools(SqliteCaptureStore store, DurableCapture
             var denial = AuthorizeCapture(principalAccessor.Current!, info, artifact, view);
             if (denial is not null)
                 return denial;
-            if (binding.SupportedViews.All(static supported => supported == "records"))
+            if (binding.SupportedViews.Contains("children", StringComparer.Ordinal))
             {
                 var prepared = await PrepareAsync(principalAccessor, binding.CaptureId, binding.ArtifactId,
                     view, cancellationToken).ConfigureAwait(false);
