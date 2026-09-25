@@ -61,13 +61,36 @@ live-dependent heap/object/root views before dispatch, even for originally live
 heap snapshots. Hosts must not bypass this gate or grant file/ptrace access
 because a snapshot contains a path.
 
-## Explicit composition limit
+## Child composition
 
-Batch/sweep wrappers require child invocation scopes plus a versioned reference
-list; a global invocation scope cannot attribute concurrent observations to the
-correct child. Until that contract exists, multiple or mismatched child
-registrations produce an **interrupted, unsupported** capture, retaining bounded
-children for explicit recovery rather than falsely encoding an aggregate as one
-child or claiming completeness. Capture each child independently instead.
-Unknown returned-only DTOs likewise fail explicitly; there is no reflection
-serializer fallback.
+Wrap each batch/sweep child with
+`RunChildAsync(kind, name, collect, cancellationToken)` before its callbacks start.
+The outer `CaptureAsync` owns persistence. This helper passes results through
+unchanged outside a recording invocation and reports child errors/cancellation
+inside one. Successful groups store a separately versioned reference snapshot,
+not a reflection-serialized aggregate. `OpenAsync(...).Composition` exposes the
+child references and bounded per-child admission/source/error metadata; select a
+child artifact for existing typed drilldown. A group handle has no dispatcher
+views. Source reports from repeated session names sum within each child; any
+unknown child contribution makes total source loss unknown.
+
+Core composed collectors can use
+`CaptureRecordingContext.CreateChild(kind, name)` and enter the returned sink
+with `CaptureRecordingContext.Enter(child)`. Retain that exact sink to re-enter
+around delayed handle registration (for example, GC/activity `BuildSide`).
+Never infer child routing from kind or PID: concurrent same-kind/same-PID
+collections remain distinct. `ReportCompletion(error, cancelled, data)` can
+retain returned-only typed data or record a partial failure.
+
+Child routes and all retained registrations share `MaxArtifacts` bounds.
+Per-child source names have a 64-entry/1,024-UTF-8-byte-name bound; rejected source
+metadata is explicitly counted and keeps loss unknown. A child failure leaves an
+interrupted capture with explicit group completion metadata. Unscoped multiple
+or mismatched registrations still fail rather than misattribute observations.
+Unknown returned-only DTOs also fail; there is no reflection serializer fallback.
+
+**Recovery limitation:** the current store regenerates artifact IDs while
+copying compatibility snapshots. Recovered individual child snapshots work,
+but old group references deliberately fail validation rather than guessing by
+name/PID or reading the source package. An explicit old-to-new artifact mapping
+is required in the storage recovery contract to reopen recovered group wrappers.

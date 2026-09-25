@@ -12,7 +12,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace DotnetDiagnostics.Core.Tests;
 
-public sealed class DurableCaptureUseCasesTests : IDisposable
+public sealed partial class DurableCaptureUseCasesTests : IDisposable
 {
     private readonly string _root = Path.Combine(AppContext.BaseDirectory, "durable-usecases-tests", Guid.NewGuid().ToString("N"));
     private static readonly CaptureAccess Owner = new("alice");

@@ -19,4 +19,10 @@ internal interface ICaptureObservationSink
     /// deduplicate by handle ID, since a delegating custom store can announce the same handle.
     /// </summary>
     void ArtifactRegistered(DiagnosticHandle handle, object artifact);
+
+    /// <summary>Creates a child observation route before its callbacks are started.</summary>
+    ICaptureObservationSink CreateChild(string kind, string name) => this;
+
+    /// <summary>Records structured child completion without changing the caller's result.</summary>
+    void ReportCompletion(DiagnosticError? error, bool cancelled, object? data = null) { }
 }
