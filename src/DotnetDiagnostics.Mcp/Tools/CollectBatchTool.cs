@@ -179,6 +179,8 @@ public sealed class CollectBatchTool
         bool includeHttpDestination = false,
         [Description("Opt in to one durable SQLite capture containing all batch child artifacts. Default false.")]
         bool persist = false,
+        [Description("Route through this attached investigation.")]
+        string? investigationHandleId = null,
         DurableCaptureTools? durableCaptures = null,
         CancellationToken cancellationToken = default)
     {
@@ -254,7 +256,8 @@ public sealed class CollectBatchTool
             {
                 if (tool == ToolCollectSample)
                 {
-                    var sampleResult = await CollectSampleTool.CollectSample(
+                    var sampleResult = await DurableCaptureTools.ChildAsync(durableCaptures, kind,
+                        $"{tool}:{kind}", childToken => CollectSampleTool.CollectSample(
                         cpuSampler,
                         offCpuSampler,
                         allocationSampler,
@@ -271,11 +274,12 @@ public sealed class CollectBatchTool
                         kind: kind,
                         processId: pid,
                         durationSeconds: durationSeconds,
-                        cancellationToken: ct).ConfigureAwait(false);
+                        cancellationToken: childToken), ct).ConfigureAwait(false);
                     return Project(tool, kind, sampleResult, compactDepth);
                 }
 
-                var eventsResult = await CollectEventsTool.CollectEvents(
+                var eventsResult = await DurableCaptureTools.ChildAsync(durableCaptures, kind,
+                    $"{tool}:{kind}", childToken => CollectEventsTool.CollectEvents(
                     counterCollector,
                     exceptionCollector,
                     crashGuardCollector,
@@ -314,7 +318,7 @@ public sealed class CollectBatchTool
                     maxInstrumentTimeSeries: collectGen2Meter && kind == "counters"
                         ? Gen2MeterMaxTimeSeries
                         : 1000,
-                    cancellationToken: ct).ConfigureAwait(false);
+                    cancellationToken: childToken), ct).ConfigureAwait(false);
                 return Project(tool, kind, eventsResult, compactDepth);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)

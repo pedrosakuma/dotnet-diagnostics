@@ -162,6 +162,7 @@ internal static class ToolScopeListToolsFilter
         }
 
         var root = JsonNode.Parse(outputSchema.Value.GetRawText()) as JsonObject ?? new JsonObject();
+        CompactRemoteCaptureSchemas(root);
         if (root["properties"] is not JsonObject properties)
         {
             properties = new JsonObject();
@@ -212,5 +213,28 @@ internal static class ToolScopeListToolsFilter
         };
 
         return System.Text.Json.JsonSerializer.SerializeToElement(root);
+    }
+
+    private static void CompactRemoteCaptureSchemas(JsonNode? node)
+    {
+        if (node is JsonObject obj)
+        {
+            if (obj["properties"] is JsonObject properties && properties.ContainsKey("remoteCaptures"))
+            {
+                properties["remoteCaptures"] = new JsonObject
+                {
+                    ["type"] = "array",
+                    ["description"] = "Host-qualified capture references and failures.",
+                    ["items"] = new JsonObject { ["type"] = "object" },
+                };
+            }
+            foreach (var property in obj)
+                CompactRemoteCaptureSchemas(property.Value);
+        }
+        else if (node is JsonArray array)
+        {
+            foreach (var child in array)
+                CompactRemoteCaptureSchemas(child);
+        }
     }
 }

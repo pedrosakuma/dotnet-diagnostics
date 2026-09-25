@@ -3,8 +3,10 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Activities;
+using DotnetDiagnostics.Core.Artifacts;
 using DotnetDiagnostics.Core.Capabilities;
 using DotnetDiagnostics.Core.Collection;
+using DotnetDiagnostics.Core.Counters;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.Security;
 using DotnetDiagnostics.Mcp.Orchestrator.Investigations;
@@ -36,6 +38,105 @@ public sealed class DistributedTraceRetentionProtocolTests
     {
         Converters = { new JsonStringEnumConverter() },
     };
+
+    [Fact]
+    public async Task DurableBatch_ProxyCollectsOneDestinationPackage_WithoutLocalPersistence()
+    {
+        var root = Path.GetFullPath(Path.Combine(".validation", "remote-batch-protocol", Guid.NewGuid().ToString("N")));
+        var destinationRoot = Path.Combine(root, "destination");
+        var orchestratorRoot = Path.Combine(root, "orchestrator");
+        try
+        {
+            await using var destinationFactory = new TraceFactory(artifactRoot: destinationRoot, delegateRequests: true);
+            await using var destination = await ConnectAsync(destinationFactory);
+            var proxy = new ForwardingProxy(destination, signingRegistry: destinationFactory.Services.GetRequiredService<ToolScopeRegistry>());
+            await using var orchestratorFactory = new TraceFactory(proxy, orchestratorRoot);
+            await using var orchestrator = await ConnectAsync(orchestratorFactory);
+            var result = await orchestrator.CallToolAsync("collect_batch", new Dictionary<string, object?>
+            {
+                ["requests"] = new[]
+                {
+                    new { tool = "collect_events", kind = "counters" },
+                    new { tool = "collect_events", kind = "activities" },
+                },
+                ["persist"] = true, ["durationSeconds"] = 1, ["investigationHandleId"] = "inv-test",
+            }, cancellationToken: CancellationToken.None);
+            result.IsError.Should().NotBeTrue("proxied batch should persist: {0}", JsonSerializer.Serialize(result, JsonOptions));
+            proxy.LastRequest!.Arguments!["persist"].GetBoolean().Should().BeTrue();
+            var capture = result.StructuredContent!.Value.GetProperty("capture");
+            var parent = capture.GetProperty("artifacts").EnumerateArray()
+                .Single(item => item.GetProperty("kind").GetString() == "batch");
+            Directory.EnumerateDirectories(Path.Combine(destinationRoot, "captures")).Should().ContainSingle();
+            Directory.Exists(Path.Combine(orchestratorRoot, "captures")).Should().BeFalse();
+            var reopened = await orchestrator.CallToolAsync("query_snapshot", new Dictionary<string, object?>
+            {
+                ["captureId"] = capture.GetProperty("captureId").GetString(),
+                ["artifactId"] = parent.GetProperty("artifactId").GetString(),
+                ["view"] = "children", ["investigationHandleId"] = "inv-test",
+            }, cancellationToken: CancellationToken.None);
+            reopened.IsError.Should().NotBeTrue();
+            reopened.StructuredContent!.Value.GetProperty("data").GetProperty("children").GetArrayLength().Should().Be(2);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData("distributed_trace")]
+    [InlineData("replica_counters")]
+    public async Task DurableFanout_PersistsAtDestination_AndReopensOnlyWithHostQualifiedSelector(string kind)
+    {
+        var root = Path.GetFullPath(Path.Combine(".validation", "remote-capture-protocol", Guid.NewGuid().ToString("N")));
+        var destinationRoot = Path.Combine(root, "destination");
+        var orchestratorRoot = Path.Combine(root, "orchestrator");
+        try
+        {
+            await using var destinationFactory = new TraceFactory(artifactRoot: destinationRoot, delegateRequests: true);
+            await using var destination = await ConnectAsync(destinationFactory);
+            var proxy = new ForwardingProxy(destination, signingRegistry: destinationFactory.Services.GetRequiredService<ToolScopeRegistry>());
+            await using var orchestratorFactory = new TraceFactory(proxy, orchestratorRoot);
+            await using var orchestrator = await ConnectAsync(orchestratorFactory);
+            var arguments = new Dictionary<string, object?>
+            {
+                ["kind"] = kind, ["persist"] = true, ["durationSeconds"] = 1,
+                ["investigationHandleIds"] = HandleIds,
+            };
+            if (kind == "distributed_trace") arguments["traceId"] = Trace;
+            var result = await orchestrator.CallToolAsync("collect_events", arguments, cancellationToken: CancellationToken.None);
+            result.IsError.Should().NotBeTrue();
+            proxy.LastRequest!.Arguments!["persist"].GetBoolean().Should().BeTrue();
+            var envelope = result.StructuredContent!.Value.Deserialize<DiagnosticResult<CollectEventsEnvelope>>(JsonOptions)!;
+            envelope.Capture.Should().BeNull("the orchestrator must not invent a local observation package");
+            var reference = envelope.Data!.RemoteCaptures.Should().ContainSingle().Subject;
+            reference.Error.Should().BeNull();
+            reference.InvestigationHandleId.Should().Be("inv-test");
+            reference.Host.Should().Be("test/pod/app");
+            reference.Quality.Should().NotBeNull();
+            Directory.Exists(Path.Combine(destinationRoot, "captures", reference.CaptureId!)).Should().BeTrue();
+            Directory.Exists(Path.Combine(orchestratorRoot, "captures")).Should().BeFalse();
+
+            var selector = new Dictionary<string, object?>
+            {
+                ["captureId"] = reference.CaptureId,
+                ["artifactId"] = reference.Artifacts.Single().ArtifactId, ["view"] = "summary",
+            };
+            var wrongHost = await orchestrator.CallToolAsync("query_snapshot", selector, cancellationToken: CancellationToken.None);
+            wrongHost.IsError.Should().BeTrue();
+            selector["investigationHandleId"] = reference.InvestigationHandleId;
+            var reopened = await orchestrator.CallToolAsync("query_snapshot", selector, cancellationToken: CancellationToken.None);
+            reopened.IsError.Should().NotBeTrue("host-qualified query should reopen: {0}",
+                JsonSerializer.Serialize(reopened, JsonOptions));
+            reopened.StructuredContent!.Value.GetProperty("capture").GetProperty("captureId").GetString()
+                .Should().Be(reference.CaptureId);
+            Directory.Exists(Path.Combine(orchestratorRoot, "captures")).Should().BeFalse();
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
 
     [Theory]
     [InlineData("activities")]
@@ -220,7 +321,8 @@ public sealed class DistributedTraceRetentionProtocolTests
         }, http, ownsHttpClient: true), cancellationToken: CancellationToken.None);
     }
 
-    private sealed class TraceFactory(ForwardingProxy? proxy = null) : WebApplicationFactory<Program>
+    private sealed class TraceFactory(ForwardingProxy? proxy = null, string? artifactRoot = null,
+        bool delegateRequests = false) : WebApplicationFactory<Program>
     {
         internal const string Token = "trace-retention-test-token";
         internal EventStreamCollector Collector { get; } = new();
@@ -234,6 +336,15 @@ public sealed class DistributedTraceRetentionProtocolTests
             builder.UseSetting("Diagnostics:RedactionPatterns:0", "backend-secret");
             builder.ConfigureTestServices(services =>
             {
+                if (delegateRequests)
+                    services.AddSingleton(new ToolScopeDelegationKeyProvider("fixture-only-scoped-delegation-key-for-proxy"));
+                if (artifactRoot is not null)
+                {
+                    services.RemoveAll<IArtifactRootProvider>();
+                    services.AddSingleton<IArtifactRootProvider>(new FixedArtifactRoot(artifactRoot));
+                    services.RemoveAll<ICounterCollector>();
+                    services.AddSingleton<ICounterCollector, CounterCollector>();
+                }
                 services.RemoveAll<IActivityCollector>();
                 services.AddSingleton<IActivityCollector>(Collector);
                 services.RemoveAll<IProcessContextResolver>();
@@ -245,7 +356,8 @@ public sealed class DistributedTraceRetentionProtocolTests
                         new KubernetesInvestigationTarget("test", "pod", "app", "sidecar", "pod-test-token"),
                         InvestigationState.Active, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddMinutes(10),
                         OwnerBearerName: "trace-test",
-                        OwnerPrincipalKey: PrincipalOwnershipKey.ForOpaqueEntry("Auth:BearerTokens:0")));
+                        OwnerPrincipalKey: PrincipalOwnershipKey.ForOpaqueEntry("Auth:BearerTokens:0"),
+                        InternalScopeDelegationKey: "fixture-only-scoped-delegation-key-for-proxy"));
                     services.RemoveAll<IInvestigationStore>();
                     services.AddSingleton<IInvestigationStore>(store);
                     services.RemoveAll<IInvestigationProxyClient>();
@@ -255,13 +367,35 @@ public sealed class DistributedTraceRetentionProtocolTests
         }
     }
 
-    private sealed class ForwardingProxy(McpClient destination, bool omitRetention = false) : IInvestigationProxyClient
+    private sealed record FixedArtifactRoot(string Root) : IArtifactRootProvider;
+
+    private sealed class CounterCollector : ICounterCollector
+    {
+        public Task<CounterSnapshot> CollectAsync(int processId, TimeSpan duration,
+            IReadOnlyList<string>? providers = null, IReadOnlyList<string>? meters = null,
+            int intervalSeconds = 1, int maxInstrumentTimeSeries = 1000,
+            CancellationToken cancellationToken = default)
+            => Task.FromResult(new CounterSnapshot(processId, DateTimeOffset.UtcNow, duration,
+                [new("System.Runtime", "cpu-usage", "CPU", 42, CounterKind.Mean)], [], []));
+    }
+
+    private sealed class ForwardingProxy(McpClient destination, bool omitRetention = false,
+        ToolScopeRegistry? signingRegistry = null) : IInvestigationProxyClient
     {
         internal CallToolRequestParams? LastRequest { get; private set; }
         internal CallToolResult? LastResponse { get; private set; }
         public async Task<CallToolResult> CallToolAsync(InvestigationHandle handle, CallToolRequestParams request, CancellationToken cancellationToken)
         {
             LastRequest = request;
+            if (signingRegistry is not null &&
+                request.Arguments?.ContainsKey(ToolScopeDelegation.ArgumentName) != true)
+            {
+                var caller = TestPrincipalAccessors.WithIdentity("trace-test",
+                    PrincipalOwnershipKey.ForOpaqueEntry("Auth:BearerTokens:0"), "root").Current!;
+                request = ToolScopeDelegation.Add(request,
+                    signingRegistry.Authorize(request.Name, request.Arguments, caller), caller,
+                    "fixture-only-scoped-delegation-key-for-proxy");
+            }
             LastResponse = await destination.CallToolAsync(request.Name,
                 request.Arguments!.ToDictionary(pair => pair.Key, pair => (object?)pair.Value),
                 cancellationToken: cancellationToken);

@@ -87,7 +87,7 @@ public sealed class InspectHeapTool
         CancellationToken cancellationToken = default)
     {
         return await DurableCaptureTools.CollectAsync(
-            durableCaptures, principalAccessor, persist, "inspect_heap", source,
+            durableCaptures, principalAccessor, persist, "inspect_heap", "heap-snapshot",
             ExecuteAsync, cancellationToken).ConfigureAwait(false);
 
         async Task<DiagnosticResult<object>> ExecuteAsync(CancellationToken cancellationToken)

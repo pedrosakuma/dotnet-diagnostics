@@ -72,7 +72,7 @@ public sealed class GetBytesTool
         [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
         string? investigationHandleId = null,
         ILoggerFactory? loggerFactory = null,
-        [Description("kind='captures' only: list (default), describe, delete, or recover. Recovery explicitly creates a derived package, never modifies the source.")]
+        [Description("captures: list|describe|delete|recover (default list). Recovery creates a derived package.")]
         string captureAction = "list",
         [Description("Opaque durable capture ID for describe/delete/recover. No paths or SQL accepted.")]
         string? captureId = null,

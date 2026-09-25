@@ -139,7 +139,7 @@ public sealed partial class QuerySnapshotTool
         INativeAddressResolver addressResolver,
         IFrameVariableResolver frameVariableResolver,
         [Description("Drilldown handle; required unless latestOfKind is supplied.")] string? handle = null,
-        [Description("Kind-specific projection; omit for default. See tool-reference.md for the view catalog. Durable selectors also support bounded 'records'; historical handles allow snapshot-only views, never reattachment.")] string? view = null,
+        [Description("Kind-specific view; omit for default. Durable selectors add bounded records and composition children. Historical views never reattach; see tool-reference.md.")] string? view = null,
         [Description("Ranked entries: defaults 50 heap/thread/collection, 25 off-CPU/diff. Inline caps: threads 8, locks 12, retention paths 10; full evidence stays behind the handle.")] int? topN = null,
         [Description("Heap top-types/growth: bytes|instances. CPU top-methods: exclusive|inclusive|running. Running is on-CPU self samples only for OS backends; otherwise frequency candidates, not scheduler state.")] string rankBy = "bytes",
         [Description("Heap view='retention-paths' only: case-insensitive substring matched against TypeFullName.")] string? typeFullName = null,
@@ -167,12 +167,12 @@ public sealed partial class QuerySnapshotTool
         [Description("Thread/lock paging offset 0..256; prefer cursor.")] int offset = 0,
         [Description("nextThreadCursor/nextLockCursor/nextWaiterCursor continuation, bound to handle/view/lock. Cannot combine with nonzero offset.")] string? cursor = null,
         [Description("Sample top-methods: display MoveNext as its async method; asyncFolded reports matches. No stronger CPU evidence. Default false.")] bool foldAsync = false,
-        [Description("Latest non-expired handle of this kind. Supply exactly one of handle/latestOfKind; optionally narrow by latestOfKindProcessId.")] string? latestOfKind = null,
+        [Description("Latest non-expired kind, optionally narrowed by latestOfKindProcessId; excludes handle/captureId.")] string? latestOfKind = null,
         [Description("latestOfKind: optional OS PID filter.")] int? latestOfKindProcessId = null,
         [Description("GC handle for activities gc-overlay.")] string? gcHandle = null,
-        [Description("Durable capture ID. Mutually exclusive with handle/latestOfKind; requires artifactId. Never falls back to live evidence.")]
+        [Description("Durable ID; requires artifactId, excludes handle/latestOfKind. No live fallback.")]
         string? captureId = null,
-        [Description("Artifact ID within captureId, returned by persistence or get_bytes(kind='captures', captureAction='describe').")]
+        [Description("Artifact ID within captureId (from capture.artifacts).")]
         string? artifactId = null,
         [Description("view='records': inclusive UTC lower timestamp bound.")]
         DateTimeOffset? recordFrom = null,

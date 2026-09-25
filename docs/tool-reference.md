@@ -3177,6 +3177,27 @@ package with child artifacts, not one package per child. The additive
 `capture` result field contains the capture ID, artifact IDs, state, and quality.
 Save these opaque IDs rather than an expiring in-memory handle.
 
+For a composed capture, select the parent artifact with `view="children"` (or
+omit `view`) to inspect bounded child references, completion errors, source
+quality, and snapshot availability. Select an individual child artifact for
+ordinary snapshot views or normalized records. Before decoding snapshots from
+a multi-artifact package, the host conservatively requires the current scopes
+for **every artifact** in that package, including on reused handles. A partial
+batch remains interrupted and requires explicit recovery before offline reads.
+
+`collect_events(kind="distributed_trace"|"replica_counters", persist=true)`
+forwards persistence to the actual collecting hosts. Its `data.remoteCaptures`
+contains host-qualified investigation IDs, display names, capture/artifact IDs,
+quality, state, and per-host errors. Capture IDs are **host-local**; save the
+investigation/host together with each ID and pass `investigationHandleId` when
+reopening or managing a remote package. The orchestrator does not create a
+misleading empty local package or claim that a multi-host capture is one file.
+Durable fan-out accepts at most 16 selected hosts. Failed or cancelled children
+retain confirmed references; an unconfirmed result explicitly directs you to
+inspect that host's inventory rather than assuming no capture was written.
+The returned stitched comparison itself remains an inline aggregate, not a
+separate persisted local snapshot.
+
 Persistence does not imply that every observation was retained. Read the capture
 quality counters, unknown source-loss indication, and per-producer notes. A
 normalized record stream and a bounded compatibility snapshot are different
@@ -3199,6 +3220,10 @@ original provenance says `Live`. The same restriction, current owner checks,
 deletion checks, and current scopes apply to subsequent use of that handle.
 Raw snapshot Resources are not a durable-read bypass; use bounded
 `query_snapshot` projections instead.
+Durable responses account for both structured JSON and text JSON plus envelope
+overhead within a 1 MiB wire budget. Oversized inline collection results keep
+bounded capture references and return an explicit capacity error; use narrower
+queries. Record paging may return fewer than the requested number of rows.
 
 Ownership uses the authenticated principal's stable ownership key, not its
 display name or a stored bearer. Current explicit root/`*` authority permits

@@ -3,9 +3,11 @@ using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Artifacts;
 using DotnetDiagnostics.Core.Bytes;
 using DotnetDiagnostics.Core.Captures;
+using DotnetDiagnostics.Core.CaptureRecording;
 using DotnetDiagnostics.Core.Counters;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Dump;
+using DotnetDiagnostics.Core.Exceptions;
 using DotnetDiagnostics.Core.Security;
 using DotnetDiagnostics.Core.UseCases;
 using DotnetDiagnostics.Mcp.Resources;
@@ -21,6 +23,81 @@ public sealed class DurableCaptureToolTests : IDisposable
         ".validation", "durable-mcp-tests", Guid.NewGuid().ToString("N")));
     private static readonly IPrincipalAccessor Owner = Principal("owner-a", "read-counters", "module-bytes-read",
         "investigation-export", "delete-artifact");
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Records_DistinguishUnavailableSnapshotOnly_FromDeclaredZeroStream(bool declareStream)
+    {
+        var context = Create();
+        var capture = (await CaptureCounters(context, declareStream)).Capture!;
+        var artifact = capture.Artifacts.Single(item => item.Kind == "counters");
+        var result = await Records(context, Owner, capture.CaptureId, artifact.ArtifactId);
+        if (declareStream)
+        {
+            result.Error.Should().BeNull();
+            ((CaptureRecordPage)result.Data!).Records.Should().BeEmpty();
+            result.Capture!.Quality.SourceRejected.Should().BeNull("declaring availability does not invent known source loss");
+        }
+        else
+        {
+            result.Error!.Kind.Should().Be("CaptureStoreError");
+            result.Error.Message.Should().Contain("no declared or retained record stream");
+        }
+    }
+
+    [Fact]
+    public async Task OversizedCollection_OmitsInlineDataButPreservesCaptureReference()
+    {
+        var context = Create();
+        var result = await CaptureCounters(context, displayName: new string('x', DurableCaptureTools.MaximumResponseBytes / 2));
+        result.Error!.Detail.Should().Be("CapacityExceeded");
+        result.Data.Should().BeNull();
+        result.Capture.Should().NotBeNull();
+        result.Capture!.State.Should().Be(CaptureState.Sealed);
+        result.Hints.Should().ContainSingle().Which.SuggestedArguments!["captureId"].Should().Be(result.Capture.CaptureId);
+    }
+
+    [Fact]
+    public async Task Composition_EnforcesEveryChildScopeBeforeOpen_AndRechecksReusedHandlesAndDeletion()
+    {
+        var context = Create();
+        var principal = Principal("owner-a", "root");
+        var result = await DurableCaptureTools.CollectAsync(context.Tools, principal, true,
+            "collect_batch", "batch", async ct =>
+            {
+                await DurableCaptureTools.ChildAsync(context.Tools, "counters", "counters", _ =>
+                {
+                    var snapshot = new CounterSnapshot(123, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(1), [], [], []);
+                    var handle = context.Handles.Register(123, "counters", snapshot, TimeSpan.FromMinutes(10));
+                    return Task.FromResult(DiagnosticResult.OkWithHandle(snapshot, "counters", handle.Id, handle.ExpiresAt));
+                }, ct);
+                await DurableCaptureTools.ChildAsync(context.Tools, "exceptions", "exceptions", _ =>
+                {
+                    var snapshot = new ExceptionSnapshot(123, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(1), 0, [], []);
+                    var handle = context.Handles.Register(123, "exception-snapshot", snapshot, TimeSpan.FromMinutes(10));
+                    return Task.FromResult(DiagnosticResult.OkWithHandle(snapshot, "exceptions", handle.Id, handle.ExpiresAt));
+                }, ct);
+                return DiagnosticResult.Ok(new object(), "batch");
+            }, CancellationToken.None);
+        result.Error.Should().BeNull();
+        var capture = result.Capture!;
+        var parent = capture.Artifacts.Single(artifact => artifact.Kind == "batch");
+        (await Query(context, Principal("owner-a", "read-counters"), capture.CaptureId,
+            parent.ArtifactId, view: "children")).Error!.Kind.Should().Be("Forbidden");
+        (await Query(context, Principal("owner-b", "read-counters", "eventpipe"), capture.CaptureId,
+            parent.ArtifactId, view: "children")).Error.Should().NotBeNull();
+
+        var opened = await Query(context, principal, capture.CaptureId, parent.ArtifactId, view: "children");
+        opened.Error.Should().BeNull();
+        opened.Data.Should().BeOfType<DurableCaptureComposition>().Which.Children.Should().HaveCount(2);
+        (await Query(context, Principal("owner-a", "read-counters"), handle: opened.Handle, view: "children"))
+            .Error!.Kind.Should().Be("Forbidden");
+        (await Query(context, principal, handle: opened.Handle, view: "object")).Error.Should().NotBeNull();
+        (await context.Tools.LifecycleAsync(Owner, "delete", capture.CaptureId, 25, null, CancellationToken.None))
+            .Error.Should().BeNull();
+        (await Query(context, principal, handle: opened.Handle, view: "children")).Error.Should().NotBeNull();
+    }
 
     [Fact]
     public async Task DefaultCollection_RemainsEphemeral_AndDoesNotRequireDurableServices()
@@ -217,7 +294,7 @@ public sealed class DurableCaptureToolTests : IDisposable
         var context = Create();
         var principal = Principal("owner-a", "root");
         var persisted = await DurableCaptureTools.CollectAsync(context.Tools, principal, true,
-            "inspect_heap", "live", _ =>
+            "inspect_heap", "heap-snapshot", _ =>
             {
                 var snapshot = new HeapSnapshotArtifact(
                     HeapSnapshotOrigin.Live, 123, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(1),
@@ -355,11 +432,14 @@ public sealed class DurableCaptureToolTests : IDisposable
         return new(store, handles, new DurableCaptureTools(store, useCases));
     }
 
-    private static Task<DiagnosticResult<CounterSnapshot>> CaptureCounters(Context context)
+    private static Task<DiagnosticResult<CounterSnapshot>> CaptureCounters(Context context,
+        bool declareStream = false, string? displayName = null)
         => DurableCaptureTools.CollectAsync(context.Tools, Owner, true, "collect_events", "counters", _ =>
         {
+            if (declareStream)
+                CaptureRecordingContext.Current!.ReportSourceLoss("EventPipe", null);
             var snapshot = new CounterSnapshot(123, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(1),
-                [new("System.Runtime", "cpu-usage", "CPU", 42, CounterKind.Mean)], [], []);
+                [new("System.Runtime", "cpu-usage", displayName ?? "CPU", 42, CounterKind.Mean)], [], []);
             var handle = context.Handles.Register(123, "counters", snapshot, TimeSpan.FromMinutes(10));
             return Task.FromResult(DiagnosticResult.OkWithHandle(snapshot, "counters", handle.Id, handle.ExpiresAt));
         }, CancellationToken.None);

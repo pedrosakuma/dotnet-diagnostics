@@ -27,6 +27,8 @@ The default tool catalog and ephemeral collection behavior remain unchanged.
 To retain a supported collection across server restarts, pass `persist=true`
 to the existing collection tool and save the returned `capture.captureId` and
 artifact IDs. `collect_batch` persists one package with child artifacts.
+Use `view="children"` on the parent artifact for composition references and
+per-child quality/errors; select a child artifact for retained evidence.
 Reopen through `query_snapshot(captureId=..., artifactId=..., view=...)`;
 manage packages through `get_bytes(kind="captures", captureAction=...)`.
 See [durable capture contracts](./tool-reference.md#durable-captures-through-the-existing-tools).
@@ -43,6 +45,13 @@ can be denied even for the same owner. The existing stdio synthetic principal
 policy applies locally. Missing principals never gain root privileges on the
 durable path. Through orchestrator routing, signed delegation preserves the
 caller's ownership identity and current permissions.
+Distributed trace and replica-counter fan-out persist on each collecting host,
+not on the orchestrator. Save each `data.remoteCaptures` host/investigation ID
+alongside its host-local capture and artifact IDs, then include
+`investigationHandleId` when querying or managing that package. Durable fan-out
+is limited to 16 hosts per call. Preserving only the orchestrator's artifact
+directory does not preserve remote captures; preserve each collecting host's
+configured artifact root.
 
 Historical views use retained evidence, never a stored PID to reattach. Queries
 do not repair interrupted captures: request explicit `captureAction="recover"`

@@ -20,9 +20,15 @@ public sealed class DurableCaptureTools(SqliteCaptureStore store, DurableCapture
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
     };
 
+    internal static Task<DiagnosticResult<T>> ChildAsync<T>(
+        DurableCaptureTools? service, string kind, string name,
+        Func<CancellationToken, Task<DiagnosticResult<T>>> collect, CancellationToken cancellationToken)
+        => service is null ? collect(cancellationToken)
+            : service._captures.RunChildAsync(kind, name, collect, cancellationToken);
+
     internal static async Task<DiagnosticResult<T>> CollectAsync<T>(
         DurableCaptureTools? service, IPrincipalAccessor principalAccessor, bool persist,
-        string tool, string kind, Func<CancellationToken, Task<DiagnosticResult<T>>> collect,
+        string tool, string? kind, Func<CancellationToken, Task<DiagnosticResult<T>>> collect,
         CancellationToken cancellationToken)
     {
         if (!persist)
@@ -37,8 +43,8 @@ public sealed class DurableCaptureTools(SqliteCaptureStore store, DurableCapture
         try
         {
             var result = await service._captures.CaptureAsync(
-                tool, kind, access!, collect, cancellationToken).ConfigureAwait(false);
-            return result with
+                tool, kind.Trim().ToLowerInvariant(), access!, collect, cancellationToken).ConfigureAwait(false);
+            var presented = result with
             {
                 Error = result.Error is { Kind: "CapturePersistenceFailed" } persistenceError
                     ? new DiagnosticError("CaptureStoreError", persistenceError.Message, persistenceError.Kind)
@@ -51,6 +57,21 @@ public sealed class DurableCaptureTools(SqliteCaptureStore store, DurableCapture
                     })
                     : hint).ToArray(),
             };
+            if (Fits(presented))
+                return presented;
+            return Bound(presented with
+            {
+                Data = default,
+                Summary = "Collection completed; inline evidence exceeded the wire budget. Inspect the durable capture.",
+                Error = presented.Error ?? new DiagnosticError("CaptureStoreError",
+                    "Inline evidence exceeds the 1 MiB wire budget; query a bounded retained view.", "CapacityExceeded"),
+                Hints = [new NextActionHint("get_bytes", "Inspect the retained capture metadata.",
+                    new Dictionary<string, object?>
+                    {
+                        ["kind"] = "captures", ["captureAction"] = "describe",
+                        ["captureId"] = presented.Capture?.CaptureId,
+                    })],
+            });
         }
         catch (CaptureStoreException exception)
         {
@@ -125,14 +146,7 @@ public sealed class DurableCaptureTools(SqliteCaptureStore store, DurableCapture
                 return denial;
             var query = new CaptureRecordQuery(
                 artifactId, from, to, threadId, category, name, afterRecordId, pageSize);
-            var page = reader.Query(query);
-            if (page.Records.Count == 0 &&
-                reader.Query(new CaptureRecordQuery(artifactId, PageSize: 1)).Records.Count == 0)
-                return DiagnosticResult.Fail<object>(
-                    "No retained normalized records are available for this artifact; use a supported snapshot view.",
-                    new DiagnosticError("CaptureStoreError",
-                        "Record coverage is not established by an empty retained stream; this does not establish that the source emitted zero events.",
-                        "RecordsUnavailable")) with { Capture = reader.Info };
+            var page = await _captures.QueryRecordsAsync(captureId, query, access!, cancellationToken).ConfigureAwait(false);
             while (true)
             {
                 var result = DiagnosticResult.Ok<object>(page, "Retained normalized records; see capture quality for loss and coverage.")
@@ -142,7 +156,7 @@ public sealed class DurableCaptureTools(SqliteCaptureStore store, DurableCapture
                 if (page.Records.Count <= 1)
                     return TooLarge();
                 query = query with { PageSize = page.Records.Count / 2 };
-                page = reader.Query(query);
+                page = await _captures.QueryRecordsAsync(captureId, query, access!, cancellationToken).ConfigureAwait(false);
             }
         }
         catch (CaptureStoreException exception)
@@ -163,10 +177,26 @@ public sealed class DurableCaptureTools(SqliteCaptureStore store, DurableCapture
             var artifact = info.Artifacts.SingleOrDefault(item => item.ArtifactId == artifactId);
             if (artifact is null)
                 return (null, Invalid("artifactId does not identify an artifact in this capture."));
-            var denial = AuthorizeArtifact(principalAccessor.Current!, artifact, view);
+            var denial = AuthorizeCapture(principalAccessor.Current!, info, artifact, view);
             if (denial is not null)
                 return (null, denial);
             var opened = await _captures.OpenAsync(captureId, artifactId, access!, cancellationToken).ConfigureAwait(false);
+            if (opened.Composition is not null)
+            {
+                if (!string.IsNullOrWhiteSpace(view) &&
+                    !string.Equals(view.Trim(), "children", StringComparison.OrdinalIgnoreCase))
+                    return (null, Invalid("Composition artifacts support only view='children'; select a child artifact for typed snapshot views."));
+                return (null, Bound(DiagnosticResult.Ok<object>(
+                    opened.Composition, "Composition references and source quality, not raw observations; select a child artifact to drill down.")
+                    with
+                    {
+                        Capture = opened.Capture,
+                        Handle = opened.Handle.Id,
+                        HandleExpiresAt = opened.Handle.ExpiresAt,
+                        Hints = [new NextActionHint("query_snapshot", "Reopen a child using this captureId and its artifactId.",
+                            new Dictionary<string, object?> { ["captureId"] = captureId })],
+                    }));
+            }
             await _captures.AuthorizeViewAsync(opened.Handle.Id, CanonicalView(
                     opened.SupportedViews, EffectiveView(artifact.Kind, view)),
                 access!, cancellationToken).ConfigureAwait(false);
@@ -225,9 +255,15 @@ public sealed class DurableCaptureTools(SqliteCaptureStore store, DurableCapture
             await _captures.AuthorizeHandleAsync(handle, access!, cancellationToken).ConfigureAwait(false);
             var info = await _captures.DescribeAsync(binding.CaptureId, access!, cancellationToken).ConfigureAwait(false);
             var artifact = info.Artifacts.Single(item => item.ArtifactId == binding.ArtifactId);
-            var denial = AuthorizeArtifact(principalAccessor.Current!, artifact, view);
+            var denial = AuthorizeCapture(principalAccessor.Current!, info, artifact, view);
             if (denial is not null)
                 return denial;
+            if (binding.SupportedViews.All(static supported => supported == "records"))
+            {
+                var prepared = await PrepareAsync(principalAccessor, binding.CaptureId, binding.ArtifactId,
+                    view, cancellationToken).ConfigureAwait(false);
+                return prepared.Error ?? Invalid("The historical artifact has no supported snapshot views.");
+            }
             await _captures.AuthorizeViewAsync(handle, CanonicalView(
                     binding.SupportedViews, EffectiveView(artifact.Kind, view)),
                 access!, cancellationToken).ConfigureAwait(false);
@@ -252,9 +288,31 @@ public sealed class DurableCaptureTools(SqliteCaptureStore store, DurableCapture
     private static string CanonicalView(IReadOnlyList<string> supported, string view)
         => supported.FirstOrDefault(item => string.Equals(item, view, StringComparison.OrdinalIgnoreCase)) ?? view;
 
+    private static DiagnosticResult<object>? AuthorizeCapture(
+        BearerPrincipal principal, CaptureInfo info, CaptureArtifactInfo selected, string? view)
+    {
+        // A composition can carry child failures and source evidence. Its representation is not
+        // known until decoding, so authorize the complete manifest first, including on handle reuse.
+        foreach (var artifact in info.Artifacts)
+        {
+            var denial = AuthorizeArtifact(principal, artifact,
+                artifact.ArtifactId == selected.ArtifactId ? view : "summary");
+            if (denial is not null)
+                return denial;
+        }
+        return null;
+    }
+
     internal static DiagnosticResult<object>? AuthorizeArtifact(
         BearerPrincipal principal, CaptureArtifactInfo artifact, string? view)
     {
+        if (artifact.Kind is "batch" or "sweep")
+        {
+            if (string.Equals(view?.Trim(), "records", StringComparison.OrdinalIgnoreCase))
+                return Forbidden<object>("Composition records are not observations; select an authorized child artifact.");
+            return principal.HasScope("eventpipe") || principal.HasScope("read-counters")
+                ? null : Forbidden<object>("Composition reads require a diagnostic read scope and every child artifact's scopes.");
+        }
         if (!QuerySnapshotTool.RegisteredKinds.Contains(artifact.Kind) &&
             artifact.Kind is not ("cpu-efficiency-sample" or "requests-now"))
             return Forbidden<object>("This artifact kind has no reviewed durable read authorization policy.");
@@ -311,7 +369,12 @@ public sealed class DurableCaptureTools(SqliteCaptureStore store, DurableCapture
     internal static DiagnosticResult<object> Bound(DiagnosticResult<object> result)
         => Fits(result) ? result : TooLarge();
 
-    private static bool Fits(DiagnosticResult<object> result)
+    internal static DiagnosticResult<T> Bound<T>(DiagnosticResult<T> result)
+        => Fits(result) ? result : new DiagnosticResult<T>(
+            "Durable response exceeds the wire budget; narrow the query or target selection.",
+            [], new DiagnosticError("CaptureStoreError", "The response exceeds the 1 MiB wire budget.", "CapacityExceeded"));
+
+    private static bool Fits<T>(DiagnosticResult<T> result)
     {
         var structured = JsonSerializer.SerializeToUtf8Bytes(result, BudgetOptions);
         var text = JsonSerializer.SerializeToUtf8Bytes(Encoding.UTF8.GetString(structured));
