@@ -11,6 +11,11 @@ public sealed record DurableCaptureOpenResult(
 {
     /// <summary>Versioned reference metadata for a composed capture; select a child for typed drilldown.</summary>
     public DurableCaptureComposition? Composition { get; init; }
+
+    /// <summary>Independent records were observed or explicitly declared by the producer.</summary>
+    public bool RecordStreamAvailable { get; init; }
+
+    public DurableCaptureRecordStreamInfo? RecordStream { get; init; }
 }
 
 /// <summary>Small association whose lifetime is bounded by the registered snapshot's lifetime.</summary>
@@ -27,6 +32,7 @@ public sealed record DurableCaptureHandleBinding(
 /// </summary>
 public sealed class DurableCaptureUseCases
 {
+    private static readonly IReadOnlyList<string> RecordViews = Array.AsReadOnly<string>(["records"]);
     private readonly SqliteCaptureStore _store;
     private readonly IDiagnosticHandleStore _handles;
     private readonly CaptureStoreOptions _options;
@@ -158,10 +164,10 @@ public sealed class DurableCaptureUseCases
                         writer.SetArtifactProvenance(id, provenance);
                         var artifactIndex = artifacts.FindIndex(a => a.ArtifactId == id);
                         artifacts[artifactIndex] = artifacts[artifactIndex] with { Provenance = provenance };
-                        WriteSnapshot(writer, id, registered.Kind, registered.Artifact);
+                        WriteSnapshot(writer, id, registered.Kind, registered.Artifact, id == node.ArtifactId ? node : null);
                         snapshots.Add(id);
-                        var views = Array.AsReadOnly(CaptureArtifactCodec
-                            .GetSupportedSnapshotViews(registered.Kind, registered.Artifact).ToArray());
+                        var views = SupportedViews(registered.Kind, registered.Artifact,
+                            id == node.ArtifactId && node.RecordStreamAvailable);
                         _bindings.Set(registered.Handle, registered.Artifact,
                             new(writer.Reference.CaptureId, id, views) { Artifact = artifacts[artifactIndex] });
                     }
@@ -181,7 +187,7 @@ public sealed class DurableCaptureUseCases
                     {
                         if (data is not null)
                         {
-                            WriteSnapshot(writer, node.ArtifactId, node.Kind, data);
+                            WriteSnapshot(writer, node.ArtifactId, node.Kind, data, node);
                             snapshots.Add(node.ArtifactId);
                         }
                         else if (node.Error is null && !node.Cancelled && !result.IsError && !result.Cancelled)
@@ -205,9 +211,22 @@ public sealed class DurableCaptureUseCases
                     snapshots.Contains(child.ArtifactId))).ToArray());
                 try
                 {
-                    writer.SetSnapshot(node.ArtifactId, DurableCaptureCompositionCodec.SnapshotVersion,
-                        DurableCaptureCompositionCodec.Encode(node.Kind, composition, _options.MaxSnapshotBytes));
+                    var encoded = DurableCaptureCompositionCodec.Encode(node.Kind, composition, _options.MaxSnapshotBytes);
+                    writer.SetSnapshot(node.ArtifactId, DurableCaptureSnapshotMetadata.Version,
+                        DurableCaptureSnapshotMetadata.Encode(node.Kind, DurableCaptureCompositionCodec.SnapshotVersion,
+                            encoded, DurableCaptureSnapshotMetadata.Stream(node), _options.MaxSnapshotBytes));
                     snapshots.Add(node.ArtifactId);
+                }
+                catch (Exception ex) when (IsPersistenceException(ex)) { persistenceFailure ??= ex; }
+            }
+            foreach (var node in retained.Nodes)
+            {
+                if (snapshots.Contains(node.ArtifactId)) continue;
+                try
+                {
+                    writer.SetSnapshot(node.ArtifactId, DurableCaptureSnapshotMetadata.Version,
+                        DurableCaptureSnapshotMetadata.Encode(node.Kind, 0, "{}"u8,
+                            DurableCaptureSnapshotMetadata.Stream(node), _options.MaxSnapshotBytes));
                 }
                 catch (Exception ex) when (IsPersistenceException(ex)) { persistenceFailure ??= ex; }
             }
@@ -295,18 +314,27 @@ public sealed class DurableCaptureUseCases
         object decoded;
         IReadOnlyList<string> views;
         DurableCaptureComposition? composition = null;
+        DurableCaptureRecordStreamInfo? stream = null;
+        var recordsAvailable = false;
         try
         {
+            if (snapshot.Version == DurableCaptureSnapshotMetadata.Version)
+            {
+                var metadata = DurableCaptureSnapshotMetadata.Decode(artifact.Kind, snapshot, _options.MaxSnapshotBytes);
+                snapshot = metadata.Snapshot;
+                stream = metadata.Stream;
+            }
+            recordsAvailable = stream?.Available == true || HasRecords(reader, artifactId);
             if (snapshot.Version == DurableCaptureCompositionCodec.SnapshotVersion)
             {
                 composition = DurableCaptureCompositionCodec.Decode(artifact.Kind, artifactId, snapshot, reader.Info, _options);
                 decoded = composition;
-                views = Array.Empty<string>();
+                views = recordsAvailable ? RecordViews : Array.Empty<string>();
             }
             else
             {
                 decoded = CaptureArtifactCodec.Decode(artifact.Kind, snapshot.Version, snapshot.Utf8Json.Span, _options.MaxSnapshotBytes);
-                views = Array.AsReadOnly(CaptureArtifactCodec.GetSupportedSnapshotViews(artifact.Kind, decoded).ToArray());
+                views = SupportedViews(artifact.Kind, decoded, recordsAvailable);
             }
         }
         catch (Exception ex) when (IsPersistenceException(ex))
@@ -323,13 +351,39 @@ public sealed class DurableCaptureUseCases
             producingTool: artifact.Provenance?.ProducingTool);
         var binding = new DurableCaptureHandleBinding(captureId, artifactId, views) { Artifact = artifact };
         _bindings.Set(handle, decoded, binding);
-        return new(handle, views, reader.Info, artifact) { Composition = composition };
+        return new(handle, views, reader.Info, artifact)
+        {
+            Composition = composition,
+            RecordStreamAvailable = recordsAvailable,
+            RecordStream = stream,
+        };
     }
 
     public async Task<CaptureRecordPage> QueryRecordsAsync(string captureId, CaptureRecordQuery query,
         CaptureAccess access, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(query);
         using var reader = await _store.OpenAsync(captureId, access, cancellationToken).ConfigureAwait(false);
+        if (!HasRecords(reader, query.ArtifactId))
+        {
+            var artifact = reader.Info.Artifacts.FirstOrDefault(a => a.ArtifactId == query.ArtifactId)
+                ?? throw new CaptureStoreException(CaptureErrorCode.NotFound, "Capture artifact was not found.");
+            var snapshot = reader.ReadSnapshot(query.ArtifactId);
+            bool available;
+            try
+            {
+                available = snapshot?.Version == DurableCaptureSnapshotMetadata.Version &&
+                    DurableCaptureSnapshotMetadata.Decode(artifact.Kind, snapshot, _options.MaxSnapshotBytes).Stream.Available;
+            }
+            catch (Exception ex) when (IsPersistenceException(ex))
+            {
+                throw new CaptureStoreException(CaptureErrorCode.UnsupportedFormat,
+                    "Record stream metadata cannot be safely read: " + ex.Message, ex);
+            }
+            if (!available)
+                throw new CaptureStoreException(CaptureErrorCode.UnsupportedFormat,
+                    "This artifact has no declared or retained record stream. Use its supported snapshot views instead.");
+        }
         return reader.Query(query);
     }
 
@@ -368,9 +422,23 @@ public sealed class DurableCaptureUseCases
         return binding;
     }
 
-    private void WriteSnapshot(CaptureWriter writer, string id, string kind, object artifact)
-        => writer.SetSnapshot(id, CaptureArtifactCodec.FormatVersion,
-            CaptureArtifactCodec.Encode(kind, artifact, _options.MaxSnapshotBytes));
+    private void WriteSnapshot(CaptureWriter writer, string id, string kind, object artifact, CaptureRecordingNode? node)
+    {
+        var encoded = CaptureArtifactCodec.Encode(kind, artifact, _options.MaxSnapshotBytes);
+        writer.SetSnapshot(id, DurableCaptureSnapshotMetadata.Version,
+            DurableCaptureSnapshotMetadata.Encode(kind, CaptureArtifactCodec.FormatVersion, encoded,
+                DurableCaptureSnapshotMetadata.Stream(node), _options.MaxSnapshotBytes));
+    }
+
+    private static System.Collections.ObjectModel.ReadOnlyCollection<string> SupportedViews(
+        string kind, object artifact, bool recordsAvailable)
+    {
+        var views = CaptureArtifactCodec.GetSupportedSnapshotViews(kind, artifact);
+        return Array.AsReadOnly(recordsAvailable ? views.Append("records").Distinct(StringComparer.Ordinal).ToArray() : views.ToArray());
+    }
+
+    private static bool HasRecords(CaptureReader reader, string artifactId)
+        => reader.Query(new(artifactId, PageSize: 1)).Records.Count != 0;
 
     private static bool IsPersistenceException(Exception ex)
         => ex is CaptureStoreException or IOException or InvalidDataException or UnauthorizedAccessException or JsonException or

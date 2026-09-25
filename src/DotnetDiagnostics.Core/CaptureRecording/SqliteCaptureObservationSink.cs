@@ -172,7 +172,8 @@ internal sealed class SqliteCaptureObservationSink : ICaptureObservationSink
             _root._closed = true;
             var nodes = _nodes.Select(node => new CaptureRecordingNode(
                 node.ArtifactId, node.Kind, node.Name, node.ParentArtifactId,
-                node._artifacts.Values.ToArray(), Interlocked.Read(ref node._offered),
+                node._artifacts.Values.ToArray(), node._reported || Interlocked.Read(ref node._offered) != 0,
+                Interlocked.Read(ref node._offered),
                 Interlocked.Read(ref node._accepted),
                 node._reported && !node._unknown ? node._sourceRejected : null,
                 new Dictionary<string, long?>(node._sources, StringComparer.Ordinal),
@@ -203,6 +204,6 @@ internal sealed record CaptureRecordingCompletion(CaptureRecordingNode[] Nodes, 
 
 internal sealed record CaptureRecordingNode(
     string ArtifactId, string Kind, string Name, string? ParentArtifactId,
-    HandleLookup[] Artifacts, long Offered, long Accepted, long? SourceRejected,
+    HandleLookup[] Artifacts, bool RecordStreamAvailable, long Offered, long Accepted, long? SourceRejected,
     IReadOnlyDictionary<string, long?> Sources, long SourceReportsRejected,
     DiagnosticError? Error, bool Cancelled, object? Result);

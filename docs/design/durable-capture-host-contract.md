@@ -29,6 +29,18 @@ before returning. Snapshot rows are not counted as raw observations. Source loss
 reports sum across sessions, including repeated names; any unknown report remains
 unknown, and absence is never treated as zero.
 
+Compatibility snapshots carry a separately versioned, bounded metadata wrapper.
+`OpenAsync` exposes `RecordStreamAvailable` and `RecordStream` (per-artifact
+admission counts and source-name loss). A snapshot alone does not declare a
+record stream: a producer observation or explicit source report does. The
+`records` view is advertised only when independently retained records exist or
+the producer declared its stream, including legitimate zero-event streams.
+Use `QueryRecordsAsync`, not a direct reader query, so snapshot-only/undeclared
+artifacts reject records instead of returning misleading empty success. Legacy
+snapshots without metadata can expose retained records, but not invent an empty
+stream. Metadata-only interrupted artifacts can retain stream availability
+through recovery without pretending to contain a typed compatibility snapshot.
+
 Hosts use `ListAsync`, `DescribeAsync`, `QueryRecordsAsync`, `DeleteAsync`, and
 explicit `RecoverAsync`. Ordinary describe/query/open never recover or mutate an
 interrupted package. Recovery produces a separate derived package.

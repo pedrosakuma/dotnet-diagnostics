@@ -52,7 +52,9 @@ public sealed partial class DurableCaptureUseCasesTests
         var opened = await service.OpenAsync(info.CaptureId, root.ArtifactId, Owner);
         Assert.Equal("capture-group", opened.Handle.Kind);
         Assert.Empty(opened.SupportedViews);
-        Assert.Empty((await service.QueryRecordsAsync(info.CaptureId, new(root.ArtifactId), Owner)).Records);
+        Assert.False(opened.RecordStreamAvailable);
+        await Assert.ThrowsAsync<CaptureStoreException>(() =>
+            service.QueryRecordsAsync(info.CaptureId, new(root.ArtifactId), Owner));
         var composition = Assert.IsType<DurableCaptureComposition>(opened.Composition);
         Assert.Equal(2, composition.Children.Count);
         foreach (var child in composition.Children)
@@ -152,7 +154,8 @@ public sealed partial class DurableCaptureUseCasesTests
         Assert.NotNull(await service.OpenAsync(recovered.CaptureId, childInfo.ArtifactId, Owner));
         var recoveredRoot = recovered.Artifacts.Single(a => a.Name == "failed-batch");
         using var reader = await Store().OpenAsync(recovered.CaptureId, Owner);
-        var wrapper = reader.ReadSnapshot(recoveredRoot.ArtifactId)!;
+        var wrapper = DurableCaptureSnapshotMetadata.Decode("batch",
+            reader.ReadSnapshot(recoveredRoot.ArtifactId)!, new CaptureStoreOptions().MaxSnapshotBytes).Snapshot;
         var originalRoot = result.Capture.Artifacts.Single(a => a.Name == "failed-batch");
         var composition = DurableCaptureCompositionCodec.Decode("batch", originalRoot.ArtifactId,
             wrapper, result.Capture, new());
