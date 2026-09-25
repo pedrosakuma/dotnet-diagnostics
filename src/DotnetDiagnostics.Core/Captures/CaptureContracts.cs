@@ -88,11 +88,16 @@ public sealed class CaptureStoreException : Exception
 public sealed record CaptureStoreOptions
 {
     public int QueueRecords { get; init; } = 8192;
+    /// <summary>Live queued/in-flight logical reservation, released after commit or failure; not measured RAM.</summary>
     public long QueueBytes { get; init; } = 16 * 1024 * 1024;
     public int MaxRecordBytes { get; init; } = 64 * 1024;
     public int MaxFields { get; init; } = 64;
     public int BatchRecords { get; init; } = 256;
     public TimeSpan MaxBatchAge { get; init; } = TimeSpan.FromMilliseconds(50);
+    /// <summary>
+    /// Cumulative capture-lifetime admitted record and snapshot payload budget, not live RAM.
+    /// Successful commits do not release it: committed evidence still consumes the capture budget.
+    /// </summary>
     public long MaxLogicalBytes { get; init; } = 128 * 1024 * 1024;
     public long MaxDatabaseBytes { get; init; } = 256 * 1024 * 1024;
     public long MaxPackageBytes { get; init; } = 512 * 1024 * 1024;

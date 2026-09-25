@@ -277,6 +277,16 @@ offer age. Its fill delay is at most the configured age, but thread scheduling,
 SQL contention, and storage latency do not have a promised wall-clock bound.
 There is one writer task and at most one cached shutdown task per capture.
 
+There are **two independent logical byte budgets**. `QueueBytes` is the live
+queued/in-flight reservation and is released when that work commits or fails.
+`MaxLogicalBytes` bounds the **cumulative capture-lifetime admitted record and
+snapshot payload**, including already committed retained evidence. A successful
+commit therefore never decrements `LogicalBytes`: it changes where evidence
+resides, not how much evidence the capture has admitted. Neither counter is a
+measurement of live managed RAM. A failed capture may conservatively retain
+admission charges for rolled-back offers; that never grants new capacity or
+turns failure into success. An offer that never enters the queue is not charged.
+
 SQLite runs in WAL mode with `synchronous=FULL`, foreign keys enabled,
 `trusted_schema=OFF`, and bounded auto-checkpointing. The writer sets and reads
 back `max_page_count` on its own connection; the limit is not assumed to

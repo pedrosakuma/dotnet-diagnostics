@@ -9,6 +9,56 @@ namespace DotnetDiagnostics.Core.Tests;
 public sealed partial class DurableCaptureStoreTests
 {
     [Fact]
+    public async Task CommittedBatches_ReleaseQueueReservation_ButNeverReleaseCumulativeCaptureBudget()
+    {
+        var options = new CaptureStoreOptions
+        {
+            QueueRecords = 1, QueueBytes = 256, MaxLogicalBytes = 256, BatchRecords = 1
+        };
+        await using var writer = await Store(options).CreateAsync(new("cumulative capture budget"), Owner);
+        var artifact = writer.AddArtifact("test", "test");
+
+        Assert.True(writer.TryAppend(artifact, new CaptureRecord()));
+        await WaitForDrainAsync(1);
+        var first = writer.GetMetrics();
+        Assert.Equal(0, first.QueueBytes);
+        Assert.Equal(0, first.QueueRecords);
+        Assert.Equal(128, first.LogicalBytes);
+
+        Assert.True(writer.TryAppend(artifact, new CaptureRecord()));
+        await WaitForDrainAsync(2);
+        var second = writer.GetMetrics();
+        Assert.Equal(0, second.QueueBytes);
+        Assert.Equal(0, second.QueueRecords);
+        Assert.Equal(256, second.LogicalBytes);
+        Assert.Equal(2, second.Transactions);
+
+        Assert.False(writer.TryAppend(artifact, new CaptureRecord()));
+        var info = await writer.CompleteAsync();
+        var final = writer.GetMetrics();
+        Assert.Equal(256, final.LogicalBytes);
+        Assert.Equal(0, final.QueueBytes);
+        Assert.Equal(0, final.Quality.QueueRejected);
+        Assert.Equal(1, final.Quality.StorageRejected);
+        Assert.Equal(2, final.Quality.Persisted);
+        AssertConservation(final.Quality);
+        using var reader = await Store().OpenAsync(info.CaptureId, Owner);
+        Assert.Equal(2, reader.Query(new(artifact)).Records.Count);
+
+        async Task WaitForDrainAsync(long persisted)
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            while (true)
+            {
+                var metrics = writer.GetMetrics();
+                if (metrics.Quality.Persisted == persisted && metrics.QueueRecords == 0 && metrics.QueueBytes == 0)
+                    return;
+                await Task.Delay(1, timeout.Token);
+            }
+        }
+    }
+
+    [Fact]
     public async Task QueryByteBudget_CountsJsonEscapes_AndPaginatesWithoutLosingRecords()
     {
         var options = new CaptureStoreOptions { MaxQueryPageBytes = 64 * 1024 };
