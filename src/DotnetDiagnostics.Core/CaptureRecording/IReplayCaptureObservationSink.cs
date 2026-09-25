@@ -4,7 +4,7 @@ namespace DotnetDiagnostics.Core.CaptureRecording;
 /// Optional bounded admission for sequential replay after the live collection has stopped
 /// and drained. Never call from a live EventPipe/native callback.
 /// </summary>
-internal interface IReplayCaptureObservationSink
+internal interface IReplayCaptureObservationSink : ICaptureObservationSink
 {
     /// <summary>
     /// Awaits queue capacity for one copied observation without retrying TryAppend.
@@ -12,5 +12,5 @@ internal interface IReplayCaptureObservationSink
     /// cancellation throws and must not be translated to successful admission.
     /// Implementations bound pending observations as well as the writer queue.
     /// </summary>
-    ValueTask<bool> AppendReplayAsync(CaptureObservation observation, CancellationToken cancellationToken);
+    ValueTask<bool> AppendReplayAsync(CaptureObservation observation, CancellationToken cancellationToken = default);
 }
