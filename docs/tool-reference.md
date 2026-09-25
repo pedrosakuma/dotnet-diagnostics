@@ -3180,8 +3180,8 @@ Save these opaque IDs rather than an expiring in-memory handle.
 For a composed capture, select the parent artifact with `view="children"` (or
 omit `view`) to inspect bounded child references, completion errors, source
 quality, and snapshot availability. Select an individual child artifact for
-ordinary snapshot views or normalized records. Before decoding snapshots from
-a multi-artifact package, the host conservatively requires the current scopes
+ordinary snapshot views or normalized records. Before reading snapshots or records
+from a multi-artifact package, the host conservatively requires the current scopes
 for **every artifact** in that package, including on reused handles. A partial
 batch remains interrupted and requires explicit recovery before offline reads.
 

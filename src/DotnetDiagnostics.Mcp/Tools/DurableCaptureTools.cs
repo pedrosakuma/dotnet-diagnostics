@@ -141,7 +141,7 @@ public sealed class DurableCaptureTools(SqliteCaptureStore store, DurableCapture
             var artifact = reader.Info.Artifacts.SingleOrDefault(item => item.ArtifactId == artifactId);
             if (artifact is null)
                 return Invalid("artifactId does not identify an artifact in this capture.");
-            var denial = AuthorizeArtifact(principalAccessor.Current!, artifact, "records");
+            var denial = AuthorizeCapture(principalAccessor.Current!, reader.Info, artifact, "records");
             if (denial is not null)
                 return denial;
             var query = new CaptureRecordQuery(

@@ -25,6 +25,25 @@ public sealed class DurableCaptureToolTests : IDisposable
         "investigation-export", "delete-artifact");
 
     [Theory]
+    [InlineData("exception-snapshot")]
+    [InlineData("unreviewed-parent-kind")]
+    public async Task ChildRecords_RequireTheCompletePackageAuthorizationPolicy(string siblingKind)
+    {
+        var context = Create();
+        await using var writer = await context.Store.CreateAsync(new("composition-records"), new("owner-a"));
+        var counters = writer.AddArtifact("counters", "counters");
+        writer.AddArtifact(siblingKind, "parent-or-sibling");
+        writer.TryAppend(counters, new(Name: "cpu-usage")).Should().BeTrue();
+        var capture = await writer.CompleteAsync();
+
+        var denied = await Records(context, Owner, capture.CaptureId, counters);
+        denied.Error.Should().NotBeNull("a low-scope child stream must not bypass parent/sibling policies");
+        var elevated = await Records(context, Principal("owner-a", "root"), capture.CaptureId, counters);
+        if (siblingKind == "unreviewed-parent-kind") elevated.Error.Should().NotBeNull();
+        else elevated.Error.Should().BeNull();
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task Records_DistinguishUnavailableSnapshotOnly_FromDeclaredZeroStream(bool declareStream)
