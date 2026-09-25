@@ -81,8 +81,28 @@ public sealed partial class DurableCaptureUseCasesTests
         var recovered = await service.RecoverAsync(result.Capture!.CaptureId, Owner);
         var artifact = Assert.Single(recovered.Artifacts);
         Assert.Empty((await service.QueryRecordsAsync(recovered.CaptureId, new(artifact.ArtifactId), Owner)).Records);
+        Assert.Equal(["records"], await service.DescribeArtifactViewsAsync(recovered.CaptureId, artifact.ArtifactId, Owner));
+        Assert.Null(_handles.TryGetLatestByKind("counters"));
         await Assert.ThrowsAsync<CaptureStoreException>(() =>
             service.OpenAsync(recovered.CaptureId, artifact.ArtifactId, Owner));
+    }
+
+    [Fact]
+    public async Task RegistrationFreeViewDescriptionsStillCheckOwnerAndDeletion()
+    {
+        var service = Service();
+        var result = await service.CaptureAsync("snapshot", "counters", Owner,
+            _ => Task.FromResult(DiagnosticResult.Ok(Snapshot, "done")));
+        var info = result.Capture!;
+        var artifact = Assert.Single(info.Artifacts);
+        Assert.NotEmpty(await service.DescribeArtifactViewsAsync(info.CaptureId, artifact.ArtifactId, Owner));
+        Assert.Null(_handles.TryGetLatestByKind("counters"));
+        var forbidden = await Assert.ThrowsAsync<CaptureStoreException>(() =>
+            service.DescribeArtifactViewsAsync(info.CaptureId, artifact.ArtifactId, new("bob")));
+        Assert.Equal(CaptureErrorCode.Forbidden, forbidden.Code);
+        await service.DeleteAsync(info.CaptureId, Owner);
+        await Assert.ThrowsAsync<CaptureStoreException>(() =>
+            service.DescribeArtifactViewsAsync(info.CaptureId, artifact.ArtifactId, Owner));
     }
 
     [Fact]

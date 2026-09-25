@@ -52,6 +52,10 @@ interrupted package. Recovery produces a separate derived package.
    host policy. Missing producer metadata is not a safe authorization default.
    Registered artifacts preserve producing tool, original handle origin and PID;
    returned-only DTOs without that metadata must not invent a producer.
+   `DescribeArtifactViewsAsync(captureId, artifactId, access)` validates the
+   authoritative offline allowlist without registering a handle. Shape-dependent
+   views still require bounded snapshot decoding; known current handles expose
+   their already-computed allowlist through `LookupBinding(handle).SupportedViews`.
 2. `OpenAsync(captureId, artifactId, access)` decodes only a bounded known
    kind/version. It returns `Handle`, `SupportedViews`, `Capture`, and `Artifact`.
    The fresh handle has `Imported` origin and does not expire when a PID exits.

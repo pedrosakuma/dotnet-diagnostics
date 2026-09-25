@@ -307,25 +307,62 @@ public sealed class DurableCaptureUseCases
         CaptureAccess access, CancellationToken cancellationToken = default)
     {
         using var reader = await _store.OpenAsync(captureId, access, cancellationToken).ConfigureAwait(false);
+        var materialized = DecodeArtifact(reader, artifactId);
+        var artifact = materialized.Artifact;
+        var decoded = materialized.Snapshot
+            ?? throw new CaptureStoreException(CaptureErrorCode.UnsupportedFormat, "Artifact has no supported compatibility snapshot.");
+        cancellationToken.ThrowIfCancellationRequested();
+        // Stored paths and PIDs are provenance, never an instruction to reattach to a process or file.
+        var handle = _handles.RegisterWithMetadata(artifact.Provenance?.ProcessId ?? 0,
+            materialized.Composition is null ? artifact.Kind : DurableCaptureCompositionCodec.HandleKind,
+            decoded, TimeSpan.FromMinutes(30),
+            evictWhenProcessExits: false, origin: HandleOrigin.Imported,
+            producingTool: artifact.Provenance?.ProducingTool);
+        var binding = new DurableCaptureHandleBinding(captureId, artifactId, materialized.Views) { Artifact = artifact };
+        _bindings.Set(handle, decoded, binding);
+        return new(handle, materialized.Views, reader.Info, artifact)
+        {
+            Composition = materialized.Composition,
+            RecordStreamAvailable = materialized.RecordsAvailable,
+            RecordStream = materialized.Stream,
+        };
+    }
+
+    /// <summary>Validates offline views without registering or retaining a diagnostic handle.</summary>
+    public async Task<IReadOnlyList<string>> DescribeArtifactViewsAsync(string captureId, string artifactId,
+        CaptureAccess access, CancellationToken cancellationToken = default)
+    {
+        using var reader = await _store.OpenAsync(captureId, access, cancellationToken).ConfigureAwait(false);
+        var artifact = DecodeArtifact(reader, artifactId);
+        cancellationToken.ThrowIfCancellationRequested();
+        return artifact.Views;
+    }
+
+    private DecodedCaptureArtifact DecodeArtifact(CaptureReader reader, string artifactId)
+    {
         var artifact = reader.Info.Artifacts.FirstOrDefault(a => a.ArtifactId == artifactId)
             ?? throw new CaptureStoreException(CaptureErrorCode.NotFound, "Capture artifact was not found.");
-        var snapshot = reader.ReadSnapshot(artifactId)
-            ?? throw new CaptureStoreException(CaptureErrorCode.UnsupportedFormat, "Artifact has no supported compatibility snapshot.");
-        object decoded;
+        var snapshot = reader.ReadSnapshot(artifactId);
+        object? decoded;
         IReadOnlyList<string> views;
         DurableCaptureComposition? composition = null;
         DurableCaptureRecordStreamInfo? stream = null;
         var recordsAvailable = false;
         try
         {
-            if (snapshot.Version == DurableCaptureSnapshotMetadata.Version)
+            if (snapshot?.Version == DurableCaptureSnapshotMetadata.Version)
             {
                 var metadata = DurableCaptureSnapshotMetadata.Decode(artifact.Kind, snapshot, _options.MaxSnapshotBytes);
                 snapshot = metadata.Snapshot;
                 stream = metadata.Stream;
             }
             recordsAvailable = stream?.Available == true || HasRecords(reader, artifactId);
-            if (snapshot.Version == DurableCaptureCompositionCodec.SnapshotVersion)
+            if (snapshot is null || snapshot.Version == 0)
+            {
+                decoded = null;
+                views = recordsAvailable ? RecordViews : Array.Empty<string>();
+            }
+            else if (snapshot.Version == DurableCaptureCompositionCodec.SnapshotVersion)
             {
                 composition = DurableCaptureCompositionCodec.Decode(artifact.Kind, artifactId, snapshot, reader.Info, _options);
                 decoded = composition;
@@ -342,21 +379,7 @@ public sealed class DurableCaptureUseCases
             throw new CaptureStoreException(CaptureErrorCode.UnsupportedFormat,
                 "Capture snapshot cannot be safely reopened: " + ex.Message, ex);
         }
-        cancellationToken.ThrowIfCancellationRequested();
-        // Stored paths and PIDs are provenance, never an instruction to reattach to a process or file.
-        var handle = _handles.RegisterWithMetadata(artifact.Provenance?.ProcessId ?? 0,
-            composition is null ? artifact.Kind : DurableCaptureCompositionCodec.HandleKind,
-            decoded, TimeSpan.FromMinutes(30),
-            evictWhenProcessExits: false, origin: HandleOrigin.Imported,
-            producingTool: artifact.Provenance?.ProducingTool);
-        var binding = new DurableCaptureHandleBinding(captureId, artifactId, views) { Artifact = artifact };
-        _bindings.Set(handle, decoded, binding);
-        return new(handle, views, reader.Info, artifact)
-        {
-            Composition = composition,
-            RecordStreamAvailable = recordsAvailable,
-            RecordStream = stream,
-        };
+        return new(artifact, decoded, views, composition, stream, recordsAvailable);
     }
 
     public async Task<CaptureRecordPage> QueryRecordsAsync(string captureId, CaptureRecordQuery query,
@@ -456,4 +479,8 @@ public sealed class DurableCaptureUseCases
             }
         return result.ToArray();
     }
+
+    private sealed record DecodedCaptureArtifact(CaptureArtifactInfo Artifact, object? Snapshot,
+        IReadOnlyList<string> Views, DurableCaptureComposition? Composition,
+        DurableCaptureRecordStreamInfo? Stream, bool RecordsAvailable);
 }

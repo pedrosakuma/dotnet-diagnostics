@@ -331,9 +331,12 @@ public sealed partial class DurableCaptureUseCasesTests : IDisposable
         Assert.False(result.IsError, result.Error?.Message);
         var info = result.Capture!;
         var artifact = Assert.Single(info.Artifacts);
+        var views = await service.DescribeArtifactViewsAsync(info.CaptureId, artifact.ArtifactId, Owner);
+        Assert.Equal(result.Handle, _handles.TryGetLatestByKind(kind)!.Id);
         var open = await service.OpenAsync(info.CaptureId, artifact.ArtifactId, Owner);
         Assert.Equal(snapshot.GetType(), _handles.TryGetWithKind(open.Handle.Id)!.Value.Artifact.GetType());
         Assert.Equal(CaptureArtifactCodec.GetSupportedSnapshotViews(kind, snapshot), open.SupportedViews);
+        Assert.Equal(views, open.SupportedViews);
         Assert.Equal(0, info.Quality.Offered);
     }
 
