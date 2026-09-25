@@ -144,3 +144,6 @@ reading input or registering anything. `GetImportResultAsync` currently reports
 does not invoke a worker. Isolated admission, package-3 provenance, remapping,
 import publication and host transfer remain separate work. No whole-feature
 performance or release gate is claimed by the focused exporter tests.
+
+The [isolated worker capability substrate](isolated-import-worker.md) is a
+separate internal prerequisite; it does not enable import or change export.

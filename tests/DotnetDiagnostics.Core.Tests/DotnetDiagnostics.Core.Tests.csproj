@@ -48,4 +48,10 @@
     <Using Include="DotnetDiagnostics.TestSupport" />
   </ItemGroup>
 
+  <!-- Internal Linux worker milestone: no new package/tool deliverable or host activation. -->
+  <Target Name="BuildIsolatedCaptureWorkerFixtures" AfterTargets="Build"
+          Condition="$([MSBuild]::IsOSPlatform('Linux')) and '$(NETCoreSdkRuntimeIdentifier)' == 'linux-x64'">
+    <Exec Command="/usr/bin/cc -std=c11 -O2 -Wall -Wextra -Werror -fstack-protector-strong -D_FORTIFY_SOURCE=2 -Wl,-z,relro,-z,now &quot;$(MSBuildProjectDirectory)/../../src/DotnetDiagnostics.Core/Captures/Isolation/native/capture_worker.c&quot; -ldl -Wl,--no-as-needed -lm -Wl,--as-needed -o &quot;$(TargetDir)capture-worker&quot;" />
+    <Exec Command="/usr/bin/cc -std=c11 -O2 -Wall -Wextra -Werror &quot;$(MSBuildProjectDirectory)/Fixtures/Isolation/worker_fixture.c&quot; -o &quot;$(TargetDir)capture-worker-fixture&quot;" />
+  </Target>
 </Project>
