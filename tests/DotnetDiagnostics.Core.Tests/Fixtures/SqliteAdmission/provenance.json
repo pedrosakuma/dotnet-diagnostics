@@ -1,0 +1,24 @@
+{
+  "origin": "Independent known SQL executed only to CREATE this synthetic v2 fixture; no production writer used.",
+  "sqlite": "3.45.1",
+  "artifactId": "11111111111111111111111111111111",
+  "format": [
+    2,
+    1,
+    1,
+    1,
+    2,
+    2
+  ],
+  "rows": [
+    1,
+    3,
+    1,
+    1,
+    1,
+    1
+  ],
+  "snapshotSemantics": "Synthetic JSON; no supported typed-codec validity is asserted.",
+  "databaseSha256": "f587bb019255611c138aef061cdcde936ae04219dd28a4ab2db5f6f551e1d887",
+  "generatorSha256": "d34a88570b137571259ea856a69427dc86eba79a76aca2c2388578bc38dc6530"
+}

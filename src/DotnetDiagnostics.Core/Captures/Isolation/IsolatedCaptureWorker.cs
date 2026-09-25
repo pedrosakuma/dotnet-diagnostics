@@ -29,7 +29,7 @@ internal sealed record CaptureWorkerLimits
 /// Internal capability milestone, not archive admission. Every path/fixture is supplied by trusted
 /// host/test code. No external capture is accepted and public import remains unavailable.
 /// </summary>
-internal static class IsolatedCaptureWorker
+internal static partial class IsolatedCaptureWorker
 {
     private const int OutputLimit = 4096;
 
@@ -81,14 +81,34 @@ internal static class IsolatedCaptureWorker
             new Uri(probe.TrustedFixture).AbsoluteUri + "?immutable=1", probe.BenignMarker,
             probe.HelperProcessId.ToString(CultureInfo.InvariantCulture), probe.HelperAddress, probe.HelperExecutable })
             start.ArgumentList.Add(argument);
+        var outcome = RunProtocol(start, nonce, limits, "GO\n"u8.ToArray(),
+            (stream, ct) => ReadBoundedAsync(stream, OutputLimit, false, ct), token);
+        var text = outcome.Result;
+        var result = text.TrimEnd('\n').Split(' ');
+        if (result.Length != 7 || result[0] != "RESULT" || result[1] != "1" || result[2] != nonce ||
+            !int.TryParse(result[3], CultureInfo.InvariantCulture, out var denied) || denied != 21 ||
+            !int.TryParse(result[4], CultureInfo.InvariantCulture, out var value) ||
+            !int.TryParse(result[5], CultureInfo.InvariantCulture, out var version) || version < 3031000 ||
+            !long.TryParse(result[6], CultureInfo.InvariantCulture, out var instructions) || instructions is < 1000 or > 200000000)
+            throw Unsupported("WorkerResultInvalid");
+        return new(outcome.Abi, version, denied, value, instructions, outcome.PeakRss,
+            outcome.MaximumGap, Encoding.UTF8.GetByteCount(text));
+    }
+
+    private sealed record ProtocolOutcome<T>(T Result, int Abi, long PeakRss, TimeSpan MaximumGap);
+
+    private static ProtocolOutcome<T> RunProtocol<T>(ProcessStartInfo start, string nonce, CaptureWorkerLimits limits,
+        byte[] request, Func<Stream, CancellationToken, Task<T>> receive, CancellationToken token)
+    {
         using var process = new Process { StartInfo = start };
         var wall = Stopwatch.StartNew();
         var observations = new CaptureWorkerObservation(limits);
         using var io = new CancellationTokenSource();
-        Task<string>? frame = null;
+        Task? frame = null;
+        Task? sending = null;
         Task<string>? errors = null;
         var started = false;
-        CaptureWorkerCapabilities? capabilities = null;
+        ProtocolOutcome<T>? outcome = null;
         Exception? failure = null;
         try
         {
@@ -97,35 +117,29 @@ internal static class IsolatedCaptureWorker
             catch (System.ComponentModel.Win32Exception ex) { throw Unsupported("WorkerLaunchUnavailable", ex); }
             if (!started) throw Unsupported("WorkerLaunchUnavailable");
             errors = ReadBoundedAsync(process.StandardError.BaseStream, OutputLimit, false, io.Token);
-            frame = ReadBoundedAsync(process.StandardOutput.BaseStream, 256, true, io.Token);
+            var handshake = ReadBoundedAsync(process.StandardOutput.BaseStream, 256, true, io.Token);
+            frame = handshake;
             Await(frame, mandatory: false);
-            var ready = frame.GetAwaiter().GetResult().TrimEnd('\n').Split(' ');
+            var ready = handshake.GetAwaiter().GetResult().TrimEnd('\n').Split(' ');
             if (ready.Length == 2 && ready[0] == "UNSUPPORTED") throw Unsupported(ready[1]);
             if (ready.Length != 4 || ready[0] != "READY" || ready[1] != "1" || ready[2] != nonce ||
                 !int.TryParse(ready[3], CultureInfo.InvariantCulture, out var abi) || abi < 3)
                 throw Unsupported("WorkerHandshakeInvalid");
-            frame = ReadBoundedAsync(process.StandardOutput.BaseStream, OutputLimit, false, io.Token);
+            var response = receive(process.StandardOutput.BaseStream, io.Token);
+            frame = response;
             Observe();
-            process.StandardInput.Write("GO\n");
-            process.StandardInput.Flush();
+            sending = process.StandardInput.BaseStream.WriteAsync(request, io.Token).AsTask();
+            Await(sending, mandatory: true);
             process.StandardInput.Close();
             Await(frame, mandatory: true);
             Await(errors, mandatory: true);
             while (!process.HasExited) { Check(); Observe(); Thread.Sleep(1); }
+            Check();
             observations.CheckGap(wall.Elapsed);
-            if (process.ExitCode == 78) throw Unsupported(frame.GetAwaiter().GetResult().Trim());
+            if (process.ExitCode == 78) throw Unsupported(response.GetAwaiter().GetResult()?.ToString()?.Trim() ?? "WorkerUnavailable");
             if (process.ExitCode != 0 || errors.GetAwaiter().GetResult().Length != 0)
                 throw CapturePackage.Error(CaptureErrorCode.StorageFailure, "Worker exited unsuccessfully; no admission result exists.");
-            var text = frame.GetAwaiter().GetResult();
-            var result = text.TrimEnd('\n').Split(' ');
-            if (result.Length != 7 || result[0] != "RESULT" || result[1] != "1" || result[2] != nonce ||
-                !int.TryParse(result[3], CultureInfo.InvariantCulture, out var denied) || denied != 21 ||
-                !int.TryParse(result[4], CultureInfo.InvariantCulture, out var value) ||
-                !int.TryParse(result[5], CultureInfo.InvariantCulture, out var version) || version < 3031000 ||
-                !long.TryParse(result[6], CultureInfo.InvariantCulture, out var instructions) || instructions is < 1000 or > 200000000)
-                throw Unsupported("WorkerResultInvalid");
-            capabilities = new(abi, version, denied, value, instructions, observations.PeakRss,
-                observations.MaximumGap, Encoding.UTF8.GetByteCount(text));
+            outcome = new(response.GetAwaiter().GetResult(), abi, observations.PeakRss, observations.MaximumGap);
         }
         catch (Exception ex) { failure = ex; }
         try
@@ -146,10 +160,11 @@ internal static class IsolatedCaptureWorker
         {
             io.Cancel();
             ObserveIoFailure(frame);
+            ObserveIoFailure(sending);
             ObserveIoFailure(errors);
         }
         if (failure is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
-        return capabilities!;
+        return outcome!;
 
         void Check()
         {
@@ -166,7 +181,15 @@ internal static class IsolatedCaptureWorker
                 process.Refresh();
                 var rss = process.WorkingSet64;
                 var cpu = process.TotalProcessorTime;
-                if (rss == 0 && process.HasExited) { observations.CheckGap(wall.Elapsed); return; }
+                if (rss == 0)
+                {
+                    // Linux can clear mm before the exit notification is visible.
+                    // Confirm termination without treating zero as a valid sample
+                    // or advancing the last observation's mandatory deadline.
+                    var exited = process.WaitForExit(1);
+                    observations.ConfirmExit(wall.Elapsed, exited);
+                    return;
+                }
                 observations.Record(wall.Elapsed, rss, cpu);
             }
             catch (InvalidOperationException) when (process.HasExited) { observations.CheckGap(wall.Elapsed); }
@@ -224,6 +247,11 @@ internal sealed class CaptureWorkerObservation(CaptureWorkerLimits limits)
     internal void CheckWallTime(TimeSpan elapsed)
     {
         if (elapsed > limits.WallTime) throw IsolatedCaptureWorker.Limit("WorkerWallTime");
+    }
+    internal void ConfirmExit(TimeSpan now, bool exited)
+    {
+        CheckGap(now);
+        if (!exited) throw IsolatedCaptureWorker.Unsupported("WorkerObservationUnavailable");
     }
     internal void CheckGap(TimeSpan now)
     {
