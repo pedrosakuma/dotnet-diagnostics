@@ -13,6 +13,9 @@ independent multi-capture bundles, bounded admission and a future package-3
 import-derived provenance representation. The implementation described here
 remains package 2 / executing reader 2; its trusted-root checks are not sufficient
 for arbitrary uploaded SQLite files.
+The bounded trusted-store exporter is now described in
+[`portable-capture-export.md`](portable-capture-export.md); it preserves sealed
+source bytes and does not implement isolated import.
 
 ## Public API and ownership
 

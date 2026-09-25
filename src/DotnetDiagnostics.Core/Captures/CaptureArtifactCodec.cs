@@ -113,6 +113,8 @@ internal static class CaptureArtifactCodec
         return result;
     }
 
+    internal static bool SupportsKind(string kind) => Codecs.ContainsKey(kind);
+
     private static void ReadHeader(ref Utf8JsonReader reader, string kind)
     {
         Expect(ref reader, JsonTokenType.StartObject);

@@ -5,6 +5,8 @@ authorized HTTP/stdio byte-transfer contract, see
 [`portable-capture-contract.md`](portable-capture-contract.md) (#1048).
 It preserves the ownership and offline-view boundaries below; a server-side
 archive path alone is not remote transfer.
+The [Core exporter](portable-capture-export.md) is available separately; CLI/MCP
+byte-transfer adapters and isolated import are not implemented by that entry point.
 
 `DurableCaptureUseCases` wraps an existing asynchronous operation with
 `CaptureAsync(name, kind, access, collect, cancellationToken)`. It does not replace

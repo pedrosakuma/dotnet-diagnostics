@@ -7,7 +7,7 @@ namespace DotnetDiagnostics.Core.Captures;
 /// Opt-in, one-package-per-capture local storage. Construction performs no filesystem or SQLite work.
 /// The artifact root must be private to trusted host code; packages are not an untrusted import format.
 /// </summary>
-public sealed class SqliteCaptureStore
+public sealed partial class SqliteCaptureStore
 {
     private readonly IArtifactRootProvider _root;
     private readonly CaptureStoreOptions _options;
@@ -421,6 +421,7 @@ public sealed class SqliteCaptureStore
             CapturePackage.RejectLinks(directory);
             bytes = checked(bytes + CapturePackage.PackageBytes(directory));
         }
+        bytes = checked(bytes + PortableCaptureStorage.AccountedBytes(root));
         if (reservation > _options.MaxStoreBytes - bytes)
             throw CapturePackage.Error(CaptureErrorCode.CapacityExceeded, "Store byte admission budget exhausted (including unsealed package reservations).");
     }

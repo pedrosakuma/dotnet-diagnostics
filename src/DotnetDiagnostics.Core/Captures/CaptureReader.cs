@@ -23,6 +23,7 @@ public sealed class CaptureReader : IDisposable
     }
 
     public CaptureInfo Info { get; }
+    internal SqliteConnection PortableConnection => _connection;
     public CaptureFormatVersions Format { get; }
     public CaptureReaderIdentity ExecutingReader { get; } = new("DotnetDiagnostics.Core.Captures.CaptureReader", 2);
 
