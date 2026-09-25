@@ -35,6 +35,13 @@ multi-capture database, arbitrary SQL, a central history service, live collectio
 changes, native file transport, or a new MCP tool. CLI continues to reference
 Core only. Package ownership and per-kind/view authorization remain independent.
 
+Trusted export and untrusted import have different execution boundaries. Export
+selects capture IDs from the host's existing trusted private store; it does not
+accept arbitrary source paths, archives or externally supplied raw SQLite files.
+A matching seal/hash does not establish that trust. Copying an external database
+into a store directory is not an admission mechanism: it must pass isolated
+import first. Import alone requires the isolated worker described in section 7.
+
 An interrupted source must undergo explicit existing recovery first. A recovered
 sealed capture can be exported even if its retained evidence has incomplete or
 unknown quality. “Sealed” means immutable publication, not complete observation.
@@ -212,8 +219,12 @@ Composition uses `CaptureSnapshot.Version=2` with `compositionVersion` 1 or 2.
 The record-stream wrapper uses `CaptureSnapshot.Version=3` with
 `metadataVersion=1` and nested representation 0 (metadata only), 1 or 2.
 These existing numbers are **not package 3**. Unknown kinds/versions, including
-an undecodable snapshot in an otherwise supported package, fail v1 import/export;
-the exporter must not produce a bundle its supported importer cannot admit.
+an undecodable snapshot in an otherwise supported package, fail v1 import/export.
+Export must emit supported archive/package/record/snapshot representations and
+validate their portable compatibility; this is not a guarantee of admission at
+every destination. Import independently checks all untrusted input and may reject
+otherwise compatible evidence for destination capacity, current authorization,
+configured lower limits or import-worker work/resource limits.
 Artifacts without snapshots remain valid when their declared record semantics
 are supported. Absence of a snapshot is not absence of retained records.
 
@@ -368,8 +379,15 @@ public delegate ValueTask AuthorizePortableImport(
 ```
 
 `PortableCaptureUseCases` is constructed with the trusted store, finite portable
-limits, clock, and bounded untrusted-validation worker supplied through Core
-abstractions. It must not depend on MCP/HTTP or caller-supplied directory paths.
+limits and clock through Core abstractions. The bounded untrusted-validation
+worker is an import-only dependency: export-only construction and `ExportAsync`
+must work without it. `ImportAsync` without a configured worker capable of
+enforcing section 7 fails explicitly with `CaptureErrorCode.UnsupportedFormat`
+and reason `ImportWorkerUnavailable` before processing source data or publishing
+anything; no in-process fallback or successful stub is permitted. Reading an
+existing operation result does not require a worker. Core must not depend on
+MCP/HTTP or caller-supplied source directory paths. The public method and DTO
+shapes are unchanged by this dependency boundary.
 
 ```csharp
 Task<PortableExportResult> ExportAsync(
@@ -396,6 +414,9 @@ Core enforces destination ownership regardless of that callback. Host export aut
 must check every selected capture/artifact, including sensitive record access,
 before invoking export; Core independently checks `CaptureAccess`.
 
+Export may use the existing in-process store reader for these trusted sources,
+plus bounded portable metadata, record and snapshot compatibility validation and
+byte/work checks. This does not turn that reader into an untrusted SQLite parser.
 Export acquires shared source leases in sorted unique capture-ID order, validates
 all sources, and retains leases while copying their exact bytes. Duplicate
 selections reuse one lease, not a mutable second read. It reserves private space,
@@ -494,6 +515,9 @@ These are conservative **v1 admission ceilings**, not throughput recommendations
 or evidence that #1041 has passed. Hosts may lower them; raising them requires a
 contract/version review. Integer arithmetic is checked. Limits apply to actual
 consumption and reservations across cooperating processes, not only declarations.
+Archive, storage, portable-buffer, metadata, row/token and operation limits apply
+to both paths where relevant. The explicitly identified import-worker limits
+below govern isolated untrusted admission, not the trusted local store reader.
 
 | Resource | Hard admission/stop rule |
 |---|---|
@@ -508,16 +532,16 @@ consumption and reservations across cooperating processes, not only declarations
 | Artifacts / source snapshots | 64 per capture / 8 MiB each; JSON depth 64 |
 | Source logical payload / record / fields | 128 MiB per capture / 64 KiB / 64, using foundation accounting |
 | Labels / ordinary provenance text | 256 bytes / existing 1 KiB UTF-8 bounds |
-| SQLite schema | 32 entries maximum; 32 KiB total SQL text; exact allowlist in section 7 |
+| SQLite schema | 32 entries maximum; 32 KiB total SQL text; import additionally enforces the exact allowlist in section 7 |
 | Table work | At most 2,000,000 rows per table and 4,000,000 total rows per capture, including fields/strings |
 | Semantic JSON work | 2,000,000 tokens per snapshot; 8,000,000 per capture; count before DTO materialization |
-| SQL execution work | 200,000,000 VM instructions per entry across all admission statements; callback every 1,000 instructions |
-| Worker time / whole operation | 60 seconds CPU and 120 seconds wall per entry; 600 seconds wall per operation |
+| Import-worker SQL execution work | 200,000,000 VM instructions per entry across all admission statements; callback every 1,000 instructions |
+| Import-worker time / whole operation | 60 seconds CPU and 120 seconds wall per import entry; 600 seconds wall per export or import operation |
 | Copy buffers / metadata | 64 KiB per stream, at most four live buffers / 4 MiB retained metadata outside snapshots |
-| Validation native heap / SQLite cache | 32 MiB hard SQLite heap limit / 8 MiB cache, mmap disabled |
-| Validation process resident-memory stop | 256 MiB, watchdog samples at most 10 ms apart and terminates on exceedance |
+| Import-worker native heap / SQLite cache | 32 MiB hard SQLite heap limit / 8 MiB cache, mmap disabled |
+| Import-worker resident-memory stop | 256 MiB, watchdog samples at most 10 ms apart and terminates on exceedance |
 | Host retained portable buffers | 32 MiB per active operation, reserved before allocation; never retain all snapshots |
-| Portable operations / validators | 2 active operations per store, 1 per owner; 1 validation worker per store |
+| Portable operations / validators | 2 active operations per store, 1 per owner; 1 import validation worker per store |
 | Store writer slots | Existing limit 2 total, shared with ordinary writers; imports do not add slots |
 | Per-operation private disk | 2 GiB including archive, extracted sources, destination staging and SQLite side files |
 | Aggregate managed store | 4 GiB and 256 captures by default, or lower configured limits; include private staging, receipts, tombstones and reservations |
@@ -527,7 +551,13 @@ consumption and reservations across cooperating processes, not only declarations
 Use the smaller applicable Core `CaptureStoreOptions` limit. Some locally valid
 large captures will not be portable under these limits; return the exact limit,
 observed value and maximum, not truncated “success”. Metadata/row/token/VM budgets
-can reject a compact yet expensive input even below the byte cap.
+can reject a compact yet expensive input even below the byte cap on their
+applicable path. Trusted export still enforces finite row/token work and the
+600-second operation deadline: check cancellation/deadline before and after
+trusted reader calls and between bounded pages, snapshots and copy chunks.
+Cancellation/deadline failure never returns export success. These cooperative
+checks do not promise preemption or an adversarial native-parser watchdog inside
+the trusted in-process reader; those guarantees belong to isolated import.
 
 Reserve archive and extraction capacity before receiving their next bytes; reserve
 one full destination `MaxPackageBytes` before building that entry, including
@@ -540,19 +570,20 @@ count, work or deadline cap. Never silently wait in an unbounded queue.
 
 Admission arrays, strings, decoded base64, JSON tokens and ZIP descriptors must
 be checked/reserved **before** allocation; use a bounded lookahead byte/record
-to detect overflow. A VM progress handler does not bound all native parser work.
-The worker deadline and process watchdog therefore cover first SQLite open,
-schema parsing and integrity checking as well. A watchdog RSS threshold is a
+to detect overflow. In untrusted import, a VM progress handler does not bound all
+native parser work. The worker deadline and process watchdog cover first SQLite
+open, schema parsing and integrity checking as well. A watchdog RSS threshold is a
 termination threshold, not a proof of zero sampling overshoot or a portable
 kernel-enforced RSS cap. #1041 must measure peak/process-tree memory including
-that overshoot; unsupported hard-limit/interrupt facilities must fail admission,
-not silently use the ordinary in-process reader. No “safe because hash matched”
-shortcut is permitted.
+that overshoot; unsupported hard-limit/interrupt facilities must fail import
+admission, not silently use the ordinary in-process reader. No “safe because hash
+matched” shortcut is permitted.
 
 ## 7. Untrusted SQLite and payload admission
 
-No untrusted database is opened by the long-lived CLI/MCP host or installed as a
-local package. Run the admission/rebuild work in a disposable, quota-controlled
+This section is mandatory for import, not a prerequisite worker for trusted
+export. No untrusted database is opened by the long-lived CLI/MCP host or installed
+as a local package. Run the admission/rebuild work in a disposable, quota-controlled
 worker through a Core abstraction, without network, target-process access,
 host bearer tokens, or access to unrelated stores. Hosts must package an actual
 worker implementation; a test stub is not release acceptance. Use platform
@@ -840,7 +871,7 @@ external denial; do not expose other owners' receipt state.
 | `Busy` | Admission/lease/worker/transfer concurrency; bounded retry delay |
 | `CapacityExceeded` | Named byte/header/row/work/memory/store/time limit; no truncation |
 | `Incomplete` | `SourceNotSealed`, `UploadIncomplete`; explicit recovery needed only for source evidence |
-| `UnsupportedFormat` | Archive/package/required feature/codec/schema capability unsupported |
+| `UnsupportedFormat` | Archive/package/required feature/codec/schema capability unsupported; `ImportWorkerUnavailable` when safe import cannot be configured |
 | `CorruptPackage` | Hash/CRC mismatch, inconsistent descriptor, invalid SQLite data or references |
 | `UnsafePath` | Invalid archive member grammar, symlink/reparse/alias attempt |
 | `StorageFailure` | I/O, worker crash, cleanup or receipt failure; preserve operation reference |
@@ -858,6 +889,9 @@ Use real cross-root bytes and client transfers, not direct helper-only mocks.
 
 | Case | Required observation | Owner |
 |---|---|---|
+| Trusted ID-selected export without an import worker | Export remains bounded, authorized, leased and immutable; arbitrary paths/raw external SQLite are not accepted as sources | #1049 |
+| Import without a configured safe worker | Explicit `UnsupportedFormat/ImportWorkerUnavailable` before input processing/publication; no in-process fallback or stub success | #1050 |
+| Compatible export into a restricted destination | Import may reject current policy, capacity or worker budgets without mislabeling the source format as incompatible or weakening admission | #1050/#1054 |
 | Two sealed captures with duplicate labels/source IDs | Distinct entry/local IDs; whole-bundle index verified; no merge or overwrite | #1049/#1050 |
 | Export labels/filename changed | Source package bytes/member sets/quality unchanged; index and bundle hashes change | #1049 |
 | Interrupted source and explicit recovery | Direct export fails; recovered sealed evidence roundtrips with unknown-tail/rejection facts | #1049/#1050 |
@@ -888,7 +922,8 @@ Use real cross-root bytes and client transfers, not direct helper-only mocks.
 
 Implementation ownership:
 
-- **#1049:** bounded immutable export, archive fixtures, and Core export API.
+- **#1049:** bounded trusted-store immutable export, archive fixtures, and Core
+  export API; no dependency on implementing the isolated import worker first.
 - **#1050:** untrusted admission worker, package-3 provenance/reader fixtures,
   typed reference remapping, quotas, staging/publication and retry receipts.
 - **#1053:** Core-only local CLI file workflows and user reference documentation.
