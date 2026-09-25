@@ -3188,6 +3188,12 @@ projection rather than the ordinary typed dispatcher. Before reading snapshots
 or records from a multi-artifact package, the host conservatively requires the current scopes
 for **every artifact** in that package, including on reused handles. A partial
 batch remains interrupted and requires explicit recovery before offline reads.
+Sweep parent evidence additionally requires its producer's `eventpipe` scope,
+independent of which children were retained.
+For sweeps, `children` also returns typed `metadata.sweep` containing parent
+triage, resource trends/memory, duration, failures, and child artifact references.
+The original collection response remains `data.kind` plus `data.sweep`; this
+MCP wrapper is not serialized as historical parent evidence.
 
 `collect_events(kind="distributed_trace"|"replica_counters", persist=true)`
 forwards persistence to the actual collecting hosts. Its `data.remoteCaptures`

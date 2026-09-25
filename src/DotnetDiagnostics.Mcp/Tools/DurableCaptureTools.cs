@@ -42,8 +42,20 @@ public sealed class DurableCaptureTools(SqliteCaptureStore store, DurableCapture
                 new DiagnosticError("InvalidArgument", "A collection kind is required.", "kind"));
         try
         {
-            var result = await service._captures.CaptureAsync(
-                tool, kind.Trim().ToLowerInvariant(), access!, collect, cancellationToken).ConfigureAwait(false);
+            var operation = await service._captures.CaptureOperationAsync(
+                tool, kind.Trim().ToLowerInvariant(), access!, collect,
+                static result => DurableCaptureEnvelope.Box(result) with
+                {
+                    Data = result.Data switch
+                    {
+                        CollectEventsEnvelope { Kind: "sweep", Sweep: { } sweep } => sweep,
+                        _ => result.Data,
+                    },
+                }, cancellationToken).ConfigureAwait(false);
+            var result = DurableCaptureEnvelope.Apply(
+                operation.Result ?? new DiagnosticResult<T>(
+                    operation.Outcome.Summary, operation.Outcome.Hints, operation.Outcome.Error),
+                operation.Outcome);
             var presented = result with
             {
                 Error = result.Error is { Kind: "CapturePersistenceFailed" } persistenceError

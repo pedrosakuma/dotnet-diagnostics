@@ -4,7 +4,9 @@ using DotnetDiagnostics.Core.Artifacts;
 using DotnetDiagnostics.Core.Capabilities;
 using DotnetDiagnostics.Core.Counters;
 using DotnetDiagnostics.Core.Exceptions;
+using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.ProcessDiscovery;
+using DotnetDiagnostics.Core.ThreadPool;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -20,6 +22,75 @@ public sealed class DurableCaptureHttpTests : IDisposable
     private const string Token = "durable-http-test-token-not-production";
     private readonly string _root = Path.GetFullPath(Path.Combine(
         ".validation", "durable-mcp-http", Guid.NewGuid().ToString("N")));
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task WrappedSweep_PreservesParentEvidenceAcrossServerRestart(bool failResources)
+    {
+        string captureId;
+        string parentId;
+        JsonElement originalSweep;
+        await using (var factory = Factory(failResources: failResources))
+        await using (var client = await Connect(factory))
+        {
+            var collected = await client.CallToolAsync("collect_events", new Dictionary<string, object?>
+            {
+                ["kind"] = "sweep", ["durationSeconds"] = 6, ["persist"] = true,
+            }, cancellationToken: CancellationToken.None);
+            collected.IsError.Should().NotBeTrue("wrapped sweep must persist: {0}", JsonSerializer.Serialize(collected));
+            var original = Envelope(collected);
+            original.GetProperty("data").GetProperty("kind").GetString().Should().Be("sweep");
+            originalSweep = original.GetProperty("data").GetProperty("sweep").Clone();
+            originalSweep.GetProperty("handles").EnumerateObject().Should().HaveCount(4);
+            originalSweep.GetProperty("failures").GetArrayLength().Should().Be(failResources ? 1 : 0);
+            var capture = original.GetProperty("capture");
+            captureId = capture.GetProperty("captureId").GetString()!;
+            var artifacts = capture.GetProperty("artifacts").EnumerateArray().ToArray();
+            artifacts.Should().HaveCount(5);
+            parentId = artifacts.Single(item => item.GetProperty("kind").GetString() == "sweep")
+                .GetProperty("artifactId").GetString()!;
+        }
+
+        await using var restarted = Factory();
+        await using var reader = await Connect(restarted);
+        var queried = await reader.CallToolAsync("query_snapshot", new Dictionary<string, object?>
+        {
+            ["captureId"] = captureId, ["artifactId"] = parentId, ["view"] = "children",
+        }, cancellationToken: CancellationToken.None);
+        queried.IsError.Should().NotBeTrue("sweep composition must reopen: {0}", JsonSerializer.Serialize(queried));
+        var composition = Envelope(queried).GetProperty("data");
+        var children = composition.GetProperty("children").EnumerateArray().ToArray();
+        children.Should().HaveCount(4);
+        var metadata = composition.GetProperty("metadata").GetProperty("sweep");
+        foreach (var property in new[] { "durationSeconds", "triage", "failures" })
+            metadata.GetProperty(property).GetRawText().Should().Be(originalSweep.GetProperty(property).GetRawText());
+        if (!failResources)
+        {
+            metadata.GetProperty("resource").GetRawText().Should().Be(originalSweep.GetProperty("resource").GetRawText());
+            metadata.GetProperty("resource").GetProperty("trend").GetProperty("samples").GetArrayLength().Should().Be(2);
+            metadata.GetProperty("resource").GetProperty("managedVsNative").GetProperty("rssBytes").GetInt64()
+                .Should().Be(8_000_000);
+        }
+        else
+        {
+            metadata.TryGetProperty("resource", out var resource).Should().BeFalse();
+        }
+        var references = metadata.GetProperty("artifactIds").EnumerateObject().ToArray();
+        references.Should().HaveCount(4);
+        foreach (var reference in references)
+            children.Should().Contain(child => child.GetProperty("artifactId").GetString() == reference.Value.GetString());
+        metadata.TryGetProperty("handles", out _).Should().BeFalse();
+        metadata.TryGetProperty("counters", out _).Should().BeFalse("child snapshots remain separate artifacts");
+
+        var reused = await reader.CallToolAsync("query_snapshot", new Dictionary<string, object?>
+        {
+            ["handle"] = Envelope(queried).GetProperty("handle").GetString(), ["view"] = "children",
+        }, cancellationToken: CancellationToken.None);
+        reused.IsError.Should().NotBeTrue();
+        Envelope(reused).GetProperty("data").GetProperty("metadata").GetRawText()
+            .Should().Be(composition.GetProperty("metadata").GetRawText());
+    }
 
     [Theory]
     [InlineData(false)]
@@ -149,7 +220,7 @@ public sealed class DurableCaptureHttpTests : IDisposable
         Envelope(query).GetProperty("capture").GetProperty("captureId").GetString().Should().Be(captureId);
     }
 
-    private WebApplicationFactory<Program> Factory(bool failExceptions = false)
+    private WebApplicationFactory<Program> Factory(bool failExceptions = false, bool failResources = false)
         => new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
             builder.UseSetting("Auth:BearerTokens:0:Name", "durable-test");
@@ -163,6 +234,9 @@ public sealed class DurableCaptureHttpTests : IDisposable
                 services.AddSingleton<IArtifactRootProvider>(new TestRoot(_root));
                 services.AddSingleton<ICounterCollector>(new CounterCollector());
                 services.AddSingleton<IExceptionCollector>(new ExceptionCollector(failExceptions));
+                services.AddSingleton<IGcCollector>(new GcCollector());
+                services.AddSingleton<IThreadPoolCollector>(new ThreadPoolCollector());
+                services.AddSingleton<IProcessResourcesCollector>(new ResourceCollector(failResources));
                 services.AddSingleton<IProcessContextResolver>(new Resolver());
             });
         });
@@ -220,5 +294,37 @@ public sealed class DurableCaptureHttpTests : IDisposable
             CancellationToken cancellationToken = default)
             => fail ? throw new InvalidOperationException("deterministic child failure")
                 : Task.FromResult(new ExceptionSnapshot(processId, DateTimeOffset.UtcNow, duration, 0, [], []));
+    }
+
+    private sealed class GcCollector : IGcCollector
+    {
+        public Task<GcSummary> CollectAsync(int processId, TimeSpan duration, int maxEvents = 200,
+            CancellationToken cancellationToken = default)
+            => Task.FromResult(new GcSummary(processId, DateTimeOffset.UtcNow, duration,
+                0, TimeSpan.Zero, TimeSpan.Zero, [], []));
+    }
+
+    private sealed class ThreadPoolCollector : IThreadPoolCollector
+    {
+        public Task<ThreadPoolEventSnapshot> CollectAsync(int processId, TimeSpan duration,
+            CancellationToken cancellationToken = default)
+            => Task.FromResult(new ThreadPoolEventSnapshot(processId, DateTimeOffset.UtcNow, duration,
+                [], [], [], [], null, 0, 0, []));
+    }
+
+    private sealed class ResourceCollector(bool fail) : IProcessResourcesCollector
+    {
+        public Task<ProcessResources> CollectAsync(int processId, int durationSeconds, int sampleEverySeconds,
+            CancellationToken cancellationToken = default)
+            => fail ? throw new InvalidOperationException("deterministic resource failure")
+                : Task.FromResult(new ProcessResources(processId, DateTimeOffset.UtcNow, 12, null,
+                    null, null, null, ["deterministic resource evidence"],
+                    new ProcessResourcesTrend([
+                        new(DateTimeOffset.UnixEpoch, 10, null, null, null, null),
+                        new(DateTimeOffset.UnixEpoch.AddSeconds(durationSeconds), 12, null, null, null, null),
+                    ]))
+                {
+                    ManagedVsNative = new(8_000_000, 2_000_000, 6_000_000, 0.25, true),
+                });
     }
 }
