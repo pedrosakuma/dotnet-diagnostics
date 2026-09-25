@@ -21,6 +21,27 @@ public sealed class CliDurableCaptureTests : IDisposable
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     [Fact]
+    public async Task OriginalPersistedProducerHandleIsReauthorizedAfterDeletion()
+    {
+        using var services = Services();
+        var (exit, captured) = await ExecuteAsync(services,
+            ["collect", "--kind", "counters", "--persist", "--capture-root", _root, "--json"]);
+        exit.Should().Be(0, captured.ToString());
+        var captureId = captured.GetProperty("capture").GetProperty("captureId").GetString()!;
+        var handle = captured.GetProperty("handle").GetString()!;
+        var (beforeExit, before) = await ExecuteAsync(services,
+            ["query", "--handle", handle, "--view", "summary", "--json"], session: true);
+        beforeExit.Should().Be(0, before.ToString());
+        var (deleteExit, deleted) = await ExecuteAsync(services,
+            ["captures", "delete", "--capture-id", captureId, "--capture-root", _root, "--json"], session: true);
+        deleteExit.Should().Be(0, deleted.ToString());
+        var (afterExit, after) = await ExecuteAsync(services,
+            ["query", "--handle", handle, "--view", "summary", "--json"], session: true);
+        afterExit.Should().Be(1);
+        after.GetProperty("error").GetProperty("kind").GetString().Should().BeOneOf("Deleted", "NotFound");
+    }
+
+    [Fact]
     public async Task SeparateCliProcessQueriesPersistedSnapshotAfterProducerHostDisposal()
     {
         string captureId;
@@ -97,6 +118,10 @@ public sealed class CliDurableCaptureTests : IDisposable
         result.IsError.Should().BeFalse(result.Human);
         var info = result.Capture!;
         var artifactId = info.Artifacts.Single().ArtifactId;
+        var (originalExit, original) = await ExecuteAsync(services,
+            ["query", "--handle", result.Handle!, "--view", "object", "--address", "123", "--json"], session: true);
+        originalExit.Should().Be(1);
+        original.GetProperty("error").GetProperty("kind").GetString().Should().Be("Forbidden");
         var (badExit, bad) = await ExecuteAsync(services,
             ["query", "--capture-id", info.CaptureId, "--artifact-id", artifactId,
                 "--capture-root", _root, "--view", "object", "--address", "123", "--json"]);

@@ -870,6 +870,9 @@ pruning of capture packages and no daemon or global database.
 Snapshot queries allow **only the advertised offline views**. Historical process IDs
 do not authorize reattachment: live memory readers, frame variables, and native
 companions that require the original target remain unavailable after restoration.
+Original producer handles from a persisted collection are also capture-bound:
+ownership, deletion, and offline-view checks apply each time they are queried.
+Ordinary non-persisted handles keep their existing behavior.
 Capture quality reports known losses, interrupted evidence, and unknown source loss;
 persisted does not mean complete. Normalized retained records and compatibility
 snapshots are not a promise to retain every raw runtime event.
