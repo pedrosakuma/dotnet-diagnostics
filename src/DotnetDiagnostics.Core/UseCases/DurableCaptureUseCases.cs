@@ -69,6 +69,27 @@ public sealed class DurableCaptureUseCases
         }
     }
 
+    /// <summary>
+    /// Wraps a heterogeneous host dispatcher. The required projection must expose its original
+    /// structured error/cancellation and typed payload, not serialize or reinterpret the host wrapper.
+    /// </summary>
+    public async Task<DurableCaptureOperationResult<T>> CaptureOperationAsync<T>(
+        string name, string kind, CaptureAccess access, Func<CancellationToken, Task<T>> collect,
+        Func<T, DiagnosticResult<object?>> describeResult, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(collect);
+        ArgumentNullException.ThrowIfNull(describeResult);
+        T? original = default;
+        var hasResult = false;
+        var outcome = await CaptureAsync<object?>(name, kind, access, async token =>
+        {
+            original = await collect(token).ConfigureAwait(false);
+            hasResult = true;
+            return describeResult(original);
+        }, cancellationToken).ConfigureAwait(false);
+        return new(original, hasResult, outcome);
+    }
+
     public async Task<DiagnosticResult<T>> CaptureAsync<T>(
         string name, string kind, CaptureAccess access,
         Func<CancellationToken, Task<DiagnosticResult<T>>> collect, CancellationToken cancellationToken = default)

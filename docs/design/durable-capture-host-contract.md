@@ -13,6 +13,12 @@ Cancellation retains an interrupted capture. Persistence failures never return a
 successful result. Admission failures before package creation throw a
 `CaptureStoreException` and cannot provide a package reference.
 
+Heterogeneous dispatchers can use `CaptureOperationAsync` with a required
+`Func<T, DiagnosticResult<object?>>` outcome projection. `DurableCaptureEnvelope.Box`
+and `Apply` let a host's existing generic boxing helper preserve concrete result
+types without reflection. The returned operation contains the original `Result`,
+`HasResult`, and authoritative `Outcome`/`Capture`; never discard outcome failures.
+
 One invocation creates an observation artifact before collection. Scalar fields
 retain integer precision, explicit nulls and exact strings; writer bounds reject
 oversized records without truncation. Callback paths never serialize snapshots
