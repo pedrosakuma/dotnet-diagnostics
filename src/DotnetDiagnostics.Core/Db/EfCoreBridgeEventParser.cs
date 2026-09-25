@@ -57,7 +57,8 @@ internal sealed class EfCoreBridgeEventParser(SensitiveDataRedactor redactor) : 
         var sanitizedConnectionString = redactor.Redact(rawConnectionString) ?? string.Empty;
         var duration = DbEventPipeParsing.ParseDuration(arguments);
         var explicitStart = DbEventPipeParsing.ParseStartedAt(arguments);
-        var startedAt = explicitStart ?? (duration is { } observedDuration ? stoppedAt - observedDuration : stoppedAt);
+        var canDeriveStart = duration is { } observedDuration && observedDuration.Ticks <= stoppedAt.UtcTicks;
+        var startedAt = explicitStart ?? (canDeriveStart ? stoppedAt.ToUniversalTime() - duration!.Value : stoppedAt);
         state.CompleteCommand(
             new PendingCommand(
                 Provider: EfCoreSourceName,
@@ -72,7 +73,7 @@ internal sealed class EfCoreBridgeEventParser(SensitiveDataRedactor redactor) : 
                     activityId),
                 StartedAt: startedAt)
             {
-                CaptureTimingUnavailable = duration is null && (explicitStart is null || explicitStart > stoppedAt),
+                CaptureTimingUnavailable = explicitStart > stoppedAt || (explicitStart is null && !canDeriveStart),
             },
             stoppedAt,
             Math.Max(0, (duration ?? (stoppedAt - startedAt)).TotalMilliseconds), threadId);

@@ -160,7 +160,8 @@ public sealed class EventPipeEventSourceCollector : IEventSourceCollector
             CaptureObservationField.Int64("omittedPayloadFields", Math.Max(0, observation.Payload.Count - maxPayloadFields)),
         };
         foreach (var field in observation.Payload.Take(maxPayloadFields))
-            fields.Add(CaptureObservationField.String("payload." + field.Key, field.Value));
+            fields.Add(CaptureObservationField.String("payload." + field.Key,
+                EventSourceDurableSanitizer.SanitizeValue(field.Key, field.Value)));
         sink.TryAppend(new CaptureObservation("event-source.event", observation.Timestamp, null, observation.EventName, fields));
     }
 }

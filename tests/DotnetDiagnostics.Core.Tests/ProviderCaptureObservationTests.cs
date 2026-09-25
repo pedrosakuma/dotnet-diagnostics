@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Globalization;
 using DotnetDiagnostics.Core.CaptureRecording;
 using DotnetDiagnostics.Core.Db;
 using DotnetDiagnostics.Core.Drilldown;
@@ -18,6 +19,48 @@ namespace DotnetDiagnostics.Core.Tests;
 public sealed class ProviderCaptureObservationTests
 {
     private static readonly DateTimeOffset Start = DateTimeOffset.UnixEpoch;
+
+    [Theory]
+    [InlineData("future", "25000", true)]
+    [InlineData("normal", "25000", false)]
+    [InlineData(null, "25000", false)]
+    [InlineData("normal", null, false)]
+    [InlineData(null, null, true)]
+    [InlineData("9223372036854775807", null, true)]
+    [InlineData("9223372036854775808", null, true)]
+    [InlineData(null, "9223372036854775808", true)]
+    [InlineData(null, "9223372036854775807", true)]
+    public void EfParser_TimingRequiresCoherentRepresentableStart(string? startValue, string? durationValue, bool unavailable)
+    {
+        var stoppedAt = Start.AddSeconds(10);
+        var explicitStart = startValue switch
+        {
+            "future" => stoppedAt.AddSeconds(1).UtcTicks.ToString(CultureInfo.InvariantCulture),
+            "normal" => stoppedAt.AddMilliseconds(-2.5).UtcTicks.ToString(CultureInfo.InvariantCulture),
+            _ => startValue,
+        };
+        var arguments = new Dictionary<string, string> { ["Tags"] = "[db.statement, SELECT 名称 FROM 用户]" };
+        if (explicitStart is not null) arguments["StartTimeTicks"] = explicitStart;
+        if (durationValue is not null) arguments["DurationTicks"] = durationValue;
+        var sink = new BoundedSink(2);
+        var state = new DbEventAggregationState(sink);
+        new EfCoreBridgeEventParser(new SensitiveDataRedactor()).HandleCompletion(
+            "Microsoft.EntityFrameworkCore", arguments, stoppedAt, Guid.Empty, Guid.Empty, 19, state);
+        var record = Assert.Single(sink.Records);
+        Assert.Equal(unavailable, Field(record, "timingUnavailable").Boolean);
+        Assert.Equal(1, state.TotalCommands);
+        if (unavailable)
+        {
+            Assert.Equal(CaptureObservationValueKind.Null, Field(record, "startedAtUtc").Kind);
+            Assert.Equal(CaptureObservationValueKind.Null, Field(record, "durationMs").Kind);
+        }
+        else
+        {
+            Assert.Equal(2.5, Field(record, "durationMs").Number);
+            Assert.Equal(stoppedAt.AddMilliseconds(-2.5).ToString("O", CultureInfo.InvariantCulture),
+                Field(record, "startedAtUtc").Text);
+        }
+    }
 
     [Fact]
     public void EfParser_FiltersSourceAndMissingCommandsBeforeRecordingRedactedCompletions()
@@ -274,6 +317,51 @@ public sealed class ProviderCaptureObservationTests
         Assert.Equal(2, sink.Attempts);
         Assert.Equal("重复🚀", Field(sink.Records[0], "payload.命令").Text);
         Assert.Equal("", Field(sink.Records[0], "payload.empty").Text);
+    }
+
+    [Theory]
+    [InlineData("Password")]
+    [InlineData("db.pwd")]
+    [InlineData("api_key")]
+    [InlineData("client-secret")]
+    [InlineData("access_token")]
+    [InlineData("Authorization")]
+    [InlineData("Cookie")]
+    [InlineData("Credentials")]
+    [InlineData("PrivateKey")]
+    public void EventSource_DurableCopiesSanitizeNamesAndValuesWithoutChangingEphemeralPayload(string credentialName)
+    {
+        var sink = new BoundedSink(2);
+        var retained = new List<CapturedEvent>();
+        const string ordinary = "重复🚀 café e\u0301\0\n";
+        var payload = new Dictionary<string, string>
+        {
+            [credentialName] = "short-opaque-value",
+            ["message"] = "Bearer abcdefghijklmnop",
+            ["ordinary"] = ordinary,
+        };
+        var observation = new CapturedEvent(Start, "Approved.Provider", "操作", "Informational", payload);
+        EventPipeEventSourceCollector.RetainEvent(retained, 1, observation.Provider, observation, sink);
+        var record = Assert.Single(sink.Records);
+        Assert.Equal(SensitiveDataRedactor.RedactedPlaceholder, Field(record, "payload." + credentialName).Text);
+        Assert.Equal(SensitiveDataRedactor.RedactedPlaceholder, Field(record, "payload.message").Text);
+        Assert.Equal(ordinary, Field(record, "payload.ordinary").Text);
+        Assert.Same(observation, Assert.Single(retained));
+        Assert.Equal("short-opaque-value", observation.Payload[credentialName]);
+        Assert.Equal("Bearer abcdefghijklmnop", observation.Payload["message"]);
+
+        var original = new EventSourceCapture(7, observation.Provider, Start, TimeSpan.FromSeconds(1), 1, retained);
+        var durable = EventSourceDurableSanitizer.Sanitize(original);
+        Assert.NotSame(original, durable);
+        Assert.NotSame(original.Events, durable.Events);
+        Assert.NotSame(original.Events[0].Payload, durable.Events[0].Payload);
+        Assert.Equal(record.Fields.Single(f => f.Name == "payload." + credentialName).Text, durable.Events[0].Payload[credentialName]);
+        Assert.Equal(ordinary, durable.Events[0].Payload["ordinary"]);
+        Assert.Equal(SensitiveDataRedactor.RedactedPlaceholder, durable.Events[0].Payload["message"]);
+        Assert.Equal(original.ProcessId, durable.ProcessId);
+        Assert.Equal(original.Provider, durable.Provider);
+        Assert.Equal(original.TotalEvents, durable.TotalEvents);
+        Assert.Equal("short-opaque-value", original.Events[0].Payload[credentialName]);
     }
 
     [Fact]
