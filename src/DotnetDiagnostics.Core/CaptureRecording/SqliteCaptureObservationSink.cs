@@ -28,6 +28,7 @@ internal sealed class SqliteCaptureObservationSink : ICaptureObservationSink
     private DiagnosticError? _error;
     private bool _cancelled;
     private object? _result;
+    private RejectedChildSink? _rejectedChild;
 
     internal SqliteCaptureObservationSink(CaptureWriter writer, string artifactId, string kind, string name,
         CaptureStoreOptions options, Action<DiagnosticHandle, object>? registered = null)
@@ -130,6 +131,8 @@ internal sealed class SqliteCaptureObservationSink : ICaptureObservationSink
                 }, artifact);
                 return;
             }
+            // A returned rejected-child handle must not be re-announced into its parent.
+            if (ReferenceEquals(this, _root) && _root._overflow) return;
             if (_owners.Count == _options.MaxArtifacts) { _root._overflow = true; return; }
             _owners.Add(handle.Id, this);
             _artifacts.Add(handle.Id, new(handle, artifact));
@@ -145,12 +148,43 @@ internal sealed class SqliteCaptureObservationSink : ICaptureObservationSink
             if (_nodes.Count == _options.MaxArtifacts)
             {
                 _root._overflow = true;
-                throw new CaptureStoreException(CaptureErrorCode.CapacityExceeded, "Child capture count exceeded MaxArtifacts.");
+                return _root._rejectedChild ??= new(_root);
             }
             var id = _writer.AddArtifact(kind, name);
             var child = new SqliteCaptureObservationSink(this, id, kind, name);
             _nodes.Add(child);
             return child;
+        }
+    }
+
+    private sealed class RejectedChildSink(SqliteCaptureObservationSink root) : IReplayCaptureObservationSink
+    {
+        public bool TryAppend(CaptureObservation observation)
+            => root._writer.TryAppend(root.ArtifactId, null!);
+
+        public ValueTask<bool> AppendReplayAsync(CaptureObservation observation, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(TryAppend(observation));
+        }
+
+        public void ReportSourceLoss(string source, long? count) { }
+
+        public void ArtifactRegistered(DiagnosticHandle handle, object artifact)
+        {
+            lock (root._gate)
+            {
+                if (!root._closed) root._registered?.Invoke(handle, artifact);
+            }
+        }
+
+        public ICaptureObservationSink CreateChild(string kind, string name)
+        {
+            lock (root._gate)
+            {
+                if (root._closed) throw new InvalidOperationException("Capture recording has completed.");
+                return this;
+            }
         }
     }
 
@@ -188,7 +222,7 @@ internal sealed class SqliteCaptureObservationSink : ICaptureObservationSink
                     aggregate = null;
                 else aggregate += count;
             }
-            _writer.SetSourceRejected(aggregate);
+            _writer.SetSourceRejected(_root._overflow ? null : aggregate);
             foreach (var node in _nodes)
             {
                 node._artifacts.Clear();

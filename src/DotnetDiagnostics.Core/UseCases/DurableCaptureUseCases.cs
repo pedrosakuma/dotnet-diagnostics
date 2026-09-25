@@ -205,7 +205,7 @@ public sealed class DurableCaptureUseCases
 
             if (retained.Overflow)
                 persistenceFailure ??= new CaptureStoreException(CaptureErrorCode.CapacityExceeded,
-                    "Registered artifact count exceeded MaxArtifacts; capture is incomplete.");
+                    "Artifact or child-route count exceeded MaxArtifacts; capture is incomplete.");
             foreach (var node in Enumerable.Reverse(retained.Nodes))
             {
                 if (!retained.Nodes.Any(child => child.ParentArtifactId == node.ArtifactId)) continue;

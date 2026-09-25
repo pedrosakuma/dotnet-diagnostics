@@ -129,6 +129,14 @@ collections remain distinct. `ReportCompletion(error, cancelled, data)` can
 retain returned-only typed data or record a partial failure.
 
 Child routes and all retained registrations share `MaxArtifacts` bounds.
+Exhausting child-route capacity returns an isolated rejecting sink, never the
+parent or a null scope. Collectors still run and retain their ordinary results;
+rejected observations are counted without retaining their fields, and original
+handles remain durably bound with no authorized persisted artifact. Admitted
+siblings can finish normally, while the outer capture reports persistence
+failure and remains interrupted. Rejected source reports cannot make source loss
+known or manufacture a parent stream. Creating children after recording has
+closed remains a programming error.
 Per-child source names have a 64-entry/1,024-UTF-8-byte-name bound; rejected source
 metadata is explicitly counted and keeps loss unknown. A child failure leaves an
 interrupted capture with explicit group completion metadata. Unscoped multiple
