@@ -25,6 +25,16 @@ public sealed class DurableCaptureToolTests : IDisposable
     private static readonly IPrincipalAccessor Owner = Principal("owner-a", "read-counters", "module-bytes-read",
         "investigation-export", "delete-artifact");
 
+    [Fact]
+    public void SweepParentEvidence_RequiresItsProducerScopeIndependentOfRetainedChildren()
+    {
+        var artifact = new CaptureArtifactInfo(new string('1', 32), "sweep", "sweep");
+        DurableCaptureTools.AuthorizeArtifact(Owner.Current!, artifact, "children")!.Error!.Kind
+            .Should().Be("InsufficientScope");
+        DurableCaptureTools.AuthorizeArtifact(Principal("owner-a", "eventpipe").Current!, artifact, "children")
+            .Should().BeNull();
+    }
+
     [Theory]
     [InlineData("exception-snapshot")]
     [InlineData("unreviewed-parent-kind")]

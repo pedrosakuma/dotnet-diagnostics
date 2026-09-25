@@ -324,6 +324,8 @@ public sealed class DurableCaptureTools(SqliteCaptureStore store, DurableCapture
         {
             if (string.Equals(view?.Trim(), "records", StringComparison.OrdinalIgnoreCase))
                 return Forbidden<object>("Composition records are not observations; select an authorized child artifact.");
+            if (artifact.Kind == "sweep" && !principal.HasScope("eventpipe"))
+                return Forbidden<object>("Sweep parent evidence requires the producer's eventpipe scope.");
             return principal.HasScope("eventpipe") || principal.HasScope("read-counters")
                 ? null : Forbidden<object>("Composition reads require a diagnostic read scope and every child artifact's scopes.");
         }
