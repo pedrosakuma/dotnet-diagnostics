@@ -12,6 +12,15 @@ public sealed class CaptureWriter : IAsyncDisposable
 {
     private sealed record Offer(string ArtifactId, CaptureRecord Record, long Bytes, long OfferedAt);
     private sealed record SqliteSettings(string JournalMode, long Synchronous, long PageLimit);
+    private sealed class PendingAppend(CaptureWriter owner, Offer offer, CancellationToken cancellationToken)
+    {
+        internal CaptureWriter Owner { get; } = owner;
+        internal Offer? Offer { get; set; } = offer;
+        internal CancellationToken CancellationToken { get; } = cancellationToken;
+        internal TaskCompletionSource<bool> Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal LinkedListNode<PendingAppend>? Node { get; set; }
+        internal CancellationTokenRegistration Registration { get; set; }
+    }
     private readonly string _directory;
     private readonly CaptureStoreOptions _options;
     private readonly FileStream _lease;
@@ -21,6 +30,9 @@ public sealed class CaptureWriter : IAsyncDisposable
     private readonly object _lifecycle = new();
     private readonly ConcurrentDictionary<string, CaptureArtifactInfo> _artifacts = new(StringComparer.Ordinal);
     private readonly Dictionary<string, CaptureSnapshot> _snapshots = new(StringComparer.Ordinal);
+    private readonly LinkedList<PendingAppend> _pendingAppends = new();
+    private int _waitingAppends;
+    private long _waitingAppendBytes;
     private readonly Task _worker;
     private CaptureManifest _manifest;
     private Task<CaptureInfo>? _shutdown;
@@ -96,6 +108,7 @@ public sealed class CaptureWriter : IAsyncDisposable
             {
                 _failure = CapturePackage.Translate(ex);
                 Interlocked.Exchange(ref _abort, 1);
+                DrainPendingAppends();
                 throw CapturePackage.Translate(ex);
             }
 
@@ -131,6 +144,7 @@ public sealed class CaptureWriter : IAsyncDisposable
             {
                 _failure = CapturePackage.Translate(ex);
                 Interlocked.Exchange(ref _abort, 1);
+                DrainPendingAppends();
                 throw CapturePackage.Translate(ex);
             }
             _artifacts[artifactId] = updated;
@@ -189,6 +203,174 @@ public sealed class CaptureWriter : IAsyncDisposable
     }
 
     /// <summary>
+    /// Replay/post-capture admission only: waits for queue capacity, never for SQLite on the caller.
+    /// Native/live callbacks must retain <see cref="TryAppend"/>. True means admitted, not committed.
+    /// </summary>
+    public ValueTask<bool> AppendAsync(string artifactId, CaptureRecord record, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        EnsureActive();
+        Interlocked.Increment(ref _offersInFlight);
+        var deferred = false;
+        try
+        {
+            EnsureActive();
+            Interlocked.Increment(ref _offered);
+            lock (_gate)
+            {
+                if (Volatile.Read(ref _stopping) != 0)
+                {
+                    Interlocked.Increment(ref _queueRejected);
+                    throw CapturePackage.Error(CaptureErrorCode.Closed, "Capture writer is already stopping or closed.");
+                }
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    Interlocked.Increment(ref _queueRejected);
+                    cancellationToken.ThrowIfCancellationRequested();
+                }
+                if (artifactId is null || !_artifacts.ContainsKey(artifactId) || !TryOwn(record, out var owned, out var size))
+                {
+                    Interlocked.Increment(ref _recordRejected);
+                    return ValueTask.FromResult(false);
+                }
+                if (_failure is not null || Volatile.Read(ref _abort) != 0 || size > _options.MaxLogicalBytes - _logicalBytes)
+                {
+                    Interlocked.Increment(ref _storageRejected);
+                    return ValueTask.FromResult(false);
+                }
+                if (size > _options.QueueBytes)
+                {
+                    Interlocked.Increment(ref _queueRejected);
+                    return ValueTask.FromResult(false);
+                }
+                DrainPendingAppends();
+                // Draining older replay offers may have consumed the remaining lifetime budget.
+                if (size > _options.MaxLogicalBytes - _logicalBytes)
+                {
+                    Interlocked.Increment(ref _storageRejected);
+                    return ValueTask.FromResult(false);
+                }
+                var offer = new Offer(artifactId, owned!, size, Stopwatch.GetTimestamp());
+                if (_pendingAppends.Count == 0 && HasQueueCapacity(size))
+                    return ValueTask.FromResult(AdmitReplayOffer(offer));
+                if (_pendingAppends.Count >= _options.MaxPendingAppends ||
+                    size > _options.MaxPendingAppendBytes - _waitingAppendBytes)
+                {
+                    Interlocked.Increment(ref _queueRejected);
+                    return ValueTask.FromResult(false);
+                }
+                var pending = new PendingAppend(this, offer, cancellationToken);
+                pending.Node = _pendingAppends.AddLast(pending);
+                _waitingAppendBytes += size;
+                Volatile.Write(ref _waitingAppends, _pendingAppends.Count);
+                deferred = true;
+                try
+                {
+                    pending.Registration = cancellationToken.UnsafeRegister(static state =>
+                    {
+                        var waiting = (PendingAppend)state!;
+                        waiting.Owner.CancelPendingAppend(waiting);
+                    }, pending);
+                }
+                catch
+                {
+                    if (pending.Node is not null)
+                    {
+                        Interlocked.Increment(ref _queueRejected);
+                        FinishPendingAppend(pending, false);
+                    }
+                    throw;
+                }
+                // A cancellation can run synchronously during registration.
+                if (pending.Node is null) pending.Registration.Unregister();
+                return new ValueTask<bool>(pending.Completion.Task);
+            }
+        }
+        finally
+        {
+            if (!deferred) Interlocked.Decrement(ref _offersInFlight);
+        }
+    }
+
+    private bool HasQueueCapacity(long bytes) =>
+        Volatile.Read(ref _queueRecords) < _options.QueueRecords &&
+        bytes <= _options.QueueBytes - Interlocked.Read(ref _queueBytes);
+
+    private bool AdmitReplayOffer(Offer offer)
+    {
+        Interlocked.Increment(ref _queueRecords);
+        Interlocked.Add(ref _queueBytes, offer.Bytes);
+        _logicalBytes += offer.Bytes;
+        if (!_queue.Writer.TryWrite(offer))
+        {
+            Interlocked.Decrement(ref _queueRecords);
+            Interlocked.Add(ref _queueBytes, -offer.Bytes);
+            _logicalBytes -= offer.Bytes;
+            Interlocked.Increment(ref _queueRejected);
+            return false;
+        }
+        Interlocked.Increment(ref _accepted);
+        return true;
+    }
+
+    // Call only under _gate. Completed tasks always run continuations asynchronously.
+    private void DrainPendingAppends()
+    {
+        while (_pendingAppends.First is { } node)
+        {
+            var pending = node.Value;
+            if (Volatile.Read(ref _stopping) != 0)
+            {
+                Interlocked.Increment(ref _queueRejected);
+                FinishPendingAppend(pending, false,
+                    CapturePackage.Error(CaptureErrorCode.Closed, "Capture writer stopped before replay admission."));
+            }
+            else if (pending.CancellationToken.IsCancellationRequested)
+            {
+                Interlocked.Increment(ref _queueRejected);
+                FinishPendingAppend(pending, false, canceled: true);
+            }
+            else if (_failure is not null || Volatile.Read(ref _abort) != 0 ||
+                pending.Offer!.Bytes > _options.MaxLogicalBytes - _logicalBytes)
+            {
+                Interlocked.Increment(ref _storageRejected);
+                FinishPendingAppend(pending, false);
+            }
+            else
+            {
+                if (!HasQueueCapacity(pending.Offer!.Bytes)) return;
+                FinishPendingAppend(pending, AdmitReplayOffer(pending.Offer));
+            }
+        }
+    }
+
+    private void CancelPendingAppend(PendingAppend pending)
+    {
+        lock (_gate)
+        {
+            if (pending.Node is null) return;
+            Interlocked.Increment(ref _queueRejected);
+            FinishPendingAppend(pending, false, canceled: true);
+            DrainPendingAppends();
+        }
+    }
+
+    private void FinishPendingAppend(PendingAppend pending, bool result, Exception? failure = null, bool canceled = false)
+    {
+        _pendingAppends.Remove(pending.Node!);
+        pending.Node = null;
+        _waitingAppendBytes -= pending.Offer!.Bytes;
+        pending.Offer = null;
+        Volatile.Write(ref _waitingAppends, _pendingAppends.Count);
+        // Unregister never waits for a concurrent cancellation callback holding/waiting on _gate.
+        pending.Registration.Unregister();
+        if (canceled) pending.Completion.TrySetCanceled(pending.CancellationToken);
+        else if (failure is not null) pending.Completion.TrySetException(failure);
+        else pending.Completion.TrySetResult(result);
+        Interlocked.Decrement(ref _offersInFlight);
+    }
+
+    /// <summary>
     /// Stores one bounded, explicitly versioned UTF-8 JSON compatibility snapshot per artifact.
     /// This does not replace independently queryable occurrence records.
     /// </summary>
@@ -232,6 +414,7 @@ public sealed class CaptureWriter : IAsyncDisposable
                 throw CapturePackage.Error(CaptureErrorCode.CapacityExceeded, "Capture snapshot or logical byte budget exhausted.");
             _snapshots.Add(artifactId, new CaptureSnapshot(version, utf8Json.ToArray(), artifact.Kind));
             _logicalBytes += utf8Json.Length;
+            DrainPendingAppends();
         }
     }
 
@@ -248,7 +431,8 @@ public sealed class CaptureWriter : IAsyncDisposable
             var settings = Volatile.Read(ref _settings);
             return new(GetQuality(Volatile.Read(ref _interrupted) != 0), _logicalBytes, Interlocked.Read(ref _queueBytes),
                 Volatile.Read(ref _queueRecords), Interlocked.Read(ref _transactions), Volatile.Read(ref _largestBatch), Interlocked.Read(ref _observedBytes),
-                settings?.JournalMode, settings?.Synchronous, settings?.PageLimit);
+                settings?.JournalMode, settings?.Synchronous, settings?.PageLimit,
+                _pendingAppends.Count, _waitingAppendBytes);
         }
     }
 
@@ -364,7 +548,11 @@ public sealed class CaptureWriter : IAsyncDisposable
 
     private async Task<CaptureInfo> StopAsync(bool seal, CancellationToken cancellationToken)
     {
-        lock (_gate) Interlocked.Exchange(ref _stopping, 1);
+        lock (_gate)
+        {
+            Interlocked.Exchange(ref _stopping, 1);
+            DrainPendingAppends();
+        }
         using var registration = cancellationToken.Register(() => Interlocked.Exchange(ref _abort, 1));
         try
         {
@@ -500,6 +688,7 @@ public sealed class CaptureWriter : IAsyncDisposable
         {
             _failure ??= ex;
             Interlocked.Exchange(ref _abort, 1);
+            lock (_gate) DrainPendingAppends();
             // Stop accepting but keep consuming all already admitted populations.
             Interlocked.Add(ref _storageRejected, batch.Count);
             ReleaseBatch(batch);
@@ -519,6 +708,10 @@ public sealed class CaptureWriter : IAsyncDisposable
     {
         Interlocked.Add(ref _queueRecords, -batch.Count);
         foreach (var offer in batch) Interlocked.Add(ref _queueBytes, -offer.Bytes);
+        if (Volatile.Read(ref _waitingAppends) != 0)
+        {
+            lock (_gate) DrainPendingAppends();
+        }
     }
 
     private void ObservePackage()
