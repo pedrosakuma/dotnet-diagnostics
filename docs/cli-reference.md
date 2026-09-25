@@ -881,6 +881,14 @@ availability. Ordinary ephemeral handles do not gain a records stream.
 | `--after-record-id` | Exclusive nonnegative continuation ID from the previous page. |
 | `--page-size` | Requested row cap, 1..1000; the Core byte budget may shorten the page. |
 
+Durable EventPipe CPU samples can use `sample.cpu.eventpipe.stack-ref.v1` rows.
+Resolve a sample's `record.name` in the **same artifact** using
+`--category definition.cpu-stack.v1 --name <sample-name>`. The definition retains
+the full interpreted stack and common evidence metadata; the sample retains its
+thread, relative time, and weight. Definitions are not sample occurrences.
+Inline `sample.cpu.eventpipe` fallback rows remain self-contained. See the
+[versioned CPU record contract](./resource-boundedness.md#durable-cpu-stack-definitions-and-occurrences).
+
 Snapshot queries allow **only the advertised offline views**. Historical process IDs
 do not authorize reattachment: live memory readers, frame variables, and native
 companions that require the original target remain unavailable after restoration.

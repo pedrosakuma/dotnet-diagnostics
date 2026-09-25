@@ -3228,6 +3228,16 @@ query_snapshot(captureId="<capture-id>", artifactId="<artifact-id>", view="recor
                recordPageSize=100, afterRecordId=0)
 ```
 
+Durable EventPipe CPU occurrences can have category
+`sample.cpu.eventpipe.stack-ref.v1`. Resolve each row's `record.name` by querying
+the **same artifact** with `view="records"`,
+`recordCategory="definition.cpu-stack.v1"`, and `recordName=<sample-record-name>`.
+The indexed definition holds the interpreted stack and common evidence metadata;
+thread, relative time, and weight remain on each sample. Definition rows are
+not occurrences. Inline `sample.cpu.eventpipe` fallback rows remain self-contained.
+See the [versioned CPU record contract](./resource-boundedness.md#durable-cpu-stack-definitions-and-occurrences);
+neither lookup requires a retained raw trace.
+
 Historical snapshot queries restore a fresh handle and support only retained,
 snapshot-only views. They never reattach to a stored live PID, even if the
 original provenance says `Live`. The same restriction, current owner checks,
