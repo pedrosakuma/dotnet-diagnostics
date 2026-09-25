@@ -33,12 +33,12 @@ public sealed class GetBytesTool
     internal const string KindTrace = DiagnosticOperationCatalog.ByteKinds.Trace;
     internal const string KindList = DiagnosticOperationCatalog.ByteKinds.List;
     internal const string KindDelete = DiagnosticOperationCatalog.ByteKinds.Delete;
-    internal const string KindCaptures = "captures";
+    internal const string KindCaptures = DiagnosticOperationCatalog.ByteKinds.Captures;
 
     internal const string DeleteArtifactScope = ToolInvocationScopeResolver.DeleteArtifactScope;
 
     internal static readonly IReadOnlyList<string> AllowedKinds =
-        DiagnosticOperationCatalog.ByteKinds.All.Append(KindCaptures).Distinct(StringComparer.Ordinal).ToArray();
+        DiagnosticOperationCatalog.ByteKinds.All;
 
     [RequireScope("module-bytes-read")]
     [McpServerTool(
@@ -61,15 +61,15 @@ public sealed class GetBytesTool
         IPrincipalAccessor principalAccessor,
         IArtifactLifecycle artifactLifecycle,
         [Description("module|dump|trace: byte streaming; list|delete: raw artifact lifecycle; captures: private durable capture lifecycle, selected by captureAction.")] string kind,
-        [Description("Module MVID (GUID 'D' format). Required when kind='module'; ignored otherwise.")] string? moduleVersionId = null,
-        [Description("Module artifact when kind='module': 'pe' (default) or 'pdb'. Ignored when kind='dump'.")] string asset = "pe",
-        [Description("Dump path when kind='dump'. Relative paths resolve under MCP_ARTIFACT_ROOT; absolute paths must still resolve under that root. Ignored for other kinds.")] string? dumpFilePath = null,
-        [Description("Trace path when kind='trace'. Relative paths resolve under MCP_ARTIFACT_ROOT; absolute paths must still resolve under that root. Ignored for other kinds.")] string? traceFilePath = null,
-        [Description("Artifact path to delete when kind='delete'. Relative to MCP_ARTIFACT_ROOT; traversal/absolute/symlink escapes are rejected. Ignored for other kinds.")] string? artifactPath = null,
-        [Description("Byte offset where this chunk starts. Defaults to 0.")] long offset = 0,
-        [Description("Maximum bytes to return in this response. Defaults to 4 MiB and is capped at 16 MiB.")] int maxBytes = FileChunkReader.DefaultChunkBytes,
-        [Description("Operating system process id of the target .NET process. Used only when kind='module'; optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
-        [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
+        [Description("Module-only required MVID, GUID 'D' format.")] string? moduleVersionId = null,
+        [Description("Module-only artifact: 'pe' (default) or 'pdb'.")] string asset = "pe",
+        [Description("Dump-only path. Relative or absolute paths must resolve under MCP_ARTIFACT_ROOT.")] string? dumpFilePath = null,
+        [Description("Trace-only path. Relative or absolute paths must resolve under MCP_ARTIFACT_ROOT.")] string? traceFilePath = null,
+        [Description("Delete-only path relative to MCP_ARTIFACT_ROOT; traversal/absolute/symlink escapes are rejected.")] string? artifactPath = null,
+        [Description("Chunk byte offset; default 0.")] long offset = 0,
+        [Description("Response byte limit: default 4 MiB, cap 16 MiB.")] int maxBytes = FileChunkReader.DefaultChunkBytes,
+        [Description("Module-only target PID. Omit to auto-select the lone visible .NET process.")] int? processId = null,
+        [Description("attach_to_pod handle; routes through its attached Pod instead of the current MCP session binding.")]
         string? investigationHandleId = null,
         ILoggerFactory? loggerFactory = null,
         [Description("captures: list|describe|delete|recover (default list). Recovery creates a derived package.")]

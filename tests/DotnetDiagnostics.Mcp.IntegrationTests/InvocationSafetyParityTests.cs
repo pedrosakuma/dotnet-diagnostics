@@ -90,6 +90,7 @@ public sealed class InvocationSafetyParityTests
         var arguments = DeserializeArguments(
             """
             {
+              "persist": true,
               "requests": [
                 { "tool": "collect_events", "kind": "counters" },
                 { "tool": "collect_sample", "kind": "off_cpu" }
@@ -104,6 +105,23 @@ public sealed class InvocationSafetyParityTests
         safety.RiskLevel.Should().Be(InvocationRiskLevel.High);
         safety.ApprovalPolicy.Should().Be(InvocationApprovalPolicy.Acknowledge);
         safety.TargetImpact.Should().Contain(TargetImpact.KernelTracing);
+        safety.SideEffects.Should().Contain(InvocationSideEffect.WritesArtifact);
+    }
+
+    [Theory]
+    [InlineData("list", InvocationRiskLevel.Low)]
+    [InlineData("describe", InvocationRiskLevel.Low)]
+    [InlineData("delete", InvocationRiskLevel.High)]
+    [InlineData("recover", InvocationRiskLevel.Moderate)]
+    public void McpNormalizer_CaptureLifecycleUsesSharedCoreClassification(string action, InvocationRiskLevel risk)
+    {
+        var safety = McpInvocationSafety.Resolve(
+            DiagnosticOperationCatalog.GetBytes,
+            DeserializeArguments($$"""{"kind":"captures","captureAction":"{{action}}"}"""));
+        var shared = InvocationSafetyResolver.Resolve(InvocationSafetyRequest.Create(
+            DiagnosticOperationCatalog.GetBytes, ("kind", "captures"), ("captureAction", action)));
+        safety.Should().BeEquivalentTo(shared);
+        safety.RiskLevel.Should().Be(risk);
     }
 
     [Fact]
