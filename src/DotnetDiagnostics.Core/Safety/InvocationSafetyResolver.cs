@@ -250,6 +250,10 @@ public static class InvocationSafetyResolver
         var handleKind = Get(request, "handleKind");
         if (handleKind == DotnetDiagnostics.Core.UseCases.DurableCaptureCompositionCodec.HandleKind)
             return safety;
+        if ((handleKind is DotnetDiagnostics.Core.UseCases.SamplerUseCases.CpuEfficiencyHandleKind
+                or DiagnosticOperationCatalog.InspectProcessViews.RequestsNow)
+            && string.Equals(Get(request, "view")?.Trim(), "records", StringComparison.OrdinalIgnoreCase))
+            return safety;
         if (handleKind is null && HasValue(request, "handle"))
         {
             return InvocationSafetyRegistry.Get(request.Operation).MaximumSafety;

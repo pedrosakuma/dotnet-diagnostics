@@ -86,6 +86,29 @@ public sealed class DurableInvocationSafetyTests
                 "get_bytes", ("kind", "captures"), ("captureAction", "future-action"))));
     }
 
+    [Theory]
+    [InlineData("cpu-efficiency-sample", "records")]
+    [InlineData("requests-now", " RECORDS ")]
+    public void RecordOnlySnapshotsHaveAnOfflineClassificationWithoutInventingSummarySupport(string kind, string view)
+    {
+        var safety = InvocationSafetyResolver.Resolve(InvocationSafetyRequest.Create(
+            "query_snapshot", ("handle", "opaque"), ("handleKind", kind), ("view", view)));
+        Assert.Equal(InvocationRiskLevel.Moderate, safety.RiskLevel);
+        Assert.Empty(safety.TargetImpact);
+        Assert.Throws<InvocationSafetyResolutionException>(() =>
+            InvocationSafetyResolver.Resolve(InvocationSafetyRequest.Create(
+                "query_snapshot", ("handle", "opaque"), ("handleKind", kind), ("view", "summary"))));
+    }
+
+    [Fact]
+    public void ParameterRecordsStillRequireTheirSensitiveClassification()
+    {
+        var safety = InvocationSafetyResolver.Resolve(InvocationSafetyRequest.Create(
+            "query_snapshot", ("handle", "opaque"), ("handleKind", "method-params-capture"), ("view", "records")));
+        Assert.Equal(InvocationRiskLevel.Critical, safety.RiskLevel);
+        Assert.Equal(InvocationApprovalPolicy.HumanApproval, safety.ApprovalPolicy);
+    }
+
     [Fact]
     public void PersistedBatchInheritsChildRisksAndStorageSideEffect()
     {

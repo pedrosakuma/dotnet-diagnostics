@@ -124,6 +124,21 @@ public sealed class InvocationSafetyParityTests
         safety.RiskLevel.Should().Be(risk);
     }
 
+    [Theory]
+    [InlineData("cpu-efficiency-sample")]
+    [InlineData("requests-now")]
+    public void McpNormalizer_RecordOnlyHandlesUseOfflineRecordSafety(string kind)
+    {
+        var handles = new MemoryDiagnosticHandleStore();
+        var handle = handles.Register(123, kind, new object(), TimeSpan.FromMinutes(1),
+            evictWhenProcessExits: false);
+        var safety = McpInvocationSafety.Resolve(
+            DiagnosticOperationCatalog.QuerySnapshot,
+            DeserializeArguments($$"""{"handle":"{{handle.Id}}","view":"records"}"""), handles);
+        safety.RiskLevel.Should().Be(InvocationRiskLevel.Moderate);
+        safety.TargetImpact.Should().BeEmpty();
+    }
+
     [Fact]
     public void QuerySnapshotHandleKinds_ResolveTheArtifactSpecificExposure()
     {
