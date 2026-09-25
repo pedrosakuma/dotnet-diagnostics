@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Collection;
+using DotnetDiagnostics.Core.Captures;
 using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Dump;
@@ -133,6 +134,11 @@ internal static partial class CliCommands
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(options);
 
+        if (options.CaptureId is not null)
+        {
+            return await QueryCaptureAsync(services, options, cancellationToken).ConfigureAwait(false);
+        }
+
         if (!string.IsNullOrWhiteSpace(options.Handle) && !string.IsNullOrWhiteSpace(options.LatestOfKind))
         {
             return Fail("query: --handle and --latest-of-kind cannot be combined.", "InvalidArgument",
@@ -170,6 +176,23 @@ internal static partial class CliCommands
         }
 
         var kind = lookup.Value.Kind;
+        var durableService = CliDurableCaptures.For(services).FindBinding(options.Handle);
+        if (durableService is not null)
+        {
+            try
+            {
+                var binding = await durableService.AuthorizeHandleAsync(options.Handle,
+                    CliCaptureRootProvider.CurrentAccess(), cancellationToken).ConfigureAwait(false);
+                var view = options.View ?? (binding.SupportedViews.Count > 0 ? binding.SupportedViews[0] : string.Empty);
+                await durableService.AuthorizeViewAsync(options.Handle, view,
+                    CliCaptureRootProvider.CurrentAccess(), cancellationToken).ConfigureAwait(false);
+                options = options with { View = view };
+            }
+            catch (CaptureStoreException ex)
+            {
+                return CaptureFailure(ex);
+            }
+        }
 
         // Heap snapshot handles drill down through the host-neutral HeapSnapshotQueryDispatcher (#300):
         // the projection views render from the walked snapshot alone (no ClrMD runtime, no

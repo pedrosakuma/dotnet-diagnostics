@@ -11,6 +11,10 @@ internal static partial class CliCommands
     {
         ArgumentNullException.ThrowIfNull(options);
         error = null;
+        if (!TryValidateCaptures(options, out error))
+        {
+            return false;
+        }
         if (options.IncludeHttpDestination && (options.Command != "collect" || options.Kind is not ("activities" or "gc-activities")))
         {
             error = "--include-http-destination requires 'collect --kind activities' / 'gc-activities'.";

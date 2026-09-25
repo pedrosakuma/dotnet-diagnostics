@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using DotnetDiagnostics.Core.Drilldown;
+using DotnetDiagnostics.Core.Captures;
 using DotnetDiagnostics.Core.Safety;
 
 namespace DotnetDiagnostics.Cli;
@@ -186,6 +187,18 @@ internal static class CliSafetyPreflight
         InvocationSafetyDescriptor safety,
         string? artifactRoot)
     {
+        if (options.Persist || options.Command == "captures" || options.CaptureId is not null)
+        {
+            try
+            {
+                var root = Path.Combine(new CliCaptureRootProvider(options.CaptureRoot).Root, "captures");
+                return options.CaptureId is null ? root : Path.Combine(root, options.CaptureId);
+            }
+            catch (CaptureStoreException)
+            {
+                return "Supply --capture-root <stable-directory>.";
+            }
+        }
         if (!string.IsNullOrWhiteSpace(options.SavePath))
         {
             return TryGetFullPath(options.SavePath);

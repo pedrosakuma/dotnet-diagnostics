@@ -10,6 +10,17 @@ internal sealed record CliOptions
 {
     /// <summary>The sub-command (e.g. <c>processes</c>), or null when none was supplied.</summary>
     public string? Command { get; init; }
+    public bool Persist { get; init; }
+    public string? CaptureRoot { get; init; }
+    public string? CaptureAction { get; init; }
+    public string? CaptureId { get; init; }
+    public string? ArtifactId { get; init; }
+    public string? RecordFrom { get; init; }
+    public string? RecordTo { get; init; }
+    public string? RecordName { get; init; }
+    public long? AfterRecordId { get; init; }
+    public int? PageSize { get; init; }
+    public string? AfterCaptureId { get; init; }
 
     /// <summary>Target OS process id (<c>--pid</c>). Optional — collectors auto-resolve the lone visible .NET process.</summary>
     public int? Pid { get; init; }
@@ -405,6 +416,12 @@ internal sealed record CliOptions
 
             if (state.Command is not null)
             {
+                if (state.Command == "captures" && state.CaptureAction is null)
+                {
+                    state.CaptureAction = token;
+                    continue;
+                }
+
                 if (string.Equals(state.Command, "compare", StringComparison.Ordinal))
                 {
                     state.ComparePaths.Add(token);
@@ -503,6 +520,16 @@ internal sealed record CliOptions
             new FlagOptionDescriptor(state => state.FoldAsync = true, "--fold-async"),
             new FlagOptionDescriptor(state => state.Launch = true, "--launch"),
             new FlagOptionDescriptor(state => state.SuspendStartup = true, "--suspend-startup"),
+            new FlagOptionDescriptor(state => state.Persist = true, "--persist"),
+            new StringOptionDescriptor((state, value) => state.CaptureRoot = value, "--capture-root"),
+            new StringOptionDescriptor((state, value) => state.CaptureId = value, "--capture-id"),
+            new StringOptionDescriptor((state, value) => state.ArtifactId = value, "--artifact-id"),
+            new StringOptionDescriptor((state, value) => state.RecordFrom = value, "--from"),
+            new StringOptionDescriptor((state, value) => state.RecordTo = value, "--to"),
+            new StringOptionDescriptor((state, value) => state.RecordName = value, "--name"),
+            new LongOptionDescriptor((state, value) => state.AfterRecordId = value, "--after-record-id"),
+            new IntOptionDescriptor((state, value) => state.PageSize = value, "--page-size"),
+            new StringOptionDescriptor((state, value) => state.AfterCaptureId = value, "--after-capture-id"),
             new PidOptionDescriptor("--pid", "-p"),
             new StringOptionDescriptor((state, value) => state.CommandLineContains = value, "--command-line-contains"),
             new StringOptionDescriptor((state, value) => state.Kind = value, "--kind"),
@@ -595,6 +622,17 @@ internal sealed record CliOptions
 
     private sealed class ParseState
     {
+        public bool Persist { get; set; }
+        public string? CaptureRoot { get; set; }
+        public string? CaptureAction { get; set; }
+        public string? CaptureId { get; set; }
+        public string? ArtifactId { get; set; }
+        public string? RecordFrom { get; set; }
+        public string? RecordTo { get; set; }
+        public string? RecordName { get; set; }
+        public long? AfterRecordId { get; set; }
+        public int? PageSize { get; set; }
+        public string? AfterCaptureId { get; set; }
         public string? Command { get; set; }
 
         public int? Pid { get; set; }
@@ -787,6 +825,17 @@ internal sealed record CliOptions
         public CliOptions Build() =>
             new()
             {
+                Persist = Persist,
+                CaptureRoot = CaptureRoot,
+                CaptureAction = CaptureAction,
+                CaptureId = CaptureId,
+                ArtifactId = ArtifactId,
+                RecordFrom = RecordFrom,
+                RecordTo = RecordTo,
+                RecordName = RecordName,
+                AfterRecordId = AfterRecordId,
+                PageSize = PageSize,
+                AfterCaptureId = AfterCaptureId,
                 Command = Command,
                 Pid = Pid,
                 PidName = PidName,

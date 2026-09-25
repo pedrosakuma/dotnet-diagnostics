@@ -8,10 +8,11 @@ namespace DotnetDiagnostics.Cli.Tests;
 public sealed class CliInvocationSafetyTests
 {
     [Fact]
-    public void EveryCliCommand_HasCanonicalSafetyMapping()
+    public void EveryCliCommand_HasExplicitSafetyMapping()
     {
         var options = new Dictionary<string, CliOptions>(StringComparer.Ordinal)
         {
+            ["captures"] = new() { Command = "captures", CaptureAction = "list" },
             ["docker-bootstrap"] = new() { Command = "docker-bootstrap" },
             ["processes"] = new() { Command = "processes" },
             ["capabilities"] = new() { Command = "capabilities" },
@@ -35,8 +36,15 @@ public sealed class CliInvocationSafetyTests
             var request = CliInvocationSafety.CreateRequest(pair.Value);
             var safety = CliInvocationSafety.Resolve(pair.Value);
 
-            InvocationSafetyRegistry.TryGet(request.Operation, out _).Should().BeTrue(
-                $"CLI command '{pair.Key}' must map to a registered Core operation");
+            if (pair.Key == "captures")
+            {
+                request.Operation.Should().Be("cli_capture_list", "local OS package lifecycle is a CLI-only operation");
+            }
+            else
+            {
+                InvocationSafetyRegistry.TryGet(request.Operation, out _).Should().BeTrue(
+                    $"CLI command '{pair.Key}' must map to a registered Core operation");
+            }
             safety.Reason.Should().NotBeNullOrWhiteSpace();
         }
     }

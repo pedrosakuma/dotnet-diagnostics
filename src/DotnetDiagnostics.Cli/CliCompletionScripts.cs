@@ -74,6 +74,10 @@ internal static class CliCompletionScripts
             done
 
             case "$prev" in
+                captures)
+                    COMPREPLY=( $(compgen -W "{{BashWords(CliCommandCatalog.CaptureActions)}}" -- "$cur") )
+                    return 0
+                    ;;
                 --kind)
                     if [[ "$command" == "get-bytes" ]]; then
                         COMPREPLY=( $(compgen -W "{{byteKinds}}" -- "$cur") )
@@ -163,6 +167,12 @@ internal static class CliCompletionScripts
             value_flags=({{ZshWords(CliCommandCatalog.ValueFlags)}})
 
             case ${words[CURRENT-1]} in
+                captures)
+                    local -a capture_actions
+                    capture_actions=({{ZshWords(CliCommandCatalog.CaptureActions)}})
+                    _describe -t actions 'capture action' capture_actions
+                    return
+                    ;;
                 --kind)
                     if (( ${words[(Ie)get-bytes]} )); then
                         _describe -t kinds 'get-bytes kind' byte_kinds
@@ -275,6 +285,7 @@ internal static class CliCompletionScripts
 
             $previous = if ($tokens.Count -gt 1) { $tokens[$tokens.Count - 2] } else { '' }
             $candidates = switch ($previous) {
+                'captures' { {{PwshArray(CliCommandCatalog.CaptureActions)}}; break }
                 '--kind' {
                     if ($command -eq 'get-bytes') { $byteKinds } else { $collectKinds }
                     break

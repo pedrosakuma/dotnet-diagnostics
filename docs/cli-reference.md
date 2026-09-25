@@ -8,7 +8,7 @@ ship from this repository and run the **same Core diagnostics engine**, but they
 | Consumer | A human, a shell script, a CI job | An LLM, via an MCP client |
 | Surface | Sub-commands you type | MCP tools the model calls |
 | Transport | None — in-process, one-shot or REPL | Streamable HTTP (bearer auth) or stdio |
-| State | One-shot inline results, or a `session` REPL holding queryable handles | MCP session holding handles |
+| State | One-shot inline results, a `session` REPL holding queryable handles, or opt-in local durable captures | MCP session holding handles |
 | Install | `dotnet tool install -g dotnet-diagnostics-cli` | `dotnet tool install -g dotnet-diagnostics-mcp` |
 
 If you want an LLM to drive diagnostics, use the **server** — see [`client-setup.md`](./client-setup.md) and
@@ -801,8 +801,8 @@ the ranked stack output, `nativeContentionEvidence`, and the shared `session que
 
 Re-render a previously-collected handle under a different view **without re-collecting**.
 
-This is **only meaningful inside a `session`** — drill-down handles live for the lifetime of the host, and
-the one-shot CLI builds a fresh host per command and exits. Run one-shot, `query` returns a `NotSupported`
+Temporary handles are **only meaningful inside a `session`** — drill-down handles live for the lifetime of the host, and
+the one-shot CLI builds a fresh host per command and exits. Run one-shot, `query --handle` returns a `NotSupported`
 envelope (exit 1) that redirects you to `dotnet-diagnostics session`, where a `collect` (or `inspect-heap` /
 `dump`) issues a handle you can drill into in the same session; for a one-shot answer instead, re-run the
 originating command with `--depth detail` / `--json` to get the full result inline.
@@ -810,11 +810,89 @@ Inside `session`, `query --handle <id> --view <view>` works against the live han
 An alias `query --latest-of-kind <kind> --view <view>` resolves to the most recently registered
 non-expired handle of that kind instead of requiring you to copy a handle id (see below).
 
+For persisted evidence, use `query --capture-id <id> --artifact-id <id> --view <view>`.
+This works in a fresh CLI process, even after the original temporary handle expires.
+The durable selector cannot be combined with `--handle`, `--latest-of-kind`, `--gc-handle`,
+or `--pid`. Capture and artifact IDs are exact, case-sensitive lower-case GUIDs in N
+format (32 hexadecimal characters without hyphens), not
+paths or interchangeable session handles.
+
+### Durable captures: `--persist` and `captures`
+
+Persistence is opt-in: `collect --persist` and `inspect-heap --persist` retain a local
+SQLite capture while preserving the ordinary diagnostic result's `data`. With no
+`--persist`, collection and handle lifetimes remain unchanged. A capture advertises
+its ID, artifact IDs, quality, and supported offline views. Grouped workflows retain
+their child artifacts in one logical capture, not unrelated packages.
+
+```bash
+dotnet-diagnostics-cli collect --kind gc --pid 1234 --duration 10 \
+  --persist --capture-root ./diagnostic-evidence --json
+dotnet-diagnostics-cli captures list --capture-root ./diagnostic-evidence --json
+dotnet-diagnostics-cli captures show --capture-root ./diagnostic-evidence --capture-id <id>
+dotnet-diagnostics-cli query --capture-root ./diagnostic-evidence \
+  --capture-id <id> --artifact-id <artifact-id> --view records --page-size 100 --json
+dotnet-diagnostics-cli captures recover --capture-root ./diagnostic-evidence --capture-id <id>
+dotnet-diagnostics-cli captures delete --capture-root ./diagnostic-evidence --capture-id <id> --acknowledge-risk high
+```
+
+**Root and ownership.** `--capture-root <directory>` selects a dedicated stable root.
+Otherwise a nonempty `MCP_ARTIFACT_ROOT` is used; otherwise the root is
+`dotnet-diagnostics` under the current user's local application-data directory
+(typically `$XDG_DATA_HOME/dotnet-diagnostics` or `~/.local/share/dotnet-diagnostics`
+on Linux and `%LOCALAPPDATA%\dotnet-diagnostics` on Windows). Packages live under
+`<capture-root>/captures/`, protected by the capture-store marker. No session scratch
+directory or `dump --out` override is silently used as the persistent root.
+Ownership is a stable nonsecret local OS identity; there is no bearer token and no
+automatic all-owners privilege. Filesystem permissions remain an additional boundary.
+
+**Lifecycle.** `captures list` accepts `--page-size` (1..100) and
+`--after-capture-id` from the previous page. `captures show`, `delete`, and `recover`
+require `--capture-id`. Recovery is explicit and creates a **new derived package**;
+deletion requires `--acknowledge-risk high` in non-interactive use (or the session's
+high-risk confirmation). `--explain-risk` describes these local-OS operations
+without reading or mutating packages.
+ordinary reads never repair or mutate the original. Captures survive process restart
+and REPL exit until explicitly deleted. There is no automatic 24-hour raw-artifact
+pruning of capture packages and no daemon or global database.
+
+**Records query.** `--view records` exposes bounded typed records, not arbitrary SQL:
+
+| Option | Meaning |
+|---|---|
+| `--from`, `--to` | Inclusive ISO-8601 timestamp bounds with an explicit UTC offset. |
+| `--thread-id` | Exact thread identifier filter. |
+| `--category` | One exact category filter. |
+| `--name` | Exact record-name filter. |
+| `--after-record-id` | Exclusive nonnegative continuation ID from the previous page. |
+| `--page-size` | Requested row cap, 1..1000; the Core byte budget may shorten the page. |
+
+Snapshot queries allow **only the advertised offline views**. Historical process IDs
+do not authorize reattachment: live memory readers, frame variables, and native
+companions that require the original target remain unavailable after restoration.
+Capture quality reports known losses, interrupted evidence, and unknown source loss;
+persisted does not mean complete. Normalized retained records and compatibility
+snapshots are not a promise to retain every raw runtime event.
+
+`dump`, `get-bytes`, raw method bytes, exported `.nettrace` files, and native companion
+files are not copied into the SQLite package by these flags. No command exports the
+raw SQLite database. Generic artifact reads/deletes cannot bypass capture ownership
+or package protection, including when re-rooted inside a marked package.
+
 ### `session`
 
 Start the stateful REPL — covered in the next section. Accepts `--launch -- <app> [args]` at startup
 to spawn the target as a child and bind it for the whole session (zero-privilege live attach under
 `ptrace_scope=1`; see the [Linux note](#linux-ptrace-note)). The child is killed when the session ends.
+
+`session --persist --capture-root <directory>` opts eligible `collect` and
+`inspect-heap` commands into persistence. Capture commands and durable queries inherit
+the stable root; an explicit per-command `--capture-root` overrides it. Dump/export
+scratch roots are independent. Exiting the REPL deletes only its scratch artifacts,
+not durable captures.
+One session accepts at most 32 distinct capture roots; exceeding `MaximumRoots`
+returns an explicit capacity error. Start another session rather than evicting
+existing durable-handle authorization bindings.
 
 ## The `session` REPL
 
