@@ -7,7 +7,7 @@ namespace DotnetDiagnostics.Core.Captures;
 /// Opt-in, one-package-per-capture local storage. Construction performs no filesystem or SQLite work.
 /// The artifact root must be private to trusted host code; packages are not an untrusted import format.
 /// </summary>
-public sealed class SqliteCaptureStore
+public sealed partial class SqliteCaptureStore
 {
     private readonly IArtifactRootProvider _root;
     private readonly CaptureStoreOptions _options;
@@ -408,21 +408,26 @@ public sealed class SqliteCaptureStore
             throw CapturePackage.Error(CaptureErrorCode.CapacityExceeded, "Store capture-count admission limit reached.");
         long bytes = 0;
         foreach (var directory in directories)
-        {
-            var actual = CapturePackage.PackageBytes(directory);
-            var sealedPackage = File.Exists(Path.Combine(directory, CapturePackage.Seal));
-            var manifestPath = Path.Combine(directory, CapturePackage.Manifest);
-            var reserved = !sealedPackage && File.Exists(manifestPath)
-                ? CapturePackage.ReadManifest(directory, Path.GetFileName(directory)).ReservationBytes : 512L * 1024 * 1024;
-            bytes = checked(bytes + (sealedPackage ? actual : Math.Max(actual, reserved)));
-        }
+            bytes = checked(bytes + AccountedPackageBytes(directory));
         foreach (var directory in Directory.EnumerateDirectories(root, ".recovery-*"))
         {
             CapturePackage.RejectLinks(directory);
             bytes = checked(bytes + CapturePackage.PackageBytes(directory));
         }
+        bytes = checked(bytes + PortableCaptureStorage.AccountedBytes(root));
         if (reservation > _options.MaxStoreBytes - bytes)
             throw CapturePackage.Error(CaptureErrorCode.CapacityExceeded, "Store byte admission budget exhausted (including unsealed package reservations).");
+    }
+
+    private static long AccountedPackageBytes(string directory)
+    {
+        var actual = CapturePackage.PackageBytes(directory);
+        if (File.Exists(Path.Combine(directory, CapturePackage.Seal))) return actual;
+        var manifestPath = Path.Combine(directory, CapturePackage.Manifest);
+        // A crash before manifest publication must not release the package's reservation.
+        var reserved = File.Exists(manifestPath)
+            ? CapturePackage.ReadManifest(directory, Path.GetFileName(directory)).ReservationBytes : 512L * 1024 * 1024;
+        return Math.Max(actual, reserved);
     }
 
     private static void DeleteMembers(string directory)
