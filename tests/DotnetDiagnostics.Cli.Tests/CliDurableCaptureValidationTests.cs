@@ -155,9 +155,9 @@ public sealed class CliDurableCaptureValidationTests
         "myapp", "--flag")]
     [InlineData("collect --kind gc --launch -- myapp --persist --capture-root ./target", "./session evidence",
         "myapp", "--persist", "--capture-root", "./target")]
-    [InlineData("collect --kind gc --capture-root './command evidence' --launch -- myapp --capture-root ./target", "./command evidence",
+    [InlineData("collect --kind gc --capture-root \"./command evidence\" --launch -- myapp --capture-root ./target", "./command evidence",
         "myapp", "--capture-root", "./target")]
-    [InlineData("collect --kind gc --persist --launch -- './my app' '--local value' -- '--capture-root' './target evidence'", "./session evidence",
+    [InlineData("collect --kind gc --persist --launch -- \"./my app\" \"--local value\" -- \"--capture-root\" \"./target evidence\"", "./session evidence",
         "./my app", "--local value", "--", "--capture-root", "./target evidence")]
     public void SessionCaptureInheritancePreservesLaunchArguments(
         string command, string expectedRoot, params string[] expectedLaunchArgs)
