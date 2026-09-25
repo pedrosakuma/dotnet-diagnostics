@@ -30,11 +30,17 @@ open; connection limits, defensive/trusted-schema/extension settings and
 authorizer/progress hooks precede every application query.
 
 The shared supervisor retains CPU/wall/RSS/gap enforcement and bounded I/O.
-Linux may clear a terminating child's address space just before publishing
-its exit notification. A zero-RSS observation gets at most a 1 ms exit
-confirmation wait: it never becomes a valid zero-cost sample and never
-advances the previous sample's 10 ms deadline. Unconfirmed exit or a missed
-deadline remains a failure. No host settings, priorities or retry loop are used.
+A zero-RSS observation does not establish whether the child is exiting or
+telemetry is unavailable. Exit confirmation may use only the remaining time
+before the **last valid RSS sample plus 10 ms**, also bounded by the original
+wall deadline and cancellation. Whole-millisecond waits are rounded down;
+sub-millisecond remainders permit only nonblocking exit probes. Zero RSS never
+becomes a valid zero-cost sample or advances either deadline. Only confirmed
+exit observed within that window can conclude this reconciliation. Still
+unconfirmed at the exact deadline is unavailable; observation beyond it is a
+gap failure, even if exit is then confirmed. Exit-observation errors also fail
+closed. No host settings, priorities, validation retries or new time allowance
+are used.
 
 ## Actual validation
 

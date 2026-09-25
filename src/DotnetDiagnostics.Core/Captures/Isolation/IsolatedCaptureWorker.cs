@@ -183,11 +183,9 @@ internal static partial class IsolatedCaptureWorker
                 var cpu = process.TotalProcessorTime;
                 if (rss == 0)
                 {
-                    // Linux can clear mm before the exit notification is visible.
-                    // Confirm termination without treating zero as a valid sample
-                    // or advancing the last observation's mandatory deadline.
-                    var exited = process.WaitForExit(1);
-                    observations.ConfirmExit(wall.Elapsed, exited);
+                    // Zero RSS is not exit evidence. Only this child's confirmed
+                    // termination within the last valid sample's deadline qualifies.
+                    observations.WaitForConfirmedExit(() => wall.Elapsed, process.WaitForExit, token);
                     return;
                 }
                 observations.Record(wall.Elapsed, rss, cpu);
@@ -248,10 +246,39 @@ internal sealed class CaptureWorkerObservation(CaptureWorkerLimits limits)
     {
         if (elapsed > limits.WallTime) throw IsolatedCaptureWorker.Limit("WorkerWallTime");
     }
-    internal void ConfirmExit(TimeSpan now, bool exited)
+    internal void WaitForConfirmedExit(Func<TimeSpan> elapsed, Func<int, bool> waitForExit,
+        CancellationToken cancellationToken)
     {
-        CheckGap(now);
-        if (!exited) throw IsolatedCaptureWorker.Unsupported("WorkerObservationUnavailable");
+        var now = elapsed();
+        CheckStop(now);
+        if (_last is not { } last) throw IsolatedCaptureWorker.Unsupported("WorkerObservationUnavailable");
+        var deadline = last + TimeSpan.FromMilliseconds(10);
+        while (true)
+        {
+            // Floor to the Process API's whole milliseconds. A sub-millisecond
+            // remainder permits only a nonblocking exit probe, never a rounded-up wait.
+            var remaining = deadline - now;
+            var wallRemaining = limits.WallTime - now;
+            var wait = (int)Math.Min(remaining.TotalMilliseconds, wallRemaining.TotalMilliseconds);
+            bool exited;
+            try { exited = waitForExit(wait); }
+            catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException or InvalidOperationException)
+            {
+                CheckStop(elapsed());
+                throw IsolatedCaptureWorker.Unsupported("WorkerObservationUnavailable", ex);
+            }
+            now = elapsed();
+            CheckStop(now);
+            if (exited) return;
+            if (now == deadline) throw IsolatedCaptureWorker.Unsupported("WorkerObservationUnavailable");
+        }
+
+        void CheckStop(TimeSpan time)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            CheckWallTime(time);
+            CheckGap(time);
+        }
     }
     internal void CheckGap(TimeSpan now)
     {

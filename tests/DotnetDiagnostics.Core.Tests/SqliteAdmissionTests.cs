@@ -431,13 +431,137 @@ public sealed class SqliteAdmissionTests(ITestOutputHelper output) : IDisposable
     {
         var observation = new CaptureWorkerObservation(new());
         observation.Record(TimeSpan.Zero, 1000, TimeSpan.Zero);
-        if (confirmed && ticks == 100000) observation.ConfirmExit(TimeSpan.FromTicks(ticks), confirmed);
+        var now = TimeSpan.Zero;
+        void Reconcile() => observation.WaitForConfirmedExit(() => now, milliseconds =>
+        {
+            Assert.Equal(10, milliseconds);
+            now = TimeSpan.FromTicks(ticks);
+            return confirmed;
+        }, CancellationToken.None);
+        if (confirmed && ticks == 100000) Reconcile();
         else
         {
-            var error = Assert.Throws<CaptureStoreException>(() => observation.ConfirmExit(TimeSpan.FromTicks(ticks), confirmed));
+            var error = Assert.Throws<CaptureStoreException>(Reconcile);
             Assert.Equal(ticks > 100000 ? CaptureErrorCode.CapacityExceeded : CaptureErrorCode.UnsupportedFormat, error.Code);
         }
         Assert.Equal(1000, observation.PeakRss);
+    }
+
+    [Fact]
+    public void ZeroRssCanWaitBeyondOneMillisecondOnlyForConfirmedExitWithinTheOriginalDeadline()
+    {
+        var observation = new CaptureWorkerObservation(new());
+        observation.Record(TimeSpan.FromMilliseconds(40), 1000, TimeSpan.Zero);
+        var now = TimeSpan.FromMilliseconds(43);
+        var calls = 0;
+        observation.WaitForConfirmedExit(() => now, milliseconds =>
+        {
+            calls++;
+            Assert.Equal(7, milliseconds);
+            now = TimeSpan.FromMilliseconds(47);
+            return true;
+        }, CancellationToken.None);
+        Assert.Equal(1, calls);
+        Assert.Equal(1000, observation.PeakRss);
+        Assert.Equal(TimeSpan.FromMilliseconds(7), observation.MaximumGap);
+        var error = Assert.Throws<CaptureStoreException>(() => observation.CheckGap(
+            TimeSpan.FromMilliseconds(50) + TimeSpan.FromTicks(1)));
+        Assert.Contains("WorkerObservationGap", error.Message);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void PendingZeroRssUsesOnlyTheRemainderFromTheLastValidSample(bool confirmAtDeadline)
+    {
+        var observation = new CaptureWorkerObservation(new());
+        observation.Record(TimeSpan.FromMilliseconds(40), 1000, TimeSpan.Zero);
+        var now = TimeSpan.FromMilliseconds(43.5);
+        var calls = 0;
+        void Reconcile() => observation.WaitForConfirmedExit(() => now, milliseconds =>
+        {
+            Assert.True(++calls <= 3);
+            Assert.Equal(calls == 1 ? 6 : 0, milliseconds);
+            now = TimeSpan.FromMilliseconds(calls == 1 ? 49.5 : calls == 2 ? 49.75 : 50);
+            return calls == 3 && confirmAtDeadline;
+        }, CancellationToken.None);
+        if (confirmAtDeadline) Reconcile();
+        else
+        {
+            var error = Assert.Throws<CaptureStoreException>(Reconcile);
+            Assert.Equal(CaptureErrorCode.UnsupportedFormat, error.Code);
+            Assert.Contains("WorkerObservationUnavailable", error.Message);
+        }
+        Assert.Equal(3, calls);
+        Assert.Equal(TimeSpan.FromMilliseconds(10), observation.MaximumGap);
+        Assert.Equal(1000, observation.PeakRss);
+    }
+
+    [Fact]
+    public void ExitProbeFaultIsUnavailableNotExitEvidence()
+    {
+        var observation = new CaptureWorkerObservation(new());
+        observation.Record(TimeSpan.Zero, 1000, TimeSpan.Zero);
+        var now = TimeSpan.FromMilliseconds(2);
+        var failure = new IOException("Purpose-created unavailable exit observation");
+        var error = Assert.Throws<CaptureStoreException>(() => observation.WaitForConfirmedExit(() => now, _ =>
+        {
+            now = TimeSpan.FromMilliseconds(4);
+            throw failure;
+        }, CancellationToken.None));
+        Assert.Equal(CaptureErrorCode.UnsupportedFormat, error.Code);
+        Assert.Same(failure, error.InnerException);
+        Assert.Equal(TimeSpan.FromMilliseconds(4), observation.MaximumGap);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CancellationAndWallDeadlinePreemptExitEvidenceEvenIfTheGapAlsoExpires(bool cancel)
+    {
+        var observation = new CaptureWorkerObservation(new() { WallTime = TimeSpan.FromMilliseconds(5) });
+        observation.Record(TimeSpan.Zero, 1000, TimeSpan.Zero);
+        var now = TimeSpan.FromMilliseconds(2);
+        using var cancellation = new CancellationTokenSource();
+        void Reconcile() => observation.WaitForConfirmedExit(() => now, milliseconds =>
+        {
+            Assert.Equal(3, milliseconds);
+            now = TimeSpan.FromMilliseconds(11);
+            if (cancel) cancellation.Cancel();
+            return true;
+        }, cancellation.Token);
+        if (cancel) Assert.ThrowsAny<OperationCanceledException>(Reconcile);
+        else
+        {
+            var error = Assert.Throws<CaptureStoreException>(Reconcile);
+            Assert.Contains("WorkerWallTime", error.Message);
+        }
+    }
+
+    [Fact]
+    public void ExpiredObservationDeadlinePreemptsAnExitProbeFault()
+    {
+        var observation = new CaptureWorkerObservation(new());
+        observation.Record(TimeSpan.Zero, 1000, TimeSpan.Zero);
+        var now = TimeSpan.FromMilliseconds(2);
+        var error = Assert.Throws<CaptureStoreException>(() => observation.WaitForConfirmedExit(() => now, _ =>
+        {
+            now = TimeSpan.FromMilliseconds(10) + TimeSpan.FromTicks(1);
+            throw new IOException("Purpose-created late exit-observation failure");
+        }, CancellationToken.None));
+        Assert.Equal(CaptureErrorCode.CapacityExceeded, error.Code);
+        Assert.Contains("WorkerObservationGap", error.Message);
+    }
+
+    [Fact]
+    public void ZeroRssWithoutAnInitialValidSampleCannotBecomeSuccess()
+    {
+        var observation = new CaptureWorkerObservation(new());
+        var calls = 0;
+        var error = Assert.Throws<CaptureStoreException>(() => observation.WaitForConfirmedExit(
+            static () => TimeSpan.Zero, _ => { calls++; return true; }, CancellationToken.None));
+        Assert.Equal(CaptureErrorCode.UnsupportedFormat, error.Code);
+        Assert.Equal(0, calls);
     }
 
     public void Dispose()
