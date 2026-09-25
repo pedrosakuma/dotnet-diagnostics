@@ -107,6 +107,19 @@ descendants before exposing group content, including child error messages; a
 conservative check of all capture artifacts is acceptable. Source reports from repeated session names sum within each child; any
 unknown child contribution makes total source loss unknown.
 
+`Composition.Metadata` preserves explicitly allowlisted parent evidence:
+`Sweep` contains duration, full triage, resource snapshots/trends, failures, and
+artifact references; `GcActivities` contains process lifetime, side status and
+requested/observed windows, intersection, startup skew, overlay, and notes.
+These versioned DTOs do not duplicate child snapshots or retain ephemeral
+handles. References must resolve to the group's own retained descendants.
+Unknown aggregate types remain reference-only; they are never serialized through
+an arbitrary-object fallback. Parent metadata shares the snapshot byte/depth
+limits, and missing references or oversized metadata make persistence incomplete.
+The composition reader accepts the original reference-only version and the
+extended metadata version. Hosts should render these fields under the same
+descendant authorization as `children`, not route them to a live dispatcher.
+
 Core composed collectors can use
 `CaptureRecordingContext.CreateChild(kind, name)` and enter the returned sink
 with `CaptureRecordingContext.Enter(child)`. Retain that exact sink to re-enter
@@ -127,3 +140,4 @@ bounded `SourceArtifactId` field. Group decoding resolves child and parent
 references through those explicit aliases, returning current destination IDs.
 It never guesses by name/PID or reads the source package. Missing or ambiguous
 aliases fail closed; recovery leaves the original wrapper bytes unchanged.
+Typed parent metadata artifact references use the same recovery alias mapping.

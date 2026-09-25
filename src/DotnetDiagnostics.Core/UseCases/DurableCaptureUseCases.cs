@@ -145,6 +145,7 @@ public sealed class DurableCaptureUseCases
                 sink.ArtifactRegistered(lookup.Handle, lookup.Artifact);
             var retained = sink.Finish();
             var snapshots = new HashSet<string>(StringComparer.Ordinal);
+            var artifactByHandle = new Dictionary<string, string>(StringComparer.Ordinal);
             foreach (var node in retained.Nodes)
             {
                 if (node.ArtifactId != defaultId) artifacts.Add(new(node.ArtifactId, node.Kind, node.Name));
@@ -169,6 +170,7 @@ public sealed class DurableCaptureUseCases
                         artifacts[artifactIndex] = artifacts[artifactIndex] with { Provenance = provenance };
                         WriteSnapshot(writer, id, registered.Kind, registered.Artifact, id == node.ArtifactId ? node : null);
                         snapshots.Add(id);
+                        artifactByHandle.Add(registered.Handle.Id, id);
                         var views = SupportedViews(registered.Kind, registered.Artifact,
                             id == node.ArtifactId && node.RecordStreamAvailable);
                         _bindings.Set(registered.Handle, registered.Artifact,
@@ -214,7 +216,17 @@ public sealed class DurableCaptureUseCases
                     snapshots.Contains(child.ArtifactId))).ToArray());
                 try
                 {
+                    composition = composition with
+                    {
+                        Metadata = DurableCaptureParentMetadataCodec.Project(
+                            node.ArtifactId == defaultId ? (object?)result.Data : node.Result,
+                            artifactByHandle, _options.MaxArtifacts),
+                    };
                     var encoded = DurableCaptureCompositionCodec.Encode(node.Kind, composition, _options.MaxSnapshotBytes);
+                    _ = DurableCaptureCompositionCodec.Decode(node.Kind, node.ArtifactId,
+                        new(DurableCaptureCompositionCodec.SnapshotVersion, encoded),
+                        new(writer.Reference.CaptureId, access.OwnerId, name, null, created,
+                            CaptureState.Interrupted, artifacts.AsReadOnly(), new()), _options);
                     writer.SetSnapshot(node.ArtifactId, DurableCaptureSnapshotMetadata.Version,
                         DurableCaptureSnapshotMetadata.Encode(node.Kind, DurableCaptureCompositionCodec.SnapshotVersion,
                             encoded, DurableCaptureSnapshotMetadata.Stream(node), _options.MaxSnapshotBytes));

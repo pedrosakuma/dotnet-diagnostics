@@ -287,8 +287,8 @@ public sealed partial class DurableCaptureUseCasesTests
         Assert.Throws<InvalidDataException>(() => DurableCaptureCompositionCodec.Decode(
             "batch", root.ArtifactId, snapshot, info, options with { MaxSnapshotBytes = bytes.Length - 1 }));
         var duplicateJson = System.Text.Encoding.UTF8.GetBytes(
-            System.Text.Encoding.UTF8.GetString(bytes).Replace("\"compositionVersion\":1,",
-                "\"compositionVersion\":1,\"compositionVersion\":1,", StringComparison.Ordinal));
+            System.Text.Encoding.UTF8.GetString(bytes).Replace("\"compositionVersion\":2,",
+                "\"compositionVersion\":2,\"compositionVersion\":2,", StringComparison.Ordinal));
         Assert.Throws<InvalidDataException>(() => DurableCaptureCompositionCodec.Decode("batch", root.ArtifactId,
             new(DurableCaptureCompositionCodec.SnapshotVersion, duplicateJson), info, options));
     }
