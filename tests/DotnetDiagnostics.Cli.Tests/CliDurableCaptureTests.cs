@@ -7,6 +7,7 @@ using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Capabilities;
 using DotnetDiagnostics.Core.Captures;
 using DotnetDiagnostics.Core.Counters;
+using DotnetDiagnostics.Core.CpuEfficiency;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Dump;
 using DotnetDiagnostics.Core.ProcessDiscovery;
@@ -19,6 +20,33 @@ public sealed class CliDurableCaptureTests : IDisposable
 {
     private readonly string _root = Path.Combine(Environment.CurrentDirectory, ".validation", "cli-captures-" + Guid.NewGuid().ToString("N"));
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    [Fact]
+    public async Task CpuEfficiencyPersistsTypedAggregateWithoutInventingSnapshotViews()
+    {
+        using var services = Services();
+        var (exit, captured) = await ExecuteAsync(services,
+            ["collect", "--kind", "cpu-efficiency", "--persist", "--capture-root", _root, "--json"]);
+        exit.Should().Be(0, captured.ToString());
+        captured.GetProperty("data").GetProperty("instructionsPerCycle").GetDouble().Should().Be(2);
+        var capture = captured.GetProperty("capture");
+        var captureId = capture.GetProperty("captureId").GetString()!;
+        var artifact = capture.GetProperty("artifacts").EnumerateArray().Single();
+        artifact.GetProperty("supportedViews").EnumerateArray().Select(view => view.GetString())
+            .Should().NotContain("summary");
+        var artifactId = artifact.GetProperty("artifactId").GetString()!;
+        var store = new SqliteCaptureStore(new CliCaptureRootProvider(_root));
+        using var reader = await store.OpenAsync(captureId, CliCaptureRootProvider.CurrentAccess());
+        var snapshot = reader.ReadSnapshot(artifactId);
+        snapshot.Should().NotBeNull();
+        using var snapshotJson = JsonDocument.Parse(snapshot!.Utf8Json);
+        var restored = snapshotJson.RootElement.GetProperty("snapshot").Deserialize<CpuEfficiencySample>(JsonOptions);
+        restored!.InstructionsPerCycle.Should().Be(2);
+        var (queryExit, query, _) = await HostAsync("query", "--capture-id", captureId,
+            "--artifact-id", artifactId, "--view", "summary");
+        queryExit.Should().Be(1);
+        query.GetProperty("error").GetProperty("kind").GetString().Should().Be("Forbidden");
+    }
 
     [Fact]
     public async Task ExplicitChildScopesPreserveSameKindArtifactIdentityAndExposeReferences()
@@ -408,7 +436,17 @@ public sealed class CliDurableCaptureTests : IDisposable
             .AddSingleton<IDiagnosticHandleStore>(new MemoryDiagnosticHandleStore())
             .AddSingleton<IProcessContextResolver>(new Resolver())
             .AddSingleton<ICounterCollector>(counters ?? new CounterReplay())
+            .AddSingleton<ICpuEfficiencySampler>(new CpuEfficiencyReplay())
             .BuildServiceProvider();
+
+    private sealed class CpuEfficiencyReplay : ICpuEfficiencySampler
+    {
+        public bool IsAvailable() => true;
+
+        public Task<CpuEfficiencySample> SampleAsync(int processId, TimeSpan duration, CancellationToken cancellationToken = default)
+            => Task.FromResult(new CpuEfficiencySample(processId, DateTimeOffset.UnixEpoch, duration,
+                "fixture", Instructions: 200, Cycles: 100, InstructionsPerCycle: 2));
+    }
 
     private sealed class Resolver : IProcessContextResolver
     {

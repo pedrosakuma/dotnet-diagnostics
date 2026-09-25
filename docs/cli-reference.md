@@ -856,7 +856,7 @@ require `--capture-id`. Recovery is explicit and creates a **new derived package
 deletion requires `--acknowledge-risk high` in non-interactive use (or the session's
 high-risk confirmation). `--explain-risk` describes these local-OS operations
 without reading or mutating packages.
-ordinary reads never repair or mutate the original. Captures survive process restart
+Ordinary reads never repair or mutate the original. Captures survive process restart
 and REPL exit until explicitly deleted. There is no automatic 24-hour raw-artifact
 pruning of capture packages and no daemon or global database.
 
@@ -877,6 +877,9 @@ companions that require the original target remain unavailable after restoration
 Original producer handles from a persisted collection are also capture-bound:
 ownership, deletion, and offline-view checks apply each time they are queried.
 Ordinary non-persisted handles keep their existing behavior.
+CPU-efficiency aggregates are retained as typed snapshots, but currently have no
+supported snapshot drilldown view; retaining a snapshot does not imply that
+`query --view summary` is available. Collection output still includes the aggregate.
 Capture quality reports known losses, interrupted evidence, and unknown source loss;
 persisted does not mean complete. Normalized retained records and compatibility
 snapshots are not a promise to retain every raw runtime event.
