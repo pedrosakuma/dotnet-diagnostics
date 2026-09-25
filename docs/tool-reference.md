@@ -3206,6 +3206,10 @@ Persistence does not imply that every observation was retained. Read the capture
 quality counters, unknown source-loss indication, and per-producer notes. A
 normalized record stream and a bounded compatibility snapshot are different
 representations; an unavailable representation is not an empty successful query.
+CPU-efficiency compatibility snapshots are retained but currently have no
+allowlisted snapshot drilldown; a historical `summary` request is unsupported.
+Their records are available only when the producer declared or emitted a
+normalized record stream, not merely because a snapshot exists.
 `persist` does not enable raw trace export: `exportTrace=true` remains a separate
 opt-in. Dump files, raw traces, and captured native method bytes remain explicit
 file dependencies, not a promise of a self-contained historical native debugger.
