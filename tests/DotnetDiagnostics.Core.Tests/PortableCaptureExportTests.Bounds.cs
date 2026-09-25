@@ -10,6 +10,120 @@ namespace DotnetDiagnostics.Core.Tests;
 public sealed partial class PortableCaptureExportTests
 {
     [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task LeaseOnlyOrphanRetainsConservativeReservationInBothAdmissionPaths(
+        bool tombstoned, bool capacityAllows)
+    {
+        var source = await CreateAsync();
+        var orphanId = Guid.NewGuid().ToString("N");
+        var orphan = Package(orphanId);
+        Directory.CreateDirectory(orphan);
+        await File.WriteAllBytesAsync(Path.Combine(orphan, ".lease"), []);
+        var tombstone = Path.Combine(_root, "captures", ".deleted-" + orphanId);
+        if (tombstoned) await File.WriteAllBytesAsync(tombstone, []);
+        var options = new CaptureStoreOptions
+        {
+            MaxDatabaseBytes = 1024 * 1024, MaxPackageBytes = 1024 * 1024,
+            MaxStoreBytes = (capacityAllows ? 520L : 512L) * 1024 * 1024
+        };
+        using var output = new MemoryStream();
+        var request = Request(new CaptureExportSelection(source.CaptureId, null));
+        if (capacityAllows)
+        {
+            await Exporter(storeOptions: options).ExportAsync(request, output, Owner);
+            ValidateIndependentArchive(output.ToArray(), [source], [null]);
+            await using var writer = await Store(options).CreateAsync(new("ordinary admission"), Owner);
+            await writer.CompleteAsync();
+        }
+        else
+        {
+            await Error(CaptureErrorCode.CapacityExceeded, () =>
+                Exporter(storeOptions: options).ExportAsync(request, output, Owner));
+            await Error(CaptureErrorCode.CapacityExceeded, () =>
+                Store(options).CreateAsync(new("ordinary admission"), Owner));
+            Assert.Equal(0, output.Length);
+        }
+        Assert.Equal(".lease", Path.GetFileName(Assert.Single(Directory.GetFiles(orphan))));
+        Assert.Equal(tombstoned, File.Exists(tombstone));
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task UnrelatedSealedPackageAccountingDoesNotReadItsManifest(
+        bool tombstoned, bool missingManifest)
+    {
+        var source = await CreateAsync();
+        var unrelated = await CreateAsync();
+        var manifest = Path.Combine(Package(unrelated.CaptureId), "manifest.json");
+        if (missingManifest) File.Delete(manifest);
+        else await File.WriteAllTextAsync(manifest, "{");
+        if (tombstoned)
+            await File.WriteAllBytesAsync(Path.Combine(_root, "captures", ".deleted-" + unrelated.CaptureId), []);
+        var options = new CaptureStoreOptions
+        {
+            MaxDatabaseBytes = 1024 * 1024, MaxPackageBytes = 1024 * 1024, MaxStoreBytes = 4 * 1024 * 1024
+        };
+        var before = SourceHashes(source, unrelated);
+        using var output = new MemoryStream();
+        await Exporter(storeOptions: options).ExportAsync(
+            Request(new CaptureExportSelection(source.CaptureId, null)), output, Owner);
+        ValidateIndependentArchive(output.ToArray(), [source], [null]);
+        await using var writer = await Store(options).CreateAsync(new("ordinary admission"), Owner);
+        await writer.CompleteAsync();
+        Assert.Equal(before, SourceHashes(source, unrelated));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task InterruptedPackageAccountingUsesItsManifestReservation(bool tombstoned)
+    {
+        var source = await CreateAsync();
+        var options = new CaptureStoreOptions
+        {
+            MaxDatabaseBytes = 1024 * 1024, MaxPackageBytes = 1024 * 1024, MaxStoreBytes = 4 * 1024 * 1024
+        };
+        CaptureInfo interrupted;
+        await using (var writer = await Store(options).CreateAsync(new("interrupted"), Owner))
+            interrupted = await writer.CompleteAsync();
+        File.Delete(Path.Combine(Package(interrupted.CaptureId), "seal.json"));
+        if (tombstoned)
+            await File.WriteAllBytesAsync(Path.Combine(_root, "captures", ".deleted-" + interrupted.CaptureId), []);
+        var before = SourceHashes(source, interrupted);
+        await Exporter(storeOptions: options).ExportAsync(
+            Request(new CaptureExportSelection(source.CaptureId, null)), Stream.Null, Owner);
+        await using var next = await Store(options).CreateAsync(new("ordinary admission"), Owner);
+        await next.CompleteAsync();
+        Assert.Equal(before, SourceHashes(source, interrupted));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CorruptPresentUnsealedManifestIsNotAnOrphanFallback(bool tombstoned)
+    {
+        var source = await CreateAsync();
+        var unrelated = await CreateAsync();
+        File.Delete(Path.Combine(Package(unrelated.CaptureId), "seal.json"));
+        await File.WriteAllTextAsync(Path.Combine(Package(unrelated.CaptureId), "manifest.json"), "{");
+        if (tombstoned)
+            await File.WriteAllBytesAsync(Path.Combine(_root, "captures", ".deleted-" + unrelated.CaptureId), []);
+        var before = SourceHashes(source, unrelated);
+        using var output = new MemoryStream();
+        await Error(CaptureErrorCode.CorruptPackage, () => Exporter().ExportAsync(
+            Request(new CaptureExportSelection(source.CaptureId, null)), output, Owner));
+        await Error(CaptureErrorCode.CorruptPackage, () => Store().CreateAsync(new("ordinary admission"), Owner));
+        Assert.Equal(0, output.Length);
+        Assert.Equal(before, SourceHashes(source, unrelated));
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task CompositionAndStreamWrappersRemainByteIdentical(bool wrapped)

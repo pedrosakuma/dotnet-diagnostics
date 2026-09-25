@@ -16,10 +16,7 @@ public sealed partial class SqliteCaptureStore
         foreach (var directory in CatalogDirectories(root, includeDeleted: true))
         {
             PortableBounds.Check("ControlMilliseconds", watch.ElapsedMilliseconds, 5000);
-            var actual = CapturePackage.PackageBytes(directory);
-            var manifest = CapturePackage.ReadManifest(directory, Path.GetFileName(directory));
-            bytes = checked(bytes + (File.Exists(Path.Combine(directory, CapturePackage.Seal))
-                ? actual : Math.Max(actual, manifest.ReservationBytes)));
+            bytes = checked(bytes + AccountedPackageBytes(directory));
         }
         foreach (var directory in Directory.EnumerateDirectories(root, ".recovery-*"))
         {
