@@ -868,6 +868,9 @@ Each artifact advertises `recordStreamAvailable` and, when recorded, its own
 for declared occurrence streams or retained rows. A declared zero-event stream
 can return an empty page; snapshot-only evidence and reference-only group roots
 return an actionable error, not a misleading observed-zero result.
+Within a session, the same filters work with `query --handle <durable-handle>
+--view records`; each read rechecks capture ownership, deletion, and stream
+availability. Ordinary ephemeral handles do not gain a records stream.
 
 | Option | Meaning |
 |---|---|
@@ -887,6 +890,9 @@ Ordinary non-persisted handles keep their existing behavior.
 CPU-efficiency aggregates are retained as typed snapshots, but currently have no
 supported snapshot drilldown view; retaining a snapshot does not imply that
 `query --view summary` is available. Collection output still includes the aggregate.
+Their `records` view exposes projected `snapshot.*` facts marked
+`sourceOccurrence=false` and `derivedRetainedRow=true`, not source events.
+Source loss remains unknown; these rows do not establish a complete event history.
 Capture quality reports known losses, interrupted evidence, and unknown source loss;
 persisted does not mean complete. Normalized retained records and compatibility
 snapshots are not a promise to retain every raw runtime event.

@@ -187,6 +187,15 @@ internal static partial class CliCommands
                 await durableService.AuthorizeViewAsync(options.Handle, view,
                     CliCaptureRootProvider.CurrentAccess(), cancellationToken).ConfigureAwait(false);
                 options = options with { View = view };
+                if (view == "records")
+                {
+                    var page = await durableService.QueryRecordsAsync(binding.CaptureId,
+                        CaptureRecordsQuery(binding.ArtifactId, options),
+                        CliCaptureRootProvider.CurrentAccess(), cancellationToken).ConfigureAwait(false);
+                    return BuildResult(DiagnosticResult.OkWithHandle(page,
+                        "Bounded durable records; use nextAfterRecordId to continue.",
+                        lookup.Value.Handle.Id, lookup.Value.Handle.ExpiresAt), SerializeQuery);
+                }
                 if (lookup.Value.Artifact is DurableCaptureComposition composition)
                 {
                     if (view != "children")

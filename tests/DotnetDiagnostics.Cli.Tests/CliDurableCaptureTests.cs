@@ -33,12 +33,19 @@ public sealed class CliDurableCaptureTests : IDisposable
         var captureId = capture.GetProperty("captureId").GetString()!;
         var artifact = capture.GetProperty("artifacts").EnumerateArray().Single();
         artifact.GetProperty("supportedViews").EnumerateArray().Select(view => view.GetString())
-            .Should().BeEmpty();
-        artifact.GetProperty("recordStreamAvailable").GetBoolean().Should().BeFalse();
+            .Should().Equal("records");
+        artifact.GetProperty("recordStreamAvailable").GetBoolean().Should().BeTrue();
+        artifact.GetProperty("recordStream").TryGetProperty("sourceRejected", out _).Should().BeFalse();
+        artifact.GetProperty("recordStream").GetProperty("sources").GetProperty("snapshot-derived")
+            .ValueKind.Should().Be(JsonValueKind.Null);
+        capture.GetProperty("quality").GetProperty("isComplete").GetBoolean().Should().BeFalse();
         var artifactId = artifact.GetProperty("artifactId").GetString()!;
         var store = new SqliteCaptureStore(new CliCaptureRootProvider(_root));
-        using var reader = await store.OpenAsync(captureId, CliCaptureRootProvider.CurrentAccess());
-        var snapshot = reader.ReadSnapshot(artifactId);
+        CaptureSnapshot? snapshot;
+        using (var reader = await store.OpenAsync(captureId, CliCaptureRootProvider.CurrentAccess()))
+        {
+            snapshot = reader.ReadSnapshot(artifactId);
+        }
         snapshot.Should().NotBeNull();
         using var snapshotJson = JsonDocument.Parse(snapshot!.Utf8Json);
         var restored = snapshotJson.RootElement.GetProperty("snapshot").GetProperty("snapshot").Deserialize<CpuEfficiencySample>(JsonOptions);
@@ -57,8 +64,48 @@ public sealed class CliDurableCaptureTests : IDisposable
         handleChildren.GetProperty("error").GetProperty("kind").GetString().Should().Be("Forbidden");
         var (recordsExit, records, _) = await HostAsync("query", "--capture-id", captureId,
             "--artifact-id", artifactId, "--view", "records");
-        recordsExit.Should().Be(1);
-        records.GetProperty("error").GetProperty("detail").GetString().Should().Contain("record stream");
+        recordsExit.Should().Be(0, records.ToString());
+        AssertDerivedRecords(records);
+        var (originalExit, originalRecords) = await ExecuteAsync(services,
+            ["query", "--handle", captured.GetProperty("handle").GetString()!,
+                "--view", "records", "--page-size", "100", "--json"], session: true);
+        originalExit.Should().Be(0, originalRecords.ToString());
+        AssertDerivedRecords(originalRecords);
+        originalRecords.GetProperty("handle").GetString().Should().Be(captured.GetProperty("handle").GetString());
+        using var fresh = Services();
+        var reopened = await CliDurableCaptures.For(fresh).Get(_root)
+            .OpenAsync(captureId, artifactId, CliCaptureRootProvider.CurrentAccess());
+        var (reusedExit, reusedRecords) = await ExecuteAsync(fresh,
+            ["query", "--handle", reopened.Handle.Id, "--view", "records", "--page-size", "100", "--json"], session: true);
+        reusedExit.Should().Be(0, reusedRecords.ToString());
+        AssertDerivedRecords(reusedRecords);
+        var (filteredExit, filtered) = await ExecuteAsync(fresh,
+            ["query", "--handle", reopened.Handle.Id, "--view", "records", "--page-size", "1",
+                "--category", "snapshot.cpu-efficiency.window", "--name", "fixture",
+                "--from", "1970-01-01T00:00:00Z", "--to", "1970-01-01T00:00:00Z", "--json"], session: true);
+        filteredExit.Should().Be(0, filtered.ToString());
+        filtered.GetProperty("data").GetProperty("records").GetArrayLength().Should().Be(1);
+        AssertDerivedRecords(filtered);
+        await store.DeleteAsync(captureId, CliCaptureRootProvider.CurrentAccess());
+        var (deletedExit, deleted) = await ExecuteAsync(fresh,
+            ["query", "--handle", reopened.Handle.Id, "--view", "records", "--json"], session: true);
+        deletedExit.Should().Be(1);
+        deleted.GetProperty("error").GetProperty("kind").GetString().Should().BeOneOf("Deleted", "NotFound");
+    }
+
+    private static void AssertDerivedRecords(JsonElement envelope)
+    {
+        var records = envelope.GetProperty("data").GetProperty("records").EnumerateArray().ToArray();
+        records.Should().NotBeEmpty();
+        foreach (var row in records)
+        {
+            var record = row.GetProperty("record");
+            record.GetProperty("category").GetString().Should().StartWith("snapshot.");
+            var fields = record.GetProperty("fields").EnumerateArray()
+                .ToDictionary(field => field.GetProperty("name").GetString()!);
+            fields["sourceOccurrence"].GetProperty("booleanValue").GetBoolean().Should().BeFalse();
+            fields["derivedRetainedRow"].GetProperty("booleanValue").GetBoolean().Should().BeTrue();
+        }
     }
 
     [Fact]
