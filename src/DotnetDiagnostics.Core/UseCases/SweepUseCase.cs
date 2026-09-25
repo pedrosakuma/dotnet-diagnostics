@@ -1,4 +1,5 @@
 using DotnetDiagnostics.Core.Collection;
+using DotnetDiagnostics.Core.CaptureRecording;
 using DotnetDiagnostics.Core.Counters;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Exceptions;
@@ -162,9 +163,30 @@ public static class SweepUseCase
     // result so the consolidated envelope + per-collector failure list still come back.
     private static async Task<DiagnosticResult<T>> SafeAsync<T>(Func<Task<DiagnosticResult<T>>> run, string kind, CancellationToken ct)
     {
-        try { return await run().ConfigureAwait(false); }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-        catch (Exception ex) { return DiagnosticResult.Fail<T>($"{kind} failed: {ex.Message}", new DiagnosticError("CollectorFailed", ex.Message)); }
+        using var recording = CaptureRecordingContext.EnterChild(kind switch
+        {
+            "gc" => CollectionHandleKinds.GcEvents,
+            "exceptions" => CollectionHandleKinds.ExceptionSnapshot,
+            "threadpool" => CollectionHandleKinds.ThreadPoolSnapshot,
+            _ => kind,
+        }, kind);
+        try
+        {
+            var result = await run().ConfigureAwait(false);
+            CaptureRecordingContext.Current?.ReportCompletion(result.Error, result.Cancelled, result.Data);
+            return result;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            CaptureRecordingContext.Current?.ReportCompletion(null, cancelled: true);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            var error = new DiagnosticError("CollectorFailed", ex.Message);
+            CaptureRecordingContext.Current?.ReportCompletion(error, cancelled: false);
+            return DiagnosticResult.Fail<T>($"{kind} failed: {ex.Message}", error);
+        }
     }
 
     private static async Task<ProcessResources?> SafeResourceAsync(Func<Task<ProcessResources>> run, CancellationToken ct)
