@@ -1,5 +1,11 @@
 # Durable capture host contract
 
+For the separate **proposed**, not-yet-implemented bundle export/import and
+authorized HTTP/stdio byte-transfer contract, see
+[`portable-capture-contract.md`](portable-capture-contract.md) (#1048).
+It preserves the ownership and offline-view boundaries below; a server-side
+archive path alone is not remote transfer.
+
 `DurableCaptureUseCases` wraps an existing asynchronous operation with
 `CaptureAsync(name, kind, access, collect, cancellationToken)`. It does not replace
 collectors. The default remains ephemeral: construction and DI registration do

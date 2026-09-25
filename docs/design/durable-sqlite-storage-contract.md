@@ -7,6 +7,13 @@ handles, modify existing collectors, enable persistence by default, or use the
 TestSupport experiments. Creating a `SqliteCaptureStore` and listing a
 nonexistent store create no files.
 
+Portable ZIP transport and untrusted import are a separate **proposed** contract:
+[`portable-capture-contract.md`](portable-capture-contract.md) (#1048). It specifies
+independent multi-capture bundles, bounded admission and a future package-3
+import-derived provenance representation. The implementation described here
+remains package 2 / executing reader 2; its trusted-root checks are not sufficient
+for arbitrary uploaded SQLite files.
+
 ## Public API and ownership
 
 ```csharp
