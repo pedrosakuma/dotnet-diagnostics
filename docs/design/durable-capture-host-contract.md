@@ -162,3 +162,14 @@ or accessing native dependencies. Projection uses the same record/queue/storage
 bounds and exposes rejections through quality metadata. The original typed
 snapshot and its snapshot-view allowlist remain unchanged; `records` becomes
 available for the explicitly derived facts, not an invented event history.
+
+## Offline replay admission
+
+An optional `IReplayCaptureObservationSink.AppendReplayAsync(observation, token)`
+capability paces already-collected observations through the same bounded writer
+queue. CPU TraceLog replay awaits each admission only after the live EventPipe
+session has stopped and drained. Live/native callbacks retain nonblocking
+`TryAppend`; neither route retries rejected offers. Hard record/storage limits
+remain enforced and counted once, cancellation interrupts replay, and no queue
+or quota is enlarged. Replay callers must await each offer before advancing the
+source iterator, not accumulate pending tasks or retained event references.

@@ -6,7 +6,7 @@ using DotnetDiagnostics.Core.UseCases;
 namespace DotnetDiagnostics.Core.CaptureRecording;
 
 /// <summary>Invocation-owned adapter. Callback admission never serializes artifacts or touches disk.</summary>
-internal sealed class SqliteCaptureObservationSink : ICaptureObservationSink
+internal sealed class SqliteCaptureObservationSink : IReplayCaptureObservationSink
 {
     private readonly object _gate;
     private readonly CaptureWriter _writer;
@@ -68,10 +68,26 @@ internal sealed class SqliteCaptureObservationSink : ICaptureObservationSink
     public bool TryAppend(CaptureObservation observation)
     {
         Interlocked.Increment(ref _offered);
+        var accepted = _writer.TryAppend(ArtifactId, ToRecord(observation)!);
+        if (accepted) Interlocked.Increment(ref _accepted);
+        return accepted;
+    }
+
+    public async ValueTask<bool> AppendReplayAsync(CaptureObservation observation, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        Interlocked.Increment(ref _offered);
+        var accepted = await _writer.AppendAsync(ArtifactId, ToRecord(observation)!, cancellationToken).ConfigureAwait(false);
+        if (accepted) Interlocked.Increment(ref _accepted);
+        return accepted;
+    }
+
+    private CaptureRecord? ToRecord(CaptureObservation observation)
+    {
         // Let the writer count invalid offers, without copying a hostile/unbounded field collection.
-        if (observation.Fields.Count > _options.MaxFields)
-            return _writer.TryAppend(ArtifactId, null!);
-        var fields = new CaptureField[observation.Fields.Count];
+        var count = observation.Fields.Count;
+        if (count < 0 || count > _options.MaxFields) return null;
+        var fields = new CaptureField[count];
         for (var i = 0; i < fields.Length; i++)
         {
             var field = observation.Fields[i];
@@ -85,10 +101,8 @@ internal sealed class SqliteCaptureObservationSink : ICaptureObservationSink
                 _ => new(field.Name, (CaptureFieldKind)(-1)),
             };
         }
-        var accepted = _writer.TryAppend(ArtifactId, new CaptureRecord(
-            observation.Timestamp, observation.ThreadId, observation.Category, observation.Name, Fields: fields));
-        if (accepted) Interlocked.Increment(ref _accepted);
-        return accepted;
+        return new CaptureRecord(
+            observation.Timestamp, observation.ThreadId, observation.Category, observation.Name, Fields: fields);
     }
 
     public void ReportSourceLoss(string source, long? count)
