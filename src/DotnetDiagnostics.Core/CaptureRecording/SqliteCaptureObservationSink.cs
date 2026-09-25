@@ -199,6 +199,36 @@ internal sealed class SqliteCaptureObservationSink : ICaptureObservationSink
         }
     }
 
+    internal void EmitSnapshotRows(object? rootResult)
+    {
+        List<(SqliteCaptureObservationSink Sink, object Artifact)> candidates = [];
+        lock (_gate)
+        {
+            if (_root._closed) throw new InvalidOperationException("Capture recording has completed.");
+            foreach (var node in _nodes)
+            {
+                if (!SnapshotObservationProjection.Supports(node.Kind) ||
+                    ReferenceEquals(node, _root) && _root._overflow ||
+                    _nodes.Any(child => child.ParentArtifactId == node.ArtifactId)) continue;
+                var artifact = node._artifacts.Count switch
+                {
+                    0 => ReferenceEquals(node, _root) ? rootResult : node._result,
+                    1 when node._artifacts.Values.First().Kind == node.Kind => node._artifacts.Values.First().Artifact,
+                    _ => null,
+                };
+                if (artifact is not null) candidates.Add((node, artifact));
+            }
+        }
+        foreach (var (sink, artifact) in candidates)
+        {
+            // Validate bounded material before enumerating retained rows from collector-owned DTOs.
+            var bytes = CaptureArtifactCodec.Encode(sink.Kind, artifact, _options.MaxSnapshotBytes);
+            var bounded = CaptureArtifactCodec.Decode(sink.Kind, CaptureArtifactCodec.FormatVersion, bytes, _options.MaxSnapshotBytes);
+            sink.ReportSourceLoss("snapshot-derived", null);
+            SnapshotObservationProjection.Emit(sink.Kind, bounded, sink);
+        }
+    }
+
     internal CaptureRecordingCompletion Finish()
     {
         lock (_gate)

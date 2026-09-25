@@ -149,3 +149,16 @@ references through those explicit aliases, returning current destination IDs.
 It never guesses by name/PID or reads the source package. Missing or ambiguous
 aliases fail closed; recovery leaves the original wrapper bytes unchanged.
 Typed parent metadata artifact references use the same recovery alias mapping.
+
+## Indexed point-in-time rows
+
+After collection, orchestration projects allowlisted heap, thread, requests-now,
+and CPU-efficiency snapshots into indexed `snapshot.*` rows using the existing
+bounded projection helper. Every row declares `sourceOccurrence=false` and
+`derivedRetainedRow=true`; snapshot/window timestamps are not occurrence times.
+Source loss remains unknown. Both registered and returned-only snapshots are
+supported without mutating original results, duplicating handle announcements,
+or accessing native dependencies. Projection uses the same record/queue/storage
+bounds and exposes rejections through quality metadata. The original typed
+snapshot and its snapshot-view allowlist remain unchanged; `records` becomes
+available for the explicitly derived facts, not an invented event history.

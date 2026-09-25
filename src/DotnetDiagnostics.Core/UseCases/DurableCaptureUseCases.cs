@@ -143,6 +143,8 @@ public sealed class DurableCaptureUseCases
             // A custom handle store may not implement registration announcements.
             if (result.Handle is { } returnedHandle && _handles.TryGetWithKind(returnedHandle) is { } lookup)
                 sink.ArtifactRegistered(lookup.Handle, lookup.Artifact);
+            try { sink.EmitSnapshotRows(result.Data); }
+            catch (Exception ex) when (IsPersistenceException(ex)) { persistenceFailure ??= ex; }
             var retained = sink.Finish();
             var snapshots = new HashSet<string>(StringComparer.Ordinal);
             var artifactByHandle = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -185,7 +187,7 @@ public sealed class DurableCaptureUseCases
                 if (node.Artifacts.Length > 1 || node.Artifacts.Length == 1 && (matching != 1 || hasChildren))
                     persistenceFailure ??= new NotSupportedException(
                         "Each collection needs an explicit child scope; an aggregate cannot own ambiguous child snapshots.");
-                if (!hasChildren && node.Artifacts.Length == 0)
+                if (!hasChildren && node.Artifacts.Length == 0 && !(retained.Overflow && node.ArtifactId == defaultId))
                 {
                     var data = node.ArtifactId == defaultId ? (object?)result.Data : node.Result;
                     try
