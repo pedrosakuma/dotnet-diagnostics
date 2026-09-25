@@ -60,6 +60,11 @@ public sealed partial class MonitoredRunnerTests
     public async Task GeometryFixtureOrderedConstructionMeasures539Plus32AndStrictCleanup()
     {
         if (!OperatingSystem.IsLinux()) return;
+        if (!GeometryFixtureProcess.IsChild)
+        {
+            await GeometryFixtureProcess.RunAsync("ordered", _output);
+            return;
+        }
         var root = Path.Combine(_workspace, "geometry");
         var history = Path.Combine(root, "history");
         Directory.CreateDirectory(history);
@@ -151,6 +156,11 @@ public sealed partial class MonitoredRunnerTests
     public async Task GeometryFixtureConstructionFailureClosesOwnedHandlesWithoutBlockingObserver(bool cancel)
     {
         if (!OperatingSystem.IsLinux()) return;
+        if (!GeometryFixtureProcess.IsChild)
+        {
+            await GeometryFixtureProcess.RunAsync(cancel ? "cancel" : "failure", _output);
+            return;
+        }
         var root = Path.Combine(_workspace, "geometry");
         var history = Path.Combine(root, "history");
         Directory.CreateDirectory(history);

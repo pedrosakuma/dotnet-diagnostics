@@ -176,6 +176,13 @@ dotnet … collect_events(kind="exceptions")  # synchronous
 
 `tests/DotnetDiagnostics.Core.Tests/LiveCoreClrProcessTests.cs` spawns the `CoreClrSample` webapi by invoking its published DLL directly (`dotnet …/CoreClrSample.dll`) and attaches to the resulting PID. The fixture deliberately avoids `dotnet run`, which creates a wrapper host process whose PID is not the application. Required: .NET 10 SDK on `PATH`, ability to bind to `127.0.0.1:0`, and ~10s of runtime. CI runs both Linux and Windows runners.
 
+The Core test assembly also has a private geometry-fixture entry point. The
+strict inventory cases run in fresh child processes so the xUnit host's retained
+heap does not consume their absolute harness RSS budget. Keep the executable
+test-project setting; normal discovery still uses `dotnet test`. Process-wide
+descriptor tests use an exclusive collection. Do not relax monitor limits to
+accommodate unrelated tests.
+
 ### 💥 Linux host-crash flake (issues #147 / #685 / dotnet/runtime#128525) — historical
 
 The xunit host used to segfault on `ubuntu-latest` under full-suite load — a native crash in a runtime thread, unified only by being the slowest tests in the serialized `LiveProcess` collection (see dotnet/runtime#128525 for the original mmap/munmap fault-address analysis). **Root cause has since been identified in ClrMD.** The two dedicated nightly reproduction workflows (`linux-crash-repro-preload.yml`'s `LD_PRELOAD` mmap tracer and `linux-crash-repro.yml`'s `strace` harness, plus their `tools/linux-crash-repro/` helpers) are no longer needed and were retired in issue #857.
