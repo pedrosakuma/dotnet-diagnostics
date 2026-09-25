@@ -6,7 +6,10 @@ using System.Text;
 namespace DotnetDiagnostics.Core.Captures;
 
 internal sealed record CaptureWorkerProbe(string Executable, string SqliteLibrary, string PrivateDirectory,
-    string TrustedFixture, string BenignMarker, int HelperProcessId, string HelperAddress, string HelperExecutable);
+    string TrustedFixture, string BenignMarker, int HelperProcessId, string HelperAddress, string HelperExecutable)
+{
+    internal bool WritableProfile { get; init; }
+}
 
 internal sealed record CaptureWorkerCapabilities(int LandlockAbi, int SqliteVersion, int DeniedProbes,
     int FixtureValue, long VmInstructions, long PeakObservedRss, TimeSpan MaximumObservationGap, int OutputBytes);
@@ -81,6 +84,7 @@ internal static partial class IsolatedCaptureWorker
             new Uri(probe.TrustedFixture).AbsoluteUri + "?immutable=1", probe.BenignMarker,
             probe.HelperProcessId.ToString(CultureInfo.InvariantCulture), probe.HelperAddress, probe.HelperExecutable })
             start.ArgumentList.Add(argument);
+        if (probe.WritableProfile) start.ArgumentList.Add("--writable-profile-probe");
         var outcome = RunProtocol(start, nonce, limits, "GO\n"u8.ToArray(),
             (stream, ct) => ReadBoundedAsync(stream, OutputLimit, false, ct), token);
         var text = outcome.Result;
@@ -95,10 +99,16 @@ internal static partial class IsolatedCaptureWorker
             outcome.MaximumGap, Encoding.UTF8.GetByteCount(text));
     }
 
-    private sealed record ProtocolOutcome<T>(T Result, int Abi, long PeakRss, TimeSpan MaximumGap);
+    private sealed record ProtocolOutcome<T>(T Result, int Abi, long PeakRss, TimeSpan MaximumGap, TimeSpan WallTime);
 
     private static ProtocolOutcome<T> RunProtocol<T>(ProcessStartInfo start, string nonce, CaptureWorkerLimits limits,
-        byte[] request, Func<Stream, CancellationToken, Task<T>> receive, CancellationToken token)
+        byte[] request, Func<Stream, CancellationToken, Task<T>> receive, CancellationToken token,
+        Action<int>? beforeInput = null, Action? afterExit = null)
+        => RunProtocol(start, nonce, limits, (stream, ct) => stream.WriteAsync(request, ct).AsTask(), receive, token, beforeInput, afterExit);
+
+    private static ProtocolOutcome<T> RunProtocol<T>(ProcessStartInfo start, string nonce, CaptureWorkerLimits limits,
+        Func<Stream, CancellationToken, Task> send, Func<Stream, CancellationToken, Task<T>> receive, CancellationToken token,
+        Action<int>? beforeInput = null, Action? afterExit = null)
     {
         using var process = new Process { StartInfo = start };
         var wall = Stopwatch.StartNew();
@@ -125,21 +135,23 @@ internal static partial class IsolatedCaptureWorker
             if (ready.Length != 4 || ready[0] != "READY" || ready[1] != "1" || ready[2] != nonce ||
                 !int.TryParse(ready[3], CultureInfo.InvariantCulture, out var abi) || abi < 3)
                 throw Unsupported("WorkerHandshakeInvalid");
+            beforeInput?.Invoke(process.Id);
             var response = receive(process.StandardOutput.BaseStream, io.Token);
             frame = response;
             Observe();
-            sending = process.StandardInput.BaseStream.WriteAsync(request, io.Token).AsTask();
+            sending = Task.Run(() => send(process.StandardInput.BaseStream, io.Token), CancellationToken.None);
             Await(sending, mandatory: true);
             process.StandardInput.Close();
             Await(frame, mandatory: true);
             Await(errors, mandatory: true);
             while (!process.HasExited) { Check(); Observe(); Thread.Sleep(1); }
+            Observe();
             Check();
             observations.CheckGap(wall.Elapsed);
             if (process.ExitCode == 78) throw Unsupported(response.GetAwaiter().GetResult()?.ToString()?.Trim() ?? "WorkerUnavailable");
             if (process.ExitCode != 0 || errors.GetAwaiter().GetResult().Length != 0)
                 throw CapturePackage.Error(CaptureErrorCode.StorageFailure, "Worker exited unsuccessfully; no admission result exists.");
-            outcome = new(response.GetAwaiter().GetResult(), abi, observations.PeakRss, observations.MaximumGap);
+            outcome = new(response.GetAwaiter().GetResult(), abi, observations.PeakRss, observations.MaximumGap, wall.Elapsed);
         }
         catch (Exception ex) { failure = ex; }
         try
@@ -150,6 +162,14 @@ internal static partial class IsolatedCaptureWorker
                 if (!process.WaitForExit(5000))
                     throw CapturePackage.Error(CaptureErrorCode.StorageFailure, "Worker termination could not be confirmed.");
             }
+            io.Cancel();
+            var pending = new[] { frame, sending, errors }.Where(static task => task is not null).Select(static task =>
+                task!.ContinueWith(static completed => _ = completed.Exception, CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default)).ToArray();
+            if (!Task.WhenAll(pending).Wait(TimeSpan.FromSeconds(5)))
+                throw CapturePackage.Error(CaptureErrorCode.StorageFailure,
+                    "WorkerIoCleanupUnconfirmed: retain operation staging and reservations.");
+            if (started && process.HasExited) afterExit?.Invoke();
         }
         catch (Exception ex)
         {
@@ -175,7 +195,8 @@ internal static partial class IsolatedCaptureWorker
         void Observe()
         {
             Check();
-            if (process.HasExited) { observations.CheckGap(wall.Elapsed); return; }
+            if (observations.Completed) return;
+            if (process.HasExited) { observations.ConfirmExit(wall.Elapsed); return; }
             try
             {
                 process.Refresh();
@@ -185,14 +206,15 @@ internal static partial class IsolatedCaptureWorker
                 {
                     // Zero RSS is not exit evidence. Only this child's confirmed
                     // termination within the last valid sample's deadline qualifies.
-                    observations.WaitForConfirmedExit(() => wall.Elapsed, process.WaitForExit, token);
+                    var confirmed = observations.WaitForConfirmedExit(() => wall.Elapsed, process.WaitForExit, token);
+                    observations.ConfirmExit(confirmed);
                     return;
                 }
                 observations.Record(wall.Elapsed, rss, cpu);
             }
-            catch (InvalidOperationException) when (process.HasExited) { observations.CheckGap(wall.Elapsed); }
-            catch (System.ComponentModel.Win32Exception ex) { throw Unsupported("WorkerObservationUnavailable", ex); }
-            catch (IOException ex) { throw Unsupported("WorkerObservationUnavailable", ex); }
+            catch (InvalidOperationException) when (process.HasExited) { observations.ConfirmExit(wall.Elapsed); }
+            catch (System.ComponentModel.Win32Exception ex) { observations.MetricUnavailable(ex, () => process.HasExited, () => wall.Elapsed); }
+            catch (IOException ex) { observations.MetricUnavailable(ex, () => process.HasExited, () => wall.Elapsed); }
         }
         void Await(Task task, bool mandatory)
         {
@@ -246,7 +268,27 @@ internal sealed class CaptureWorkerObservation(CaptureWorkerLimits limits)
     {
         if (elapsed > limits.WallTime) throw IsolatedCaptureWorker.Limit("WorkerWallTime");
     }
-    internal void WaitForConfirmedExit(Func<TimeSpan> elapsed, Func<int, bool> waitForExit,
+    internal bool Completed { get; private set; }
+    internal void MetricUnavailable(Exception error, Func<bool> hasExited, Func<TimeSpan> elapsed)
+    {
+        bool exited;
+        try { exited = hasExited(); }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException or InvalidOperationException)
+        {
+            throw IsolatedCaptureWorker.Unsupported("WorkerObservationUnavailable", ex);
+        }
+        if (!exited) throw IsolatedCaptureWorker.Unsupported("WorkerObservationUnavailable", error);
+        ConfirmExit(elapsed());
+    }
+    internal void ConfirmExit(TimeSpan observedAt)
+    {
+        if (Completed) return;
+        if (_last is null) throw IsolatedCaptureWorker.Unsupported("WorkerObservationUnavailable");
+        CheckWallTime(observedAt);
+        CheckGap(observedAt);
+        Completed = true;
+    }
+    internal TimeSpan WaitForConfirmedExit(Func<TimeSpan> elapsed, Func<int, bool> waitForExit,
         CancellationToken cancellationToken)
     {
         var now = elapsed();
@@ -269,7 +311,7 @@ internal sealed class CaptureWorkerObservation(CaptureWorkerLimits limits)
             }
             now = elapsed();
             CheckStop(now);
-            if (exited) return;
+            if (exited) return now;
             if (now == deadline) throw IsolatedCaptureWorker.Unsupported("WorkerObservationUnavailable");
         }
 
@@ -282,6 +324,7 @@ internal sealed class CaptureWorkerObservation(CaptureWorkerLimits limits)
     }
     internal void CheckGap(TimeSpan now)
     {
+        if (Completed) return;
         if (_last is not { } previous) return;
         var gap = now - previous;
         if (gap > MaximumGap) MaximumGap = gap;
@@ -290,6 +333,7 @@ internal sealed class CaptureWorkerObservation(CaptureWorkerLimits limits)
     }
     internal void Record(TimeSpan now, long rss, TimeSpan cpu)
     {
+        if (Completed) throw IsolatedCaptureWorker.Unsupported("WorkerAlreadyExited");
         if (rss <= 0 || cpu < TimeSpan.Zero) throw IsolatedCaptureWorker.Unsupported("WorkerObservationUnavailable");
         CheckGap(now);
         _last = now;

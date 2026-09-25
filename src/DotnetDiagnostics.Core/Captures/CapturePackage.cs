@@ -22,6 +22,7 @@ internal static class CapturePackage
     internal const int MetadataLimit = 128 * 1024;
     internal const string RecoveryIdentityFeature = "recovery-artifact-identity-v1";
     internal static readonly CaptureFormatVersions CurrentFormat = new(2, 1, 1, 1, 2, 2);
+    internal static readonly CaptureFormatVersions PortableFormat = new(3, 1, 1, 1, 3, 3);
     private static readonly CaptureFormatVersions PreviousFormat = new(1, 1, 1, 1, 1, 1);
     internal static readonly UTF8Encoding Utf8 = new(false, true);
     private static readonly HashSet<string> Members = new(StringComparer.Ordinal)
@@ -152,10 +153,20 @@ internal static class CapturePackage
     internal static CaptureManifest ReadManifest(string directory, string id)
     {
         var manifest = ReadJson<CaptureManifest>(Path.Combine(directory, Manifest));
+        return ValidateManifest(manifest, id);
+    }
+
+    internal static CaptureManifest ValidateManifest(CaptureManifest manifest, string id)
+    {
         var format = FormatOf(manifest);
         var features = manifest.RequiredFeatures;
         var supportedFeatures = format == PreviousFormat
             ? features is { Length: 1 } && features[0] == "normalized-scalars-v1"
+            : format == PortableFormat
+            ? features is { Length: 3 or 4 } && features.Contains("normalized-scalars-v1", StringComparer.Ordinal) &&
+              features.Contains("artifact-provenance-v1", StringComparer.Ordinal) &&
+              features.Contains("portable-source-v1", StringComparer.Ordinal) &&
+              (features.Length == 3 || features.Contains(RecoveryIdentityFeature, StringComparer.Ordinal))
             : features is { Length: 2 or 3 } && features.Contains("normalized-scalars-v1", StringComparer.Ordinal) &&
               features.Contains("artifact-provenance-v1", StringComparer.Ordinal) &&
               (features.Length == 2 || features.Contains(RecoveryIdentityFeature, StringComparer.Ordinal));
@@ -173,7 +184,7 @@ internal static class CapturePackage
             quality.Persisted < 0 || quality.RecordRejected < 0 || quality.QueueRejected < 0 ||
             quality.StorageRejected < 0 || quality.Pending < 0 || quality.SourceRejected < 0 ||
             quality.SnapshotRejected < 0 || quality.Accepted > quality.Offered || quality.Persisted > quality.Accepted ||
-            quality.Offered - quality.Persisted - quality.RecordRejected - quality.QueueRejected - quality.StorageRejected != quality.Pending ||
+            !QualityAddsUp(quality) ||
             manifest.Info.State == CaptureState.Sealed && quality.Pending != 0)
             throw Error(CaptureErrorCode.CorruptPackage, "Invalid capture quality populations or name.");
         var ids = new HashSet<string>(StringComparer.Ordinal);
@@ -206,7 +217,24 @@ internal static class CapturePackage
         }
         if (hasRecoveryIdentity && (aliases == 0 || manifest.Info.DerivedFrom is null))
             throw Error(CaptureErrorCode.CorruptPackage, "Recovery identity feature requires derived capture metadata and actual source identities.");
+        if (format == PortableFormat)
+            PortableCaptureProvenance.Validate(manifest.Info);
+        else if (manifest.Info.PortableSource is not null)
+            throw Error(CaptureErrorCode.UnsupportedFormat, "Portable source provenance requires package 3.");
         return manifest;
+    }
+
+    private static bool QualityAddsUp(CaptureQuality quality)
+    {
+        var remaining = quality.Offered;
+        ReadOnlySpan<long> populations = [quality.Persisted, quality.RecordRejected, quality.QueueRejected,
+            quality.StorageRejected, quality.Pending];
+        foreach (var population in populations)
+        {
+            if (population < 0 || population > remaining) return false;
+            remaining -= population;
+        }
+        return remaining == 0 && quality.Accepted <= quality.Offered - quality.RecordRejected - quality.QueueRejected;
     }
 
     internal static CaptureFormatVersions FormatOf(CaptureManifest manifest) => new(
@@ -214,7 +242,7 @@ internal static class CapturePackage
         manifest.IndexVersion, manifest.WriterVersion, manifest.ReaderVersion);
 
     internal static bool IsSupportedFormat(CaptureFormatVersions format) =>
-        format == CurrentFormat || format == PreviousFormat;
+        format == CurrentFormat || format == PreviousFormat || format == PortableFormat;
 
     internal static void ValidateProvenance(CaptureArtifactProvenance provenance)
     {

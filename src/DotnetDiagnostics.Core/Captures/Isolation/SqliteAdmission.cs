@@ -6,7 +6,12 @@ using System.Text.Json;
 namespace DotnetDiagnostics.Core.Captures;
 
 internal sealed record SqliteAdmissionRequest(string Executable, string SqliteLibrary, string PrivateDirectory,
-    string Database, CaptureFormatVersions Format, IReadOnlyList<CaptureArtifactInfo> Artifacts, long Persisted);
+    string Database, CaptureFormatVersions Format, IReadOnlyList<CaptureArtifactInfo> Artifacts, long Persisted)
+{
+    internal Action<int>? BeforeInput { get; init; }
+    internal Action? AfterExit { get; init; }
+    internal bool IncludeUsage { get; init; }
+}
 
 internal sealed record SqliteAdmissionLimits
 {
@@ -30,7 +35,11 @@ internal sealed record SqliteAdmissionLimits
 
 /// <summary>Only schema/scalar validation. Evidence remains provisional; this is NOT a valid capture/import result.</summary>
 internal sealed record SqliteAdmissionResult(IReadOnlyList<long> TableRows, long LogicalBytes, long VmInstructions,
-    long WireBytes, int LandlockAbi, long PeakObservedRss, TimeSpan MaximumObservationGap);
+    long WireBytes, int LandlockAbi, long PeakObservedRss, TimeSpan MaximumObservationGap)
+{
+    internal TimeSpan CpuTime { get; init; }
+    internal TimeSpan WallTime { get; init; }
+}
 
 internal static partial class IsolatedCaptureWorker
 {
@@ -70,13 +79,15 @@ internal static partial class IsolatedCaptureWorker
             try
             {
                 result = RunProtocol(start, nonce, limits.Worker, payload,
-                    (stream, token) => SqliteAdmissionWire.ReadAsync(stream, evidence, request, limits, token), cancellationToken);
+                    (stream, token) => SqliteAdmissionWire.ReadAsync(stream, evidence, request, limits, token), cancellationToken,
+                    request.BeforeInput, request.AfterExit);
             }
             catch (IOException ex)
             {
                 throw CapturePackage.Error(CaptureErrorCode.StorageFailure, "Admission evidence I/O failed; discard the provisional prefix.", ex);
             }
-            return result.Result with { LandlockAbi = result.Abi, PeakObservedRss = result.PeakRss, MaximumObservationGap = result.MaximumGap };
+            return result.Result with { LandlockAbi = result.Abi, PeakObservedRss = result.PeakRss,
+                MaximumObservationGap = result.MaximumGap, WallTime = result.WallTime };
         }, CancellationToken.None);
     }
 
@@ -130,7 +141,7 @@ internal static partial class IsolatedCaptureWorker
         using var writer = new BinaryWriter(memory, CapturePackage.Utf8, leaveOpen: true);
         writer.Write("GO\n"u8);
         writer.Write(0);
-        writer.Write(1);
+        writer.Write(request.IncludeUsage ? 2 : 1);
         foreach (var axis in new[] { request.Format.PackageVersion, request.Format.SchemaVersion,
             request.Format.RecordVersion, request.Format.IndexVersion, request.Format.WriterVersion, request.Format.RequiredReaderVersion })
             writer.Write(axis);
@@ -287,7 +298,7 @@ internal static class SqliteAdmissionWire
             }
             else if (tag == 5)
             {
-                if (length != 65 || table != -1 || rows[0] != 1 || rows[2] != request.Artifacts.Count ||
+                if (length != (request.IncludeUsage ? 73 : 65) || table != -1 || rows[0] != 1 || rows[2] != request.Artifacts.Count ||
                     rows[3] != request.Persisted) throw IsolatedCaptureWorker.CorruptAdmission("Wire.Completion");
                 for (var i = 0; i < 6; i++)
                     if (BinaryPrimitives.ReadInt64LittleEndian(buffer.AsSpan(1 + i * 8)) != rows[i])
@@ -296,12 +307,16 @@ internal static class SqliteAdmissionWire
                 var work = BinaryPrimitives.ReadInt64LittleEndian(buffer.AsSpan(57));
                 if (logical < 0 || logical > limits.Store.MaxLogicalBytes || work < 0 || work > limits.VmInstructions)
                     throw IsolatedCaptureWorker.CorruptAdmission("Wire.Budget");
+                var cpu = request.IncludeUsage ? BinaryPrimitives.ReadInt64LittleEndian(buffer.AsSpan(65)) : 0;
+                if (cpu < 0 || cpu > limits.Worker.CpuTime.Ticks / 10) throw IsolatedCaptureWorker.Limit("WorkerCpuTime");
+                BinaryPrimitives.WriteUInt32LittleEndian(prefix, 65);
                 await evidence.WriteAsync(prefix, token).ConfigureAwait(false);
-                await evidence.WriteAsync(buffer.AsMemory(0, (int)length), token).ConfigureAwait(false);
+                await evidence.WriteAsync(buffer.AsMemory(0, 65), token).ConfigureAwait(false);
                 if (await source.ReadAsync(prefix.AsMemory(0, 1), token).ConfigureAwait(false) != 0)
                     throw IsolatedCaptureWorker.CorruptAdmission("Wire.Trailing");
                 await evidence.FlushAsync(token).ConfigureAwait(false);
-                return new(Array.AsReadOnly(rows), logical, work, wire, 0, 0, TimeSpan.Zero);
+                return new(Array.AsReadOnly(rows), logical, work, wire, 0, 0, TimeSpan.Zero)
+                    { CpuTime = TimeSpan.FromTicks(cpu * 10) };
             }
             else throw IsolatedCaptureWorker.CorruptAdmission("Wire.Tag");
             await evidence.WriteAsync(prefix, token).ConfigureAwait(false);

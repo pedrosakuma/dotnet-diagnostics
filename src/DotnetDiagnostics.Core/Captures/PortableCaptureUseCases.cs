@@ -1,12 +1,11 @@
 using System.Buffers.Binary;
-using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using DotnetDiagnostics.Core.Artifacts;
 
 namespace DotnetDiagnostics.Core.Captures;
 
-/// <summary>Bounded export from an ID-selected private store. Does not admit external SQLite files.</summary>
-public sealed class PortableCaptureUseCases
+/// <summary>Trusted-store export and explicitly configured isolated import of bounded capture bundles.</summary>
+public sealed partial class PortableCaptureUseCases
 {
     private static readonly string[] Features = ["independent-captures-v1", "stored-zip-v1", "index-sha256-v1"];
     private static readonly string[] MemberNames = [CapturePackage.Manifest, CapturePackage.Database, CapturePackage.Seal];
@@ -14,15 +13,18 @@ public sealed class PortableCaptureUseCases
     private readonly AuthorizePortableExport _authorize;
     private readonly PortableCaptureOptions _options;
     private readonly TimeProvider _clock;
+    private readonly PortableCaptureImportWorker? _importWorker;
 
     public PortableCaptureUseCases(SqliteCaptureStore store, AuthorizePortableExport authorizeExport,
-        PortableCaptureOptions? options = null, TimeProvider? timeProvider = null)
+        PortableCaptureOptions? options = null, TimeProvider? timeProvider = null,
+        PortableCaptureImportWorker? importWorker = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _authorize = authorizeExport ?? throw new ArgumentNullException(nameof(authorizeExport));
         _options = options ?? new();
         _options.Validate();
         _clock = timeProvider ?? TimeProvider.System;
+        _importWorker = importWorker;
     }
 
     public async Task<PortableExportResult> ExportAsync(CaptureExportRequest request, Stream destination,
@@ -178,14 +180,15 @@ public sealed class PortableCaptureUseCases
         return Task.CompletedTask;
     }
 
-    [SuppressMessage("Performance", "CA1822:Mark members as static",
-        Justification = "The frozen instance API reserves import for a future configured isolated worker; no fallback is implemented.")]
     public Task<PortableImportResult> ImportAsync(CaptureImportRequest request, Stream source, CaptureAccess access,
         AuthorizePortableImport authorize, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        throw CapturePackage.Error(CaptureErrorCode.UnsupportedFormat,
-            "ImportWorkerUnavailable: isolated import is not configured; no source data was processed.");
+        if (_importWorker is null)
+            throw CapturePackage.Error(CaptureErrorCode.UnsupportedFormat,
+                "ImportWorkerUnavailable: isolated import is not configured; no source data was processed.");
+        _importWorker.Validate();
+        return ImportCoreAsync(request, source, access, authorize, cancellationToken);
     }
 
     public Task<PortableImportResult> GetImportResultAsync(PortableOperationKey operation, CaptureAccess access,
@@ -195,9 +198,8 @@ public sealed class PortableCaptureUseCases
         CapturePackage.ValidateAccess(access);
         ArgumentNullException.ThrowIfNull(operation);
         CapturePackage.ValidateId(operation.Id);
-        try { _ = _store.PortableRoot(); }
+        try { return Task.FromResult(PortableCaptureStorage.ReadImportResult(_store, operation, access, _clock.GetUtcNow())); }
         catch (Exception ex) when (ex is not OperationCanceledException) { throw CapturePackage.Translate(ex); }
-        throw CapturePackage.Error(CaptureErrorCode.NotFound, "No import receipt exists in this exporter-only store.");
     }
 
     private async Task<PortableContentHash[]> MeasureSourceAsync(Source source, CancellationToken token)

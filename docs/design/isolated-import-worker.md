@@ -1,18 +1,18 @@
 # Isolated import worker: capability substrate
 
-This is an internal #1050 prerequisite, **not an importer or release gate**.
+This is the internal #1050 containment substrate, **not a release gate**.
 `IsolatedCaptureWorker.ProbeTrustedFixtureAsync` exercises a real child using only
 an internally generated SQLite fixture, a harmless unrelated marker, and a
-purpose-created same-UID helper. Public `PortableCaptureUseCases.ImportAsync`
-still rejects with `UnsupportedFormat/ImportWorkerUnavailable`. No archive
-admission, schema admission/rebuild, package-3 provenance, or publication is
-implemented here. The [approved portable contract](portable-capture-contract.md)
-and existing export APIs are unchanged.
+purpose-created same-UID helper. The [Core importer](portable-capture-import.md)
+uses separate admission and rebuild processes and requires explicit worker
+configuration; default import still rejects with
+`UnsupportedFormat/ImportWorkerUnavailable`. The
+[approved portable contract](portable-capture-contract.md) is unchanged.
 
 The separate [SQLite structure/scalar admission operation](sqlite-structure-admission.md)
 now uses this containment and supervisor for parent-owned staging databases.
 The capability probe below still uses only its internally generated fixtures;
-the admission operation does not enable public import.
+the admission operation alone does not authorize or publish an import.
 
 ## Containment and deployment boundary
 
@@ -28,7 +28,7 @@ Executable/library paths are trusted deployment configuration, never archive
 fields. They and the generated fixture must exist and reject symlink paths.
 The staging directory must be private (no group/other permissions). This slice
 does not package a worker into the CLI/MCP distributions: that integration and
-asset integrity/lifecycle remain necessary before enabling import.
+asset integrity/lifecycle remain host integration requirements.
 
 Before SQLite opens the fixture, the child:
 
@@ -37,18 +37,23 @@ Before SQLite opens the fixture, the child:
 - Installs child-only CPU/file/core/descriptor limits, disables dumps and sets
   `no_new_privs`. It inventories its own threads and requires exactly one.
 - Probes and actually installs Landlock (ABI 3 or later), allowing read-only
-  access only under private staging. Runtime libraries are loaded before
+  access only under private staging for source admission. A separate rebuild
+  profile permits regular-file writes only under its empty private output.
+  Runtime libraries are loaded before
   confinement, with no external database open.
 - Installs an architecture-checked, default-deny seccomp syscall allowlist.
   All process/thread creation and exec, sockets/network IPC, ptrace,
   process-VM operations, pidfds, signal access, namespace creation and
   io_uring are denied. No post-start CLR thread exception is necessary.
+- Sets parent-death `SIGKILL` before confinement and verifies parent identity
+  around that setting; the later filter denies changing it.
 
 Live probes require `EACCES` for 21 denied operations, including IPv4/IPv6/Unix/
 Netlink sockets, socket pairs, unrelated marker reads/writes, the helper's
 `/proc/<pid>/mem`, process-VM reads/writes, ptrace, pidfd access, signal probing,
 fork/vfork/clone/clone3, execve/execveat, unshare and io_uring. Only the test's
-own harmless helper/marker are targeted. File metadata visibility is not
+own harmless helper/marker are targeted. Both read-only and writable profiles
+run these denial probes. File metadata visibility is not
 claimed to be hidden by Landlock: SQLite needs path metadata calls, while
 contents/writes and device/control syscalls remain restricted.
 
@@ -91,7 +96,11 @@ resolution/priority changes or a real-time guarantee. RSS is a sampled stop
 threshold with possible overshoot, **not** a kernel hard-RSS/cgroup guarantee.
 Cancellation, overflow, timeout, malformed protocol and unsuccessful exit
 cannot produce capability success. Cleanup kills and waits for the child;
-process-tree killing is not relied upon for isolation.
+process-tree killing is not relied upon for isolation. Positively confirmed exit
+within the last valid sample's deadline ends the RSS window, allowing bounded
+parent-only evidence finalization. It does not extend wall or cancellation limits.
+Cleanup cancels and joins I/O before invoking the durable exit callback. Failure
+to confirm I/O completion within five seconds invalidates the operation.
 
 Deadline regression tests use explicit elapsed times to cover the wall-budget
 boundary with and without mandatory observations. A real stalled child may hit
@@ -100,9 +109,15 @@ capabilities. The live test does not assume scheduler delivery within 10 ms.
 
 ## Remaining integration
 
-Untrusted archive admission, typed snapshot/reference validation, full quality
-reconciliation, rebuild, destination publication/remapping and per-store
-cross-process validator admission remain separate work. Future
-hosts must package the actual trusted worker and enforce the whole import
-lifecycle/resource contract. The capability probe accepts no externally
-supplied inputs; the separate staging database validator does not authorize import.
+The Core pipeline now supplies archive and semantic admission, quality/origin
+preservation, separate trusted-schema rebuild, per-store validator admission and
+owner-bound publication. Before input it durably records native and parent-I/O
+identities (boot ID, PID namespace and PID). Cleanup requires confirmed
+termination/quiescence; an inaccessible or reused live PID conservatively retains
+storage. Persisted PIDs are never signalled. Pending parent I/O cannot be declared
+dead merely because the native parser exited.
+
+Hosts still must package/integrity-check the trusted assets and integrate their
+lifecycle. No CLI/MCP packaging or additional platform support is claimed.
+The capability probe accepts no externally supplied inputs; its success alone
+does not authorize an import or establish complete pipeline acceptance.

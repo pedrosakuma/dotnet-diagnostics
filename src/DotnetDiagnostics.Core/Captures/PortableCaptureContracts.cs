@@ -60,7 +60,13 @@ internal static class PortableBounds
     internal static void Check(string name, long observed, long maximum)
     {
         if (observed > maximum)
-            throw CapturePackage.Error(CaptureErrorCode.CapacityExceeded,
+        {
+            var error = CapturePackage.Error(CaptureErrorCode.CapacityExceeded,
                 FormattableString.Invariant($"{name}: observed={observed}, maximum={maximum}."));
+            error.Data["PortableLimit"] = name;
+            error.Data["PortableObserved"] = observed;
+            error.Data["PortableMaximum"] = maximum;
+            throw error;
+        }
     }
 }

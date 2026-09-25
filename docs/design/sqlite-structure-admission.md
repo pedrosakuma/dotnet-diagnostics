@@ -1,9 +1,10 @@
 # Isolated SQLite structure/scalar admission
 
 This internal #1050 milestone extends the [worker substrate](isolated-import-worker.md).
-It is **not full capture validation or import**. The public exporter/DTOs and
-`ImportAsync` gate are unchanged: public import still reports
-`UnsupportedFormat/ImportWorkerUnavailable`.
+This operation alone is **not full capture validation or import**. The
+[configured Core importer](portable-capture-import.md) composes it with archive,
+semantic, rebuild and publication checks. Default public import still reports
+`UnsupportedFormat/ImportWorkerUnavailable` without safe worker configuration.
 
 ## Entry point and trust boundary
 
@@ -40,7 +41,11 @@ exit observed within that window can conclude this reconciliation. Still
 unconfirmed at the exact deadline is unavailable; observation beyond it is a
 gap failure, even if exit is then confirmed. Exit-observation errors also fail
 closed. No host settings, priorities, validation retries or new time allowance
-are used.
+are used. A process-metric read failure can also reconcile a positively confirmed
+exit within that same original window; the read failure alone is not evidence.
+Confirmed exit ends only RSS observation, not wall/cancellation enforcement or
+the requirement to drain pending output. Cleanup joins cancelled I/O before
+receipt finalization; unconfirmed I/O retains staging and reservations.
 
 ## Actual validation
 
@@ -98,8 +103,14 @@ Wire consumption is capped at 512 MiB including framing; overhead may therefore
 reject otherwise compact evidence. There are no population-sized queues:
 backpressure is a caller-owned stream, one reusable 64 KiB frame buffer, and at
 most one reserved 8 MiB snapshot buffer for syntax/depth/token scanning, well
-below the 32 MiB retained-buffer ceiling. Subsequent typed graph allocation is
-not implemented or covered by this reservation.
+below the 32 MiB retained-buffer ceiling. Subsequent typed graph allocation uses
+the Core importer's separate conservative workspace checks, not this reservation.
+
+The internal request can select protocol 2 to append an int64 CPU-microsecond
+measurement to tag 5. It uses the child's own `getrusage`; actual wire accounting
+includes those eight bytes. The parent persists a normalized protocol-1 summary
+and returns CPU/wall/VM usage separately so the fresh rebuild consumes only the
+remaining per-entry budgets. This does not change the archive format.
 
 Frames may precede a later error. Even tag 5 is provisional until EOF, successful
 child exit, final watchdog/cancellation checks and output flush. Callers must
@@ -119,10 +130,9 @@ contained child. Tests cover schema/index/constraint changes, malformed scalars,
 UTF-8/FKs/ordinals, native corruption, resource boundaries, framing, cancellation
 and output failure, plus an actual exported database opened offline.
 
-Still incomplete: contract section 7 step 6 typed snapshot codecs, duplicate-key
-and semantic-reference/cycle validation; full step 7 quality/provenance
-reconciliation (only persisted population is matched here); and step 8 rebuild,
-ID/reference remapping and publication. Archive admission, per-store validator
-admission, destination reservations, host packaging and release/performance
-acceptance remain separate gates. A `SqliteAdmissionResult` is not evidence
-that the whole capture, import pipeline, or #1050 is complete.
+Contract section 7 steps 6-8 are composed by the separate Core importer:
+typed codecs and reference validation, quality/provenance checks, fresh-schema
+rebuild, remapping and publication. This low-level operation still matches only
+its documented structure/scalar populations. A `SqliteAdmissionResult` alone
+does not establish whole-capture validity. Host packaging and release/performance
+acceptance remain separate gates.

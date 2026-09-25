@@ -94,7 +94,8 @@ internal static class CaptureArtifactCodec
         return buffer.ToArray();
     }
 
-    internal static object Decode(string kind, int representationVersion, ReadOnlySpan<byte> bytes, int maxBytes)
+    internal static object Decode(string kind, int representationVersion, ReadOnlySpan<byte> bytes, int maxBytes,
+        bool portable = false)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxBytes);
         var codec = Find(kind);
@@ -107,6 +108,11 @@ internal static class CaptureArtifactCodec
         ValidateJson(bytes);
         var reader = new Utf8JsonReader(bytes, new JsonReaderOptions { MaxDepth = MaximumDepth });
         ReadHeader(ref reader, kind);
+        if (portable)
+        {
+            var validation = reader;
+            codec.ValidatePortable(ref validation);
+        }
         var result = codec.Read(ref reader);
         Expect(ref reader, JsonTokenType.EndObject);
         if (reader.Read()) throw new JsonException("Trailing snapshot data.");
@@ -114,6 +120,18 @@ internal static class CaptureArtifactCodec
     }
 
     internal static bool SupportsKind(string kind) => Codecs.ContainsKey(kind);
+
+    internal static void ValidateMethodIdentity(ReadOnlySpan<byte> bytes)
+    {
+        ValidateJson(bytes);
+        var reader = new Utf8JsonReader(bytes, new JsonReaderOptions { MaxDepth = MaximumDepth });
+        if (!reader.Read()) throw new JsonException("Missing stack method identity.");
+        var validation = reader;
+        SnapshotEncodingValidation.Validate(ref validation, typeof(Memory.MethodIdentity), Options, portable: true);
+        _ = JsonSerializer.Deserialize<Memory.MethodIdentity>(ref reader, Options)
+            ?? throw new JsonException("Null stack method identity.");
+        if (reader.Read()) throw new JsonException("Trailing stack method identity.");
+    }
 
     private static void ReadHeader(ref Utf8JsonReader reader, string kind)
     {
@@ -239,6 +257,7 @@ internal static class CaptureArtifactCodec
         internal abstract void Write(Utf8JsonWriter writer, object artifact, int maxBytes);
         internal abstract object Read(ref Utf8JsonReader reader);
         internal abstract void ValidatePayload(ref Utf8JsonReader reader);
+        internal abstract void ValidatePortable(ref Utf8JsonReader reader);
     }
 
     private sealed class Codec<T>() : Codec(typeof(T)) where T : class
@@ -253,6 +272,8 @@ internal static class CaptureArtifactCodec
         }
         internal override void ValidatePayload(ref Utf8JsonReader reader)
             => SnapshotEncodingValidation.Validate(ref reader, typeof(T), Options);
+        internal override void ValidatePortable(ref Utf8JsonReader reader)
+            => SnapshotEncodingValidation.Validate(ref reader, typeof(T), Options, portable: true);
     }
 
     private sealed class ThreadCodec() : Codec(typeof(ThreadSnapshotArtifact))
@@ -273,5 +294,7 @@ internal static class CaptureArtifactCodec
         }
         internal override void ValidatePayload(ref Utf8JsonReader reader)
             => SnapshotEncodingValidation.Validate(ref reader, typeof(ThreadSnapshotEncoding), Options);
+        internal override void ValidatePortable(ref Utf8JsonReader reader)
+            => SnapshotEncodingValidation.Validate(ref reader, typeof(ThreadSnapshotEncoding), Options, portable: true);
     }
 }

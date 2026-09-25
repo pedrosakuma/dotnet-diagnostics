@@ -11,7 +11,11 @@ internal sealed record PortableIndex(int ArchiveVersion, int RequiredArchiveRead
     string[] RequiredFeatures, string BundleId, DateTimeOffset CreatedUtc, PortableEntry[] Entries);
 internal sealed record PortableIndexSeal(int ArchiveVersion, long IndexBytes, string IndexSha256);
 internal sealed record PortableExportReceipt(string OwnerId, PortableOperationKey Operation, string Fingerprint,
-    string BundleId, DateTimeOffset CreatedUtc, DateTimeOffset BytesExpireUtc, long ReservationBytes, PortableExportResult? Result);
+    string BundleId, DateTimeOffset CreatedUtc, DateTimeOffset BytesExpireUtc, long ReservationBytes, PortableExportResult? Result,
+    PortableImportJournal? Import = null);
+internal sealed record PortableImportPlan(string EntryId, string CaptureId, string? SealHash);
+internal sealed record PortableImportJournal(PortableImportResult Result, PortableImportPlan[] Plans, bool Terminal,
+    PortableWorkerIdentity? Worker = null, PortableWorkerIdentity? ParentIo = null);
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(PortableIndex))]
@@ -31,7 +35,7 @@ internal sealed partial class PortableCaptureJson : JsonSerializerContext
         }
         catch (InvalidDataException ex)
         {
-            throw CapturePackage.Error(CaptureErrorCode.CapacityExceeded,
+            throw CapturePackage.Error(global::DotnetDiagnostics.Core.Captures.CaptureErrorCode.CapacityExceeded,
                 FormattableString.Invariant($"PortableJsonBytes: maximum={maximum}; bounded encoding rejected the payload."), ex);
         }
     }
