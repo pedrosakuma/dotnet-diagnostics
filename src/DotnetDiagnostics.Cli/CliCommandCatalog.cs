@@ -415,7 +415,7 @@ query options:
       --handle <id>             Session drill-down handle. Exactly one of --handle/--latest-of-kind is required.
       --latest-of-kind <kind>   Session query: alias for --handle — resolves to the most recently registered
                                 non-expired handle of this kind (e.g. cpu-sample); narrow with --pid.
-      --view <name>             Existing drill-down view, or records for a durable artifact.
+      --view <name>             Existing drill-down view, records, or children for a durable group.
       --trace-id <32-hex>       Session query: required for an activities handle with --view trace.
       --gc-handle <id>          Session query: GC capture for activities --view gc-overlay.
       --top <int>               Session query: cap ranked rows/groups; wins when --top-types is also set.

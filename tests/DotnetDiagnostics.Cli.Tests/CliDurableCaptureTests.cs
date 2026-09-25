@@ -47,6 +47,14 @@ public sealed class CliDurableCaptureTests : IDisposable
             "--artifact-id", artifactId, "--view", "summary");
         queryExit.Should().Be(1);
         query.GetProperty("error").GetProperty("kind").GetString().Should().Be("Forbidden");
+        var (childrenExit, children, _) = await HostAsync("query", "--capture-id", captureId,
+            "--artifact-id", artifactId, "--view", "children");
+        childrenExit.Should().Be(1);
+        children.GetProperty("error").GetProperty("kind").GetString().Should().Be("Forbidden");
+        var (handleChildrenExit, handleChildren) = await ExecuteAsync(services,
+            ["query", "--handle", captured.GetProperty("handle").GetString()!, "--view", "children", "--json"], session: true);
+        handleChildrenExit.Should().Be(1);
+        handleChildren.GetProperty("error").GetProperty("kind").GetString().Should().Be("Forbidden");
         var (recordsExit, records, _) = await HostAsync("query", "--capture-id", captureId,
             "--artifact-id", artifactId, "--view", "records");
         recordsExit.Should().Be(1);
@@ -85,13 +93,15 @@ public sealed class CliDurableCaptureTests : IDisposable
         query.GetProperty("data").GetProperty("records").GetArrayLength().Should().Be(0);
     }
 
-    [Fact]
-    public async Task ExplicitChildScopesPreserveSameKindArtifactIdentityAndExposeReferences()
+    [Theory]
+    [InlineData("sweep")]
+    [InlineData("counters")]
+    public async Task ExplicitChildScopesPreserveSameKindArtifactIdentityAndExposeReferences(string groupKind)
     {
         using var services = Services();
         var coordinator = CliDurableCaptures.For(services).Get(_root);
         var result = await CliCommands.PersistAsync(services,
-            new CliOptions { Command = "collect", Kind = "sweep", Persist = true, CaptureRoot = _root },
+            new CliOptions { Command = "collect", Kind = groupKind, Persist = true, CaptureRoot = _root },
             async ct =>
             {
                 foreach (var name in new[] { "first-window", "second-window" })
@@ -109,12 +119,12 @@ public sealed class CliDurableCaptureTests : IDisposable
         result.IsError.Should().BeFalse(result.Human);
         var capture = result.Capture!;
         capture.State.Should().Be(CaptureState.Sealed);
-        var root = capture.Artifacts.Single(artifact => artifact.Kind == "sweep");
+        var root = capture.Artifacts.Single(artifact => artifact.Name == $"collect {groupKind}");
         var composition = result.CaptureCompositions![root.ArtifactId];
         composition.Children.Should().HaveCount(2);
         composition.Children.Select(child => child.ArtifactId).Should().OnlyHaveUniqueItems();
         composition.Children.Select(child => child.Name).Should().BeEquivalentTo("first-window", "second-window");
-        result.CaptureViews![root.ArtifactId].Should().BeEmpty();
+        result.CaptureViews![root.ArtifactId].Should().Equal("children");
         var (showExit, show, _) = await HostAsync("captures", "show", "--capture-id", capture.CaptureId);
         showExit.Should().Be(0, show.ToString());
         var shownRoot = show.GetProperty("capture").GetProperty("artifacts").EnumerateArray()
@@ -125,6 +135,22 @@ public sealed class CliDurableCaptureTests : IDisposable
         recordsExit.Should().Be(1);
         records.GetProperty("error").GetProperty("detail").GetString().Should().Contain("record stream");
         using var fresh = Services();
+        var (groupExit, group) = await ExecuteAsync(fresh,
+            ["query", "--capture-id", capture.CaptureId, "--artifact-id", root.ArtifactId,
+                "--capture-root", _root, "--view", "children", "--json"]);
+        groupExit.Should().Be(0, group.ToString());
+        group.GetProperty("data").GetProperty("children").GetArrayLength().Should().Be(2);
+        var groupHandle = group.GetProperty("handle").GetString()!;
+        var (reuseExit, reuse) = await ExecuteAsync(fresh,
+            ["query", "--handle", groupHandle, "--view", "children", "--json"], session: true);
+        reuseExit.Should().Be(0, reuse.ToString());
+        reuse.GetProperty("data").GetProperty("children").EnumerateArray()
+            .Select(child => child.GetProperty("artifactId").GetString())
+            .Should().BeEquivalentTo(composition.Children.Select(child => child.ArtifactId));
+        var (wrongViewExit, wrongView) = await ExecuteAsync(fresh,
+            ["query", "--handle", groupHandle, "--view", "summary", "--json"], session: true);
+        wrongViewExit.Should().Be(1);
+        wrongView.GetProperty("error").GetProperty("kind").GetString().Should().Be("Forbidden");
         foreach (var child in composition.Children)
         {
             child.ParentArtifactId.Should().Be(root.ArtifactId);
@@ -133,6 +159,12 @@ public sealed class CliDurableCaptureTests : IDisposable
                     "--capture-root", _root, "--view", "summary", "--json"]);
             queryExit.Should().Be(0, query.ToString());
         }
+        await new SqliteCaptureStore(new CliCaptureRootProvider(_root)).DeleteAsync(
+            capture.CaptureId, CliCaptureRootProvider.CurrentAccess());
+        var (deletedExit, deleted) = await ExecuteAsync(fresh,
+            ["query", "--handle", groupHandle, "--view", "children", "--json"], session: true);
+        deletedExit.Should().Be(1);
+        deleted.GetProperty("error").GetProperty("kind").GetString().Should().BeOneOf("Deleted", "NotFound");
     }
 
     [Fact]

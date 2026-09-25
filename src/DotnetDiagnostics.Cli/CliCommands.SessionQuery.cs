@@ -187,6 +187,22 @@ internal static partial class CliCommands
                 await durableService.AuthorizeViewAsync(options.Handle, view,
                     CliCaptureRootProvider.CurrentAccess(), cancellationToken).ConfigureAwait(false);
                 options = options with { View = view };
+                if (lookup.Value.Artifact is DurableCaptureComposition composition)
+                {
+                    if (view != "children")
+                    {
+                        return Fail("Composition snapshots require the children view.", "Forbidden",
+                            "Use --view children, or select a child artifact ID and one of its advertised views.");
+                    }
+                    foreach (var child in composition.Children)
+                    {
+                        await durableService.DescribeArtifactViewsAsync(binding.CaptureId, child.ArtifactId,
+                            CliCaptureRootProvider.CurrentAccess(), cancellationToken).ConfigureAwait(false);
+                    }
+                    return BuildResult(DiagnosticResult.OkWithHandle(composition,
+                        "Durable capture children; select a child artifact ID for its offline views.",
+                        lookup.Value.Handle.Id, lookup.Value.Handle.ExpiresAt), SerializeQuery);
+                }
             }
             catch (CaptureStoreException ex)
             {

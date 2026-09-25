@@ -826,8 +826,10 @@ its ID, artifact IDs, quality, and supported offline views. Grouped workflows re
 their child artifacts in one logical capture, not unrelated packages.
 Collection output and `captures show` include `capture.artifacts[].composition` for
 group roots: bounded child references, parent IDs, admission/source-loss evidence,
-and completion errors/cancellation. Group roots have no snapshot dispatcher views;
-select a child artifact ID for its advertised offline views.
+and completion errors/cancellation. Query a group with `--view children`, including
+when reusing its temporary handle in the same session. This authorized composition
+view does not use a typed snapshot dispatcher; select a child artifact ID for its
+advertised offline views. Ordinary snapshots without views are not treated as groups.
 
 ```bash
 dotnet-diagnostics-cli collect --kind gc --pid 1234 --duration 10 \
