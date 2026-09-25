@@ -49,7 +49,6 @@ public sealed class IsolatedCaptureWorkerTests(ITestOutputHelper output) : IDisp
     [InlineData("unsupported", CaptureErrorCode.UnsupportedFormat, "PurposeCreatedMissingFacility")]
     [InlineData("flood", CaptureErrorCode.CapacityExceeded, "WorkerOutputBytes")]
     [InlineData("crash", CaptureErrorCode.StorageFailure, "Worker exited")]
-    [InlineData("stall", CaptureErrorCode.CapacityExceeded, "WorkerWallTime")]
     public async Task PurposeCreatedProtocolFailuresNeverProduceCapabilities(string mode, CaptureErrorCode code, string reason)
     {
         if (!SupportedPlatform) return;
@@ -66,6 +65,55 @@ public sealed class IsolatedCaptureWorkerTests(ITestOutputHelper output) : IDisp
             Assert.False(helper.HasExited);
         }
         finally { Stop(helper); }
+    }
+
+    [Fact]
+    public async Task StalledChildFailsClosedAtFirstWallOrObservationDeadline()
+    {
+        if (!SupportedPlatform) return;
+        var fixture = CreateFixture("stall.db");
+        using var helper = StartHelper();
+        var address = await helper.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        CaptureWorkerCapabilities? capabilities = null;
+        try
+        {
+            var error = await Assert.ThrowsAsync<CaptureStoreException>(async () =>
+            {
+                capabilities = await IsolatedCaptureWorker.ProbeTrustedFixtureAsync(
+                    Request(fixture, helper.Id, address!) with { Executable = Helper },
+                    new() { WallTime = TimeSpan.FromMilliseconds(100) });
+            });
+            Assert.Equal(CaptureErrorCode.CapacityExceeded, error.Code);
+            var reason = error.Message.Split(':', 2)[0];
+            Assert.True(reason is "WorkerWallTime" or "WorkerObservationGap", error.Message);
+            Assert.Null(capabilities);
+            Assert.False(helper.HasExited);
+            output.WriteLine($"Stalled child rejected by first watchdog decision: {reason}");
+        }
+        finally { Stop(helper); }
+    }
+
+    [Theory]
+    [InlineData(100, false)]
+    [InlineData(100, true)]
+    [InlineData(120000, false)]
+    [InlineData(120000, true)]
+    public void WallDeadlineIsEnforcedWithAndWithoutMandatoryObservations(int milliseconds, bool mandatory)
+    {
+        var limit = TimeSpan.FromMilliseconds(milliseconds);
+        var observations = new CaptureWorkerObservation(new() { WallTime = limit });
+        for (var elapsed = 0; elapsed <= milliseconds; elapsed += 10)
+        {
+            var now = TimeSpan.FromMilliseconds(elapsed);
+            observations.CheckWallTime(now);
+            if (mandatory) observations.Record(now, 1000, TimeSpan.Zero);
+        }
+        var expired = limit + TimeSpan.FromTicks(1);
+        observations.CheckGap(expired);
+        var error = Assert.Throws<CaptureStoreException>(() => observations.CheckWallTime(expired));
+        Assert.Equal(CaptureErrorCode.CapacityExceeded, error.Code);
+        Assert.StartsWith("WorkerWallTime:", error.Message);
+        Assert.Equal(mandatory ? TimeSpan.FromMilliseconds(10) : TimeSpan.Zero, observations.MaximumGap);
     }
 
     [Fact]

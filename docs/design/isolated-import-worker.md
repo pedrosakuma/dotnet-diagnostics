@@ -88,6 +88,11 @@ Cancellation, overflow, timeout, malformed protocol and unsuccessful exit
 cannot produce capability success. Cleanup kills and waits for the child;
 process-tree killing is not relied upon for isolation.
 
+Deadline regression tests use explicit elapsed times to cover the wall-budget
+boundary with and without mandatory observations. A real stalled child may hit
+either the wall deadline or the observation-gap guard first; both must reject
+capabilities. The live test does not assume scheduler delivery within 10 ms.
+
 ## Remaining integration
 
 Untrusted archive/header admission, full SQLite schema/data validation and

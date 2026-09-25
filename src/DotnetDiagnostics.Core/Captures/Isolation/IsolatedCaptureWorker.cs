@@ -154,7 +154,7 @@ internal static class IsolatedCaptureWorker
         void Check()
         {
             token.ThrowIfCancellationRequested();
-            if (wall.Elapsed > limits.WallTime) throw Limit("WorkerWallTime");
+            observations.CheckWallTime(wall.Elapsed);
             if (errors?.IsFaulted == true) errors.GetAwaiter().GetResult();
         }
         void Observe()
@@ -221,6 +221,10 @@ internal sealed class CaptureWorkerObservation(CaptureWorkerLimits limits)
     private TimeSpan? _last;
     internal long PeakRss { get; private set; }
     internal TimeSpan MaximumGap { get; private set; }
+    internal void CheckWallTime(TimeSpan elapsed)
+    {
+        if (elapsed > limits.WallTime) throw IsolatedCaptureWorker.Limit("WorkerWallTime");
+    }
     internal void CheckGap(TimeSpan now)
     {
         if (_last is not { } previous) return;
