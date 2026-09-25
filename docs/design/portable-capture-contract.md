@@ -230,18 +230,31 @@ required for imported package 3. Its exact logical data contract is:
 - `ImmediateSource`: source capture ID, six-axis format and three member hashes
   for this import, allowing differentiation from the first portable source.
 - `ArtifactMap`: one row per artifact:
-  `{originArtifactId, sourceArtifactId, localArtifactId}`. Each column is
+  `{originArtifactId, entryArtifactId, localArtifactId}`. Each column is
   bijective within this capture; never resolve a mapping across bundle entries.
+  `entryArtifactId` is the artifact's current `ArtifactId` in this archive entry's
+  manifest, not its recovery alias or an ID looked up in another store.
 - `ImportedUtc`: current destination import time. Local `CaptureInfo.CreatedUtc`
   remains source capture creation time, not upload time.
 
 For the first import, origin equals the archived source. For re-import, carry
 forward its already validated `Origin` and `OriginMemberHashes` unchanged;
-replace only `ImmediateSource`, `ImportedUtc`, and mapping destination IDs.
+replace `ImmediateSource`, `ImportedUtc`, and mapping entry/destination IDs.
+Resolve each preserved origin artifact ID through the source's validated
+`ArtifactMap` row whose `localArtifactId` equals the current entry artifact ID.
 Do not recursively embed previous manifests or append unbounded history.
 `Origin` is a bounded DTO, not arbitrary JSON or a nested `PortableSource`.
 Its aliases describe existing pre-portable recovery; they do not grow on import.
 Hashes establish linkage, not authentication of these claims.
+
+`CaptureArtifactInfo.SourceArtifactId` remains the existing intra-store recovery
+mechanism: a fixed original reference key used to resolve unchanged recovered
+snapshots within one capture. It is not the immediately preceding artifact ID.
+The proposed `PortableArtifactMapping.EntryArtifactId`, in contrast, identifies
+the immediate archived artifact across an import boundary, scoped by bundle
+entry. Never copy `EntryArtifactId` into `SourceArtifactId`: import preserves any
+existing recovery alias unchanged, and leaves it null when absent. Neither
+mechanism confers ownership, cross-store lookup permission or query authority.
 
 The local manifest's `CaptureId`, artifact IDs and `OwnerId` are new/current;
 name, group, timestamps, producer provenance and quality are preserved.
@@ -264,8 +277,17 @@ same IDs. Record/stack IDs scoped within an artifact remain stable.
 
 Use allowlisted codecs to rewrite semantic artifact references in composition
 children, parent `Sweep`/`GcActivities` metadata and any other registered
-reference-bearing representation. Resolve existing recovery aliases once using
-the source's own mapping, then map current source IDs to destination IDs.
+reference-bearing representation. Resolve each typed artifact reference in this
+deterministic order:
+
+1. Validate uniqueness across all current IDs and recovery aliases in this
+   entry's manifest first; any collision rejects, even if a direct ID matches.
+2. Resolve an exact current `ArtifactId`; only if absent, resolve an exact
+   `SourceArtifactId` recovery alias to that artifact's current ID. Missing or
+   ambiguous references reject; origin IDs and other entries are never fallbacks.
+3. Use that current ID as `EntryArtifactId` in this entry's bijection to obtain
+   the new local ID. Rewrite the typed reference to that local ID.
+
 Do not regex-replace ID-looking strings in user fields or stack names.
 Every child/parent/stack reference must resolve in the same capture under its
 declared representation. Unknown, missing, duplicate or ambiguous references
@@ -279,6 +301,28 @@ Destination snapshots must reference current local IDs directly, so repeated
 imports need no growing alias chain. Original recovery aliases remain provenance,
 not a way to override direct destination references. Freeze reference-remapping
 fixtures in #1050; no source package is consulted during later local drilldown.
+
+Acceptance example (symbols stand for valid opaque IDs; `H1`/`H2` identify
+different origin member-hash sets): a recovered source has capture/artifact
+`C/A`, recovery alias `R`, and a parent's child reference to `R`. Another independent
+source has the same `C/A/R` IDs but different evidence hashes. Both must import
+without cross-entry resolution:
+
+| Import and entry | Immediate archived capture/artifact | Preserved origin capture/artifact/hashes | EntryArtifactId | New local capture/artifact |
+|---|---|---|---|---|
+| First, E1 | C/A | C/A/H1 | A | D1/B1 |
+| First, E2 | C/A | C/A/H2 | A | D2/B2 |
+| Repeat, F1 | D1/B1 | C/A/H1 | B1 | N1/K1 |
+| Repeat, F2 | D1/B1 | C/A/H1 | B1 | N2/K2 |
+
+For the repeat, export D1 twice as distinct entries F1/F2 and import again.
+Both retain origin `C/A/H1`, record D1 and its actual sealed member hashes as
+`ImmediateSource`, and get independent destination IDs. The first child reference
+resolves `R -> A -> B1`; the repeated references resolve directly `B1 -> K1`
+and `B1 -> K2` within their respective entries. Every retained recovery alias
+stays `R`, never becomes `A` or `B1`; the origin artifact is `A`, not `R`.
+All destinations use the current importing owner. Colliding source IDs, duplicate
+labels and identical source bytes never merge entries or grant access.
 
 ## 5. Core API and lifecycle
 
@@ -296,7 +340,7 @@ public sealed record CaptureExportRequest(
 public sealed record CaptureImportRequest(
     PortableOperationKey Operation, long ArchiveBytes, string ArchiveSha256);
 public sealed record PortableArtifactMapping(
-    string SourceArtifactId, string OriginArtifactId, string LocalArtifactId);
+    string EntryArtifactId, string OriginArtifactId, string LocalArtifactId);
 public sealed record PortableEntryMapping(
     string EntryId, string? Label, string SourceCaptureId,
     string LocalCaptureId, IReadOnlyList<PortableArtifactMapping> Artifacts);
@@ -673,10 +717,13 @@ is not the same owner. Stdio transfer state belongs to that subprocess, never
 a global anonymous owner. Logs contain IDs/outcomes, not bearer values, chunk
 contents or source absolute paths.
 
-Follow the foundation's actual lifecycle gate: literal/explicit
-`module-bytes-read` **and** `investigation-export`; wildcard alone does not
-satisfy that explicit scope check. The implemented stdio principal currently
-contains only `root`, so it does **not** already pass this gate. #1052 must add
+Follow the foundation's actual lifecycle gate:
+`HasExplicitScope("module-bytes-read") && HasScope("investigation-export")`.
+Literal membership is required only for `module-bytes-read`; `root`/`*`
+satisfies the ordinary `investigation-export` check, but not the explicit
+`module-bytes-read` check. The proposed transfer gate retains this distinction.
+The implemented stdio principal currently contains only `root`, so it does
+**not** already pass this gate. #1052 must add
 a trusted local startup configuration for explicit capture-byte access:
 the verified stdio host constructs its local principal with literal
 `module-bytes-read` only when opted in, and explicitly configured sensitivity
