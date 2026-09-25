@@ -1,4 +1,3 @@
-using System.Runtime.CompilerServices;
 using System.Text.Json;
 using DotnetDiagnostics.Core.CaptureRecording;
 using DotnetDiagnostics.Core.Captures;
@@ -8,7 +7,16 @@ namespace DotnetDiagnostics.Core.UseCases;
 
 /// <summary>A fully materialized, offline snapshot and the metadata needed for host policy checks.</summary>
 public sealed record DurableCaptureOpenResult(
-    DiagnosticHandle Handle, IReadOnlyList<string> SupportedViews, CaptureInfo Capture, CaptureArtifactInfo Artifact);
+    DiagnosticHandle Handle, IReadOnlyList<string> SupportedViews, CaptureInfo Capture, CaptureArtifactInfo Artifact)
+{
+    /// <summary>Versioned reference metadata for a composed capture; select a child for typed drilldown.</summary>
+    public DurableCaptureComposition? Composition { get; init; }
+
+    /// <summary>Independent records were observed or explicitly declared by the producer.</summary>
+    public bool RecordStreamAvailable { get; init; }
+
+    public DurableCaptureRecordStreamInfo? RecordStream { get; init; }
+}
 
 /// <summary>Small association whose lifetime is bounded by the registered snapshot's lifetime.</summary>
 public sealed record DurableCaptureHandleBinding(
@@ -24,10 +32,11 @@ public sealed record DurableCaptureHandleBinding(
 /// </summary>
 public sealed class DurableCaptureUseCases
 {
+    private static readonly IReadOnlyList<string> RecordViews = Array.AsReadOnly<string>(["records"]);
     private readonly SqliteCaptureStore _store;
     private readonly IDiagnosticHandleStore _handles;
     private readonly CaptureStoreOptions _options;
-    private readonly ConditionalWeakTable<object, BoundHandle> _bindings = new();
+    private readonly DurableCaptureBindings _bindings;
 
     public DurableCaptureUseCases(SqliteCaptureStore store, IDiagnosticHandleStore handles, CaptureStoreOptions options)
     {
@@ -35,6 +44,56 @@ public sealed class DurableCaptureUseCases
         _handles = handles ?? throw new ArgumentNullException(nameof(handles));
         _options = options ?? throw new ArgumentNullException(nameof(options));
         options.Validate();
+        _bindings = new(handles);
+    }
+
+    /// <summary>Routes a child operation before callbacks start; the outer capture owns persistence.</summary>
+    public async Task<DiagnosticResult<T>> RunChildAsync<T>(string kind, string name,
+        Func<CancellationToken, Task<DiagnosticResult<T>>> collect, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(collect);
+        var child = CaptureRecordingContext.CreateChild(kind, name);
+        using var scope = child is null ? null : CaptureRecordingContext.Enter(child);
+        try
+        {
+            var result = await collect(cancellationToken).ConfigureAwait(false)
+                ?? throw new InvalidOperationException("Child collector returned no diagnostic result.");
+            if (result.Handle is { } handle && _handles.TryGetWithKind(handle) is { } lookup)
+                child?.ArtifactRegistered(lookup.Handle, lookup.Artifact);
+            child?.ReportCompletion(result.Error, result.Cancelled, result.Data);
+            return result;
+        }
+        catch (OperationCanceledException)
+        {
+            child?.ReportCompletion(null, cancelled: true);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            child?.ReportCompletion(new("ChildCollectionFailed", ex.Message), cancelled: false);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Wraps a heterogeneous host dispatcher. The required projection must expose its original
+    /// structured error/cancellation and typed payload, not serialize or reinterpret the host wrapper.
+    /// </summary>
+    public async Task<DurableCaptureOperationResult<T>> CaptureOperationAsync<T>(
+        string name, string kind, CaptureAccess access, Func<CancellationToken, Task<T>> collect,
+        Func<T, DiagnosticResult<object?>> describeResult, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(collect);
+        ArgumentNullException.ThrowIfNull(describeResult);
+        T? original = default;
+        var hasResult = false;
+        var outcome = await CaptureAsync<object?>(name, kind, access, async token =>
+        {
+            original = await collect(token).ConfigureAwait(false);
+            hasResult = true;
+            return describeResult(original);
+        }, cancellationToken).ConfigureAwait(false);
+        return new(original, hasResult, outcome);
     }
 
     public async Task<DiagnosticResult<T>> CaptureAsync<T>(
@@ -55,7 +114,9 @@ public sealed class DurableCaptureUseCases
         {
             var defaultId = writer.AddArtifact(kind, name);
             artifacts.Add(new(defaultId, kind, name));
-            var sink = new SqliteCaptureObservationSink(writer, defaultId, _options);
+            var pending = new DurableCaptureHandleBinding(writer.Reference.CaptureId, defaultId, Array.Empty<string>());
+            var sink = new SqliteCaptureObservationSink(writer, defaultId, kind, name, _options,
+                (handle, artifact) => _bindings.Set(handle, artifact, pending));
             try
             {
                 using (CaptureRecordingContext.Enter(sink))
@@ -80,45 +141,98 @@ public sealed class DurableCaptureUseCases
             if (result.Handle is { } returnedHandle && _handles.TryGetWithKind(returnedHandle) is { } lookup)
                 sink.ArtifactRegistered(lookup.Handle, lookup.Artifact);
             var retained = sink.Finish();
-            var matching = retained.Artifacts.Count(a => a.Kind == kind);
-            foreach (var registered in retained.Artifacts)
+            var snapshots = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var node in retained.Nodes)
             {
-                try
+                if (node.ArtifactId != defaultId) artifacts.Add(new(node.ArtifactId, node.Kind, node.Name));
+                var hasChildren = retained.Nodes.Any(child => child.ParentArtifactId == node.ArtifactId);
+                var matching = node.Artifacts.Count(a => a.Kind == node.Kind);
+                foreach (var registered in node.Artifacts)
                 {
-                    var id = matching == 1 && registered.Kind == kind
-                        ? defaultId : writer.AddArtifact(registered.Kind, registered.Kind);
-                    if (id != defaultId) artifacts.Add(new(id, registered.Kind, registered.Kind));
-                    var process = result.ResolvedProcess;
-                    var provenance = new CaptureArtifactProvenance(
-                        ProcessId: registered.Handle.ProcessId > 0 ? registered.Handle.ProcessId : null,
-                        ProducingTool: registered.Handle.ProducingTool,
-                        OriginalHandleOrigin: registered.Handle.Origin.ToString(),
-                        RuntimeName: process?.ProcessId == registered.Handle.ProcessId ? process.Runtime.ToString() : null,
-                        RuntimeVersion: process?.ProcessId == registered.Handle.ProcessId ? process.RuntimeVersion : null);
-                    writer.SetArtifactProvenance(id, provenance);
-                    var artifactIndex = artifacts.FindIndex(a => a.ArtifactId == id);
-                    artifacts[artifactIndex] = artifacts[artifactIndex] with { Provenance = provenance };
-                    WriteSnapshot(writer, id, registered.Kind, registered.Artifact);
+                    try
+                    {
+                        var id = matching == 1 && registered.Kind == node.Kind && !hasChildren
+                            ? node.ArtifactId : writer.AddArtifact(registered.Kind, registered.Kind);
+                        if (id != node.ArtifactId) artifacts.Add(new(id, registered.Kind, registered.Kind));
+                        var process = result.ResolvedProcess;
+                        var provenance = new CaptureArtifactProvenance(
+                            ProcessId: registered.Handle.ProcessId > 0 ? registered.Handle.ProcessId : null,
+                            ProducingTool: registered.Handle.ProducingTool,
+                            OriginalHandleOrigin: registered.Handle.Origin.ToString(),
+                            RuntimeName: process?.ProcessId == registered.Handle.ProcessId ? process.Runtime.ToString() : null,
+                            RuntimeVersion: process?.ProcessId == registered.Handle.ProcessId ? process.RuntimeVersion : null);
+                        writer.SetArtifactProvenance(id, provenance);
+                        var artifactIndex = artifacts.FindIndex(a => a.ArtifactId == id);
+                        artifacts[artifactIndex] = artifacts[artifactIndex] with { Provenance = provenance };
+                        WriteSnapshot(writer, id, registered.Kind, registered.Artifact, id == node.ArtifactId ? node : null);
+                        snapshots.Add(id);
+                        var views = SupportedViews(registered.Kind, registered.Artifact,
+                            id == node.ArtifactId && node.RecordStreamAvailable);
+                        _bindings.Set(registered.Handle, registered.Artifact,
+                            new(writer.Reference.CaptureId, id, views) { Artifact = artifacts[artifactIndex] });
+                    }
+                    catch (Exception ex) when (IsPersistenceException(ex))
+                    {
+                        persistenceFailure ??= ex;
+                    }
                 }
-                catch (Exception ex) when (IsPersistenceException(ex))
+
+                if (node.Artifacts.Length > 1 || node.Artifacts.Length == 1 && (matching != 1 || hasChildren))
+                    persistenceFailure ??= new NotSupportedException(
+                        "Each collection needs an explicit child scope; an aggregate cannot own ambiguous child snapshots.");
+                if (!hasChildren && node.Artifacts.Length == 0)
                 {
-                    persistenceFailure ??= ex;
+                    var data = node.ArtifactId == defaultId ? (object?)result.Data : node.Result;
+                    try
+                    {
+                        if (data is not null)
+                        {
+                            WriteSnapshot(writer, node.ArtifactId, node.Kind, data, node);
+                            snapshots.Add(node.ArtifactId);
+                        }
+                        else if (node.Error is null && !node.Cancelled && !result.IsError && !result.Cancelled)
+                            throw new NotSupportedException(
+                                $"Capture kind '{node.Kind}' returned neither a registered snapshot nor supported typed data.");
+                    }
+                    catch (Exception ex) when (IsPersistenceException(ex)) { persistenceFailure ??= ex; }
                 }
             }
 
             if (retained.Overflow)
                 persistenceFailure ??= new CaptureStoreException(CaptureErrorCode.CapacityExceeded,
                     "Registered artifact count exceeded MaxArtifacts; capture is incomplete.");
-            if (retained.Artifacts.Length > 1 || retained.Artifacts.Length == 1 && matching != 1)
-                persistenceFailure ??= new NotSupportedException(
-                    "Composite capture wrappers require explicit child scopes and reference metadata. " +
-                    "Retained children require explicit recovery; use individual captures instead.");
-            if (retained.Artifacts.Length == 0)
+            foreach (var node in Enumerable.Reverse(retained.Nodes))
             {
-                if (result.Data is { } data) WriteSnapshot(writer, defaultId, kind, data);
-                else if (!result.IsError && !result.Cancelled) throw new NotSupportedException(
-                    $"Capture kind '{kind}' returned neither a registered snapshot nor supported typed data.");
+                if (!retained.Nodes.Any(child => child.ParentArtifactId == node.ArtifactId)) continue;
+                var descendants = Descendants(retained.Nodes, node.ArtifactId);
+                var composition = new DurableCaptureComposition(descendants.Select(child => new DurableCaptureChild(
+                    child.ArtifactId, child.Kind, child.Name, child.ParentArtifactId!, child.Offered, child.Accepted,
+                    child.SourceRejected, child.Sources, child.SourceReportsRejected, child.Error, child.Cancelled,
+                    snapshots.Contains(child.ArtifactId))).ToArray());
+                try
+                {
+                    var encoded = DurableCaptureCompositionCodec.Encode(node.Kind, composition, _options.MaxSnapshotBytes);
+                    writer.SetSnapshot(node.ArtifactId, DurableCaptureSnapshotMetadata.Version,
+                        DurableCaptureSnapshotMetadata.Encode(node.Kind, DurableCaptureCompositionCodec.SnapshotVersion,
+                            encoded, DurableCaptureSnapshotMetadata.Stream(node), _options.MaxSnapshotBytes));
+                    snapshots.Add(node.ArtifactId);
+                }
+                catch (Exception ex) when (IsPersistenceException(ex)) { persistenceFailure ??= ex; }
             }
+            foreach (var node in retained.Nodes)
+            {
+                if (snapshots.Contains(node.ArtifactId)) continue;
+                try
+                {
+                    writer.SetSnapshot(node.ArtifactId, DurableCaptureSnapshotMetadata.Version,
+                        DurableCaptureSnapshotMetadata.Encode(node.Kind, 0, "{}"u8,
+                            DurableCaptureSnapshotMetadata.Stream(node), _options.MaxSnapshotBytes));
+                }
+                catch (Exception ex) when (IsPersistenceException(ex)) { persistenceFailure ??= ex; }
+            }
+            if (retained.Nodes.Any(node => node.Error is not null || node.Cancelled))
+                result = result with { Error = result.Error ?? new DiagnosticError("CaptureChildIncomplete",
+                    "One or more capture children failed or were cancelled; explicit recovery is required.") };
 
             if (persistenceFailure is null && !result.IsError && !result.Cancelled &&
                 !cancellationToken.IsCancellationRequested)
@@ -193,37 +307,106 @@ public sealed class DurableCaptureUseCases
         CaptureAccess access, CancellationToken cancellationToken = default)
     {
         using var reader = await _store.OpenAsync(captureId, access, cancellationToken).ConfigureAwait(false);
+        var materialized = DecodeArtifact(reader, artifactId);
+        var artifact = materialized.Artifact;
+        var decoded = materialized.Snapshot
+            ?? throw new CaptureStoreException(CaptureErrorCode.UnsupportedFormat, "Artifact has no supported compatibility snapshot.");
+        cancellationToken.ThrowIfCancellationRequested();
+        // Stored paths and PIDs are provenance, never an instruction to reattach to a process or file.
+        var handle = _handles.RegisterWithMetadata(artifact.Provenance?.ProcessId ?? 0,
+            materialized.Composition is null ? artifact.Kind : DurableCaptureCompositionCodec.HandleKind,
+            decoded, TimeSpan.FromMinutes(30),
+            evictWhenProcessExits: false, origin: HandleOrigin.Imported,
+            producingTool: artifact.Provenance?.ProducingTool);
+        var binding = new DurableCaptureHandleBinding(captureId, artifactId, materialized.Views) { Artifact = artifact };
+        _bindings.Set(handle, decoded, binding);
+        return new(handle, materialized.Views, reader.Info, artifact)
+        {
+            Composition = materialized.Composition,
+            RecordStreamAvailable = materialized.RecordsAvailable,
+            RecordStream = materialized.Stream,
+        };
+    }
+
+    /// <summary>Validates offline views without registering or retaining a diagnostic handle.</summary>
+    public async Task<IReadOnlyList<string>> DescribeArtifactViewsAsync(string captureId, string artifactId,
+        CaptureAccess access, CancellationToken cancellationToken = default)
+    {
+        using var reader = await _store.OpenAsync(captureId, access, cancellationToken).ConfigureAwait(false);
+        var artifact = DecodeArtifact(reader, artifactId);
+        cancellationToken.ThrowIfCancellationRequested();
+        return artifact.Views;
+    }
+
+    private DecodedCaptureArtifact DecodeArtifact(CaptureReader reader, string artifactId)
+    {
         var artifact = reader.Info.Artifacts.FirstOrDefault(a => a.ArtifactId == artifactId)
             ?? throw new CaptureStoreException(CaptureErrorCode.NotFound, "Capture artifact was not found.");
-        var snapshot = reader.ReadSnapshot(artifactId)
-            ?? throw new CaptureStoreException(CaptureErrorCode.UnsupportedFormat, "Artifact has no supported compatibility snapshot.");
-        object decoded;
+        var snapshot = reader.ReadSnapshot(artifactId);
+        object? decoded;
         IReadOnlyList<string> views;
+        DurableCaptureComposition? composition = null;
+        DurableCaptureRecordStreamInfo? stream = null;
+        var recordsAvailable = false;
         try
         {
-            decoded = CaptureArtifactCodec.Decode(artifact.Kind, snapshot.Version, snapshot.Utf8Json.Span, _options.MaxSnapshotBytes);
-            views = Array.AsReadOnly(CaptureArtifactCodec.GetSupportedSnapshotViews(artifact.Kind, decoded).ToArray());
+            if (snapshot?.Version == DurableCaptureSnapshotMetadata.Version)
+            {
+                var metadata = DurableCaptureSnapshotMetadata.Decode(artifact.Kind, snapshot, _options.MaxSnapshotBytes);
+                snapshot = metadata.Snapshot;
+                stream = metadata.Stream;
+            }
+            recordsAvailable = stream?.Available == true || HasRecords(reader, artifactId);
+            if (snapshot is null || snapshot.Version == 0)
+            {
+                decoded = null;
+                views = recordsAvailable ? RecordViews : Array.Empty<string>();
+            }
+            else if (snapshot.Version == DurableCaptureCompositionCodec.SnapshotVersion)
+            {
+                composition = DurableCaptureCompositionCodec.Decode(artifact.Kind, artifactId, snapshot, reader.Info, _options);
+                decoded = composition;
+                views = recordsAvailable ? RecordViews : Array.Empty<string>();
+            }
+            else
+            {
+                decoded = CaptureArtifactCodec.Decode(artifact.Kind, snapshot.Version, snapshot.Utf8Json.Span, _options.MaxSnapshotBytes);
+                views = SupportedViews(artifact.Kind, decoded, recordsAvailable);
+            }
         }
         catch (Exception ex) when (IsPersistenceException(ex))
         {
             throw new CaptureStoreException(CaptureErrorCode.UnsupportedFormat,
                 "Capture snapshot cannot be safely reopened: " + ex.Message, ex);
         }
-        cancellationToken.ThrowIfCancellationRequested();
-        // Stored paths and PIDs are provenance, never an instruction to reattach to a process or file.
-        var handle = _handles.RegisterWithMetadata(artifact.Provenance?.ProcessId ?? 0,
-            artifact.Kind, decoded, TimeSpan.FromMinutes(30),
-            evictWhenProcessExits: false, origin: HandleOrigin.Imported,
-            producingTool: artifact.Provenance?.ProducingTool);
-        var binding = new DurableCaptureHandleBinding(captureId, artifactId, views) { Artifact = artifact };
-        _bindings.Add(decoded, new(handle.Id, binding));
-        return new(handle, views, reader.Info, artifact);
+        return new(artifact, decoded, views, composition, stream, recordsAvailable);
     }
 
     public async Task<CaptureRecordPage> QueryRecordsAsync(string captureId, CaptureRecordQuery query,
         CaptureAccess access, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(query);
         using var reader = await _store.OpenAsync(captureId, access, cancellationToken).ConfigureAwait(false);
+        if (!HasRecords(reader, query.ArtifactId))
+        {
+            var artifact = reader.Info.Artifacts.FirstOrDefault(a => a.ArtifactId == query.ArtifactId)
+                ?? throw new CaptureStoreException(CaptureErrorCode.NotFound, "Capture artifact was not found.");
+            var snapshot = reader.ReadSnapshot(query.ArtifactId);
+            bool available;
+            try
+            {
+                available = snapshot?.Version == DurableCaptureSnapshotMetadata.Version &&
+                    DurableCaptureSnapshotMetadata.Decode(artifact.Kind, snapshot, _options.MaxSnapshotBytes).Stream.Available;
+            }
+            catch (Exception ex) when (IsPersistenceException(ex))
+            {
+                throw new CaptureStoreException(CaptureErrorCode.UnsupportedFormat,
+                    "Record stream metadata cannot be safely read: " + ex.Message, ex);
+            }
+            if (!available)
+                throw new CaptureStoreException(CaptureErrorCode.UnsupportedFormat,
+                    "This artifact has no declared or retained record stream. Use its supported snapshot views instead.");
+        }
         return reader.Query(query);
     }
 
@@ -234,8 +417,7 @@ public sealed class DurableCaptureUseCases
         => _store.RecoverAsync(captureId, access, cancellationToken);
 
     public DurableCaptureHandleBinding? LookupBinding(string handle)
-        => _handles.TryGetWithKind(handle) is { } lookup &&
-            _bindings.TryGetValue(lookup.Artifact, out var bound) && bound.HandleId == handle ? bound.Binding : null;
+        => _bindings.Lookup(handle);
 
     /// <summary>Revalidates ownership and deletion on every query; materialization does not grant access.</summary>
     public async Task<DurableCaptureHandleBinding> AuthorizeHandleAsync(string handle, CaptureAccess access,
@@ -243,6 +425,9 @@ public sealed class DurableCaptureUseCases
     {
         var binding = LookupBinding(handle)
             ?? throw new CaptureStoreException(CaptureErrorCode.NotFound, "Durable handle is unknown or has expired.");
+        if (binding.Artifact is null)
+            throw new CaptureStoreException(CaptureErrorCode.Incomplete,
+                "Durable handle has no successfully persisted artifact binding.");
         using var reader = await _store.OpenAsync(binding.CaptureId, access, cancellationToken).ConfigureAwait(false);
         if (!reader.Info.Artifacts.Any(a => a.ArtifactId == binding.ArtifactId))
             throw new CaptureStoreException(CaptureErrorCode.NotFound, "Capture artifact is no longer available.");
@@ -260,13 +445,42 @@ public sealed class DurableCaptureUseCases
         return binding;
     }
 
-    private void WriteSnapshot(CaptureWriter writer, string id, string kind, object artifact)
-        => writer.SetSnapshot(id, CaptureArtifactCodec.FormatVersion,
-            CaptureArtifactCodec.Encode(kind, artifact, _options.MaxSnapshotBytes));
+    private void WriteSnapshot(CaptureWriter writer, string id, string kind, object artifact, CaptureRecordingNode? node)
+    {
+        var encoded = CaptureArtifactCodec.Encode(kind, artifact, _options.MaxSnapshotBytes);
+        writer.SetSnapshot(id, DurableCaptureSnapshotMetadata.Version,
+            DurableCaptureSnapshotMetadata.Encode(kind, CaptureArtifactCodec.FormatVersion, encoded,
+                DurableCaptureSnapshotMetadata.Stream(node), _options.MaxSnapshotBytes));
+    }
+
+    private static System.Collections.ObjectModel.ReadOnlyCollection<string> SupportedViews(
+        string kind, object artifact, bool recordsAvailable)
+    {
+        var views = CaptureArtifactCodec.GetSupportedSnapshotViews(kind, artifact);
+        return Array.AsReadOnly(recordsAvailable ? views.Append("records").Distinct(StringComparer.Ordinal).ToArray() : views.ToArray());
+    }
+
+    private static bool HasRecords(CaptureReader reader, string artifactId)
+        => reader.Query(new(artifactId, PageSize: 1)).Records.Count != 0;
 
     private static bool IsPersistenceException(Exception ex)
         => ex is CaptureStoreException or IOException or InvalidDataException or UnauthorizedAccessException or JsonException or
-            NotSupportedException or ArgumentException or InvalidOperationException;
+            NotSupportedException or ArgumentException or InvalidOperationException or FormatException or OverflowException;
 
-    private sealed record BoundHandle(string HandleId, DurableCaptureHandleBinding Binding);
+    private static CaptureRecordingNode[] Descendants(CaptureRecordingNode[] nodes, string parent)
+    {
+        var ids = new HashSet<string>(StringComparer.Ordinal) { parent };
+        var result = new List<CaptureRecordingNode>();
+        foreach (var node in nodes)
+            if (node.ParentArtifactId is { } id && ids.Contains(id))
+            {
+                ids.Add(node.ArtifactId);
+                result.Add(node);
+            }
+        return result.ToArray();
+    }
+
+    private sealed record DecodedCaptureArtifact(CaptureArtifactInfo Artifact, object? Snapshot,
+        IReadOnlyList<string> Views, DurableCaptureComposition? Composition,
+        DurableCaptureRecordStreamInfo? Stream, bool RecordsAvailable);
 }

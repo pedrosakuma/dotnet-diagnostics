@@ -34,6 +34,8 @@ internal static class CliCommandExecution
 
     internal const string OneShotHandleNotice =
         "This handle is in-memory and valid only until this one-shot command exits; a later invocation cannot query it. Use --depth detail or --json for inline evidence, or run the originating command and query inside one 'session' REPL.";
+    private const string DurableHandleNotice =
+        "This temporary handle ends with the command. Reopen persisted evidence with query --capture-id <id> --artifact-id <id> --view <view> using the same --capture-root.";
 
     public static bool TryPrepareOneShot(
         IReadOnlyList<string> args,
@@ -288,7 +290,32 @@ internal static class CliCommandExecution
                 && executionOptions.Context == CliExecutionContext.OneShot
                 && result.Handle is not null)
             {
-                objectEnvelope["handleNotice"] = OneShotHandleNotice;
+                objectEnvelope["handleNotice"] = result.Capture is null ? OneShotHandleNotice : DurableHandleNotice;
+            }
+            if (envelope is JsonObject captureEnvelope && result.Capture is { } capture)
+            {
+                var captureNode = JsonSerializer.SerializeToNode(capture, JsonOptions)!;
+                if (captureNode["artifacts"] is JsonArray artifacts && result.CaptureViews is { } views)
+                {
+                    foreach (var artifact in artifacts.OfType<JsonObject>())
+                    {
+                        var id = artifact["artifactId"]!.GetValue<string>();
+                        if (views.TryGetValue(id, out var supported))
+                        {
+                            artifact["supportedViews"] = JsonSerializer.SerializeToNode(supported, JsonOptions);
+                            artifact["recordStreamAvailable"] = supported.Contains("records", StringComparer.Ordinal);
+                        }
+                        if (result.CaptureCompositions?.TryGetValue(id, out var composition) == true)
+                        {
+                            artifact["composition"] = JsonSerializer.SerializeToNode(composition, JsonOptions);
+                        }
+                        if (result.CaptureRecordStreams?.TryGetValue(id, out var stream) == true)
+                        {
+                            artifact["recordStream"] = JsonSerializer.SerializeToNode(stream, JsonOptions);
+                        }
+                    }
+                }
+                captureEnvelope["capture"] = captureNode;
             }
 
             await stdout.WriteLineAsync(JsonSerializer.Serialize(envelope, JsonOptions))
@@ -300,9 +327,33 @@ internal static class CliCommandExecution
                 && result.RenderHumanForBoundTarget is { } renderForBoundTarget
                 ? renderForBoundTarget(boundPid)
                 : result.Human;
+            if (result.Capture is { } capture)
+            {
+                human = string.Concat(human, Environment.NewLine, $"  capture: {capture.CaptureId} ({capture.State})",
+                    Environment.NewLine, $"  quality: persisted={capture.Quality.Persisted}, complete={capture.Quality.IsComplete}, incomplete={capture.Quality.IsIncomplete}");
+                foreach (var artifact in capture.Artifacts)
+                {
+                    var views = result.CaptureViews?.GetValueOrDefault(artifact.ArtifactId) ?? [];
+                    human = string.Concat(human, Environment.NewLine,
+                        $"  artifact: {artifact.ArtifactId} ({artifact.Kind}); offline views: {string.Join(", ", views)}");
+                    if (result.CaptureCompositions?.TryGetValue(artifact.ArtifactId, out var composition) == true)
+                    {
+                        foreach (var child in composition.Children)
+                        {
+                            human = string.Concat(human, Environment.NewLine,
+                                $"    child: {child.ArtifactId} ({child.Kind}); parent: {child.ParentArtifactId}; cancelled={child.Cancelled}; error={child.Error?.Kind ?? "none"}");
+                        }
+                    }
+                }
+                human = string.Concat(human, Environment.NewLine,
+                    capture.State == DotnetDiagnostics.Core.Captures.CaptureState.Sealed
+                        ? "  Reopen with query --capture-id <id> --artifact-id <id> --view <view> using the same --capture-root."
+                        : "  Unsealed evidence requires finalization or explicit captures recover --capture-id <id> before querying.");
+            }
             if (executionOptions.Context == CliExecutionContext.OneShot && result.Handle is not null)
             {
-                human = string.Concat(human, Environment.NewLine, "  note: ", OneShotHandleNotice);
+                human = string.Concat(human, Environment.NewLine, "  note: ",
+                    result.Capture is null ? OneShotHandleNotice : DurableHandleNotice);
             }
             human = result.RawHuman ? human : CliAnsi.ColorizeHuman(human, executionOptions.AnsiEnabled);
             await stdout.WriteLineAsync(human).ConfigureAwait(false);

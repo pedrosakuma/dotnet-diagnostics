@@ -3167,6 +3167,82 @@ evaluate inferred wait-for cycle candidates with `query_snapshot(view="deadlocks
 
 ---
 
+## Durable captures through the existing tools
+
+Collection remains **ephemeral by default**. Set `persist=true` on
+`collect_events`, `collect_sample`, `collect_batch`, `collect_thread_snapshot`,
+or `inspect_heap` to request a private SQLite capture under the operator's
+`MCP_ARTIFACT_ROOT`. No additional MCP tool is registered. A batch creates one
+package with child artifacts, not one package per child. The additive
+`capture` result field contains the capture ID, artifact IDs, state, and quality.
+Save these opaque IDs rather than an expiring in-memory handle.
+
+For a composed capture, select the parent artifact with `view="children"` (or
+omit `view`) to inspect bounded child references, completion errors, source
+quality, and snapshot availability. Select an individual child artifact for
+ordinary snapshot views or normalized records. Before decoding snapshots from
+a multi-artifact package, the host conservatively requires the current scopes
+for **every artifact** in that package, including on reused handles. A partial
+batch remains interrupted and requires explicit recovery before offline reads.
+
+`collect_events(kind="distributed_trace"|"replica_counters", persist=true)`
+forwards persistence to the actual collecting hosts. Its `data.remoteCaptures`
+contains host-qualified investigation IDs, display names, capture/artifact IDs,
+quality, state, and per-host errors. Capture IDs are **host-local**; save the
+investigation/host together with each ID and pass `investigationHandleId` when
+reopening or managing a remote package. The orchestrator does not create a
+misleading empty local package or claim that a multi-host capture is one file.
+Durable fan-out accepts at most 16 selected hosts. Failed or cancelled children
+retain confirmed references; an unconfirmed result explicitly directs you to
+inspect that host's inventory rather than assuming no capture was written.
+The returned stitched comparison itself remains an inline aggregate, not a
+separate persisted local snapshot.
+
+Persistence does not imply that every observation was retained. Read the capture
+quality counters, unknown source-loss indication, and per-producer notes. A
+normalized record stream and a bounded compatibility snapshot are different
+representations; an unavailable representation is not an empty successful query.
+`persist` does not enable raw trace export: `exportTrace=true` remains a separate
+opt-in. Dump files, raw traces, and captured native method bytes remain explicit
+file dependencies, not a promise of a self-contained historical native debugger.
+
+```text
+collect_events(kind="counters", durationSeconds=6, persist=true)
+get_bytes(kind="captures", captureAction="describe", captureId="<capture-id>")
+query_snapshot(captureId="<capture-id>", artifactId="<artifact-id>", view="summary")
+query_snapshot(captureId="<capture-id>", artifactId="<artifact-id>", view="records",
+               recordPageSize=100, afterRecordId=0)
+```
+
+Historical snapshot queries restore a fresh handle and support only retained,
+snapshot-only views. They never reattach to a stored live PID, even if the
+original provenance says `Live`. The same restriction, current owner checks,
+deletion checks, and current scopes apply to subsequent use of that handle.
+Raw snapshot Resources are not a durable-read bypass; use bounded
+`query_snapshot` projections instead.
+Durable responses account for both structured JSON and text JSON plus envelope
+overhead within a 1 MiB wire budget. Oversized inline collection results keep
+bounded capture references and return an explicit capacity error; use narrower
+queries. Record paging may return fewer than the requested number of rows.
+
+Ownership uses the authenticated principal's stable ownership key, not its
+display name or a stored bearer. Current explicit root/`*` authority permits
+cross-owner management; stored metadata never grants authority. Historical reads
+still require their producer/kind scopes and sensitive-view modifiers. Durable
+heap reads conservatively require both `heap-read` and `ptrace`, irrespective
+of a stored/imported origin; durable CPU/allocation reads require the producer's
+`eventpipe` scope as well as `investigation-export`. Generic
+heap records require explicit `sensitive-heap-read`, method-parameter records
+require explicit `sensitive-parameter-read`, and generic EventSource records
+require explicit `eventsource-any`. Missing principals fail closed.
+
+Ordinary queries are immutable and never recover automatically. A
+`CaptureStoreError` reports the store reason; interrupted/corrupt/future-format
+packages are not silently treated as empty data. Explicit recovery through
+`get_bytes` creates a **new derived package**, leaving the source untouched.
+The private capture namespace is excluded from generic artifact list/read/delete
+and the raw-artifact TTL reaper.
+
 ## `query_snapshot`
 
 The single **drilldown surface**. Every collector that captures a reusable
@@ -3187,6 +3263,11 @@ contract.
 | `latestOfKindProcessId` | `int?` | — | `latestOfKind` only: restrict resolution to handles registered for this OS process id. Omit to resolve the latest handle of the kind across all processes visible to this server — recommended when more than one process may hold handles of the same kind. |
 | `view` | `string?` | per-kind default | Kind-specific view (catalog below). Omit for the kind's default |
 | `topN` | `int?` | 50 heap/thread/collection, 25 off-CPU | Max entries in a ranked-list view |
+| `captureId`, `artifactId` | `string?` | — | Explicit durable selection. Supply both; mutually exclusive with `handle`, `latestOfKind`, and `latestOfKindProcessId`. Never falls back to latest/live evidence. |
+| `recordFrom`, `recordTo` | `DateTimeOffset?` | — | `view="records"` only: inclusive UTC time bounds. Existing `threadId` selects the retained thread ID. |
+| `recordCategory`, `recordName` | `string?` | — | `view="records"` only: exact typed filters; no SQL or expressions. |
+| `afterRecordId` | `long` | 0 | `view="records"` continuation from `nextAfterRecordId`. |
+| `recordPageSize` | `int` | 100 | `view="records"` row limit, 1..1000. The store and MCP wire budgets may return fewer rows; follow the returned continuation. |
 
 **View catalog (by handle kind):**
 
@@ -3412,6 +3493,14 @@ The single byte-fetch entrypoint dispatches on a `kind` discriminator:
   `MCP_ARTIFACT_ROOT`; `..`, absolute, and symlink escapes rejected with
   `InvalidArtifactPath`). Returns the deleted artifact's metadata. **Requires the
   literal `delete-artifact` scope** in addition to `module-bytes-read`.
+- `kind: "captures"` — managed durable capture lifecycle, never database bytes:
+  `captureAction="list"` (default), `"describe"`, `"delete"`, or `"recover"`.
+  Describe/delete/recover require `captureId`; list uses `capturePageSize`
+  (default 25, maximum 100) and `afterCaptureId` from `nextAfterCaptureId`.
+  All require `investigation-export` plus the existing literal
+  `module-bytes-read`; deletion additionally requires literal `delete-artifact`.
+  Owner checks apply to every action. Recovery writes a derived package only.
+  No client-selected root, arbitrary SQL, or database path is accepted.
 
 Both branches share `offset` / `maxBytes` and return the same
 `ByteFetchEnvelope` documented below. Unknown `kind` returns a structured
@@ -3424,6 +3513,8 @@ Both branches share `offset` / `maxBytes` and return the same
 > **Artifact TTL reaper.** A background reaper prunes artifacts older than
 > `MCP_ARTIFACT_TTL_HOURS` (default 24h; `0`/negative disables it) so a sidecar doing
 > repeated WithHeap dumps does not fill `/tmp`. `kind="delete"` is the manual override.
+> Durable captures are excluded; use `kind="captures", captureAction="delete"`
+> for their explicit owner-checked lifecycle.
 
 ## `get_bytes(kind="module")`
 

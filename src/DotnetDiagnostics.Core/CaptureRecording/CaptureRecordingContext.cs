@@ -23,6 +23,18 @@ internal static class CaptureRecordingContext
     internal static void ArtifactRegistered(DiagnosticHandle handle, object artifact)
         => Current?.ArtifactRegistered(handle, artifact);
 
+    internal static ICaptureObservationSink? CreateChild(string kind, string name)
+        => Current?.CreateChild(kind, name);
+
+    internal static IDisposable EnterChild(string kind, string name)
+        => CreateChild(kind, name) is { } child ? Enter(child) : EmptyScope.Instance;
+
+    private sealed class EmptyScope : IDisposable
+    {
+        internal static EmptyScope Instance { get; } = new();
+        public void Dispose() { }
+    }
+
     private sealed class Scope(ICaptureObservationSink sink, Scope? previous) : IDisposable
     {
         internal ICaptureObservationSink Sink { get; } = sink;

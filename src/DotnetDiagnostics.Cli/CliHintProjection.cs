@@ -51,6 +51,7 @@ internal static class CliHintProjection
         ["inspect_dump"] = "inspect-heap",
         ["collect_process_dump"] = "dump",
         ["query_snapshot"] = "query",
+        ["capture_describe"] = "captures",
         ["query_heap_snapshot"] = "query",
         // Hints authored on the CLI side already use these verbs verbatim — keep them stable.
         ["collect"] = "collect",
@@ -60,6 +61,7 @@ internal static class CliHintProjection
         ["capabilities"] = "capabilities",
         ["get-bytes"] = "get-bytes",
         ["query"] = "query",
+        ["captures"] = "captures",
         ["session"] = "session",
         ["start_investigation"] = "investigate",
         ["export_investigation_summary"] = "export-summary",

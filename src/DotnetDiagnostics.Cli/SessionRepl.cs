@@ -72,6 +72,7 @@ internal sealed class SessionRepl
     // Set when the session itself launched the target (issue #365, `session --launch -- <app>`), so
     // the opening banner can explain the bound pid came from the launched child.
     private readonly bool _launchedTarget;
+    private CliOptions? _sessionOptions;
 
     /// <summary>Internal (not <c>private</c>) so <see cref="CheckTargetLiveness"/> is directly unit-testable
     /// against a freshly-constructed instance (issue #675) without going through the full <see cref="RunAsync"/>
@@ -91,7 +92,8 @@ internal sealed class SessionRepl
         TextWriter stderr,
         int? initialTargetPid,
         CancellationToken externalToken,
-        bool? interactiveSafetyOverride = null)
+        bool? interactiveSafetyOverride = null,
+        CliOptions? sessionOptions = null)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(artifactProvider);
@@ -99,7 +101,7 @@ internal sealed class SessionRepl
         ArgumentNullException.ThrowIfNull(stdout);
         ArgumentNullException.ThrowIfNull(stderr);
 
-        var repl = new SessionRepl(initialTargetPid, externalToken);
+        var repl = new SessionRepl(initialTargetPid, externalToken) { _sessionOptions = sessionOptions };
         return repl.LoopAsync(services, artifactProvider, stdin, stdout, stderr, interactiveSafetyOverride);
     }
 
@@ -360,7 +362,8 @@ internal sealed class SessionRepl
         TextWriter stderr,
         bool interactiveSafety)
     {
-        var tokens = Tokenize(line);
+        IReadOnlyList<string> tokens = Tokenize(line);
+        tokens = InheritCaptureOptions(tokens, _sessionOptions);
         if (!CliCommandExecution.TryPrepareSession(tokens, _targetPid, out var prepared, out var response))
         {
             await CliCommandExecution.WriteImmediateResponseAsync(response!, stdout, stderr).ConfigureAwait(false);
@@ -607,6 +610,32 @@ internal sealed class SessionRepl
             default:
                 return false;
         }
+
+    }
+
+    internal static IReadOnlyList<string> InheritCaptureOptions(IReadOnlyList<string> tokens, CliOptions? sessionOptions)
+    {
+        if (sessionOptions is null || tokens.Count == 0)
+        {
+            return tokens;
+        }
+        var parsed = CliOptions.Parse(tokens, out var error);
+        if (error is not null || parsed is null)
+        {
+            return tokens;
+        }
+        var result = tokens.ToList();
+        if (sessionOptions.Persist && !parsed.Persist && parsed.Command is "collect" or "inspect-heap")
+        {
+            result.Add("--persist");
+        }
+        if (sessionOptions.CaptureRoot is not null && parsed.CaptureRoot is null
+            && parsed.Command is "collect" or "inspect-heap" or "captures" or "query")
+        {
+            result.Add("--capture-root");
+            result.Add(sessionOptions.CaptureRoot);
+        }
+        return result;
     }
 
     /// <summary>
@@ -913,11 +942,17 @@ internal sealed class SessionRepl
           dump [...] --confirm            Write a process dump to disk.
           get-bytes --kind <k> [...]      Materialise a module or dump file to disk.
           query --handle <id> --view <v>  Re-render a collected handle under a different view.
+          captures list|show|delete|recover [...]
+                                          Manage durable local capture packages.
+          query --capture-id <id> --artifact-id <id> --view <v|records>
+                                          Query persisted evidence without live attachment.
           compare <a.json> <b.json> [...] Compare saved comparable snapshots.
           <command> --help                Show full options for a command.
           help                            Show this list.
           exit | quit                     Leave the session (Ctrl-D / EOF also exits).
         Event catalog query filters: --provider-filter <text>, --root-method-filter <event-name>.
+        collect/inspect-heap --persist retain evidence beyond the session; session --persist enables
+        inherited opt-in. --capture-root selects stable storage, independent of dump/export scratch.
         A bound target (shown as 'diag(pid <id>)>') is overridden by an explicit --pid on any command
         — except in a session started with --launch, where the target is fixed for the session's
         lifetime and 'target'/--pid cannot change it (exit to investigate a different process).

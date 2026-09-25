@@ -185,7 +185,8 @@ internal static class CliHost
             try
             {
                 return await SessionRepl.RunAsync(
-                    sessionHost.Services, artifactProvider, stdin, stdout, stderr, initialTargetPid, cancellationToken).ConfigureAwait(false);
+                    sessionHost.Services, artifactProvider, stdin, stdout, stderr, initialTargetPid, cancellationToken,
+                    sessionOptions: options).ConfigureAwait(false);
             }
             finally
             {
@@ -553,7 +554,10 @@ internal static class CliHost
 
             using var host = BuildHost(options);
             var ansiEnabled = !options.Json && CliAnsi.IsEnabled(stdout, forceAnsi: null);
-            var result = await CliCommands.RunColdStartStartupAsync(host.Services, options, target, coldCts.Token).ConfigureAwait(false);
+            var result = options.Persist
+                ? await CliCommands.PersistAsync(host.Services, options,
+                    ct => CliCommands.RunColdStartStartupAsync(host.Services, options, target, ct), coldCts.Token).ConfigureAwait(false)
+                : await CliCommands.RunColdStartStartupAsync(host.Services, options, target, coldCts.Token).ConfigureAwait(false);
             return await CliCommandExecution.WriteCompletedResultAsync(
                 result,
                 options,

@@ -6,6 +6,7 @@ using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Activities;
 using DotnetDiagnostics.Core.Bytes;
 using DotnetDiagnostics.Core.Capabilities;
+using DotnetDiagnostics.Core.Captures;
 using DotnetDiagnostics.Core.Collection;
 using DotnetDiagnostics.Core.Container;
 using DotnetDiagnostics.Core.Comparison;
@@ -46,6 +47,11 @@ namespace DotnetDiagnostics.Cli;
 /// </summary>
 internal sealed record CliCommandResult(bool IsError, bool Cancelled, object Envelope, string Human)
 {
+    public CaptureInfo? Capture { get; init; }
+    public IReadOnlyDictionary<string, IReadOnlyList<string>>? CaptureViews { get; init; }
+    public IReadOnlyDictionary<string, DurableCaptureComposition>? CaptureCompositions { get; init; }
+    public IReadOnlyDictionary<string, DurableCaptureRecordStreamInfo>? CaptureRecordStreams { get; init; }
+    internal Func<DiagnosticResult<object>>? CaptureProjection { get; init; }
     /// <summary>Drill-down handle published by the originating command (e.g. <c>collect</c>), or
     /// <c>null</c>. Surfaced by the <c>session</c> REPL so the user can <c>query --handle &lt;id&gt;</c>
     /// without re-collecting; meaningless (and unused) in the one-shot path where the process exits.</summary>
@@ -134,6 +140,12 @@ internal static partial class CliCommands
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(options);
 
+        if (options.Persist)
+        {
+            return await PersistAsync(services, options,
+                ct => RunAsync(services, options with { Persist = false }, ct), cancellationToken).ConfigureAwait(false);
+        }
+
         return options.Command switch
         {
             "docker-bootstrap" => await DockerBootstrapAsync(options, cancellationToken).ConfigureAwait(false),
@@ -144,6 +156,8 @@ internal static partial class CliCommands
             "inspect" => await InspectAsync(services, options, cancellationToken).ConfigureAwait(false),
             "inspect-heap" => await InspectHeapAsync(services, options, cancellationToken).ConfigureAwait(false),
             "dump" => await DumpAsync(services, options, cancellationToken).ConfigureAwait(false),
+            "captures" => await CapturesAsync(services, options, cancellationToken).ConfigureAwait(false),
+            "query" when options.CaptureId is not null => await QueryCaptureAsync(services, options, cancellationToken).ConfigureAwait(false),
             "query" => Query(),
             "get-bytes" => await GetBytesAsync(services, options, cancellationToken).ConfigureAwait(false),
             "compare" => await CompareAsync(options, cancellationToken).ConfigureAwait(false),

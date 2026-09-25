@@ -165,6 +165,42 @@ no trace dependency and does not make unsupported native/live views available.
   artifact. Do not silently persist an inline top-N response in place of its
   full retained backing artifact.
 
+## Observation hooks accompanying the codecs
+
+The recording layer complements, rather than replaces, the typed snapshots
+above. `CaptureRecordingContext` is invocation-scoped. Native callbacks capture
+their sink before processing begins; a disabled context performs no SQLite
+work. The sink receives interpreted scalar fields, not `TraceEvent` objects or
+an unrestricted runtime-payload stream.
+
+| Lane | Implemented observation families | Important evidence boundaries |
+|---|---|---|
+| Runtime events | Counter and meter readings, activity stops, exceptions, completed contention waits, GC collections/heap statistics/suspension phases, ThreadPool events and logs | Actual intervals and units survive. Filters and redaction precede recording. Snapshot ring eviction or top-N selection does not by itself erase an already recorded observation. Correlation and source-admission limits still apply. |
+| Specialized providers | DB, EventSource/catalog, networking, Kestrel, JIT, startup, requests, DATAS and CrashGuard | DB commands remain sanitized shapes. Network/Kestrel phase facts are not invented completion records. Catalog data is event metadata, not arbitrary payload content. CrashGuard separates observed exceptions from retained final evidence and exit inference. |
+| Samplers | EventPipe/ETW/perf CPU stacks, allocation ticks, native allocator/lock samples, off-CPU spans and admitted method-parameter invocations | Samples are not exhaustive execution/allocation histories. Existing parameter allowlists, redaction and capture limits remain effective. Scheduler censoring and unavailable source-loss counts remain explicit. |
+| Point-in-time projections | Thread, heap, requests-now and CPU-efficiency retained results | Rows use `snapshot.*` categories and are derived from retained snapshots. They do not represent a second observation stream, a complete object graph, or missing historical events. |
+
+The shared EventPipe runner reports its source's final loss count once.
+Independent EventPipe/trace backends report their own source; perf sources
+without a reliable count report unknown, not zero. Persistence admission,
+source loss and pre-existing snapshot retention are distinct populations.
+Counts from concurrent source sessions must not overwrite each other, and a
+single unknown contribution prevents an aggregate claim of known zero loss.
+
+These hooks do not remove source-side admission limits. For example,
+method-parameter collection still stops at its authorized capture limit,
+DATAS retains its existing admission semantics, and an activity's post-drain
+HTTP-destination enrichment remains part of its typed snapshot rather than
+retroactively rewriting an earlier occurrence. Bounded stack/payload projections
+report omitted fields; oversized records can still be rejected explicitly by
+the storage budget. A sealed package is not necessarily a complete capture.
+
+Composed operations additionally require child-stream routing and bounded
+parent/child outcome metadata. Merely entering one ambient scope around a
+concurrent sweep is not sufficient to associate observations with the right
+child artifact. Host integration must also enforce the snapshot-only view
+allowlist and current authorization on every reopened-handle query.
+
 See [resource boundedness](../resource-boundedness.md) for collector-specific
 caps and loss semantics. The codec preserves those limits and reported evidence;
-it does not remove them or claim that occurrence hooks listed here already exist.
+it does not remove them or turn retained projections into complete histories.

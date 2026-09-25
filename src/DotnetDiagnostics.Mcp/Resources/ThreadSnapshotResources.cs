@@ -25,9 +25,12 @@ public sealed class ThreadSnapshotResources
         "(SyncBlock) graph with owners + waiter counts, and optional ThreadPool counters/queues " +
         "when captured by the backend. It may be large; prefer bounded query_snapshot thread/lock pages for LLM use. Returns an error contents block when the handle is unknown " +
         "or expired.")]
-    public static string ReadSnapshot(IDiagnosticHandleStore handles, string handle)
+    public static string ReadSnapshot(IDiagnosticHandleStore handles, string handle,
+        Tools.DurableCaptureTools? durableCaptures = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(handle);
+        if (durableCaptures?.IsDurableHandle(handle) == true)
+            return Tools.DurableCaptureTools.ResourceDenial;
 
         var snapshot = handles.TryGet<ThreadSnapshotArtifact>(handle);
         if (snapshot is null)

@@ -441,6 +441,15 @@ internal static partial class CliCommands
         var human = RenderEnvelope(projected, renderData, renderErrorData: renderErrorData);
         return new CliCommandResult(projected.IsError, projected.Cancelled, projected, human)
         {
+            CaptureProjection = () => new DiagnosticResult<object>(projected.Summary, projected.Hints, projected.Error)
+            {
+                Data = projected.Data,
+                Signals = projected.Signals,
+                Handle = projected.Handle,
+                HandleExpiresAt = projected.HandleExpiresAt,
+                ResolvedProcess = projected.ResolvedProcess,
+                Cancelled = projected.Cancelled,
+            },
             Handle = projected.Handle,
             HandleExpiresAt = projected.HandleExpiresAt,
             RenderHumanForBoundTarget = boundPid => RenderEnvelope(
