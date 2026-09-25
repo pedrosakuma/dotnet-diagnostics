@@ -292,6 +292,6 @@ to every contributor and every agent on this repo.
 ## Things deliberately not in scope
 
 - **Modifying target source or deployment** — non-goal. Standard diagnostics work over the diagnostic socket; the explicitly requested method-parameter path may temporarily attach a profiler and ReJIT only its allowlisted methods.
-- **Persistent server-side state** — server stays stateless; investigation memory is portable JSON the agent persists externally (see issue [#10](https://github.com/pedrosakuma/dotnet-diagnostics/issues/10)).
+- **Persistent server-side investigation memory** — investigation memory remains portable JSON the agent persists externally (see issue [#10](https://github.com/pedrosakuma/dotnet-diagnostics/issues/10)). Opt-in SQLite evidence packages are a separate, explicit persistence feature: ordinary reads are immutable, recovery creates a derived package, and the generic artifact reaper must never enter the managed `captures/` namespace. See [`docs/design/durable-sqlite-storage-contract.md`](./docs/design/durable-sqlite-storage-contract.md).
 - **A web UI** — this is an MCP server; the UI is whatever MCP client the human uses.
 - **Replacing dotnet-monitor** — different goals. `dotnet-monitor` is rule-based collection for ops; we are interactive diagnosis for an LLM. They complement each other.

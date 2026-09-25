@@ -260,9 +260,9 @@ dedicated diagnostic job. **Full reference:** [`src/DotnetDiagnostics.BenchmarkD
 | `collect_events` | EventCounters/Meters and bounded EventPipe event families (GC, exceptions, activities, logs, JIT, networking, and more) |
 | `collect_sample` | CPU, off-CPU, managed/native allocation, and explicitly gated method-parameter capture |
 | `collect_batch` | Run several collect_sample/collect_events kinds concurrently against one resolved process in one call (eliminates the process-exit race of separate calls) |
-| `query_snapshot` | Re-project retained handles into call trees, diffs, histograms, events, roots, and other focused views |
+| `query_snapshot` | Query retained handles or durable captures through supported snapshot views, indexed records, and composition children |
 | `inspect_heap` | Live or dump heap walk with retained-type, root, retention-path, and async-state-machine drilldowns |
-| `get_bytes` | Materialize authorized module, PDB, dump, or trace bytes from a server-side artifact |
+| `get_bytes` | Materialize authorized artifact bytes or explicitly list, describe, recover, and delete durable captures |
 | `discover_azure` | Configuration-gated App Service, Container Apps, and AKS discovery |
 | `collect_process_dump` | Write a Mini / Triage / WithHeap / Full dump to disk |
 | `collect_thread_snapshot` | Managed thread states, stacks, SyncBlock lock graph, and deadlock evidence |
@@ -275,6 +275,25 @@ dedicated diagnostic job. **Full reference:** [`src/DotnetDiagnostics.BenchmarkD
 | `detach_from_pod` | Close an orchestrated investigation and release its transport resources |
 
 </details>
+
+### Durable evidence (opt-in)
+
+Supported MCP collectors accept `persist=true`; the CLI uses `--persist` and
+`--capture-root`. Private SQLite packages retain normalized evidence and compatible
+typed snapshots for analysis after target exit or server restart. Ordinary
+collection remains ephemeral when persistence is disabled. See the
+[MCP tool reference](./docs/tool-reference.md) and
+[CLI reference](./docs/cli-reference.md) for supported operations and offline views.
+
+Sampling, filtering, source loss, and storage caps remain explicit; a sealed
+package is not a promise of lossless acquisition. Raw trace retention stays opt-in,
+and SQLite does not make native-dependent queries self-contained. Current
+ownership and authorization still apply to historical reads.
+
+Packages require explicit deletion and are excluded from the raw-artifact TTL
+reaper. Ordinary reads never repair a package; explicit recovery creates a new
+derived package. Use a persistent volume when evidence must survive container or
+Pod replacement, and set an operator-owned retention policy.
 
 ---
 
