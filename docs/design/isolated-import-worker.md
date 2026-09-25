@@ -9,6 +9,11 @@ admission, schema admission/rebuild, package-3 provenance, or publication is
 implemented here. The [approved portable contract](portable-capture-contract.md)
 and existing export APIs are unchanged.
 
+The separate [SQLite structure/scalar admission operation](sqlite-structure-admission.md)
+now uses this containment and supervisor for parent-owned staging databases.
+The capability probe below still uses only its internally generated fixtures;
+the admission operation does not enable public import.
+
 ## Containment and deployment boundary
 
 The initial executable is a **single-threaded Linux x86-64 native worker**, not
@@ -95,9 +100,9 @@ capabilities. The live test does not assume scheduler delivery within 10 ms.
 
 ## Remaining integration
 
-Untrusted archive/header admission, full SQLite schema/data validation and
-rebuild, bounded row/JSON frames, destination publication/remapping and
-per-store cross-process validator admission remain separate work. Future
+Untrusted archive admission, typed snapshot/reference validation, full quality
+reconciliation, rebuild, destination publication/remapping and per-store
+cross-process validator admission remain separate work. Future
 hosts must package the actual trusted worker and enforce the whole import
-lifecycle/resource contract. The current launcher accepts no externally
-supplied archives or SQLite inputs and does not authorize import.
+lifecycle/resource contract. The capability probe accepts no externally
+supplied inputs; the separate staging database validator does not authorize import.

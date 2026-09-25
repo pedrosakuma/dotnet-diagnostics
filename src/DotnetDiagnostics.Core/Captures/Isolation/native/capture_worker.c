@@ -49,9 +49,21 @@ static int64_t (*sql_heap)(int64_t);
 static void *(*sql_malloc)(int);
 static void (*sql_free)(void *);
 static int (*sql_version)(void);
+static int (*sql_type)(sqlite3_stmt *, int);
+static int (*sql_bytes)(sqlite3_stmt *, int);
+static const void *(*sql_blob)(sqlite3_stmt *, int);
+static const unsigned char *(*sql_text)(sqlite3_stmt *, int);
+static int64_t (*sql_int64)(sqlite3_stmt *, int);
+static double (*sql_double)(sqlite3_stmt *, int);
+static int (*sql_bind_int64)(sqlite3_stmt *, int, int64_t);
+static int (*sql_reset)(sqlite3_stmt *);
+static int (*sql_status)(sqlite3_stmt *, int, int);
+static int admission_active;
+static void admission_error(const char *reason);
 
 static void unsupported(const char *reason)
 {
+    if (admission_active) admission_error(reason);
     fprintf(stdout, "UNSUPPORTED %s\n", reason);
     fflush(stdout);
     _exit(78);
@@ -85,6 +97,15 @@ static void load_sqlite(const char *path)
     LOAD(sql_malloc, "sqlite3_malloc");
     LOAD(sql_free, "sqlite3_free");
     LOAD(sql_version, "sqlite3_libversion_number");
+    LOAD(sql_type, "sqlite3_column_type");
+    LOAD(sql_bytes, "sqlite3_column_bytes");
+    LOAD(sql_blob, "sqlite3_column_blob");
+    LOAD(sql_text, "sqlite3_column_text");
+    LOAD(sql_int64, "sqlite3_column_int64");
+    LOAD(sql_double, "sqlite3_column_double");
+    LOAD(sql_bind_int64, "sqlite3_bind_int64");
+    LOAD(sql_reset, "sqlite3_reset");
+    LOAD(sql_status, "sqlite3_stmt_status");
 #undef LOAD
     require(sql_config(1) == 0, "SqliteSingleThreadUnavailable");
     sql_heap(32 * 1024 * 1024);
@@ -219,11 +240,15 @@ static int64_t instructions;
 static int interrupt_next;
 static int denied_authorizations;
 static sqlite3 *active;
+static int64_t instruction_limit = 200000000;
+static sqlite3_stmt *executing_statement;
+static int admission_authorize(int action, const char *first, const char *second);
 
 static int authorize(void *unused, int action, const char *first, const char *second,
     const char *database, const char *origin)
 {
     (void)unused; (void)second; (void)database; (void)origin;
+    if (admission_active) return admission_authorize(action, first, second);
     if (action == 21 || action == 33) return 0; /* SELECT / recursive SELECT */
     if (action == 20 && first != NULL && strcmp(first, "probe") == 0) return 0;
     if (configuring && action == 19 && first != NULL &&
@@ -235,18 +260,36 @@ static int authorize(void *unused, int action, const char *first, const char *se
 static int progress(void *unused)
 {
     (void)unused;
+    if (admission_active) {
+        if (executing_statement)
+            return instructions + sql_status(executing_statement, 4, 0) > instruction_limit;
+        instructions += 1000;
+        return instructions > instruction_limit;
+    }
     instructions += 1000;
     if (interrupt_next) sql_interrupt(active);
-    return instructions >= 200000000;
+    return instructions >= instruction_limit;
+}
+
+static int tracked_step(sqlite3_stmt *statement)
+{
+    if (!admission_active) return sql_step(statement);
+    executing_statement = statement;
+    int result = sql_step(statement);
+    executing_statement = NULL;
+    /* Charge short statements too: they may never reach a progress callback. */
+    instructions += sql_status(statement, 4, 1);
+    if (instructions > instruction_limit) admission_error("Limit.VmInstructions");
+    return result;
 }
 
 static int scalar(sqlite3 *db, const char *query)
 {
     sqlite3_stmt *statement = NULL;
     require(sql_prepare(db, query, -1, &statement, NULL) == 0, "SqlitePrepareFailed");
-    require(sql_step(statement) == 100, "SqliteStepFailed");
+    require(tracked_step(statement) == 100, "SqliteStepFailed");
     int result = sql_column_int(statement, 0);
-    require(sql_step(statement) == 101 && sql_finalize(statement) == 0, "SqliteFinishFailed");
+    require(tracked_step(statement) == 101 && sql_finalize(statement) == 0, "SqliteFinishFailed");
     return result;
 }
 
@@ -255,7 +298,7 @@ static void execute(sqlite3 *db, const char *query)
     sqlite3_stmt *statement = NULL;
     require(sql_prepare(db, query, -1, &statement, NULL) == 0, "SqliteConfigureFailed");
     int result;
-    do { result = sql_step(statement); } while (result == 100);
+    do { result = tracked_step(statement); } while (result == 100);
     require(result == 101 && sql_finalize(statement) == 0, "SqliteConfigureFailed");
 }
 
@@ -270,7 +313,7 @@ static void sql_denied(sqlite3 *db, const char *query)
     require((result == 23 || result == 1) && denied_authorizations > before, "SqliteAuthorizerNotEnforced");
 }
 
-static int probe_sqlite(const char *uri)
+static sqlite3 *open_configured(const char *uri)
 {
     /* URI is generated solely by the trusted Core launcher, never an archive. */
     sqlite3 *db = NULL;
@@ -297,6 +340,12 @@ static int probe_sqlite(const char *uri)
     require(scalar(db, "PRAGMA cache_size;") == -8192 && scalar(db, "PRAGMA mmap_size;") == 0,
         "SqliteCacheLimitUnavailable");
     configuring = 0;
+    return db;
+}
+
+static int probe_sqlite(const char *uri)
+{
+    sqlite3 *db = open_configured(uri);
     int value = scalar(db, "SELECT value FROM probe;");
     sql_denied(db, "ATTACH ':memory:' AS other;");
     sql_denied(db, "CREATE TABLE forbidden(value);");
@@ -314,11 +363,14 @@ static int probe_sqlite(const char *uri)
     return value;
 }
 
+#include "sqlite_admission.h"
+
 int main(int argc, char **argv)
 {
     extern char **environ;
     require(environ[0] == NULL, "WorkerEnvironmentNotEmpty");
-    if (argc != 9) unsupported("InvalidProbeArguments");
+    int admission = argc == 7 && strcmp(argv[6], "--admit") == 0;
+    if (!admission && argc != 9) unsupported("InvalidProbeArguments");
     for (int i = 1; i < argc; i++)
         require(strlen(argv[i]) <= 4096, "ProbeArgumentTooLong");
     require(strlen(argv[1]) == 32, "InvalidNonce");
@@ -334,8 +386,13 @@ int main(int argc, char **argv)
     fflush(stdout);
     /* The host starts mandatory RSS/time observation before releasing SQLite.
      * No externally supplied data is accepted by this capability-only slice. */
-    char go[4];
+    char go[3];
     require(read(STDIN_FILENO, go, sizeof(go)) == 3 && memcmp(go, "GO\n", 3) == 0, "HandshakeFailed");
+    if (admission) {
+        admission_active = 1;
+        admit_database(argv[4], argv[5]);
+        return 0;
+    }
     int probes = probe_denials(argv[5], atoi(argv[6]), (uintptr_t)strtoull(argv[7], NULL, 16), argv[8]);
     int value = probe_sqlite(argv[4]);
     printf("RESULT 1 %s %d %d %d %lld\n", argv[1], probes, value, sql_version(), (long long)instructions);

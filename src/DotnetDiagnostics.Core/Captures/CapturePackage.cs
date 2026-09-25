@@ -213,7 +213,7 @@ internal static class CapturePackage
         manifest.PackageVersion, manifest.SchemaVersion, manifest.RecordVersion,
         manifest.IndexVersion, manifest.WriterVersion, manifest.ReaderVersion);
 
-    private static bool IsSupportedFormat(CaptureFormatVersions format) =>
+    internal static bool IsSupportedFormat(CaptureFormatVersions format) =>
         format == CurrentFormat || format == PreviousFormat;
 
     internal static void ValidateProvenance(CaptureArtifactProvenance provenance)
