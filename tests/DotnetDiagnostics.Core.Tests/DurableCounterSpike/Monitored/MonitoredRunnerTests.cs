@@ -9,6 +9,10 @@ using Xunit.Abstractions;
 
 namespace DotnetDiagnostics.Core.Tests.DurableCounterSpike.Monitored;
 
+// Descriptor fixtures inventory this process, including files owned by other tests.
+// Concurrent SQLite writers would become unrelated charged resources.
+[Collection(nameof(MonitoredRunnerTests))]
+[CollectionDefinition(nameof(MonitoredRunnerTests), DisableParallelization = true)]
 public sealed partial class MonitoredRunnerTests : IDisposable
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
