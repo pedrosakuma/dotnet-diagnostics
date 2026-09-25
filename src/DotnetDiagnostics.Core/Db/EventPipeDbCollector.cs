@@ -1,4 +1,5 @@
 using System.Diagnostics.Tracing;
+using DotnetDiagnostics.Core.CaptureRecording;
 using Microsoft.Diagnostics.NETCore.Client;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Extensions.Logging;
@@ -33,6 +34,7 @@ public sealed class EventPipeDbCollector : IDbCollector
         int intervalSeconds = 1,
         CancellationToken cancellationToken = default)
     {
+        var observationSink = CaptureRecordingContext.Current;
         if (duration <= TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(nameof(duration), "Duration must be positive.");
@@ -54,7 +56,7 @@ public sealed class EventPipeDbCollector : IDbCollector
             .ConfigureAwait(false);
 
         var startedAt = DateTimeOffset.UtcNow;
-        var state = new DbEventAggregationState();
+        var state = new DbEventAggregationState(observationSink);
         var processingTask = Task.Run(() => ProcessEvents(processId, session, state), cancellationToken);
 
         try
@@ -94,9 +96,11 @@ public sealed class EventPipeDbCollector : IDbCollector
             };
 
             source.Process();
+            state.ReportSourceLoss(source.EventsLost);
         }
         catch (Exception ex)
         {
+            state.ReportSourceLoss(null);
             _logger.LogDebug(ex, "DB EventPipe source ended for pid {Pid}.", processId);
         }
     }

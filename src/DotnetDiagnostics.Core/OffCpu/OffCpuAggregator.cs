@@ -1,5 +1,6 @@
 using DotnetDiagnostics.Core.NativeLockContention;
 using System.Globalization;
+using DotnetDiagnostics.Core.CaptureRecording;
 
 namespace DotnetDiagnostics.Core.OffCpu;
 
@@ -50,6 +51,7 @@ internal static class OffCpuAggregator
 
 internal sealed class OffCpuAggregationBuilder
 {
+    private readonly ICaptureObservationSink? _sink = CaptureRecordingContext.Current;
     // Per-stack syscall breakdown is a label, not a full latency histogram (explicitly out of
     // scope for issue #829) — cap the number of distinct syscalls reported per stack group.
     private const int MaxSyscallsPerStack = 8;
@@ -64,6 +66,7 @@ internal sealed class OffCpuAggregationBuilder
 
     public void AddSpan(OffCpuSpan span)
     {
+        if (_sink is not null) SamplerObservationProjection.OffCpu(_sink, span);
         _totalMicros += span.DurationMicros;
         if (span.IsCensored)
         {

@@ -63,6 +63,7 @@ internal static class PerfScriptParser
         }
 
         long samplesEmitted = 0;
+        var retainDimensions = DotnetDiagnostics.Core.CaptureRecording.CaptureRecordingContext.Current is not null;
         string? pendingHeader = null;
 
         while (true)
@@ -130,7 +131,9 @@ internal static class PerfScriptParser
             }
 
             samplesEmitted++;
-            if (!onSample(new PerfSample(samplePid, frames)))
+            if (!onSample(new PerfSample(samplePid, frames,
+                retainDimensions ? TryExtractTimestamp(header) : null,
+                retainDimensions ? TryExtractThreadId(header) : null)))
             {
                 return new PerfScriptParseResult(samplesEmitted, Completed: false);
             }
@@ -170,6 +173,31 @@ internal static class PerfScriptParser
         }
     }
 
+    private static double? TryExtractTimestamp(string header)
+    {
+        foreach (var token in header.Split(HeaderSeparators, StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (token.EndsWith(':') && token.Contains('.') &&
+                double.TryParse(token.AsSpan(0, token.Length - 1), NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds) &&
+                double.IsFinite(seconds))
+                return seconds;
+        }
+        return null;
+    }
+
+    private static int? TryExtractThreadId(string header)
+    {
+        foreach (var token in header.Split(HeaderSeparators, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var separator = token.IndexOf('/');
+            if (separator > 0 && int.TryParse(token.AsSpan(0, separator), CultureInfo.InvariantCulture, out _) &&
+                int.TryParse(token.AsSpan(separator + 1), CultureInfo.InvariantCulture, out var tid))
+                return tid;
+        }
+        // A lone pid field does not establish a distinct OS thread identity.
+        return null;
+    }
+
     private static int TryExtractPid(string header)
     {
         foreach (var token in header.Split(HeaderSeparators, StringSplitOptions.RemoveEmptyEntries))
@@ -187,7 +215,7 @@ internal static class PerfScriptParser
 
 internal readonly record struct PerfScriptParseResult(long SamplesEmitted, bool Completed);
 
-internal sealed record PerfSample(int ProcessId, IReadOnlyList<PerfFrame> Frames);
+internal sealed record PerfSample(int ProcessId, IReadOnlyList<PerfFrame> Frames, double? TimestampSeconds = null, int? ThreadId = null);
 
 internal sealed record PerfFrame(
     string Module,

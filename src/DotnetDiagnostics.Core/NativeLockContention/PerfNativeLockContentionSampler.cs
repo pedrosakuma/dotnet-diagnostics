@@ -215,7 +215,7 @@ public sealed partial class PerfNativeLockContentionSampler : INativeLockContent
             }
             catch { /* best effort */ }
 
-            var aggregate = await RunScriptAsync(perfDataPath, topN, jitMap, cancellationToken).ConfigureAwait(false);
+            var aggregate = await RunScriptAsync(perfDataPath, topN, jitMap, samplePeriod, cancellationToken).ConfigureAwait(false);
             if (aggregate.Truncated)
             {
                 notes.Add($"Stopped parsing perf script after {PerfScriptSampleBudget:N0} samples to keep mutex-hot captures bounded; hotspots reflect the processed prefix only.");
@@ -315,7 +315,7 @@ public sealed partial class PerfNativeLockContentionSampler : INativeLockContent
         return args;
     }
 
-    private async Task<PerfScriptAggregationResult> RunScriptAsync(string perfDataPath, int topN, JitMapResult? jitMap, CancellationToken ct)
+    private async Task<PerfScriptAggregationResult> RunScriptAsync(string perfDataPath, int topN, JitMapResult? jitMap, long samplePeriod, CancellationToken ct)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -346,7 +346,9 @@ public sealed partial class PerfNativeLockContentionSampler : INativeLockContent
                 topN: topN,
                 jitMap: jitMap,
                 sampleBudget: PerfScriptSampleBudget,
-                cancellationToken: boundedToken).ConfigureAwait(false);
+                cancellationToken: boundedToken,
+                observationCategory: "sample.native-lock-contention.perf",
+                samplePeriod: samplePeriod).ConfigureAwait(false);
             if (aggregate.Truncated && !process.HasExited)
             {
                 try { process.Kill(true); } catch { /* best effort */ }

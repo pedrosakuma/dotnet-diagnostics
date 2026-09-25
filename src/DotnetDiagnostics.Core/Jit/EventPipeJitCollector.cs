@@ -1,4 +1,5 @@
 using System.Diagnostics.Tracing;
+using DotnetDiagnostics.Core.CaptureRecording;
 using DotnetDiagnostics.Core.Internal;
 using Microsoft.Diagnostics.NETCore.Client;
 using Microsoft.Diagnostics.Tracing;
@@ -42,6 +43,7 @@ public sealed class EventPipeJitCollector : IJitCollector
         TimeSpan duration,
         CancellationToken cancellationToken = default)
     {
+        var observationSink = CaptureRecordingContext.Current;
         if (duration <= TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(nameof(duration), "Duration must be positive.");
@@ -89,6 +91,11 @@ public sealed class EventPipeJitCollector : IJitCollector
             {
                 source.Clr.MethodJittingStarted += data =>
                 {
+                    observationSink?.TryAppend(ProviderObservationProjection.Create(
+                        "jit.phase", ToUtcOffset(data.TimeStamp), data.ThreadID, "MethodJittingStarted",
+                        ("provider", RuntimeProvider), ("methodId", data.MethodID),
+                        ("methodNamespace", data.MethodNamespace), ("methodName", data.MethodName),
+                        ("methodSignature", data.MethodSignature)));
                     jitStarts++;
                     if (!pendingStarts.TryGetValue(data.MethodID, out var queue))
                     {
@@ -116,8 +123,10 @@ public sealed class EventPipeJitCollector : IJitCollector
                     completedCompilations++;
                     var completedAt = ToUtcOffset(data.TimeStamp);
                     var started = completedAt;
+                    var correlation = "missing-start";
                     if (pendingStarts.TryGetValue(data.MethodID, out var queue) && queue.Count > 0)
                     {
+                        correlation = queue.Count == 1 ? "fifo-start" : "ambiguous-multiple-starts";
                         started = queue.Dequeue();
                     }
                     else
@@ -131,6 +140,13 @@ public sealed class EventPipeJitCollector : IJitCollector
 
                     var inclusiveMs = Math.Max(0, (completedAt - started).TotalMilliseconds);
                     var key = BuildMethodKey(data.MethodNamespace, data.MethodName, data.MethodSignature);
+                    observationSink?.TryAppend(ProviderObservationProjection.Create(
+                        "jit.method-load", completedAt, data.ThreadID, key,
+                        ("provider", RuntimeProvider), ("methodId", data.MethodID), ("methodNamespace", data.MethodNamespace),
+                        ("methodName", data.MethodName), ("methodSignature", data.MethodSignature),
+                        ("optimizationTier", data.OptimizationTier.ToString()), ("reJitIdUInt64", data.ReJITID),
+                        ("correlation", correlation), ("inclusiveJitTimeMs", correlation == "fifo-start" ? inclusiveMs : null),
+                        ("startedAtUtc", correlation == "fifo-start" ? started : null)));
                     if (!methods.TryGetValue(key, out var accumulator))
                     {
                         if (methods.Count >= MaxTrackedMethods)
@@ -195,6 +211,9 @@ public sealed class EventPipeJitCollector : IJitCollector
 
                 source.Clr.MethodILToNativeMap += data =>
                 {
+                    observationSink?.TryAppend(ProviderObservationProjection.Create(
+                        "jit.phase", ToUtcOffset(data.TimeStamp), data.ThreadID, "MethodILToNativeMap",
+                        ("provider", RuntimeProvider), ("methodId", data.MethodID)));
                     ilMapCount++;
                     if (methodIdsWithIlMap.Count < MaxTrackedIlMapMethodIds || methodIdsWithIlMap.Contains(data.MethodID))
                     {
@@ -221,6 +240,9 @@ public sealed class EventPipeJitCollector : IJitCollector
 
                 source.Clr.MethodR2RGetEntryPoint += data =>
                 {
+                    observationSink?.TryAppend(ProviderObservationProjection.Create(
+                        "jit.r2r.lookup", ToUtcOffset(data.TimeStamp), data.ThreadID, "MethodR2RGetEntryPoint",
+                        ("provider", RuntimeProvider), ("methodId", data.MethodID), ("hit", data.EntryPoint != 0)));
                     r2rLookups++;
                     if (data.EntryPoint != 0)
                     {
@@ -247,6 +269,12 @@ public sealed class EventPipeJitCollector : IJitCollector
             .ToList();
 
         var unresolvedStarts = pendingStarts.Sum(static entry => entry.Value.Count);
+        observationSink?.TryAppend(ProviderObservationProjection.Create(
+            "jit.retention.aggregate", null, null, "jit",
+            ("provider", RuntimeProvider), ("unresolvedStarts", unresolvedStarts),
+            ("droppedPendingStarts", droppedPendingStarts), ("droppedMethods", droppedMethods),
+            ("droppedMethodIdMappings", droppedMethodIdMappings), ("droppedIlMapMethodIds", droppedIlMapMethodIds),
+            ("droppedR2rMisses", droppedR2rMisses)));
         if (unresolvedStarts > 0)
         {
             notes.Add($"{unresolvedStarts} MethodJittingStarted event(s) did not complete before the collection window ended.");

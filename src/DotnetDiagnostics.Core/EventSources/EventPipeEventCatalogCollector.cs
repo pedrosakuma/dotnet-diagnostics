@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.Tracing;
+using DotnetDiagnostics.Core.CaptureRecording;
 using DotnetDiagnostics.Core.Internal;
 using Microsoft.Diagnostics.NETCore.Client;
 using Microsoft.Diagnostics.Tracing;
@@ -38,6 +39,7 @@ public sealed class EventPipeEventCatalogCollector : IEventCatalogCollector
         int maxEvents = 200,
         CancellationToken cancellationToken = default)
     {
+        var observationSink = CaptureRecordingContext.Current;
         if (duration <= TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(nameof(duration), "Duration must be positive.");
@@ -79,6 +81,9 @@ public sealed class EventPipeEventCatalogCollector : IEventCatalogCollector
 
                     Interlocked.Increment(ref total);
                     counts.AddOrUpdate((provider, eventName, level), 1, static (_, current) => current + 1);
+                    if (observationSink is not null)
+                        RecordMetadata(observationSink, new CatalogEventOccurrence(
+                            new DateTimeOffset(traceEvent.TimeStamp.ToUniversalTime(), TimeSpan.Zero), provider, eventName, level));
 
                     // Metadata-only bounded sample. Do not read PayloadNames or PayloadByName here:
                     // arbitrary EventSource payload values may contain PII/auth context.
@@ -93,9 +98,12 @@ public sealed class EventPipeEventCatalogCollector : IEventCatalogCollector
                 };
 
                 source.Process();
+                observationSink?.ReportSourceLoss("event-catalog", source.EventsLost);
             }
+
             catch (Exception ex)
             {
+                observationSink?.ReportSourceLoss("event-catalog", null);
                 _logger.LogDebug(ex, "EventPipe catalog source ended for pid {Pid}.", processId);
             }
         }, cancellationToken);
@@ -132,6 +140,11 @@ public sealed class EventPipeEventCatalogCollector : IEventCatalogCollector
             maxEvents,
             sample.ToList());
     }
+
+    internal static void RecordMetadata(ICaptureObservationSink? sink, CatalogEventOccurrence occurrence) =>
+        sink?.TryAppend(ProviderObservationProjection.Create(
+            "event-catalog.metadata", occurrence.Timestamp, null, occurrence.EventName,
+            ("provider", occurrence.Provider), ("level", occurrence.Level)));
 
     private static IReadOnlyList<string> NormalizeProviders(IReadOnlyList<string>? providers)
     {

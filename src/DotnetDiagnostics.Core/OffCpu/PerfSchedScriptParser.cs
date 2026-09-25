@@ -433,6 +433,7 @@ internal static class PerfSchedScriptParser
 /// correlated. Set by the caller (not by the parser itself) once the
 /// <see cref="SyscallIntervalIndex"/> is available.
 /// </param>
+/// <param name="SourceClock">Clock domain of OutTimestampSeconds; never implicitly a UTC timestamp.</param>
 internal sealed record OffCpuSpan(
     int Tid,
     string Comm,
@@ -441,4 +442,5 @@ internal sealed record OffCpuSpan(
     IReadOnlyList<OffCpuFrame> BlockingStack,
     bool IsCensored = false,
     double? OutTimestampSeconds = null,
-    string? Syscall = null);
+    string? Syscall = null,
+    string SourceClock = "perf-monotonic-seconds");

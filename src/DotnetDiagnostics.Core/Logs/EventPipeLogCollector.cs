@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using DotnetDiagnostics.Core.CaptureRecording;
 using DotnetDiagnostics.Core.Security;
 using DotnetDiagnostics.Core.Internal;
 using Microsoft.Diagnostics.NETCore.Client;
@@ -83,9 +84,11 @@ public sealed partial class EventPipeLogCollector : ILogCollector
         var totalEvents = 0L;
         var truncated = false;
         var levelCounts = new long[6];
+        var recording = CaptureRecordingContext.Current;
 
         var processingTask = Task.Run(() =>
         {
+            long? sourceLoss = null;
             try
             {
                 using var source = new EventPipeEventSource(session.EventStream);
@@ -113,11 +116,10 @@ public sealed partial class EventPipeLogCollector : ILogCollector
                                 return;
                             }
 
+                            RecordLogEntry(entry, false, ref lastEntry, recent, maxEvents, ref truncated, recording);
                             totalEvents++;
                             levelCounts[(int)entry.Level]++;
                             AddCategory(categoryCounts, entry.Category, entry.Level);
-                            AppendRecent(recent, entry, maxEvents, ref truncated);
-                            lastEntry = entry;
                             return;
                         }
                         case "MessageJson" when includeJsonPayload:
@@ -127,33 +129,29 @@ public sealed partial class EventPipeLogCollector : ILogCollector
                                 return;
                             }
 
-                            if (lastEntry is not null && lastEntry.Matches(entry))
-                            {
-                                lastEntry.ExceptionType = entry.ExceptionType;
-                                lastEntry.ExceptionMessage = entry.ExceptionMessage;
-                                if (entry.Scopes.Count > 0)
-                                {
-                                    lastEntry.Scopes = entry.Scopes;
-                                }
-
+                            if (!RecordLogEntry(entry, true, ref lastEntry, recent, maxEvents, ref truncated, recording))
                                 return;
-                            }
-
                             totalEvents++;
                             levelCounts[(int)entry.Level]++;
                             AddCategory(categoryCounts, entry.Category, entry.Level);
-                            AppendRecent(recent, entry, maxEvents, ref truncated);
-                            lastEntry = entry;
                             return;
                         }
                     }
                 };
 
                 source.Process();
+                sourceLoss = source.EventsLost;
             }
             catch (Exception ex)
             {
                 _logger.LogDebug(ex, "EventPipe ILogger source ended for pid {Pid}.", processId);
+            }
+            finally
+            {
+                // MessageJson may enrich the preceding formatted entry. Flush only after that
+                // pairing opportunity, including the final entry when processing fails.
+                FlushLogEntry(recording, lastEntry);
+                EventPipeCollectionRunner.ReportSourceLoss(recording, sourceLoss);
             }
         }, cancellationToken);
 
@@ -288,30 +286,64 @@ public sealed partial class EventPipeLogCollector : ILogCollector
             return false;
         }
 
-        var eventId = ParseInt(traceEvent.PayloadByName("EventId"));
-        var eventName = NullIfEmpty(FormatString(traceEvent.PayloadByName("EventName")));
-        var message = TruncateAndRedact(FormatString(traceEvent.PayloadByName("FormattedMessage")), maxMessageBytes);
         var scopes = ResolveScopes(traceEvent.ActivityID, scopeFrames, activeScopes, maxMessageBytes);
+        return TryCreateLogEntry(new DateTimeOffset(traceEvent.TimeStamp.ToUniversalTime(), TimeSpan.Zero),
+            category, level.Value, ParseInt(traceEvent.PayloadByName("EventId")),
+            NullIfEmpty(FormatString(traceEvent.PayloadByName("EventName"))),
+            FormatString(traceEvent.PayloadByName("FormattedMessage")),
+            includeException ? FormatString(traceEvent.PayloadByName("ExceptionJson")) : null,
+            scopes, categoryFilters, minLevel, maxMessageBytes, out entry);
+    }
+
+    internal bool TryCreateLogEntry(DateTimeOffset timestamp, string category, LogLevel level, int eventId,
+        string? eventName, string message, string? exceptionJson, IReadOnlyDictionary<string, string> scopes,
+        IReadOnlyList<string> categoryFilters, LogLevel minLevel, int maxMessageBytes, out MutableLogEntry entry)
+    {
+        entry = default!;
+        if (string.IsNullOrWhiteSpace(category) || !MatchesAnyFilter(category, categoryFilters)
+            || level < minLevel || level == LogLevel.None)
+            return false;
         var exceptionType = (string?)null;
         var exceptionMessage = (string?)null;
 
-        if (includeException)
+        if (exceptionJson is not null)
         {
-            var exceptionJson = FormatString(traceEvent.PayloadByName("ExceptionJson"));
             (exceptionType, exceptionMessage) = ParseException(exceptionJson, maxMessageBytes);
         }
 
         entry = new MutableLogEntry(
-            timestamp: new DateTimeOffset(traceEvent.TimeStamp.ToUniversalTime(), TimeSpan.Zero),
-            level: level.Value,
+            timestamp: timestamp,
+            level: level,
             category: category,
             eventId: eventId,
             eventName: eventName,
-            message: message,
+            message: TruncateAndRedact(message, maxMessageBytes),
             exceptionType: exceptionType,
             exceptionMessage: exceptionMessage,
             scopes: scopes);
         return true;
+    }
+
+    internal bool RecordLogEntry(MutableLogEntry entry, bool isJson, ref MutableLogEntry? lastEntry,
+        Queue<MutableLogEntry> recent, int maxEvents, ref bool truncated, ICaptureObservationSink? recording)
+    {
+        if (isJson && lastEntry is not null && lastEntry.Matches(entry))
+        {
+            lastEntry.ExceptionType = entry.ExceptionType;
+            lastEntry.ExceptionMessage = entry.ExceptionMessage;
+            if (entry.Scopes.Count > 0) lastEntry.Scopes = entry.Scopes;
+            return false;
+        }
+        FlushLogEntry(recording, lastEntry);
+        AppendRecent(recent, entry, maxEvents, ref truncated);
+        lastEntry = entry;
+        return true;
+    }
+
+    internal void FlushLogEntry(ICaptureObservationSink? recording, MutableLogEntry? entry)
+    {
+        if (recording is not null && entry is not null)
+            RuntimeObservationProjection.Log(recording, entry, _redactor);
     }
 
     private static void AddCategory(Dictionary<string, CategoryAccumulator> categoryCounts, string category, LogLevel level)
@@ -650,7 +682,7 @@ public sealed partial class EventPipeLogCollector : ILogCollector
 
     private static string? NullIfEmpty(string? value) => string.IsNullOrWhiteSpace(value) ? null : value;
 
-    private sealed class MutableLogEntry
+    internal sealed class MutableLogEntry
     {
         public MutableLogEntry(DateTimeOffset timestamp, LogLevel level, string category, int eventId, string? eventName, string message, string? exceptionType, string? exceptionMessage, IReadOnlyDictionary<string, string> scopes)
         {

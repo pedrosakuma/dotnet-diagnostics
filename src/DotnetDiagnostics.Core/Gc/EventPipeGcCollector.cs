@@ -1,4 +1,5 @@
 using System.Diagnostics.Tracing;
+using DotnetDiagnostics.Core.CaptureRecording;
 using DotnetDiagnostics.Core.Internal;
 using Microsoft.Diagnostics.NETCore.Client;
 using Microsoft.Diagnostics.Tracing;
@@ -59,7 +60,8 @@ public sealed class EventPipeGcCollector : IGcCollector
 
         // EventPipeEventSource invokes these callbacks on the single source.Process() thread, so
         // plain collections are sufficient and avoid unnecessary synchronization on the hot path.
-        var state = new GcCaptureState(maxEvents);
+        var recording = CaptureRecordingContext.Current;
+        var state = new GcCaptureState(maxEvents, recording);
         var aggregation = state.Collections;
         var heapStats = new List<GcHeapStatsSample>(Math.Min(maxEvents, 128));
         var droppedHeapStats = 0;
@@ -97,13 +99,13 @@ public sealed class EventPipeGcCollector : IGcCollector
 
                 source.Clr.GCHeapStats += traceEvent =>
                 {
-                    if (heapStats.Count >= maxEvents)
+                    if (heapStats.Count >= maxEvents && recording is null)
                     {
                         if (droppedHeapStats < int.MaxValue) droppedHeapStats++;
                         return;
                     }
 
-                    heapStats.Add(new GcHeapStatsSample(
+                    var sample = new GcHeapStatsSample(
                         Timestamp: new DateTimeOffset(traceEvent.TimeStamp.ToUniversalTime(), TimeSpan.Zero),
                         Gen0SizeBytes: traceEvent.GenerationSize0,
                         Gen1SizeBytes: traceEvent.GenerationSize1,
@@ -117,7 +119,9 @@ public sealed class EventPipeGcCollector : IGcCollector
                         FinalizationPromotedBytes: traceEvent.FinalizationPromotedSize,
                         FinalizationPromotedCount: (long)traceEvent.FinalizationPromotedCount,
                         PinnedObjectCount: traceEvent.PinnedObjectCount,
-                        GcHandleCount: traceEvent.GCHandleCount));
+                        GcHandleCount: traceEvent.GCHandleCount);
+                    RecordHeapSample(sample, traceEvent.Version, traceEvent.ClrInstanceID, heapStats, maxEvents,
+                        ref droppedHeapStats, recording);
                 };
             },
             ex =>
@@ -154,6 +158,14 @@ public sealed class EventPipeGcCollector : IGcCollector
             RequestedDuration = duration,
         };
     }
+
+    internal static void RecordHeapSample(GcHeapStatsSample sample, int version, int clrInstanceId,
+        List<GcHeapStatsSample> retained, int maxEvents, ref int dropped, ICaptureObservationSink? sink)
+    {
+        if (sink is not null) RuntimeObservationProjection.Heap(sink, sample, version, clrInstanceId);
+        if (retained.Count < maxEvents) retained.Add(sample);
+        else if (dropped < int.MaxValue) dropped++;
+    }
 }
 
 /// <summary>
@@ -167,12 +179,14 @@ internal sealed class GcEventAggregation
     private readonly int[] _generationCounts = new int[3];
     private long _totalPauseTicks;
     private long _maxPauseTicks;
+    private readonly ICaptureObservationSink? _sink;
 
-    public GcEventAggregation(int maxEvents)
+    public GcEventAggregation(int maxEvents, ICaptureObservationSink? sink = null)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(maxEvents, 1);
         _maxEvents = maxEvents;
         _events = new List<GcEvent>(Math.Min(maxEvents, 128));
+        _sink = sink;
     }
 
     public long ObservedCollections { get; private set; }
@@ -194,6 +208,7 @@ internal sealed class GcEventAggregation
 
     public void Add(GcEvent gcEvent)
     {
+        if (_sink is not null) RuntimeObservationProjection.Collection(_sink, gcEvent);
         if (ObservedCollections < long.MaxValue) ObservedCollections++;
         _totalPauseTicks = gcEvent.PauseDuration.Ticks > long.MaxValue - _totalPauseTicks
             ? long.MaxValue : _totalPauseTicks + gcEvent.PauseDuration.Ticks;

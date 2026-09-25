@@ -119,7 +119,8 @@ internal static class DbEventPipeParsing
     public static DateTimeOffset? ParseStartedAt(IReadOnlyDictionary<string, string> arguments)
     {
         var rawTicks = GetArgument(arguments, "StartTimeTicks");
-        return long.TryParse(rawTicks, NumberStyles.Integer, CultureInfo.InvariantCulture, out var ticks) && ticks > 0
+        return long.TryParse(rawTicks, NumberStyles.Integer, CultureInfo.InvariantCulture, out var ticks)
+            && ticks > 0 && ticks <= DateTime.MaxValue.Ticks
             ? new DateTimeOffset(new DateTime(ticks, DateTimeKind.Utc), TimeSpan.Zero)
             : null;
     }

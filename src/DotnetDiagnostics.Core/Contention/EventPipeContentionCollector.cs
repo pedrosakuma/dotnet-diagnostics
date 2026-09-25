@@ -1,4 +1,5 @@
 using System.Diagnostics.Tracing;
+using DotnetDiagnostics.Core.CaptureRecording;
 using DotnetDiagnostics.Core.Internal;
 using Microsoft.Diagnostics.NETCore.Client;
 using Microsoft.Diagnostics.Tracing.Etlx;
@@ -46,7 +47,8 @@ public sealed class EventPipeContentionCollector : IContentionCollector
 
         var startedAt = DateTimeOffset.UtcNow;
         var notes = new HashSet<string>(StringComparer.Ordinal);
-        var topEvents = new TopContentionEvents(MaxTrackedEvents);
+        var recording = CaptureRecordingContext.Current;
+        var topEvents = new TopContentionEvents(MaxTrackedEvents, recording);
         var pendingByThread = new Dictionary<int, Stack<PendingContention>>();
         var durations = new BoundedDurationSampler();
         var distinctMonitorIds = new HashSet<ulong>();
@@ -56,6 +58,7 @@ public sealed class EventPipeContentionCollector : IContentionCollector
 
         var processingTask = Task.Run(() =>
         {
+            long? sourceLoss = null;
             try
             {
                 using var source = new Microsoft.Diagnostics.Tracing.EventPipeEventSource(session.EventStream);
@@ -110,7 +113,7 @@ public sealed class EventPipeContentionCollector : IContentionCollector
                         }
                     }
 
-                    topEvents.Add(new ContentionEventSample(
+                    var sample = new ContentionEventSample(
                         StartedAt: pending.StartedAt,
                         StoppedAt: stoppedAt,
                         Duration: waitDuration,
@@ -119,14 +122,21 @@ public sealed class EventPipeContentionCollector : IContentionCollector
                         LockId: pending.LockId,
                         AssociatedObjectId: pending.AssociatedObjectId,
                         CallSiteMethod: pending.CallSite.Method,
-                        CallSiteModule: pending.CallSite.Module));
+                        CallSiteModule: pending.CallSite.Module);
+                    topEvents.Add(sample, durationFromStop >= TimeSpan.Zero,
+                        data.DurationNs > 0 ? "runtime-stop-duration" : "matched-wall-clock-boundaries");
                 };
 
                 source.Process();
+                sourceLoss = source.EventsLost;
             }
             catch (Exception ex)
             {
                 _logger.LogDebug(ex, "EventPipe contention source ended for pid {Pid}.", processId);
+            }
+            finally
+            {
+                EventPipeCollectionRunner.ReportSourceLoss(recording, sourceLoss);
             }
         }, cancellationToken);
 
@@ -294,17 +304,20 @@ public sealed class EventPipeContentionCollector : IContentionCollector
     {
         private readonly int _capacity;
         private readonly List<ContentionEventSample> _events;
+        private readonly ICaptureObservationSink? _sink;
 
-        public TopContentionEvents(int capacity)
+        public TopContentionEvents(int capacity, ICaptureObservationSink? sink = null)
         {
             _capacity = capacity;
             _events = new List<ContentionEventSample>(capacity);
+            _sink = sink;
         }
 
         public int DroppedCount { get; private set; }
 
-        public void Add(ContentionEventSample sample)
+        public void Add(ContentionEventSample sample, bool validDuration = true, string durationSource = "matched-wall-clock-boundaries")
         {
+            if (_sink is not null) RuntimeObservationProjection.Contention(_sink, sample, validDuration, durationSource);
             if (_events.Count < _capacity)
             {
                 _events.Add(sample);

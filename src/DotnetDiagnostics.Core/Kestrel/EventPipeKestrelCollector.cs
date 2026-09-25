@@ -1,4 +1,5 @@
 using System.Diagnostics.Tracing;
+using DotnetDiagnostics.Core.CaptureRecording;
 using System.Globalization;
 using DotnetDiagnostics.Core.Internal;
 using Microsoft.Diagnostics.NETCore.Client;
@@ -40,6 +41,7 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
         int intervalSeconds = 1,
         CancellationToken cancellationToken = default)
     {
+        var observationSink = CaptureRecordingContext.Current;
         if (duration <= TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(nameof(duration), "Duration must be positive.");
@@ -115,7 +117,7 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
                         switch (traceEvent.EventName)
                         {
                             case "EventCounters":
-                                HandleCounter(traceEvent, timestamp, counters, queuePoints, ref peakConnectionQueue, ref peakRequestQueue, ref droppedQueuePoints);
+                                HandleCounter(traceEvent, timestamp, counters, queuePoints, ref peakConnectionQueue, ref peakRequestQueue, ref droppedQueuePoints, observationSink);
                                 break;
 
                             case "ConnectionStart":
@@ -215,6 +217,11 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
 
                                 break;
                         }
+                        if (observationSink is not null)
+                            RecordLifecycle(observationSink, traceEvent.EventName, timestamp, traceEvent.ThreadID,
+                                PayloadString(traceEvent, "connectionId"), PayloadString(traceEvent, "requestId"),
+                                PayloadString(traceEvent, "method"), PayloadString(traceEvent, "path"),
+                                PayloadString(traceEvent, "httpVersion"), PayloadString(traceEvent, "sslProtocols"));
                     }
                     catch (Exception ex)
                     {
@@ -277,6 +284,24 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
             notes.Add($"Dropped {droppedQueuePoints} queue-length sample point(s) after reaching the in-memory cap of {MaxQueuePoints}.");
         }
 
+        observationSink?.TryAppend(ProviderObservationProjection.Create(
+            "kestrel.correlation.aggregate", null, null, "kestrel",
+            ("provider", KestrelProviderName), ("connectionsStarted", connectionsStarted), ("connectionsStopped", connectionsStopped),
+            ("requestsStarted", requestsStarted), ("requestsStopped", requestsStopped),
+            ("tlsStarted", tlsStarted), ("tlsStopped", tlsStopped), ("tlsFailed", tlsFailed),
+            ("expiredConnections", expiredConnections), ("evictedConnections", evictedConnections),
+            ("expiredRequests", expiredRequests), ("evictedRequests", evictedRequests),
+            ("expiredTls", expiredTls), ("evictedTls", evictedTls),
+            ("unfinishedConnections", pendingConnections.Count), ("unfinishedRequests", pendingRequests.Count),
+            ("unfinishedTls", pendingTls.Count), ("overflowedOperations", overflowedOperations),
+            ("droppedQueuePoints", droppedQueuePoints), ("correlation", "snapshot uses last-start-wins; phases are not unique completions")));
+        foreach (var operation in operations)
+            observationSink?.TryAppend(ProviderObservationProjection.Create(
+                "kestrel.request.aggregate", null, null, operation.Method,
+                ("provider", KestrelProviderName), ("method", operation.Method), ("path", operation.Path),
+                ("httpVersion", operation.HttpVersion), ("count", operation.Count),
+                ("totalDurationMs", operation.TotalDuration.TotalMilliseconds), ("p95Ms", operation.P95Duration.TotalMilliseconds),
+                ("maxMs", operation.MaxDuration.TotalMilliseconds), ("correlation", "last-start-wins")));
         return new KestrelSnapshot(
             ProcessId: processId,
             StartedAt: startedAt,
@@ -355,7 +380,8 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
         List<KestrelQueuePoint> queuePoints,
         ref long peakConnectionQueue,
         ref long peakRequestQueue,
-        ref int droppedQueuePoints)
+        ref int droppedQueuePoints,
+        ICaptureObservationSink? observationSink)
     {
         if (traceEvent.PayloadValue(0) is not IDictionary<string, object> outer
             || !outer.TryGetValue("Payload", out var inner)
@@ -392,17 +418,43 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
             string.IsNullOrEmpty(display) ? name : display,
             value,
             string.IsNullOrEmpty(unit) ? null : unit);
+        observationSink?.TryAppend(ProviderObservationProjection.Create(
+            "kestrel.counter.aggregate", timestamp, traceEvent.ThreadID, name,
+            ("provider", KestrelProviderName), ("value", value), ("displayName", string.IsNullOrEmpty(display) ? name : display),
+            ("unit", string.IsNullOrEmpty(unit) ? null : unit),
+            ("counterType", data.ContainsKey("Mean") ? "Mean" : "Increment")));
 
         if (string.Equals(name, ConnectionQueueLengthCounter, StringComparison.Ordinal))
         {
             AddQueuePoint(queuePoints, new KestrelQueuePoint(timestamp, name, value), ref droppedQueuePoints);
             peakConnectionQueue = Math.Max(peakConnectionQueue, (long)Math.Round(value));
         }
+
         else if (string.Equals(name, RequestQueueLengthCounter, StringComparison.Ordinal))
         {
             AddQueuePoint(queuePoints, new KestrelQueuePoint(timestamp, name, value), ref droppedQueuePoints);
             peakRequestQueue = Math.Max(peakRequestQueue, (long)Math.Round(value));
         }
+    }
+
+    internal static void RecordLifecycle(
+        ICaptureObservationSink sink, string eventName, DateTimeOffset timestamp, long? threadId,
+        string connectionId, string requestId, string method, string path, string httpVersion, string protocols)
+    {
+        if (eventName is not ("ConnectionStart" or "Connection/Start" or "ConnectionStop" or "Connection/Stop"
+            or "ConnectionRejected" or "Connection/Rejected" or "RequestStart" or "Request/Start"
+            or "RequestStop" or "Request/Stop" or "TlsHandshakeStart" or "TlsHandshake/Start"
+            or "TlsHandshakeStop" or "TlsHandshake/Stop" or "TlsHandshakeFailed" or "TlsHandshake/Failed"))
+            return;
+        // Kestrel's snapshot pairing is last-start-wins. Preserve phases, not invented unique completions.
+        var isRequestStart = eventName is "RequestStart" or "Request/Start";
+        sink.TryAppend(ProviderObservationProjection.Create(
+            "kestrel.lifecycle.phase", timestamp, threadId, eventName,
+            ("provider", KestrelProviderName), ("connectionId", connectionId), ("requestId", requestId),
+            ("method", isRequestStart ? method : null), ("path", isRequestStart ? NormalizePath(path) : null),
+            ("httpVersion", isRequestStart ? httpVersion : null),
+            ("protocols", eventName.StartsWith("Tls", StringComparison.Ordinal) ? protocols : null),
+            ("correlated", false)));
     }
 
     private static void RecordPairedDuration(
