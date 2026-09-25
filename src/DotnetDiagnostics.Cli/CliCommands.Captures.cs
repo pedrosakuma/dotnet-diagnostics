@@ -52,6 +52,7 @@ internal static partial class CliCommands
                 Capture = persisted.Capture,
                 CaptureViews = metadata?.Views,
                 CaptureCompositions = metadata?.Compositions,
+                CaptureRecordStreams = metadata?.RecordStreams,
             };
         }
         catch (CaptureStoreException ex)
@@ -86,6 +87,7 @@ internal static partial class CliCommands
                         Capture = info,
                         CaptureViews = metadata.Views,
                         CaptureCompositions = metadata.Compositions,
+                        CaptureRecordStreams = metadata.RecordStreams,
                     };
                 case "delete":
                     await service.DeleteAsync(options.CaptureId!, access, cancellationToken).ConfigureAwait(false);
@@ -140,8 +142,14 @@ internal static partial class CliCommands
                 Capture = opened.Capture,
                 CaptureViews = new Dictionary<string, IReadOnlyList<string>>
                 {
-                    [opened.Artifact.ArtifactId] = ["records", .. opened.SupportedViews],
+                    [opened.Artifact.ArtifactId] = opened.SupportedViews,
                 },
+                CaptureRecordStreams = opened.RecordStream is { } stream
+                    ? new Dictionary<string, DotnetDiagnostics.Core.UseCases.DurableCaptureRecordStreamInfo>
+                    {
+                        [opened.Artifact.ArtifactId] = stream,
+                    }
+                    : null,
             };
         }
         catch (CaptureStoreException ex)

@@ -303,10 +303,15 @@ internal static class CliCommandExecution
                         if (views.TryGetValue(id, out var supported))
                         {
                             artifact["supportedViews"] = JsonSerializer.SerializeToNode(supported, JsonOptions);
+                            artifact["recordStreamAvailable"] = supported.Contains("records", StringComparer.Ordinal);
                         }
                         if (result.CaptureCompositions?.TryGetValue(id, out var composition) == true)
                         {
                             artifact["composition"] = JsonSerializer.SerializeToNode(composition, JsonOptions);
+                        }
+                        if (result.CaptureRecordStreams?.TryGetValue(id, out var stream) == true)
+                        {
+                            artifact["recordStream"] = JsonSerializer.SerializeToNode(stream, JsonOptions);
                         }
                     }
                 }

@@ -33,19 +33,56 @@ public sealed class CliDurableCaptureTests : IDisposable
         var captureId = capture.GetProperty("captureId").GetString()!;
         var artifact = capture.GetProperty("artifacts").EnumerateArray().Single();
         artifact.GetProperty("supportedViews").EnumerateArray().Select(view => view.GetString())
-            .Should().NotContain("summary");
+            .Should().BeEmpty();
+        artifact.GetProperty("recordStreamAvailable").GetBoolean().Should().BeFalse();
         var artifactId = artifact.GetProperty("artifactId").GetString()!;
         var store = new SqliteCaptureStore(new CliCaptureRootProvider(_root));
         using var reader = await store.OpenAsync(captureId, CliCaptureRootProvider.CurrentAccess());
         var snapshot = reader.ReadSnapshot(artifactId);
         snapshot.Should().NotBeNull();
         using var snapshotJson = JsonDocument.Parse(snapshot!.Utf8Json);
-        var restored = snapshotJson.RootElement.GetProperty("snapshot").Deserialize<CpuEfficiencySample>(JsonOptions);
+        var restored = snapshotJson.RootElement.GetProperty("snapshot").GetProperty("snapshot").Deserialize<CpuEfficiencySample>(JsonOptions);
         restored!.InstructionsPerCycle.Should().Be(2);
         var (queryExit, query, _) = await HostAsync("query", "--capture-id", captureId,
             "--artifact-id", artifactId, "--view", "summary");
         queryExit.Should().Be(1);
         query.GetProperty("error").GetProperty("kind").GetString().Should().Be("Forbidden");
+        var (recordsExit, records, _) = await HostAsync("query", "--capture-id", captureId,
+            "--artifact-id", artifactId, "--view", "records");
+        recordsExit.Should().Be(1);
+        records.GetProperty("error").GetProperty("detail").GetString().Should().Contain("record stream");
+    }
+
+    [Fact]
+    public async Task ExplicitZeroEventStreamRemainsQueryableAndAdvertisesItsOwnAvailability()
+    {
+        var store = new SqliteCaptureStore(new CliCaptureRootProvider(_root));
+        await using var writer = await store.CreateAsync(new("zero-event fixture"), CliCaptureRootProvider.CurrentAccess());
+        var artifactId = writer.AddArtifact("fixture-records", "declared empty stream");
+        writer.SetSnapshot(artifactId, 3, JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            metadataVersion = 1,
+            kind = "fixture-records",
+            snapshotVersion = 0,
+            recordStream = new
+            {
+                available = true, offered = 0, accepted = 0, sourceRejected = 0,
+                sources = new Dictionary<string, long> { ["fixture"] = 0 }, sourceReportsRejected = 0,
+            },
+            snapshot = new { },
+        }));
+        var capture = await writer.CompleteAsync();
+        var (showExit, shown, _) = await HostAsync("captures", "show", "--capture-id", capture.CaptureId);
+        showExit.Should().Be(0, shown.ToString());
+        var artifact = shown.GetProperty("capture").GetProperty("artifacts")[0];
+        artifact.GetProperty("recordStreamAvailable").GetBoolean().Should().BeTrue();
+        artifact.GetProperty("recordStream").GetProperty("offered").GetInt32().Should().Be(0);
+        artifact.GetProperty("supportedViews").EnumerateArray().Select(view => view.GetString())
+            .Should().BeEquivalentTo("records");
+        var (queryExit, query, _) = await HostAsync("query", "--capture-id", capture.CaptureId,
+            "--artifact-id", artifactId, "--view", "records");
+        queryExit.Should().Be(0, query.ToString());
+        query.GetProperty("data").GetProperty("records").GetArrayLength().Should().Be(0);
     }
 
     [Fact]
@@ -83,6 +120,10 @@ public sealed class CliDurableCaptureTests : IDisposable
         var shownRoot = show.GetProperty("capture").GetProperty("artifacts").EnumerateArray()
             .Single(artifact => artifact.GetProperty("artifactId").GetString() == root.ArtifactId);
         shownRoot.GetProperty("composition").GetProperty("children").GetArrayLength().Should().Be(2);
+        var (recordsExit, records, _) = await HostAsync("query", "--capture-id", capture.CaptureId,
+            "--artifact-id", root.ArtifactId, "--view", "records");
+        recordsExit.Should().Be(1);
+        records.GetProperty("error").GetProperty("detail").GetString().Should().Contain("record stream");
         using var fresh = Services();
         foreach (var child in composition.Children)
         {
@@ -259,7 +300,7 @@ public sealed class CliDurableCaptureTests : IDisposable
             artifactId = json.GetProperty("capture").GetProperty("artifacts")[0].GetProperty("artifactId").GetString()!;
             oldHandle = json.GetProperty("handle").GetString()!;
             json.GetProperty("capture").GetProperty("artifacts")[0].GetProperty("supportedViews")
-                .EnumerateArray().Select(view => view.GetString()).Should().BeEquivalentTo("records", "summary", "byProvider");
+                .EnumerateArray().Select(view => view.GetString()).Should().BeEquivalentTo("summary", "byProvider");
             json.GetProperty("handleNotice").GetString().Should().Contain("--capture-id");
             json.GetProperty("capture").GetProperty("ownerId").GetString().Should().Be(CliCaptureRootProvider.CurrentAccess().OwnerId);
         }

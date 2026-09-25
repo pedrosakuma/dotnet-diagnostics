@@ -861,6 +861,11 @@ and REPL exit until explicitly deleted. There is no automatic 24-hour raw-artifa
 pruning of capture packages and no daemon or global database.
 
 **Records query.** `--view records` exposes bounded typed records, not arbitrary SQL:
+Each artifact advertises `recordStreamAvailable` and, when recorded, its own
+`recordStream` admission/source-loss evidence. The `records` view appears only
+for declared occurrence streams or retained rows. A declared zero-event stream
+can return an empty page; snapshot-only evidence and reference-only group roots
+return an actionable error, not a misleading observed-zero result.
 
 | Option | Meaning |
 |---|---|

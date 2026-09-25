@@ -9,7 +9,8 @@ namespace DotnetDiagnostics.Cli;
 
 internal sealed record CliCaptureMetadata(
     IReadOnlyDictionary<string, IReadOnlyList<string>> Views,
-    IReadOnlyDictionary<string, DurableCaptureComposition> Compositions);
+    IReadOnlyDictionary<string, DurableCaptureComposition> Compositions,
+    IReadOnlyDictionary<string, DurableCaptureRecordStreamInfo> RecordStreams);
 
 internal sealed class CliDurableCaptures
 {
@@ -58,10 +59,11 @@ internal sealed class CliDurableCaptures
     {
         var result = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
         var compositions = new Dictionary<string, DurableCaptureComposition>(StringComparer.Ordinal);
+        var streams = new Dictionary<string, DurableCaptureRecordStreamInfo>(StringComparer.Ordinal);
         if (capture.State != CaptureState.Sealed)
         {
             foreach (var artifact in capture.Artifacts) result.Add(artifact.ArtifactId, []);
-            return new(result, compositions);
+            return new(result, compositions, streams);
         }
 
         var options = new CaptureStoreOptions();
@@ -70,33 +72,47 @@ internal sealed class CliDurableCaptures
         foreach (var artifact in capture.Artifacts)
         {
             var snapshot = reader.ReadSnapshot(artifact.ArtifactId);
+            var recordsAvailable = reader.Query(new(artifact.ArtifactId, PageSize: 1)).Records.Count > 0;
             if (snapshot is null)
             {
-                result.Add(artifact.ArtifactId, ["records"]);
+                result.Add(artifact.ArtifactId, recordsAvailable ? ["records"] : []);
                 continue;
             }
             try
             {
+                if (snapshot.Version == DurableCaptureSnapshotMetadata.Version)
+                {
+                    var metadata = DurableCaptureSnapshotMetadata.Decode(artifact.Kind, snapshot, options.MaxSnapshotBytes);
+                    snapshot = metadata.Snapshot;
+                    streams.Add(artifact.ArtifactId, metadata.Stream);
+                    recordsAvailable |= metadata.Stream.Available;
+                }
+                if (snapshot.Version == 0)
+                {
+                    result.Add(artifact.ArtifactId, recordsAvailable ? ["records"] : []);
+                    continue;
+                }
                 if (snapshot.Version == DurableCaptureCompositionCodec.SnapshotVersion)
                 {
                     var composition = DurableCaptureCompositionCodec.Decode(
                         artifact.Kind, artifact.ArtifactId, snapshot, reader.Info, options);
                     compositions.Add(artifact.ArtifactId, composition);
-                    result.Add(artifact.ArtifactId, []);
+                    result.Add(artifact.ArtifactId, recordsAvailable ? ["records"] : []);
                     continue;
                 }
                 var decoded = CaptureArtifactCodec.Decode(artifact.Kind, snapshot.Version,
                     snapshot.Utf8Json.Span, options.MaxSnapshotBytes);
                 var offline = CaptureArtifactCodec.GetSupportedSnapshotViews(artifact.Kind, decoded);
+                IReadOnlyList<string> recordViews = recordsAvailable ? ["records"] : [];
                 result.Add(artifact.ArtifactId,
-                    ["records", .. offline.Intersect(CliCommands.SessionViewsFor(artifact.Kind), StringComparer.Ordinal)]);
+                    [.. recordViews, .. offline.Intersect(CliCommands.SessionViewsFor(artifact.Kind), StringComparer.Ordinal)]);
             }
-            catch (Exception ex) when (ex is JsonException or InvalidDataException or NotSupportedException or ArgumentException or InvalidOperationException)
+            catch (Exception ex) when (ex is JsonException or InvalidDataException or NotSupportedException or ArgumentException or InvalidOperationException or FormatException or OverflowException)
             {
                 throw new CaptureStoreException(CaptureErrorCode.UnsupportedFormat,
                     $"Artifact {artifact.ArtifactId} has no safely supported snapshot representation: {ex.Message}", ex);
             }
         }
-        return new(result, compositions);
+        return new(result, compositions, streams);
     }
 }
