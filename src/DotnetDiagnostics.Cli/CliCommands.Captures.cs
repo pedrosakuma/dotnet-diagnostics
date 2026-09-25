@@ -23,12 +23,12 @@ internal static partial class CliCommands
                         ?? throw new InvalidOperationException("This command does not expose a typed diagnostic capture result.");
                 }, cancellationToken).ConfigureAwait(false);
 
-            Dictionary<string, IReadOnlyList<string>>? views = null;
+            CliCaptureMetadata? metadata = null;
             if (persisted.Capture is { } capture)
             {
                 try
                 {
-                    views = await CliDurableCaptures.DescribeViewsAsync(options.CaptureRoot, capture, CancellationToken.None).ConfigureAwait(false);
+                    metadata = await CliDurableCaptures.DescribeMetadataAsync(options.CaptureRoot, capture, CancellationToken.None).ConfigureAwait(false);
                 }
                 catch (CaptureStoreException ex)
                 {
@@ -50,7 +50,8 @@ internal static partial class CliCommands
                     ? pid => render(pid) + failureNotice
                     : null,
                 Capture = persisted.Capture,
-                CaptureViews = views,
+                CaptureViews = metadata?.Views,
+                CaptureCompositions = metadata?.Compositions,
             };
         }
         catch (CaptureStoreException ex)
@@ -79,10 +80,12 @@ internal static partial class CliCommands
                     return BuildResult(DiagnosticResult.Ok(page, "Durable captures for the current local OS owner."), SerializeQuery);
                 case "show":
                     var info = await service.DescribeAsync(options.CaptureId!, access, cancellationToken).ConfigureAwait(false);
+                    var metadata = await CliDurableCaptures.DescribeMetadataAsync(options.CaptureRoot, info, cancellationToken).ConfigureAwait(false);
                     return BuildResult(DiagnosticResult.Ok(info, $"Capture {info.CaptureId}."), SerializeQuery) with
                     {
                         Capture = info,
-                        CaptureViews = await CliDurableCaptures.DescribeViewsAsync(options.CaptureRoot, info, cancellationToken).ConfigureAwait(false),
+                        CaptureViews = metadata.Views,
+                        CaptureCompositions = metadata.Compositions,
                     };
                 case "delete":
                     await service.DeleteAsync(options.CaptureId!, access, cancellationToken).ConfigureAwait(false);

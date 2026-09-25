@@ -49,6 +49,7 @@ internal sealed record CliCommandResult(bool IsError, bool Cancelled, object Env
 {
     public CaptureInfo? Capture { get; init; }
     public IReadOnlyDictionary<string, IReadOnlyList<string>>? CaptureViews { get; init; }
+    public IReadOnlyDictionary<string, DurableCaptureComposition>? CaptureCompositions { get; init; }
     internal Func<DiagnosticResult<object>>? CaptureProjection { get; init; }
     /// <summary>Drill-down handle published by the originating command (e.g. <c>collect</c>), or
     /// <c>null</c>. Surfaced by the <c>session</c> REPL so the user can <c>query --handle &lt;id&gt;</c>

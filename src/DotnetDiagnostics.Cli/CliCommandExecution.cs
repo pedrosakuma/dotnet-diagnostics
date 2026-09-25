@@ -304,6 +304,10 @@ internal static class CliCommandExecution
                         {
                             artifact["supportedViews"] = JsonSerializer.SerializeToNode(supported, JsonOptions);
                         }
+                        if (result.CaptureCompositions?.TryGetValue(id, out var composition) == true)
+                        {
+                            artifact["composition"] = JsonSerializer.SerializeToNode(composition, JsonOptions);
+                        }
                     }
                 }
                 captureEnvelope["capture"] = captureNode;
@@ -327,6 +331,14 @@ internal static class CliCommandExecution
                     var views = result.CaptureViews?.GetValueOrDefault(artifact.ArtifactId) ?? [];
                     human = string.Concat(human, Environment.NewLine,
                         $"  artifact: {artifact.ArtifactId} ({artifact.Kind}); offline views: {string.Join(", ", views)}");
+                    if (result.CaptureCompositions?.TryGetValue(artifact.ArtifactId, out var composition) == true)
+                    {
+                        foreach (var child in composition.Children)
+                        {
+                            human = string.Concat(human, Environment.NewLine,
+                                $"    child: {child.ArtifactId} ({child.Kind}); parent: {child.ParentArtifactId}; cancelled={child.Cancelled}; error={child.Error?.Kind ?? "none"}");
+                        }
+                    }
                 }
                 human = string.Concat(human, Environment.NewLine,
                     capture.State == DotnetDiagnostics.Core.Captures.CaptureState.Sealed

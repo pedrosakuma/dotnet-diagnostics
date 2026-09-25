@@ -21,6 +21,52 @@ public sealed class CliDurableCaptureTests : IDisposable
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     [Fact]
+    public async Task ExplicitChildScopesPreserveSameKindArtifactIdentityAndExposeReferences()
+    {
+        using var services = Services();
+        var coordinator = CliDurableCaptures.For(services).Get(_root);
+        var result = await CliCommands.PersistAsync(services,
+            new CliOptions { Command = "collect", Kind = "sweep", Persist = true, CaptureRoot = _root },
+            async ct =>
+            {
+                foreach (var name in new[] { "first-window", "second-window" })
+                {
+                    var child = await coordinator.RunChildAsync<object>("counters", name, async childToken =>
+                    {
+                        var captured = await CliCommands.RunAsync(services,
+                            new CliOptions { Command = "collect", Kind = "counters" }, childToken);
+                        return captured.CaptureProjection!();
+                    }, ct);
+                    child.IsError.Should().BeFalse();
+                }
+                return CliCommands.BuildResult(DiagnosticResult.Ok(new { ChildCount = 2 }, "two windows"), static (_, _) => { });
+            }, CancellationToken.None);
+        result.IsError.Should().BeFalse(result.Human);
+        var capture = result.Capture!;
+        capture.State.Should().Be(CaptureState.Sealed);
+        var root = capture.Artifacts.Single(artifact => artifact.Kind == "sweep");
+        var composition = result.CaptureCompositions![root.ArtifactId];
+        composition.Children.Should().HaveCount(2);
+        composition.Children.Select(child => child.ArtifactId).Should().OnlyHaveUniqueItems();
+        composition.Children.Select(child => child.Name).Should().BeEquivalentTo("first-window", "second-window");
+        result.CaptureViews![root.ArtifactId].Should().BeEmpty();
+        var (showExit, show, _) = await HostAsync("captures", "show", "--capture-id", capture.CaptureId);
+        showExit.Should().Be(0, show.ToString());
+        var shownRoot = show.GetProperty("capture").GetProperty("artifacts").EnumerateArray()
+            .Single(artifact => artifact.GetProperty("artifactId").GetString() == root.ArtifactId);
+        shownRoot.GetProperty("composition").GetProperty("children").GetArrayLength().Should().Be(2);
+        using var fresh = Services();
+        foreach (var child in composition.Children)
+        {
+            child.ParentArtifactId.Should().Be(root.ArtifactId);
+            var (queryExit, query) = await ExecuteAsync(fresh,
+                ["query", "--capture-id", capture.CaptureId, "--artifact-id", child.ArtifactId,
+                    "--capture-root", _root, "--view", "summary", "--json"]);
+            queryExit.Should().Be(0, query.ToString());
+        }
+    }
+
+    [Fact]
     public async Task OriginalPersistedProducerHandleIsReauthorizedAfterDeletion()
     {
         using var services = Services();

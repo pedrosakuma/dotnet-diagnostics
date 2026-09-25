@@ -824,6 +824,10 @@ SQLite capture while preserving the ordinary diagnostic result's `data`. With no
 `--persist`, collection and handle lifetimes remain unchanged. A capture advertises
 its ID, artifact IDs, quality, and supported offline views. Grouped workflows retain
 their child artifacts in one logical capture, not unrelated packages.
+Collection output and `captures show` include `capture.artifacts[].composition` for
+group roots: bounded child references, parent IDs, admission/source-loss evidence,
+and completion errors/cancellation. Group roots have no snapshot dispatcher views;
+select a child artifact ID for its advertised offline views.
 
 ```bash
 dotnet-diagnostics-cli collect --kind gc --pid 1234 --duration 10 \

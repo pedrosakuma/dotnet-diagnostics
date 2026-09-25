@@ -7,6 +7,10 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace DotnetDiagnostics.Cli;
 
+internal sealed record CliCaptureMetadata(
+    IReadOnlyDictionary<string, IReadOnlyList<string>> Views,
+    IReadOnlyDictionary<string, DurableCaptureComposition> Compositions);
+
 internal sealed class CliDurableCaptures
 {
     private const int MaximumRoots = 32;
@@ -49,14 +53,15 @@ internal sealed class CliDurableCaptures
         }
     }
 
-    internal static async Task<Dictionary<string, IReadOnlyList<string>>> DescribeViewsAsync(
+    internal static async Task<CliCaptureMetadata> DescribeMetadataAsync(
         string? root, CaptureInfo capture, CancellationToken cancellationToken)
     {
         var result = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
+        var compositions = new Dictionary<string, DurableCaptureComposition>(StringComparer.Ordinal);
         if (capture.State != CaptureState.Sealed)
         {
             foreach (var artifact in capture.Artifacts) result.Add(artifact.ArtifactId, []);
-            return result;
+            return new(result, compositions);
         }
 
         var options = new CaptureStoreOptions();
@@ -72,6 +77,14 @@ internal sealed class CliDurableCaptures
             }
             try
             {
+                if (snapshot.Version == DurableCaptureCompositionCodec.SnapshotVersion)
+                {
+                    var composition = DurableCaptureCompositionCodec.Decode(
+                        artifact.Kind, artifact.ArtifactId, snapshot, reader.Info, options);
+                    compositions.Add(artifact.ArtifactId, composition);
+                    result.Add(artifact.ArtifactId, []);
+                    continue;
+                }
                 var decoded = CaptureArtifactCodec.Decode(artifact.Kind, snapshot.Version,
                     snapshot.Utf8Json.Span, options.MaxSnapshotBytes);
                 var offline = CaptureArtifactCodec.GetSupportedSnapshotViews(artifact.Kind, decoded);
@@ -84,6 +97,6 @@ internal sealed class CliDurableCaptures
                     $"Artifact {artifact.ArtifactId} has no safely supported snapshot representation: {ex.Message}", ex);
             }
         }
-        return result;
+        return new(result, compositions);
     }
 }
