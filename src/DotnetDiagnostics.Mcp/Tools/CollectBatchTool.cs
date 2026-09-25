@@ -112,7 +112,7 @@ public sealed class CollectBatchTool
         Name = ToolName,
         Title = "Run several bounded-time collectors in one call against one process",
         Destructive = false,
-        ReadOnly = true,
+        ReadOnly = false,
         Idempotent = false,
         UseStructuredContent = true)]
     [Description(
@@ -177,8 +177,17 @@ public sealed class CollectBatchTool
         string depth = "full",
         [Description("Opt in to redacted HTTP authority evidence for the activities entry only; requires that entry. Native tags are unchanged.")]
         bool includeHttpDestination = false,
+        [Description("Opt in to one durable SQLite capture containing all batch child artifacts. Default false.")]
+        bool persist = false,
+        DurableCaptureTools? durableCaptures = null,
         CancellationToken cancellationToken = default)
     {
+        return await DurableCaptureTools.CollectAsync(
+            durableCaptures, principalAccessor, persist, "collect_batch", "batch",
+            ExecuteAsync, cancellationToken).ConfigureAwait(false);
+
+        async Task<DiagnosticResult<CollectBatchReport>> ExecuteAsync(CancellationToken cancellationToken)
+        {
         if (durationSeconds < 1)
         {
             return DiagnosticResult.Fail<CollectBatchReport>(
@@ -345,6 +354,7 @@ public sealed class CollectBatchTool
             : $"Batch over {durationSeconds}s against pid {pid}: {results.Length} entr{(results.Length == 1 ? "y" : "ies")} requested, {failureCount} failed.";
 
         return DiagnosticResult.Ok(report, summary);
+        }
     }
 
     /// <summary>

@@ -50,28 +50,15 @@ public sealed class InspectHeapTool
         Name = ToolName,
         Title = "Inspect a managed heap (live process or dump file)",
         Destructive = false,
-        ReadOnly = true,
+        ReadOnly = false,
         Idempotent = false,
         UseStructuredContent = true)]
     [Description(
-        "Walks the managed heap and returns aggregated runtime/heap totals plus top types by " +
-        "retained bytes and instance count. Each TypeStat carries a TypeIdentity (ModuleVersionId + " +
-        "MetadataToken) ready to hand off verbatim to dotnet-assembly-mcp's get_type. The " +
-        "`source` discriminator selects the backend: " +
-        "`source=\"live\"` attaches to a live .NET process via ClrMD (requires same UID as the " +
-        "target plus CAP_SYS_PTRACE on Linux; the target is suspended for the duration of the walk) " +
-        "and requires `processId` (auto-resolved when only one .NET process is reachable); " +
-        "`source=\"dump\"` walks a previously-captured WithHeap/Full dump offline (read-only, no " +
-        "ptrace) and requires `dumpFilePath`. Mini and Triage dumps return runtime metadata only. " +
-        "`source=\"gcdump\"` triggers an induced GC heap snapshot over EventPipe (the dotnet-gcdump " +
-        "mechanism — production-safe: no ptrace, no ClrMD attach, no dump file) and targets a live " +
-        "`processId` (auto-resolved); it returns per-type byte/instance totals but ClrMD-only views " +
-        "(GC handles, static fields, delegate targets, segment layout) stay empty. " +
-        "Live and dump invocations both produce the same `HeapSnapshotArtifact`, addressable via " +
-        "`query_snapshot(handle, view, …)` for retention paths, static-field roots, task/timer leak candidates, AssemblyLoadContext leak candidates, GCHandle table aggregation, finalizer " +
-        "queue and other drilldown views without re-walking. Live-origin handles are evicted when " +
-        "the target PID exits; dump-origin handles are retained until their TTL elapses. " +
-        "`inspect_heap` is the only registered public heap-inspection tool.")]
+        "Inspect managed heap totals and top types; TypeIdentity supports dotnet-assembly-mcp handoff. " +
+        "live: ClrMD suspends the target; same UID and Linux CAP_SYS_PTRACE required. dump: read-only WithHeap/Full analysis; Mini/Triage yields runtime metadata only. " +
+        "gcdump: induces GC over EventPipe, no ptrace/ClrMD/dump file; returns observed type totals, not ClrMD-only details or a guaranteed complete graph. " +
+        "query_snapshot drills into the retained handle; persist=true supports snapshot-only historical views, never reattachment. Raw trace export is separate. " +
+        "Live handles normally expire with the PID; dump/durable handles use TTL. See tool-reference.md for views and limits. Only registered heap-inspection tool.")]
     public static async Task<DiagnosticResult<object>> InspectHeap(
         IDumpInspector inspector,
         IDiagnosticHandleStore handles,
@@ -94,8 +81,17 @@ public sealed class InspectHeapTool
         string? investigationHandleId = null,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
         RequestContext<CallToolRequestParams>? requestContext = null,
+        [Description("Persist private SQLite evidence; default false. Historical views never reattach; raw files remain separate.")]
+        bool persist = false,
+        DurableCaptureTools? durableCaptures = null,
         CancellationToken cancellationToken = default)
     {
+        return await DurableCaptureTools.CollectAsync(
+            durableCaptures, principalAccessor, persist, "inspect_heap", source,
+            ExecuteAsync, cancellationToken).ConfigureAwait(false);
+
+        async Task<DiagnosticResult<object>> ExecuteAsync(CancellationToken cancellationToken)
+        {
         if (!ToolDispatchGuards.TryValidateDiscriminator<object>(
                 source, AllowedSources, nameof(source), out var canonical, out var discriminatorFailure))
         {
@@ -233,6 +229,7 @@ public sealed class InspectHeapTool
             {
                 Cancelled = true,
             };
+        }
         }
     }
 

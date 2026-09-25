@@ -34,9 +34,12 @@ public sealed class HeapSnapshotResources
         "Returns an error contents block when the handle is unknown or expired.")]
     public static string ReadSnapshot(
         IDiagnosticHandleStore handles,
-        string handle)
+        string handle,
+        Tools.DurableCaptureTools? durableCaptures = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(handle);
+        if (durableCaptures?.IsDurableHandle(handle) == true)
+            return Tools.DurableCaptureTools.ResourceDenial;
 
         var snapshot = handles.TryGet<HeapSnapshotArtifact>(handle);
         if (snapshot is null)

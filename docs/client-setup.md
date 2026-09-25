@@ -21,6 +21,34 @@ This is the MCP server's **start here** doc: pick one transport track first, the
 
 For permission-shaped failures on the HTTP track, make `inspect_process(view="preflight")` your first troubleshooting step before retrying a more expensive tool.
 
+### Optional durable SQLite evidence
+
+The default tool catalog and ephemeral collection behavior remain unchanged.
+To retain a supported collection across server restarts, pass `persist=true`
+to the existing collection tool and save the returned `capture.captureId` and
+artifact IDs. `collect_batch` persists one package with child artifacts.
+Reopen through `query_snapshot(captureId=..., artifactId=..., view=...)`;
+manage packages through `get_bytes(kind="captures", captureAction=...)`.
+See [durable capture contracts](./tool-reference.md#durable-captures-through-the-existing-tools).
+
+Configure a stable operator-controlled `MCP_ARTIFACT_ROOT` and preserve that
+directory across process/container restarts. Clients cannot choose a SQLite
+path or send SQL. No history files are created merely by registering services;
+collection remains opt-in. Raw trace export still requires `exportTrace=true`.
+The raw-artifact TTL reaper does not delete private capture packages.
+
+HTTP captures belong to the current authenticated ownership key; display names
+and saved package metadata are not credentials. Reopening under reduced scopes
+can be denied even for the same owner. The existing stdio synthetic principal
+policy applies locally. Missing principals never gain root privileges on the
+durable path. Through orchestrator routing, signed delegation preserves the
+caller's ownership identity and current permissions.
+
+Historical views use retained evidence, never a stored PID to reattach. Queries
+do not repair interrupted captures: request explicit `captureAction="recover"`
+to create a new derived package. Inspect quality and error details rather than
+assuming an incomplete capture is complete or an unavailable view is empty.
+
 ## 1. Run the server
 
 ### Option A: `--stdio` (local dev)

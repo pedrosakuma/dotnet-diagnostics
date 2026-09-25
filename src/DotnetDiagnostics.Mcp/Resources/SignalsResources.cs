@@ -40,9 +40,12 @@ public sealed class SignalsResources
         "returns an error contents block when the handle is unknown or expired.")]
     public static string ReadCpuSampleSignals(
         IDiagnosticHandleStore handles,
-        string handle)
+        string handle,
+        Tools.DurableCaptureTools? durableCaptures = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(handle);
+        if (durableCaptures?.IsDurableHandle(handle) == true)
+            return Tools.DurableCaptureTools.ResourceDenial;
 
         // Restrict to cpu-sample handles: allocation-sample / native-alloc-sample also back a
         // CpuSampleTraceArtifact, but their stack counts are allocation events, not CPU samples —

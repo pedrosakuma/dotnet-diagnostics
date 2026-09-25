@@ -33,32 +33,34 @@ public sealed class GetBytesTool
     internal const string KindTrace = DiagnosticOperationCatalog.ByteKinds.Trace;
     internal const string KindList = DiagnosticOperationCatalog.ByteKinds.List;
     internal const string KindDelete = DiagnosticOperationCatalog.ByteKinds.Delete;
+    internal const string KindCaptures = "captures";
 
     internal const string DeleteArtifactScope = ToolInvocationScopeResolver.DeleteArtifactScope;
 
     internal static readonly IReadOnlyList<string> AllowedKinds =
-        DiagnosticOperationCatalog.ByteKinds.All;
+        DiagnosticOperationCatalog.ByteKinds.All.Append(KindCaptures).Distinct(StringComparer.Ordinal).ToArray();
 
     [RequireScope("module-bytes-read")]
     [McpServerTool(
         Name = ToolName,
-        Title = "Fetch module/dump/trace bytes; list or delete artifacts",
+        Title = "Fetch bytes; manage artifacts and durable captures",
         Destructive = true,
         ReadOnly = false,
-        Idempotent = true,
+        Idempotent = false,
         UseStructuredContent = true)]
     [Description(
-        "Streams a managed module artifact (PE or PDB), a dump file, or a raw trace (.nettrace) as repeated CallTool chunks so sibling MCPs can materialise pod-local binaries through the orchestrator proxy; also lists and deletes artifacts under MCP_ARTIFACT_ROOT for lifecycle hygiene. " +
-        "Dispatches on 'kind': 'module' (resolve by ModuleVersionId in a live process; asset defaults to 'pe'; optional processId — server auto-selects when omitted), 'dump' (path under MCP_ARTIFACT_ROOT, re-validated every call), 'trace' (a .nettrace exported by collect_sample(kind='cpu', exportTrace=true) or inspect_heap(source='gcdump', exportTrace=true), path under MCP_ARTIFACT_ROOT), 'list' (read-only inventory of all artifacts under the root, newest first), or 'delete' (remove one artifact — requires the literal 'delete-artifact' scope). " +
-        "maxBytes defaults to 4 MiB and is capped at 16 MiB per response; total artifact size is capped at 256 MiB. A TTL reaper (MCP_ARTIFACT_TTL_HOURS, default 24h, 0=disabled) prunes aged artifacts automatically. " +
-        "`get_bytes` is the only registered public byte-fetch tool. Clients migrating from the removed `get_module_bytes` and `get_dump_bytes` names should use `kind=\"module\"` and `kind=\"dump\"`, respectively; the removed names are migration history and are not registered.")]
+        "Fetch PE/PDB, dump or exported .nettrace chunks; manage raw artifacts or private SQLite captures. " +
+        "Paths stay under MCP_ARTIFACT_ROOT and are revalidated per call. maxBytes: default 4 MiB, cap 16 MiB; artifact cap 256 MiB. " +
+        "captures uses captureAction=list|describe|delete|recover, checks current ownership, and never exposes SQL/database bytes or client roots. Recovery creates a derived package. " +
+        "Requires literal module-bytes-read; captures also investigation-export; deletion also literal delete-artifact. Raw TTL excludes captures. " +
+        "Only registered byte-fetch tool: removed get_module_bytes/get_dump_bytes aliases map to kind=module/dump (migration history only).")]
     public static async Task<DiagnosticResult<object>> GetBytes(
         IModuleByteSource moduleByteSource,
         IDumpByteSource dumpByteSource,
         IProcessContextResolver resolver,
         IPrincipalAccessor principalAccessor,
         IArtifactLifecycle artifactLifecycle,
-        [Description("Artifact kind: 'module' (PE/PDB of a loaded module), 'dump' (dump file under the root), 'trace' (.nettrace under the root), 'list' (inventory all artifacts), or 'delete' (remove one artifact).")] string kind,
+        [Description("module|dump|trace: byte streaming; list|delete: raw artifact lifecycle; captures: private durable capture lifecycle, selected by captureAction.")] string kind,
         [Description("Module MVID (GUID 'D' format). Required when kind='module'; ignored otherwise.")] string? moduleVersionId = null,
         [Description("Module artifact when kind='module': 'pe' (default) or 'pdb'. Ignored when kind='dump'.")] string asset = "pe",
         [Description("Dump path when kind='dump'. Relative paths resolve under MCP_ARTIFACT_ROOT; absolute paths must still resolve under that root. Ignored for other kinds.")] string? dumpFilePath = null,
@@ -70,6 +72,15 @@ public sealed class GetBytesTool
         [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
         string? investigationHandleId = null,
         ILoggerFactory? loggerFactory = null,
+        [Description("kind='captures' only: list (default), describe, delete, or recover. Recovery explicitly creates a derived package, never modifies the source.")]
+        string captureAction = "list",
+        [Description("Opaque durable capture ID for describe/delete/recover. No paths or SQL accepted.")]
+        string? captureId = null,
+        [Description("kind='captures', action='list': maximum catalog entries, 1..100 (default 25).")]
+        int capturePageSize = 25,
+        [Description("kind='captures', action='list': continuation from nextAfterCaptureId.")]
+        string? afterCaptureId = null,
+        DurableCaptureTools? durableCaptures = null,
         CancellationToken cancellationToken = default)
     {
         if (!ToolDispatchGuards.TryValidateDiscriminator<object>(
@@ -84,6 +95,11 @@ public sealed class GetBytesTool
 
         return canonicalKind switch
         {
+            KindCaptures => durableCaptures is null
+                ? DurableCaptureTools.Unavailable<object>()
+                : await durableCaptures.LifecycleAsync(
+                    principalAccessor, captureAction, captureId, capturePageSize, afterCaptureId,
+                    cancellationToken).ConfigureAwait(false),
             KindModule => AsObject(await DiagnosticTools.GetModuleBytes(
                 moduleByteSource,
                 resolver,

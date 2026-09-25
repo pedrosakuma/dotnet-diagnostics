@@ -100,7 +100,7 @@ internal static class ToolScopeListToolsFilter
             Title = tool.Title,
             Description = AppendSafetyGuidance(tool.Description),
             InputSchema = AddSafetyAcknowledgementSchema(tool.InputSchema, safety),
-            OutputSchema = AddSafetyResultSchema(tool.OutputSchema),
+            OutputSchema = AddSafetyResultSchema(tool.OutputSchema, tool.Name),
             Annotations = tool.Annotations,
             Icons = tool.Icons,
             Meta = meta,
@@ -154,7 +154,7 @@ internal static class ToolScopeListToolsFilter
     }
 
     private static System.Text.Json.JsonElement? AddSafetyResultSchema(
-        System.Text.Json.JsonElement? outputSchema)
+        System.Text.Json.JsonElement? outputSchema, string toolName)
     {
         if (outputSchema is null)
         {
@@ -166,6 +166,26 @@ internal static class ToolScopeListToolsFilter
         {
             properties = new JsonObject();
             root["properties"] = properties;
+        }
+
+        if (properties.ContainsKey("capture"))
+        {
+            // CaptureInfo is shared by every DiagnosticResult<T>. Expand only the routing
+            // contract on durable-capable tools rather than repeating the storage manifest
+            // schema seventeen times on every tools/list request.
+            if (toolName is "collect_events" or "collect_sample" or "collect_batch" or
+                "collect_thread_snapshot" or "inspect_heap" or "query_snapshot" or "get_bytes")
+            {
+                properties["capture"] = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["description"] = "Optional durable captureId, artifacts (artifactId/kind), state and quality; see tool-reference.md.",
+                };
+            }
+            else
+            {
+                properties.Remove("capture");
+            }
         }
 
         properties["safety"] = new JsonObject

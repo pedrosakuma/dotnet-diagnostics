@@ -203,8 +203,17 @@ public sealed partial class CollectEventsTool
         int maxMatchedActivities = 200,
         [Description("activities/distributed_trace: opt in to redacted HTTP scheme/host/port evidence joined by W3C IDs, separate from unchanged native tags. Missing/ambiguous evidence stays unavailable.")]
         bool includeHttpDestination = false,
+        [Description("Persist private SQLite evidence; default false. Raw files remain separate.")]
+        bool persist = false,
+        DurableCaptureTools? durableCaptures = null,
         CancellationToken cancellationToken = default)
     {
+        return await DurableCaptureTools.CollectAsync(
+            durableCaptures, principalAccessor, persist, "collect_events", kind,
+            ExecuteAsync, cancellationToken).ConfigureAwait(false);
+
+        async Task<DiagnosticResult<CollectEventsEnvelope>> ExecuteAsync(CancellationToken cancellationToken)
+        {
         if (!ToolDispatchGuards.TryValidateDiscriminator<CollectEventsEnvelope>(
                 kind, AllowedKinds, nameof(kind), out var canonicalKind, out var dispatchFailure))
         {
@@ -326,6 +335,7 @@ public sealed partial class CollectEventsTool
 
         var effectiveDuration = durationSeconds ?? handler.DefaultDurationSeconds(context);
         return await handler.ExecuteAsync(context, effectiveDuration, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     /// <summary>
