@@ -143,12 +143,14 @@ public sealed class EventPipeCpuSampler : ICpuSampler
                 SelfSamples = aggregate.SelfSamples,
                 TopSelfTime = topSelfTime,
                 Timings = timings,
+                Notes = aggregate.RecordingNotes ?? [],
             };
             var relativeTrace = exportPath is null ? null : RelativeToRoot(exportPath);
             var artifact = new CpuSampleTraceArtifact(processId, startedAt, duration, aggregate.Total, aggregate.Root, aggregate.Sources, aggregate.Identities, TracePath: relativeTrace)
             {
                 Evidence = CpuSampleEvidence.EventPipeSampleProfiler,
                 SelfSamples = aggregate.SelfSamples,
+                Notes = aggregate.RecordingNotes ?? [],
             };
             return new CpuSampleResult(summary, artifact);
         }
@@ -291,6 +293,8 @@ public sealed class EventPipeCpuSampler : ICpuSampler
             long unknownSamples = 0;
             long waitingSamples = 0;
             var aggregationStopwatch = Stopwatch.StartNew();
+            var replayStacks = observationSink is IReplayCaptureObservationSink replaySink
+                ? new CpuReplayStackObservationWriter(replaySink) : null;
 
             foreach (var traceEvent in process.EventsInProcess)
             {
@@ -341,7 +345,12 @@ public sealed class EventPipeCpuSampler : ICpuSampler
                 }
 
                 // stack is leaf→root; reverse to root→leaf for tree traversal.
-                if (observationSink is not null)
+                if (replayStacks is not null)
+                {
+                    await replayStacks.AppendAsync(traceEvent.ThreadID, traceEvent.TimeStampRelativeMSec,
+                        stackFrames, cancellationToken).ConfigureAwait(false);
+                }
+                else if (observationSink is not null)
                 {
                     // Collection is already stopped and drained. Pace this offline replay instead
                     // of dropping its bounded local input when the storage queue is temporarily full.
@@ -470,7 +479,8 @@ public sealed class EventPipeCpuSampler : ICpuSampler
                 sourceLineResolutionDuration,
                 aggregationDuration,
                 methodInstantiationResolutionDuration,
-                selfSamples);
+                selfSamples,
+                replayStacks?.GetNotes());
         }
         finally
         {
@@ -1036,7 +1046,8 @@ public sealed class EventPipeCpuSampler : ICpuSampler
         TimeSpan SourceLineResolutionDuration,
         TimeSpan AggregationDuration,
         TimeSpan MethodInstantiationResolutionDuration,
-        SelfSampleBreakdown? SelfSamples);
+        SelfSampleBreakdown? SelfSamples,
+        IReadOnlyList<string>? RecordingNotes = null);
 
     private static CallTreeNode EmptyRoot() => new(new SampledFrame(string.Empty, "<root>"), 0, 0, Array.Empty<CallTreeNode>());
 

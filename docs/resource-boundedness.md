@@ -92,6 +92,7 @@ graph.
 | `ClrMdTaskTimerAnalyzer` (`Dump/`) | `MaxTrackedTimerAddresses` (`DefaultMaxTrackedTimerAddresses = 200,000`) | Exact dedup for the first 200k distinct timer addresses seen during a heap walk | Beyond that, dedup becomes approximate (a timer leak large enough to hit this is itself the finding) — totals may slightly over-count duplicate timer containers | `TimerAddressTrackingTruncated` flag → note: *"Timer address de-duplication hit its safety cap ({cap}); totals may slightly over-count duplicate timer containers beyond that point."* (a separate, unrelated note — *"Timer callback rows are truncated to the top groups retained in the snapshot."* — covers ordinary top-N row truncation, not the address-dedup cap) |
 | `RequestsNowCollector` (`ProcessDiscovery/`) | Snapshot-capture queue bounded at `SnapshotQueueCapacity = 256`, non-blocking `TryWrite` | Up to 256 concurrently-queued thread-snapshot captures per window | When the queue is full, the newly-started request is **removed from the result entirely** (not just its stack) — the final snapshot only includes requests with a captured call stack (`TopFrames.Length > 0`) | `notes`: `"Dropped N request thread snapshot capture(s) after reaching SnapshotQueueCapacity=256; request rows and counts are incomplete lower bounds..."`; the existing debug log is also preserved |
 | `MvidReader` singleton cache (`CpuSampling/`) | `DefaultCapacity = 128` (FIFO eviction) | The 128 most-recently-resolved module identities | Older module→MVID mappings are evicted and re-resolved on next use (cache miss, not correctness loss) | N/A — pure cache, re-resolution is transparent |
+| `CpuReplayStackObservationWriter` (`CpuSampling/`, opt-in durable EventPipe CPU replay only) | `MaximumStackDefinitions = 4096`; `MaximumStackCacheBytes = 8 MiB` for retained UTF-16 stack keys/reference names plus a conservative per-entry allowance | First admitted complete stack definitions; **every** source sample retains its own thread, relative timestamp and weight, with an artifact-local reference | No source sample is replaced by top-N. On dictionary saturation, rejected definition admission, or existing 128-frame/64-KiB stack-encoding truncation, samples use explicitly marked inline-stack fallback under the unchanged record/capture budgets | Bounded summary/artifact `Notes` name the cap and fallback counts; each fallback has `stackReferenceFallback`. Definition/source admission failures remain counted in capture quality |
 | `MemoryDiagnosticHandleStore` (`Drilldown/`) | `Diagnostics:HandleStore:MaxEntries` (default 32, validated `1..1024`) live artifacts + exactly `4 × MaxEntries` lightweight tombstones | Live artifacts whose TTL deadline is latest; ties preserve newer registrations. Tombstones retain only id/reason/time/pid/kind | After TTL cleanup, capacity evicts the earliest-expiring artifact. Old tombstones age out FIFO, after which that handle is reported as unknown. Artifacts are disposed and never retained in tombstones | Warning log for capacity eviction; information logs for registration/TTL; disposal-failure warning; `DotnetDiagnostics.Core.DiagnosticHandles` counters; `query_snapshot` / CLI `query` return `HandleCapacityEvicted`, `HandleExpired`, or `HandleNotFound` |
 | `collect_batch` correlated counter projection (`Mcp/Tools/CollectBatchSalientEvidence`) | `MaxInlineCounters = 18`; paired counters+GC requests subscribe only to `System.Runtime\dotnet.gc.collections` with `Gen2MeterMaxTimeSeries = 8`; at most two fixed explanatory notes and one fixed-size `gen2Evidence` record | The normal headline counter set; when paired GC reports Gen2 activity, also `gen-2-size`, `loh-size`, and `gc-fragmentation` when emitted; only the generation-tag variants of the one GC-collections Meter | Every other counter stays only in the existing full counter artifact behind the handle; no second full table is materialized; unrelated runtime Meter instruments are never enabled by the batch | Inline note names the counter cap and full captured count; Meter time-series overflow uses the counter collector's existing explicit note; `gen2Evidence` labels interval-delta, rate, process-cumulative, and collector-window scopes separately |
 | `collect_batch` native-contention correlation (`Mcp/Tools/CollectBatchSalientEvidence.ApplyNativeContentionEvidence`, `Core/NativeLockContention/NativeLockContentionUx.CorrelateBatchEvidence`, issue #855) | No new session/state is opened — the correlation reads only the two already-bounded artifacts each entry's own collector produced (`NativeLockContentionArtifact`, capped by that collector's own `topN`/`samplePeriod`; `OffCpuSnapshotArtifact`, capped by the existing off-CPU/syscall-companion budgets documented above) and returns a single fixed-shape `nativeContentionEvidence` record — no per-span or per-callsite list is duplicated into the projection | One merged `NativeContentionEvidence` record (level, sampled lock-call count, span/micros counters, evidence sources/rationale) | Neither entry's own full artifact/handle is affected; each collector's own cap/degradation notes stay exactly as that collector already reports them | The merged record's `Level` is always the off_cpu entry's own level — native-lock activity never elevates it (evidence-taxonomy invariant); a trailing `Summary` clause names whichever of the two entries did not run or failed, so partial success (one collector unavailable, denied, or errored) is explicit without special-casing the per-entry `Error` that already reports the failure |
@@ -99,6 +100,59 @@ graph.
 | Perf CoreCLR JIT frame symbolization (`CpuSampling/PerfScriptFrameParser.cs`, `OffCpu/JitMapEmitter.cs`) | JIT method ranges are kept only for the current parse window; repeated IP lookups use a bounded 16,384-address cache | Frames whose raw instruction pointer falls inside the captured JIT map are stamped with existing `MethodIdentity`; `/memfd:doublemapper` / bracketed unknown displays are replaced only after address match | No target modification or persistent instrumentation. If the map is unavailable or an address does not match, the raw perf frame is kept and supported summaries add a note | Notes on native-alloc/native-lock/off-CPU summaries when unresolved JIT-like frames were observed |
 | Off-CPU syscall attribution `SyscallIntervalIndex` (`OffCpu/SyscallIntervalIndex.cs`, issues #829/#839/#840) | Two layered caps, both enforced **at insertion**, never buffered-then-truncated: (1) `PerfSyscallScriptParser.MaxParsedEvents = 1,000,000` raw enter/exit lines while parsing the separate target-scoped `raw_syscalls:sys_enter`/`sys_exit` companion capture (the parser keeps draining `perf script`'s stdout past the cap so the child process is never blocked on a full pipe, it just stops appending); (2) `SyscallIntervalIndex.MaxIntervals = 500,000` paired intervals built from those events. The companion recording itself has a separate 64 MiB `perf record --max-size` cap and carries no callgraphs. | Parsed events / correlation intervals up to each cap; every off-CPU span is still emitted (uncorrelated spans just get no syscall label rather than being dropped). Closed futex/native-sync spans may be classified as `confirmed-blocking` native contention evidence only when the capture is not degraded. | Additional raw lines / enter-exit pairs once a cap is hit; those later spans simply don't get syscall attribution (never crashes/degrades the base off-CPU capture). Any cap/truncation/censoring/degradation note downgrades native-contention evidence to `probable-blocking` rather than confirmed. | `notes`: `"Syscall correlation stopped parsing raw_syscalls events after reaching the 1,000,000-event budget; N event(s) beyond that point were ignored, ..."`, `"Syscall correlation hit the 500000-interval cap; N syscall interval(s) were dropped, so some off-CPU spans may be missing a syscall label."`, or an explicit syscall companion failure/no-events note. The shaped `nativeContentionEvidence` payload also reports closed/censored span counts, durations, and rationale. |
 | Perf native-allocation sampler (`NativeAlloc/PerfNativeAllocSampler.cs`) | Same streaming parser as CPU/off-CPU, **plus** a hard `PerfScriptSampleBudget = 250,000` samples | The first 250,000 parsed perf-script samples | Parsing stops once the budget is hit; hotspots reflect only the processed prefix, not the full allocator-hot run | `aggregate.Truncated` → note: *"Stopped parsing perf script after 250,000 samples to keep allocator-hot captures bounded; hotspots reflect the processed prefix only."* — **this is a real trade-off, not a pure refactor**, since a single very allocation-heavy run can exceed the budget and silently-in-spirit (though not silently-in-notes) miss later hotspots |
+
+### Durable CPU stack definitions and occurrences
+
+The CPU sampler replays its temporary EventPipe transport **after** live collection
+has stopped and drained. A replay-capable recording sink uses normalized,
+versioned records instead of repeating the same stack and interpretation metadata
+in every observation:
+
+- `category="definition.cpu-stack.v1"` is a **non-occurrence** record
+  (`sourceOccurrence=false`). Its indexed `name` is a unique
+  `cpu-stack-v1:<replay-id>:<sequence>` definition key. The row retains the
+  leaf-first structured stack, module/method strings and available identities,
+  clock domain, weight unit, truncation flag, and backend evidence classification.
+- `category="sample.cpu.eventpipe.stack-ref.v1"` is one **source occurrence**
+  (`sourceOccurrence=true`). Its indexed `name` references the definition key in
+  the **same artifact**. OS thread ID, `sourceSeconds`, and sample `weight` remain
+  per occurrence; the common UTC timestamp remains null.
+- To resolve a sample's stack after reopening, query the **same artifact ID** with
+  `category="definition.cpu-stack.v1"` and `name=<sample.name>`. Those existing
+  category/name indexes retrieve the definition without needing a raw trace.
+  Enumerating definitions also exposes their method/module/identity fields for
+  method-oriented follow-up; query samples by the chosen definition key.
+- `sample.cpu.eventpipe` remains the self-contained inline form for legacy sinks
+  and explicit fallback. A normalized reader must not treat definition records
+  as samples or sum their fields as sample weights.
+
+Each definition must be admitted before any reference is offered. Rejected
+definitions are never referenced: their source observation is instead offered
+in the inline form, not retried as the rejected record. Cancellation can leave
+an unused definition, but cannot emit a reference before its definition.
+The writer's ordered admission/commit and interrupted-capture quality semantics
+still apply; admission is not a persistence guarantee.
+
+The dictionary is invocation-scoped, insertion-bounded, and never evicts/reuses
+definition IDs. Different replays use distinct namespaces, even when an artifact
+contains multiple collections. No live callback waits, no additional producer
+queue, no raw trace retention, and no store quota or lifetime accounting change
+are introduced. The compatibility snapshot still contains the full retained
+offline call tree, not a top-N substitute. Stack normalization removes repeated
+evidence, not logical-budget accounting: genuinely diverse stacks and longer
+captures can still reach the original record/capture limits.
+
+**Measured regression, not a universal capacity promise:** the eight-second
+CoreClrSample `/cpu-burn?ms=400` × 6 fixture on 2026-09-25 offered 69,420 inline
+samples accounting for 340,231,458 logical bytes (147,603,897 from repeated stack
+strings). Only 27,197 were admitted before the unchanged 128-MiB lifetime budget
+was exhausted; the compatibility snapshot was just 72,842 bytes. With normalized
+definitions, the same fixture retained all 68,902 samples plus 63 definitions in
+54,960,707 logical record bytes, with an 88,391-byte compatibility snapshot and
+zero record/queue/storage rejection. Sample and unique-stack counts naturally
+vary between live runs. Both stack duplication and repeated invariant metadata
+were removed; SQLite string interning alone does not reduce logical admission
+accounting.
 
 ## Bounded LLM response projections
 
