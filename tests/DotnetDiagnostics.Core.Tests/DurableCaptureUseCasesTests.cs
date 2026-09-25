@@ -130,6 +130,70 @@ public sealed class DurableCaptureUseCasesTests : IDisposable
     }
 
     [Fact]
+    public async Task OriginalProducerHandlesRecheckOwnershipDeletionAndOfflineViews()
+    {
+        var service = Service();
+        var result = await service.CaptureAsync("original", "counters", Owner, _ =>
+        {
+            var handle = _handles.RegisterWithMetadata(42, "counters", Snapshot, TimeSpan.FromMinutes(1));
+            return Task.FromResult(DiagnosticResult.OkWithHandle(Snapshot, "done", handle.Id, handle.ExpiresAt));
+        });
+        var binding = Assert.IsType<DurableCaptureHandleBinding>(service.LookupBinding(result.Handle!));
+        Assert.Equal(result.Capture!.CaptureId, binding.CaptureId);
+        await service.AuthorizeViewAsync(result.Handle!, binding.SupportedViews[0], Owner);
+        await Assert.ThrowsAsync<CaptureStoreException>(() => service.AuthorizeHandleAsync(result.Handle!, new("bob")));
+        await Assert.ThrowsAsync<CaptureStoreException>(() => service.AuthorizeViewAsync(result.Handle!, "objects", Owner));
+        await service.DeleteAsync(result.Capture.CaptureId, Owner);
+        Assert.NotNull(_handles.TryGetWithKind(result.Handle!));
+        await Assert.ThrowsAsync<CaptureStoreException>(() => service.AuthorizeHandleAsync(result.Handle!, Owner));
+    }
+
+    [Fact]
+    public async Task EveryChildAndOverBudgetHandleRemainsBoundAndFailsClosed()
+    {
+        var service = Service(new() { MaxArtifacts = 1 });
+        var ids = new List<string>();
+        var shared = Snapshot;
+        var result = await service.CaptureAsync("children", "counters", Owner, _ =>
+        {
+            for (var i = 0; i < 5; i++)
+                ids.Add(_handles.RegisterWithMetadata(42, "counters", shared, TimeSpan.FromMinutes(1)).Id);
+            return Task.FromResult(DiagnosticResult.Ok(shared, "children"));
+        });
+        Assert.True(result.IsError);
+        foreach (var id in ids)
+        {
+            Assert.NotNull(_handles.TryGetWithKind(id));
+            Assert.NotNull(service.LookupBinding(id));
+            await Assert.ThrowsAsync<CaptureStoreException>(() => service.AuthorizeHandleAsync(id, Owner));
+        }
+    }
+
+    [Fact]
+    public void SharedSnapshotBindingAliasCapacityFailsClosedWithoutDroppingKnownBindings()
+    {
+        var handles = new MemoryDiagnosticHandleStore(maxEntries: DiagnosticHandleStoreOptions.MaxAllowedEntries);
+        var bindings = new DurableCaptureBindings(handles);
+        var shared = Snapshot;
+        var binding = new DurableCaptureHandleBinding("capture", "artifact", ["view"])
+        {
+            Artifact = new("artifact", "counters", "test"),
+        };
+        for (var i = 0; i < DiagnosticHandleStoreOptions.MaxAllowedEntries + 2; i++)
+        {
+            var handle = handles.Register(42, "counters", shared, TimeSpan.FromMinutes(1));
+            bindings.Set(handle, shared, binding);
+            var retained = Assert.IsType<DurableCaptureHandleBinding>(bindings.Lookup(handle.Id));
+            if (i < DiagnosticHandleStoreOptions.MaxAllowedEntries) Assert.Same(binding, retained);
+            else
+            {
+                Assert.Null(retained.Artifact);
+                Assert.Empty(retained.SupportedViews);
+            }
+        }
+    }
+
+    [Fact]
     public async Task LiveHeapPathsAreProvenanceAndNeverEnableLiveViews()
     {
         var service = Service();

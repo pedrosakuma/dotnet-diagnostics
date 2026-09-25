@@ -44,8 +44,13 @@ interrupted package. Recovery produces a separate derived package.
    The returned binding's `Artifact` contains the original producer metadata.
    No scope or bearer token from a manifest is authority.
 
+Original producer handles, including child and over-budget registrations, are
+also bound. Pending/unsupported bindings fail closed rather than falling back to
+ephemeral permissions. This does not invalidate or replace the original handles.
 Bindings use weak snapshot keys, so handle eviction does not retain snapshots
-indefinitely. Keep the use-case service singleton with its handle store. Decoding
+indefinitely. Aliases sharing a snapshot have a fixed 1,024-entry ceiling;
+unknown aliases after overflow fail closed, while known bindings are retained.
+Keep the use-case service singleton with its handle store. Decoding
 fully materializes the snapshot while holding the reader lease; it then releases
 the lease. Deleting a package does not erase already materialized memory, but
 subsequent authorization fails. Authorization and dispatch are separate host

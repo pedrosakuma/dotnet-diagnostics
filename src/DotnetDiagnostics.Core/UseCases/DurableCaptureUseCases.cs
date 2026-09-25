@@ -1,4 +1,3 @@
-using System.Runtime.CompilerServices;
 using System.Text.Json;
 using DotnetDiagnostics.Core.CaptureRecording;
 using DotnetDiagnostics.Core.Captures;
@@ -27,7 +26,7 @@ public sealed class DurableCaptureUseCases
     private readonly SqliteCaptureStore _store;
     private readonly IDiagnosticHandleStore _handles;
     private readonly CaptureStoreOptions _options;
-    private readonly ConditionalWeakTable<object, BoundHandle> _bindings = new();
+    private readonly DurableCaptureBindings _bindings;
 
     public DurableCaptureUseCases(SqliteCaptureStore store, IDiagnosticHandleStore handles, CaptureStoreOptions options)
     {
@@ -35,6 +34,7 @@ public sealed class DurableCaptureUseCases
         _handles = handles ?? throw new ArgumentNullException(nameof(handles));
         _options = options ?? throw new ArgumentNullException(nameof(options));
         options.Validate();
+        _bindings = new(handles);
     }
 
     public async Task<DiagnosticResult<T>> CaptureAsync<T>(
@@ -55,7 +55,9 @@ public sealed class DurableCaptureUseCases
         {
             var defaultId = writer.AddArtifact(kind, name);
             artifacts.Add(new(defaultId, kind, name));
-            var sink = new SqliteCaptureObservationSink(writer, defaultId, _options);
+            var pending = new DurableCaptureHandleBinding(writer.Reference.CaptureId, defaultId, Array.Empty<string>());
+            var sink = new SqliteCaptureObservationSink(writer, defaultId, _options,
+                (handle, artifact) => _bindings.Set(handle, artifact, pending));
             try
             {
                 using (CaptureRecordingContext.Enter(sink))
@@ -99,6 +101,10 @@ public sealed class DurableCaptureUseCases
                     var artifactIndex = artifacts.FindIndex(a => a.ArtifactId == id);
                     artifacts[artifactIndex] = artifacts[artifactIndex] with { Provenance = provenance };
                     WriteSnapshot(writer, id, registered.Kind, registered.Artifact);
+                    var views = Array.AsReadOnly(CaptureArtifactCodec
+                        .GetSupportedSnapshotViews(registered.Kind, registered.Artifact).ToArray());
+                    _bindings.Set(registered.Handle, registered.Artifact,
+                        new(writer.Reference.CaptureId, id, views) { Artifact = artifacts[artifactIndex] });
                 }
                 catch (Exception ex) when (IsPersistenceException(ex))
                 {
@@ -216,7 +222,7 @@ public sealed class DurableCaptureUseCases
             evictWhenProcessExits: false, origin: HandleOrigin.Imported,
             producingTool: artifact.Provenance?.ProducingTool);
         var binding = new DurableCaptureHandleBinding(captureId, artifactId, views) { Artifact = artifact };
-        _bindings.Add(decoded, new(handle.Id, binding));
+        _bindings.Set(handle, decoded, binding);
         return new(handle, views, reader.Info, artifact);
     }
 
@@ -234,8 +240,7 @@ public sealed class DurableCaptureUseCases
         => _store.RecoverAsync(captureId, access, cancellationToken);
 
     public DurableCaptureHandleBinding? LookupBinding(string handle)
-        => _handles.TryGetWithKind(handle) is { } lookup &&
-            _bindings.TryGetValue(lookup.Artifact, out var bound) && bound.HandleId == handle ? bound.Binding : null;
+        => _bindings.Lookup(handle);
 
     /// <summary>Revalidates ownership and deletion on every query; materialization does not grant access.</summary>
     public async Task<DurableCaptureHandleBinding> AuthorizeHandleAsync(string handle, CaptureAccess access,
@@ -243,6 +248,9 @@ public sealed class DurableCaptureUseCases
     {
         var binding = LookupBinding(handle)
             ?? throw new CaptureStoreException(CaptureErrorCode.NotFound, "Durable handle is unknown or has expired.");
+        if (binding.Artifact is null)
+            throw new CaptureStoreException(CaptureErrorCode.Incomplete,
+                "Durable handle has no successfully persisted artifact binding.");
         using var reader = await _store.OpenAsync(binding.CaptureId, access, cancellationToken).ConfigureAwait(false);
         if (!reader.Info.Artifacts.Any(a => a.ArtifactId == binding.ArtifactId))
             throw new CaptureStoreException(CaptureErrorCode.NotFound, "Capture artifact is no longer available.");
@@ -267,6 +275,4 @@ public sealed class DurableCaptureUseCases
     private static bool IsPersistenceException(Exception ex)
         => ex is CaptureStoreException or IOException or InvalidDataException or UnauthorizedAccessException or JsonException or
             NotSupportedException or ArgumentException or InvalidOperationException;
-
-    private sealed record BoundHandle(string HandleId, DurableCaptureHandleBinding Binding);
 }

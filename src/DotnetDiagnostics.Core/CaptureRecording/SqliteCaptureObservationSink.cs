@@ -5,7 +5,8 @@ namespace DotnetDiagnostics.Core.CaptureRecording;
 
 /// <summary>Invocation-owned adapter. Callback admission never serializes artifacts or touches disk.</summary>
 internal sealed class SqliteCaptureObservationSink(
-    CaptureWriter writer, string artifactId, CaptureStoreOptions options) : ICaptureObservationSink
+    CaptureWriter writer, string artifactId, CaptureStoreOptions options,
+    Action<DiagnosticHandle, object>? registered = null) : ICaptureObservationSink
 {
     private readonly object _gate = new();
     private readonly Dictionary<string, HandleLookup> _artifacts = new(StringComparer.Ordinal);
@@ -56,6 +57,7 @@ internal sealed class SqliteCaptureObservationSink(
         lock (_gate)
         {
             if (_closed) return;
+            registered?.Invoke(handle, artifact);
             if (_artifacts.TryGetValue(handle.Id, out var existing))
             {
                 // A delegating registration can announce first without metadata, then with it.
