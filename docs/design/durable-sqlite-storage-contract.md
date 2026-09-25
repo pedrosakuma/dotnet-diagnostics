@@ -160,7 +160,8 @@ silently interpreted using whichever version happens to work.
 | Minimum required reader generation | 1 | 2 |
 
 v1 requires exactly `normalized-scalars-v1`. v2 requires that feature plus
-`artifact-provenance-v1`. The provenance feature is optional as data, but
+`artifact-provenance-v1`; derived packages carrying recovery aliases additionally
+require `recovery-artifact-identity-v1`. The provenance feature is optional as data, but
 understanding its v2 metadata representation is required of the reader.
 Unknown/missing features, unsupported future versions, undeclared v2
 provenance in a v1 manifest, and other version combinations fail closed.
@@ -391,6 +392,35 @@ Recovery always produces the current v2 descriptor and preserves available v2
 artifact provenance. Recovery of a genuine interrupted v1 fixture produces
 new capture/artifact IDs with null provenance; it never enriches or rewrites
 the source to fill missing facts.
+
+`CaptureArtifactInfo` appends optional `SourceArtifactId=null`. Only recovery
+sets this value, using `source.SourceArtifactId ?? source.ArtifactId`; ordinary
+`AddArtifact` leaves it null and there is no public writer setter. It preserves
+the **original exact reference key**, not necessarily the immediately preceding
+package's artifact ID. Repeated recovery retains this one fixed-size key per
+artifact instead of accumulating an unbounded chain of aliases.
+
+This supports byte-identical compatibility group snapshots that explicitly
+reference child artifact IDs. Group resolution must match an exact current
+`ArtifactId` or `SourceArtifactId` in the recovered package, and must refuse
+missing/ambiguous references rather than guessing names, kinds, or process IDs
+or reading the source package. Every alias is a validated opaque GUID and is
+unique across **both** current IDs and aliases in the whole manifest (including
+self-collisions). The existing artifact-count and manifest-byte caps still
+apply. Provenance remains independent and is copied unchanged.
+
+Derived packages with aliases declare required feature
+`recovery-artifact-identity-v1`. An older v2 reader that does not understand it
+rejects that package rather than claiming valid group composition. Updated
+readers still accept v2 packages without the key/feature and expose null; they
+do not fabricate recovery mapping. An alias without its feature, feature with
+no aliases, or feature without derived-capture metadata is rejected. The
+unreleased current-v2/genuine-previous-v1 window and all version axes remain
+unchanged; snapshot-body representation versions remain producer-controlled.
+The two-round test prepares an unsealed intermediate derived source by removing
+its seal, then checks source member hashes around each recovery and original
+child keys across unchanged group-body bytes. This is a deterministic missing
+publication fixture, not a claimed power-loss simulation.
 It never claims that a volatile producer queue or uncommitted WAL tail was
 recovered, even if the source had a clean disposal. Recovery does not reattach
 to a process. Cancellation/failure can leave an interrupted derived capture;

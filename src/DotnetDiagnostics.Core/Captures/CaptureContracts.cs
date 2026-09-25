@@ -36,7 +36,8 @@ public sealed record CaptureArtifactProvenance(
     string? RuntimeName = null, string? RuntimeVersion = null);
 
 public sealed record CaptureArtifactInfo(
-    string ArtifactId, string Kind, string Name, CaptureArtifactProvenance? Provenance = null);
+    string ArtifactId, string Kind, string Name, CaptureArtifactProvenance? Provenance = null,
+    string? SourceArtifactId = null);
 
 /// <summary>Source format axes. RequiredReaderVersion is not the identity of the executing reader.</summary>
 public sealed record CaptureFormatVersions(

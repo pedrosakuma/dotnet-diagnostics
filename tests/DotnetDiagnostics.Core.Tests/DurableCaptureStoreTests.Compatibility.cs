@@ -24,6 +24,7 @@ public sealed partial class DurableCaptureStoreTests
             Assert.Equal(new CaptureReaderIdentity("DotnetDiagnostics.Core.Captures.CaptureReader", 2), reader.ExecutingReader);
             var artifact = Assert.Single(reader.Info.Artifacts);
             Assert.Null(artifact.Provenance);
+            Assert.Null(artifact.SourceArtifactId);
             var records = reader.Query(new(artifact.ArtifactId)).Records;
             Assert.Equal(2, records.Count);
             Assert.Equal("frozen-v1 🧪", records[0].Record.Fields![0].StringValue);
@@ -51,6 +52,7 @@ public sealed partial class DurableCaptureStoreTests
         var recovered = await Store().RecoverAsync(fixture.CaptureId, fixture.Access);
         Assert.NotEqual(fixture.CaptureId, recovered.CaptureId);
         Assert.NotEqual(fixture.ArtifactId, Assert.Single(recovered.Artifacts).ArtifactId);
+        Assert.Equal(fixture.ArtifactId, recovered.Artifacts[0].SourceArtifactId);
         Assert.Equal(fixture.CaptureId, recovered.DerivedFrom);
         Assert.True(recovered.Quality.UnknownTail);
         Assert.True(recovered.Quality.IsIncomplete);

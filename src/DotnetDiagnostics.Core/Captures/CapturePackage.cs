@@ -20,6 +20,7 @@ internal static class CapturePackage
     internal const string Seal = "seal.json";
     internal const string Lease = ".lease";
     internal const int MetadataLimit = 128 * 1024;
+    internal const string RecoveryIdentityFeature = "recovery-artifact-identity-v1";
     internal static readonly CaptureFormatVersions CurrentFormat = new(2, 1, 1, 1, 2, 2);
     private static readonly CaptureFormatVersions PreviousFormat = new(1, 1, 1, 1, 1, 1);
     internal static readonly UTF8Encoding Utf8 = new(false, true);
@@ -155,8 +156,9 @@ internal static class CapturePackage
         var features = manifest.RequiredFeatures;
         var supportedFeatures = format == PreviousFormat
             ? features is { Length: 1 } && features[0] == "normalized-scalars-v1"
-            : features is { Length: 2 } && features.Contains("normalized-scalars-v1", StringComparer.Ordinal) &&
-              features.Contains("artifact-provenance-v1", StringComparer.Ordinal);
+            : features is { Length: 2 or 3 } && features.Contains("normalized-scalars-v1", StringComparer.Ordinal) &&
+              features.Contains("artifact-provenance-v1", StringComparer.Ordinal) &&
+              (features.Length == 2 || features.Contains(RecoveryIdentityFeature, StringComparer.Ordinal));
         if (!IsSupportedFormat(format) || !supportedFeatures)
             throw Error(CaptureErrorCode.UnsupportedFormat, "Unsupported package/schema/record/index/writer/reader version or required feature.");
         if (manifest.Info is null || manifest.Info.CaptureId != id || manifest.Info.Artifacts is null ||
@@ -175,6 +177,8 @@ internal static class CapturePackage
             manifest.Info.State == CaptureState.Sealed && quality.Pending != 0)
             throw Error(CaptureErrorCode.CorruptPackage, "Invalid capture quality populations or name.");
         var ids = new HashSet<string>(StringComparer.Ordinal);
+        var hasRecoveryIdentity = features!.Contains(RecoveryIdentityFeature, StringComparer.Ordinal);
+        var aliases = 0;
         foreach (var artifact in manifest.Info.Artifacts)
         {
             if (artifact is null || artifact.Name is null || string.IsNullOrWhiteSpace(artifact.Kind))
@@ -189,8 +193,19 @@ internal static class CapturePackage
                 ValidateProvenance(artifact.Provenance);
             }
             if (!ids.Add(artifact.ArtifactId))
-                throw Error(CaptureErrorCode.CorruptPackage, "Duplicate artifact identity.");
+                throw Error(CaptureErrorCode.CorruptPackage, "Duplicate or ambiguous artifact identity.");
+            if (artifact.SourceArtifactId is { } sourceId)
+            {
+                if (!hasRecoveryIdentity)
+                    throw Error(CaptureErrorCode.UnsupportedFormat, "Recovery artifact identity requires its declared versioned feature.");
+                ValidateId(sourceId);
+                if (!ids.Add(sourceId))
+                    throw Error(CaptureErrorCode.CorruptPackage, "Recovery source identity collides with another current or source artifact identity.");
+                aliases++;
+            }
         }
+        if (hasRecoveryIdentity && (aliases == 0 || manifest.Info.DerivedFrom is null))
+            throw Error(CaptureErrorCode.CorruptPackage, "Recovery identity feature requires derived capture metadata and actual source identities.");
         return manifest;
     }
 

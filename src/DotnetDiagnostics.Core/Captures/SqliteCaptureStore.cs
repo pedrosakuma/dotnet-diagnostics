@@ -218,8 +218,7 @@ public sealed class SqliteCaptureStore
             writer.SetSourceRejected(manifest.Info.Quality.SourceRejected);
             foreach (var artifact in manifest.Info.Artifacts)
             {
-                var newId = writer.AddArtifact(artifact.Kind, artifact.Name);
-                if (artifact.Provenance is not null) writer.SetArtifactProvenance(newId, artifact.Provenance);
+                var newId = writer.AddRecoveredArtifact(artifact);
                 long after = 0;
                 while (true)
                 {

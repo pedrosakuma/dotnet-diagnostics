@@ -52,6 +52,18 @@ public sealed class CaptureWriter : IAsyncDisposable
     public CaptureReference Reference => new(_manifest.Info.CaptureId);
 
     public string AddArtifact(string kind, string name)
+        => AddArtifactCore(kind, name, null, null);
+
+    internal string AddRecoveredArtifact(CaptureArtifactInfo source)
+    {
+        var sourceId = source.SourceArtifactId ?? source.ArtifactId;
+        CapturePackage.ValidateId(sourceId);
+        if (_manifest.Info.DerivedFrom is null)
+            throw CapturePackage.Error(CaptureErrorCode.InvalidInput, "Recovered artifacts require a derived capture.");
+        return AddArtifactCore(source.Kind, source.Name, source.Provenance, sourceId);
+    }
+
+    private string AddArtifactCore(string kind, string name, CaptureArtifactProvenance? provenance, string? sourceArtifactId)
     {
         CapturePackage.ValidateText(kind, 1024, nameof(kind));
         CapturePackage.ValidateText(name, 1024, nameof(name));
@@ -62,10 +74,23 @@ public sealed class CaptureWriter : IAsyncDisposable
             EnsureActive();
             if (_artifacts.Count >= _options.MaxArtifacts)
                 throw CapturePackage.Error(CaptureErrorCode.CapacityExceeded, "Artifact count limit reached.");
-            var artifact = new CaptureArtifactInfo(Guid.NewGuid().ToString("N"), kind, name);
+            if (sourceArtifactId is not null &&
+                _artifacts.Values.Any(a => a.ArtifactId == sourceArtifactId || a.SourceArtifactId == sourceArtifactId))
+                throw CapturePackage.Error(CaptureErrorCode.CorruptPackage, "Recovered source identity is ambiguous.");
+            string id;
+            do { id = Guid.NewGuid().ToString("N"); }
+            while (id == sourceArtifactId || _artifacts.Values.Any(a => a.ArtifactId == id || a.SourceArtifactId == id));
+            var artifact = new CaptureArtifactInfo(id, kind, name, provenance, sourceArtifactId);
             if (!_artifacts.TryAdd(artifact.ArtifactId, artifact))
                 throw CapturePackage.Error(CaptureErrorCode.StorageFailure, "Generated artifact identity collided.");
-            _manifest = _manifest with { Info = _manifest.Info with { Artifacts = _artifacts.Values.ToArray() } };
+            var features = _manifest.RequiredFeatures!;
+            if (sourceArtifactId is not null && !features.Contains(CapturePackage.RecoveryIdentityFeature, StringComparer.Ordinal))
+                features = [.. features, CapturePackage.RecoveryIdentityFeature];
+            _manifest = _manifest with
+            {
+                Info = _manifest.Info with { Artifacts = _artifacts.Values.ToArray() },
+                RequiredFeatures = features
+            };
             try { CapturePackage.WriteJson(_directory, CapturePackage.Manifest, _manifest); }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or CaptureStoreException)
             {
