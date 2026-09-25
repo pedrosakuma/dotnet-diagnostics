@@ -75,7 +75,7 @@ internal sealed class CliDurableCaptures
             var offline = await service.DescribeArtifactViewsAsync(
                 capture.CaptureId, artifact.ArtifactId, CliCaptureRootProvider.CurrentAccess(), cancellationToken).ConfigureAwait(false);
             result.Add(artifact.ArtifactId,
-                offline.Where(view => view == "records" ||
+                offline.Where(view => view is "records" or "children" ||
                     CliCommands.SessionViewsFor(artifact.Kind).Contains(view, StringComparer.Ordinal)).ToArray());
             var snapshot = reader.ReadSnapshot(artifact.ArtifactId);
             if (snapshot is null)

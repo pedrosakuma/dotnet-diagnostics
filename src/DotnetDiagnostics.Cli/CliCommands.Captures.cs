@@ -122,10 +122,7 @@ internal static partial class CliCommands
             if (options.View == "records")
             {
                 var page = await service.QueryRecordsAsync(options.CaptureId!,
-                    new CaptureRecordQuery(options.ArtifactId!, ParseRecordTime(options.RecordFrom),
-                        ParseRecordTime(options.RecordTo), options.ThreadId, options.Categories.Count > 0 ? options.Categories[0] : null,
-                        options.RecordName, options.AfterRecordId ?? 0, options.PageSize ?? 100),
-                    access, cancellationToken).ConfigureAwait(false);
+                    CaptureRecordsQuery(options.ArtifactId!, options), access, cancellationToken).ConfigureAwait(false);
                 return BuildResult(DiagnosticResult.Ok(page, "Bounded durable records; use nextAfterRecordId to continue."), SerializeQuery);
             }
 
@@ -162,6 +159,11 @@ internal static partial class CliCommands
                 $"{ex.Message} Check --capture-root and the capture/artifact IDs.");
         }
     }
+
+    private static CaptureRecordQuery CaptureRecordsQuery(string artifactId, CliOptions options)
+        => new(artifactId, ParseRecordTime(options.RecordFrom), ParseRecordTime(options.RecordTo),
+            options.ThreadId, options.Categories.Count > 0 ? options.Categories[0] : null,
+            options.RecordName, options.AfterRecordId ?? 0, options.PageSize ?? 100);
 
     private static CliCommandResult CaptureFailure(CaptureStoreException exception)
     {

@@ -42,8 +42,20 @@ public sealed class DurableCaptureTools(SqliteCaptureStore store, DurableCapture
                 new DiagnosticError("InvalidArgument", "A collection kind is required.", "kind"));
         try
         {
-            var result = await service._captures.CaptureAsync(
-                tool, kind.Trim().ToLowerInvariant(), access!, collect, cancellationToken).ConfigureAwait(false);
+            var operation = await service._captures.CaptureOperationAsync(
+                tool, kind.Trim().ToLowerInvariant(), access!, collect,
+                static result => DurableCaptureEnvelope.Box(result) with
+                {
+                    Data = result.Data switch
+                    {
+                        CollectEventsEnvelope { Kind: "sweep", Sweep: { } sweep } => sweep,
+                        _ => result.Data,
+                    },
+                }, cancellationToken).ConfigureAwait(false);
+            var result = DurableCaptureEnvelope.Apply(
+                operation.Result ?? new DiagnosticResult<T>(
+                    operation.Outcome.Summary, operation.Outcome.Hints, operation.Outcome.Error),
+                operation.Outcome);
             var presented = result with
             {
                 Error = result.Error is { Kind: "CapturePersistenceFailed" } persistenceError
@@ -141,7 +153,7 @@ public sealed class DurableCaptureTools(SqliteCaptureStore store, DurableCapture
             var artifact = reader.Info.Artifacts.SingleOrDefault(item => item.ArtifactId == artifactId);
             if (artifact is null)
                 return Invalid("artifactId does not identify an artifact in this capture.");
-            var denial = AuthorizeArtifact(principalAccessor.Current!, artifact, "records");
+            var denial = AuthorizeCapture(principalAccessor.Current!, reader.Info, artifact, "records");
             if (denial is not null)
                 return denial;
             var query = new CaptureRecordQuery(
@@ -186,6 +198,8 @@ public sealed class DurableCaptureTools(SqliteCaptureStore store, DurableCapture
                 if (!string.IsNullOrWhiteSpace(view) &&
                     !string.Equals(view.Trim(), "children", StringComparison.OrdinalIgnoreCase))
                     return (null, Invalid("Composition artifacts support only view='children'; select a child artifact for typed snapshot views."));
+                await _captures.AuthorizeViewAsync(opened.Handle.Id, "children",
+                    access!, cancellationToken).ConfigureAwait(false);
                 return (null, Bound(DiagnosticResult.Ok<object>(
                     opened.Composition, "Composition references and source quality, not raw observations; select a child artifact to drill down.")
                     with
@@ -258,7 +272,7 @@ public sealed class DurableCaptureTools(SqliteCaptureStore store, DurableCapture
             var denial = AuthorizeCapture(principalAccessor.Current!, info, artifact, view);
             if (denial is not null)
                 return denial;
-            if (binding.SupportedViews.All(static supported => supported == "records"))
+            if (binding.SupportedViews.Contains("children", StringComparer.Ordinal))
             {
                 var prepared = await PrepareAsync(principalAccessor, binding.CaptureId, binding.ArtifactId,
                     view, cancellationToken).ConfigureAwait(false);
@@ -310,6 +324,8 @@ public sealed class DurableCaptureTools(SqliteCaptureStore store, DurableCapture
         {
             if (string.Equals(view?.Trim(), "records", StringComparison.OrdinalIgnoreCase))
                 return Forbidden<object>("Composition records are not observations; select an authorized child artifact.");
+            if (artifact.Kind == "sweep" && !principal.HasScope("eventpipe"))
+                return Forbidden<object>("Sweep parent evidence requires the producer's eventpipe scope.");
             return principal.HasScope("eventpipe") || principal.HasScope("read-counters")
                 ? null : Forbidden<object>("Composition reads require a diagnostic read scope and every child artifact's scopes.");
         }

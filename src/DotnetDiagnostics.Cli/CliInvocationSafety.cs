@@ -9,27 +9,17 @@ namespace DotnetDiagnostics.Cli;
 /// Maps CLI syntax to the same canonical Core safety request used by MCP invocations.
 /// <see cref="CliSafetyPreflight"/> applies the CLI interaction policy to the resolved descriptor.
 /// </summary>
-internal static partial class CliInvocationSafety
+internal static class CliInvocationSafety
 {
     internal static InvocationSafetyDescriptor Resolve(
         CliOptions options,
         IDiagnosticHandleStore? handles = null)
-        => options.Persist || options.Command == "captures" || options.CaptureId is not null
-            ? ResolveForPreflight(CreateRequest(options, handles))
-            : InvocationSafetyResolver.Resolve(CreateRequest(options, handles));
+        => InvocationSafetyResolver.Resolve(CreateRequest(options, handles));
 
     internal static InvocationSafetyDescriptor ResolveForPreflight(
         InvocationSafetyRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
-        if (TryResolveDurableSafety(request.Operation) is { } durable)
-        {
-            foreach (var child in request.Children)
-            {
-                durable = Merge(durable, ResolveForPreflight(child));
-            }
-            return durable;
-        }
         try
         {
             return InvocationSafetyResolver.Resolve(request);
@@ -54,7 +44,9 @@ internal static partial class CliInvocationSafety
         var request = CreateDiagnosticRequest(options, handles);
         if (options.Persist && options.Command != "session")
         {
-            request = new InvocationSafetyRequest(CapturePersistOperation, children: [request]);
+            request = new InvocationSafetyRequest(request.Operation,
+                request.Arguments.Select(static pair => KeyValuePair.Create<string, string?>(pair.Key, pair.Value))
+                    .Append(KeyValuePair.Create<string, string?>("persist", "true")), request.Children);
         }
         return options.Launch
             ? new InvocationSafetyRequest(
@@ -83,14 +75,10 @@ internal static partial class CliInvocationSafety
                 ("dumpType", options.DumpType),
                 ("outputDirectory", options.OutDir)),
             "query" => Query(options, handles),
-            "captures" => InvocationSafetyRequest.Create(options.CaptureAction switch
-            {
-                "list" => CaptureListOperation,
-                "show" => CaptureShowOperation,
-                "delete" => CaptureDeleteOperation,
-                "recover" => CaptureRecoverOperation,
-                _ => throw new InvocationSafetyResolutionException("captures", "Unknown durable capture action."),
-            }),
+            "captures" => InvocationSafetyRequest.Create(
+                DiagnosticOperationCatalog.GetBytes,
+                ("kind", DiagnosticOperationCatalog.ByteKinds.Captures),
+                ("captureAction", options.CaptureAction == "show" ? "describe" : options.CaptureAction)),
             "get-bytes" => InvocationSafetyRequest.Create(
                 DiagnosticOperationCatalog.GetBytes,
                 ("kind", options.Kind)),
@@ -189,7 +177,10 @@ internal static partial class CliInvocationSafety
     {
         if (options.CaptureId is not null)
         {
-            return InvocationSafetyRequest.Create(CaptureQueryOperation);
+            return InvocationSafetyRequest.Create(
+                DiagnosticOperationCatalog.QuerySnapshot,
+                ("captureId", options.CaptureId),
+                ("view", options.View));
         }
         var handleKind = options.Handle is { Length: > 0 } handle
             ? handles?.LookupWithKind(handle).Lookup?.Kind

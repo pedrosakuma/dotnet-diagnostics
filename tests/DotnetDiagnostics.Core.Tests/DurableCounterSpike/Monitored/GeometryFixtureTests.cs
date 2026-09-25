@@ -60,6 +60,11 @@ public sealed partial class MonitoredRunnerTests
     public async Task GeometryFixtureOrderedConstructionMeasures539Plus32AndStrictCleanup()
     {
         if (!OperatingSystem.IsLinux()) return;
+        if (!GeometryFixtureProcess.IsChild)
+        {
+            await GeometryFixtureProcess.RunAsync("ordered", _output);
+            return;
+        }
         var root = Path.Combine(_workspace, "geometry");
         var history = Path.Combine(root, "history");
         Directory.CreateDirectory(history);
@@ -69,7 +74,7 @@ public sealed partial class MonitoredRunnerTests
         await using var monitor = GeometryMonitor(root, owner, history);
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(120));
         _ = monitor.StartAsync();
-        var coverage = await PrevalidationGeometry.RunForComponentAsync(root, history, monitor, deadline.Token,
+        var coverage = await RunGeometryWithDiagnosticsAsync(root, history, monitor, deadline.Token,
             index =>
             {
                 // The first memfd is not created until every rooted pathname already exists.
@@ -151,6 +156,11 @@ public sealed partial class MonitoredRunnerTests
     public async Task GeometryFixtureConstructionFailureClosesOwnedHandlesWithoutBlockingObserver(bool cancel)
     {
         if (!OperatingSystem.IsLinux()) return;
+        if (!GeometryFixtureProcess.IsChild)
+        {
+            await GeometryFixtureProcess.RunAsync(cancel ? "cancel" : "failure", _output);
+            return;
+        }
         var root = Path.Combine(_workspace, "geometry");
         var history = Path.Combine(root, "history");
         Directory.CreateDirectory(history);
@@ -160,7 +170,7 @@ public sealed partial class MonitoredRunnerTests
         await using var monitor = GeometryMonitor(root, owner, history);
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(120));
         _ = monitor.StartAsync();
-        Func<Task> construct = () => PrevalidationGeometry.RunForComponentAsync(root, history, monitor,
+        Func<Task> construct = () => RunGeometryWithDiagnosticsAsync(root, history, monitor,
             deadline.Token, index =>
             {
                 if (index != 7) return;
@@ -209,6 +219,21 @@ public sealed partial class MonitoredRunnerTests
         }
         Action count = () => PrevalidationGeometry.CountFixtureFiles(history);
         count.Should().Throw<DurableStorageExperimentException>();
+    }
+
+    private async Task<PrevalidationCoverage> RunGeometryWithDiagnosticsAsync(string root, string history,
+        MonitoredStorageMonitor monitor, CancellationToken cancellationToken, Action<int>? fixtureCreated = null)
+    {
+        try
+        {
+            return await PrevalidationGeometry.RunForComponentAsync(
+                root, history, monitor, cancellationToken, fixtureCreated);
+        }
+        catch (DurableStorageExperimentException error)
+        {
+            _output.WriteLine($"Geometry prevalidation failure: {error.Code}; monitor alarm: {monitor.TerminalAlarm}");
+            throw;
+        }
     }
 
     private static MonitoredStorageMonitor GeometryMonitor(string root, MonitoredProcessIdentity owner,

@@ -826,8 +826,10 @@ its ID, artifact IDs, quality, and supported offline views. Grouped workflows re
 their child artifacts in one logical capture, not unrelated packages.
 Collection output and `captures show` include `capture.artifacts[].composition` for
 group roots: bounded child references, parent IDs, admission/source-loss evidence,
-and completion errors/cancellation. Group roots have no snapshot dispatcher views;
-select a child artifact ID for its advertised offline views.
+and completion errors/cancellation. Query a group with `--view children`, including
+when reusing its temporary handle in the same session. This authorized composition
+view does not use a typed snapshot dispatcher; select a child artifact ID for its
+advertised offline views. Ordinary snapshots without views are not treated as groups.
 
 ```bash
 dotnet-diagnostics-cli collect --kind gc --pid 1234 --duration 10 \
@@ -866,6 +868,9 @@ Each artifact advertises `recordStreamAvailable` and, when recorded, its own
 for declared occurrence streams or retained rows. A declared zero-event stream
 can return an empty page; snapshot-only evidence and reference-only group roots
 return an actionable error, not a misleading observed-zero result.
+Within a session, the same filters work with `query --handle <durable-handle>
+--view records`; each read rechecks capture ownership, deletion, and stream
+availability. Ordinary ephemeral handles do not gain a records stream.
 
 | Option | Meaning |
 |---|---|
@@ -876,6 +881,14 @@ return an actionable error, not a misleading observed-zero result.
 | `--after-record-id` | Exclusive nonnegative continuation ID from the previous page. |
 | `--page-size` | Requested row cap, 1..1000; the Core byte budget may shorten the page. |
 
+Durable EventPipe CPU samples can use `sample.cpu.eventpipe.stack-ref.v1` rows.
+Resolve a sample's `record.name` in the **same artifact** using
+`--category definition.cpu-stack.v1 --name <sample-name>`. The definition retains
+the full interpreted stack and common evidence metadata; the sample retains its
+thread, relative time, and weight. Definitions are not sample occurrences.
+Inline `sample.cpu.eventpipe` fallback rows remain self-contained. See the
+[versioned CPU record contract](./resource-boundedness.md#durable-cpu-stack-definitions-and-occurrences).
+
 Snapshot queries allow **only the advertised offline views**. Historical process IDs
 do not authorize reattachment: live memory readers, frame variables, and native
 companions that require the original target remain unavailable after restoration.
@@ -885,6 +898,9 @@ Ordinary non-persisted handles keep their existing behavior.
 CPU-efficiency aggregates are retained as typed snapshots, but currently have no
 supported snapshot drilldown view; retaining a snapshot does not imply that
 `query --view summary` is available. Collection output still includes the aggregate.
+Their `records` view exposes projected `snapshot.*` facts marked
+`sourceOccurrence=false` and `derivedRetainedRow=true`, not source events.
+Source loss remains unknown; these rows do not establish a complete event history.
 Capture quality reports known losses, interrupted evidence, and unknown source loss;
 persisted does not mean complete. Normalized retained records and compatibility
 snapshots are not a promise to retain every raw runtime event.

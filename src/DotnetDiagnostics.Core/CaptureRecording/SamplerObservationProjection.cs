@@ -25,6 +25,13 @@ internal static class SamplerObservationProjection
         ICaptureObservationSink sink, string category, string sourceClock, double? sourceSeconds,
         long? threadId, IEnumerable<Frame> leafToRoot, long weight = 1, string weightUnit = "samples",
         long? samplePeriod = null, IReadOnlyList<CaptureObservationField>? additional = null)
+        => sink.TryAppend(BuildSample(category, sourceClock, sourceSeconds, threadId, leafToRoot,
+            weight, weightUnit, samplePeriod, additional));
+
+    internal static CaptureObservation BuildSample(
+        string category, string sourceClock, double? sourceSeconds,
+        long? threadId, IEnumerable<Frame> leafToRoot, long weight = 1, string weightUnit = "samples",
+        long? samplePeriod = null, IReadOnlyList<CaptureObservationField>? additional = null)
     {
         var fields = new List<CaptureObservationField>
         {
@@ -89,7 +96,7 @@ internal static class SamplerObservationProjection
             fields.Add(CaptureObservationField.Null("waitMicroseconds"));
         }
         if (additional is not null) fields.AddRange(additional);
-        sink.TryAppend(new CaptureObservation(category, null, threadId, name, fields));
+        return new CaptureObservation(category, null, threadId, name, fields);
     }
 
     internal static void OffCpu(ICaptureObservationSink sink, OffCpuSpan span)

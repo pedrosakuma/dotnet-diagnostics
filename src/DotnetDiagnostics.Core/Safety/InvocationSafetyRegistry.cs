@@ -69,7 +69,7 @@ public static class InvocationSafetyRegistry
             "kind",
             DiagnosticOperationCatalog.CollectEventsKinds.Counters,
             DiagnosticOperationCatalog.CollectEventsKinds.All,
-            ["depth", "unsafeProvider", "triggerWhen", "captureKind", "launch", "savePath"],
+            ["depth", "unsafeProvider", "triggerWhen", "captureKind", "launch", "savePath", "persist"],
             DiagnosticOperationCatalog.CollectEventsKinds.All.Select(CollectEventsProfile)
                 .Concat(
                 [
@@ -94,6 +94,7 @@ public static class InvocationSafetyRegistry
                         [],
                         ["Use only with an operator-approved executable and arguments.", "Do not use it against a process whose lifetime must outlive the capture."])),
                     SaveOutputProfile(),
+                    PersistCaptureProfile(),
                 ]));
 
         yield return Registration(
@@ -101,7 +102,7 @@ public static class InvocationSafetyRegistry
             "kind",
             DiagnosticOperationCatalog.CollectSampleKinds.Cpu,
             DiagnosticOperationCatalog.CollectSampleKinds.All,
-            ["resolveMethodInstantiations", "exportTrace", "symbolPath", "includeSensitiveValues"],
+            ["resolveMethodInstantiations", "exportTrace", "symbolPath", "includeSensitiveValues", "persist"],
             DiagnosticOperationCatalog.CollectSampleKinds.All.Select(CollectSampleProfile)
                 .Concat(
                 [
@@ -116,6 +117,7 @@ public static class InvocationSafetyRegistry
                         [InvocationSideEffect.WritesArtifact],
                         SensitiveArtifactMitigations)),
                     RemoteSymbolsProfile(),
+                    PersistCaptureProfile(),
                 ]));
 
         yield return Registration(
@@ -123,7 +125,7 @@ public static class InvocationSafetyRegistry
             null,
             null,
             [],
-            ["children"],
+            ["children", "persist"],
             [
                 Profile("default", [], Descriptor(
                     InvocationRiskLevel.Moderate,
@@ -141,6 +143,7 @@ public static class InvocationSafetyRegistry
                     [],
                     [],
                     ["Review every child request; batching must not hide or downgrade critical work."])),
+                PersistCaptureProfile(),
             ]);
 
         yield return Registration(
@@ -148,7 +151,7 @@ public static class InvocationSafetyRegistry
             "source",
             null,
             DiagnosticOperationCatalog.HeapSources.All,
-            ["includeRetentionPaths", "includeStaticFields", "includeDelegateTargets", "includeDuplicateStrings", "exportTrace", "symbolPath"],
+            ["includeRetentionPaths", "includeStaticFields", "includeDelegateTargets", "includeDuplicateStrings", "exportTrace", "symbolPath", "persist"],
             DiagnosticOperationCatalog.HeapSources.All.Select(InspectHeapProfile)
                 .Concat(
                 [
@@ -175,6 +178,7 @@ public static class InvocationSafetyRegistry
                         [InvocationSideEffect.WritesArtifact],
                         SensitiveArtifactMitigations)),
                     RemoteSymbolsProfile(),
+                    PersistCaptureProfile(),
                 ]));
 
         yield return Registration(
@@ -210,8 +214,17 @@ public static class InvocationSafetyRegistry
             "kind",
             null,
             DiagnosticOperationCatalog.ByteKinds.All,
-            [],
-            DiagnosticOperationCatalog.ByteKinds.All.Select(GetBytesProfile));
+            ["captureAction"],
+            DiagnosticOperationCatalog.ByteKinds.All.Select(GetBytesProfile).Concat(
+            [
+                Profile("captures-delete", [("kind", "captures"), ("captureAction", "delete")],
+                    GetBytesProfile(DiagnosticOperationCatalog.ByteKinds.Delete).Safety),
+                Profile("captures-recover", [("kind", "captures"), ("captureAction", "recover")],
+                    Descriptor(InvocationRiskLevel.Moderate, InvocationApprovalPolicy.Warn,
+                        "Explicit recovery creates derived evidence; the source is unchanged.",
+                        [], [DataExposure.PossibleConfidentialData], [InvocationSideEffect.WritesArtifact],
+                        ["Inspect recovery quality and unknown-tail metadata."])),
+            ]));
 
         yield return Simple(DiagnosticOperationCatalog.CollectProcessDump, ProcessDumpSafety());
         yield return Registration(
@@ -219,7 +232,7 @@ public static class InvocationSafetyRegistry
             null,
             null,
             [],
-            ["dumpFilePath", "dumpFile", "symbolPath"],
+            ["dumpFilePath", "dumpFile", "symbolPath", "persist"],
             [
                 Profile("live", [], HighLiveAttach(
                     "A live thread snapshot attaches with ClrMD, briefly suspends the target, and exposes stack, type, and method names.")),
@@ -232,6 +245,7 @@ public static class InvocationSafetyRegistry
                     [],
                     SensitiveOutputMitigations)),
                 RemoteSymbolsProfile(),
+                PersistCaptureProfile(),
             ]);
         yield return Simple(
             DiagnosticOperationCatalog.CaptureMethodBytes,
@@ -756,7 +770,7 @@ public static class InvocationSafetyRegistry
     private static InvocationSafetyProfile GetBytesProfile(string kind)
         => kind switch
         {
-            DiagnosticOperationCatalog.ByteKinds.List => Profile(
+            DiagnosticOperationCatalog.ByteKinds.List or DiagnosticOperationCatalog.ByteKinds.Captures => Profile(
                 kind,
                 [("kind", kind)],
                 Descriptor(
@@ -805,6 +819,13 @@ public static class InvocationSafetyRegistry
                 DiagnosticOperationCatalog.GetBytes,
                 $"Byte kind '{kind}' has no safety profile."),
         };
+
+    private static InvocationSafetyProfile PersistCaptureProfile()
+        => ModifierProfile("persist", ("persist", "true"), Descriptor(
+            InvocationRiskLevel.Moderate, InvocationApprovalPolicy.Warn,
+            "Retains diagnostic evidence after collection; does not reduce collector risk.",
+            [], [DataExposure.PossibleConfidentialData], [InvocationSideEffect.WritesArtifact],
+            ["Protect the capture root and explicitly delete expired evidence."]));
 
     private static InvocationSafetyProfile ListOrchestratorProfile(string kind)
         => Profile(

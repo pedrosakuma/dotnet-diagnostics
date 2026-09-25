@@ -625,15 +625,20 @@ internal sealed class SessionRepl
             return tokens;
         }
         var result = tokens.ToList();
+        var insertionIndex = result.IndexOf("--");
+        if (insertionIndex < 0)
+        {
+            insertionIndex = result.Count;
+        }
         if (sessionOptions.Persist && !parsed.Persist && parsed.Command is "collect" or "inspect-heap")
         {
-            result.Add("--persist");
+            result.Insert(insertionIndex++, "--persist");
         }
         if (sessionOptions.CaptureRoot is not null && parsed.CaptureRoot is null
             && parsed.Command is "collect" or "inspect-heap" or "captures" or "query")
         {
-            result.Add("--capture-root");
-            result.Add(sessionOptions.CaptureRoot);
+            result.Insert(insertionIndex++, "--capture-root");
+            result.Insert(insertionIndex, sessionOptions.CaptureRoot);
         }
         return result;
     }

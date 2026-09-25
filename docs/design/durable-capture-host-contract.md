@@ -29,6 +29,12 @@ before returning. Snapshot rows are not counted as raw observations. Source loss
 reports sum across sessions, including repeated names; any unknown report remains
 unknown, and absence is never treated as zero.
 
+EventSource compatibility payloads are cloned through the shared durable
+sanitizer after bounded codec validation. Name-based credentials and default
+value patterns are redacted only in the durable copy; the original
+diagnostic result and original handle artifact are not mutated. Authorizing an
+unsafe provider does not authorize writing raw credentials into a package.
+
 Compatibility snapshots carry a separately versioned, bounded metadata wrapper.
 `OpenAsync` exposes `RecordStreamAvailable` and `RecordStream` (per-artifact
 admission counts and source-name loss). A snapshot alone does not declare a
@@ -92,9 +98,27 @@ unchanged outside a recording invocation and reports child errors/cancellation
 inside one. Successful groups store a separately versioned reference snapshot,
 not a reflection-serialized aggregate. `OpenAsync(...).Composition` exposes the
 child references and bounded per-child admission/source/error metadata; select a
-child artifact for existing typed drilldown. A group handle has no dispatcher
-views. Source reports from repeated session names sum within each child; any
+child artifact for existing typed drilldown. Group handles advertise the
+reserved `children` view (plus `records` only when a root stream exists); hosts
+render `OpenResult.Composition` rather than invoking an existing typed dispatcher.
+`DescribeArtifactViewsAsync` recognizes this representation even when a group's
+kind is also an ordinary snapshot kind. Hosts must authorize all referenced
+descendants before exposing group content, including child error messages; a
+conservative check of all capture artifacts is acceptable. Source reports from repeated session names sum within each child; any
 unknown child contribution makes total source loss unknown.
+
+`Composition.Metadata` preserves explicitly allowlisted parent evidence:
+`Sweep` contains duration, full triage, resource snapshots/trends, failures, and
+artifact references; `GcActivities` contains process lifetime, side status and
+requested/observed windows, intersection, startup skew, overlay, and notes.
+These versioned DTOs do not duplicate child snapshots or retain ephemeral
+handles. References must resolve to the group's own retained descendants.
+Unknown aggregate types remain reference-only; they are never serialized through
+an arbitrary-object fallback. Parent metadata shares the snapshot byte/depth
+limits, and missing references or oversized metadata make persistence incomplete.
+The composition reader accepts the original reference-only version and the
+extended metadata version. Hosts should render these fields under the same
+descendant authorization as `children`, not route them to a live dispatcher.
 
 Core composed collectors can use
 `CaptureRecordingContext.CreateChild(kind, name)` and enter the returned sink
@@ -105,14 +129,47 @@ collections remain distinct. `ReportCompletion(error, cancelled, data)` can
 retain returned-only typed data or record a partial failure.
 
 Child routes and all retained registrations share `MaxArtifacts` bounds.
+Exhausting child-route capacity returns an isolated rejecting sink, never the
+parent or a null scope. Collectors still run and retain their ordinary results;
+rejected observations are counted without retaining their fields, and original
+handles remain durably bound with no authorized persisted artifact. Admitted
+siblings can finish normally, while the outer capture reports persistence
+failure and remains interrupted. Rejected source reports cannot make source loss
+known or manufacture a parent stream. Creating children after recording has
+closed remains a programming error.
 Per-child source names have a 64-entry/1,024-UTF-8-byte-name bound; rejected source
 metadata is explicitly counted and keeps loss unknown. A child failure leaves an
 interrupted capture with explicit group completion metadata. Unscoped multiple
 or mismatched registrations still fail rather than misattribute observations.
 Unknown returned-only DTOs also fail; there is no reflection serializer fallback.
 
-**Recovery limitation:** the current store regenerates artifact IDs while
-copying compatibility snapshots. Recovered individual child snapshots work,
-but old group references deliberately fail validation rather than guessing by
-name/PID or reading the source package. An explicit old-to-new artifact mapping
-is required in the storage recovery contract to reopen recovered group wrappers.
+Recovery regenerates artifact IDs while preserving the original ID in the
+bounded `SourceArtifactId` field. Group decoding resolves child and parent
+references through those explicit aliases, returning current destination IDs.
+It never guesses by name/PID or reads the source package. Missing or ambiguous
+aliases fail closed; recovery leaves the original wrapper bytes unchanged.
+Typed parent metadata artifact references use the same recovery alias mapping.
+
+## Indexed point-in-time rows
+
+After collection, orchestration projects allowlisted heap, thread, requests-now,
+and CPU-efficiency snapshots into indexed `snapshot.*` rows using the existing
+bounded projection helper. Every row declares `sourceOccurrence=false` and
+`derivedRetainedRow=true`; snapshot/window timestamps are not occurrence times.
+Source loss remains unknown. Both registered and returned-only snapshots are
+supported without mutating original results, duplicating handle announcements,
+or accessing native dependencies. Projection uses the same record/queue/storage
+bounds and exposes rejections through quality metadata. The original typed
+snapshot and its snapshot-view allowlist remain unchanged; `records` becomes
+available for the explicitly derived facts, not an invented event history.
+
+## Offline replay admission
+
+An optional `IReplayCaptureObservationSink.AppendReplayAsync(observation, token)`
+capability paces already-collected observations through the same bounded writer
+queue. CPU TraceLog replay awaits each admission only after the live EventPipe
+session has stopped and drained. Live/native callbacks retain nonblocking
+`TryAppend`; neither route retries rejected offers. Hard record/storage limits
+remain enforced and counted once, cancellation interrupts replay, and no queue
+or quota is enlarged. Replay callers must await each offer before advancing the
+source iterator, not accumulate pending tasks or retained event references.

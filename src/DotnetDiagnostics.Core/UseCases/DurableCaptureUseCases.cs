@@ -2,6 +2,7 @@ using System.Text.Json;
 using DotnetDiagnostics.Core.CaptureRecording;
 using DotnetDiagnostics.Core.Captures;
 using DotnetDiagnostics.Core.Drilldown;
+using DotnetDiagnostics.Core.EventSources;
 
 namespace DotnetDiagnostics.Core.UseCases;
 
@@ -33,6 +34,8 @@ public sealed record DurableCaptureHandleBinding(
 public sealed class DurableCaptureUseCases
 {
     private static readonly IReadOnlyList<string> RecordViews = Array.AsReadOnly<string>(["records"]);
+    private static readonly IReadOnlyList<string> CompositionViews = Array.AsReadOnly<string>(["children"]);
+    private static readonly IReadOnlyList<string> CompositionRecordViews = Array.AsReadOnly<string>(["children", "records"]);
     private readonly SqliteCaptureStore _store;
     private readonly IDiagnosticHandleStore _handles;
     private readonly CaptureStoreOptions _options;
@@ -140,8 +143,11 @@ public sealed class DurableCaptureUseCases
             // A custom handle store may not implement registration announcements.
             if (result.Handle is { } returnedHandle && _handles.TryGetWithKind(returnedHandle) is { } lookup)
                 sink.ArtifactRegistered(lookup.Handle, lookup.Artifact);
+            try { sink.EmitSnapshotRows(result.Data); }
+            catch (Exception ex) when (IsPersistenceException(ex)) { persistenceFailure ??= ex; }
             var retained = sink.Finish();
             var snapshots = new HashSet<string>(StringComparer.Ordinal);
+            var artifactByHandle = new Dictionary<string, string>(StringComparer.Ordinal);
             foreach (var node in retained.Nodes)
             {
                 if (node.ArtifactId != defaultId) artifacts.Add(new(node.ArtifactId, node.Kind, node.Name));
@@ -166,6 +172,7 @@ public sealed class DurableCaptureUseCases
                         artifacts[artifactIndex] = artifacts[artifactIndex] with { Provenance = provenance };
                         WriteSnapshot(writer, id, registered.Kind, registered.Artifact, id == node.ArtifactId ? node : null);
                         snapshots.Add(id);
+                        artifactByHandle.Add(registered.Handle.Id, id);
                         var views = SupportedViews(registered.Kind, registered.Artifact,
                             id == node.ArtifactId && node.RecordStreamAvailable);
                         _bindings.Set(registered.Handle, registered.Artifact,
@@ -180,7 +187,7 @@ public sealed class DurableCaptureUseCases
                 if (node.Artifacts.Length > 1 || node.Artifacts.Length == 1 && (matching != 1 || hasChildren))
                     persistenceFailure ??= new NotSupportedException(
                         "Each collection needs an explicit child scope; an aggregate cannot own ambiguous child snapshots.");
-                if (!hasChildren && node.Artifacts.Length == 0)
+                if (!hasChildren && node.Artifacts.Length == 0 && !(retained.Overflow && node.ArtifactId == defaultId))
                 {
                     var data = node.ArtifactId == defaultId ? (object?)result.Data : node.Result;
                     try
@@ -200,7 +207,7 @@ public sealed class DurableCaptureUseCases
 
             if (retained.Overflow)
                 persistenceFailure ??= new CaptureStoreException(CaptureErrorCode.CapacityExceeded,
-                    "Registered artifact count exceeded MaxArtifacts; capture is incomplete.");
+                    "Artifact or child-route count exceeded MaxArtifacts; capture is incomplete.");
             foreach (var node in Enumerable.Reverse(retained.Nodes))
             {
                 if (!retained.Nodes.Any(child => child.ParentArtifactId == node.ArtifactId)) continue;
@@ -211,7 +218,17 @@ public sealed class DurableCaptureUseCases
                     snapshots.Contains(child.ArtifactId))).ToArray());
                 try
                 {
+                    composition = composition with
+                    {
+                        Metadata = DurableCaptureParentMetadataCodec.Project(
+                            node.ArtifactId == defaultId ? (object?)result.Data : node.Result,
+                            artifactByHandle, _options.MaxArtifacts),
+                    };
                     var encoded = DurableCaptureCompositionCodec.Encode(node.Kind, composition, _options.MaxSnapshotBytes);
+                    _ = DurableCaptureCompositionCodec.Decode(node.Kind, node.ArtifactId,
+                        new(DurableCaptureCompositionCodec.SnapshotVersion, encoded),
+                        new(writer.Reference.CaptureId, access.OwnerId, name, null, created,
+                            CaptureState.Interrupted, artifacts.AsReadOnly(), new()), _options);
                     writer.SetSnapshot(node.ArtifactId, DurableCaptureSnapshotMetadata.Version,
                         DurableCaptureSnapshotMetadata.Encode(node.Kind, DurableCaptureCompositionCodec.SnapshotVersion,
                             encoded, DurableCaptureSnapshotMetadata.Stream(node), _options.MaxSnapshotBytes));
@@ -366,7 +383,7 @@ public sealed class DurableCaptureUseCases
             {
                 composition = DurableCaptureCompositionCodec.Decode(artifact.Kind, artifactId, snapshot, reader.Info, _options);
                 decoded = composition;
-                views = recordsAvailable ? RecordViews : Array.Empty<string>();
+                views = recordsAvailable ? CompositionRecordViews : CompositionViews;
             }
             else
             {
@@ -448,6 +465,14 @@ public sealed class DurableCaptureUseCases
     private void WriteSnapshot(CaptureWriter writer, string id, string kind, object artifact, CaptureRecordingNode? node)
     {
         var encoded = CaptureArtifactCodec.Encode(kind, artifact, _options.MaxSnapshotBytes);
+        if (artifact is EventSourceCapture)
+        {
+            // Bound and validate before cloning: arbitrary DTO enumerables must not turn the
+            // sanitizer's materialization into an unbounded allocation ahead of the codec cap.
+            var bounded = (EventSourceCapture)CaptureArtifactCodec.Decode(
+                kind, CaptureArtifactCodec.FormatVersion, encoded, _options.MaxSnapshotBytes);
+            encoded = CaptureArtifactCodec.Encode(kind, EventSourceDurableSanitizer.Sanitize(bounded), _options.MaxSnapshotBytes);
+        }
         writer.SetSnapshot(id, DurableCaptureSnapshotMetadata.Version,
             DurableCaptureSnapshotMetadata.Encode(kind, CaptureArtifactCodec.FormatVersion, encoded,
                 DurableCaptureSnapshotMetadata.Stream(node), _options.MaxSnapshotBytes));

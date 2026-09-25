@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text.Json;
 using DotnetDiagnostics.Core.Activities;
 using DotnetDiagnostics.Core.Artifacts;
 using DotnetDiagnostics.Core.Captures;
@@ -7,12 +8,14 @@ using DotnetDiagnostics.Core.Collection;
 using DotnetDiagnostics.Core.Counters;
 using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Drilldown;
+using DotnetDiagnostics.Core.Dump;
 using DotnetDiagnostics.Core.Exceptions;
 using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.Logs;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.Security;
 using DotnetDiagnostics.Core.ThreadPool;
+using DotnetDiagnostics.Core.Threads;
 using DotnetDiagnostics.Core.UseCases;
 using Microsoft.Extensions.Logging;
 
@@ -117,6 +120,15 @@ public sealed class LiveDurableCaptureTests : IDisposable
         Assert.DoesNotContain(counterRows, r => r.Record.Name == "System.FormatException");
         Assert.Contains(exceptionRows, r => r.Record.Name == "System.FormatException");
         Assert.DoesNotContain(exceptionRows, r => r.Record.Name == "cpu-usage");
+        var parent = Assert.Single(info.Artifacts, a => a.Kind == "sweep");
+        var reopened = await new DurableCaptureUseCases(Store(), new MemoryDiagnosticHandleStore(), _options)
+            .OpenAsync(info.CaptureId, parent.ArtifactId, Owner);
+        var metadata = Assert.IsType<DurableSweepMetadata>(reopened.Composition?.Metadata?.Sweep);
+        Assert.Equal(JsonSerializer.Serialize(result.Data!.Triage), JsonSerializer.Serialize(metadata.Triage));
+        Assert.Equal(JsonSerializer.Serialize(result.Data.Resource), JsonSerializer.Serialize(metadata.Resource));
+        Assert.Equal(result.Data.Failures, metadata.Failures);
+        Assert.All(metadata.ArtifactIds.Values.Where(id => id is not null),
+            id => Assert.Contains(info.Artifacts, a => a.ArtifactId == id));
     }
 
     [Fact(Timeout = 90_000)]
@@ -155,6 +167,18 @@ public sealed class LiveDurableCaptureTests : IDisposable
         Assert.DoesNotContain(gcRows, r => r.Record.Name == "CoreClrSample.Outer");
         Assert.NotNull(reader.ReadSnapshot(gc.ArtifactId));
         Assert.NotNull(reader.ReadSnapshot(activities.ArtifactId));
+        var parent = Assert.Single(info.Artifacts, a => a.Kind == "gc-activities");
+        var reopened = await new DurableCaptureUseCases(Store(), new MemoryDiagnosticHandleStore(), _options)
+            .OpenAsync(info.CaptureId, parent.ArtifactId, Owner);
+        var metadata = Assert.IsType<DurableGcActivitiesMetadata>(reopened.Composition?.Metadata?.GcActivities);
+        Assert.Equal(result.Data!.Status, metadata.Status);
+        Assert.Equal(result.Data.IntersectionStart, metadata.IntersectionStart);
+        Assert.Equal(result.Data.IntersectionEnd, metadata.IntersectionEnd);
+        Assert.Equal(result.Data.StartupSkewMs, metadata.StartupSkewMs);
+        Assert.Equal(JsonSerializer.Serialize(result.Data.Overlay), JsonSerializer.Serialize(metadata.Overlay));
+        Assert.Equal(result.Data.Notes, metadata.Notes);
+        Assert.Equal(gc.ArtifactId, metadata.Gc.ArtifactId);
+        Assert.Equal(activities.ArtifactId, metadata.Activities.ArtifactId);
     }
 
     [Fact(Timeout = 90_000)]
@@ -172,7 +196,7 @@ public sealed class LiveDurableCaptureTests : IDisposable
         await Task.WhenAll(capture, load);
         var result = await capture;
 
-        Assert.False(result.IsError, result.Error?.Message);
+        Assert.False(result.IsError, $"{result.Error?.Message} Capture: {JsonSerializer.Serialize(result.Capture)}");
         var artifact = Assert.IsType<CpuSampleTraceArtifact>(result.Data);
         Assert.NotEmpty(artifact.Root.Children);
         Assert.Null(artifact.TracePath);
@@ -276,6 +300,61 @@ public sealed class LiveDurableCaptureTests : IDisposable
         Assert.Contains(strings, value => value.Contains(SensitiveDataRedactor.RedactedPlaceholder, StringComparison.Ordinal));
     }
 
+    [Fact(Timeout = 90_000)]
+    public async Task Heap_PreservesIndexedSnapshotRowsAfterTargetExit()
+    {
+        await using var sample = await StartAsync("CoreClrSample");
+        var handles = new MemoryDiagnosticHandleStore();
+        var result = await CaptureAsync(
+            handles, sample.ProcessId, HeapInspectionUseCases.HeapSnapshotKind,
+            ct => new ClrMdDumpInspector().InspectLiveAsync(
+                sample.ProcessId, new DumpInspectionOptions(TopTypes: 25), ct),
+            producingTool: "inspect_heap");
+        Assert.False(result.IsError, result.Error?.Message);
+        await sample.DisposeAsync();
+        Assert.True(handles.Invalidate(result.Handle!));
+
+        var (_, records) = await ReadOfflineAsync<HeapSnapshotArtifact>(
+            result, HeapInspectionUseCases.HeapSnapshotKind, "top-types");
+        AssertDerivedRows(Assert.IsType<CaptureInfo>(result.Capture), records);
+    }
+
+    [Fact(Timeout = 90_000)]
+    public async Task Threads_PreserveIndexedSnapshotRowsAfterTargetExit()
+    {
+        await using var sample = await StartAsync("CoreClrSample");
+        var handles = new MemoryDiagnosticHandleStore();
+        var result = await CaptureAsync(
+            handles, sample.ProcessId, SamplerUseCases.ThreadSnapshotKind,
+            ct => new ClrMdThreadSnapshotInspector().InspectLiveAsync(
+                sample.ProcessId, new ThreadSnapshotOptions(MaxFramesPerThread: 32), ct),
+            producingTool: "collect_thread_snapshot");
+        Assert.False(result.IsError, result.Error?.Message);
+        var snapshot = Assert.IsType<ThreadSnapshotArtifact>(result.Data);
+        Assert.NotEmpty(snapshot.Threads);
+        await sample.DisposeAsync();
+        Assert.True(handles.Invalidate(result.Handle!));
+
+        var (restored, records) = await ReadOfflineAsync<ThreadSnapshotArtifact>(
+            result, SamplerUseCases.ThreadSnapshotKind, "threads-summary");
+        Assert.Equal(snapshot.Threads.Count, restored.Threads.Count);
+        AssertDerivedRows(Assert.IsType<CaptureInfo>(result.Capture), records);
+    }
+
+    private static void AssertDerivedRows(CaptureInfo capture, IReadOnlyList<CaptureRecordEntry> records)
+    {
+        Assert.NotEmpty(records);
+        Assert.Null(capture.Quality.SourceRejected);
+        Assert.False(capture.Quality.IsComplete);
+        Assert.All(records, entry =>
+        {
+            Assert.StartsWith("snapshot.", entry.Record.Category);
+            var fields = Assert.IsAssignableFrom<IReadOnlyList<CaptureField>>(entry.Record.Fields);
+            Assert.Contains(fields, field => field.Name == "sourceOccurrence" && field.BooleanValue == false);
+            Assert.Contains(fields, field => field.Name == "derivedRetainedRow" && field.BooleanValue == true);
+        });
+    }
+
     private Task<DiagnosticResult<T>> CaptureAsync<T>(
         MemoryDiagnosticHandleStore handles, int processId, string kind,
         Func<CancellationToken, Task<T>> collect, string producingTool = "collect_events") where T : class
@@ -305,16 +384,14 @@ public sealed class LiveDurableCaptureTests : IDisposable
         var provenance = Assert.IsType<CaptureArtifactProvenance>(artifact.Provenance);
         Assert.True(provenance.ProcessId > 0);
         Assert.Equal(nameof(HandleOrigin.Live), provenance.OriginalHandleOrigin);
-        Assert.Contains(provenance.ProducingTool, new[] { "collect_events", "collect_sample" });
+        Assert.Contains(provenance.ProducingTool,
+            new[] { "collect_events", "collect_sample", "inspect_heap", "collect_thread_snapshot" });
         var package = Path.Combine(_root, "captures", info.CaptureId);
         var before = HashFiles(package);
         var rows = new List<CaptureRecordEntry>();
-        T decoded;
         using (var reader = await Store().OpenAsync(info.CaptureId, Owner))
         {
-            var snapshot = Assert.IsType<CaptureSnapshot>(reader.ReadSnapshot(artifact.ArtifactId));
-            decoded = Assert.IsType<T>(CaptureArtifactCodec.Decode(
-                kind, snapshot.Version, snapshot.Utf8Json.Span, _options.MaxSnapshotBytes));
+            Assert.IsType<CaptureSnapshot>(reader.ReadSnapshot(artifact.ArtifactId));
             long after = 0;
             do
             {
@@ -338,7 +415,7 @@ public sealed class LiveDurableCaptureTests : IDisposable
         Assert.Equal(HandleOrigin.Imported, reopened.Handle.Origin);
         Assert.Equal(provenance.ProcessId, reopened.Handle.ProcessId);
         Assert.Contains(view, reopened.SupportedViews);
-        Assert.IsType<T>(reopenedHandles.TryGetWithKind(reopened.Handle.Id)!.Value.Artifact);
+        var decoded = Assert.IsType<T>(reopenedHandles.TryGetWithKind(reopened.Handle.Id)!.Value.Artifact);
         await reopenedUseCases.AuthorizeViewAsync(reopened.Handle.Id, view, Owner);
         var denied = await Assert.ThrowsAsync<CaptureStoreException>(
             () => reopenedUseCases.AuthorizeViewAsync(

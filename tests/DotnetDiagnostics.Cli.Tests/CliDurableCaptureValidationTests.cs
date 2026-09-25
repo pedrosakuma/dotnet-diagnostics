@@ -150,6 +150,30 @@ public sealed class CliDurableCaptureValidationTests
         }
     }
 
+    [Theory]
+    [InlineData("collect --kind gc --launch -- myapp --flag", "./session evidence",
+        "myapp", "--flag")]
+    [InlineData("collect --kind gc --launch -- myapp --persist --capture-root ./target", "./session evidence",
+        "myapp", "--persist", "--capture-root", "./target")]
+    [InlineData("collect --kind gc --capture-root \"./command evidence\" --launch -- myapp --capture-root ./target", "./command evidence",
+        "myapp", "--capture-root", "./target")]
+    [InlineData("collect --kind gc --persist --launch -- \"./my app\" \"--local value\" -- \"--capture-root\" \"./target evidence\"", "./session evidence",
+        "./my app", "--local value", "--", "--capture-root", "./target evidence")]
+    public void SessionCaptureInheritancePreservesLaunchArguments(
+        string command, string expectedRoot, params string[] expectedLaunchArgs)
+    {
+        var tokens = SessionRepl.Tokenize(command);
+        var original = CliOptions.Parse(tokens, out var originalError)!;
+        originalError.Should().BeNull();
+        var session = new CliOptions { Command = "session", Persist = true, CaptureRoot = "./session evidence" };
+        var inherited = SessionRepl.InheritCaptureOptions(tokens, session);
+        var options = CliOptions.Parse(inherited, out var error)!;
+        error.Should().BeNull();
+        options.Persist.Should().BeTrue();
+        options.CaptureRoot.Should().Be(expectedRoot);
+        options.LaunchArgs.Should().Equal(expectedLaunchArgs).And.Equal(original.LaunchArgs);
+    }
+
     [Fact]
     public void RootSelectionDoesNotCreateDirectoriesOrFollowEphemeralOverrides()
     {

@@ -3180,10 +3180,20 @@ Save these opaque IDs rather than an expiring in-memory handle.
 For a composed capture, select the parent artifact with `view="children"` (or
 omit `view`) to inspect bounded child references, completion errors, source
 quality, and snapshot availability. Select an individual child artifact for
-ordinary snapshot views or normalized records. Before decoding snapshots from
-a multi-artifact package, the host conservatively requires the current scopes
+ordinary snapshot views or normalized records. The reserved `children` view
+identifies a validated composition even when its artifact kind matches an
+ordinary snapshot kind; an empty view list does not identify a composition.
+Both capture-ID selection and reused handles use the authorized composition
+projection rather than the ordinary typed dispatcher. Before reading snapshots
+or records from a multi-artifact package, the host conservatively requires the current scopes
 for **every artifact** in that package, including on reused handles. A partial
 batch remains interrupted and requires explicit recovery before offline reads.
+Sweep parent evidence additionally requires its producer's `eventpipe` scope,
+independent of which children were retained.
+For sweeps, `children` also returns typed `metadata.sweep` containing parent
+triage, resource trends/memory, duration, failures, and child artifact references.
+The original collection response remains `data.kind` plus `data.sweep`; this
+MCP wrapper is not serialized as historical parent evidence.
 
 `collect_events(kind="distributed_trace"|"replica_counters", persist=true)`
 forwards persistence to the actual collecting hosts. Its `data.remoteCaptures`
@@ -3202,6 +3212,10 @@ Persistence does not imply that every observation was retained. Read the capture
 quality counters, unknown source-loss indication, and per-producer notes. A
 normalized record stream and a bounded compatibility snapshot are different
 representations; an unavailable representation is not an empty successful query.
+CPU-efficiency compatibility snapshots are retained but currently have no
+allowlisted snapshot drilldown; a historical `summary` request is unsupported.
+Their records are available only when the producer declared or emitted a
+normalized record stream, not merely because a snapshot exists.
 `persist` does not enable raw trace export: `exportTrace=true` remains a separate
 opt-in. Dump files, raw traces, and captured native method bytes remain explicit
 file dependencies, not a promise of a self-contained historical native debugger.
@@ -3213,6 +3227,16 @@ query_snapshot(captureId="<capture-id>", artifactId="<artifact-id>", view="summa
 query_snapshot(captureId="<capture-id>", artifactId="<artifact-id>", view="records",
                recordPageSize=100, afterRecordId=0)
 ```
+
+Durable EventPipe CPU occurrences can have category
+`sample.cpu.eventpipe.stack-ref.v1`. Resolve each row's `record.name` by querying
+the **same artifact** with `view="records"`,
+`recordCategory="definition.cpu-stack.v1"`, and `recordName=<sample-record-name>`.
+The indexed definition holds the interpreted stack and common evidence metadata;
+thread, relative time, and weight remain on each sample. Definition rows are
+not occurrences. Inline `sample.cpu.eventpipe` fallback rows remain self-contained.
+See the [versioned CPU record contract](./resource-boundedness.md#durable-cpu-stack-definitions-and-occurrences);
+neither lookup requires a retained raw trace.
 
 Historical snapshot queries restore a fresh handle and support only retained,
 snapshot-only views. They never reattach to a stored live PID, even if the

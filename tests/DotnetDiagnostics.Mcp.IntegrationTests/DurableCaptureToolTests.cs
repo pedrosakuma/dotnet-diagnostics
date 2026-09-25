@@ -5,6 +5,7 @@ using DotnetDiagnostics.Core.Bytes;
 using DotnetDiagnostics.Core.Captures;
 using DotnetDiagnostics.Core.CaptureRecording;
 using DotnetDiagnostics.Core.Counters;
+using DotnetDiagnostics.Core.CpuEfficiency;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Dump;
 using DotnetDiagnostics.Core.Exceptions;
@@ -23,6 +24,35 @@ public sealed class DurableCaptureToolTests : IDisposable
         ".validation", "durable-mcp-tests", Guid.NewGuid().ToString("N")));
     private static readonly IPrincipalAccessor Owner = Principal("owner-a", "read-counters", "module-bytes-read",
         "investigation-export", "delete-artifact");
+
+    [Fact]
+    public void SweepParentEvidence_RequiresItsProducerScopeIndependentOfRetainedChildren()
+    {
+        var artifact = new CaptureArtifactInfo(new string('1', 32), "sweep", "sweep");
+        DurableCaptureTools.AuthorizeArtifact(Owner.Current!, artifact, "children")!.Error!.Kind
+            .Should().Be("InsufficientScope");
+        DurableCaptureTools.AuthorizeArtifact(Principal("owner-a", "eventpipe").Current!, artifact, "children")
+            .Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData("exception-snapshot")]
+    [InlineData("unreviewed-parent-kind")]
+    public async Task ChildRecords_RequireTheCompletePackageAuthorizationPolicy(string siblingKind)
+    {
+        var context = Create();
+        await using var writer = await context.Store.CreateAsync(new("composition-records"), new("owner-a"));
+        var counters = writer.AddArtifact("counters", "counters");
+        writer.AddArtifact(siblingKind, "parent-or-sibling");
+        writer.TryAppend(counters, new(Name: "cpu-usage")).Should().BeTrue();
+        var capture = await writer.CompleteAsync();
+
+        var denied = await Records(context, Owner, capture.CaptureId, counters);
+        denied.Error.Should().NotBeNull("a low-scope child stream must not bypass parent/sibling policies");
+        var elevated = await Records(context, Principal("owner-a", "root"), capture.CaptureId, counters);
+        if (siblingKind == "unreviewed-parent-kind") elevated.Error.Should().NotBeNull();
+        else elevated.Error.Should().BeNull();
+    }
 
     [Theory]
     [InlineData(false)]
@@ -58,14 +88,21 @@ public sealed class DurableCaptureToolTests : IDisposable
         result.Hints.Should().ContainSingle().Which.SuggestedArguments!["captureId"].Should().Be(result.Capture.CaptureId);
     }
 
-    [Fact]
-    public async Task Composition_EnforcesEveryChildScopeBeforeOpen_AndRechecksReusedHandlesAndDeletion()
+    [Theory]
+    [InlineData("batch", false)]
+    [InlineData("batch", true)]
+    [InlineData("counters", false)]
+    [InlineData("counters", true)]
+    public async Task Composition_EnforcesEveryChildScopeBeforeOpen_AndRechecksReusedHandlesAndDeletion(
+        string parentKind, bool declareRootRecords)
     {
         var context = Create();
         var principal = Principal("owner-a", "root");
         var result = await DurableCaptureTools.CollectAsync(context.Tools, principal, true,
-            "collect_batch", "batch", async ct =>
+            "collect_batch", parentKind, async ct =>
             {
+                if (declareRootRecords)
+                    CaptureRecordingContext.Current!.ReportSourceLoss("root", null);
                 await DurableCaptureTools.ChildAsync(context.Tools, "counters", "counters", _ =>
                 {
                     var snapshot = new CounterSnapshot(123, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(1), [], [], []);
@@ -82,7 +119,7 @@ public sealed class DurableCaptureToolTests : IDisposable
             }, CancellationToken.None);
         result.Error.Should().BeNull();
         var capture = result.Capture!;
-        var parent = capture.Artifacts.Single(artifact => artifact.Kind == "batch");
+        var parent = capture.Artifacts.Single(artifact => artifact.Name == "collect_batch");
         (await Query(context, Principal("owner-a", "read-counters"), capture.CaptureId,
             parent.ArtifactId, view: "children")).Error!.Kind.Should().Be("Forbidden");
         (await Query(context, Principal("owner-b", "read-counters", "eventpipe"), capture.CaptureId,
@@ -91,12 +128,54 @@ public sealed class DurableCaptureToolTests : IDisposable
         var opened = await Query(context, principal, capture.CaptureId, parent.ArtifactId, view: "children");
         opened.Error.Should().BeNull();
         opened.Data.Should().BeOfType<DurableCaptureComposition>().Which.Children.Should().HaveCount(2);
+        context.Handles.TryGetWithKind(opened.Handle!)!.Value.Kind.Should().Be("capture-group");
+        foreach (var view in new string?[] { null, "children", " CHILDREN " })
+        {
+            var initiallySelected = await Query(context, principal, capture.CaptureId, parent.ArtifactId, view: view);
+            initiallySelected.Error.Should().BeNull();
+            initiallySelected.Data.Should().BeOfType<DurableCaptureComposition>();
+            var reused = await Query(context, principal, handle: opened.Handle, view: view);
+            reused.Error.Should().BeNull();
+            reused.Data.Should().BeOfType<DurableCaptureComposition>().Which.Children.Should().HaveCount(2);
+        }
+        (await Query(context, Principal("owner-b", "read-counters", "eventpipe"),
+            handle: opened.Handle, view: "children")).Error.Should().NotBeNull();
         (await Query(context, Principal("owner-a", "read-counters"), handle: opened.Handle, view: "children"))
             .Error!.Kind.Should().Be("Forbidden");
         (await Query(context, principal, handle: opened.Handle, view: "object")).Error.Should().NotBeNull();
         (await context.Tools.LifecycleAsync(Owner, "delete", capture.CaptureId, 25, null, CancellationToken.None))
             .Error.Should().BeNull();
         (await Query(context, principal, handle: opened.Handle, view: "children")).Error.Should().NotBeNull();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task OrdinarySnapshot_WithoutTypedViews_IsNotReopenedAsComposition(bool declareRecords)
+    {
+        const string kind = "cpu-efficiency-sample";
+        var context = Create();
+        var principal = Principal("owner-a", "root");
+        var persisted = await DurableCaptureTools.CollectAsync(context.Tools, principal, true,
+            "collect_sample", "cpu-efficiency", _ =>
+            {
+                if (declareRecords)
+                    CaptureRecordingContext.Current!.ReportSourceLoss("perf", null);
+                var snapshot = new CpuEfficiencySample(123, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(1), "perf-stat");
+                var handle = context.Handles.Register(123, kind, snapshot, TimeSpan.FromMinutes(10));
+                return Task.FromResult(DiagnosticResult.OkWithHandle(snapshot, "sample", handle.Id, handle.ExpiresAt));
+            }, CancellationToken.None);
+        persisted.Error.Should().BeNull();
+        var original = context.Handles.TryGetLatestByKind(kind)!.Id;
+
+        foreach (var view in new string?[] { null, "children" })
+        {
+            var rejected = await Query(context, principal, handle: original, view: view);
+            rejected.Error!.Kind.Should().Be("CaptureStoreError");
+            rejected.Error.Detail.Should().Be("Forbidden");
+            context.Handles.TryGetLatestByKind(kind)!.Id.Should().Be(original,
+                "absence of typed views is not a composition marker and must not reopen an ordinary snapshot");
+        }
     }
 
     [Fact]

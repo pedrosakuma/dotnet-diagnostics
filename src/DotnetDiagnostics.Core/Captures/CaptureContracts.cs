@@ -64,7 +64,8 @@ public sealed record CaptureQuality(
 public sealed record CaptureWriterMetrics(
     CaptureQuality Quality, long LogicalBytes, long QueueBytes, int QueueRecords,
     long Transactions, int LargestBatch, long ObservedPackageBytes,
-    string? JournalMode = null, long? Synchronous = null, long? DatabasePageLimit = null);
+    string? JournalMode = null, long? Synchronous = null, long? DatabasePageLimit = null,
+    int WaitingAppends = 0, long WaitingAppendBytes = 0);
 
 public sealed record CaptureInfo(
     string CaptureId, string OwnerId, string Name, string? GroupId, DateTimeOffset CreatedUtc,
@@ -91,6 +92,10 @@ public sealed record CaptureStoreOptions
     public int QueueRecords { get; init; } = 8192;
     /// <summary>Live queued/in-flight logical reservation, released after commit or failure; not measured RAM.</summary>
     public long QueueBytes { get; init; } = 16 * 1024 * 1024;
+    /// <summary>Bound on replay-only AppendAsync calls waiting for queue capacity; live callbacks do not wait.</summary>
+    public int MaxPendingAppends { get; init; } = 32;
+    /// <summary>Separate logical reservation for bounded owned records waiting in AppendAsync.</summary>
+    public long MaxPendingAppendBytes { get; init; } = 1024 * 1024;
     public int MaxRecordBytes { get; init; } = 64 * 1024;
     public int MaxFields { get; init; } = 64;
     public int BatchRecords { get; init; } = 256;
@@ -116,6 +121,7 @@ public sealed record CaptureStoreOptions
     internal void Validate()
     {
         if (QueueRecords is < 1 or > 8192 || QueueBytes is < 256 or > 16 * 1024 * 1024 ||
+            MaxPendingAppends is < 1 or > 256 || MaxPendingAppendBytes is < 128 or > 16 * 1024 * 1024 ||
             MaxRecordBytes is < 128 or > 64 * 1024 || MaxFields is < 0 or > 64 ||
             BatchRecords is < 1 or > 256 || MaxBatchAge <= TimeSpan.Zero || MaxBatchAge > TimeSpan.FromSeconds(1) ||
             MaxLogicalBytes is < 128 or > 128 * 1024 * 1024 ||

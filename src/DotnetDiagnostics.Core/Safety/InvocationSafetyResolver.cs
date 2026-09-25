@@ -15,7 +15,7 @@ public static class InvocationSafetyResolver
 
         if (request.Operation == DiagnosticOperationCatalog.CollectBatch)
         {
-            return ResolveBatch(request);
+            return ResolvePersistence(request, ResolveBatch(request));
         }
         if (request.Operation == DiagnosticOperationCatalog.LaunchProcess)
         {
@@ -25,12 +25,13 @@ public static class InvocationSafetyResolver
         var profileId = ResolveBaseProfileId(registration, request);
         var safety = InvocationSafetyRegistry.GetProfile(request.Operation, profileId).Safety;
 
-        return request.Operation switch
+        var resolved = request.Operation switch
         {
             DiagnosticOperationCatalog.CollectEvents => ResolveCollectEvents(request, safety),
             DiagnosticOperationCatalog.CollectSample => ResolveCollectSample(request, safety),
             DiagnosticOperationCatalog.InspectHeap => ResolveInspectHeap(request, safety),
             DiagnosticOperationCatalog.QuerySnapshot => ResolveQuerySnapshot(request, safety),
+            DiagnosticOperationCatalog.GetBytes => ResolveCaptureLifecycle(request, safety),
             DiagnosticOperationCatalog.CollectThreadSnapshot => ResolveThreadSnapshot(request),
             DiagnosticOperationCatalog.CompareToBaseline => ResolveSavedOutput(request, safety),
             DiagnosticOperationCatalog.ListOrchestrator => ResolveListOrchestrator(request, safety),
@@ -38,6 +39,30 @@ public static class InvocationSafetyResolver
             DiagnosticOperationCatalog.DiscoverAzure => ResolveDiscoverAzure(request, safety),
             DiagnosticOperationCatalog.DockerBootstrap => ResolveDockerBootstrap(request, safety),
             _ => safety,
+        };
+        return ResolvePersistence(request, resolved);
+    }
+
+    private static InvocationSafetyDescriptor ResolvePersistence(
+        InvocationSafetyRequest request, InvocationSafetyDescriptor safety)
+        => IsTrue(request, "persist") && request.Operation is
+            DiagnosticOperationCatalog.CollectEvents or DiagnosticOperationCatalog.CollectSample or
+            DiagnosticOperationCatalog.CollectBatch or DiagnosticOperationCatalog.CollectThreadSnapshot or
+            DiagnosticOperationCatalog.InspectHeap
+                ? Merge(safety, Profile(request.Operation, "persist"))
+                : safety;
+
+    private static InvocationSafetyDescriptor ResolveCaptureLifecycle(
+        InvocationSafetyRequest request, InvocationSafetyDescriptor safety)
+    {
+        if (!string.Equals(Get(request, "kind"), DiagnosticOperationCatalog.ByteKinds.Captures, StringComparison.OrdinalIgnoreCase))
+            return safety;
+        return Get(request, "captureAction")?.ToLowerInvariant() switch
+        {
+            null or "list" or "describe" => safety,
+            "delete" => Profile(request.Operation, "captures-delete"),
+            "recover" => Profile(request.Operation, "captures-recover"),
+            _ => throw new InvocationSafetyResolutionException(request.Operation, "Unknown captureAction."),
         };
     }
 
@@ -223,6 +248,12 @@ public static class InvocationSafetyResolver
         InvocationSafetyDescriptor safety)
     {
         var handleKind = Get(request, "handleKind");
+        if (handleKind == DotnetDiagnostics.Core.UseCases.DurableCaptureCompositionCodec.HandleKind)
+            return safety;
+        if ((handleKind is DotnetDiagnostics.Core.UseCases.SamplerUseCases.CpuEfficiencyHandleKind
+                or DiagnosticOperationCatalog.InspectProcessViews.RequestsNow)
+            && string.Equals(Get(request, "view")?.Trim(), "records", StringComparison.OrdinalIgnoreCase))
+            return safety;
         if (handleKind is null && HasValue(request, "handle"))
         {
             return InvocationSafetyRegistry.Get(request.Operation).MaximumSafety;

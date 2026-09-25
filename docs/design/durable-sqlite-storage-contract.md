@@ -278,6 +278,54 @@ offer age. Its fill delay is at most the configured age, but thread scheduling,
 SQL contention, and storage latency do not have a promised wall-clock bound.
 There is one writer task and at most one cached shutdown task per capture.
 
+### Awaitable admission is replay-only
+
+`ValueTask<bool> AppendAsync(string artifactId, CaptureRecord record,
+CancellationToken cancellationToken = default)` exists for post-capture
+replay of already buffered evidence, such as the CPU sampler's TraceLog
+enumeration **after** `CollectTraceAsync` completes. Native/live EventPipe
+callbacks must continue to use unchanged nonblocking `TryAppend`.
+This is not the internal `AppendRecoveryAsync` API, whose recovery-only
+semantics remain unchanged.
+
+`AppendAsync` validates and owns the bounded scalar record once. If queue
+capacity is available, it admits immediately; otherwise it retains one
+bounded waiting offer. It never retries `TryAppend`, runs SQLite on the
+producer, or multiplies rejection counts through polling. Admitted records
+use the same channel and FIFO writer. Pending replay offers are served in
+FIFO order among themselves; concurrent native offers still use their
+original nonblocking admission semantics, not a global offered-order promise.
+True means **admitted**, not committed; `CompleteAsync` remains responsible
+for surfacing any subsequent storage failure.
+
+Waiting records have separate finite bounds: `MaxPendingAppends=32` and
+`MaxPendingAppendBytes=1 MiB` by default (allowed ranges 1–256 and 128 bytes–16
+MiB). These are additional owned waiting-record reservations, not increases
+to the existing queue, cumulative capture, database, or store quotas.
+`CaptureWriterMetrics.WaitingAppends` and `WaitingAppendBytes` expose them.
+Sequential replay normally has at most one waiting record; callers must not
+launch an unbounded collection of producer tasks.
+
+Offers are counted once. Invalid records return false with `RecordRejected`.
+Exhausted cumulative budgets or known storage failure return false with
+`StorageRejected`; a record that can never fit the queue or exhausted
+waiting-offer bounds returns false with `QueueRejected`. Hard limits do not
+wait for capacity that cannot become available. The cumulative cap is
+rechecked when older waiting offers are admitted. Pending offers contribute
+to quality `Pending` but not `Accepted` or cumulative `LogicalBytes` until
+actually admitted.
+
+A token already canceled on entry produces cancellation without an offer.
+Cancellation after an offer removes its waiter, increments `QueueRejected`
+once, and throws `OperationCanceledException`. Successful prior admission is
+not retracted by later token cancellation. Shutdown wakes waiting offers
+with counted queue rejection and `Closed` before waiting for producer
+quiescence; writer failure wakes them with counted storage rejection even
+before the caller invokes completion. Cancellation registrations are
+unregistered without waiting under the admission lock, and continuations
+never run synchronously under that lock. No completed waiter retains its
+owned record in the pending list.
+
 There are **two independent logical byte budgets**. `QueueBytes` is the live
 queued/in-flight reservation and is released when that work commits or fails.
 `MaxLogicalBytes` bounds the **cumulative capture-lifetime admitted record and
@@ -338,6 +386,7 @@ universal safety limits or performance recommendations**:
 |---|---:|
 | Queue records, including in-flight batch | 8,192 |
 | Owned logical queue reservation | 16 MiB |
+| Replay-only pending appends / owned logical reservation | 32 / 1 MiB |
 | Accounted bytes per record | 64 KiB |
 | Scalar fields per record | 64 |
 | Records per transaction | 256 |

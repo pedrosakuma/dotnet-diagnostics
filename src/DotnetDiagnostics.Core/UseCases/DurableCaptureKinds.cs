@@ -28,6 +28,7 @@ internal static class DurableCaptureKinds
         "native-lock-contention" or "native_lock_contention" => SamplerUseCases.NativeLockContentionHandleKind,
         "cpu-efficiency" or "cpu_efficiency" => SamplerUseCases.CpuEfficiencyHandleKind,
         "method-params" => MethodParameterCaptureUseCases.HandleKind,
+        "live" or "dump" or "gcdump" or "gc-dump" => HeapInspectionUseCases.HeapSnapshotKind,
         _ => kind,
     };
 }

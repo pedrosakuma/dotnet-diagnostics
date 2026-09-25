@@ -6,7 +6,7 @@ using DotnetDiagnostics.Core.UseCases;
 namespace DotnetDiagnostics.Core.CaptureRecording;
 
 /// <summary>Invocation-owned adapter. Callback admission never serializes artifacts or touches disk.</summary>
-internal sealed class SqliteCaptureObservationSink : ICaptureObservationSink
+internal sealed class SqliteCaptureObservationSink : IReplayCaptureObservationSink
 {
     private readonly object _gate;
     private readonly CaptureWriter _writer;
@@ -28,6 +28,7 @@ internal sealed class SqliteCaptureObservationSink : ICaptureObservationSink
     private DiagnosticError? _error;
     private bool _cancelled;
     private object? _result;
+    private RejectedChildSink? _rejectedChild;
 
     internal SqliteCaptureObservationSink(CaptureWriter writer, string artifactId, string kind, string name,
         CaptureStoreOptions options, Action<DiagnosticHandle, object>? registered = null)
@@ -67,10 +68,26 @@ internal sealed class SqliteCaptureObservationSink : ICaptureObservationSink
     public bool TryAppend(CaptureObservation observation)
     {
         Interlocked.Increment(ref _offered);
+        var accepted = _writer.TryAppend(ArtifactId, ToRecord(observation)!);
+        if (accepted) Interlocked.Increment(ref _accepted);
+        return accepted;
+    }
+
+    public async ValueTask<bool> AppendReplayAsync(CaptureObservation observation, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        Interlocked.Increment(ref _offered);
+        var accepted = await _writer.AppendAsync(ArtifactId, ToRecord(observation)!, cancellationToken).ConfigureAwait(false);
+        if (accepted) Interlocked.Increment(ref _accepted);
+        return accepted;
+    }
+
+    private CaptureRecord? ToRecord(CaptureObservation observation)
+    {
         // Let the writer count invalid offers, without copying a hostile/unbounded field collection.
-        if (observation.Fields.Count > _options.MaxFields)
-            return _writer.TryAppend(ArtifactId, null!);
-        var fields = new CaptureField[observation.Fields.Count];
+        var count = observation.Fields.Count;
+        if (count < 0 || count > _options.MaxFields) return null;
+        var fields = new CaptureField[count];
         for (var i = 0; i < fields.Length; i++)
         {
             var field = observation.Fields[i];
@@ -84,10 +101,8 @@ internal sealed class SqliteCaptureObservationSink : ICaptureObservationSink
                 _ => new(field.Name, (CaptureFieldKind)(-1)),
             };
         }
-        var accepted = _writer.TryAppend(ArtifactId, new CaptureRecord(
-            observation.Timestamp, observation.ThreadId, observation.Category, observation.Name, Fields: fields));
-        if (accepted) Interlocked.Increment(ref _accepted);
-        return accepted;
+        return new CaptureRecord(
+            observation.Timestamp, observation.ThreadId, observation.Category, observation.Name, Fields: fields);
     }
 
     public void ReportSourceLoss(string source, long? count)
@@ -130,6 +145,8 @@ internal sealed class SqliteCaptureObservationSink : ICaptureObservationSink
                 }, artifact);
                 return;
             }
+            // A returned rejected-child handle must not be re-announced into its parent.
+            if (ReferenceEquals(this, _root) && _root._overflow) return;
             if (_owners.Count == _options.MaxArtifacts) { _root._overflow = true; return; }
             _owners.Add(handle.Id, this);
             _artifacts.Add(handle.Id, new(handle, artifact));
@@ -145,12 +162,43 @@ internal sealed class SqliteCaptureObservationSink : ICaptureObservationSink
             if (_nodes.Count == _options.MaxArtifacts)
             {
                 _root._overflow = true;
-                throw new CaptureStoreException(CaptureErrorCode.CapacityExceeded, "Child capture count exceeded MaxArtifacts.");
+                return _root._rejectedChild ??= new(_root);
             }
             var id = _writer.AddArtifact(kind, name);
             var child = new SqliteCaptureObservationSink(this, id, kind, name);
             _nodes.Add(child);
             return child;
+        }
+    }
+
+    private sealed class RejectedChildSink(SqliteCaptureObservationSink root) : IReplayCaptureObservationSink
+    {
+        public bool TryAppend(CaptureObservation observation)
+            => root._writer.TryAppend(root.ArtifactId, null!);
+
+        public ValueTask<bool> AppendReplayAsync(CaptureObservation observation, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(TryAppend(observation));
+        }
+
+        public void ReportSourceLoss(string source, long? count) { }
+
+        public void ArtifactRegistered(DiagnosticHandle handle, object artifact)
+        {
+            lock (root._gate)
+            {
+                if (!root._closed) root._registered?.Invoke(handle, artifact);
+            }
+        }
+
+        public ICaptureObservationSink CreateChild(string kind, string name)
+        {
+            lock (root._gate)
+            {
+                if (root._closed) throw new InvalidOperationException("Capture recording has completed.");
+                return this;
+            }
         }
     }
 
@@ -162,6 +210,36 @@ internal sealed class SqliteCaptureObservationSink : ICaptureObservationSink
             _error ??= error;
             _cancelled |= cancelled;
             _result = data;
+        }
+    }
+
+    internal void EmitSnapshotRows(object? rootResult)
+    {
+        List<(SqliteCaptureObservationSink Sink, object Artifact)> candidates = [];
+        lock (_gate)
+        {
+            if (_root._closed) throw new InvalidOperationException("Capture recording has completed.");
+            foreach (var node in _nodes)
+            {
+                if (!SnapshotObservationProjection.Supports(node.Kind) ||
+                    ReferenceEquals(node, _root) && _root._overflow ||
+                    _nodes.Any(child => child.ParentArtifactId == node.ArtifactId)) continue;
+                var artifact = node._artifacts.Count switch
+                {
+                    0 => ReferenceEquals(node, _root) ? rootResult : node._result,
+                    1 when node._artifacts.Values.First().Kind == node.Kind => node._artifacts.Values.First().Artifact,
+                    _ => null,
+                };
+                if (artifact is not null) candidates.Add((node, artifact));
+            }
+        }
+        foreach (var (sink, artifact) in candidates)
+        {
+            // Validate bounded material before enumerating retained rows from collector-owned DTOs.
+            var bytes = CaptureArtifactCodec.Encode(sink.Kind, artifact, _options.MaxSnapshotBytes);
+            var bounded = CaptureArtifactCodec.Decode(sink.Kind, CaptureArtifactCodec.FormatVersion, bytes, _options.MaxSnapshotBytes);
+            sink.ReportSourceLoss("snapshot-derived", null);
+            SnapshotObservationProjection.Emit(sink.Kind, bounded, sink);
         }
     }
 
@@ -188,7 +266,7 @@ internal sealed class SqliteCaptureObservationSink : ICaptureObservationSink
                     aggregate = null;
                 else aggregate += count;
             }
-            _writer.SetSourceRejected(aggregate);
+            _writer.SetSourceRejected(_root._overflow ? null : aggregate);
             foreach (var node in _nodes)
             {
                 node._artifacts.Clear();

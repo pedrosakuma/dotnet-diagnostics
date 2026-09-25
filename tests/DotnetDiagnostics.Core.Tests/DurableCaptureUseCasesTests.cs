@@ -193,17 +193,24 @@ public sealed partial class DurableCaptureUseCasesTests : IDisposable
         }
     }
 
-    [Fact]
-    public async Task LiveHeapPathsAreProvenanceAndNeverEnableLiveViews()
+    [Theory]
+    [InlineData("heap-snapshot")]
+    [InlineData("live")]
+    [InlineData("dump")]
+    [InlineData("gcdump")]
+    [InlineData("gc-dump")]
+    public async Task LiveHeapPathsAreProvenanceAndNeverEnableLiveViews(string kind)
     {
         var service = Service();
         var heap = new HeapSnapshotArtifact(HeapSnapshotOrigin.Live, 42, At, TimeSpan.FromSeconds(1),
             new("CoreCLR", "10.0.0", "X64", false, 1), new(1024, 0, 0, 1024, 0, 0, 1024), [], [])
         { DumpFilePath = "/unavailable/provenance-only.dmp" };
-        var result = await service.CaptureAsync("heap", "heap-snapshot", Owner,
+        var result = await service.CaptureAsync("heap", kind, Owner,
             _ => Task.FromResult(DiagnosticResult.Ok(heap, "done")));
+        Assert.False(result.IsError, result.Error?.Message);
+        Assert.Equal("heap-snapshot", Assert.Single(result.Capture!.Artifacts).Kind);
         var open = await service.OpenAsync(result.Capture!.CaptureId, result.Capture.Artifacts[0].ArtifactId, Owner);
-        Assert.Equal(["top-types"], open.SupportedViews);
+        Assert.Equal(["top-types", "records"], open.SupportedViews);
         foreach (var view in new[] { "objects", "gcroot", "object", "roots", "strings" })
             await Assert.ThrowsAsync<CaptureStoreException>(() => service.AuthorizeViewAsync(open.Handle.Id, view, Owner));
     }
@@ -335,9 +342,11 @@ public sealed partial class DurableCaptureUseCasesTests : IDisposable
         Assert.Equal(result.Handle, _handles.TryGetLatestByKind(kind)!.Id);
         var open = await service.OpenAsync(info.CaptureId, artifact.ArtifactId, Owner);
         Assert.Equal(snapshot.GetType(), _handles.TryGetWithKind(open.Handle.Id)!.Value.Artifact.GetType());
-        Assert.Equal(CaptureArtifactCodec.GetSupportedSnapshotViews(kind, snapshot), open.SupportedViews);
+        var snapshotViews = CaptureArtifactCodec.GetSupportedSnapshotViews(kind, snapshot);
+        Assert.Equal(SnapshotObservationProjection.Supports(kind) ? [.. snapshotViews, "records"] : snapshotViews, open.SupportedViews);
         Assert.Equal(views, open.SupportedViews);
-        Assert.Equal(0, info.Quality.Offered);
+        if (SnapshotObservationProjection.Supports(kind)) Assert.True(info.Quality.Offered > 0);
+        else Assert.Equal(0, info.Quality.Offered);
     }
 
     [Fact]

@@ -84,12 +84,13 @@ internal static partial class CliCommands
             }
         }
 
-        var records = options.Command == "query" && options.CaptureId is not null && options.View == "records";
+        var records = options.Command == "query" && options.View == "records"
+            && (options.CaptureId is not null || options.Handle is not null || options.LatestOfKind is not null);
         var list = options.Command == "captures" && options.CaptureAction == "list";
         if ((options.RecordFrom is not null || options.RecordTo is not null || options.RecordName is not null
              || options.AfterRecordId is not null) && !records)
         {
-            error = "--from, --to, --name, and --after-record-id require query --capture-id ... --view records.";
+            error = "--from, --to, --name, and --after-record-id require query --view records with a capture ID or durable handle.";
         }
         else if (options.PageSize is not null && !records && !list)
         {

@@ -36,17 +36,37 @@ public sealed class CliInvocationSafetyTests
             var request = CliInvocationSafety.CreateRequest(pair.Value);
             var safety = CliInvocationSafety.Resolve(pair.Value);
 
-            if (pair.Key == "captures")
-            {
-                request.Operation.Should().Be("cli_capture_list", "local OS package lifecycle is a CLI-only operation");
-            }
-            else
-            {
-                InvocationSafetyRegistry.TryGet(request.Operation, out _).Should().BeTrue(
-                    $"CLI command '{pair.Key}' must map to a registered Core operation");
-            }
+            InvocationSafetyRegistry.TryGet(request.Operation, out _).Should().BeTrue(
+                $"CLI command '{pair.Key}' must map to a registered Core operation");
             safety.Reason.Should().NotBeNullOrWhiteSpace();
         }
+    }
+
+    [Theory]
+    [InlineData("list", "list")]
+    [InlineData("show", "describe")]
+    [InlineData("delete", "delete")]
+    [InlineData("recover", "recover")]
+    public void CaptureLifecycle_UsesTheSameCoreRequestAsMcp(string command, string action)
+    {
+        var cli = CliInvocationSafety.Resolve(new CliOptions { Command = "captures", CaptureAction = command });
+        var shared = InvocationSafetyResolver.Resolve(InvocationSafetyRequest.Create(
+            DiagnosticOperationCatalog.GetBytes, ("kind", "captures"), ("captureAction", action)));
+        cli.Should().BeEquivalentTo(shared);
+    }
+
+    [Fact]
+    public void PersistedLaunch_RetainsNestedRiskAndStorageSideEffect()
+    {
+        var request = CliInvocationSafety.CreateRequest(new CliOptions
+        {
+            Command = "collect", Kind = "counters", Persist = true, Launch = true,
+        });
+        request.Children.Should().ContainSingle().Which.Arguments["persist"].Should().Be("true");
+        var safety = InvocationSafetyResolver.Resolve(request);
+        safety.RiskLevel.Should().Be(InvocationRiskLevel.High);
+        safety.SideEffects.Should().Contain(InvocationSideEffect.WritesArtifact);
+        safety.TargetImpact.Should().Contain(TargetImpact.ProcessTermination);
     }
 
     [Fact]

@@ -4,7 +4,10 @@ using DotnetDiagnostics.Core.Captures;
 namespace DotnetDiagnostics.Core.UseCases;
 
 /// <summary>Explicit child routes and completion evidence; these rows are not raw observations.</summary>
-public sealed record DurableCaptureComposition(IReadOnlyList<DurableCaptureChild> Children);
+public sealed record DurableCaptureComposition(IReadOnlyList<DurableCaptureChild> Children)
+{
+    public DurableCaptureParentMetadata? Metadata { get; init; }
+}
 
 public sealed record DurableCaptureChild(
     string ArtifactId, string Kind, string Name, string ParentArtifactId,
@@ -23,7 +26,7 @@ internal static class DurableCaptureCompositionCodec
         {
             writer.WriteStartObject();
             writer.WriteString("kind", kind);
-            writer.WriteNumber("compositionVersion", 1);
+            writer.WriteNumber("compositionVersion", 2);
             writer.WriteStartArray("children");
             foreach (var child in composition.Children)
             {
@@ -53,6 +56,8 @@ internal static class DurableCaptureCompositionCodec
                 writer.WriteEndObject();
             }
             writer.WriteEndArray();
+            writer.WritePropertyName("metadata");
+            DurableCaptureParentMetadataCodec.Write(writer, composition.Metadata);
             writer.WriteEndObject();
         }
         return buffer.ToArray();
@@ -63,10 +68,14 @@ internal static class DurableCaptureCompositionCodec
     {
         if (snapshot.Version != SnapshotVersion || snapshot.Utf8Json.Length > options.MaxSnapshotBytes)
             throw new InvalidDataException("Unsupported or oversized composition snapshot.");
-        using var document = JsonDocument.Parse(snapshot.Utf8Json, new JsonDocumentOptions { MaxDepth = 16 });
+        using var document = JsonDocument.Parse(snapshot.Utf8Json, new JsonDocumentOptions { MaxDepth = 32 });
         var root = document.RootElement;
-        RequireProperties(root, "kind", "compositionVersion", "children");
-        if (root.GetProperty("kind").GetString() != kind || root.GetProperty("compositionVersion").GetInt32() != 1)
+        if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("compositionVersion", out var versionJson) ||
+            versionJson.ValueKind != JsonValueKind.Number || !versionJson.TryGetInt32(out var version))
+            throw new InvalidDataException("Missing or invalid composition version.");
+        if (version == 1) RequireProperties(root, "kind", "compositionVersion", "children");
+        else RequireProperties(root, "kind", "compositionVersion", "children", "metadata");
+        if (root.GetProperty("kind").GetString() != kind || version is not (1 or 2))
             throw new InvalidDataException("Composition kind or version does not match.");
         var children = root.GetProperty("children");
         if (children.ValueKind != JsonValueKind.Array || children.GetArrayLength() > options.MaxArtifacts)
@@ -77,13 +86,14 @@ internal static class DurableCaptureCompositionCodec
         {
             RequireProperties(child, "artifactId", "kind", "name", "parentArtifactId", "offered", "accepted",
                 "sourceRejected", "sourceReportsRejected", "sources", "error", "cancelled", "snapshotAvailable");
-            var id = Text(child, "artifactId");
+            var id = ResolveIdentity(capture, Text(child, "artifactId"));
             var childKind = Text(child, "kind");
             var name = Text(child, "name");
-            var parent = Text(child, "parentArtifactId");
-            if (id == artifactId || !ids.Add(id) || !capture.Artifacts.Any(a =>
-                a.ArtifactId == id && a.Kind == childKind && a.Name == name))
-                throw new InvalidDataException("Composition references are unavailable; open retained child artifacts individually.");
+            var parent = ResolveIdentity(capture, Text(child, "parentArtifactId"));
+            if (id == artifactId) throw new InvalidDataException("Composition cannot reference itself as a child.");
+            if (!ids.Add(id)) throw new InvalidDataException("Composition contains a duplicate child identity.");
+            if (!capture.Artifacts.Any(a => a.ArtifactId == id && a.Kind == childKind && a.Name == name))
+                throw new InvalidDataException("Composition child identity, kind or name differs from artifact metadata.");
             var offered = Nonnegative(child.GetProperty("offered"));
             var accepted = Nonnegative(child.GetProperty("accepted"));
             if (accepted > offered) throw new InvalidDataException("Invalid composition admission accounting.");
@@ -121,13 +131,30 @@ internal static class DurableCaptureCompositionCodec
                     ?? throw new InvalidDataException("Composition parent reference is unavailable.");
             }
         }
-        return new(result.AsReadOnly());
+        return new(result.AsReadOnly())
+        {
+            Metadata = version == 1 ? null : DurableCaptureParentMetadataCodec.Read(
+                root.GetProperty("metadata"), capture, ids, options.MaxArtifacts),
+        };
     }
 
     private static void WriteNullable(Utf8JsonWriter writer, string name, long? value)
     {
         if (value is { } known) writer.WriteNumber(name, known);
         else writer.WriteNull(name);
+    }
+
+    internal static string ResolveIdentity(CaptureInfo capture, string reference)
+    {
+        CaptureArtifactInfo? found = null;
+        foreach (var artifact in capture.Artifacts)
+        {
+            if (artifact.ArtifactId != reference && artifact.SourceArtifactId != reference) continue;
+            if (found is not null) throw new InvalidDataException("Composition artifact identity is ambiguous.");
+            found = artifact;
+        }
+        return found?.ArtifactId
+            ?? throw new InvalidDataException("Composition references are unavailable; open retained child artifacts individually.");
     }
 
     private static string Text(JsonElement element, string property)
