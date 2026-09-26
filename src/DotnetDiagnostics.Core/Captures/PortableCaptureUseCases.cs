@@ -29,6 +29,16 @@ public sealed partial class PortableCaptureUseCases
 
     public async Task<PortableExportResult> ExportAsync(CaptureExportRequest request, Stream destination,
         CaptureAccess access, CancellationToken cancellationToken = default)
+        => (await ExportCoreAsync(request, destination, access, false, cancellationToken).ConfigureAwait(false)).Result;
+
+    /// <summary>Stages trusted export once and holds its operation/source leases until disposal.</summary>
+    public async Task<PortableCaptureTransfer> PrepareExportAsync(CaptureExportRequest request,
+        CaptureAccess access, CancellationToken cancellationToken = default)
+        => (await ExportCoreAsync(request, Stream.Null, access, true, cancellationToken).ConfigureAwait(false)).Transfer!;
+
+    private async Task<(PortableExportResult Result, PortableCaptureTransfer? Transfer)> ExportCoreAsync(
+        CaptureExportRequest request, Stream destination, CaptureAccess access, bool hold,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(request.Operation);
@@ -56,6 +66,7 @@ public sealed partial class PortableCaptureUseCases
         PortableCaptureStorage? storage = null;
         var sources = new Dictionary<string, Source>(StringComparer.Ordinal);
         var ready = false;
+        var transferred = false;
         try
         {
             token.ThrowIfCancellationRequested();
@@ -134,11 +145,29 @@ public sealed partial class PortableCaptureUseCases
                 CapturePackage.Authorize(source.Info, access);
                 await _authorize(source.Info, token).ConfigureAwait(false);
             }
+            if (hold)
+            {
+                storage.SaveTransfer(upload: false, 0);
+                var transfer = new PortableCaptureTransfer(storage, result, async token =>
+                {
+                    foreach (var source in sources.Values)
+                    {
+                        _ = _store.PortablePackagePath(source.Info.CaptureId);
+                        CapturePackage.Authorize(source.Info, access);
+                        await _authorize(source.Info, token).ConfigureAwait(false);
+                    }
+                }, () =>
+                {
+                    foreach (var source in sources.Values) source.Dispose();
+                });
+                transferred = true;
+                return (result, transfer);
+            }
             using (var input = OpenRead(storage.ArchivePath))
                 await CopyResultAsync(input, destination, result, token).ConfigureAwait(false);
             token.ThrowIfCancellationRequested();
             storage.LimitRetention(_clock.GetUtcNow().AddMinutes(5));
-            return result;
+            return (result, null);
         }
         catch (Exception ex)
         {
@@ -166,8 +195,11 @@ public sealed partial class PortableCaptureUseCases
         }
         finally
         {
-            foreach (var source in sources.Values) source.Dispose();
-            storage?.Dispose();
+            if (!transferred)
+            {
+                foreach (var source in sources.Values) source.Dispose();
+                storage?.Dispose();
+            }
         }
     }
 

@@ -12,7 +12,8 @@ internal sealed record PortableIndex(int ArchiveVersion, int RequiredArchiveRead
 internal sealed record PortableIndexSeal(int ArchiveVersion, long IndexBytes, string IndexSha256);
 internal sealed record PortableExportReceipt(string OwnerId, PortableOperationKey Operation, string Fingerprint,
     string BundleId, DateTimeOffset CreatedUtc, DateTimeOffset BytesExpireUtc, long ReservationBytes, PortableExportResult? Result,
-    PortableImportJournal? Import = null);
+    PortableImportJournal? Import = null, PortableTransferJournal? Transfer = null);
+internal sealed record PortableTransferJournal(bool Upload, long ReceivedBytes);
 internal sealed record PortableImportPlan(string EntryId, string CaptureId, string? SealHash);
 internal sealed record PortableImportJournal(PortableImportResult Result, PortableImportPlan[] Plans, bool Terminal,
     PortableWorkerIdentity? Worker = null, PortableWorkerIdentity? ParentIo = null);

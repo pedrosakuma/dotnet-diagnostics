@@ -112,6 +112,13 @@ internal sealed partial class PortableCaptureStorage : IDisposable
         WriteReceipt(DirectoryPath, Receipt);
     }
 
+    internal void SaveTransfer(bool upload, long receivedBytes)
+    {
+        using var admission = SqliteCaptureStore.PortableAdmission(_store.PortableRoot());
+        Receipt = Receipt with { Transfer = new(upload, receivedBytes) };
+        WriteReceipt(DirectoryPath, Receipt);
+    }
+
     internal void Abandon()
     {
         using var admission = SqliteCaptureStore.PortableAdmission(_store.PortableRoot());
@@ -167,6 +174,15 @@ internal sealed partial class PortableCaptureStorage : IDisposable
             using (var lease = TryLease(directory))
             {
                 if (lease is null) continue;
+                // A host-held transfer has no restart capability. Its durable import
+                // receipt survives, but byte staging is never adopted by a new host.
+                if (receipt.Transfer is not null && receipt.Import is null)
+                {
+                    DeleteArchiveFiles(directory);
+                    receipt = receipt with { BytesExpireUtc = DateTimeOffset.MinValue,
+                        ReservationBytes = PortableBounds.ReceiptReservation };
+                    WriteReceipt(directory, receipt);
+                }
                 if (receipt.Import is not null)
                 {
                     receipt = ReconcileImport(root, directory, receipt);
