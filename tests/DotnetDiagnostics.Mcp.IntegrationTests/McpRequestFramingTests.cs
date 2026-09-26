@@ -12,6 +12,34 @@ namespace DotnetDiagnostics.Mcp.IntegrationTests;
 
 public sealed class McpRequestFramingTests
 {
+    [Fact]
+    public async Task Http_ConcurrentFrameBuffersAreReservedWithoutAWaiterQueue()
+    {
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var middleware = new McpRequestFramingMiddleware(_ => release.Task);
+        static DefaultHttpContext Request()
+        {
+            var context = new DefaultHttpContext();
+            context.Request.Path = "/mcp";
+            context.Request.Method = "POST";
+            context.Request.Body = new MemoryStream("{}"u8.ToArray());
+            return context;
+        }
+        var held = Enumerable.Range(0, 16).Select(_ => middleware.InvokeAsync(Request())).ToArray();
+        try
+        {
+            held.Should().OnlyContain(task => !task.IsCompleted);
+            var excess = Request();
+            await middleware.InvokeAsync(excess);
+            excess.Response.StatusCode.Should().Be(429);
+            excess.Request.Body.Position.Should().Be(0, "admission must reject before allocating or consuming a frame");
+        }
+        finally { release.SetResult(); await Task.WhenAll(held); }
+        var after = Request();
+        await middleware.InvokeAsync(after);
+        after.Response.StatusCode.Should().Be(200);
+    }
+
     [Theory]
     [InlineData(65536, true)]
     [InlineData(65537, false)]

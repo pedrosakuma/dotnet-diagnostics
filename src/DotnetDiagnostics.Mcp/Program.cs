@@ -245,6 +245,15 @@ app.UseMiddleware<BearerTokenMiddleware>((IPrincipalResolver)registry);
 // short-circuits cheaply and only authenticated traffic counts against the policy.
 app.UseRateLimiter();
 app.UseMiddleware<McpRequestFramingMiddleware>();
+app.Use(async (context, next) =>
+{
+    if (HttpMethods.IsDelete(context.Request.Method) && context.Request.Path == "/mcp" &&
+        context.GetBearerPrincipal() is { } principal &&
+        context.Request.Headers["Mcp-Session-Id"].ToString() is { Length: > 0 } session)
+        context.RequestServices.GetRequiredService<DotnetDiagnostics.Mcp.Tools.PortableCaptureTools>()
+            .CancelSession(session, principal);
+    await next(context).ConfigureAwait(false);
+});
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 app.MapEphemeralAttachmentControl();

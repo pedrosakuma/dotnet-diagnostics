@@ -72,6 +72,10 @@ internal static class DiagnosticServiceRegistration
         services.AddDiagnosticCoreServices(securityOptions, configuredSymbolPath, handleStoreOptions);
         services.TryAddSingleton<DurableCaptureTools>();
         services.TryAddSingleton<TimeProvider>(TimeProvider.System);
+        services.TryAddSingleton(PortableTransferOptions.FromConfiguration(configuration));
+        services.AddHttpContextAccessor();
+        services.TryAddSingleton<PortableCaptureTools>();
+        services.AddHostedService(static services => services.GetRequiredService<PortableCaptureTools>());
         services.TryAddSingleton<EphemeralAttachmentLifetime>();
         services.AddHostedService<EphemeralAttachmentExpiryService>();
 

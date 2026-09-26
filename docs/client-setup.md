@@ -78,10 +78,36 @@ Stdio rejects an oversized line before dispatch and closes the transport.
 Ordinary non-capture requests retain the 1 MiB allowance. This is request
 admission, not a change to response budgets.
 
-These guards and local opt-in are prerequisites for portable capture transfer,
-not an implementation of it. MCP currently exposes only list/describe/delete/
-recover for captures; portable export/download/upload/import actions remain
-unavailable pending the shared Core transfer reservation/staging integration.
+Portable capture bytes use the same `get_bytes` tool on both transports.
+HTTP transfers require a session-capable MCP client using protocol `2025-11-25`
+or earlier. SDK 2.2's default `2026-07-28` HTTP protocol is stateless; transfer
+initiation returns `SessionRequired` rather than weakening session ownership.
+The endpoint's default hybrid behavior is unchanged, and operation-key result
+reconciliation remains available without an active transfer session.
+For the .NET MCP client, set `McpClientOptions.ProtocolVersion = "2025-11-25"`.
+Stdio transfers belong to that subprocess and need the local capture-byte opt-in.
+
+Portable import is enabled only when **both** trusted operator variables are set:
+
+```sh
+export DOTNET_DIAGNOSTICS_IMPORT_WORKER=/opt/diagnostics/portable/capture-worker
+export DOTNET_DIAGNOSTICS_SQLITE_LIBRARY=/opt/diagnostics/portable/libe_sqlite3.so
+```
+
+These are explicit absolute asset paths, not discovery defaults or a promise
+that those example files are installed. Both absent means
+`ImportWorkerUnavailable`; partial or invalid configuration fails startup.
+No automatic packaged-asset discovery, in-process SQLite admission, Windows
+fallback, or archive-supplied executable is used. The current safe worker
+supports Linux x64 only; configured assets must also match the host's native ABI
+and support the required isolation facilities.
+
+See [portable capture transfer](./tool-reference.md#portable-capture-transfer)
+for the exact action fields and client sequence. Clients must write returned
+chunks to their own selected file and verify the advertised whole-archive hash;
+a server-local archive is not a completed download. Treat archives as sensitive.
+HTTP enforces at most 16 concurrent buffered MCP request frames without a waiter
+queue and a 30-second body-read deadline; overflow returns 429 with retry delay.
 
 Historical views use retained evidence, never a stored PID to reattach. Queries
 do not repair interrupted captures: request explicit `captureAction="recover"`

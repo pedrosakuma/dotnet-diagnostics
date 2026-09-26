@@ -110,6 +110,8 @@ internal sealed class BoundedMcpInputStream(Stream input) : Stream
 /// <summary>Applies the same pre-parser limits to length-delimited and chunked HTTP bodies.</summary>
 internal sealed class McpRequestFramingMiddleware(RequestDelegate next)
 {
+    private int _activeFrames;
+
     public async Task InvokeAsync(HttpContext context)
     {
         if (!context.Request.Path.StartsWithSegments("/mcp") || !HttpMethods.IsPost(context.Request.Method))
@@ -124,7 +126,22 @@ internal sealed class McpRequestFramingMiddleware(RequestDelegate next)
             return;
         }
 
+        if (Interlocked.Increment(ref _activeFrames) > 16)
+        {
+            Interlocked.Decrement(ref _activeFrames);
+            context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+            context.Response.Headers.RetryAfter = "1";
+            return;
+        }
+        try { await ReadAndDispatchAsync(context).ConfigureAwait(false); }
+        finally { Interlocked.Decrement(ref _activeFrames); }
+    }
+
+    private async Task ReadAndDispatchAsync(HttpContext context)
+    {
         using var frame = new MemoryStream(McpRequestFraming.CopyBufferBytes);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token, context.RequestAborted);
         var buffer = new byte[McpRequestFraming.CopyBufferBytes];
         try
         {
@@ -133,7 +150,7 @@ internal sealed class McpRequestFramingMiddleware(RequestDelegate next)
                 var remaining = McpRequestFraming.MaximumFrameBytes - checked((int)frame.Length);
                 var count = await context.Request.Body.ReadAsync(
                     buffer.AsMemory(0, Math.Min(buffer.Length, remaining + 1)),
-                    context.RequestAborted).ConfigureAwait(false);
+                    linked.Token).ConfigureAwait(false);
                 if (count == 0) break;
                 if (count > remaining)
                     throw new InvalidDataException("MCP request exceeds the transport frame limit.");
@@ -149,6 +166,11 @@ internal sealed class McpRequestFramingMiddleware(RequestDelegate next)
         catch (JsonException)
         {
             context.Response.StatusCode = StatusCodes.Status400BadRequest;
+            return;
+        }
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested && !context.RequestAborted.IsCancellationRequested)
+        {
+            context.Response.StatusCode = StatusCodes.Status408RequestTimeout;
             return;
         }
 

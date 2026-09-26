@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Text.Json;
 using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Artifacts;
 using DotnetDiagnostics.Core.Bytes;
@@ -23,6 +24,7 @@ namespace DotnetDiagnostics.Mcp.Tools;
 /// <see cref="DiagnosticTools.GetDumpBytes"/> entrypoints. Those methods are implementation
 /// details rather than registered MCP tools; compatibility is asserted by
 /// <c>GetBytesCompatibilityTests</c>.</para>
+/// <para>Migration history: removed get_module_bytes/get_dump_bytes aliases map to kind=module/dump.</para>
 /// </remarks>
 [McpServerToolType]
 public sealed class GetBytesTool
@@ -49,11 +51,10 @@ public sealed class GetBytesTool
         Idempotent = false,
         UseStructuredContent = true)]
     [Description(
-        "Fetch PE/PDB, dump or exported .nettrace chunks; manage raw artifacts or private SQLite captures. " +
-        "Paths stay under MCP_ARTIFACT_ROOT and are revalidated per call. maxBytes: default 4 MiB, cap 16 MiB; artifact cap 256 MiB. " +
-        "captures uses captureAction=list|describe|delete|recover, checks current ownership, and never exposes SQL/database bytes or client roots. Recovery creates a derived package. " +
-        "Requires literal module-bytes-read; captures also investigation-export; deletion also literal delete-artifact. Raw TTL excludes captures. " +
-        "Only registered byte-fetch tool: removed get_module_bytes/get_dump_bytes aliases map to kind=module/dump (migration history only).")]
+        "Fetch PE/PDB, dump or .nettrace chunks; manage artifacts and captures. Paths remain under MCP_ARTIFACT_ROOT. " +
+        "maxBytes: 4 MiB default, 16 MiB cap; artifact cap 256 MiB. " +
+        "captures supports lifecycle and bounded portable transfers via captureAction/captureTransfer; no SQL or client-selected roots. " +
+        "Requires literal module-bytes-read; captures also investigation-export; deletion literal delete-artifact. Raw TTL excludes captures.")]
     public static async Task<DiagnosticResult<object>> GetBytes(
         IModuleByteSource moduleByteSource,
         IDumpByteSource dumpByteSource,
@@ -72,7 +73,7 @@ public sealed class GetBytesTool
         [Description("attach_to_pod handle; routes through its attached Pod instead of the current MCP session binding.")]
         string? investigationHandleId = null,
         ILoggerFactory? loggerFactory = null,
-        [Description("captures: list|describe|delete|recover (default list). Recovery creates a derived package.")]
+        [Description("captures: list|describe|delete|recover; export-start|download-chunk|import-start|upload-chunk|import-commit|transfer-status|import-result|transfer-cancel.")]
         string captureAction = "list",
         [Description("Opaque durable capture ID for describe/delete/recover. No paths or SQL accepted.")]
         string? captureId = null,
@@ -81,6 +82,10 @@ public sealed class GetBytesTool
         [Description("kind='captures', action='list': continuation from nextAfterCaptureId.")]
         string? afterCaptureId = null,
         DurableCaptureTools? durableCaptures = null,
+        [Description("Portable action fields: operationId/requestedUtc, entries, transferId, offset/count, base64/sha256, archiveBytes/archiveSha256, afterEntry/pageSize. See tool reference.")]
+        JsonElement? captureTransfer = null,
+        PortableCaptureTools? portableCaptures = null,
+        McpServer? server = null,
         CancellationToken cancellationToken = default)
     {
         if (!ToolDispatchGuards.TryValidateDiscriminator<object>(
@@ -95,6 +100,9 @@ public sealed class GetBytesTool
 
         return canonicalKind switch
         {
+            KindCaptures when captureAction.Contains('-', StringComparison.Ordinal) => portableCaptures is null
+                ? DurableCaptureTools.Unavailable<object>()
+                : await portableCaptures.InvokeAsync(principalAccessor, server, captureAction, captureTransfer, cancellationToken).ConfigureAwait(false),
             KindCaptures => durableCaptures is null
                 ? DurableCaptureTools.Unavailable<object>()
                 : await durableCaptures.LifecycleAsync(
