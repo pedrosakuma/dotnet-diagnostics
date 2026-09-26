@@ -27,17 +27,7 @@ public sealed class StdioCaptureAuthorityClientTests : IDisposable
         writer.TryAppend(artifact, new(Name: "cpu-usage")).Should().BeTrue();
         var capture = await writer.CompleteAsync();
 
-        var transport = new StdioClientTransport(new()
-        {
-            Command = "dotnet",
-            Arguments = [ServerDll(), "--stdio", "--Stdio:CaptureBytes=" + enabled],
-            EnvironmentVariables = new Dictionary<string, string?>
-            {
-                ["MCP_ARTIFACT_ROOT"] = _root,
-                ["Orchestrator__Enabled"] = "false",
-                ["AzureDiscovery__Enabled"] = "false",
-            },
-        });
+        var transport = Transport(enabled);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await using var client = await McpClient.CreateAsync(transport, cancellationToken: timeout.Token);
         var result = await client.CallToolAsync("get_bytes", new Dictionary<string, object?>
@@ -63,6 +53,43 @@ public sealed class StdioCaptureAuthorityClientTests : IDisposable
             result.IsError.Should().BeTrue();
             JsonSerializer.Serialize(result).Should().Contain("module-bytes-read");
             result.StructuredContent.Should().BeNull("the scope filter denies before lifecycle dispatch");
+        }
+    }
+
+    [Theory]
+    [InlineData("heap-snapshot", "sensitive-heap-read", false)]
+    [InlineData("heap-snapshot", "sensitive-heap-read", true)]
+    [InlineData("event-source", "eventsource-any", false)]
+    [InlineData("event-source", "eventsource-any", true)]
+    [InlineData("method-params-capture", "sensitive-parameter-read", false)]
+    [InlineData("method-params-capture", "sensitive-parameter-read", true)]
+    public async Task ActualStdioClient_SensitiveRecordsRequireExplicitConfiguredModifier(
+        string kind, string modifier, bool granted)
+    {
+        var store = new SqliteCaptureStore(new TestRoot(_root));
+        await using var writer = await store.CreateAsync(new("sensitive retained fixture"),
+            new(StdioRootPrincipalAccessor.Instance.Current!.OwnershipKey));
+        var artifact = writer.AddArtifact(kind, "sensitive evidence");
+        writer.TryAppend(artifact, new(Name: "sensitive-fixture-record")).Should().BeTrue();
+        var capture = await writer.CompleteAsync();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await using var client = await McpClient.CreateAsync(
+            Transport(enabled: true, granted ? modifier : null), cancellationToken: timeout.Token);
+        var result = await client.CallToolAsync("query_snapshot", new Dictionary<string, object?>
+        {
+            ["captureId"] = capture.CaptureId, ["artifactId"] = artifact, ["view"] = "records",
+        }, cancellationToken: timeout.Token);
+        if (granted)
+        {
+            result.IsError.Should().NotBeTrue("actual result: {0}", JsonSerializer.Serialize(result));
+            var records = result.StructuredContent!.Value.GetProperty("data").GetProperty("records");
+            records.GetArrayLength().Should().Be(1);
+            records[0].GetProperty("record").GetProperty("name").GetString().Should().Be("sensitive-fixture-record");
+        }
+        else
+        {
+            result.IsError.Should().BeTrue();
+            JsonSerializer.Serialize(result).Should().NotContain("sensitive-fixture-record");
         }
     }
 
@@ -126,6 +153,23 @@ public sealed class StdioCaptureAuthorityClientTests : IDisposable
             new DirectoryInfo(AppContext.BaseDirectory).Name, "DotnetDiagnostics.Mcp.dll");
         File.Exists(dll).Should().BeTrue("missing subprocess assets are a test failure, not passing coverage");
         return dll;
+    }
+
+    private StdioClientTransport Transport(bool enabled, string? modifier = null)
+    {
+        var arguments = new List<string> { ServerDll(), "--stdio", "--Stdio:CaptureBytes=" + enabled };
+        if (modifier is not null) arguments.Add("--Stdio:CaptureModifiers:0=" + modifier);
+        return new(new()
+        {
+            Command = "dotnet",
+            Arguments = arguments,
+            EnvironmentVariables = new Dictionary<string, string?>
+            {
+                ["MCP_ARTIFACT_ROOT"] = _root,
+                ["Orchestrator__Enabled"] = "false",
+                ["AzureDiscovery__Enabled"] = "false",
+            },
+        });
     }
 
     public void Dispose()
