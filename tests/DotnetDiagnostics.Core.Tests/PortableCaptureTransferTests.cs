@@ -100,10 +100,15 @@ public sealed partial class PortableCaptureExportTests
     public async Task Upload_HashMismatchCannotCommitOrRunWorker()
     {
         var request = new CaptureImportRequest(new(Guid.NewGuid().ToString("N"), _clock.Now), 1, new string('0', 64));
-        await using var upload = Exporter().BeginUpload(request, Owner, static (_, _, _, _) => ValueTask.CompletedTask);
+        var service = Exporter();
+        await using var upload = service.BeginUpload(request, Owner, static (_, _, _, _) => ValueTask.CompletedTask);
         await upload.AppendAsync(0, new byte[] { 1 });
         Assert.Equal(CaptureErrorCode.CorruptPackage, (await Assert.ThrowsAsync<CaptureStoreException>(() =>
             upload.CommitAsync())).Code);
+        await upload.DisposeAsync();
+        var result = await service.GetImportResultAsync(request.Operation, Owner);
+        Assert.False(result.Cancelled);
+        Assert.Equal(CaptureErrorCode.CorruptPackage, result.Failure!.Code);
     }
 
     [Fact]

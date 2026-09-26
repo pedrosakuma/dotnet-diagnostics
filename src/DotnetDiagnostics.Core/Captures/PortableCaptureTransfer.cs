@@ -99,7 +99,15 @@ public sealed class PortableCaptureTransfer : IAsyncDisposable
                 if (file.Length != ArchiveBytes ||
                     !string.Equals(Convert.ToHexString(await SHA256.HashDataAsync(file, token).ConfigureAwait(false)),
                         ArchiveSha256, StringComparison.OrdinalIgnoreCase))
+                {
+                    var journal = _storage.Receipt.Import!;
+                    _result = journal.Result with
+                    {
+                        Failure = new(CaptureErrorCode.CorruptPackage, "Archive.DigestOrLengthMismatch", null, null, null, null)
+                    };
+                    _storage.SaveImport(journal with { Terminal = true, Result = _result });
                     throw CapturePackage.Error(CaptureErrorCode.CorruptPackage, "Archive.DigestOrLengthMismatch");
+                }
             }
             _committed = true;
             try { return _result = await _import(token).ConfigureAwait(false); }
