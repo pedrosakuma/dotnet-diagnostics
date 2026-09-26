@@ -137,6 +137,37 @@ workflow still builds and attests product artifacts; public NuGet/GitHub Release
 publication remains tag-only. Use the nonpublishing preparation workflow for
 initial producer validation.
 
+When the new preparation workflow is not registered on the default branch, the
+existing registered `release.yml` offers a separate **`producer_only=true`**
+manual mode (default false). This calls only the unchanged reusable producer:
+`pack-tool`, `publish-binaries`, `release`, and `publish-nuget` are explicitly
+skipped. The running job has `contents: read`, inherits no secrets, and produces
+only internal success/failure artifacts. No product packing, attestation, tag,
+package publication or GitHub Release is performed in this mode. The existing
+required `version` input stays required; supply the inert value `producer-only`,
+which no product job consumes.
+
+After independent review and verification of the pushed preparation branch SHA,
+the dispatch body for registered workflow `release.yml` is:
+
+```json
+{
+  "ref": "feature/1054-producer-only-validation",
+  "inputs": {
+    "version": "producer-only",
+    "producer_only": true,
+    "include_portable_worker": false
+  }
+}
+```
+
+Do not dispatch an older workflow revision lacking this gate. Before dispatch,
+inspect default-branch completion triggers for downstream publishing. Verify the
+resulting run's `head_sha`, read-only token permissions, skipped product jobs and
+internal-artifact inventory; retain the first failure without rerunning. This
+preparation mode is not release authorization. Ordinary manual and tag paths
+retain their prior behavior when `producer_only` is absent or false.
+
 Docker consumes the same already-prepared artifact; it does not compile one.
 Extract it into `artifacts/portable-worker/linux-x64` in the build context and use
 `--build-arg INCLUDE_PORTABLE_CAPTURE_WORKER=true`. The deny-all `.dockerignore`
