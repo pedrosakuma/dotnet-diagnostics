@@ -25,6 +25,11 @@ Host transfers are not restart capabilities. Startup cleanup expires their
 staged export bytes and reconciles interrupted uploads/imports into durable
 owner-bound receipts. Existing stream `ExportAsync`/`ImportAsync` callers keep
 their prior copy, lifetime, cancellation and retry behavior.
+Reconciliation is repeated while holding an acquired retry lease: the previous
+owner may have exited after the startup/control scan observed its lease active.
+An interrupted receiving upload becomes terminal `ImportInterrupted`, with no
+invented bundle or entry IDs. Retrying returns that failure receipt; it does
+not resume the upload or treat the initial pending journal as a final outcome.
 
 Worker configuration validation is available through
 `PortableCaptureImportWorker.Validate`; it validates trusted assets and the

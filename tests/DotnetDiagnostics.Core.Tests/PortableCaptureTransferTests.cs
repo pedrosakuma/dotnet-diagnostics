@@ -1,10 +1,109 @@
 using System.Security.Cryptography;
+using System.Text.Json;
+using DotnetDiagnostics.Core.Artifacts;
 using DotnetDiagnostics.Core.Captures;
 
 namespace DotnetDiagnostics.Core.Tests;
 
 public sealed partial class PortableCaptureExportTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ReleasedNonterminalUpload_ReconcilesToInterruptedWithoutResuming(bool queryBeforeRetry)
+    {
+        var (store, request, original) = PersistedReceivingUpload();
+        var path = original.DirectoryPath;
+        var persisted = JsonSerializer.Deserialize(File.ReadAllBytes(Path.Combine(path, "receipt.json")),
+            PortableCaptureJson.Default.PortableExportReceipt)!;
+        Assert.False(persisted.Import!.Terminal);
+        Assert.Null(persisted.Import.Result.Failure);
+        Assert.Equal(75, persisted.Transfer!.ReceivedBytes);
+        Assert.Equal(75, new FileInfo(original.ArchivePath).Length);
+        original.Dispose(); // All fixture I/O is closed; explicitly release only the process lease, not transfer cleanup.
+
+        var service = new PortableCaptureUseCases(store, static (_, _) => ValueTask.CompletedTask, timeProvider: _clock);
+        if (queryBeforeRetry)
+            AssertInterrupted(await service.GetImportResultAsync(request.Operation, Owner));
+        await using var retry = service.BeginUpload(request, Owner,
+            static (_, _, _, _) => throw new InvalidOperationException("Interrupted upload must not be validated or published."));
+        AssertInterrupted(retry.ExistingResult!);
+        Assert.Same(retry.ExistingResult, await retry.CommitAsync());
+        Assert.Equal(CaptureErrorCode.InvalidInput, (await Assert.ThrowsAsync<CaptureStoreException>(() =>
+            retry.AppendAsync(75, new byte[25]))).Code);
+        Assert.False(File.Exists(Path.Combine(path, "bundle.ddcapture")));
+        Assert.Empty((await store.ListAsync(Owner)).Captures);
+        await retry.DisposeAsync();
+        AssertInterrupted(await service.GetImportResultAsync(request.Operation, Owner));
+        Assert.Equal(CaptureErrorCode.NotFound, (await Assert.ThrowsAsync<CaptureStoreException>(() =>
+            service.GetImportResultAsync(request.Operation, new("other", true)))).Code);
+        var conflict = Assert.Throws<CaptureStoreException>(() => service.BeginUpload(
+            request with { ArchiveBytes = 101 }, Owner, static (_, _, _, _) => ValueTask.CompletedTask));
+        Assert.Equal(CaptureErrorCode.InvalidInput, conflict.Code);
+        Assert.Contains("OperationConflict", conflict.Message);
+    }
+
+    [Fact]
+    public async Task LeaseReleasedAfterCleanupProbe_ReconcilesAgainInsideReusedLease()
+    {
+        var (store, request, original) = PersistedReceivingUpload();
+        var path = original.DirectoryPath;
+        PortableCaptureTransfer retry;
+        using (SqliteCaptureStore.PortableAdmission(store.PortableRoot()))
+        {
+            // Reproduce CleanupLocked's active-lease observation, then the owner exiting
+            // before Begin's later reuse step. No GC/finalizer timing or native process is involved.
+            Assert.Throws<IOException>(() => new FileStream(Path.Combine(path, ".lease"),
+                FileMode.Open, FileAccess.ReadWrite, FileShare.None));
+            var receipt = original.Receipt;
+            Assert.False(receipt.Import!.Terminal);
+            original.Dispose();
+            var reused = PortableCaptureStorage.ReuseUnderAdmission(store, path, receipt, import: true);
+            Assert.True(reused.Receipt.Import!.Terminal);
+            AssertInterrupted(reused.Receipt.Import.Result);
+            Assert.Equal(PortableBounds.ReceiptReservation, reused.Receipt.ReservationBytes);
+            Assert.False(File.Exists(reused.ArchivePath));
+            retry = new PortableCaptureTransfer(reused, request,
+                static _ => throw new InvalidOperationException("The stopped upload is terminal, not resumable."));
+        }
+        await using (retry)
+        {
+            AssertInterrupted(retry.ExistingResult!);
+            Assert.Same(retry.ExistingResult, await retry.CommitAsync());
+            Assert.Empty((await store.ListAsync(Owner)).Captures);
+        }
+    }
+
+    private (SqliteCaptureStore Store, CaptureImportRequest Request, PortableCaptureStorage Storage) PersistedReceivingUpload()
+    {
+        var store = Store();
+        _ = store.InitializePortableRoot();
+        var request = new CaptureImportRequest(new(Guid.NewGuid().ToString("N"), _clock.Now), 100, new string('0', 64));
+        var initial = new PortableImportResult(request.Operation.Id, null, request.ArchiveSha256, false, false, [], null);
+        var fingerprint = PortableCaptureStorage.Digest(CapturePackage.Utf8.GetBytes(
+            FormattableString.Invariant($"import/{request.ArchiveBytes}/{request.ArchiveSha256}")));
+        var storage = PortableCaptureStorage.Begin(store, request.Operation, Owner, fingerprint, _clock.Now, new(initial, [], false));
+        storage.Reserve(request.ArchiveBytes);
+        using (var bytes = SafeArtifactPath.CreateRestrictedFile(storage.ArchivePath))
+        {
+            bytes.Write(new byte[75]);
+            bytes.Flush(flushToDisk: true);
+        }
+        storage.SaveTransfer(upload: true, 75);
+        return (store, request, storage);
+    }
+
+    private static void AssertInterrupted(PortableImportResult result)
+    {
+        Assert.NotNull(result);
+        Assert.False(result.Complete);
+        Assert.False(result.Cancelled);
+        Assert.Null(result.BundleId);
+        Assert.Empty(result.Entries);
+        Assert.Equal(CaptureErrorCode.Incomplete, result.Failure!.Code);
+        Assert.Equal("ImportInterrupted", result.Failure.Reason);
+    }
+
     [Fact]
     public async Task TransferCallAdmissionSharesItsFiniteCounterAcrossStoreInstances()
     {

@@ -33,7 +33,12 @@ public sealed class PortableCaptureTransfer : IAsyncDisposable
         ArchiveBytes = request.ArchiveBytes;
         ArchiveSha256 = request.ArchiveSha256;
         _import = import;
-        _result = storage.Reused ? storage.Receipt.Import!.Result : null;
+        if (storage.Reused)
+        {
+            if (storage.Receipt.Import is not { Terminal: true } terminal)
+                throw CapturePackage.Error(CaptureErrorCode.StorageFailure, "ImportReceiptNotTerminal: retry requires reconciliation.");
+            _result = terminal.Result;
+        }
     }
 
     public PortableExportResult? Export { get; }

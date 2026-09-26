@@ -69,8 +69,7 @@ internal sealed partial class PortableCaptureStorage : IDisposable
                 throw CapturePackage.Error(CaptureErrorCode.InvalidInput, "OperationConflict: operation kind differs.");
             if (import is null && (receipt.Result is null || receipt.BytesExpireUtc <= now || !File.Exists(Path.Combine(path, "bundle.ddcapture"))))
                 throw CapturePackage.Error(CaptureErrorCode.InvalidInput, "TransferExpired: staged export is unavailable; use a new operation key.");
-            var lease = TryLease(path) ?? throw CapturePackage.Error(CaptureErrorCode.Busy, "Export retry is already active.");
-            return new(store, path, lease, receipt, reused: true);
+            return ReuseUnderAdmission(store, path, receipt, import is not null);
         }
         if (key.RequestedUtc < now.AddMinutes(-5))
             throw CapturePackage.Error(CaptureErrorCode.InvalidInput, "OperationExpired: first use must be within five minutes.");
@@ -85,6 +84,36 @@ internal sealed partial class PortableCaptureStorage : IDisposable
         WriteReceipt(path, created);
         return new(store, path, TryLease(path) ??
             throw CapturePackage.Error(CaptureErrorCode.Busy, "Portable lease could not be acquired."), created, reused: false);
+    }
+
+    internal static PortableCaptureStorage ReuseUnderAdmission(SqliteCaptureStore store, string path,
+        PortableExportReceipt receipt, bool import)
+    {
+        var lease = TryLease(path) ?? throw CapturePackage.Error(CaptureErrorCode.Busy, "Portable retry is already active.");
+        try
+        {
+            if (import)
+            {
+                // Cleanup may have seen this lease active immediately before its owner
+                // exited. Reconcile after acquisition, not just during the earlier scan.
+                receipt = ReconcileAndCleanImport(store.PortableRoot(), path, receipt);
+            }
+            return new(store, path, lease, receipt, reused: true);
+        }
+        catch
+        {
+            lease.Dispose();
+            throw;
+        }
+    }
+
+    private static PortableExportReceipt ReconcileAndCleanImport(string root, string path, PortableExportReceipt receipt)
+    {
+        receipt = ReconcileImport(root, path, receipt);
+        DeleteImportWork(path);
+        receipt = receipt with { ReservationBytes = PortableBounds.ReceiptReservation };
+        WriteReceipt(path, receipt);
+        return receipt;
     }
 
     internal void Reserve(long archiveBytes)
@@ -192,10 +221,7 @@ internal sealed partial class PortableCaptureStorage : IDisposable
                 }
                 if (receipt.Import is not null)
                 {
-                    receipt = ReconcileImport(root, directory, receipt);
-                    DeleteImportWork(directory);
-                    receipt = receipt with { ReservationBytes = PortableBounds.ReceiptReservation };
-                    WriteReceipt(directory, receipt);
+                    receipt = ReconcileAndCleanImport(root, directory, receipt);
                     if (receipt.Operation.RequestedUtc.AddHours(24) > now) continue;
                 }
                 if (receipt.Result is not null && receipt.Operation.RequestedUtc.AddHours(24) > now &&

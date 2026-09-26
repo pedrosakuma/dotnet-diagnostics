@@ -60,7 +60,8 @@ internal sealed partial class PortableCaptureStorage
         var receipt = ReadReceipt(path);
         if (receipt.OwnerId != access.OwnerId || receipt.Operation != key || receipt.Import is null)
             throw CapturePackage.Error(CaptureErrorCode.NotFound, "Import operation was not found for this owner.");
-        return receipt.Import.Result;
+        receipt = ReconcileAndCleanImport(root, path, receipt);
+        return receipt.Import!.Result;
     }
 
     private static PortableExportReceipt ReconcileImport(string root, string directory, PortableExportReceipt receipt)
