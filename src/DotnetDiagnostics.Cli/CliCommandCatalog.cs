@@ -42,10 +42,11 @@ internal static class CliCommandCatalog
         "--acknowledge-risk",
         "--capture-root", "--capture-id", "--artifact-id", "--from", "--to", "--name",
         "--after-record-id", "--page-size", "--after-capture-id",
+        "--entry", "--file", "--operation-id", "--requested-utc",
     ];
 
     public static readonly IReadOnlyList<string> DepthValues = ["summary", "detail", "raw"];
-    public static readonly IReadOnlyList<string> CaptureActions = ["list", "show", "delete", "recover"];
+    public static readonly IReadOnlyList<string> CaptureActions = ["list", "show", "delete", "recover", "export", "import", "import-result"];
     public static readonly IReadOnlyList<string> CpuBackendValues = ["automatic", "eventpipe", "os"];
     public static readonly IReadOnlyList<string> CompareModes = ["trend", "dispersion"];
     public static readonly IReadOnlyList<string> AcknowledgementValues = ["high", "critical"];
@@ -100,13 +101,23 @@ Options:
     [
         new(
             "captures",
-            "List, show, delete, or explicitly recover a durable local SQLite capture.",
+            "Manage durable local captures and explicitly export/import portable bundles.",
 """
 captures options:
   list                          List the current local OS owner's captures.
   show --capture-id <id>        Show artifacts, state, ownership, and capture quality.
   delete --capture-id <id>      Explicitly delete a capture; requires --acknowledge-risk high.
   recover --capture-id <id>     Create a new derived package from interrupted evidence.
+  export --entry <id>[=<label>] --file <path>
+                               Export 1-16 explicit entries (repeat --entry); no overwrite.
+                               Labels are display data, at most 256 UTF-8 bytes.
+  import --file <path>          Import through an explicitly configured isolated worker.
+  import-result                Read the current owner's persisted import outcome.
+      --operation-id <id>       Retry/result identity; use with --requested-utc <ISO-8601>.
+      --requested-utc <time>    Original operation timestamp, unchanged on retry.
+                               Import/export print their operation key even on failure.
+                               Use --json for structured outcomes, mappings and provenance.
+                               No binary stdin/stdout; use trusted local directories.
       --capture-root <directory> Stable root (MCP_ARTIFACT_ROOT, then local application data).
       --page-size <int>         List page size, 1..100 (default 100).
       --after-capture-id <id>    List continuation from the previous page.
@@ -115,8 +126,10 @@ captures options:
   dotnet-diagnostics-cli captures list --json
   dotnet-diagnostics-cli captures show --capture-id <id>
   dotnet-diagnostics-cli captures recover --capture-id <id>
+  dotnet-diagnostics-cli captures export --entry <id>=baseline --file ./baseline.ddcapture --acknowledge-risk high
+  dotnet-diagnostics-cli captures import --file ./baseline.ddcapture --acknowledge-risk high
 """,
-            ["--capture-id", "--page-size", "--after-capture-id"]),
+            ["--capture-id", "--page-size", "--after-capture-id", "--entry", "--file", "--operation-id", "--requested-utc"]),
         new(
             "docker-bootstrap",
             "Start a Docker sidecar for a running target container and print the matching external-profile config for the central MCP.",

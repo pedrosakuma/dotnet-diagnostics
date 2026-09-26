@@ -69,6 +69,8 @@ internal static partial class CliCommands
     private static async Task<CliCommandResult> CapturesAsync(
         IServiceProvider services, CliOptions options, CancellationToken cancellationToken)
     {
+        if (options.CaptureAction is "export" or "import" or "import-result")
+            return await PortableCaptureAsync(services, options, cancellationToken).ConfigureAwait(false);
         try
         {
             var service = CliDurableCaptures.For(services).Get(options.CaptureRoot);
@@ -98,7 +100,7 @@ internal static partial class CliCommands
                     return BuildResult(DiagnosticResult.Ok(recovered,
                         $"Recovered into new derived capture {recovered.CaptureId}; original evidence was not modified."), SerializeQuery);
                 default:
-                    return Fail("Unknown capture action.", "InvalidArgument", "Use captures list, show, delete, or recover.");
+                    return Fail("Unknown capture action.", "InvalidArgument", "Use captures list, show, delete, recover, export, import, or import-result.");
             }
         }
         catch (CaptureStoreException ex)

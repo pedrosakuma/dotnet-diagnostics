@@ -862,6 +862,131 @@ Ordinary reads never repair or mutate the original. Captures survive process res
 and REPL exit until explicitly deleted. There is no automatic 24-hour raw-artifact
 pruning of capture packages and no daemon or global database.
 
+#### Portable bundles: `captures export`, `import`, and `import-result`
+
+Portability is an explicit durable-storage operation, not a change to the default
+ephemeral collection behavior. The CLI calls Core directly: no MCP connection,
+HTTP endpoint, bearer token, or daemon is involved. The
+[portable capture contract](./design/portable-capture-contract.md) defines format,
+admission, ownership, and partial-publication semantics.
+
+```bash
+# Choose each sealed capture explicitly; duplicate selections/labels are allowed.
+dotnet-diagnostics-cli captures export --capture-root "./source evidence" \
+  --entry <capture-id-a>=baseline --entry "<capture-id-b>=after change" \
+  --file "./comparison set.ddcapture" --acknowledge-risk high --json
+
+# Requires the trusted worker configuration below.
+dotnet-diagnostics-cli captures import --capture-root "./destination evidence" \
+  --file "./comparison set.ddcapture" --acknowledge-risk high --json
+
+# Use the operation pair returned by import; this needs neither input nor worker.
+dotnet-diagnostics-cli captures import-result --capture-root "./destination evidence" \
+  --operation-id <operation-id> --requested-utc <original-ISO-8601-timestamp> --json
+
+# Query with the NEW local identifiers from data.import.entries[].mapping.
+dotnet-diagnostics-cli query --capture-root "./destination evidence" \
+  --capture-id <local-capture-id> --artifact-id <local-artifact-id> --view records --json
+```
+
+`--entry <capture-id>[=<label>]` is repeatable, with 1..16 entries in supplied
+order. Capture IDs must be exact lower-case, 32-character GUIDs, never names or
+paths. The first `=` separates the ID from the optional label; later `=` characters
+belong to the label. Labels are at most 256 UTF-8 bytes without control characters.
+They are display data, not selectors, output paths, authority, or source renames.
+The output filename is independent of every label and immutable source identity.
+Quote each whole argument when it contains spaces; neither command executes shell
+fragments from arguments. Import accepts the whole bundle, not label-based subsets.
+
+`--file` names a binary file, not stdin/stdout (`-` is rejected); `--json` selects
+the **outcome envelope**, never a JSON encoding of the archive. Export writes in
+64 KiB chunks to a random, exclusively created sibling `.ddcapture-*.pending`,
+flushes and checks size/SHA-256, then publishes with a no-overwrite rename.
+The destination parent must already exist. Existing destinations are never replaced.
+Output inside the managed `captures/` directory is rejected. On Unix the sibling
+is created with owner read/write permissions; Windows inherits directory ACLs.
+Use trusted local directories whose parents cannot be replaced by another user.
+Existing symlink/reparse paths are rejected; this is not a race-proof filesystem
+sandbox against a hostile process sharing write permission to those directories.
+Do not use devices, pipes, mutable producer files, or network-mounted destinations.
+Import hashes the bounded input file before Core independently admits its ZIP,
+SQLite schema/data and compatibility. A matching hash is **not trust**.
+
+Both file paths are bounded at 512 MiB; Core's additional format, work, memory,
+concurrency and store limits still apply. The CLI's operation deadline is 600
+seconds including local hashing/copying. Cancellation/failure can perform bounded
+receipt/metadata lookups afterward (up to 10 seconds each). Handled export failures
+remove only the temporary file created by that invocation; cleanup failure is
+reported separately. An abrupt kill can leave that sibling behind. Inspect its
+exact path and operation state before manually removing it; do not delete the
+capture store or glob-delete other operations' staging.
+
+**Trusted import assets and current platform limit.** Set both absolute paths in
+the CLI host's environment:
+
+```bash
+export DOTNET_DIAGNOSTICS_IMPORT_WORKER=/opt/dotnet-diagnostics/trusted/portable-capture-worker
+export DOTNET_DIAGNOSTICS_SQLITE_LIBRARY=/opt/dotnet-diagnostics/trusted/libe_sqlite3.so
+```
+
+These are operator-trusted executable/library inputs, never paths supplied by a
+bundle. Use the matching reviewed worker and SQLite runtime assets, installed in
+directories unmodifiable by untrusted users. This CLI change does **not** package
+or automatically discover those native assets, download them, search test output,
+or accept foreign SQLite in the CLI process. Installed cross-host native packaging
+remains an integration/release requirement. The current confined worker requires
+supported Linux isolation features; other platforms, missing assets, or unavailable
+isolation fail explicitly (`ImportWorkerUnavailable` or the underlying Core
+failure). There is no less-isolated fallback. Export and receipt lookup do not
+require worker configuration.
+
+**Local risk and ownership.** Export/import require `--acknowledge-risk high` in
+non-interactive use, or the interactive session's high-risk confirmation.
+These actions use the canonical Core safety profiles shared with MCP.
+`import-result` is Moderate/Warn: receipt reconciliation can write metadata and
+delete unpublished private staging, but does not delete published captures or
+attach to a live target.
+`--explain-risk` performs no import/export and does not open packages.
+Acknowledgment concerns whole captures, including potentially sensitive records;
+it does not grant all-owners access or trust input SQL. The current OS-local owner
+is supplied to Core for every source read, import, publication, and receipt lookup.
+Imported source ownership is retained only as provenance. Each published entry
+gets new local capture/artifact IDs, and typed references are remapped. Immutable
+origin and immediate-source provenance, quality and unknown-tail/loss indicators
+remain visible in `data.captures[].portableSource` and `quality`.
+No native trace/dump dependency is smuggled into the initial format; dependent
+views can remain unavailable even when records are readable offline.
+
+**Outcome and retry identity.** Both human and JSON output retain the structured
+operation key, export metadata or import entries/mappings, provenance, and failures.
+`data.outputPublished` means the export file's final rename succeeded; an export
+hash alone does not establish publication. `data.import.complete` means all entries
+published, **not** that their diagnostic evidence is lossless. Multi-entry import
+is not one cross-directory transaction: after cancellation or failure, already
+published entries remain usable. Inspect each entry state and mapping. Unpublished
+entries have no local mapping. `failure`, `receiptFailure`, and `cleanupFailure`
+are distinct; a failed receipt lookup is not proof that nothing published.
+
+Exit `0` means the command completed; `1` means a structured failure or incomplete
+publication, `2` means argument/safety rejection, and `130` means cancellation,
+which can include useful partial results. Do not discard stdout on nonzero exit.
+For crash-safe orchestration, supply **both** `--operation-id` and `--requested-utc`
+before the first invocation and retain them externally. Omitted pairs are generated
+and returned, but a killed process cannot return its generated key.
+The ID is a lower-case N-format GUID; the timestamp must include an explicit UTC
+offset. Reuse the exact original pair, input bytes and export selection/labels on
+retry, never a fresh timestamp. Core binds receipts to the current owner and original
+request; a new key is a new operation, not deduplication. Core's first-use freshness
+and receipt retention rules apply (five minutes and 24 hours respectively);
+export byte retention is shorter. `import-result` reads/reconciles the retained
+receipt without requiring the bundle or a live target. Normal CLI `import` retries
+still require readable input and configured assets; use `import-result` when those
+are unavailable. Do not blindly repeat a partial import under a new key.
+
+The same syntax works in `session`, inheriting `--capture-root` unless overridden.
+Session-level `--persist` is not applied to these commands. There is no portable
+multi-capture comparison command in this change.
+
 **Records query.** `--view records` exposes bounded typed records, not arbitrary SQL:
 Each artifact advertises `recordStreamAvailable` and, when recorded, its own
 `recordStream` admission/source-loss evidence. The `records` view appears only

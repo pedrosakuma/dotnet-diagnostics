@@ -947,7 +947,7 @@ internal sealed class SessionRepl
           dump [...] --confirm            Write a process dump to disk.
           get-bytes --kind <k> [...]      Materialise a module or dump file to disk.
           query --handle <id> --view <v>  Re-render a collected handle under a different view.
-          captures list|show|delete|recover [...]
+          captures list|show|delete|recover|export|import|import-result [...]
                                           Manage durable local capture packages.
           query --capture-id <id> --artifact-id <id> --view <v|records>
                                           Query persisted evidence without live attachment.

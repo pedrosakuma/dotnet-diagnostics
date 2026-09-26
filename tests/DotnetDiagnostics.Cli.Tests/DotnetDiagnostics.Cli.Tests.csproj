@@ -24,6 +24,8 @@
   <ItemGroup>
     <Using Include="Xunit" />
     <Compile Include="../NetworkingCorrelationContractFixture.cs" Link="NetworkingCorrelationContractFixture.cs" />
+    <None Include="../DotnetDiagnostics.Core.Tests/Fixtures/PortableImport/known-counters-v1-v2.ddcapture"
+          Link="Fixtures/known-counters-v1-v2.ddcapture" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

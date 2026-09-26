@@ -187,6 +187,8 @@ internal static class CliSafetyPreflight
         InvocationSafetyDescriptor safety,
         string? artifactRoot)
     {
+        if (options.Command == "captures" && options.CaptureAction == "export" && options.CaptureFile is not null)
+            return TryGetFullPath(options.CaptureFile);
         if (options.Persist || options.Command == "captures" || options.CaptureId is not null)
         {
             try
