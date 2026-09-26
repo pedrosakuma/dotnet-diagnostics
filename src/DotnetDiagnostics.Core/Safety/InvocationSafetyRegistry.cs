@@ -216,7 +216,8 @@ public static class InvocationSafetyRegistry
             DiagnosticOperationCatalog.ByteKinds.All,
             ["captureAction"],
             DiagnosticOperationCatalog.ByteKinds.All.Select(GetBytesProfile).Concat(
-            [
+            new[]
+            {
                 Profile("captures-delete", [("kind", "captures"), ("captureAction", "delete")],
                     GetBytesProfile(DiagnosticOperationCatalog.ByteKinds.Delete).Safety),
                 Profile("captures-recover", [("kind", "captures"), ("captureAction", "recover")],
@@ -224,7 +225,7 @@ public static class InvocationSafetyRegistry
                         "Explicit recovery creates derived evidence; the source is unchanged.",
                         [], [DataExposure.PossibleConfidentialData], [InvocationSideEffect.WritesArtifact],
                         ["Inspect recovery quality and unknown-tail metadata."])),
-            ]));
+            }.Concat(PortableCaptureProfiles())));
 
         yield return Simple(DiagnosticOperationCatalog.CollectProcessDump, ProcessDumpSafety());
         yield return Registration(
@@ -819,6 +820,40 @@ public static class InvocationSafetyRegistry
                 DiagnosticOperationCatalog.GetBytes,
                 $"Byte kind '{kind}' has no safety profile."),
         };
+
+    private static IEnumerable<InvocationSafetyProfile> PortableCaptureProfiles()
+    {
+        foreach (var action in new[] { "export", "export-start", "import", "import-start", "import-commit",
+            "download-chunk", "upload-chunk", "transfer-status", "import-result", "transfer-cancel" })
+        {
+            var initiation = action is "export" or "export-start" or "import" or "import-start" or "import-commit";
+            var metadata = action is "transfer-status" or "import-result" or "transfer-cancel";
+            var effects = action switch
+            {
+                "export" => new[] { InvocationSideEffect.WritesArtifact, InvocationSideEffect.ExportsRawBytes },
+                "download-chunk" => [InvocationSideEffect.ExportsRawBytes],
+                "transfer-status" or "import-result" or "transfer-cancel" =>
+                    [InvocationSideEffect.WritesArtifact, InvocationSideEffect.DeletesArtifact],
+                _ => [InvocationSideEffect.WritesArtifact],
+            };
+            var reason = action switch
+            {
+                "export" or "export-start" => "Stages whole sensitive captures for export; source evidence and live targets are unchanged.",
+                "import" or "import-start" or "import-commit" => "Receives or publishes sensitive diagnostic evidence through isolated import; no live target is attached.",
+                "download-chunk" => "Returns authorized sensitive archive bytes; previously downloaded bytes cannot be recalled.",
+                "upload-chunk" => "Writes bounded sensitive upload bytes to private staging; publication requires explicit commit.",
+                "transfer-cancel" => "Stops unpublished work and cleans private staging; already published captures are never deleted.",
+                _ => "Reads bounded operation metadata; reconciliation can write receipts and delete unpublished staging.",
+            };
+            yield return Profile("captures-" + action, [("kind", "captures"), ("captureAction", action)],
+                Descriptor(initiation ? InvocationRiskLevel.High : InvocationRiskLevel.Moderate,
+                    initiation ? InvocationApprovalPolicy.Acknowledge : InvocationApprovalPolicy.Warn,
+                    reason, [], metadata ? [DataExposure.ProcessMetadata, DataExposure.PossibleConfidentialData] :
+                        [DataExposure.HeapValues, DataExposure.ParameterValues, DataExposure.EventSourcePayloads,
+                            DataExposure.PossiblePii, DataExposure.PossibleSecrets, DataExposure.PossibleConfidentialData],
+                    effects, ["Protect archive bytes and recheck current ownership and whole-capture scopes."]));
+        }
+    }
 
     private static InvocationSafetyProfile PersistCaptureProfile()
         => ModifierProfile("persist", ("persist", "true"), Descriptor(

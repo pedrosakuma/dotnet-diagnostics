@@ -87,6 +87,33 @@ public sealed class DurableInvocationSafetyTests
     }
 
     [Theory]
+    [InlineData("export", true)]
+    [InlineData("export-start", true)]
+    [InlineData("import", true)]
+    [InlineData("import-start", true)]
+    [InlineData("import-commit", true)]
+    [InlineData("download-chunk", false)]
+    [InlineData("upload-chunk", false)]
+    [InlineData("transfer-status", false)]
+    [InlineData("import-result", false)]
+    [InlineData("transfer-cancel", false)]
+    public void PortableActionsUseCanonicalRiskWithoutLiveTargetImpact(string action, bool initiation)
+    {
+        var safety = InvocationSafetyResolver.Resolve(InvocationSafetyRequest.Create(
+            "get_bytes", ("kind", "captures"), ("captureAction", action)));
+        Assert.Equal(initiation ? InvocationRiskLevel.High : InvocationRiskLevel.Moderate, safety.RiskLevel);
+        Assert.Equal(initiation ? InvocationApprovalPolicy.Acknowledge : InvocationApprovalPolicy.Warn, safety.ApprovalPolicy);
+        Assert.Empty(safety.TargetImpact);
+        Assert.Contains(DataExposure.PossibleConfidentialData, safety.DataExposure);
+        Assert.Contains(action == "download-chunk" ? InvocationSideEffect.ExportsRawBytes : InvocationSideEffect.WritesArtifact,
+            safety.SideEffects);
+        if (action is "transfer-status" or "import-result" or "transfer-cancel")
+            Assert.Contains(InvocationSideEffect.DeletesArtifact, safety.SideEffects);
+        else
+            Assert.Contains(DataExposure.PossibleSecrets, safety.DataExposure);
+    }
+
+    [Theory]
     [InlineData("cpu-efficiency-sample", "records")]
     [InlineData("requests-now", " RECORDS ")]
     public void RecordOnlySnapshotsHaveAnOfflineClassificationWithoutInventingSummarySupport(string kind, string view)
