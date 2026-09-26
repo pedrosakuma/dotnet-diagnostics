@@ -137,6 +137,13 @@ internal sealed partial class PortableCaptureStorage : IDisposable
     internal static long AccountedBytes(string root)
     {
         long bytes = 0;
+        var calls = Path.Combine(root, ".portable-calls");
+        CapturePackage.RejectLinks(calls);
+        if (File.Exists(calls))
+        {
+            PortableBounds.Check("PortableCallControlBytes", new FileInfo(calls).Length, 16);
+            bytes = 16;
+        }
         var watch = Stopwatch.StartNew();
         foreach (var directory in Directories(root))
         {

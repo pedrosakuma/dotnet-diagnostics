@@ -30,3 +30,12 @@ Worker configuration validation is available through
 `PortableCaptureImportWorker.Validate`; it validates trusted assets and the
 supported platform without launching the worker. Valid configuration does not
 claim that kernel isolation or the operating-envelope release gates have passed.
+
+`AdmitTransferCall` shares the fixed 100-calls-per-UTC-second budget across
+cooperating hosts of an existing store. It uses a fixed 16-byte counter under
+the same cross-process control-file locking primitive, not a new database or
+operation slot. Its `.portable-calls` record reserves and accounts 16 bytes
+under store admission, but subsequent polling does not contend with publication's
+`.admission` lock. An absent store remains absent; malformed control bytes fail
+portable admission closed. The host also limits calls before
+the first store is created. Rate rejection is `Busy`, never a waiting queue.

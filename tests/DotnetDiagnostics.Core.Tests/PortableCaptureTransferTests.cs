@@ -6,6 +6,25 @@ namespace DotnetDiagnostics.Core.Tests;
 public sealed partial class PortableCaptureExportTests
 {
     [Fact]
+    public async Task TransferCallAdmissionSharesItsFiniteCounterAcrossStoreInstances()
+    {
+        var first = Exporter();
+        first.AdmitTransferCall();
+        Assert.False(Directory.Exists(_root));
+        await CreateAsync();
+        var second = Exporter();
+        for (var i = 0; i < 100; i++)
+            (i % 2 == 0 ? first : second).AdmitTransferCall();
+        var excess = Assert.Throws<CaptureStoreException>(() => Exporter().AdmitTransferCall());
+        Assert.Equal(CaptureErrorCode.Busy, excess.Code);
+        Assert.Equal(16, new FileInfo(Path.Combine(_root, "captures", ".portable-calls")).Length);
+        _clock.Now = _clock.Now.AddSeconds(1);
+        second.AdmitTransferCall();
+        await first.ExportAsync(Request(new CaptureExportSelection((await Store().ListAsync(Owner)).Captures[0].CaptureId, null)),
+            Stream.Null, Owner);
+    }
+
+    [Fact]
     public async Task HeldExport_RandomReadsReuseOneArchiveAndHoldPortableSlotAndSourceLease()
     {
         var capture = await CreateAsync();
