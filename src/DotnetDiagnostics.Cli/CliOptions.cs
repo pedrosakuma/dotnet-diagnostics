@@ -14,6 +14,10 @@ internal sealed record CliOptions
     public string? CaptureRoot { get; init; }
     public string? CaptureAction { get; init; }
     public string? CaptureId { get; init; }
+    public IReadOnlyList<string> CaptureEntries { get; init; } = Array.Empty<string>();
+    public string? CaptureFile { get; init; }
+    public string? OperationId { get; init; }
+    public string? RequestedUtc { get; init; }
     public string? ArtifactId { get; init; }
     public string? RecordFrom { get; init; }
     public string? RecordTo { get; init; }
@@ -523,6 +527,10 @@ internal sealed record CliOptions
             new FlagOptionDescriptor(state => state.Persist = true, "--persist"),
             new StringOptionDescriptor((state, value) => state.CaptureRoot = value, "--capture-root"),
             new StringOptionDescriptor((state, value) => state.CaptureId = value, "--capture-id"),
+            new StringOptionDescriptor((state, value) => state.CaptureEntries.Add(value), "--entry"),
+            new StringOptionDescriptor((state, value) => state.CaptureFile = value, "--file"),
+            new StringOptionDescriptor((state, value) => state.OperationId = value, "--operation-id"),
+            new StringOptionDescriptor((state, value) => state.RequestedUtc = value, "--requested-utc"),
             new StringOptionDescriptor((state, value) => state.ArtifactId = value, "--artifact-id"),
             new StringOptionDescriptor((state, value) => state.RecordFrom = value, "--from"),
             new StringOptionDescriptor((state, value) => state.RecordTo = value, "--to"),
@@ -624,6 +632,10 @@ internal sealed record CliOptions
     {
         public bool Persist { get; set; }
         public string? CaptureRoot { get; set; }
+        public List<string> CaptureEntries { get; } = [];
+        public string? CaptureFile { get; set; }
+        public string? OperationId { get; set; }
+        public string? RequestedUtc { get; set; }
         public string? CaptureAction { get; set; }
         public string? CaptureId { get; set; }
         public string? ArtifactId { get; set; }
@@ -827,6 +839,10 @@ internal sealed record CliOptions
             {
                 Persist = Persist,
                 CaptureRoot = CaptureRoot,
+                CaptureEntries = CaptureEntries.ToArray(),
+                CaptureFile = CaptureFile,
+                OperationId = OperationId,
+                RequestedUtc = RequestedUtc,
                 CaptureAction = CaptureAction,
                 CaptureId = CaptureId,
                 ArtifactId = ArtifactId,
