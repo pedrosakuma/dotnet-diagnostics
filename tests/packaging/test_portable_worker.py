@@ -4,6 +4,8 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import platform
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -180,6 +182,37 @@ class PortableWorkerPackagingTests(unittest.TestCase):
         content = targets.find("./ItemGroup/Content")
         self.assertEqual("true", content.attrib["ExcludeFromSingleFile"])
         self.assertEqual("false", content.attrib["Pack"])
+
+
+@unittest.skipUnless(platform.system() == "Linux" and platform.machine() == "x86_64",
+                     "The native worker supports Linux x86-64 only")
+class NativeHeaderCompatibilityTests(unittest.TestCase):
+    def compile_with_truncate_definition(self, definition):
+        compiler = shutil.which("gcc")
+        self.assertIsNotNone(compiler, "GCC is required for native header compatibility checks")
+        with tempfile.TemporaryDirectory(prefix="portable headers ") as directory:
+            include = Path(directory)
+            (include / "linux").mkdir()
+            header = "#include_next <linux/landlock.h>\n#undef LANDLOCK_ACCESS_FS_TRUNCATE\n"
+            if definition is not None:
+                header += f"#define LANDLOCK_ACCESS_FS_TRUNCATE {definition}\n"
+            (include / "linux/landlock.h").write_text(header)
+            return subprocess.run(
+                [compiler, *PRODUCER.FLAGS, "-fsyntax-only", "-I", str(include), str(SOURCE)],
+                text=True, capture_output=True, timeout=30)
+
+    def test_full_worker_compiles_without_truncate_header_definition(self):
+        result = self.compile_with_truncate_definition(None)
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+
+    def test_full_worker_compiles_with_native_truncate_definition(self):
+        result = self.compile_with_truncate_definition("(1ULL << 14)")
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+
+    def test_conflicting_truncate_header_definition_fails_closed(self):
+        result = self.compile_with_truncate_definition("(1ULL << 15)")
+        self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertIn("Unexpected Landlock truncate UAPI value", result.stderr)
 
 
 if __name__ == "__main__":

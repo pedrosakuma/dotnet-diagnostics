@@ -64,6 +64,16 @@ records exact `libc6`, development-header and binutils package versions, and
 records output ELF headers/dependencies/version requirements without executing
 the generated worker.
 
+Bookworm's Linux 6.1 development headers omit `LANDLOCK_ACCESS_FS_TRUNCATE`.
+The worker supplies its stable [Linux 6.2 UAPI value](https://github.com/torvalds/linux/blob/v6.2/include/uapi/linux/landlock.h),
+`1ULL << 14`, only when the build header does not define it, and rejects a
+conflicting definition at compile time. This is header compatibility, not a
+runtime fallback: Landlock ABI >=3 is still mandatory, truncation remains in the
+handled-access mask, and only the existing private writable staging profile
+allows it. The compiler image, runtime checks and confinement policy are unchanged.
+Compile-only regression cases cover missing, matching and conflicting definitions
+without producing or executing a worker.
+
 This existing complete compiler image avoids maintaining a new compiler build or
 running mutable apt installs in our producer. It is not a minimal-size runtime
 image and is never shipped to consumers. Compilation runs network-disabled,

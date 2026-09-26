@@ -28,6 +28,12 @@
 #error The initial worker supports Linux x86-64 only.
 #endif
 
+/* Linux 6.2 UAPI bit; older build headers may omit it. contain() still requires ABI >=3. */
+#ifndef LANDLOCK_ACCESS_FS_TRUNCATE
+#define LANDLOCK_ACCESS_FS_TRUNCATE (1ULL << 14)
+#endif
+_Static_assert(LANDLOCK_ACCESS_FS_TRUNCATE == (1ULL << 14), "Unexpected Landlock truncate UAPI value");
+
 /* Only stable public SQLite C ABI declarations are needed; no system SQLite
  * installation or alternative provider is used. The host selects e_sqlite3. */
 typedef struct sqlite3 sqlite3;
