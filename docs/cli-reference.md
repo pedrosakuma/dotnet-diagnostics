@@ -931,10 +931,12 @@ export DOTNET_DIAGNOSTICS_SQLITE_LIBRARY=/opt/dotnet-diagnostics/trusted/libe_sq
 
 These are operator-trusted executable/library inputs, never paths supplied by a
 bundle. Use the matching reviewed worker and SQLite runtime assets, installed in
-directories unmodifiable by untrusted users. This CLI change does **not** package
-or automatically discover those native assets, download them, search test output,
-or accept foreign SQLite in the CLI process. Installed cross-host native packaging
-remains an integration/release requirement. The current confined worker requires
+directories unmodifiable by untrusted users. Explicitly opted-in producer builds
+can include the [prepared native sidecars](./portable-native-packaging.md).
+Installed hosts do **not** automatically discover or activate them, download them,
+search test output, or accept foreign SQLite in the CLI process. Both environment
+variables remain required, including in Docker. Producer execution and installed
+cross-host validation remain integration/release gates. The current confined worker requires
 supported Linux isolation features; other platforms, missing assets, or unavailable
 isolation fail explicitly (`ImportWorkerUnavailable` or the underlying Core
 failure). There is no less-isolated fallback. Export and receipt lookup do not

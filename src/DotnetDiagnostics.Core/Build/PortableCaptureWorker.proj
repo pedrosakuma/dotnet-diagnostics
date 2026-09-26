@@ -1,0 +1,11 @@
+<Project DefaultTargets="ProducePortableCaptureWorker">
+  <Import Project="PortableCaptureWorker.props" />
+  <PropertyGroup>
+    <PortableCaptureWorkerPython Condition="'$(PortableCaptureWorkerPython)' == ''">python3</PortableCaptureWorkerPython>
+    <PortableCaptureWorkerResolvedAssets Condition="'$(PortableCaptureWorkerResolvedAssets)' == ''">$(MSBuildThisFileDirectory)../obj/project.assets.json</PortableCaptureWorkerResolvedAssets>
+  </PropertyGroup>
+  <Target Name="ProducePortableCaptureWorker">
+    <Error Condition="'$(PortableCaptureWorkerOutput)' == ''" Text="Supply a new, nonexistent PortableCaptureWorkerOutput directory outside source and package caches." />
+    <Exec Command="&quot;$(PortableCaptureWorkerPython)&quot; &quot;$(MSBuildThisFileDirectory)produce_portable_worker.py&quot; --image &quot;$(PortableCaptureWorkerProducerImage)&quot; --compiler-version &quot;$(PortableCaptureWorkerCompilerVersion)&quot; --assets &quot;$(PortableCaptureWorkerResolvedAssets)&quot; --output &quot;$(PortableCaptureWorkerOutput)&quot;" />
+  </Target>
+</Project>
