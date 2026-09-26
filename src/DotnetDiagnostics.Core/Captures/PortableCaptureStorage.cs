@@ -5,7 +5,7 @@ using DotnetDiagnostics.Core.Artifacts;
 
 namespace DotnetDiagnostics.Core.Captures;
 
-internal sealed class PortableCaptureStorage : IDisposable
+internal sealed partial class PortableCaptureStorage : IDisposable
 {
     private static readonly HashSet<string> Members = new(StringComparer.Ordinal)
     {
@@ -29,7 +29,7 @@ internal sealed class PortableCaptureStorage : IDisposable
     }
 
     internal static PortableCaptureStorage Begin(SqliteCaptureStore store, PortableOperationKey key,
-        CaptureAccess access, string fingerprint, DateTimeOffset now)
+        CaptureAccess access, string fingerprint, DateTimeOffset now, PortableImportJournal? import = null)
     {
         CapturePackage.ValidateId(key.Id);
         if (key.RequestedUtc > now.AddMinutes(5) || key.RequestedUtc <= now.AddHours(-24))
@@ -65,7 +65,9 @@ internal sealed class PortableCaptureStorage : IDisposable
             var receipt = ReadReceipt(path);
             if (receipt.OwnerId != access.OwnerId || receipt.Operation != key || receipt.Fingerprint != fingerprint)
                 throw CapturePackage.Error(CaptureErrorCode.InvalidInput, "OperationConflict: operation key already identifies another request.");
-            if (receipt.Result is null || receipt.BytesExpireUtc <= now || !File.Exists(Path.Combine(path, "bundle.ddcapture")))
+            if ((receipt.Import is null) != (import is null))
+                throw CapturePackage.Error(CaptureErrorCode.InvalidInput, "OperationConflict: operation kind differs.");
+            if (import is null && (receipt.Result is null || receipt.BytesExpireUtc <= now || !File.Exists(Path.Combine(path, "bundle.ddcapture"))))
                 throw CapturePackage.Error(CaptureErrorCode.InvalidInput, "TransferExpired: staged export is unavailable; use a new operation key.");
             var lease = TryLease(path) ?? throw CapturePackage.Error(CaptureErrorCode.Busy, "Export retry is already active.");
             return new(store, path, lease, receipt, reused: true);
@@ -79,7 +81,7 @@ internal sealed class PortableCaptureStorage : IDisposable
         string bundleId;
         do { bundleId = Guid.NewGuid().ToString("N"); } while (bundleIds.Contains(bundleId));
         var created = new PortableExportReceipt(access.OwnerId, key, fingerprint, bundleId,
-            now.ToUniversalTime(), now.AddHours(1), PortableBounds.ReceiptReservation, null);
+            now.ToUniversalTime(), now.AddHours(1), PortableBounds.ReceiptReservation, null, import);
         WriteReceipt(path, created);
         return new(store, path, TryLease(path) ??
             throw CapturePackage.Error(CaptureErrorCode.Busy, "Portable lease could not be acquired."), created, reused: false);
@@ -165,6 +167,14 @@ internal sealed class PortableCaptureStorage : IDisposable
             using (var lease = TryLease(directory))
             {
                 if (lease is null) continue;
+                if (receipt.Import is not null)
+                {
+                    receipt = ReconcileImport(root, directory, receipt);
+                    DeleteImportWork(directory);
+                    receipt = receipt with { ReservationBytes = PortableBounds.ReceiptReservation };
+                    WriteReceipt(directory, receipt);
+                    if (receipt.Operation.RequestedUtc.AddHours(24) > now) continue;
+                }
                 if (receipt.Result is not null && receipt.Operation.RequestedUtc.AddHours(24) > now &&
                     receipt.BytesExpireUtc > now) continue;
                 try
@@ -240,6 +250,11 @@ internal sealed class PortableCaptureStorage : IDisposable
         foreach (var path in Directory.EnumerateFileSystemEntries(directory))
         {
             CapturePackage.RejectLinks(path);
+            if (Path.GetFileName(path) == "work" && Directory.Exists(path))
+            {
+                bytes = checked(bytes + ImportWorkBytes(path));
+                continue;
+            }
             if (++count > Members.Count || !Members.Contains(Path.GetFileName(path)) || Directory.Exists(path))
                 throw CapturePackage.Error(CaptureErrorCode.UnsafePath, "Portable operation contains an unexpected member.");
             bytes = checked(bytes + new FileInfo(path).Length);

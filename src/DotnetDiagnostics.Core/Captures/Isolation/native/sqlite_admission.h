@@ -490,9 +490,10 @@ static void admit_database(const char *uri,const char *path)
     read_exact(&request_size,4);
     valid(request_size<=sizeof(request),"Limit.RequestBytes");
     read_exact(request,request_size);
-    valid(request_u32()==1,"Request.Version");
+    uint32_t protocol=request_u32();
+    valid(protocol==1 || protocol==2,"Request.Version");
     for(int i=0;i<6;i++) expected_format[i]=(int)request_u32();
-    valid((expected_format[0]==1 || expected_format[0]==2) && expected_format[1]==1 &&
+    valid((expected_format[0]>=1 && expected_format[0]<=3) && expected_format[1]==1 &&
         expected_format[2]==1 && expected_format[3]==1 && expected_format[4]==expected_format[0] &&
         expected_format[5]==expected_format[0],"Format.Unsupported");
     expected_persisted=request_i64(); valid(expected_persisted>=0,"Request.Population");
@@ -513,6 +514,12 @@ static void admit_database(const char *uri,const char *path)
     sqlite3 *db=open_configured(uri);
     schema(db); data(db);
     valid(sql_close(db)==0,"Sqlite.Close");
-    int64_t summary[8]; memcpy(summary,counts,sizeof(counts)); summary[6]=logical_bytes; summary[7]=instructions;
-    frame(5,summary,sizeof(summary));
+    int64_t summary[9]; memcpy(summary,counts,sizeof(counts)); summary[6]=logical_bytes; summary[7]=instructions;
+    if(protocol==2) {
+        struct rusage usage;
+        valid(getrusage(RUSAGE_SELF,&usage)==0,"Worker.UsageUnavailable");
+        summary[8]=(int64_t)(usage.ru_utime.tv_sec+usage.ru_stime.tv_sec)*1000000+
+            usage.ru_utime.tv_usec+usage.ru_stime.tv_usec;
+    }
+    frame(5,summary,protocol==2 ? 72 : 64);
 }

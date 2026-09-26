@@ -21,7 +21,7 @@ public sealed partial class DurableCaptureStoreTests
         using (var reader = await Store().OpenAsync(fixture.CaptureId, fixture.Access))
         {
             Assert.Equal(new CaptureFormatVersions(1, 1, 1, 1, 1, 1), reader.Format);
-            Assert.Equal(new CaptureReaderIdentity("DotnetDiagnostics.Core.Captures.CaptureReader", 2), reader.ExecutingReader);
+            Assert.Equal(new CaptureReaderIdentity("DotnetDiagnostics.Core.Captures.CaptureReader", 3), reader.ExecutingReader);
             var artifact = Assert.Single(reader.Info.Artifacts);
             Assert.Null(artifact.Provenance);
             Assert.Null(artifact.SourceArtifactId);
@@ -62,7 +62,7 @@ public sealed partial class DurableCaptureStoreTests
             recovered.SourceHashes!.ToDictionary(static p => p.Key, static p => p.Value), StringComparer.Ordinal));
         using var reader = await Store().OpenAsync(recovered.CaptureId, fixture.Access);
         Assert.Equal(new CaptureFormatVersions(2, 1, 1, 1, 2, 2), reader.Format);
-        Assert.Equal(2, reader.ExecutingReader.Version);
+        Assert.Equal(3, reader.ExecutingReader.Version);
         Assert.Equal("committed-before-disposal",
             Assert.Single(reader.Query(new(recovered.Artifacts[0].ArtifactId)).Records).Record.Name);
     }
@@ -93,7 +93,7 @@ public sealed partial class DurableCaptureStoreTests
         using (var reader = await Store().OpenAsync(info.CaptureId, new("bob", AllOwners: true)))
         {
             Assert.Equal(new CaptureFormatVersions(2, 1, 1, 1, 2, 2), reader.Format);
-            Assert.Equal(2, reader.ExecutingReader.Version);
+            Assert.Equal(3, reader.ExecutingReader.Version);
             Assert.Equal(expected, reader.Info.Artifacts.Single(a => a.ArtifactId == artifact).Provenance);
             Assert.Equal("alice", reader.Info.OwnerId);
             Assert.Single(reader.Query(new(artifact)).Records);

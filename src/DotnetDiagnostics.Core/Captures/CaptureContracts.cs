@@ -70,7 +70,25 @@ public sealed record CaptureWriterMetrics(
 public sealed record CaptureInfo(
     string CaptureId, string OwnerId, string Name, string? GroupId, DateTimeOffset CreatedUtc,
     CaptureState State, IReadOnlyList<CaptureArtifactInfo> Artifacts, CaptureQuality Quality,
-    string? DerivedFrom = null, IReadOnlyDictionary<string, string>? SourceHashes = null);
+    string? DerivedFrom = null, IReadOnlyDictionary<string, string>? SourceHashes = null)
+{
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public PortableCaptureSource? PortableSource { get; init; }
+}
+
+/// <summary>Bounded claimed origin, without recursive import history or local authorization.</summary>
+public sealed record PortableCaptureOrigin(
+    string CaptureId, string OwnerId, string Name, string? GroupId, DateTimeOffset CreatedUtc,
+    string? DerivedFrom, IReadOnlyDictionary<string, string>? SourceHashes,
+    CaptureFormatVersions Format, CaptureQuality Quality, IReadOnlyList<CaptureArtifactInfo> Artifacts);
+
+public sealed record PortableCaptureMemberHashes(string Manifest, string Database, string Seal);
+public sealed record PortableCaptureImmediateSource(string CaptureId, CaptureFormatVersions Format,
+    PortableCaptureMemberHashes MemberHashes);
+public sealed record PortableCaptureSource(
+    PortableCaptureOrigin Origin, PortableCaptureMemberHashes OriginMemberHashes,
+    PortableCaptureImmediateSource ImmediateSource, IReadOnlyList<PortableArtifactMapping> ArtifactMap,
+    DateTimeOffset ImportedUtc);
 
 public sealed record CaptureCatalogPage(IReadOnlyList<CaptureInfo> Captures, string? NextAfterCaptureId);
 public enum CaptureErrorCode

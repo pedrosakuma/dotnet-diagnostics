@@ -14,8 +14,10 @@ public sealed class IsolatedCaptureWorkerTests(ITestOutputHelper output) : IDisp
     private static string Helper => Path.Combine(AppContext.BaseDirectory, "capture-worker-fixture");
     private static bool SupportedPlatform => OperatingSystem.IsLinux() && RuntimeInformation.ProcessArchitecture == Architecture.X64;
 
-    [Fact]
-    public async Task RealContainedChild_InitializesSqliteAndDeniesExternalCapabilities()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RealContainedChild_InitializesSqliteAndDeniesExternalCapabilities(bool writable)
     {
         if (!SupportedPlatform) return;
         var fixture = CreateFixture("fixture ?#% \u00e9.db");
@@ -25,7 +27,8 @@ public sealed class IsolatedCaptureWorkerTests(ITestOutputHelper output) : IDisp
         {
             var before = File.ReadAllBytes(fixture);
             var parentHeapLimit = SQLitePCL.raw.sqlite3_hard_heap_limit64(-1);
-            var result = await IsolatedCaptureWorker.ProbeTrustedFixtureAsync(Request(fixture, helper.Id, address!));
+            var result = await IsolatedCaptureWorker.ProbeTrustedFixtureAsync(
+                Request(fixture, helper.Id, address!) with { WritableProfile = writable });
             Assert.Equal(123, result.FixtureValue);
             Assert.Equal(21, result.DeniedProbes);
             Assert.Equal(parentHeapLimit, SQLitePCL.raw.sqlite3_hard_heap_limit64(-1));
@@ -37,7 +40,7 @@ public sealed class IsolatedCaptureWorkerTests(ITestOutputHelper output) : IDisp
             Assert.Equal("benign unrelated marker", File.ReadAllText(Path.Combine(_root, "unrelated.txt")));
             Assert.False(helper.HasExited);
             Assert.Single(Directory.GetFiles(Path.GetDirectoryName(fixture)!));
-            output.WriteLine($"LandlockAbi={result.LandlockAbi}; SQLite={result.SqliteVersion}; denied={result.DeniedProbes}; " +
+            output.WriteLine($"writableProfile={writable}; LandlockAbi={result.LandlockAbi}; SQLite={result.SqliteVersion}; denied={result.DeniedProbes}; " +
                 $"peakObservedRss={result.PeakObservedRss}; maxGapMs={result.MaximumObservationGap.TotalMilliseconds:F3}; " +
                 $"vmInstructions={result.VmInstructions}; resultBytes={result.OutputBytes}");
         }

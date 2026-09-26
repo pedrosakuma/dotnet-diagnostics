@@ -16,11 +16,11 @@ internal static class SnapshotEncodingValidation
 {
     private static readonly ConcurrentDictionary<(Type Type, string Property), NullabilityInfo> Nullability = new();
 
-    internal static void Validate(ref Utf8JsonReader reader, Type type, JsonSerializerOptions options)
-        => ValidateValue(ref reader, type, options, nullable: false, annotation: null);
+    internal static void Validate(ref Utf8JsonReader reader, Type type, JsonSerializerOptions options, bool portable = false)
+        => ValidateValue(ref reader, type, options, nullable: false, annotation: null, portable, nonnegative: false);
 
     private static void ValidateValue(ref Utf8JsonReader reader, Type type, JsonSerializerOptions options,
-        bool nullable, NullabilityInfo? annotation)
+        bool nullable, NullabilityInfo? annotation, bool portable, bool nonnegative)
     {
         if (reader.TokenType == JsonTokenType.Null)
         {
@@ -28,6 +28,9 @@ internal static class SnapshotEncodingValidation
                 throw new JsonException($"Null is not valid for snapshot field of type {type.Name}.");
             return;
         }
+        if (portable && reader.TokenType == JsonTokenType.Number &&
+            (!reader.TryGetDouble(out var number) || !double.IsFinite(number) || nonnegative && number < 0))
+            throw new JsonException("Portable snapshot numbers must be finite and typed counts cannot be negative.");
         type = StorageType(type);
         var info = options.GetTypeInfo(type);
         if (info.Kind == JsonTypeInfoKind.Object && reader.TokenType == JsonTokenType.StartObject)
@@ -46,7 +49,8 @@ internal static class SnapshotEncodingValidation
                         ?? throw new JsonException("Snapshot property metadata is unavailable.")));
                 if (!reader.Read()) throw new JsonException("Missing snapshot value.");
                 ValidateValue(ref reader, property.PropertyType, options,
-                    propertyAnnotation.ReadState == NullabilityState.Nullable, propertyAnnotation);
+                    propertyAnnotation.ReadState == NullabilityState.Nullable, propertyAnnotation, portable,
+                    portable && IsCount(property.Name));
             }
         }
         else if (info.Kind == JsonTypeInfoKind.Enumerable && reader.TokenType == JsonTokenType.StartArray)
@@ -55,7 +59,7 @@ internal static class SnapshotEncodingValidation
             var elementAnnotation = annotation?.ElementType ?? annotation?.GenericTypeArguments.FirstOrDefault();
             while (reader.Read() && reader.TokenType != JsonTokenType.EndArray)
                 ValidateValue(ref reader, elementType, options,
-                    elementAnnotation?.ReadState == NullabilityState.Nullable, elementAnnotation);
+                    elementAnnotation?.ReadState == NullabilityState.Nullable, elementAnnotation, portable, nonnegative);
         }
         else if (info.Kind == JsonTypeInfoKind.Dictionary && reader.TokenType == JsonTokenType.StartObject)
         {
@@ -66,11 +70,18 @@ internal static class SnapshotEncodingValidation
                 if (reader.TokenType != JsonTokenType.PropertyName || !reader.Read())
                     throw new JsonException("Invalid snapshot dictionary.");
                 ValidateValue(ref reader, valueType, options,
-                    valueAnnotation?.ReadState == NullabilityState.Nullable, valueAnnotation);
+                    valueAnnotation?.ReadState == NullabilityState.Nullable, valueAnnotation, portable, nonnegative);
             }
+
         }
         else reader.Skip();
     }
+
+    private static bool IsCount(string property) =>
+        property.EndsWith("Count", StringComparison.Ordinal) || property.EndsWith("Counts", StringComparison.Ordinal) ||
+        property.EndsWith("Samples", StringComparison.Ordinal) ||
+        property is "Offered" or "Accepted" or "Persisted" or "SourceRejected" or "RecordRejected" or
+            "QueueRejected" or "StorageRejected" or "Pending" or "SnapshotRejected";
 
     private static Type StorageType(Type type)
     {

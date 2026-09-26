@@ -56,9 +56,18 @@ static const unsigned char *(*sql_text)(sqlite3_stmt *, int);
 static int64_t (*sql_int64)(sqlite3_stmt *, int);
 static double (*sql_double)(sqlite3_stmt *, int);
 static int (*sql_bind_int64)(sqlite3_stmt *, int, int64_t);
+static int (*sql_bind_double)(sqlite3_stmt *, int, double);
+static int (*sql_bind_null)(sqlite3_stmt *, int);
+static int (*sql_bind_text)(sqlite3_stmt *, int, const char *, int, void (*)(void *));
+static int (*sql_bind_blob)(sqlite3_stmt *, int, const void *, int, void (*)(void *));
 static int (*sql_reset)(sqlite3_stmt *);
 static int (*sql_status)(sqlite3_stmt *, int, int);
+static int (*sql_extended_error)(sqlite3 *);
 static int admission_active;
+static int rebuilding;
+static int writable_profile;
+static int rebuild_ddl;
+static int rebuild_denied_action;
 static void admission_error(const char *reason);
 
 static void unsupported(const char *reason)
@@ -104,8 +113,13 @@ static void load_sqlite(const char *path)
     LOAD(sql_int64, "sqlite3_column_int64");
     LOAD(sql_double, "sqlite3_column_double");
     LOAD(sql_bind_int64, "sqlite3_bind_int64");
+    LOAD(sql_bind_double, "sqlite3_bind_double");
+    LOAD(sql_bind_null, "sqlite3_bind_null");
+    LOAD(sql_bind_text, "sqlite3_bind_text");
+    LOAD(sql_bind_blob, "sqlite3_bind_blob");
     LOAD(sql_reset, "sqlite3_reset");
     LOAD(sql_status, "sqlite3_stmt_status");
+    LOAD(sql_extended_error, "sqlite3_extended_errcode");
 #undef LOAD
     require(sql_config(1) == 0, "SqliteSingleThreadUnavailable");
     sql_heap(32 * 1024 * 1024);
@@ -148,6 +162,9 @@ static int contain(const char *staging)
         .allowed_access = LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR,
         .parent_fd = directory
     };
+    if (writable_profile)
+        path.allowed_access |= LANDLOCK_ACCESS_FS_WRITE_FILE | LANDLOCK_ACCESS_FS_MAKE_REG
+            | LANDLOCK_ACCESS_FS_REMOVE_FILE | LANDLOCK_ACCESS_FS_TRUNCATE;
     require(syscall(SYS_landlock_add_rule, rules_fd, LANDLOCK_RULE_PATH_BENEATH, &path, 0) == 0,
         "LandlockRuleUnavailable");
     require(syscall(SYS_landlock_restrict_self, rules_fd, 0) == 0, "LandlockInstallFailed");
@@ -172,8 +189,27 @@ static int contain(const char *staging)
         ALLOW(SYS_clock_gettime), ALLOW(SYS_clock_nanosleep), ALLOW(SYS_nanosleep),
         ALLOW(SYS_rt_sigaction), ALLOW(SYS_rt_sigprocmask), ALLOW(SYS_rt_sigreturn),
         ALLOW(SYS_getpid), ALLOW(SYS_gettid), ALLOW(SYS_getuid),
-        ALLOW(SYS_geteuid), ALLOW(SYS_getgid), ALLOW(SYS_getegid),
+        ALLOW(SYS_geteuid), ALLOW(SYS_getgid), ALLOW(SYS_getegid), ALLOW(SYS_getrusage),
         ALLOW(SYS_exit), ALLOW(SYS_exit_group),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_pwrite64, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, writable_profile ? SECCOMP_RET_ALLOW : SECCOMP_RET_ERRNO | EACCES),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_fsync, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, writable_profile ? SECCOMP_RET_ALLOW : SECCOMP_RET_ERRNO | EACCES),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_fdatasync, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, writable_profile ? SECCOMP_RET_ALLOW : SECCOMP_RET_ERRNO | EACCES),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_ftruncate, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, writable_profile ? SECCOMP_RET_ALLOW : SECCOMP_RET_ERRNO | EACCES),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_unlink, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, writable_profile ? SECCOMP_RET_ALLOW : SECCOMP_RET_ERRNO | EACCES),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_unlinkat, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, writable_profile ? SECCOMP_RET_ALLOW : SECCOMP_RET_ERRNO | EACCES),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_fcntl, 1, 0),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EACCES),
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[1])),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, F_SETLK, 2, 0),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, F_GETLK, 1, 0),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EACCES),
+        BPF_STMT(BPF_RET | BPF_K, writable_profile ? SECCOMP_RET_ALLOW : SECCOMP_RET_ERRNO | EACCES),
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EACCES)
     };
 #undef ALLOW
@@ -243,11 +279,13 @@ static sqlite3 *active;
 static int64_t instruction_limit = 200000000;
 static sqlite3_stmt *executing_statement;
 static int admission_authorize(int action, const char *first, const char *second);
+static int rebuild_authorize(int action, const char *first, const char *second);
 
 static int authorize(void *unused, int action, const char *first, const char *second,
     const char *database, const char *origin)
 {
     (void)unused; (void)second; (void)database; (void)origin;
+    if (rebuilding) return rebuild_authorize(action, first, second);
     if (admission_active) return admission_authorize(action, first, second);
     if (action == 21 || action == 33) return 0; /* SELECT / recursive SELECT */
     if (action == 20 && first != NULL && strcmp(first, "probe") == 0) return 0;
@@ -296,9 +334,21 @@ static int scalar(sqlite3 *db, const char *query)
 static void execute(sqlite3 *db, const char *query)
 {
     sqlite3_stmt *statement = NULL;
-    require(sql_prepare(db, query, -1, &statement, NULL) == 0, "SqliteConfigureFailed");
+    int preparation=sql_prepare(db, query, -1, &statement, NULL);
+    if (rebuilding && preparation!=0) {
+        char reason[96];
+        snprintf(reason,sizeof(reason),"Rebuild.Prepare%d.Authorization%d",sql_extended_error(db),rebuild_denied_action);
+        admission_error(reason);
+    }
+    require(preparation == 0, "SqliteConfigureFailed");
     int result;
     do { result = tracked_step(statement); } while (result == 100);
+    if(rebuilding && result!=101) {
+        if(result==13) admission_error("Limit.DatabaseBytes");
+        char reason[96];
+        snprintf(reason,sizeof(reason),"Rebuild.Step%d.Errno%d",sql_extended_error(db),errno);
+        admission_error(reason);
+    }
     require(result == 101 && sql_finalize(statement) == 0, "SqliteConfigureFailed");
 }
 
@@ -317,9 +367,10 @@ static sqlite3 *open_configured(const char *uri)
 {
     /* URI is generated solely by the trusted Core launcher, never an archive. */
     sqlite3 *db = NULL;
-    require(sql_open(uri, &db, 0x1 | 0x40 | 0x8000 | 0x40000, NULL) == 0, "SqliteReadonlyOpenFailed");
+    require(sql_open(uri, &db, (rebuilding ? 0x2 | 0x4 : 0x1) | 0x40 | 0x8000 | 0x40000, NULL) == 0,
+        "SqliteOpenFailed");
     active = db;
-    require(sql_readonly(db, "main") == 1, "SqliteReadonlyUnavailable");
+    require(sql_readonly(db, "main") == (rebuilding ? 0 : 1), "SqliteAccessModeUnavailable");
     const int limits[][2] = { {0, 9 * 1024 * 1024}, {1, 32 * 1024}, {2, 64},
         {3, 32}, {7, 0}, {9, 64}, {10, 0}, {11, 0} };
     for (size_t i = 0; i < sizeof(limits) / sizeof(limits[0]); i++) {
@@ -364,30 +415,49 @@ static int probe_sqlite(const char *uri)
 }
 
 #include "sqlite_admission.h"
+#include "sqlite_rebuild.h"
 
 int main(int argc, char **argv)
 {
     extern char **environ;
     require(environ[0] == NULL, "WorkerEnvironmentNotEmpty");
     int admission = argc == 7 && strcmp(argv[6], "--admit") == 0;
-    if (!admission && argc != 9) unsupported("InvalidProbeArguments");
+    rebuilding = argc == 7 && strcmp(argv[6], "--rebuild") == 0;
+    int availability = argc == 7 && strcmp(argv[6], "--available") == 0;
+    int profile_probe = argc == 10 && strcmp(argv[9], "--writable-profile-probe") == 0;
+    writable_profile = rebuilding || profile_probe;
+    if (!admission && !rebuilding && !availability && !profile_probe && argc != 9) unsupported("InvalidProbeArguments");
     for (int i = 1; i < argc; i++)
         require(strlen(argv[i]) <= 4096, "ProbeArgumentTooLong");
     require(strlen(argv[1]) == 32, "InvalidNonce");
+    pid_t parent=getppid();
+    require(parent>1 && prctl(PR_SET_PDEATHSIG,SIGKILL,0,0,0)==0 && getppid()==parent,
+        "ParentDeathProtectionUnavailable");
     struct rlimit cpu = {60, 60}, core = {0, 0}, file = {0, 0}, descriptors = {32, 32};
+    if (writable_profile) file.rlim_cur = file.rlim_max = 256LL * 1024 * 1024;
     require(setrlimit(RLIMIT_CPU, &cpu) == 0 && setrlimit(RLIMIT_CORE, &core) == 0
         && setrlimit(RLIMIT_FSIZE, &file) == 0, "ResourceLimitsUnavailable");
     require(syscall(SYS_close_range, 3U, ~0U, 0) == 0, "HandleScrubbingUnavailable");
     require(setrlimit(RLIMIT_NOFILE, &descriptors) == 0, "DescriptorLimitUnavailable");
     require(chdir(argv[3]) == 0, "PrivateStagingUnavailable");
+    umask(0077);
     load_sqlite(argv[2]);
     int abi = contain(argv[3]);
     printf("READY 1 %s %d\n", argv[1], abi);
     fflush(stdout);
-    /* The host starts mandatory RSS/time observation before releasing SQLite.
-     * No externally supplied data is accepted by this capability-only slice. */
+    /* The host starts mandatory RSS/time observation before releasing SQLite. */
     char go[3];
     require(read(STDIN_FILENO, go, sizeof(go)) == 3 && memcmp(go, "GO\n", 3) == 0, "HandshakeFailed");
+    if (availability) {
+        printf("AVAILABLE 1\n");
+        fflush(stdout);
+        return 0;
+    }
+    if (rebuilding) {
+        admission_active = 1;
+        rebuild_database(argv[4]);
+        return 0;
+    }
     if (admission) {
         admission_active = 1;
         admit_database(argv[4], argv[5]);

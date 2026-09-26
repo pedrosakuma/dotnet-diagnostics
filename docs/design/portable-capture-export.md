@@ -40,9 +40,10 @@ source manifest, database and seal are copied byte-for-byte; `.lease`, control
 files, WAL/SHM, pending metadata and native files are never bundle members.
 Unsupported source members cause rejection, not omission.
 
-The current store reader supports source package versions 1 and 2. Their six-axis
-descriptors remain unchanged in the index and inner packages. Package 3 remains
-unsupported until the import-derived reader work lands. Known typed snapshots,
+The current store reader supports source package versions 1, 2 and 3. Their six-axis
+descriptors remain unchanged in the index and inner packages. Package 3 carries
+the bounded origin of an imported capture; ordinary writers still emit version 2.
+Known typed snapshots,
 composition versions and record-stream wrappers are validated through existing
 Core codecs. Unknown kinds/versions are rejected, including the synthetic codec
 in the independently frozen v1 fixture: package-version compatibility is not an
@@ -134,16 +135,14 @@ claim that an inactive application performs background cleanup.
 `PortableCaptureContracts.cs` carries the approved export/import request/result,
 mapping and failure types. `PortableCaptureJson.cs`, `PortableZip.cs`,
 `PortableCaptureStorage.cs` and the store's portable admission bridge provide
-bounded format/control primitives for the later importer. The ZIP helper is
+bounded format/control primitives for the configured Core importer. The ZIP helper is
 not a complete untrusted importer; source compatibility validation is explicitly
 for trusted store-owned evidence.
 
-`ImportAsync` fails with `UnsupportedFormat/ImportWorkerUnavailable` without
-reading input or registering anything. `GetImportResultAsync` currently reports
-`NotFound` because this exporter-only store cannot create import receipts; lookup
-does not invoke a worker. Isolated admission, package-3 provenance, remapping,
-import publication and host transfer remain separate work. No whole-feature
-performance or release gate is claimed by the focused exporter tests.
-
-The [isolated worker capability substrate](isolated-import-worker.md) is a
-separate internal prerequisite; it does not enable import or change export.
+Without an explicitly configured safe worker, `ImportAsync` still fails with
+`UnsupportedFormat/ImportWorkerUnavailable` before reading input. The optional
+worker does not affect trusted export. `GetImportResultAsync` resolves current
+owner-bound receipts without invoking a worker; absent receipts return `NotFound`.
+See [Core import](portable-capture-import.md) for isolated admission, package-3
+provenance, remapping and publication. Host transfer, performance and release
+acceptance remain separate gates; focused exporter tests do not establish them.
