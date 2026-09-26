@@ -942,6 +942,10 @@ require worker configuration.
 
 **Local risk and ownership.** Export/import require `--acknowledge-risk high` in
 non-interactive use, or the interactive session's high-risk confirmation.
+These actions use the canonical Core safety profiles shared with MCP.
+`import-result` is Moderate/Warn: receipt reconciliation can write metadata and
+delete unpublished private staging, but does not delete published captures or
+attach to a live target.
 `--explain-risk` performs no import/export and does not open packages.
 Acknowledgment concerns whole captures, including potentially sensitive records;
 it does not grant all-owners access or trust input SQL. The current OS-local owner

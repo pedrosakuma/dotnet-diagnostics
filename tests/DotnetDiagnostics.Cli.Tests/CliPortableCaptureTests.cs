@@ -121,6 +121,43 @@ public sealed class CliPortableCaptureTests : IDisposable
         Directory.Exists(_root).Should().BeFalse();
     }
 
+    [Theory]
+    [InlineData("export", InvocationRiskLevel.High, InvocationApprovalPolicy.Acknowledge)]
+    [InlineData("import", InvocationRiskLevel.High, InvocationApprovalPolicy.Acknowledge)]
+    [InlineData("import-result", InvocationRiskLevel.Moderate, InvocationApprovalPolicy.Warn)]
+    public void PortableSafetyUsesCanonicalDescriptorWithoutLocalOverride(
+        string action, InvocationRiskLevel risk, InvocationApprovalPolicy approval)
+    {
+        var options = new CliOptions { Command = "captures", CaptureAction = action };
+        var request = CliInvocationSafety.CreateRequest(options);
+        var canonical = InvocationSafetyResolver.Resolve(request);
+        CliInvocationSafety.Resolve(options).Should().BeEquivalentTo(canonical);
+        CliInvocationSafety.ResolveForPreflight(request).Should().BeEquivalentTo(canonical);
+        canonical.RiskLevel.Should().Be(risk);
+        canonical.ApprovalPolicy.Should().Be(approval);
+        canonical.TargetImpact.Should().BeEmpty();
+        canonical.SideEffects.Should().Contain(InvocationSideEffect.WritesArtifact);
+        if (action == "import-result")
+            canonical.SideEffects.Should().Contain(InvocationSideEffect.DeletesArtifact);
+        else
+            canonical.DataExposure.Should().Contain(DataExposure.PossibleSecrets);
+    }
+
+    [Fact]
+    public async Task ReceiptExplanationWarnsAboutCleanupWithoutExecuting()
+    {
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var exit = await CliHost.RunAsync(["captures", "import-result", "--capture-root", _root,
+            "--operation-id", Id, "--requested-utc", DateTimeOffset.UtcNow.ToString("O"),
+            "--explain-risk", "--json"], output, error, CancellationToken.None);
+        exit.Should().Be(0, error.ToString());
+        using var json = JsonDocument.Parse(output.ToString());
+        json.RootElement.GetProperty("executed").GetBoolean().Should().BeFalse();
+        output.ToString().Should().Contain("moderate").And.Contain("writes-artifact").And.Contain("deletes-artifact");
+        Directory.Exists(_root).Should().BeFalse();
+    }
+
     [Fact]
     public async Task SessionExportUsesInheritedRootAndSameNoOverwriteOutcome()
     {

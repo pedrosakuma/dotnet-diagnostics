@@ -6,7 +6,7 @@ using DotnetDiagnostics.Core.Safety;
 namespace DotnetDiagnostics.Cli;
 
 /// <summary>
-/// Maps CLI syntax to Core safety requests, with explicit local portable-file policy.
+/// Maps CLI syntax to the same canonical Core safety request used by MCP invocations.
 /// <see cref="CliSafetyPreflight"/> applies the CLI interaction policy to the resolved descriptor.
 /// </summary>
 internal static class CliInvocationSafety
@@ -14,16 +14,12 @@ internal static class CliInvocationSafety
     internal static InvocationSafetyDescriptor Resolve(
         CliOptions options,
         IDiagnosticHandleStore? handles = null)
-    {
-        var request = CreateRequest(options, handles);
-        return PortableFileSafety(request) ?? InvocationSafetyResolver.Resolve(request);
-    }
+        => InvocationSafetyResolver.Resolve(CreateRequest(options, handles));
 
     internal static InvocationSafetyDescriptor ResolveForPreflight(
         InvocationSafetyRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
-        if (PortableFileSafety(request) is { } portable) return portable;
         try
         {
             return InvocationSafetyResolver.Resolve(request);
@@ -38,35 +34,6 @@ internal static class CliInvocationSafety
 
             return safety;
         }
-    }
-
-    private static InvocationSafetyDescriptor? PortableFileSafety(InvocationSafetyRequest request)
-    {
-        // Core's catalog predates these CLI actions; do not misclassify them as live module exports.
-        if (request.Operation != DiagnosticOperationCatalog.GetBytes ||
-            !request.Arguments.TryGetValue("kind", out var kind) || kind != "captures" ||
-            !request.Arguments.TryGetValue("captureAction", out var action))
-            return null;
-        return action switch
-        {
-            "export" => new(InvocationRiskLevel.High, [],
-                [DataExposure.PossibleConfidentialData, DataExposure.PossibleSecrets],
-                [InvocationSideEffect.WritesArtifact, InvocationSideEffect.ExportsRawBytes],
-                InvocationApprovalPolicy.Acknowledge,
-                "Export copies every artifact in the selected owned captures into a portable local file.",
-                ["Authorize disclosure of the whole capture and protect the destination file."]),
-            "import" => new(InvocationRiskLevel.High, [],
-                [DataExposure.PossibleConfidentialData, DataExposure.PossibleSecrets],
-                [InvocationSideEffect.WritesArtifact], InvocationApprovalPolicy.Acknowledge,
-                "Import validates foreign evidence in a confined worker and publishes new locally owned captures; partial publication can remain.",
-                ["Configure only trusted worker assets; inspect per-entry results before retrying."]),
-            "import-result" => new(InvocationRiskLevel.Moderate, [],
-                [DataExposure.PossibleConfidentialData], [InvocationSideEffect.WritesArtifact],
-                InvocationApprovalPolicy.Warn,
-                "Receipt lookup reads owned import mappings and may reconcile interrupted publication or clean private staging.",
-                ["Retain the original operation ID and timestamp; source provenance grants no authority."]),
-            _ => null,
-        };
     }
 
     internal static InvocationSafetyRequest CreateRequest(
