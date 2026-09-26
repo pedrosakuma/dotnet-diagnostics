@@ -8,7 +8,7 @@ using DotnetDiagnostics.Mcp.Security;
 namespace DotnetDiagnostics.Mcp.Tools;
 
 /// <summary>Host authorization and bounded presentation for the existing tools' durable branches.</summary>
-public sealed class DurableCaptureTools(SqliteCaptureStore store, DurableCaptureUseCases captures)
+public sealed partial class DurableCaptureTools(SqliteCaptureStore store, DurableCaptureUseCases captures)
 {
     private readonly DurableCaptureUseCases _captures = captures;
     internal const int MaximumResponseBytes = 1024 * 1024;

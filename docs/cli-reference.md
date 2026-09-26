@@ -707,6 +707,16 @@ dotnet-diagnostics-cli get-bytes --kind trace --dump-file ./cpu.nettrace --out .
 
 ### `compare`
 
+For offline retained CPU, heap, or EventCounter comparisons, supply all four
+`--baseline-capture-id`, `--baseline-artifact-id`, `--candidate-capture-id`, and
+`--candidate-artifact-id` selectors, optionally with `--capture-root`.
+This returns `dotnet-diagnostics/historical-comparison/v1`, not a causal verdict.
+Imported captures use their new local IDs. It does not attach, register handles,
+or accept filters, file inputs, `--save`, or `--mode` alongside these selectors.
+See [historical comparisons](./historical-comparisons.md) for the supported matrix,
+explicit examples, null/delta semantics, authorization, and finite bounds.
+The existing file-based behavior below is unchanged.
+
 Compare two or more saved comparable snapshots from `collect --save`. Human output keeps the compact verdict, first→last headline, and top metric/key deltas in the terminal; `--json` emits the full `SnapshotJourneyDiff`, and `--save` writes that full matrix to a file. Local MCP `compare_to_baseline` / `query_snapshot(view="diff")` calls use a `journey://diff/{handle}` Resource link when the matrix is large. Proxied pod calls return full results inline because dynamic pod Resources are not forwarded.
 
 For ThreadPool snapshots, only provenance-backed runtime `Starvation` and

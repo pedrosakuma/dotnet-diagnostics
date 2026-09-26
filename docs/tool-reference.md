@@ -4063,6 +4063,17 @@ handle kind before reading evidence.
 
 ## `compare_to_baseline`
 
+Optional `captureComparison` compares two explicit local retained CPU, heap, or
+EventCounter artifacts without live attachment or temporary handles. Supply
+`{"baseline":{"captureId":"…","artifactId":"…"},"candidate":{"captureId":"…","artifactId":"…"}}`.
+It cannot mix with legacy inputs or projection options. Both complete capture
+manifests require current producer/kind/view authorization plus
+`investigation-export`. Imported provenance grants no authority. The versioned
+`dotnet-diagnostics/historical-comparison/v1` result preserves quality, incompatible
+definitions, and unavailable deltas without a causal verdict. See
+[historical comparisons](./historical-comparisons.md) for the exact matrix,
+CLI/MCP examples and bounds. Legacy behavior below is unchanged.
+
 Diffs a current investigation summary against a baseline (or compares an ordered
 journey of `ComparableSnapshot` bodies) and returns a verdict + headline + ranked
 deltas. Large local matrices return a compact inline payload plus a
@@ -4079,6 +4090,7 @@ dynamic pod Resources are not forwarded.
 | `topN` | `int` | `25` | Max metric series / key rows in compact inline payloads |
 | `depth` | `string` | `full` | `full` (whole matrix when small) or `compact` (verdict/headline/top deltas) |
 | `mode` | `string?` | `trend` | `trend` (ordered captures over time) or `dispersion` (unordered replicas → outliers) |
+| `captureComparison` | `object?` | — | Explicit baseline/candidate local captureId/artifactId pairs for bounded retained CPU/heap/EventCounter comparison; no filters or legacy inputs |
 
 **Scope:** `investigation-export`. Pairs with `export_investigation_summary` for
 "did my fix actually help?" journeys — see

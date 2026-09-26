@@ -255,9 +255,23 @@ internal static class CapturePackage
         ValidateText(provenance.RuntimeVersion, 1024, nameof(provenance.RuntimeVersion));
     }
 
-    internal static string Hash(string path)
+    internal static string Hash(string path, Action? check = null)
     {
         using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        if (check is not null)
+        {
+            using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            var buffer = new byte[64 * 1024];
+            int read;
+            check();
+            while ((read = stream.Read(buffer)) != 0)
+            {
+                check();
+                hash.AppendData(buffer, 0, read);
+            }
+            check();
+            return Convert.ToHexString(hash.GetHashAndReset());
+        }
         return Convert.ToHexString(SHA256.HashData(stream));
     }
 

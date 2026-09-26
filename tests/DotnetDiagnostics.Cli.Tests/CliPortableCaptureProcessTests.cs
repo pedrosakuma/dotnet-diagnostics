@@ -120,7 +120,7 @@ public sealed class CliPortableCaptureProcessTests
         return root;
     }
 
-    private static async Task<(int Exit, JsonElement Json, string Stderr)> InvokeAsync(
+    internal static async Task<(int Exit, JsonElement Json, string Stderr)> InvokeAsync(
         string root, string name, bool configuredWorker, params string[] arguments)
     {
         var host = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ??

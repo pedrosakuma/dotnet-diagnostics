@@ -19,6 +19,12 @@ internal sealed record CliOptions
     public string? OperationId { get; init; }
     public string? RequestedUtc { get; init; }
     public string? ArtifactId { get; init; }
+    public string? BaselineCaptureId { get; init; }
+    public string? BaselineArtifactId { get; init; }
+    public string? CandidateCaptureId { get; init; }
+    public string? CandidateArtifactId { get; init; }
+    public bool HasHistoricalReferences => BaselineCaptureId is not null || BaselineArtifactId is not null ||
+        CandidateCaptureId is not null || CandidateArtifactId is not null;
     public string? RecordFrom { get; init; }
     public string? RecordTo { get; init; }
     public string? RecordName { get; init; }
@@ -375,6 +381,11 @@ internal sealed record CliOptions
     public bool SuspendStartup { get; init; }
 
     private static readonly Dictionary<string, OptionDescriptor> OptionLookup = CreateOptionLookup();
+    private static readonly HashSet<string> HistoricalOptions = new(StringComparer.Ordinal)
+    {
+        "--baseline-capture-id", "--baseline-artifact-id", "--candidate-capture-id", "--candidate-artifact-id",
+        "--capture-root", "--json", "--explain-risk", "--acknowledge-risk", "--help", "-h",
+    };
 
     /// <summary>
     /// Parses <paramref name="args"/>. Returns a populated <see cref="CliOptions"/> on success, or
@@ -386,6 +397,7 @@ internal sealed record CliOptions
         error = null;
 
         var state = new ParseState();
+        var supplied = new HashSet<string>(StringComparer.Ordinal);
         for (var i = 0; i < args.Count; i++)
         {
             var token = args[i];
@@ -404,6 +416,7 @@ internal sealed record CliOptions
 
             if (OptionLookup.TryGetValue(token, out var descriptor))
             {
+                supplied.Add(token);
                 if (!descriptor.TryApply(args, ref i, state, out error))
                 {
                     return null;
@@ -446,7 +459,13 @@ internal sealed record CliOptions
             state.Command = token;
         }
 
-        return state.Build();
+        var result = state.Build();
+        if (result.HasHistoricalReferences && (supplied.Any(option => !HistoricalOptions.Contains(option)) || result.LaunchArgs.Count != 0))
+        {
+            error = "Historical compare supports explicit references, --capture-root, --json and safety/help options only.";
+            return null;
+        }
+        return result;
     }
 
     private static bool TryTakeInt(IReadOnlyList<string> args, ref int i, string flag, out int value, out string? error)
@@ -532,6 +551,10 @@ internal sealed record CliOptions
             new StringOptionDescriptor((state, value) => state.OperationId = value, "--operation-id"),
             new StringOptionDescriptor((state, value) => state.RequestedUtc = value, "--requested-utc"),
             new StringOptionDescriptor((state, value) => state.ArtifactId = value, "--artifact-id"),
+            new StringOptionDescriptor((state, value) => state.BaselineCaptureId = value, "--baseline-capture-id"),
+            new StringOptionDescriptor((state, value) => state.BaselineArtifactId = value, "--baseline-artifact-id"),
+            new StringOptionDescriptor((state, value) => state.CandidateCaptureId = value, "--candidate-capture-id"),
+            new StringOptionDescriptor((state, value) => state.CandidateArtifactId = value, "--candidate-artifact-id"),
             new StringOptionDescriptor((state, value) => state.RecordFrom = value, "--from"),
             new StringOptionDescriptor((state, value) => state.RecordTo = value, "--to"),
             new StringOptionDescriptor((state, value) => state.RecordName = value, "--name"),
@@ -639,6 +662,10 @@ internal sealed record CliOptions
         public string? CaptureAction { get; set; }
         public string? CaptureId { get; set; }
         public string? ArtifactId { get; set; }
+        public string? BaselineCaptureId { get; set; }
+        public string? BaselineArtifactId { get; set; }
+        public string? CandidateCaptureId { get; set; }
+        public string? CandidateArtifactId { get; set; }
         public string? RecordFrom { get; set; }
         public string? RecordTo { get; set; }
         public string? RecordName { get; set; }
@@ -846,6 +873,10 @@ internal sealed record CliOptions
                 CaptureAction = CaptureAction,
                 CaptureId = CaptureId,
                 ArtifactId = ArtifactId,
+                BaselineCaptureId = BaselineCaptureId,
+                BaselineArtifactId = BaselineArtifactId,
+                CandidateCaptureId = CandidateCaptureId,
+                CandidateArtifactId = CandidateArtifactId,
                 RecordFrom = RecordFrom,
                 RecordTo = RecordTo,
                 RecordName = RecordName,

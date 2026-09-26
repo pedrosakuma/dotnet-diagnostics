@@ -70,6 +70,10 @@ public sealed partial class SqliteCaptureStore
     }
 
     public Task<CaptureReader> OpenAsync(string captureId, CaptureAccess access, CancellationToken cancellationToken = default)
+        => OpenBoundedAsync(captureId, access, null, null, cancellationToken);
+
+    internal Task<CaptureReader> OpenBoundedAsync(string captureId, CaptureAccess access,
+        Action? check, Func<int>? sqliteProgress, CancellationToken cancellationToken)
     {
         CapturePackage.ValidateId(captureId);
         CapturePackage.ValidateAccess(access);
@@ -87,11 +91,14 @@ public sealed partial class SqliteCaptureStore
                 throw CapturePackage.Error(CaptureErrorCode.CapacityExceeded, "Package exceeds configured read byte bounds.");
             var manifest = CapturePackage.ReadManifest(directory, captureId);
             CapturePackage.Authorize(manifest.Info, access);
-            ValidateSeal(directory, manifest);
+            ValidateSeal(directory, manifest, check);
             connection = CapturePackage.Connect(directory, immutable: true);
+            if (sqliteProgress is not null)
+                SQLitePCL.raw.sqlite3_progress_handler(connection.Handle, 1000, _ => sqliteProgress(), null);
             var format = CapturePackage.FormatOf(manifest);
-            CapturePackage.ValidateDatabase(connection, format);
-            var reader = new CaptureReader(connection, lease, manifest.Info, _options, format);
+            try { CapturePackage.ValidateDatabase(connection, format); }
+            finally { check?.Invoke(); }
+            var reader = new CaptureReader(connection, lease, manifest.Info, _options, format, check);
             connection = null;
             lease = null;
             return Task.FromResult(reader);
@@ -345,7 +352,7 @@ public sealed partial class SqliteCaptureStore
         return path;
     }
 
-    private static void ValidateSeal(string directory, CaptureManifest manifest)
+    private static void ValidateSeal(string directory, CaptureManifest manifest, Action? check = null)
     {
         if (manifest.Info.State != CaptureState.Sealed || !File.Exists(Path.Combine(directory, CapturePackage.Seal)))
             throw CapturePackage.Error(CaptureErrorCode.Incomplete, "Capture is not sealed; use explicit derived recovery.");
@@ -355,8 +362,8 @@ public sealed partial class SqliteCaptureStore
             File.Exists(Path.Combine(directory, CapturePackage.Seal + ".pending")))
             throw CapturePackage.Error(CaptureErrorCode.CorruptPackage, "A sealed package cannot contain WAL/SHM or unpublished metadata evidence.");
         var seal = CapturePackage.ReadJson<CaptureSeal>(Path.Combine(directory, CapturePackage.Seal));
-        if (seal.ManifestHash != CapturePackage.Hash(Path.Combine(directory, CapturePackage.Manifest)) ||
-            seal.DatabaseHash != CapturePackage.Hash(Path.Combine(directory, CapturePackage.Database)))
+        if (seal.ManifestHash != CapturePackage.Hash(Path.Combine(directory, CapturePackage.Manifest), check) ||
+            seal.DatabaseHash != CapturePackage.Hash(Path.Combine(directory, CapturePackage.Database), check))
             throw CapturePackage.Error(CaptureErrorCode.CorruptPackage, "Capture seal hash validation failed.");
     }
 

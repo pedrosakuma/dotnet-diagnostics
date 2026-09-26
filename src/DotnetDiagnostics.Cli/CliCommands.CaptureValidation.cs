@@ -7,6 +7,11 @@ internal static partial class CliCommands
     internal static bool TryValidateCaptures(CliOptions options, out string? error)
     {
         error = null;
+        if (options.HasHistoricalReferences && options.Command != "compare")
+        {
+            error = "Baseline/candidate capture and artifact selectors require compare.";
+            return false;
+        }
         var portable = options.Command == "captures" && options.CaptureAction is "export" or "import" or "import-result";
         if (!portable && (options.CaptureEntries.Count != 0 || options.CaptureFile is not null ||
                           options.OperationId is not null || options.RequestedUtc is not null))
@@ -24,9 +29,10 @@ internal static partial class CliCommands
             error = "--capture-root must name a stable directory.";
         }
         else if (options.CaptureRoot is not null
-                 && options.Command is not ("collect" or "inspect-heap" or "session" or "captures" or "query"))
+                 && options.Command is not ("collect" or "inspect-heap" or "session" or "captures" or "query")
+                 && !(options.Command == "compare" && options.HasHistoricalReferences))
         {
-            error = "--capture-root requires collect, inspect-heap, session, captures, or query.";
+            error = "--capture-root requires collect, inspect-heap, session, captures, query, or historical compare.";
         }
         else if (options.CaptureId is not null && options.Command is not ("captures" or "query"))
         {

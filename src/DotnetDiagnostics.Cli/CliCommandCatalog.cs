@@ -519,8 +519,10 @@ compare options:
 """
   dotnet-diagnostics-cli compare ./before.json ./after.json
   dotnet-diagnostics-cli compare ./a.json ./b.json ./c.json --mode dispersion --save ./matrix.json
+  dotnet-diagnostics-cli compare --capture-root ./captures --baseline-capture-id <id> --baseline-artifact-id <id> --candidate-capture-id <id> --candidate-artifact-id <id> --json
+  Historical references compare whole retained CPU/heap/counter snapshots; no filters, paths, live attach, or causal verdicts.
 """,
-            ["--json", "--save", "--mode"]),
+            ["--json", "--save", "--mode", "--capture-root", "--baseline-capture-id", "--baseline-artifact-id", "--candidate-capture-id", "--candidate-artifact-id"]),
         new(
             "investigate",
             "Plan a .NET performance investigation and get the recommended first step.",

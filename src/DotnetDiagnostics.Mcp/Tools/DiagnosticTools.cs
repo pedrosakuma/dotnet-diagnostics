@@ -1603,13 +1603,10 @@ public sealed class DiagnosticTools
         Idempotent = true,
         UseStructuredContent = true)]
     [Description(
-        "Diffs either two InvestigationSummary JSON documents (produced by export_investigation_summary) " +
-        "or 2..N persisted ComparableSnapshot JSON documents. Legacy summaries return the same " +
-        "SummaryDiff as before; comparable snapshots return either the full SnapshotJourneyDiff when small " +
-        "or a compact verdict/headline/top-deltas summary with a journey://diff/{handle} Resource link for large local matrices; " +
-        "proxied full results stay inline because dynamic pod Resources are not forwarded. " +
-        "Pass JSON bodies only; the stateless sidecar never reads comparison inputs from file paths.")]
-    public static DiagnosticResult<object> CompareToBaseline(
+        "Compares summary/snapshot JSON or explicit local durable captureComparison references. " +
+        "Legacy SummaryDiff/journey behavior is unchanged. Durable CPU/heap/counters return qualified retained differences, " +
+        "both identities/quality and incompatibilities, never causal verdicts. No live attach or arbitrary input paths.")]
+    public static Task<DiagnosticResult<object>> CompareToBaseline(
         ISummaryComparer comparer,
         IDiagnosticHandleStore handles,
         IPrincipalAccessor principalAccessor,
@@ -1620,8 +1617,22 @@ public sealed class DiagnosticTools
         [Description("ComparableSnapshot journey only: inline verbosity. `full` returns the full matrix; local large results may use a journey://diff/{handle} Resource link, while proxied results stay inline because dynamic pod Resources are not forwarded. `compact` returns verdict/headline/counts/notes plus top-N deltas. Defaults to `full`.")] string depth = "full",
         [Description("ComparableSnapshot journey only: `trend` (default) compares ordered captures over time; `dispersion` compares unordered replicas for outliers.")] string? mode = null,
         [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
-        string? investigationHandleId = null)
-        => DiagnosticToolBaselineComparison.CompareToBaseline(
+        string? investigationHandleId = null,
+        [Description("Exclusive durable input: {baseline:{captureId,artifactId},candidate:{captureId,artifactId}}. Whole retained snapshots; no filters or remote stores.")]
+        JsonElement? captureComparison = null,
+        DurableCaptureTools? durableCaptures = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (captureComparison is { } comparison)
+        {
+            if (baselineSummaryJson is not null || currentSummaryJson is not null || snapshotsJson is not null ||
+                mode is not null || topN != 25 || depth != "full")
+                return Task.FromResult(DiagnosticResult.Fail<object>("Durable references cannot be mixed with legacy inputs or projection options.",
+                    new DiagnosticError("InvalidArgument", "Use only captureComparison for durable comparison.")));
+            return durableCaptures is null ? Task.FromResult(DurableCaptureTools.Unavailable<object>())
+                : durableCaptures.CompareAsync(principalAccessor, comparison, cancellationToken);
+        }
+        return Task.FromResult(DiagnosticToolBaselineComparison.CompareToBaseline(
             comparer,
             handles,
             principalAccessor,
@@ -1631,7 +1642,8 @@ public sealed class DiagnosticTools
             topN,
             depth,
             mode,
-            investigationHandleId);
+            investigationHandleId));
+    }
 
     private static DiagnosticResult<T> InvalidArg<T>(string parameterName, string requirement)
         => DiagnosticResult.Fail<T>(

@@ -635,7 +635,8 @@ internal sealed class SessionRepl
             result.Insert(insertionIndex++, "--persist");
         }
         if (sessionOptions.CaptureRoot is not null && parsed.CaptureRoot is null
-            && parsed.Command is "collect" or "inspect-heap" or "captures" or "query")
+            && (parsed.Command is "collect" or "inspect-heap" or "captures" or "query" ||
+                parsed.Command == "compare" && parsed.HasHistoricalReferences))
         {
             result.Insert(insertionIndex++, "--capture-root");
             result.Insert(insertionIndex, sessionOptions.CaptureRoot);

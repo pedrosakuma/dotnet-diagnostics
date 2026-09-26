@@ -160,7 +160,7 @@ internal static partial class CliCommands
             "query" when options.CaptureId is not null => await QueryCaptureAsync(services, options, cancellationToken).ConfigureAwait(false),
             "query" => Query(),
             "get-bytes" => await GetBytesAsync(services, options, cancellationToken).ConfigureAwait(false),
-            "compare" => await CompareAsync(options, cancellationToken).ConfigureAwait(false),
+            "compare" => await CompareAsync(services, options, cancellationToken).ConfigureAwait(false),
             "investigate" => await InvestigateAsync(services, options, cancellationToken).ConfigureAwait(false),
             "export-summary" => await ExportSummaryAsync(services, options, cancellationToken).ConfigureAwait(false),
             "completion" => Completion(options),

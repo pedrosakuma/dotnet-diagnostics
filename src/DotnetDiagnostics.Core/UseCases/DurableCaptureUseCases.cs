@@ -31,7 +31,7 @@ public sealed record DurableCaptureHandleBinding(
 /// Host-neutral opt-in persistence around existing collection operations. Hosts remain responsible
 /// for authorizing the producer, kind, and requested view, in addition to capture ownership.
 /// </summary>
-public sealed class DurableCaptureUseCases
+public sealed partial class DurableCaptureUseCases
 {
     private static readonly IReadOnlyList<string> RecordViews = Array.AsReadOnly<string>(["records"]);
     private static readonly IReadOnlyList<string> CompositionViews = Array.AsReadOnly<string>(["children"]);
@@ -355,11 +355,13 @@ public sealed class DurableCaptureUseCases
         return artifact.Views;
     }
 
-    private DecodedCaptureArtifact DecodeArtifact(CaptureReader reader, string artifactId)
+    private DecodedCaptureArtifact DecodeArtifact(CaptureReader reader, string artifactId, int? maximumBytes = null,
+        CaptureSnapshot? retainedSnapshot = null)
     {
         var artifact = reader.Info.Artifacts.FirstOrDefault(a => a.ArtifactId == artifactId)
             ?? throw new CaptureStoreException(CaptureErrorCode.NotFound, "Capture artifact was not found.");
-        var snapshot = reader.ReadSnapshot(artifactId);
+        var limit = Math.Min(maximumBytes ?? _options.MaxSnapshotBytes, _options.MaxSnapshotBytes);
+        var snapshot = retainedSnapshot ?? reader.ReadSnapshot(artifactId, limit);
         object? decoded;
         IReadOnlyList<string> views;
         DurableCaptureComposition? composition = null;
@@ -369,7 +371,7 @@ public sealed class DurableCaptureUseCases
         {
             if (snapshot?.Version == DurableCaptureSnapshotMetadata.Version)
             {
-                var metadata = DurableCaptureSnapshotMetadata.Decode(artifact.Kind, snapshot, _options.MaxSnapshotBytes);
+                var metadata = DurableCaptureSnapshotMetadata.Decode(artifact.Kind, snapshot, limit);
                 snapshot = metadata.Snapshot;
                 stream = metadata.Stream;
             }
@@ -387,7 +389,7 @@ public sealed class DurableCaptureUseCases
             }
             else
             {
-                decoded = CaptureArtifactCodec.Decode(artifact.Kind, snapshot.Version, snapshot.Utf8Json.Span, _options.MaxSnapshotBytes);
+                decoded = CaptureArtifactCodec.Decode(artifact.Kind, snapshot.Version, snapshot.Utf8Json.Span, limit);
                 views = SupportedViews(artifact.Kind, decoded, recordsAvailable);
             }
         }

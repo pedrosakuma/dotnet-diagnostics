@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Comparison;
+using DotnetDiagnostics.Core.Captures;
 using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Investigation;
 using DotnetDiagnostics.Core.Memory;
@@ -15,8 +16,27 @@ namespace DotnetDiagnostics.Cli;
 
 internal static partial class CliCommands
 {
-    private static async Task<CliCommandResult> CompareAsync(CliOptions options, CancellationToken cancellationToken)
+    private static async Task<CliCommandResult> CompareAsync(IServiceProvider services, CliOptions options, CancellationToken cancellationToken)
     {
+        if (options.HasHistoricalReferences)
+        {
+            try
+            {
+                var result = await CliDurableCaptures.For(services).Get(options.CaptureRoot).CompareHistoricalAsync(
+                    new(new(options.BaselineCaptureId!, options.BaselineArtifactId!),
+                        new(options.CandidateCaptureId!, options.CandidateArtifactId!)),
+                    CliCaptureRootProvider.CurrentAccess(),
+                    static (_, _, _, token) => { token.ThrowIfCancellationRequested(); return ValueTask.CompletedTask; },
+                    cancellationToken).ConfigureAwait(false);
+                return new(false, false, result,
+                    JsonSerializer.Serialize(result, HistoricalComparisonJsonContext.Default.HistoricalComparisonResult));
+            }
+            catch (CaptureStoreException exception)
+            {
+                return BuildResult<object>(DiagnosticResult.Fail<object>("Historical comparison failed.",
+                    new DiagnosticError("CaptureStoreError", exception.Message, exception.Code.ToString())), static (_, _) => { });
+            }
+        }
         var snapshots = new List<ComparableSnapshot>(options.ComparePaths.Count);
         foreach (var path in options.ComparePaths)
         {

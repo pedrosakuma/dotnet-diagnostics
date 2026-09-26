@@ -274,7 +274,7 @@ public sealed class PortableCaptureClientTests(ITestOutputHelper output)
         }
     }
 
-    private sealed class ClientHost : IAsyncDisposable
+    internal sealed class ClientHost : IAsyncDisposable
     {
         private const string Token = "portable-client-test-token";
         private WebApplicationFactory<Program>? _factory;
