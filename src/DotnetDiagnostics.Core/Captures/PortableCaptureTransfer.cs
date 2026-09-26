@@ -83,6 +83,9 @@ public sealed class PortableCaptureTransfer : IAsyncDisposable
     /// <summary>Verifies the completed upload and hands the same archive, receipt and slot to isolated import.</summary>
     public async Task<PortableImportResult> CommitAsync(CancellationToken cancellationToken = default)
     {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(600));
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, deadline.Token);
+        var token = linked.Token;
         Enter();
         try
         {
@@ -94,12 +97,12 @@ public sealed class PortableCaptureTransfer : IAsyncDisposable
             using (var file = Open(FileAccess.Read))
             {
                 if (file.Length != ArchiveBytes ||
-                    !string.Equals(Convert.ToHexString(await SHA256.HashDataAsync(file, cancellationToken).ConfigureAwait(false)),
+                    !string.Equals(Convert.ToHexString(await SHA256.HashDataAsync(file, token).ConfigureAwait(false)),
                         ArchiveSha256, StringComparison.OrdinalIgnoreCase))
                     throw CapturePackage.Error(CaptureErrorCode.CorruptPackage, "Archive.DigestOrLengthMismatch");
             }
             _committed = true;
-            try { return _result = await _import(cancellationToken).ConfigureAwait(false); }
+            try { return _result = await _import(token).ConfigureAwait(false); }
             catch (CaptureStoreException exception)
             {
                 var journal = _storage.Receipt.Import!;
@@ -138,27 +141,21 @@ public sealed class PortableCaptureTransfer : IAsyncDisposable
         try
         {
             if (_disposed) return;
-            _disposed = true;
-            try
+            if (_import is null) _storage.Abandon();
+            else
             {
-                if (_import is null) _storage.Abandon();
-                else
+                if (!_committed && _result is null)
                 {
-                    if (!_committed && _result is null)
-                    {
-                        var journal = _storage.Receipt.Import!;
-                        _storage.SaveImport(journal with { Terminal = true,
-                            Result = journal.Result with { Cancelled = true,
-                                Failure = new(CaptureErrorCode.Incomplete, "Cancelled", null, null, null, null) } });
-                    }
-                    _storage.CleanImport();
+                    var journal = _storage.Receipt.Import!;
+                    _storage.SaveImport(journal with { Terminal = true,
+                        Result = journal.Result with { Cancelled = true,
+                            Failure = new(CaptureErrorCode.Incomplete, "Cancelled", null, null, null, null) } });
                 }
+                _storage.CleanImport();
             }
-            finally
-            {
-                _releaseSources?.Invoke();
-                _storage.Dispose();
-            }
+            _releaseSources?.Invoke();
+            _storage.Dispose();
+            _disposed = true;
         }
         finally { _io.Release(); }
     }

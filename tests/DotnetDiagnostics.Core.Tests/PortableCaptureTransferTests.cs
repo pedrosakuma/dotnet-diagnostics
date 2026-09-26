@@ -105,4 +105,46 @@ public sealed partial class PortableCaptureExportTests
         Assert.Equal(CaptureErrorCode.CorruptPackage, (await Assert.ThrowsAsync<CaptureStoreException>(() =>
             upload.CommitAsync())).Code);
     }
+
+    [Fact]
+    public async Task Upload_TwoOwnersShareGlobalSlots_AndEntireDeclaredArchiveIsReservedBeforeFirstByte()
+    {
+        var request = new CaptureImportRequest(new(Guid.NewGuid().ToString("N"), _clock.Now),
+            512 * 1024, new string('0', 64));
+        var options = new CaptureStoreOptions
+        {
+            MaxDatabaseBytes = 1024 * 1024, MaxPackageBytes = 1024 * 1024, MaxStoreBytes = 4 * 1024 * 1024
+        };
+        var service = Exporter(storeOptions: options);
+        await using var first = service.BeginUpload(request, Owner, static (_, _, _, _) => ValueTask.CompletedTask);
+        await using var second = service.BeginUpload(request with { Operation = new(Guid.NewGuid().ToString("N"), _clock.Now) },
+            new("bob"), static (_, _, _, _) => ValueTask.CompletedTask);
+        var busy = Assert.Throws<CaptureStoreException>(() => service.BeginUpload(
+            request with { Operation = new(Guid.NewGuid().ToString("N"), _clock.Now) }, new("carol"),
+            static (_, _, _, _) => ValueTask.CompletedTask));
+        Assert.Equal(CaptureErrorCode.Busy, busy.Code);
+        await second.DisposeAsync();
+        var full = Assert.Throws<CaptureStoreException>(() => service.BeginUpload(
+            request with { Operation = new(Guid.NewGuid().ToString("N"), _clock.Now), ArchiveBytes = 4 * 1024 * 1024 },
+            new("carol"), static (_, _, _, _) => ValueTask.CompletedTask));
+        Assert.Equal(CaptureErrorCode.CapacityExceeded, full.Code);
+        Assert.Equal(0, first.ReceivedBytes);
+    }
+
+    [Fact]
+    public async Task Transfer_CleanupFailureKeepsLeaseAndCanBeRetriedAfterControlContention()
+    {
+        var capture = await CreateAsync();
+        var service = Exporter();
+        var transfer = await service.PrepareExportAsync(Request(new CaptureExportSelection(capture.CaptureId, null)), Owner);
+        using (var control = new FileStream(Path.Combine(_root, "captures", ".admission"),
+            FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            await Assert.ThrowsAsync<CaptureStoreException>(() => transfer.DisposeAsync().AsTask());
+        var busy = await Assert.ThrowsAsync<CaptureStoreException>(() =>
+            service.ExportAsync(Request(new CaptureExportSelection(capture.CaptureId, null)), Stream.Null, Owner));
+        Assert.Equal(CaptureErrorCode.Busy, busy.Code);
+        await transfer.DisposeAsync();
+        Assert.Empty(Directory.GetFiles(Path.Combine(_root, "captures", ".portable"), "bundle.ddcapture",
+            SearchOption.AllDirectories));
+    }
 }
