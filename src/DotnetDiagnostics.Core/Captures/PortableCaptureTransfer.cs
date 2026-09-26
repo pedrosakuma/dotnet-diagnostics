@@ -12,7 +12,9 @@ public sealed class PortableCaptureTransfer : IAsyncDisposable
     private readonly Action? _releaseSources;
     private readonly Func<CancellationToken, Task<PortableImportResult>>? _import;
     private PortableImportResult? _result;
+    private PortableImportJournal? _pendingTerminal;
     private bool _disposed;
+    private bool _closing;
     private bool _committed;
 
     internal PortableCaptureTransfer(PortableCaptureStorage storage, PortableExportResult export,
@@ -72,7 +74,7 @@ public sealed class PortableCaptureTransfer : IAsyncDisposable
         Enter();
         try
         {
-            if (_import is null || _committed || _result is not null || bytes.IsEmpty ||
+            if (_import is null || _committed || _closing || _pendingTerminal is not null || _result is not null || bytes.IsEmpty ||
                 bytes.Length > PortableBounds.BufferBytes || offset != ReceivedBytes ||
                 offset > ArchiveBytes - bytes.Length)
                 throw CapturePackage.Error(CaptureErrorCode.InvalidInput, "OffsetMismatch: invalid upload offset or length.");
@@ -95,7 +97,7 @@ public sealed class PortableCaptureTransfer : IAsyncDisposable
         try
         {
             if (_result is not null) return _result;
-            if (_import is null || _committed)
+            if (_import is null || _committed || _closing || _pendingTerminal is not null)
                 throw CapturePackage.Error(CaptureErrorCode.InvalidInput, "Invalid import transfer.");
             if (ReceivedBytes != ArchiveBytes)
                 throw CapturePackage.Error(CaptureErrorCode.Incomplete, "UploadIncomplete: exact declared bytes are required.");
@@ -106,11 +108,11 @@ public sealed class PortableCaptureTransfer : IAsyncDisposable
                         ArchiveSha256, StringComparison.OrdinalIgnoreCase))
                 {
                     var journal = _storage.Receipt.Import!;
-                    _result = journal.Result with
+                    var failure = journal.Result with
                     {
                         Failure = new(CaptureErrorCode.CorruptPackage, "Archive.DigestOrLengthMismatch", null, null, null, null)
                     };
-                    _storage.SaveImport(journal with { Terminal = true, Result = _result });
+                    PersistTerminal(journal with { Terminal = true, Result = failure });
                     throw CapturePackage.Error(CaptureErrorCode.CorruptPackage, "Archive.DigestOrLengthMismatch");
                 }
             }
@@ -120,7 +122,7 @@ public sealed class PortableCaptureTransfer : IAsyncDisposable
             {
                 var journal = _storage.Receipt.Import!;
                 if (!journal.Terminal)
-                    _storage.SaveImport(journal with { Terminal = true, Result = journal.Result with
+                    PersistTerminal(journal with { Terminal = true, Result = journal.Result with
                     {
                         Failure = new(exception.Code, exception.Code == CaptureErrorCode.UnsupportedFormat
                             ? "ImportWorkerUnavailable" : "ImportFailed", null, null, null, null)
@@ -129,6 +131,14 @@ public sealed class PortableCaptureTransfer : IAsyncDisposable
             }
         }
         finally { _io.Release(); }
+    }
+
+    private void PersistTerminal(PortableImportJournal journal)
+    {
+        _pendingTerminal = journal;
+        _storage.SaveImport(journal);
+        _result = journal.Result;
+        _pendingTerminal = null;
     }
 
     private FileStream Open(FileAccess access)
@@ -154,15 +164,17 @@ public sealed class PortableCaptureTransfer : IAsyncDisposable
         try
         {
             if (_disposed) return;
+            _closing = true;
             if (_import is null) _storage.Abandon();
             else
             {
+                if (_pendingTerminal is not null) PersistTerminal(_pendingTerminal);
                 if (!_committed && _result is null)
                 {
                     var journal = _storage.Receipt.Import!;
-                    _storage.SaveImport(journal with { Terminal = true,
-                        Result = journal.Result with { Cancelled = true,
-                            Failure = new(CaptureErrorCode.Incomplete, "Cancelled", null, null, null, null) } });
+                    var cancelled = journal.Result with { Cancelled = true,
+                        Failure = new(CaptureErrorCode.Incomplete, "Cancelled", null, null, null, null) };
+                    PersistTerminal(journal with { Terminal = true, Result = cancelled });
                 }
                 _storage.CleanImport();
             }

@@ -20,6 +20,13 @@ The lease serializes I/O without queuing competing reads/appends. Disposal waits
 for I/O to quiesce before releasing the reservation lease and cleaning staging.
 An imported capture is never deleted by transfer disposal. Cleanup failure
 retains on-disk accounting; it does not free bytes on paper.
+Once upload disposal begins, the same lease no longer accepts appends or starts
+import, even if saving cancellation fails. A cancelled result is exposed only
+after its terminal receipt has been saved. Failed receipt saves remain explicit
+errors and are retried on disposal; failed cleanup retains the saved result and
+lease until disposal succeeds. An existing committed result is not overwritten
+with cancellation. MCP reports cleanup faults as `Failed`/`CleanupFailed`,
+retains the transfer for cleanup retry, and never resumes its chunk/import work.
 
 Host transfers are not restart capabilities. Startup cleanup expires their
 staged export bytes and reconciles interrupted uploads/imports into durable

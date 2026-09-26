@@ -270,4 +270,161 @@ public sealed partial class PortableCaptureExportTests
         Assert.Empty(Directory.GetFiles(Path.Combine(_root, "captures", ".portable"), "bundle.ddcapture",
             SearchOption.AllDirectories));
     }
+
+    [Theory]
+    [InlineData("admission")]
+    [InlineData("receipt-write")]
+    [InlineData("cleanup")]
+    public async Task Upload_DisposalFaultClosesMutationAndRetainsHonestReceiptUntilRetry(string fault)
+    {
+        var store = Store();
+        _ = store.InitializePortableRoot();
+        var bytes = new byte[100];
+        var request = new CaptureImportRequest(new(Guid.NewGuid().ToString("N"), _clock.Now), bytes.Length,
+            Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant());
+        var initial = new PortableImportResult(request.Operation.Id, null, request.ArchiveSha256, false, false, [], null);
+        var storage = PortableCaptureStorage.Begin(store, request.Operation, Owner, "disposal-fixture", _clock.Now,
+            new(initial, [], false));
+        storage.Reserve(bytes.Length);
+        using (SafeArtifactPath.CreateRestrictedFile(storage.ArchivePath)) { }
+        storage.SaveTransfer(upload: true, 0);
+        var imports = 0;
+        var transfer = new PortableCaptureTransfer(storage, request, _ =>
+        {
+            imports++;
+            return Task.FromResult(initial with { Complete = true });
+        });
+        await transfer.AppendAsync(0, bytes.AsMemory(0, 75));
+        var blocker = Path.Combine(storage.DirectoryPath, fault == "receipt-write" ? "receipt.pending" : "unexpected");
+        FileStream? admission = null;
+        if (fault == "admission")
+            admission = new FileStream(Path.Combine(_root, "captures", ".admission"),
+                FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        else Directory.CreateDirectory(blocker);
+        try
+        {
+            Assert.NotNull(await Record.ExceptionAsync(() => transfer.DisposeAsync().AsTask()));
+            var receipt = ReadTransferReceipt(storage);
+            Assert.Equal(fault == "cleanup", receipt.Import!.Terminal);
+            Assert.Equal(fault == "cleanup", receipt.Import.Result.Cancelled);
+            Assert.Equal(receipt.Import.Terminal, storage.Receipt.Import!.Terminal);
+            Assert.Equal(bytes.Length + PortableBounds.ReceiptReservation, receipt.ReservationBytes);
+            Assert.Throws<IOException>(() => new FileStream(Path.Combine(storage.DirectoryPath, ".lease"),
+                FileMode.Open, FileAccess.ReadWrite, FileShare.None));
+            var appendFailure = await Record.ExceptionAsync(() => transfer.AppendAsync(75, bytes.AsMemory(75)));
+            var commitFailure = await Record.ExceptionAsync(async () => await transfer.CommitAsync());
+            Assert.Equal(0, imports);
+            Assert.IsType<CaptureStoreException>(appendFailure);
+            if (fault == "cleanup")
+            {
+                Assert.Null(commitFailure);
+                Assert.Equal(JsonSerializer.Serialize(receipt.Import.Result), JsonSerializer.Serialize(transfer.ExistingResult));
+            }
+            else
+            {
+                Assert.IsType<CaptureStoreException>(commitFailure);
+                Assert.Null(transfer.ExistingResult);
+            }
+            Assert.Equal(75, transfer.ReceivedBytes);
+            Assert.Equal(75, new FileInfo(storage.ArchivePath).Length);
+        }
+        finally
+        {
+            admission?.Dispose();
+            if (Directory.Exists(blocker)) Directory.Delete(blocker);
+            await transfer.DisposeAsync();
+        }
+        var terminal = ReadTransferReceipt(storage);
+        Assert.True(terminal.Import!.Terminal);
+        Assert.True(terminal.Import.Result.Cancelled);
+        Assert.Equal("Cancelled", terminal.Import.Result.Failure!.Reason);
+        Assert.Equal(JsonSerializer.Serialize(terminal.Import.Result), JsonSerializer.Serialize(transfer.ExistingResult));
+        Assert.False(File.Exists(storage.ArchivePath));
+        Assert.Equal(PortableBounds.ReceiptReservation, terminal.ReservationBytes);
+        Assert.Equal(PortableBounds.ReceiptReservation, PortableCaptureStorage.AccountedBytes(store.PortableRoot()));
+        using var released = new FileStream(Path.Combine(storage.DirectoryPath, ".lease"),
+            FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        Assert.Equal(0, imports);
+    }
+
+    private static PortableExportReceipt ReadTransferReceipt(PortableCaptureStorage storage) =>
+        JsonSerializer.Deserialize(File.ReadAllBytes(Path.Combine(storage.DirectoryPath, "receipt.json")),
+            PortableCaptureJson.Default.PortableExportReceipt)!;
+
+    [Fact]
+    public async Task Upload_DigestReceiptSaveFailureRemainsPendingUntilDisposalPersistsOriginalFailure()
+    {
+        var service = Exporter();
+        var request = new CaptureImportRequest(new(Guid.NewGuid().ToString("N"), _clock.Now), 100, new string('0', 64));
+        var transfer = service.BeginUpload(request, Owner,
+            static (_, _, _, _) => throw new InvalidOperationException("Digest failure must never invoke import."));
+        await transfer.AppendAsync(0, new byte[100]);
+        var path = Directory.GetDirectories(Path.Combine(_root, "captures", ".portable")).Single();
+        try
+        {
+            using (var control = new FileStream(Path.Combine(_root, "captures", ".admission"),
+                FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            {
+                await Assert.ThrowsAsync<CaptureStoreException>(() => transfer.CommitAsync());
+                Assert.Null(transfer.ExistingResult);
+                var receipt = JsonSerializer.Deserialize(File.ReadAllBytes(Path.Combine(path, "receipt.json")),
+                    PortableCaptureJson.Default.PortableExportReceipt)!;
+                Assert.False(receipt.Import!.Terminal);
+                Assert.Null(receipt.Import.Result.Failure);
+                await Assert.ThrowsAsync<CaptureStoreException>(() => transfer.CommitAsync());
+                await Assert.ThrowsAsync<CaptureStoreException>(() => transfer.DisposeAsync().AsTask());
+                Assert.Null(transfer.ExistingResult);
+            }
+        }
+        finally { await transfer.DisposeAsync(); }
+        Assert.NotNull(transfer.ExistingResult);
+        Assert.False(transfer.ExistingResult.Cancelled);
+        Assert.Equal("Archive.DigestOrLengthMismatch", transfer.ExistingResult.Failure!.Reason);
+        var result = await service.GetImportResultAsync(request.Operation, Owner);
+        Assert.Equal(JsonSerializer.Serialize(result), JsonSerializer.Serialize(transfer.ExistingResult));
+    }
+
+    [Fact]
+    public async Task Upload_CommittedResultSurvivesCleanupFaultWithoutCancellationOrReimport()
+    {
+        var store = Store();
+        _ = store.InitializePortableRoot();
+        var bytes = new byte[100];
+        var request = new CaptureImportRequest(new(Guid.NewGuid().ToString("N"), _clock.Now), bytes.Length,
+            Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant());
+        var result = new PortableImportResult(request.Operation.Id, null, request.ArchiveSha256, false, false, [],
+            new(CaptureErrorCode.CorruptPackage, "FixtureRejected", null, null, null, null));
+        var storage = PortableCaptureStorage.Begin(store, request.Operation, Owner, "committed-fixture", _clock.Now,
+            new(result with { Failure = null }, [], false));
+        storage.Reserve(bytes.Length);
+        using (SafeArtifactPath.CreateRestrictedFile(storage.ArchivePath)) { }
+        storage.SaveTransfer(upload: true, 0);
+        var imports = 0;
+        var transfer = new PortableCaptureTransfer(storage, request, _ =>
+        {
+            imports++;
+            storage.SaveImport(storage.Receipt.Import! with { Terminal = true, Result = result });
+            return Task.FromResult(result);
+        });
+        await transfer.AppendAsync(0, bytes);
+        Assert.Same(result, await transfer.CommitAsync());
+        var blocker = Path.Combine(storage.DirectoryPath, "unexpected");
+        Directory.CreateDirectory(blocker);
+        try
+        {
+            await Assert.ThrowsAsync<CaptureStoreException>(() => transfer.DisposeAsync().AsTask());
+            Assert.Same(result, await transfer.CommitAsync());
+            Assert.Same(result, transfer.ExistingResult);
+            Assert.False(ReadTransferReceipt(storage).Import!.Result.Cancelled);
+            Assert.Equal("FixtureRejected", ReadTransferReceipt(storage).Import!.Result.Failure!.Reason);
+        }
+        finally
+        {
+            Directory.Delete(blocker);
+            await transfer.DisposeAsync();
+        }
+        Assert.Equal(1, imports);
+        Assert.Same(result, transfer.ExistingResult);
+        Assert.Equal(PortableBounds.ReceiptReservation, PortableCaptureStorage.AccountedBytes(store.PortableRoot()));
+    }
 }

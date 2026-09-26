@@ -20,8 +20,9 @@ internal sealed partial class PortableCaptureStorage
 
     internal void SaveImportLocked(PortableImportJournal journal)
     {
-        Receipt = Receipt with { Import = journal };
-        WriteReceipt(DirectoryPath, Receipt);
+        var updated = Receipt with { Import = journal };
+        WriteReceipt(DirectoryPath, updated);
+        Receipt = updated;
     }
 
     internal void ReduceReservationLocked(long bytes)
