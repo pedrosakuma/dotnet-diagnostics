@@ -67,16 +67,33 @@ internal sealed class HttpContextPrincipalAccessor : IPrincipalAccessor
 /// process lifecycle — there is no transport-level identity to project (docs/authorization.md#default-policy-by-transport).</summary>
 internal sealed class StdioRootPrincipalAccessor : IPrincipalAccessor
 {
-    public static readonly StdioRootPrincipalAccessor Instance = new();
+    public static readonly StdioRootPrincipalAccessor Instance = new(
+        System.Collections.Immutable.ImmutableHashSet.Create(BearerPrincipal.RootScope));
 
-    private static readonly BearerPrincipal RootPrincipal = new(
-        name: "stdio-root",
-        scopes: System.Collections.Immutable.ImmutableHashSet.Create(BearerPrincipal.RootScope));
+    private readonly BearerPrincipal _principal;
 
-    public BearerPrincipal? Current => RootPrincipal;
+    private StdioRootPrincipalAccessor(System.Collections.Immutable.ImmutableHashSet<string> scopes)
+        => _principal = new(name: "stdio-root", scopes);
 
-    /// <summary>True when <paramref name="accessor"/> is exactly the stdio-transport singleton
-    /// registered by <c>Program.RunStdioAsync</c> — a reliable, zero-new-plumbing way to detect
-    /// "this call arrived over --stdio" (issue #665 Part A's <c>launch</c> path is stdio-only).</summary>
-    public static bool IsCurrent(IPrincipalAccessor accessor) => ReferenceEquals(accessor, Instance);
+    public BearerPrincipal? Current => _principal;
+
+    internal static StdioRootPrincipalAccessor FromConfiguration(IConfiguration configuration)
+    {
+        var enabled = configuration.GetValue<bool>("Stdio:CaptureBytes");
+        var modifiers = configuration.GetSection("Stdio:CaptureModifiers").Get<string[]>() ?? [];
+        if (modifiers.Length != 0 && !enabled)
+            throw new InvalidOperationException("Stdio capture modifiers require Stdio:CaptureBytes=true.");
+        if (!enabled) return Instance;
+        var scopes = Instance._principal.Scopes.Add("module-bytes-read");
+        foreach (var modifier in modifiers)
+        {
+            if (modifier is not ("sensitive-heap-read" or "sensitive-parameter-read" or "eventsource-any"))
+                throw new InvalidOperationException("Stdio:CaptureModifiers contains an unsupported modifier.");
+            scopes = scopes.Add(modifier);
+        }
+        return new(scopes);
+    }
+
+    /// <summary>Only the local host can construct this accessor; a remote principal's name is irrelevant.</summary>
+    public static bool IsCurrent(IPrincipalAccessor accessor) => accessor is StdioRootPrincipalAccessor;
 }

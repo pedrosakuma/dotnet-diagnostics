@@ -53,6 +53,36 @@ is limited to 16 hosts per call. Preserving only the orchestrator's artifact
 directory does not preserve remote captures; preserve each collecting host's
 configured artifact root.
 
+Stdio's default `root` scope does **not** include literal `module-bytes-read`.
+To authorize local capture lifecycle access, explicitly launch the local host
+with `--stdio --Stdio:CaptureBytes=true`. This startup configuration is not a
+tool argument and is not applied to HTTP callers, including a remote principal
+named `stdio-root`. Sensitive retained evidence still needs the appropriate
+explicit modifier. For example:
+
+```sh
+dotnet-diagnostics-mcp --stdio --Stdio:CaptureBytes=true \
+  --Stdio:CaptureModifiers:0=sensitive-heap-read
+```
+
+The supported local capture modifiers are `sensitive-heap-read`,
+`sensitive-parameter-read`, and `eventsource-any`. Configure only the ones needed;
+modifiers without `Stdio:CaptureBytes=true`, and unknown modifiers, fail startup.
+This does not enable capture deletion or live privileged instrumentation.
+
+Both MCP transports bound incoming JSON-RPC frames to 1 MiB **before** SDK
+deserialization. `get_bytes` frames with a `captureAction` argument have a stricter
+64 KiB encoded bound (including padding, escaping, and the stdio newline).
+HTTP enforces actual bytes even without `Content-Length`; excess returns 413.
+Stdio rejects an oversized line before dispatch and closes the transport.
+Ordinary non-capture requests retain the 1 MiB allowance. This is request
+admission, not a change to response budgets.
+
+These guards and local opt-in are prerequisites for portable capture transfer,
+not an implementation of it. MCP currently exposes only list/describe/delete/
+recover for captures; portable export/download/upload/import actions remain
+unavailable pending the shared Core transfer reservation/staging integration.
+
 Historical views use retained evidence, never a stored PID to reattach. Queries
 do not repair interrupted captures: request explicit `captureAction="recover"`
 to create a new derived package. Inspect quality and error details rather than

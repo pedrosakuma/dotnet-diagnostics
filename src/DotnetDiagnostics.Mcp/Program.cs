@@ -244,6 +244,7 @@ app.UseMiddleware<BearerTokenMiddleware>((IPrincipalResolver)registry);
 // M5: rate limiter middleware runs after bearer-auth so 401-bound traffic still
 // short-circuits cheaply and only authenticated traffic counts against the policy.
 app.UseRateLimiter();
+app.UseMiddleware<McpRequestFramingMiddleware>();
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 app.MapEphemeralAttachmentControl();
@@ -270,7 +271,9 @@ static string RateLimitPartitionKey(HttpContext httpContext)
 
 static async Task<int> RunStdioAsync(string[] args)
 {
-    var hostBuilder = Host.CreateApplicationBuilder(DisableConfigReloadOnChange(args));
+    // This is a mode switch, not a configuration key with the following argument as its value.
+    var hostBuilder = Host.CreateApplicationBuilder(
+        DisableConfigReloadOnChange(args.Where(static argument => argument != "--stdio").ToArray()));
 
     // Stdio uses stdout as the JSON-RPC channel — emit logs on stderr only and disable
     // all console formatting that would interleave ANSI/scope text into the wire stream.
@@ -298,7 +301,7 @@ static async Task<int> RunStdioAsync(string[] args)
     // here keeps the [RequireScope] filter graceful across transports without each
     // tool body branching on transport kind.
     hostBuilder.Services.AddSingleton<DotnetDiagnostics.Mcp.Security.IPrincipalAccessor>(
-        DotnetDiagnostics.Mcp.Security.StdioRootPrincipalAccessor.Instance);
+        DotnetDiagnostics.Mcp.Security.StdioRootPrincipalAccessor.FromConfiguration(hostBuilder.Configuration));
 
     ILoggerFactory? stdioLoggerFactoryHolder = null;
     IServiceProvider? stdioServicesHolder = null;
@@ -307,7 +310,8 @@ static async Task<int> RunStdioAsync(string[] args)
             () => stdioLoggerFactoryHolder,
             enableOrchestratorTools: orchestratorEnabled,
             servicesAccessor: () => stdioServicesHolder)
-        .WithStdioServerTransport();
+        .WithStreamServerTransport(
+            new BoundedMcpInputStream(Console.OpenStandardInput()), Console.OpenStandardOutput());
 
     var host = hostBuilder.Build();
     stdioLoggerFactoryHolder = host.Services.GetRequiredService<ILoggerFactory>();

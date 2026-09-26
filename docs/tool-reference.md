@@ -3525,6 +3525,13 @@ The single byte-fetch entrypoint dispatches on a `kind` discriminator:
   `module-bytes-read`; deletion additionally requires literal `delete-artifact`.
   Owner checks apply to every action. Recovery writes a derived package only.
   No client-selected root, arbitrary SQL, or database path is accepted.
+  The local stdio host requires explicit `--Stdio:CaptureBytes=true` startup
+  opt-in for literal capture-byte authority; default root and a remote
+  `stdio-root` display name do not grant it. See
+  [local capture authorization and framing](./client-setup.md#optional-durable-sqlite-evidence).
+  Incoming `get_bytes` frames with `captureAction` are limited to 64 KiB before SDK
+  deserialization on both HTTP and stdio (other MCP requests: 1 MiB).
+  Portable bundle transfer actions are not yet exposed.
 
 Both branches share `offset` / `maxBytes` and return the same
 `ByteFetchEnvelope` documented below. Unknown `kind` returns a structured
