@@ -41,7 +41,8 @@ public sealed partial class PortableCaptureUseCases
         PortableEntryMapping Mapping, string Work, string Frames, SqliteAdmissionResult Admission, byte[] ManifestBytes);
 
     private async Task<PortableImportResult> ImportCoreAsync(CaptureImportRequest request, Stream source,
-        CaptureAccess access, AuthorizePortableImport authorize, CancellationToken cancellationToken)
+        CaptureAccess access, AuthorizePortableImport authorize, CancellationToken cancellationToken,
+        PortableCaptureStorage? suppliedStorage = null)
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(request.Operation);
@@ -59,9 +60,11 @@ public sealed partial class PortableCaptureUseCases
         var initial = new PortableImportResult(request.Operation.Id, null, request.ArchiveSha256, false, false, [], null);
         var fingerprint = PortableCaptureStorage.Digest(CapturePackage.Utf8.GetBytes(
             FormattableString.Invariant($"import/{request.ArchiveBytes}/{request.ArchiveSha256}")));
-        using var storage = PortableCaptureStorage.Begin(_store, request.Operation, access, fingerprint,
-            _clock.GetUtcNow(), new(initial, [], false));
-        if (storage.Reused) return storage.Receipt.Import!.Result;
+        using var ownedStorage = suppliedStorage is null
+            ? PortableCaptureStorage.Begin(_store, request.Operation, access, fingerprint,
+                _clock.GetUtcNow(), new(initial, [], false)) : null;
+        var storage = suppliedStorage ?? ownedStorage!;
+        if (storage.Reused && suppliedStorage is null) return storage.Receipt.Import!.Result;
         var budget = new PortableImportBudget(storage);
         var publication = new ImportPublication(_store, root, storage, budget, access, initial);
         var ioOutstanding = false;
@@ -78,7 +81,8 @@ public sealed partial class PortableCaptureUseCases
                 throw CapturePackage.Error(CaptureErrorCode.UnsupportedFormat, "ImportWorkerUnavailable: required isolation is unavailable.", ex);
             }
             _ = PortableWorkerIdentity.Capture(Environment.ProcessId);
-            await ReceiveArchive(source, storage, budget, request, token).ConfigureAwait(false);
+            if (suppliedStorage is null)
+                await ReceiveArchive(source, storage, budget, request, token).ConfigureAwait(false);
             using var archive = OpenRead(storage.ArchivePath);
             var inventory = await PortableZip.InspectAsync(archive, _options, token).ConfigureAwait(false);
             var bundle = await ReadIndex(archive, inventory, token).ConfigureAwait(false);

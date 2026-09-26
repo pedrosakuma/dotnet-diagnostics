@@ -5,7 +5,8 @@ namespace DotnetDiagnostics.Core.Captures;
 /// <summary>Explicit trusted host assets for the internal Linux import worker, not archive-supplied paths.</summary>
 public sealed record PortableCaptureImportWorker(string Executable, string SqliteLibrary)
 {
-    internal void Validate()
+    /// <summary>Validates trusted configured assets and supported platform without launching a worker.</summary>
+    public void Validate()
     {
         if (!OperatingSystem.IsLinux() || RuntimeInformation.ProcessArchitecture != Architecture.X64)
             throw IsolatedCaptureWorker.Unsupported("ImportWorkerUnavailable");

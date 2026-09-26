@@ -69,8 +69,7 @@ internal sealed partial class PortableCaptureStorage : IDisposable
                 throw CapturePackage.Error(CaptureErrorCode.InvalidInput, "OperationConflict: operation kind differs.");
             if (import is null && (receipt.Result is null || receipt.BytesExpireUtc <= now || !File.Exists(Path.Combine(path, "bundle.ddcapture"))))
                 throw CapturePackage.Error(CaptureErrorCode.InvalidInput, "TransferExpired: staged export is unavailable; use a new operation key.");
-            var lease = TryLease(path) ?? throw CapturePackage.Error(CaptureErrorCode.Busy, "Export retry is already active.");
-            return new(store, path, lease, receipt, reused: true);
+            return ReuseUnderAdmission(store, path, receipt, import is not null);
         }
         if (key.RequestedUtc < now.AddMinutes(-5))
             throw CapturePackage.Error(CaptureErrorCode.InvalidInput, "OperationExpired: first use must be within five minutes.");
@@ -85,6 +84,36 @@ internal sealed partial class PortableCaptureStorage : IDisposable
         WriteReceipt(path, created);
         return new(store, path, TryLease(path) ??
             throw CapturePackage.Error(CaptureErrorCode.Busy, "Portable lease could not be acquired."), created, reused: false);
+    }
+
+    internal static PortableCaptureStorage ReuseUnderAdmission(SqliteCaptureStore store, string path,
+        PortableExportReceipt receipt, bool import)
+    {
+        var lease = TryLease(path) ?? throw CapturePackage.Error(CaptureErrorCode.Busy, "Portable retry is already active.");
+        try
+        {
+            if (import)
+            {
+                // Cleanup may have seen this lease active immediately before its owner
+                // exited. Reconcile after acquisition, not just during the earlier scan.
+                receipt = ReconcileAndCleanImport(store.PortableRoot(), path, receipt);
+            }
+            return new(store, path, lease, receipt, reused: true);
+        }
+        catch
+        {
+            lease.Dispose();
+            throw;
+        }
+    }
+
+    private static PortableExportReceipt ReconcileAndCleanImport(string root, string path, PortableExportReceipt receipt)
+    {
+        receipt = ReconcileImport(root, path, receipt);
+        DeleteImportWork(path);
+        receipt = receipt with { ReservationBytes = PortableBounds.ReceiptReservation };
+        WriteReceipt(path, receipt);
+        return receipt;
     }
 
     internal void Reserve(long archiveBytes)
@@ -112,6 +141,13 @@ internal sealed partial class PortableCaptureStorage : IDisposable
         WriteReceipt(DirectoryPath, Receipt);
     }
 
+    internal void SaveTransfer(bool upload, long receivedBytes)
+    {
+        using var admission = SqliteCaptureStore.PortableAdmission(_store.PortableRoot());
+        Receipt = Receipt with { Transfer = new(upload, receivedBytes) };
+        WriteReceipt(DirectoryPath, Receipt);
+    }
+
     internal void Abandon()
     {
         using var admission = SqliteCaptureStore.PortableAdmission(_store.PortableRoot());
@@ -130,6 +166,13 @@ internal sealed partial class PortableCaptureStorage : IDisposable
     internal static long AccountedBytes(string root)
     {
         long bytes = 0;
+        var calls = Path.Combine(root, ".portable-calls");
+        CapturePackage.RejectLinks(calls);
+        if (File.Exists(calls))
+        {
+            PortableBounds.Check("PortableCallControlBytes", new FileInfo(calls).Length, 16);
+            bytes = 16;
+        }
         var watch = Stopwatch.StartNew();
         foreach (var directory in Directories(root))
         {
@@ -167,12 +210,18 @@ internal sealed partial class PortableCaptureStorage : IDisposable
             using (var lease = TryLease(directory))
             {
                 if (lease is null) continue;
+                // A host-held transfer has no restart capability. Its durable import
+                // receipt survives, but byte staging is never adopted by a new host.
+                if (receipt.Transfer is not null && receipt.Import is null)
+                {
+                    DeleteArchiveFiles(directory);
+                    receipt = receipt with { BytesExpireUtc = DateTimeOffset.MinValue,
+                        ReservationBytes = PortableBounds.ReceiptReservation };
+                    WriteReceipt(directory, receipt);
+                }
                 if (receipt.Import is not null)
                 {
-                    receipt = ReconcileImport(root, directory, receipt);
-                    DeleteImportWork(directory);
-                    receipt = receipt with { ReservationBytes = PortableBounds.ReceiptReservation };
-                    WriteReceipt(directory, receipt);
+                    receipt = ReconcileAndCleanImport(root, directory, receipt);
                     if (receipt.Operation.RequestedUtc.AddHours(24) > now) continue;
                 }
                 if (receipt.Result is not null && receipt.Operation.RequestedUtc.AddHours(24) > now &&

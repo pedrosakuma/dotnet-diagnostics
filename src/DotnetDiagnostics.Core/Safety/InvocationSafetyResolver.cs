@@ -62,6 +62,9 @@ public static class InvocationSafetyResolver
             null or "list" or "describe" => safety,
             "delete" => Profile(request.Operation, "captures-delete"),
             "recover" => Profile(request.Operation, "captures-recover"),
+            "export" or "export-start" or "import" or "import-start" or "import-commit" or
+                "download-chunk" or "upload-chunk" or "transfer-status" or "import-result" or "transfer-cancel"
+                => Profile(request.Operation, "captures-" + Get(request, "captureAction")!.ToLowerInvariant()),
             _ => throw new InvocationSafetyResolutionException(request.Operation, "Unknown captureAction."),
         };
     }

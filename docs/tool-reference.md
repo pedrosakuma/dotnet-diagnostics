@@ -3517,7 +3517,7 @@ The single byte-fetch entrypoint dispatches on a `kind` discriminator:
   `MCP_ARTIFACT_ROOT`; `..`, absolute, and symlink escapes rejected with
   `InvalidArtifactPath`). Returns the deleted artifact's metadata. **Requires the
   literal `delete-artifact` scope** in addition to `module-bytes-read`.
-- `kind: "captures"` — managed durable capture lifecycle, never database bytes:
+- `kind: "captures"` — managed durable lifecycle and portable bundles, never raw database-path access:
   `captureAction="list"` (default), `"describe"`, `"delete"`, or `"recover"`.
   Describe/delete/recover require `captureId`; list uses `capturePageSize`
   (default 25, maximum 100) and `afterCaptureId` from `nextAfterCaptureId`.
@@ -3525,10 +3525,102 @@ The single byte-fetch entrypoint dispatches on a `kind` discriminator:
   `module-bytes-read`; deletion additionally requires literal `delete-artifact`.
   Owner checks apply to every action. Recovery writes a derived package only.
   No client-selected root, arbitrary SQL, or database path is accepted.
+  The local stdio host requires explicit `--Stdio:CaptureBytes=true` startup
+  opt-in for literal capture-byte authority; default root and a remote
+  `stdio-root` display name do not grant it. See
+  [local capture authorization and framing](./client-setup.md#optional-durable-sqlite-evidence).
+  Incoming `get_bytes` frames with `captureAction` are limited to 64 KiB before SDK
+  deserialization on both HTTP and stdio (other MCP requests: 1 MiB).
+  Portable bundle transfers use `captureTransfer` as described below.
 
-Both branches share `offset` / `maxBytes` and return the same
+Raw byte branches share `offset` / `maxBytes` and return the same
 `ByteFetchEnvelope` documented below. Unknown `kind` returns a structured
 `InvalidArgument` error envelope listing the allowed values — never throws.
+
+### Portable capture transfer
+
+Use `get_bytes(kind="captures", captureAction=..., captureTransfer={...})`.
+`captureTransfer` is a bounded JSON object; unknown or duplicate fields reject.
+Transfer calls do not use the raw-byte branch's top-level `offset`/`maxBytes`.
+All actions require literal `module-bytes-read` and ordinary
+`investigation-export`. Root alone does not grant literal membership.
+Transfer IDs are bound to the current ownership key **and initiating MCP session**,
+not bearer authority. Another same-name principal or another session cannot
+consume them. HTTP requires the session-capable `2025-11-25` protocol handshake;
+stateless `2026-07-28` initiation returns `SessionRequired`. Stdio requires
+`--Stdio:CaptureBytes=true`; no HTTP or bearer is involved.
+
+| `captureAction` | Fields inside `captureTransfer` |
+|---|---|
+| `export-start` | `operationId`, `requestedUtc`, `entries` (1–16 objects with `captureId`, optional `label`) |
+| `download-chunk` | `transferId`, `offset`, `count` (exactly 24576) |
+| `import-start` | `operationId`, `requestedUtc`, `archiveBytes`, `archiveSha256` |
+| `upload-chunk` | `transferId`, `offset`, `base64`, `sha256` |
+| `import-commit` | `transferId` |
+| `transfer-status` | either `transferId`, or `operationId` plus `requestedUtc` |
+| `import-result` | `operationId`, `requestedUtc`, optional `afterEntry` (default -1), `pageSize` (1 only) |
+| `transfer-cancel` | `transferId` |
+
+Operation and transfer IDs are independent lowercase 32-hex values; clients
+generate an operation ID and retain its UTC `requestedUtc`. First use must be
+within five minutes; durable import receipts remain available until
+`requestedUtc + 24 hours`. Same operation and input reuses the outcome; changed
+input conflicts. New operation keys deliberately permit independent imports.
+Labels are display-only UTF-8 text, at most 256 bytes without controls, never paths.
+
+Start returns a descriptor: `transferId`, `operationId`, `direction`, `state`,
+`expiresUtc`, `idleExpiresUtc`, `maximumChunkBytes`, `nextOffset`, `archiveBytes`,
+`archiveSha256`, optional `bundleId` and structured `failure`.
+Export transitions from `Preparing` to `Ready` asynchronously. Only then download
+the immutable advertised bytes. Download offsets are 24 KiB aligned, except
+exact EOF; count is always 24 KiB and the last response is shortened. Response
+fields are `offset`, actual `count`, `base64`, `sha256`, and `eof`. Exact EOF
+returns zero bytes. Verify every chunk and the complete archive hash locally.
+
+Upload progresses from `Receiving` with `nextOffset=0`. Chunks have at most
+24 KiB raw bytes / 32 KiB canonical base64, no whitespace. A hash failure does
+not advance offset. Only sequential writes are accepted. Exact replay of the
+immediately previous chunk acknowledges without appending; other offsets reject
+with the authorized next offset. Each accepted write and offset is flushed.
+`import-commit` rejects premature input and initiates at most one validation/
+publication operation. It is idempotent; poll `transfer-status`, then obtain
+`import-result` pages with at most one entry and 64 artifact mappings.
+Use returned local capture/artifact IDs for `query_snapshot`; bundle, entry,
+operation and transfer IDs are not capture selectors.
+
+At most two transfers per store and one per owner share Core's existing
+cross-process portable reservations. Calls are limited to 100/second per
+existing store across cooperating hosts, including status polling, with no waiter queue; `Busy` includes retry
+delay. Each transfer permits one in-flight chunk and at most 65,536 chunk calls.
+Absolute lifetime is 60 minutes; idle timeout is five minutes since successful
+new progress (repeated download bytes do not renew it). Import execution has the
+600-second Core deadline. Encoded transfer requests are at most 64 KiB and
+responses at most 128 KiB, including MCP wrappers and duplicate text/structured
+content. Archives are at most 512 MiB, subject to smaller store capacity limits.
+The Core operation lease and staged-byte accounting remain held until I/O is
+quiescent; cleanup failures retain reservations and report `CleanupFailed`.
+
+Cancellation, expiry and explicit HTTP session termination stop unpublished
+work; stdio EOF shuts down its transfers. A dropped HTTP request does not cancel
+an accepted asynchronous operation: reconnect and use the operation key to
+reconcile. Host restart expires transfer IDs but preserves import receipts.
+Terminal staging is cleaned promptly (periodic cleanup at most every 60 seconds;
+terminal descriptor grace five minutes). No published captures are deleted by
+transfer cleanup. Partial imports preserve published mappings and report the
+failure; retry never silently publishes the remaining entries.
+
+Export/download and import preparation/publication recheck whole-package
+producer/kind and sensitive-record authority. Unknown policy fails closed;
+archived provenance can add requirements but cannot remove them. Current policy
+is refreshed before each publication. As with durable handle dispatch, policy
+check and dispatch are not a transactional authorization lease: already delivered
+bytes and published owner-held evidence cannot be recalled.
+
+Export/import initiation requires acknowledgement of its resolved High safety
+descriptor. Chunks, status, result and cancellation use Moderate warnings rather
+than destructive approval per chunk. Receipt status/result reconciliation can
+write receipts and clean unpublished staging; it is not side-effect-free.
+These operations never attach to a live target.
 
 > **Scope:** `module-bytes-read` (literal modifier). `kind="delete"` additionally
 > requires the literal `delete-artifact`

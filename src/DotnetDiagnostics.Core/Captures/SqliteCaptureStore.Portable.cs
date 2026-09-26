@@ -9,6 +9,16 @@ public sealed partial class SqliteCaptureStore
     internal string InitializePortableRoot() => Root(create: true);
     internal string PortablePackagePath(string captureId) => PackagePath(captureId);
     internal static FileStream PortableAdmission(string root) => AcquireControl(root, ".admission");
+    internal FileStream PortableCallAdmission(string root)
+    {
+        if (!File.Exists(Path.Combine(root, ".portable-calls")))
+        {
+            using var admission = PortableAdmission(root);
+            CheckPortableAdmission(root, 16);
+            return AcquireControl(root, ".portable-calls");
+        }
+        return AcquireControl(root, ".portable-calls");
+    }
     internal FileStream PortableValidator() => AcquireControl(Root(create: false), ".import-validator");
     internal FileStream PortableWriter()
     {
