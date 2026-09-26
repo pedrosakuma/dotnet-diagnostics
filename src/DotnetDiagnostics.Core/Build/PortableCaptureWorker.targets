@@ -1,0 +1,93 @@
+<Project>
+  <Import Project="PortableCaptureWorker.props" />
+  <UsingTask TaskName="CheckPortableCaptureProvenanceSize" TaskFactory="RoslynCodeTaskFactory"
+             AssemblyFile="$(MSBuildToolsPath)/Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <Path ParameterType="System.String" Required="true" />
+    </ParameterGroup>
+    <Task>
+      <Code Type="Fragment" Language="cs"><![CDATA[
+        if (new System.IO.FileInfo(Path).Length > 32768)
+        {
+            Log.LogError("Portable capture provenance exceeds 32 KiB.");
+            return false;
+        }
+      ]]></Code>
+    </Task>
+  </UsingTask>
+  <PropertyGroup>
+    <_PortableWorkerApplies Condition="'$(RuntimeIdentifier)' == '' or '$(RuntimeIdentifier)' == 'linux-x64'">true</_PortableWorkerApplies>
+    <_PortableWorkerSource>$(MSBuildThisFileDirectory)../Captures/Isolation/native/capture_worker.c</_PortableWorkerSource>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(_PortableWorkerApplies)' == 'true' and '$(PortableCaptureWorkerAssetsDir)' != ''">
+    <Content Include="$(PortableCaptureWorkerAssetsDir)/capture-worker;$(PortableCaptureWorkerAssetsDir)/libe_sqlite3.so;$(PortableCaptureWorkerAssetsDir)/provenance.xml;$(PortableCaptureWorkerAssetsDir)/sqlite-LICENSE.txt;$(PortableCaptureWorkerAssetsDir)/worker-LICENSE.txt"
+             Link="NativeAssets/portable-capture/linux-x64/%(Filename)%(Extension)"
+             CopyToOutputDirectory="Always" CopyToPublishDirectory="Always"
+             ExcludeFromSingleFile="true" Pack="false" />
+  </ItemGroup>
+  <Target Name="RejectStalePortableCapturePublishAssets" BeforeTargets="ComputeFilesToPublish;PackTool"
+          Condition="'$(PublishDir)' != '' and ('$(PortableCaptureWorkerAssetsDir)' == '' or '$(_PortableWorkerApplies)' != 'true')">
+    <Error Condition="Exists('$(PublishDir)/NativeAssets/portable-capture/linux-x64')"
+           Text="Stale portable capture publish assets exist without matching configuration. Use a fresh publish directory; assets are not silently deleted or included." />
+  </Target>
+  <Target Name="ValidatePortableCaptureWorkerAssets"
+          BeforeTargets="PrepareForBuild;ComputeFilesToPublish;GenerateNuspec"
+          Condition="'$(_PortableWorkerApplies)' == 'true' and ('$(RequirePortableCaptureWorkerAssets)' == 'true' or '$(PortableCaptureWorkerAssetsDir)' != '')">
+    <Error Condition="'$(PortableCaptureWorkerAssetsDir)' == ''" Text="Portable capture assets are required. Run the approved pinned producer and supply PortableCaptureWorkerAssetsDir; no compiler/download fallback exists." />
+    <ItemGroup>
+      <_PortableWorkerRequired Include="$(PortableCaptureWorkerAssetsDir)/capture-worker;$(PortableCaptureWorkerAssetsDir)/libe_sqlite3.so;$(PortableCaptureWorkerAssetsDir)/provenance.xml;$(PortableCaptureWorkerAssetsDir)/sqlite-LICENSE.txt;$(PortableCaptureWorkerAssetsDir)/worker-LICENSE.txt" />
+    </ItemGroup>
+    <Error Condition="!Exists('%(_PortableWorkerRequired.Identity)')" Text="Missing required portable capture asset: %(_PortableWorkerRequired.Identity)" />
+    <CheckPortableCaptureProvenanceSize Path="$(PortableCaptureWorkerAssetsDir)/provenance.xml" />
+    <XmlPeek XmlInputPath="$(PortableCaptureWorkerAssetsDir)/provenance.xml" Query="/PortableCaptureWorker[@version='1' and @rid='linux-x64']/@kind">
+      <Output TaskParameter="Result" PropertyName="_PortableWorkerKind" />
+    </XmlPeek>
+    <Error Condition="'$(_PortableWorkerKind)' != 'container' and !('$(_PortableWorkerKind)' == 'fixture' and '$(AllowPortableCaptureWorkerFixtureAssets)' == 'true' and '$(RequirePortableCaptureWorkerAssets)' != 'true')" Text="Portable capture assets require container provenance. Fixture assets are test-only and cannot satisfy release requirements." />
+    <XmlPeek XmlInputPath="$(PortableCaptureWorkerAssetsDir)/provenance.xml" Query="/PortableCaptureWorker/Image/text()">
+      <Output TaskParameter="Result" PropertyName="_PortableWorkerImage" />
+    </XmlPeek>
+    <Error Condition="'$(_PortableWorkerKind)' == 'container' and '$(_PortableWorkerImage)' != '$(PortableCaptureWorkerProducerImage)'" Text="Portable capture producer digest differs from the approved image." />
+    <XmlPeek XmlInputPath="$(PortableCaptureWorkerAssetsDir)/provenance.xml" Query="/PortableCaptureWorker/Compiler/text()">
+      <Output TaskParameter="Result" PropertyName="_PortableWorkerCompiler" />
+    </XmlPeek>
+    <XmlPeek XmlInputPath="$(PortableCaptureWorkerAssetsDir)/provenance.xml" Query="/PortableCaptureWorker/Libc/text()">
+      <Output TaskParameter="Result" PropertyName="_PortableWorkerLibc" />
+    </XmlPeek>
+    <Error Condition="'$(_PortableWorkerKind)' == 'container' and ('$(_PortableWorkerCompiler)' != '$(PortableCaptureWorkerCompilerVersion)' or '$(_PortableWorkerLibc)' != 'glibc 2.36')" Text="Portable capture compiler/libc identity differs from the approved producer." />
+    <XmlPeek XmlInputPath="$(PortableCaptureWorkerAssetsDir)/provenance.xml" Query="/PortableCaptureWorker/SqlitePackage/text()">
+      <Output TaskParameter="Result" PropertyName="_PortableSqlitePackage" />
+    </XmlPeek>
+    <Error Condition="'$(_PortableSqlitePackage)' != 'SQLitePCLRaw.lib.e_sqlite3/3.53.3'" Text="Portable capture assets require the existing pinned SQLite 3.53.3 package." />
+    <XmlPeek XmlInputPath="$(PortableCaptureWorkerAssetsDir)/provenance.xml" Query="/PortableCaptureWorker/WorkerSha256/text()">
+      <Output TaskParameter="Result" PropertyName="_PortableExpectedWorkerHash" />
+    </XmlPeek>
+    <XmlPeek XmlInputPath="$(PortableCaptureWorkerAssetsDir)/provenance.xml" Query="/PortableCaptureWorker/SqliteSha256/text()">
+      <Output TaskParameter="Result" PropertyName="_PortableExpectedSqliteHash" />
+    </XmlPeek>
+    <XmlPeek XmlInputPath="$(PortableCaptureWorkerAssetsDir)/provenance.xml" Query="/PortableCaptureWorker/SourceSha256/text()">
+      <Output TaskParameter="Result" PropertyName="_PortableExpectedSourceHash" />
+    </XmlPeek>
+    <XmlPeek XmlInputPath="$(PortableCaptureWorkerAssetsDir)/provenance.xml" Query="/PortableCaptureWorker/AdmissionSha256/text()">
+      <Output TaskParameter="Result" PropertyName="_PortableExpectedAdmissionHash" />
+    </XmlPeek>
+    <XmlPeek XmlInputPath="$(PortableCaptureWorkerAssetsDir)/provenance.xml" Query="/PortableCaptureWorker/RebuildSha256/text()">
+      <Output TaskParameter="Result" PropertyName="_PortableExpectedRebuildHash" />
+    </XmlPeek>
+    <GetFileHash Files="$(PortableCaptureWorkerAssetsDir)/capture-worker" Algorithm="SHA256">
+      <Output TaskParameter="Hash" PropertyName="_PortableActualWorkerHash" />
+    </GetFileHash>
+    <GetFileHash Files="$(PortableCaptureWorkerAssetsDir)/libe_sqlite3.so" Algorithm="SHA256">
+      <Output TaskParameter="Hash" PropertyName="_PortableActualSqliteHash" />
+    </GetFileHash>
+    <GetFileHash Files="$(_PortableWorkerSource)" Algorithm="SHA256">
+      <Output TaskParameter="Hash" PropertyName="_PortableActualSourceHash" />
+    </GetFileHash>
+    <GetFileHash Files="$(MSBuildThisFileDirectory)../Captures/Isolation/native/sqlite_admission.h" Algorithm="SHA256">
+      <Output TaskParameter="Hash" PropertyName="_PortableActualAdmissionHash" />
+    </GetFileHash>
+    <GetFileHash Files="$(MSBuildThisFileDirectory)../Captures/Isolation/native/sqlite_rebuild.h" Algorithm="SHA256">
+      <Output TaskParameter="Hash" PropertyName="_PortableActualRebuildHash" />
+    </GetFileHash>
+    <Error Condition="'$(_PortableExpectedWorkerHash)' != '$(_PortableActualWorkerHash)' or '$(_PortableExpectedSqliteHash)' != '$(_PortableActualSqliteHash)' or '$(_PortableExpectedSourceHash)' != '$(_PortableActualSourceHash)' or '$(_PortableExpectedAdmissionHash)' != '$(_PortableActualAdmissionHash)' or '$(_PortableExpectedRebuildHash)' != '$(_PortableActualRebuildHash)'" Text="Portable capture worker, SQLite or source hash mismatch. Do not repurpose test/host binaries as release assets." />
+  </Target>
+</Project>

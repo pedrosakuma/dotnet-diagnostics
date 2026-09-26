@@ -1,0 +1,50 @@
+name: Prepare portable native assets
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - name: Resolve existing SQLite dependency
+        run: dotnet restore src/DotnetDiagnostics.Core/DotnetDiagnostics.Core.csproj
+      - name: Produce once in the immutable Linux-x64 compiler container
+        run: |
+          dotnet msbuild src/DotnetDiagnostics.Core/Build/PortableCaptureWorker.proj \
+            -p:PortableCaptureWorkerOutput="$GITHUB_WORKSPACE/artifacts/portable-worker/linux-x64"
+      - name: Check producer packaging contracts
+        run: python3 -m unittest discover -s tests/packaging -p 'test_*.py' -v
+      - name: Validate produced assets through the shared host target
+        run: |
+          dotnet msbuild src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj \
+            -t:ValidatePortableCaptureWorkerAssets \
+            -p:PortableCaptureWorkerAssetsDir="$GITHUB_WORKSPACE/artifacts/portable-worker/linux-x64" \
+            -p:RequirePortableCaptureWorkerAssets=true
+      - name: Archive internal assets with permissions
+        run: tar -czf artifacts/portable-worker-linux-x64.tar.gz -C artifacts/portable-worker linux-x64
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: portable-worker-linux-x64
+          path: artifacts/portable-worker-linux-x64.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+      - name: Preserve first producer failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: portable-worker-producer-failure
+          path: artifacts/portable-worker/
+          if-no-files-found: warn
+          retention-days: 7

@@ -8,6 +8,17 @@
 !.editorconfig
 !src/
 !samples/
+!artifacts/
+artifacts/*
+!artifacts/portable-worker/
+artifacts/portable-worker/*
+!artifacts/portable-worker/linux-x64/
+artifacts/portable-worker/linux-x64/*
+!artifacts/portable-worker/linux-x64/capture-worker
+!artifacts/portable-worker/linux-x64/libe_sqlite3.so
+!artifacts/portable-worker/linux-x64/provenance.xml
+!artifacts/portable-worker/linux-x64/sqlite-LICENSE.txt
+!artifacts/portable-worker/linux-x64/worker-LICENSE.txt
 
 # Drop build artefacts from any subtree that gets copied.
 **/bin/

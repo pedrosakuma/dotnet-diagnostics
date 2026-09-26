@@ -1,0 +1,7 @@
+<Project>
+  <PropertyGroup>
+    <!-- Official gcc:14-bookworm linux/amd64 manifest, verified against Docker Hub metadata. -->
+    <PortableCaptureWorkerProducerImage>gcc@sha256:a689e29bc3adf4663ef9a141d23081252764d1319c63f591a027bd6fd676f4c1</PortableCaptureWorkerProducerImage>
+    <PortableCaptureWorkerCompilerVersion>14.3.0</PortableCaptureWorkerCompilerVersion>
+  </PropertyGroup>
+</Project>

@@ -22,16 +22,24 @@ WORKDIR /src
 # Bring in the files needed to restore first so the layer caches well.
 COPY global.json Directory.Build.props Directory.Packages.props .editorconfig ./
 COPY src/DotnetDiagnostics.Core/DotnetDiagnostics.Core.csproj src/DotnetDiagnostics.Core/
+COPY src/DotnetDiagnostics.Core/Build/ src/DotnetDiagnostics.Core/Build/
 COPY src/DotnetDiagnostics.Mcp/DotnetDiagnostics.Mcp.csproj src/DotnetDiagnostics.Mcp/
 COPY src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj src/DotnetDiagnostics.Cli/
 
 RUN dotnet restore src/DotnetDiagnostics.Mcp/DotnetDiagnostics.Mcp.csproj \
  && dotnet restore src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj
 
-# Copy the rest of the source needed by the server project.
-COPY src/ src/
+# The deny-all .dockerignore also permits optional, already-produced native assets.
+# No native compiler is installed or run here; opting in requires the prepared artifact.
+COPY . ./
+ARG INCLUDE_PORTABLE_CAPTURE_WORKER=false
 
-RUN dotnet publish src/DotnetDiagnostics.Mcp/DotnetDiagnostics.Mcp.csproj \
+RUN if [ "$INCLUDE_PORTABLE_CAPTURE_WORKER" = "true" ]; then \
+      test "$(dotnet --info | sed -n 's/^ *RID: *//p' | head -n 1)" = "linux-x64" || exit 1; \
+      export PortableCaptureWorkerAssetsDir=/src/artifacts/portable-worker/linux-x64 \
+                RequirePortableCaptureWorkerAssets=true; \
+    elif [ "$INCLUDE_PORTABLE_CAPTURE_WORKER" != "false" ]; then exit 1; fi \
+ && dotnet publish src/DotnetDiagnostics.Mcp/DotnetDiagnostics.Mcp.csproj \
     -c Release \
     -o /app/publish \
     --no-restore \
@@ -42,7 +50,11 @@ RUN dotnet publish src/DotnetDiagnostics.Mcp/DotnetDiagnostics.Mcp.csproj \
 # into the sidecar and run `dotnet-diagnostics-cli ...` against the shared target
 # process without standing up the HTTP server. UseAppHost=true so the symlink in
 # the runtime stage has a native launcher to point at.
-RUN dotnet publish src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj \
+RUN if [ "$INCLUDE_PORTABLE_CAPTURE_WORKER" = "true" ]; then \
+      export PortableCaptureWorkerAssetsDir=/src/artifacts/portable-worker/linux-x64 \
+             RequirePortableCaptureWorkerAssets=true; \
+    fi \
+ && dotnet publish src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj \
     -c Release \
     -o /app/cli \
     --no-restore \
@@ -97,6 +109,10 @@ RUN ln -s /app/cli/dotnet-diagnostics /usr/local/bin/dotnet-diagnostics-cli
 RUN mkdir -p /app/.dotnet-diagnostics/bootstrap-profiles \
  && touch /app/.dotnet-diagnostics/bootstrap-profile-support-v1
 RUN chown -R diagnosticsmcp:diagnosticsmcp /app
+# Keep shipped executable inputs separate from writable application state.
+RUN if [ -d /app/NativeAssets ]; then \
+      chown -R root:root /app/NativeAssets /app/cli/NativeAssets; \
+    fi
 USER diagnosticsmcp
 
 EXPOSE 8080
