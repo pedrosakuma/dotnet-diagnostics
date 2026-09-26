@@ -201,16 +201,27 @@ public sealed class PortableCaptureClientTests(ITestOutputHelper output)
     private static async Task<CallToolResult> Call(McpClient client, string action, object input, bool expectSuccess = true)
     {
         var arguments = new Dictionary<string, object?> { ["kind"] = "captures", ["captureAction"] = action, ["captureTransfer"] = input };
-        var result = await client.CallToolAsync("get_bytes", arguments, cancellationToken: CancellationToken.None);
-        if (result.StructuredContent is { } envelope && envelope.TryGetProperty("safetyApproval", out var approval) &&
-            approval.TryGetProperty("requiredAcknowledgement", out var acknowledgement))
+        for (var attempt = 0; attempt < 30; attempt++)
         {
-            arguments["_dotnetDiagnostics"] = new { acknowledgement = acknowledgement.Clone() };
-            result = await client.CallToolAsync("get_bytes", arguments, cancellationToken: CancellationToken.None);
+            var result = await client.CallToolAsync("get_bytes", arguments, cancellationToken: CancellationToken.None);
+            if (result.StructuredContent is { } envelope && envelope.TryGetProperty("safetyApproval", out var approval) &&
+                approval.TryGetProperty("requiredAcknowledgement", out var acknowledgement))
+            {
+                arguments["_dotnetDiagnostics"] = new { acknowledgement = acknowledgement.Clone() };
+                result = await client.CallToolAsync("get_bytes", arguments, cancellationToken: CancellationToken.None);
+            }
+            JsonSerializer.SerializeToUtf8Bytes(result).Length.Should().BeLessThanOrEqualTo(128 * 1024);
+            if (expectSuccess && result.IsError == true && result.StructuredContent is { } errorEnvelope &&
+                errorEnvelope.TryGetProperty("error", out var error) &&
+                error.TryGetProperty("detail", out var detail) && detail.GetString() == "Busy")
+            {
+                await Task.Delay(1000);
+                continue;
+            }
+            if (expectSuccess) result.IsError.Should().NotBeTrue(JsonSerializer.Serialize(result));
+            return result;
         }
-        JsonSerializer.SerializeToUtf8Bytes(result).Length.Should().BeLessThanOrEqualTo(128 * 1024);
-        if (expectSuccess) result.IsError.Should().NotBeTrue(JsonSerializer.Serialize(result));
-        return result;
+        throw new TimeoutException("Protocol Busy retry budget exhausted.");
     }
 
     private static async Task<JsonElement> Wait(McpClient client, string id, string expected)

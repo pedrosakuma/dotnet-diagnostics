@@ -3589,8 +3589,8 @@ Use returned local capture/artifact IDs for `query_snapshot`; bundle, entry,
 operation and transfer IDs are not capture selectors.
 
 At most two transfers per store and one per owner share Core's existing
-cross-process portable reservations. Calls are limited to 100/second per host
-store, including status polling, with no waiter queue; `Busy` includes retry
+cross-process portable reservations. Calls are limited to 100/second per
+existing store across cooperating hosts, including status polling, with no waiter queue; `Busy` includes retry
 delay. Each transfer permits one in-flight chunk and at most 65,536 chunk calls.
 Absolute lifetime is 60 minutes; idle timeout is five minutes since successful
 new progress (repeated download bytes do not renew it). Import execution has the

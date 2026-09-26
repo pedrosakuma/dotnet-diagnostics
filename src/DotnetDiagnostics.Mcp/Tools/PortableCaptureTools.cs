@@ -22,6 +22,7 @@ public sealed class PortableCaptureTools(
     private readonly string _localSession = Guid.NewGuid().ToString("N");
     private long _rateWindow;
     private int _rateCalls;
+    private readonly PortableCaptureUseCases _control = new(store, static (_, _) => ValueTask.CompletedTask, timeProvider: clock);
 
     internal async Task<DiagnosticResult<object>> InvokeAsync(IPrincipalAccessor accessor, McpServer? server,
         string action, JsonElement? input, CancellationToken cancellationToken)
@@ -373,6 +374,7 @@ public sealed class PortableCaptureTools(
             if (_rateCalls >= 100) throw Error(CaptureErrorCode.Busy, "RateLimit");
             _rateCalls++;
         }
+        _control.AdmitTransferCall();
     }
 
     private static object Status(Transfer transfer) => new

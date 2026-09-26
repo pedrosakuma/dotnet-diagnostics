@@ -212,6 +212,7 @@ public sealed class PortableCaptureHostTests : IAsyncLifetime
         for (var i = 0; i < 100; i++)
         {
             var response = await Call("transfer-status", new { transferId = id }, owner);
+            if (response.Error?.Detail == "Busy") { await Task.Delay(20); continue; }
             response.Error.Should().BeNull();
             var data = Data(response);
             var state = data.GetProperty("state").GetString();
