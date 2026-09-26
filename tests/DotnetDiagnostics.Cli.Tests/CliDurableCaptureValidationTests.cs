@@ -141,7 +141,7 @@ public sealed class CliDurableCaptureValidationTests
         CliHelp.ForCommand("inspect-heap").Should().Contain("--persist");
         CliHelp.ForCommand("query").Should().Contain("--capture-id").And.Contain("--after-record-id");
         CliHelp.ForCommand("captures").Should().Contain("recover").And.Contain("--after-capture-id");
-        SessionReplCompletion.GetCandidates(["captures"], "", null).Should().BeEquivalentTo("list", "show", "delete", "recover");
+        SessionReplCompletion.GetCandidates(["captures"], "", null).Should().BeEquivalentTo("list", "show", "delete", "recover", "export", "import", "import-result");
         SessionReplCompletion.GetCandidates(["query", "--capture-id"], "", null).Should().BeEmpty();
         foreach (var shell in CliCompletionScripts.Shells)
         {

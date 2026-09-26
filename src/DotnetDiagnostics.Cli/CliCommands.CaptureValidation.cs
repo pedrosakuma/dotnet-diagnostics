@@ -7,6 +7,14 @@ internal static partial class CliCommands
     internal static bool TryValidateCaptures(CliOptions options, out string? error)
     {
         error = null;
+        var portable = options.Command == "captures" && options.CaptureAction is "export" or "import" or "import-result";
+        if (!portable && (options.CaptureEntries.Count != 0 || options.CaptureFile is not null ||
+                          options.OperationId is not null || options.RequestedUtc is not null))
+        {
+            error = "--entry, --file, --operation-id and --requested-utc require captures export, import, or import-result.";
+            return false;
+        }
+        if (portable && !TryValidatePortableCapture(options, out error)) return false;
         if (options.Persist && options.Command is not ("collect" or "inspect-heap" or "session"))
         {
             error = "--persist requires collect, inspect-heap, or session.";
@@ -40,7 +48,7 @@ internal static partial class CliCommands
         {
             if (!CliCommandCatalog.CaptureActions.Contains(options.CaptureAction, StringComparer.Ordinal))
             {
-                error = "captures requires one action: list, show, delete, or recover.";
+                error = "captures requires one action: list, show, delete, recover, export, import, or import-result.";
             }
             else if (options.HasPid || options.Handle is not null || options.LatestOfKind is not null || options.View is not null)
             {
@@ -50,7 +58,7 @@ internal static partial class CliCommands
             {
                 error = "captures list does not accept --capture-id; use captures show.";
             }
-            else if (options.CaptureAction != "list" && options.CaptureId is null)
+            else if (!portable && options.CaptureAction != "list" && options.CaptureId is null)
             {
                 error = $"captures {options.CaptureAction} requires --capture-id <id>.";
             }
@@ -127,6 +135,45 @@ internal static partial class CliCommands
 
     private static bool IsCaptureId(string value)
         => Guid.TryParseExact(value, "N", out var id) && id.ToString("N") == value;
+
+    private static bool TryValidatePortableCapture(CliOptions options, out string? error)
+    {
+        error = null;
+        if (options.CaptureId is not null || options.Persist || options.OutDir is not null || options.SavePath is not null)
+            error = "Portable captures use --entry for export and --file for binary input/output, not --capture-id, --persist, --out or --save.";
+        else if (options.CaptureAction == "export" && options.CaptureEntries.Count is < 1 or > 16)
+            error = "captures export requires 1-16 explicit --entry <capture-id>[=<label>] selections.";
+        else if (options.CaptureAction != "export" && options.CaptureEntries.Count != 0)
+            error = "--entry is only supported by captures export.";
+        else if (options.CaptureAction == "import-result" && options.CaptureFile is not null)
+            error = "captures import-result reads an owner-bound receipt, not --file.";
+        else if (options.CaptureAction != "import-result" && (string.IsNullOrWhiteSpace(options.CaptureFile) || options.CaptureFile == "-"))
+            error = "captures export/import requires --file <path>; binary stdin/stdout and overwrite are not supported.";
+        else if ((options.OperationId is null) != (options.RequestedUtc is null) ||
+                 (options.CaptureAction == "import-result" && options.OperationId is null))
+            error = "--operation-id and --requested-utc must be supplied together; both are required for import-result.";
+        else if (options.OperationId is not null && !IsCaptureId(options.OperationId))
+            error = "--operation-id must be an exact lower-case GUID in N format.";
+        else if (options.RequestedUtc is not null && !TryRecordTime(options.RequestedUtc, out _))
+            error = "--requested-utc requires an ISO-8601 timestamp with an explicit UTC offset; reuse the original timestamp on retry.";
+        foreach (var entry in options.CaptureEntries)
+        {
+            var separator = entry.IndexOf('=');
+            var id = separator < 0 ? entry : entry[..separator];
+            var label = separator < 0 ? null : entry[(separator + 1)..];
+            if (!IsCaptureId(id) || (label is not null && System.Text.Encoding.UTF8.GetByteCount(label) > 256) || label?.Any(char.IsControl) == true)
+                error = "--entry requires an exact capture GUID optionally followed by = and a label of at most 256 UTF-8 bytes without control characters.";
+        }
+        if (error is null && options.CaptureFile is not null)
+        {
+            try { _ = Path.GetFullPath(options.CaptureFile); }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+                error = "--file must name a valid local file path.";
+            }
+        }
+        return error is null;
+    }
 
     private static bool TryRecordTime(string value, out DateTimeOffset timestamp)
         => DateTimeOffset.TryParseExact(value,
