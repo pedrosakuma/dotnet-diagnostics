@@ -138,6 +138,31 @@ or accepted as that scenario's success. The stack identifies the monitoring
 stage, not the physical scheduling cause. Deterministic lifecycle tests separately
 cover deadline/exit decisions and I/O reservation retention.
 
+Publication policy also has independent component coverage through the internal
+`ImportPublication` helper used by the production importer. It retains the real
+store admission lock, current-owner/quota checks, post-policy cancellation and
+collision checks, directory rename, reservation transfer and receipt/failure
+handling. Production calls it only after all source validation and, for each
+Publish, fresh rebuild/sealing and trusted-output validation; there is no
+alternate import mode or injectable validation-success switch.
+
+`PortableImportPublicationTests` use purpose-created ordinary Core packages as
+trusted staging fixtures, without native workers or platform-return guards.
+They cover Prepare/Publish denial and cancellation before or after the first
+publication, cleared unpublished mappings, current ownership even with
+`AllOwners`, admission-lock exclusion, policy-time collision, quota failure,
+and owner-bound receipt lookup/key reuse. These are publication-component tests,
+not imported-format admission tests or public `ImportAsync` retry evidence.
+The real-child end-to-end cases remain separate and unchanged. A later selected
+pass cannot establish the physical cause or correction of the retained gap.
+
+The first component run passed 11/11. The single bounded post-extraction
+real-child run passed 16/17: the `afterFirst=true, cancel=true` authorization case
+was preempted by `WorkerObservationGap` during rebuild output observation.
+That failure is retained without retry or policy relaxation. The earlier
+`cancel=false` case passing in this selection does not diagnose or fix its
+original gap. These component results are not an end-to-end acceptance waiver.
+
 Independent review and remaining whole-feature acceptance are required.
 Host packaging/CLI (#1053), authenticated MCP transfer (#1052), comparison
 integration (#1051), performance evidence (#1041) and integration/release (#1054)

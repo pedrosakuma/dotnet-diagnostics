@@ -63,9 +63,7 @@ public sealed partial class PortableCaptureUseCases
             _clock.GetUtcNow(), new(initial, [], false));
         if (storage.Reused) return storage.Receipt.Import!.Result;
         var budget = new PortableImportBudget(storage);
-        var result = initial;
-        PortableImportPlan[] plans = [];
-        var published = false;
+        var publication = new ImportPublication(_store, root, storage, budget, access, initial);
         var ioOutstanding = false;
         var index = -1;
         try
@@ -84,9 +82,9 @@ public sealed partial class PortableCaptureUseCases
             using var archive = OpenRead(storage.ArchivePath);
             var inventory = await PortableZip.InspectAsync(archive, _options, token).ConfigureAwait(false);
             var bundle = await ReadIndex(archive, inventory, token).ConfigureAwait(false);
-            result = result with { BundleId = bundle.BundleId,
+            publication.Result = publication.Result with { BundleId = bundle.BundleId,
                 Entries = bundle.Entries.Select(static entry => new PortableEntryResult(entry.EntryId, PortableEntryState.Pending, null, null)).ToArray() };
-            storage.SaveImport(new(result, plans, false));
+            publication.SaveProgress();
             var prepared = new List<PreparedImport>(bundle.Entries.Length);
             long metadata = checked(1024 * 1024 + inventory[0].Hash.Bytes * 8);
             for (var entry = 0; entry < bundle.Entries.Length; entry++)
@@ -142,12 +140,8 @@ public sealed partial class PortableCaptureUseCases
             var descriptors = prepared.Select(static entry => new PortableImportEntry(entry.Entry.EntryId, entry.Entry.Label,
                 entry.Source.Info, CapturePackage.FormatOf(entry.Source))).ToArray();
             index = -1;
-            await authorize(Array.AsReadOnly(descriptors), PortableAuthorizationPhase.Prepare, null, token).ConfigureAwait(false);
-            token.ThrowIfCancellationRequested();
-            plans = prepared.Select(static entry => new PortableImportPlan(entry.Entry.EntryId, entry.Mapping.LocalCaptureId, null)).ToArray();
-            result = result with { Entries = prepared.Select(static entry =>
-                new PortableEntryResult(entry.Entry.EntryId, PortableEntryState.Pending, entry.Mapping, null)).ToArray() };
-            storage.SaveImport(new(result, plans, false));
+            await publication.PrepareAsync(Array.AsReadOnly(descriptors), prepared.Select(static entry => entry.Mapping).ToArray(),
+                authorize, token).ConfigureAwait(false);
             for (index = 0; index < prepared.Count; index++)
             {
                 token.ThrowIfCancellationRequested();
@@ -173,63 +167,16 @@ public sealed partial class PortableCaptureUseCases
                 PortableBounds.Check("MaxPackageBytes", CapturePackage.PackageBytes(destination), _store.PortableStoreOptions.MaxPackageBytes);
                 using (var reader = _store.ReadTrustedImportStaging(destination, entry.Destination))
                     PortableSourceValidation.Validate(reader, _store.PortableStoreOptions, _options, metadata, token);
-                plans[index] = plans[index] with { SealHash = CapturePackage.Hash(Path.Combine(destination, CapturePackage.Seal)) };
-                storage.SaveImport(new(result, plans, false));
-                using (SqliteCaptureStore.PortableAdmission(root))
-                {
-                    token.ThrowIfCancellationRequested();
-                    _store.CheckImportPublication(entry.Mapping.LocalCaptureId, entry.Destination.Info, access);
-                    await authorize(Array.AsReadOnly(descriptors), PortableAuthorizationPhase.Publish, entry.Entry.EntryId, token).ConfigureAwait(false);
-                    token.ThrowIfCancellationRequested();
-                    _store.CheckImportPublication(entry.Mapping.LocalCaptureId, entry.Destination.Info, access);
-                    Directory.Move(destination, Path.Combine(root, entry.Mapping.LocalCaptureId));
-                    published = true;
-                    var outcomes = result.Entries.ToArray();
-                    outcomes[index] = outcomes[index] with { State = PortableEntryState.Published };
-                    result = result with { Entries = outcomes };
-                    storage.SaveImportLocked(new(result, plans, false));
-                    budget.PublishedLocked(reservation);
-                }
+                await publication.PublishAsync(destination, entry.Destination.Info, index, reservation,
+                    Array.AsReadOnly(descriptors), authorize, token).ConfigureAwait(false);
             }
-            result = result with { Complete = true };
-            storage.SaveImport(new(result, plans, true));
-            storage.CleanImport();
-            return result;
+            return publication.Complete();
         }
         catch (Exception error) when (error is CaptureStoreException or OperationCanceledException or IOException or
             UnauthorizedAccessException or JsonException or InvalidDataException or ArgumentException or InvalidOperationException or
             NotSupportedException or OverflowException)
         {
-            var cancelled = error is OperationCanceledException && cancellationToken.IsCancellationRequested;
-            var known = error as CaptureStoreException ?? CapturePackage.Error(
-                cancelled ? CaptureErrorCode.Incomplete : error is OperationCanceledException ? CaptureErrorCode.CapacityExceeded :
-                error is NotSupportedException ? CaptureErrorCode.UnsupportedFormat :
-                error is JsonException or InvalidDataException or ArgumentException or OverflowException ? CaptureErrorCode.CorruptPackage :
-                CaptureErrorCode.StorageFailure, cancelled ? "Cancelled: caller cancelled the operation." :
-                    error is OperationCanceledException ? "OperationDeadline: whole-operation budget exhausted." : "ImportValidationOrStorageFailure", error);
-            var entries = result.Entries.ToArray();
-            for (var i = 0; i < entries.Length; i++)
-                if (entries[i].State != PortableEntryState.Published)
-                    entries[i] = entries[i] with { State = i == index ? cancelled ? PortableEntryState.Cancelled : PortableEntryState.Failed :
-                        PortableEntryState.NotAttempted, Mapping = null,
-                        Failure = i == index ? Failure(known, entries[i].EntryId) : null };
-            result = result with { Complete = false, Cancelled = cancelled, Entries = entries, Failure = Failure(known, null) };
-            try
-            {
-                storage.SaveImport(new(result, plans, true, ioOutstanding ? storage.Receipt.Import?.Worker : null,
-                    ioOutstanding ? storage.Receipt.Import?.ParentIo : null));
-                storage.CleanImport();
-            }
-            catch (Exception cleanup) when (cleanup is CaptureStoreException or IOException or UnauthorizedAccessException)
-            {
-                throw CapturePackage.Error(CaptureErrorCode.StorageFailure,
-                    $"ImportFinalizationFailed: operation {request.Operation.Id}; query GetImportResultAsync before assuming no publication.",
-                    new AggregateException(error, cleanup));
-            }
-            if (published) return result;
-            if (cancelled) throw;
-            if (ReferenceEquals(error, known)) throw;
-            throw known;
+            return publication.Fail(error, index, cancellationToken.IsCancellationRequested, ioOutstanding);
         }
 
         void Started(int processId)
