@@ -21,7 +21,16 @@ public sealed class HistoricalComparisonAcceptanceTests(ITestOutputHelper output
 
     [HistoricalAcceptanceFact]
     [Trait("Category", "HistoricalAcceptance")]
-    public async Task OwnedWorkloadsCompareOnlyAfterBothTargetsExit()
+    public Task OwnedWorkloadsCompareOnlyAfterBothTargetsExit()
+    {
+        var diagnostics = new HttpReadinessDiagnostics();
+        return HistoricalAcceptanceDiagnostics.RunAsync(() => OwnedWorkloadsCore(diagnostics), output.WriteLine, diagnostics);
+    }
+
+    internal static LiveSampleOptions OwnedSampleOptions(HttpReadinessDiagnostics? diagnostics = null) =>
+        new() { WaitForHttpReady = true, ReadinessPath = "/weatherforecast", HttpDiagnostics = diagnostics };
+
+    private async Task OwnedWorkloadsCore(HttpReadinessDiagnostics diagnostics)
     {
         Assert.Equal("1", Environment.GetEnvironmentVariable("DOTNET_DIAGNOSTICS_HISTORICAL_ACCEPTANCE"));
         var captures = new List<HistoricalCaptureReference>();
@@ -29,7 +38,7 @@ public sealed class HistoricalComparisonAcceptanceTests(ITestOutputHelper output
         for (var side = 0; side < 2; side++)
         {
             LiveSampleProcess sample;
-            try { sample = await LiveSampleProcess.StartPublishedAsync("CoreClrSample", new() { WaitForHttpReady = true }); }
+            try { sample = await LiveSampleProcess.StartPublishedAsync("CoreClrSample", OwnedSampleOptions(diagnostics)); }
             catch (SkipException exception) { throw new InvalidOperationException("Authorized acceptance requires the real sample.", exception); }
             await using (sample)
             {
@@ -64,7 +73,10 @@ public sealed class HistoricalComparisonAcceptanceTests(ITestOutputHelper output
     [HistoricalAcceptanceFact]
     [Trait("Category", "HistoricalAcceptance")]
     [Trait("Category", "PortableImportNative")]
-    public async Task DifferentBundlesCompareAfterSourceDeletionAndDestinationReopen()
+    public Task DifferentBundlesCompareAfterSourceDeletionAndDestinationReopen() =>
+        HistoricalAcceptanceDiagnostics.RunAsync(ImportedComparisonCore, output.WriteLine);
+
+    private async Task ImportedComparisonCore()
     {
         Assert.Equal("1", Environment.GetEnvironmentVariable("DOTNET_DIAGNOSTICS_HISTORICAL_ACCEPTANCE"));
         var worker = new PortableCaptureImportWorker(

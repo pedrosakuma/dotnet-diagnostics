@@ -66,6 +66,7 @@ public sealed class LiveSampleProcess : IAsyncDisposable
     {
         cancellationToken.ThrowIfCancellationRequested();
         options ??= new LiveSampleOptions();
+        options.HttpDiagnostics?.Reset();
         var harvestUrl = options.HarvestListeningUrl || options.WaitForHttpReady;
 
         var sampleDll = SampleLocator.LocateSampleDll(sampleName)
@@ -141,7 +142,8 @@ public sealed class LiveSampleProcess : IAsyncDisposable
 
             if (options.WaitForHttpReady)
             {
-                sample._baseUrl = await sample.WaitForListeningUrlAsync(options.HttpTimeout, options.ReadinessPath, cancellationToken).ConfigureAwait(false);
+                sample._baseUrl = await sample.WaitForListeningUrlAsync(options.HttpTimeout, options.ReadinessPath,
+                    options.HttpDiagnostics, cancellationToken).ConfigureAwait(false);
             }
             cancellationToken.ThrowIfCancellationRequested();
         }, sample.DisposeAsync).ConfigureAwait(false);
@@ -171,10 +173,14 @@ public sealed class LiveSampleProcess : IAsyncDisposable
         => WaitForListeningUrlAsync(timeout, readinessPath, CancellationToken.None);
 
     /// <summary>Waits for the URL and HTTP readiness without relabeling caller cancellation as a timeout.</summary>
-    public async Task<string> WaitForListeningUrlAsync(TimeSpan timeout, string readinessPath, CancellationToken cancellationToken)
+    public Task<string> WaitForListeningUrlAsync(TimeSpan timeout, string readinessPath, CancellationToken cancellationToken)
+        => WaitForListeningUrlAsync(timeout, readinessPath, null, cancellationToken);
+
+    private async Task<string> WaitForListeningUrlAsync(TimeSpan timeout, string readinessPath,
+        HttpReadinessDiagnostics? diagnostics, CancellationToken cancellationToken)
     {
         var url = await WaitForUrlAsync(_listeningUrlTcs.Task, SampleDll, timeout, TimeProvider.System, cancellationToken).ConfigureAwait(false);
-        await DiagnosticReadiness.WaitForHttpReadyAsync(url, timeout, readinessPath, cancellationToken).ConfigureAwait(false);
+        await DiagnosticReadiness.WaitForHttpReadyAsync(url, timeout, readinessPath, diagnostics, cancellationToken).ConfigureAwait(false);
         _baseUrl = url;
         return url;
     }

@@ -59,19 +59,24 @@ public sealed class HttpReadinessTests
     [Fact]
     public async Task TransportFailureRetriesAtTheExistingPollingIntervalThenSucceeds()
     {
+        var diagnostics = new HttpReadinessDiagnostics();
         var clock = new ControlledClock();
         using var handler = new ScriptedHandler(attempt => attempt == 1
             ? throw new HttpRequestException("owned simulated connection refusal")
             : new(HttpStatusCode.OK));
         using var http = Client(handler);
-        var readiness = WaitAsync(http, clock);
+        var readiness = WaitAsync(http, clock, diagnostics: diagnostics);
         var deadline = await clock.NextTimerAsync(ShortDeadline);
         var poll = await clock.NextTimerAsync(TimeSpan.FromMilliseconds(250));
         handler.Calls.Should().Be(1);
+        diagnostics.LastProbeOutcome.Should().Be("TransportFailure");
+        diagnostics.LastStatusCode.Should().BeNull();
         readiness.IsCompleted.Should().BeFalse();
         poll.Fire();
         await readiness.WaitAsync(TimeSpan.FromSeconds(5));
         handler.Calls.Should().Be(2);
+        diagnostics.LastStatusCode.Should().Be(200);
+        diagnostics.Completion.Should().Be("Succeeded");
         deadline.Disposed.Should().BeTrue();
         poll.Disposed.Should().BeTrue();
     }
@@ -98,17 +103,21 @@ public sealed class HttpReadinessTests
     [Fact]
     public async Task UnsuccessfulResponseIsDisposedAndPollingStopsAtTheDeadline()
     {
+        var diagnostics = new HttpReadinessDiagnostics();
         var clock = new ControlledClock();
         var content = new DisposalContent();
         using var handler = new ScriptedHandler(_ => new(HttpStatusCode.ServiceUnavailable) { Content = content });
         using var http = Client(handler);
-        var readiness = WaitAsync(http, clock);
+        var readiness = WaitAsync(http, clock, diagnostics: diagnostics);
         var deadline = await clock.NextTimerAsync(ShortDeadline);
         var poll = await clock.NextTimerAsync(TimeSpan.FromMilliseconds(250));
         content.Disposed.Should().BeTrue();
         deadline.Fire();
         var action = () => readiness.WaitAsync(TimeSpan.FromSeconds(5));
         await action.Should().ThrowAsync<SkipException>();
+        diagnostics.LastStatusCode.Should().Be(503);
+        diagnostics.LastProbeOutcome.Should().Be("HttpResponse");
+        diagnostics.Completion.Should().Be("DeadlineExpired");
         poll.Disposed.Should().BeTrue();
         handler.Calls.Should().Be(1);
     }
@@ -118,11 +127,12 @@ public sealed class HttpReadinessTests
     [InlineData(true)]
     public async Task CallerCancellationIsNotMisclassifiedEvenWhenTheDeadlineAlsoExpires(bool expireDeadline)
     {
+        var diagnostics = new HttpReadinessDiagnostics();
         var clock = new ControlledClock();
         using var cancellation = new CancellationTokenSource();
         using var handler = new PendingHandler();
         using var http = Client(handler);
-        var readiness = WaitAsync(http, clock, cancellation.Token);
+        var readiness = WaitAsync(http, clock, diagnostics, cancellation.Token);
         try
         {
             var deadline = await clock.NextTimerAsync(ShortDeadline);
@@ -133,6 +143,7 @@ public sealed class HttpReadinessTests
             handler.Finish.TrySetResult();
             var action = () => readiness.WaitAsync(TimeSpan.FromSeconds(5));
             await action.Should().ThrowAsync<OperationCanceledException>();
+            diagnostics.Completion.Should().Be("CallerCancelled");
             handler.Active.Should().BeFalse();
         }
         finally
@@ -171,7 +182,11 @@ public sealed class HttpReadinessTests
         => new(handler) { BaseAddress = new Uri("http://127.0.0.1:1") };
 
     private static Task WaitAsync(HttpClient http, ControlledClock clock, CancellationToken token = default)
-        => DiagnosticReadiness.WaitForHttpReadyAsync(http, ShortDeadline, "/weatherforecast", clock, token);
+        => WaitAsync(http, clock, null, token);
+
+    private static Task WaitAsync(HttpClient http, ControlledClock clock, HttpReadinessDiagnostics? diagnostics,
+        CancellationToken token = default)
+        => DiagnosticReadiness.WaitForHttpReadyAsync(http, ShortDeadline, "/weatherforecast", clock, diagnostics, token);
 
     private static async Task ObserveStoppedAsync(Task readiness)
     {
