@@ -129,6 +129,7 @@ internal static partial class IsolatedCaptureWorker
             errors = ReadBoundedAsync(process.StandardError.BaseStream, OutputLimit, false, io.Token);
             var handshake = ReadBoundedAsync(process.StandardOutput.BaseStream, 256, true, io.Token);
             frame = handshake;
+            observations.ProtocolPhase = "Handshake";
             Await(frame, mandatory: false);
             var ready = handshake.GetAwaiter().GetResult().TrimEnd('\n').Split(' ');
             if (ready.Length == 2 && ready[0] == "UNSUPPORTED") throw Unsupported(ready[1]);
@@ -138,14 +139,23 @@ internal static partial class IsolatedCaptureWorker
             beforeInput?.Invoke(process.Id);
             var response = receive(process.StandardOutput.BaseStream, io.Token);
             frame = response;
+            observations.Receiver = response;
+            observations.ProtocolPhase = "InitialObservation";
             Observe();
             sending = Task.Run(() => send(process.StandardInput.BaseStream, io.Token), CancellationToken.None);
+            observations.Sender = sending;
+            observations.ProtocolPhase = "Sending";
             Await(sending, mandatory: true);
+            observations.ProtocolPhase = "ClosingInput";
             process.StandardInput.Close();
+            observations.ProtocolPhase = "Receiving";
             Await(frame, mandatory: true);
+            observations.ProtocolPhase = "Stderr";
             Await(errors, mandatory: true);
+            observations.ProtocolPhase = "ExitWait";
             while (!process.HasExited) { Check(); Observe(); Thread.Sleep(1); }
             Observe();
+            observations.ProtocolPhase = "FinalChecks";
             Check();
             observations.CheckGap(wall.Elapsed);
             if (process.ExitCode == 78) throw Unsupported(response.GetAwaiter().GetResult()?.ToString()?.Trim() ?? "WorkerUnavailable");
@@ -194,27 +204,54 @@ internal static partial class IsolatedCaptureWorker
         }
         void Observe()
         {
+            observations.PollStartedAt = wall.Elapsed;
+            try { ObserveCore(); }
+            finally { observations.LastCompletedPollDuration = wall.Elapsed - observations.PollStartedAt.Value; }
+        }
+        void ObserveCore()
+        {
+            observations.PollStage = "Check";
             Check();
             if (observations.Completed) return;
+            observations.PollStage = "ExitProbe";
             if (process.HasExited) { observations.ConfirmExit(wall.Elapsed); return; }
             try
             {
+                observations.PollStage = "Metrics";
+                observations.MetricsStartedAt = wall.Elapsed;
+                observations.MetricsFinishedAt = null;
                 process.Refresh();
                 var rss = process.WorkingSet64;
                 var cpu = process.TotalProcessorTime;
                 if (rss == 0)
                 {
+                    observations.PollStage = "ZeroRssExitConfirmation";
                     // Zero RSS is not exit evidence. Only this child's confirmed
                     // termination within the last valid sample's deadline qualifies.
                     var confirmed = observations.WaitForConfirmedExit(() => wall.Elapsed, process.WaitForExit, token);
                     observations.ConfirmExit(confirmed);
                     return;
                 }
-                observations.Record(wall.Elapsed, rss, cpu);
+                var sampledAt = wall.Elapsed;
+                observations.MetricsFinishedAt = sampledAt;
+                observations.PollStage = "Record";
+                observations.Record(sampledAt, rss, cpu);
             }
-            catch (InvalidOperationException) when (process.HasExited) { observations.ConfirmExit(wall.Elapsed); }
-            catch (System.ComponentModel.Win32Exception ex) { observations.MetricUnavailable(ex, () => process.HasExited, () => wall.Elapsed); }
-            catch (IOException ex) { observations.MetricUnavailable(ex, () => process.HasExited, () => wall.Elapsed); }
+            catch (InvalidOperationException) when (process.HasExited)
+            {
+                observations.PollStage = "MetricFailureConfirmedExit";
+                observations.ConfirmExit(wall.Elapsed);
+            }
+            catch (System.ComponentModel.Win32Exception ex)
+            {
+                observations.PollStage = "MetricFailureExitProbe";
+                observations.MetricUnavailable(ex, () => process.HasExited, () => wall.Elapsed);
+            }
+            catch (IOException ex)
+            {
+                observations.PollStage = "MetricFailureExitProbe";
+                observations.MetricUnavailable(ex, () => process.HasExited, () => wall.Elapsed);
+            }
         }
         void Await(Task task, bool mandatory)
         {
@@ -224,7 +261,11 @@ internal static partial class IsolatedCaptureWorker
                 if (mandatory) Observe();
                 Thread.Sleep(1);
             }
-            if (mandatory) observations.CheckGap(wall.Elapsed);
+            if (mandatory)
+            {
+                observations.PollStage = "AwaitCompletionGap";
+                observations.CheckGap(wall.Elapsed);
+            }
             task.GetAwaiter().GetResult();
         }
     }
@@ -262,6 +303,14 @@ internal static partial class IsolatedCaptureWorker
 internal sealed class CaptureWorkerObservation(CaptureWorkerLimits limits)
 {
     private TimeSpan? _last;
+    internal string ProtocolPhase { get; set; } = "Unspecified";
+    internal string PollStage { get; set; } = "Unspecified";
+    internal TimeSpan? PollStartedAt { get; set; }
+    internal TimeSpan? LastCompletedPollDuration { get; set; }
+    internal TimeSpan? MetricsStartedAt { get; set; }
+    internal TimeSpan? MetricsFinishedAt { get; set; }
+    internal Task? Sender { get; set; }
+    internal Task? Receiver { get; set; }
     internal long PeakRss { get; private set; }
     internal TimeSpan MaximumGap { get; private set; }
     internal void CheckWallTime(TimeSpan elapsed)
@@ -329,7 +378,22 @@ internal sealed class CaptureWorkerObservation(CaptureWorkerLimits limits)
         var gap = now - previous;
         if (gap > MaximumGap) MaximumGap = gap;
         if (gap < TimeSpan.Zero || gap > TimeSpan.FromMilliseconds(10))
-            throw IsolatedCaptureWorker.Limit("WorkerObservationGap");
+        {
+            var error = IsolatedCaptureWorker.Limit("WorkerObservationGap");
+            error.Data["WorkerLastValidSampleTicks"] = previous.Ticks;
+            error.Data["WorkerCurrentTicks"] = now.Ticks;
+            error.Data["WorkerGapTicks"] = gap.Ticks;
+            error.Data["WorkerGapLimitTicks"] = TimeSpan.FromMilliseconds(10).Ticks;
+            error.Data["WorkerProtocolPhase"] = ProtocolPhase;
+            error.Data["WorkerPollStage"] = PollStage;
+            if (PollStartedAt is { } poll) error.Data["WorkerPollStartedTicks"] = poll.Ticks;
+            if (LastCompletedPollDuration is { } duration) error.Data["WorkerLastCompletedPollDurationTicks"] = duration.Ticks;
+            if (MetricsStartedAt is { } start) error.Data["WorkerMetricsStartedTicks"] = start.Ticks;
+            if (MetricsFinishedAt is { } end) error.Data["WorkerMetricsFinishedTicks"] = end.Ticks;
+            if (Sender is { } sender) error.Data["WorkerSenderStatus"] = sender.Status.ToString();
+            if (Receiver is { } receiver) error.Data["WorkerReceiverStatus"] = receiver.Status.ToString();
+            throw error;
+        }
     }
     internal void Record(TimeSpan now, long rss, TimeSpan cpu)
     {

@@ -3,12 +3,16 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using DotnetDiagnostics.Core.Artifacts;
 using DotnetDiagnostics.Core.Captures;
+using Xunit.Abstractions;
 
 namespace DotnetDiagnostics.Core.Tests;
 
 [Collection("PortableExportResources")]
 public sealed partial class PortableCaptureImportTests : IDisposable
 {
+    private readonly ITestOutputHelper _output;
+    public PortableCaptureImportTests(ITestOutputHelper output) => _output = output;
+
     private sealed record RootProvider(string Root) : IArtifactRootProvider;
     private readonly string _root = Path.Combine(AppContext.BaseDirectory, "portable-import-tests", Guid.NewGuid().ToString("N"));
     private static readonly CaptureAccess Owner = new("destination-owner");

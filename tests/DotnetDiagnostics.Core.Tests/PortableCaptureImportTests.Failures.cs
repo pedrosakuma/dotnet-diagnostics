@@ -135,6 +135,7 @@ public sealed partial class PortableCaptureImportTests
     public async Task AuthorizationAndCancellationPreserveTruthfulPartialPublication(bool afterFirst, bool cancel)
     {
         if (!Linux) return;
+        using var diagnostics = new WatchdogFailureOutput(_output);
         var bytes = Frozen();
         var request = new CaptureImportRequest(Key(), bytes.Length, Hash(bytes));
         using var cancelled = new CancellationTokenSource();
@@ -170,6 +171,37 @@ public sealed partial class PortableCaptureImportTests
                 await Service().GetImportResultAsync(request.Operation, Owner)));
             Assert.Equal(JsonSerializer.Serialize(result), JsonSerializer.Serialize(
                 await Service().ImportAsync(request, new NoRead(), Owner, Allow)));
+        }
+    }
+
+    private sealed class WatchdogFailureOutput : IDisposable
+    {
+        private readonly Xunit.Abstractions.ITestOutputHelper _output;
+        private CaptureStoreException? _first;
+
+        internal WatchdogFailureOutput(Xunit.Abstractions.ITestOutputHelper output)
+        {
+            _output = output;
+            AppDomain.CurrentDomain.FirstChanceException += Observe;
+        }
+
+        private void Observe(object? sender, System.Runtime.ExceptionServices.FirstChanceExceptionEventArgs args)
+        {
+            // Keep one enriched failure even when the importer returns a partial result.
+            // No stack capture, payload inspection, clock read or output on the worker thread.
+            if (args.Exception is CaptureStoreException error && error.Data.Contains("WorkerGapTicks"))
+                Interlocked.CompareExchange(ref _first, error, null);
+        }
+
+        public void Dispose()
+        {
+            AppDomain.CurrentDomain.FirstChanceException -= Observe;
+            var error = Volatile.Read(ref _first);
+            if (error is null) return;
+            var fields = error.Data.Cast<System.Collections.DictionaryEntry>()
+                .Where(static pair => pair.Key is string key && key.StartsWith("Worker", StringComparison.Ordinal))
+                .Take(12).ToDictionary(static pair => (string)pair.Key, static pair => pair.Value, StringComparer.Ordinal);
+            _output.WriteLine("First worker gap diagnostics: " + JsonSerializer.Serialize(fields));
         }
     }
 

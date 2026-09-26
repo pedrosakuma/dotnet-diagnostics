@@ -107,6 +107,54 @@ boundary with and without mandatory observations. A real stalled child may hit
 either the wall deadline or the observation-gap guard first; both must reject
 capabilities. The live test does not assume scheduler delivery within 10 ms.
 
+### Bounded observation-gap diagnostics
+
+`WorkerObservationGap` retains its existing exception type, code and message.
+Its `CaptureStoreException.Data` contains at most 12 fixed scalar fields, created
+only on failure. All times are elapsed monotonic `TimeSpan` ticks (100 ns units)
+from that worker supervisor's stopwatch, not UTC or raw hardware counter ticks.
+
+- `WorkerLastValidSampleTicks`, `WorkerCurrentTicks`, `WorkerGapTicks` and
+  `WorkerGapLimitTicks` contain the exact inputs to the failed guard; the limit
+  remains 100,000 ticks. A rejected sample never advances the last valid sample.
+- `WorkerProtocolPhase` identifies handshake, initial observation, sending,
+  input closure, receiving, stderr drain, exit wait or final checks.
+  `WorkerPollStage` identifies the most recent poll step or the completion-gap
+  check. Neither field claims a native process state.
+- Optional `WorkerPollStartedTicks` and
+  `WorkerLastCompletedPollDurationTicks` describe the latest poll start and
+  last fully completed poll duration. On a failure inside a poll, the duration
+  belongs to the preceding completed poll, not the failing one.
+- Optional `WorkerMetricsStartedTicks` and `WorkerMetricsFinishedTicks` bound
+  the latest refresh/RSS/CPU-read window through the existing sample timestamp.
+  Missing completion means no completed positive-RSS sample timestamp was
+  recorded for that window; it is not a zero-duration read. Endpoint differences
+  include any scheduling delay within the window, not just native syscall cost.
+- Optional `WorkerSenderStatus` and `WorkerReceiverStatus` snapshot managed task
+  status while constructing the exception. They are not native exit evidence,
+  input-consumption acknowledgments, or task completion timestamps.
+
+Tracking retains only the latest scalar timings/task references; it does not
+keep an event history, read additional process metrics on failure, or record
+paths, payloads or process IDs. Added clock reads have finite overhead and may
+perturb timing; they do not redefine the valid-sample timestamp, reset a window,
+alter scheduling or excuse a gap. The diagnostic fields alone cannot attribute
+an interval to OS scheduling, GC or a specific syscall.
+
+The four publication authorization integration cases retain the first enriched
+gap in a test-scoped first-chance exception observer, including failures later
+converted into partial results. It stores one exception reference and prints
+only its bounded scalar fields after the test; it does not trace successful
+polls or write output on the worker thread. This observer is not production
+instrumentation. A pass of this single instrumented selection is inconclusive
+about earlier gaps, not evidence of a fix.
+
+The first instrumented Linux run executed all four authorization variants and
+passed 4/4, with no gap diagnostic emitted. The deterministic diagnostic/deadline
+selection passed 23/23. Consequently this investigation captured no new failing
+interval and cannot distinguish a physical cause for the retained earlier gaps.
+It changed neither the 10 ms policy nor acceptance status; no repeat was run.
+
 ## Remaining integration
 
 The Core pipeline now supplies archive and semantic admission, quality/origin
