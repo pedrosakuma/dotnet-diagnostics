@@ -14,6 +14,7 @@ public sealed class OperatingEnvelopeArtifactWriter
     private readonly List<OperatingEnvelopeTrialResult> _trials = [];
     private readonly List<OperatingEnvelopeArtifactHash> _writtenArtifacts = [];
     private bool _quarantined;
+    private bool _finalized;
 
     private OperatingEnvelopeArtifactWriter(string runDirectory, OperatingEnvelopeSchedule schedule,
         string configurationHash)
@@ -73,7 +74,7 @@ public sealed class OperatingEnvelopeArtifactWriter
         IReadOnlyList<OperatingEnvelopeTrialResult> trials,
         CancellationToken cancellationToken = default)
     {
-        ThrowIfQuarantined();
+        ThrowIfNotWritable();
         ArgumentNullException.ThrowIfNull(pair);
         ArgumentNullException.ThrowIfNull(trials);
         if (_pairs.Any(existing => existing.PairId == pair.PairId))
@@ -104,7 +105,7 @@ public sealed class OperatingEnvelopeArtifactWriter
 
     public async Task WriteFinalManifestAsync(CancellationToken cancellationToken = default)
     {
-        ThrowIfQuarantined();
+        ThrowIfNotWritable();
         cancellationToken.ThrowIfCancellationRequested();
         if (File.Exists(Path.Combine(RunDirectory, "results-manifest.json")))
         {
@@ -125,6 +126,7 @@ public sealed class OperatingEnvelopeArtifactWriter
         await WriteImmutableAsync("results-manifest.json", bytes, cancellationToken).ConfigureAwait(false);
         await WriteImmutableAsync("results-manifest.sha256", Encoding.ASCII.GetBytes(Hash(bytes) + "\n"),
             cancellationToken).ConfigureAwait(false);
+        _finalized = true;
     }
 
     public async Task WriteQuarantineAsync(
@@ -132,6 +134,7 @@ public sealed class OperatingEnvelopeArtifactWriter
         string reason,
         CancellationToken cancellationToken = default)
     {
+        ThrowIfNotWritable();
         ArgumentNullException.ThrowIfNull(trial);
         ArgumentException.ThrowIfNullOrWhiteSpace(reason);
         if (_quarantined)
@@ -163,6 +166,11 @@ public sealed class OperatingEnvelopeArtifactWriter
 
     private async Task WriteImmutableAsync(string relativePath, byte[] bytes, CancellationToken cancellationToken)
     {
+        if (_finalized)
+        {
+            throw new InvalidOperationException("Finalized runs cannot write additional evidence.");
+        }
+
         var fullPath = Path.GetFullPath(Path.Combine(RunDirectory, relativePath));
         if (!fullPath.StartsWith(RunDirectory + Path.DirectorySeparatorChar, StringComparison.Ordinal))
         {
@@ -182,8 +190,13 @@ public sealed class OperatingEnvelopeArtifactWriter
         _writtenArtifacts.Add(new(relative, Hash(bytes)));
     }
 
-    private void ThrowIfQuarantined()
+    private void ThrowIfNotWritable()
     {
+        if (_finalized)
+        {
+            throw new InvalidOperationException("Finalized runs cannot write additional evidence.");
+        }
+
         if (_quarantined)
         {
             throw new InvalidOperationException(

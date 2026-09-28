@@ -386,6 +386,25 @@ public sealed class OperatingEnvelopeProtocolTests
             await writer.WriteFinalManifestAsync();
             await Assert.ThrowsAsync<InvalidOperationException>(() => writer.WriteFinalManifestAsync());
 
+            var nextPairPlans = OperatingEnvelopeProtocol.GetPair(schedule, "idle-counters-pair-02");
+            var nextOutcomes = nextPairPlans.Select(plan => Trial(plan, writer.ConfigurationHash)).ToArray();
+            var nextPair = OperatingEnvelopePairValidation.Validate(
+                nextPairPlans[0].PairId, nextPairPlans[0].Population, nextOutcomes);
+            var sealedFiles = Directory.EnumerateFiles(writer.RunDirectory, "*", SearchOption.AllDirectories)
+                .Order(StringComparer.Ordinal).ToArray();
+            await Assert.ThrowsAsync<InvalidOperationException>(() => writer.WritePairAsync(nextPair, nextOutcomes));
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                writer.WriteQuarantineAsync(
+                    nextOutcomes[0] with
+                    {
+                        Outcome = OperatingEnvelopeTrialOutcome.Stopped,
+                        StopOutcome = OperatingEnvelopeStopOutcome.CleanupFailed,
+                        CleanupSucceeded = false,
+                    }, "Late cleanup failure."));
+            Assert.Equal(sealedFiles,
+                Directory.EnumerateFiles(writer.RunDirectory, "*", SearchOption.AllDirectories)
+                    .Order(StringComparer.Ordinal).ToArray());
+
             var planPath = Path.Combine(writer.RunDirectory, "plan.json");
             var runManifest = JsonDocument.Parse(await File.ReadAllTextAsync(
                 Path.Combine(writer.RunDirectory, "run-manifest.json")));
