@@ -122,8 +122,8 @@ jobs:
           file: deploy/Dockerfile
           build-args: |
             INSTALL_PERF=false
-          secrets: |
-            id=nugetconfig,src=${{ runner.temp }}/NuGet.Config
+          secret-files: |
+            nugetconfig=${{ runner.temp }}/NuGet.Config
           tags: dotnet-diagnostics-mcp:dev
           load: true
           cache-from: type=gha,scope=ext-inv-mcp
@@ -137,8 +137,8 @@ jobs:
           file: samples/CoreClrSample/Dockerfile
           tags: coreclr-sample:dev
           load: true
-          secrets: |
-            id=nugetconfig,src=${{ runner.temp }}/NuGet.Config
+          secret-files: |
+            nugetconfig=${{ runner.temp }}/NuGet.Config
           cache-from: type=gha,scope=ext-inv-sample
           cache-to: type=gha,mode=max,scope=ext-inv-sample
 

@@ -147,7 +147,7 @@ class ContainerDistributionTests(unittest.TestCase):
         validation = WORKFLOW_JOBS["validate-container"]
         self.assertIn('--secret id=nugetconfig,src="$RUNNER_TEMP/NuGet.Config"', validation)
         publish = WORKFLOW_JOBS["build"]
-        self.assertIn("id=nugetconfig,src=${{ runner.temp }}/NuGet.Config", publish)
+        self.assertIn("nugetconfig=${{ runner.temp }}/NuGet.Config", publish)
         self.assertNotRegex(WORKFLOW_TEXT, r"(?m)^\s*(?:build-args:.*(?:NUGET|NuGet)|args:.*(?:NUGET|NuGet))")
 
     def test_private_config_is_not_written_to_actions_artifacts_or_logs(self):
@@ -175,20 +175,33 @@ class ContainerDistributionTests(unittest.TestCase):
                 self.assertIn("PRIVATE_NUGET_CONFIG: ${{ secrets.NUGET_CONFIG }}", workflow)
                 self.assertIn('if [[ -z "${PRIVATE_NUGET_CONFIG:-}" ]]', workflow)
                 self.assertIn(
-                    "id=nugetconfig,src=${{ runner.temp }}/NuGet.Config",
+                    "nugetconfig=${{ runner.temp }}/NuGet.Config",
                     workflow,
                 )
                 self.assertIn("file: deploy/Dockerfile", workflow)
+                workflow_lines = workflow.splitlines()
+                action_blocks = []
+                for index, line in enumerate(workflow_lines):
+                    if "uses: docker/build-push-action@" not in line:
+                        continue
+                    end = index + 1
+                    while end < len(workflow_lines) and not workflow_lines[end].startswith("      - "):
+                        end += 1
+                    action_blocks.append("\n".join(workflow_lines[index + 1:end]))
+                self.assertTrue(action_blocks, name)
+                for action in action_blocks:
+                    self.assertRegex(
+                        action,
+                        r"(?m)^\s+secret-files:\s*\|\s*\n\s+nugetconfig="
+                        r"\$\{\{ runner\.temp \}\}/NuGet\.Config\s*$",
+                    )
+                    self.assertNotRegex(action, r"(?m)^\s+secrets:\s*\|")
                 if name in ("kind-integration", "docker-external-investigation"):
                     self.assertIn(
                         'dotnet restore --configfile "$RUNNER_TEMP/NuGet.Config"',
                         workflow,
                     )
-                    self.assertRegex(
-                        workflow,
-                        r"(?s)file: samples/CoreClrSample/Dockerfile.*?"
-                        r"secrets:\s*\|\s*id=nugetconfig,src=\$\{\{ runner\.temp \}\}/NuGet\.Config",
-                    )
+                    self.assertIn("file: samples/CoreClrSample/Dockerfile", workflow)
 
     def test_reusable_portable_producer_fails_closed_and_restores_with_private_config(self):
         self.assertRegex(
@@ -254,6 +267,70 @@ class ContainerDistributionTests(unittest.TestCase):
                 for step in upload_steps),
             upload_steps,
         )
+
+    def test_release_binary_matrix_restores_privately_and_publishes_without_restore(self):
+        binary_job = re.search(
+            r"(?ms)^  publish-binaries:\n(.*?)(?=^  [\w-]+:\n|\Z)",
+            RELEASE_WORKFLOW,
+        ).group(1)
+        self.assertIn("PRIVATE_NUGET_CONFIG: ${{ secrets.NUGET_CONFIG }}", binary_job)
+        self.assertIn('if [[ -z "${PRIVATE_NUGET_CONFIG:-}" ]]', binary_job)
+        self.assertIn('config="$RUNNER_TEMP/binaries-NuGet.Config"', binary_job)
+        self.assertIn('unset PRIVATE_NUGET_CONFIG', binary_job)
+        normalized_binary_job = re.sub(
+            r"\s+", " ", re.sub(r"\\\n\s*", " ", binary_job)
+        )
+        self.assertIn(
+            'dotnet restore src/DotnetDiagnostics.Mcp/DotnetDiagnostics.Mcp.csproj '
+            '--runtime "${{ matrix.rid }}" -p:SelfContained=true '
+            '--configfile "$RUNNER_TEMP/binaries-NuGet.Config"',
+            normalized_binary_job,
+        )
+        self.assertIn(
+            'dotnet restore src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj '
+            '--runtime "${{ matrix.rid }}" -p:SelfContained=true '
+            '--configfile "$RUNNER_TEMP/binaries-NuGet.Config"',
+            normalized_binary_job,
+        )
+        self.assertEqual(2, binary_job.count("dotnet restore "))
+        self.assertEqual(2, binary_job.count("dotnet publish "))
+        publish_step = binary_job.split("- name: Publish self-contained single-file binaries", 1)[1]
+        self.assertEqual(2, publish_step.count("--no-restore"))
+        self.assertNotRegex(publish_step, r"dotnet publish[^\n]*--no-restore")
+        self.assertIn('rm -f -- "$RUNNER_TEMP/binaries-NuGet.Config"', binary_job)
+        self.assertRegex(
+            binary_job,
+            r"(?s)- name: Remove staged private NuGet configuration\n"
+            r"\s+if: always\(\)\n\s+shell: bash\n\s+run: rm -f -- "
+            r'"\$RUNNER_TEMP/binaries-NuGet\.Config"',
+        )
+        self.assertNotRegex(binary_job, r"(?m)^\s+path:.*binaries-NuGet\.Config")
+        self.assertNotRegex(binary_job, r"(?m)^\s*(?:cat|tee)\s+.*binaries-NuGet\.Config")
+        binary_upload_steps = re.findall(
+            r"(?ms)^\s+- uses: actions/upload-artifact@[^\n]+\n(.*?)(?=^\s+-|\Z)",
+            binary_job,
+        )
+        self.assertTrue(
+            all("binaries-NuGet.Config" not in step and "RUNNER_TEMP" not in step
+                for step in binary_upload_steps),
+            binary_upload_steps,
+        )
+
+    def test_kind_required_context_skips_secret_dependent_work_for_untrusted_prs(self):
+        changes_job = KIND_WORKFLOW.split("  changes:\n", 1)[1].split("\n  kind:\n", 1)[0]
+        kind_job = KIND_WORKFLOW.split("  kind:\n", 1)[1]
+        self.assertIn("trusted_source:", changes_job)
+        self.assertIn("github.event_name != 'pull_request'", changes_job)
+        self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", changes_job)
+        self.assertIn("github.actor != 'dependabot[bot]'", changes_job)
+        self.assertIn("name: Kind Integration (ubuntu-latest)", KIND_WORKFLOW)
+        self.assertIn("needs: changes", kind_job)
+        self.assertIn("Skip secret-dependent Kind validation for untrusted pull request", kind_job)
+        self.assertIn("Skipping Kind Integration because fork and Dependabot pull requests do not receive", kind_job)
+        for line in kind_job.splitlines():
+            if "needs.changes.outputs.code == 'true'" in line and "trusted_source" not in line:
+                self.fail(f"Kind code step lacks the trusted-source gate: {line}")
+        self.assertNotIn("pull_request_target", KIND_WORKFLOW)
 
     def test_registry_publish_permissions_and_digest_promotion_are_preserved(self):
         build = WORKFLOW_JOBS["build"]

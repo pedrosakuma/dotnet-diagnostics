@@ -229,8 +229,8 @@ jobs:
           build-args: |
             INSTALL_PERF=${{ matrix.install_perf }}
             INCLUDE_PORTABLE_CAPTURE_WORKER=${{ github.event_name == 'workflow_dispatch' && inputs.include_portable_worker && matrix.platform == 'linux/amd64' }}
-          secrets: |
-            id=nugetconfig,src=${{ runner.temp }}/NuGet.Config
+          secret-files: |
+            nugetconfig=${{ runner.temp }}/NuGet.Config
           cache-from: type=gha,scope=container-${{ matrix.variant }}-${{ steps.pp.outputs.pair }}
           cache-to: type=gha,scope=container-${{ matrix.variant }}-${{ steps.pp.outputs.pair }},mode=max
           provenance: true
