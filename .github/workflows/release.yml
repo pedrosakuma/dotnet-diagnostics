@@ -25,6 +25,12 @@ on:
         default: false
         type: boolean
 
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE: true
+  DOTNET_NOLOGO: true
+
 permissions:
   contents: read
 

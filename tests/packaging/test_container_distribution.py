@@ -27,6 +27,18 @@ WORKFLOW_JOBS = dict(re.findall(
 
 
 class ContainerDistributionTests(unittest.TestCase):
+    def test_restore_surfaces_disable_sdk_background_network_checks(self):
+        expected = (
+            "DOTNET_CLI_TELEMETRY_OPTOUT",
+            "DOTNET_SKIP_FIRST_TIME_EXPERIENCE",
+            "DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE",
+            "DOTNET_NOLOGO",
+        )
+        for name in expected:
+            self.assertRegex(DOCKERFILE, rf"(?m)^(?:ENV )?\s*{name}=1(?:\s*\\)?$")
+            for workflow in (WORKFLOW_TEXT, PORTABLE_WORKFLOW, RELEASE_WORKFLOW):
+                self.assertRegex(workflow, rf"(?m)^\s+{name}: true$")
+
     def test_safe_loopback_default_has_no_global_insecure_http_override(self):
         self.assertIn("ENV ASPNETCORE_URLS=http://127.0.0.1:8080", DOCKERFILE)
         self.assertNotRegex(DOCKERFILE, r"(?m)^\s*MCP_ALLOW_INSECURE_HTTP=")

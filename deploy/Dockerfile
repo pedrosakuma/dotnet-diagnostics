@@ -20,6 +20,10 @@ ARG DOTNET_VERSION=10.0
 # mcr.microsoft.com/dotnet/sdk:10.0
 FROM mcr.microsoft.com/dotnet/sdk@sha256:ed034a8bf0b24ded0cbbac07e17825d8e9ebfe21e308191d0f7421eaf5ad4664 AS build
 WORKDIR /src
+ENV DOTNET_CLI_TELEMETRY_OPTOUT=1 \
+    DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 \
+    DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE=1 \
+    DOTNET_NOLOGO=1
 
 # Bring in the files needed to restore first so the layer caches well.
 COPY global.json Directory.Build.props Directory.Packages.props .editorconfig ./
