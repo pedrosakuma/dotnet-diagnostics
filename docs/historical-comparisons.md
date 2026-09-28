@@ -128,10 +128,26 @@ also requires explicit `DOTNET_DIAGNOSTICS_IMPORT_WORKER` and
 acceptance run or release qualification.
 
 The workload-only acceptance has passed for the reviewed comparison revision.
-The two-import acceptance has **not** passed: the first bundle imported, while
+The first two-import attempt did **not** pass: the first bundle imported, while
 the second stopped with `WorkerObservationGap` under the unchanged strict 10 ms
 observation guard. Comparison, source deletion and destination reopen therefore
-did not run. This is retained adverse evidence, not a flaky success candidate:
-do not relax the guard or rerun unchanged inputs merely to obtain green. A
-future attempt requires explicit authorization, one invocation of the exact
-selected test, bounded failure output and preservation of the first outcome.
+did not run. That failure is retained adverse evidence.
+
+A separately authorized single invocation of the same case then **passed** at
+the unchanged reviewed source `3981c561`, with the worker and SQLite assets
+from producer run `36281250444`. It ran on a quiet shared host, and the 10 ms
+guard was unchanged. Both bundles imported under distinct local identities. The
+comparison returned the exact expected delta after source deletion and
+destination reopen, and cleanup left no worker or test host running. The result
+is recorded in [#1054](https://github.com/pedrosakuma/dotnet-diagnostics/issues/1054#issuecomment-5877773502).
+Compared with the integrated candidate, the acceptance test is unchanged. In
+Core, the only differences are the capture ingestion path in `CaptureWriter.cs`
+and the worker's compile-time header fallback, which the producer assets already
+include. The other product changes are in CLI Docker bootstrap. This is
+source-level reconciliation, not a re-execution at the final revision.
+
+The pass does not explain or fix the earlier gaps. The gap did not recur, so its
+root cause remains unproven. The strict observation policy can still reject
+valid imports on busy or preempted schedulers, and callers should treat that
+rejection as a failed import, never as admission. Do not relax the guard or
+rerun unchanged inputs merely to obtain green.

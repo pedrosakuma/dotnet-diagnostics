@@ -248,3 +248,21 @@ locations, verify single-file sidecars and the non-publishing Docker variants,
 and then run separately authorized native imports through both hosts. Preserve
 first failures. A layout test, preflight, or clean workload-only comparison does
 not resolve the retained strict watchdog acceptance risk.
+
+Current status for #1054:
+
+- **Verified with the actual assets from producer run `36281250444`, without an
+  import:**
+  - the CLI and MCP package inventories;
+  - same-owner tool installs;
+  - the Linux/amd64 Docker variant.
+
+  See [the packaging checkpoint](https://github.com/pedrosakuma/dotnet-diagnostics/issues/1054#issuecomment-5862579266).
+- **One authorized Core-level two-bundle import passed** with those assets (see
+  [historical comparisons](historical-comparisons.md#bounds-and-acceptance)).
+  The watchdog's root cause remains unproven.
+- **Not yet run with the producer assets:** native imports through the
+  *installed* CLI and MCP hosts. Earlier host-level import flows used pinned
+  test assets.
+- **Tag-triggered releases still exclude the worker.** Release inclusion stays
+  a separate, explicit decision.
