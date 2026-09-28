@@ -13,11 +13,20 @@ DOC = (ROOT / "docs/portable-native-packaging.md").read_text()
 class InstalledHostSmokeScriptTests(unittest.TestCase):
     def test_script_is_gated_and_records_dry_run_without_import(self):
         self.assertIn("--execute-import", SCRIPT)
-        self.assertIn('"importExecuted": bool(args.execute_import)', SCRIPT)
+        self.assertIn('"importRequested": bool(args.execute_import)', SCRIPT)
+        self.assertIn('"importExecuted": False', SCRIPT)
         self.assertIn("if args.execute_import:", SCRIPT)
         self.assertIn("run_cli_import", SCRIPT)
         self.assertIn("run_mcp_import", SCRIPT)
         self.assertIn("importExecuted: false", DOC)
+
+    def test_import_fixture_is_a_tracked_source_path(self):
+        match = re.search(r'IMPORT_FIXTURE = ROOT / "([^"]+)"', SCRIPT)
+        self.assertIsNotNone(match)
+        fixture = ROOT / match.group(1)
+        self.assertTrue(fixture.is_file() and fixture.stat().st_size > 0, fixture)
+        self.assertIn("fixture = IMPORT_FIXTURE", SCRIPT)
+        self.assertIn("import fixture missing or empty", SCRIPT)
 
     def test_pack_install_uses_required_worker_properties_and_private_config(self):
         self.assertIn("-p:PortableCaptureWorkerAssetsDir=", SCRIPT)

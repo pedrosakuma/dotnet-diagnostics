@@ -23,6 +23,8 @@ import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PRIVATE_CONFIG = Path.home() / ".nuget/NuGet/NuGet.Config"
+# Tracked source of the fixture; the CLI test project only links it into its output.
+IMPORT_FIXTURE = ROOT / "tests/DotnetDiagnostics.Core.Tests/Fixtures/PortableImport/known-counters-v1-v2.ddcapture"
 REQUIRED_ENV = {
     "DOTNET_CLI_TELEMETRY_OPTOUT": "1",
     "DOTNET_SKIP_FIRST_TIME_EXPERIENCE": "1",
@@ -288,7 +290,7 @@ def run_cli_import(args: argparse.Namespace, installs: dict[str, dict[str, objec
         "DOTNET_DIAGNOSTICS_IMPORT_WORKER": str(native / "capture-worker"),
         "DOTNET_DIAGNOSTICS_SQLITE_LIBRARY": str(native / "libe_sqlite3.so"),
     }
-    fixture = ROOT / "tests/DotnetDiagnostics.Cli.Tests/Fixtures/known-counters-v1-v2.ddcapture"
+    fixture = IMPORT_FIXTURE
     first_out = root / "import-a.json"
     export_out = root / "export-a.json"
     second_out = root / "import-b.json"
@@ -537,12 +539,16 @@ def main() -> int:
         "repoRoot": str(ROOT),
         "assetsDir": str(args.assets_dir.resolve()),
         "trustedRoot": str(args.trusted_root.resolve()),
-        "importExecuted": bool(args.execute_import),
+        "importRequested": bool(args.execute_import),
+        "importExecuted": False,
     }
     try:
+        if args.execute_import and not (IMPORT_FIXTURE.is_file() and IMPORT_FIXTURE.stat().st_size > 0):
+            raise RuntimeError(f"import fixture missing or empty: {IMPORT_FIXTURE}")
         installs = pack_and_install(args, manifest)
         run_preflight(args, installs, manifest)
         if args.execute_import:
+            manifest["importExecuted"] = True
             cli_result = run_cli_import(args, installs, manifest)
             run_mcp_import(args, installs, cli_result, manifest)
         manifest["completedUtc"] = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
@@ -550,7 +556,7 @@ def main() -> int:
         args.work_dir.mkdir(parents=True, exist_ok=True)
         output = args.work_dir / "manifest.json"
         output.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        print(json.dumps({"manifest": str(output), "success": True, "importExecuted": bool(args.execute_import)}, indent=2))
+        print(json.dumps({"manifest": str(output), "success": True, "importExecuted": manifest["importExecuted"]}, indent=2))
         return 0
     except Exception as error:
         manifest["completedUtc"] = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
