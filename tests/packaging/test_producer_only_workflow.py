@@ -93,7 +93,29 @@ class ProducerOnlyWorkflowTests(unittest.TestCase):
         self.assertNotIn("steps:", producer)
         reusable = (WORKFLOWS / "portable-native-packaging.yml").read_text()
         self.assertIn("\npermissions:\n  contents: read\n", reusable)
-        self.assertNotRegex(reusable, r"\bsecrets\b|contents: write|packages: write|id-token: write")
+        self.assertRegex(
+            reusable,
+            r"(?s)workflow_call:\n\s+secrets:\n\s+NUGET_CONFIG:\n"
+            r"\s+description:.*\n\s+required: true",
+        )
+        self.assertNotRegex(reusable, r"contents: write|packages: write|id-token: write")
+
+    def test_portable_workflow_uses_private_restore_only_and_cleans_secret(self):
+        reusable = (WORKFLOWS / "portable-native-packaging.yml").read_text()
+        self.assertIn("PRIVATE_NUGET_CONFIG: ${{ secrets.NUGET_CONFIG }}", reusable)
+        self.assertIn("no public NuGet fallback is permitted", reusable)
+        self.assertIn(
+            'dotnet restore src/DotnetDiagnostics.Core/DotnetDiagnostics.Core.csproj '
+            '--configfile "$RUNNER_TEMP/portable-worker-NuGet.Config"',
+            reusable,
+        )
+        self.assertNotRegex(reusable, r"dotnet restore(?![^\n]*--configfile)")
+        cleanup = reusable.index("Remove staged private NuGet configuration")
+        production = reusable.index("Produce once in the immutable Linux-x64 compiler container")
+        upload = reusable.index("actions/upload-artifact@")
+        self.assertLess(cleanup, production)
+        self.assertLess(cleanup, upload)
+        self.assertIn("if: always()", reusable[cleanup:production])
 
     def test_input_defaults_and_required_version_remain_explicit(self):
         inputs = TEXT.split("\npermissions:\n", 1)[0]
