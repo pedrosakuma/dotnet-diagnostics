@@ -113,7 +113,6 @@ public sealed class StdioCaptureAuthorityClientTests : IDisposable
         process.StartInfo.Environment["AzureDiscovery__Enabled"] = "false";
         process.Start().Should().BeTrue();
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        var stderr = process.StandardError.ReadToEndAsync(timeout.Token);
         try
         {
             await process.StandardInput.WriteLineAsync(
@@ -126,11 +125,19 @@ public sealed class StdioCaptureAuthorityClientTests : IDisposable
             await process.StandardInput.WriteAsync(Encoding.UTF8.GetString(
                 McpRequestFramingTests.Frame(65537, capture: true)));
             await process.StandardInput.FlushAsync(timeout.Token);
+            var stderr = new StringBuilder();
+            string? line;
+            while ((line = await process.StandardError.ReadLineAsync(timeout.Token)) is not null)
+            {
+                stderr.AppendLine(line);
+                if (line.Contains("64 KiB", StringComparison.Ordinal))
+                    break;
+            }
             process.StandardInput.Close();
             var output = await process.StandardOutput.ReadToEndAsync(timeout.Token);
             await process.WaitForExitAsync(timeout.Token);
             output.Should().NotContain("\"id\":2", "the oversized request must not reach tools/call");
-            (await stderr).Should().Contain("64 KiB");
+            stderr.ToString().Should().Contain("64 KiB");
         }
         finally
         {
