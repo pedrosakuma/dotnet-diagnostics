@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+### Added
+
+- Prepared opt-in Linux-x64 portable import-worker packaging for the CLI and MCP
+  hosts, including a digest-pinned producer, provenance and hash validation,
+  non-executing installed-asset preflight, and an amd64-only container path.
+  Activation still requires both explicit environment variables; ordinary
+  builds and ARM64 containers remain asset-free.
+- Added retained historical comparison for compatible CPU-sample, heap-snapshot
+  and EventCounter artifacts through the existing CLI and MCP comparison
+  surfaces. Imported captures use their destination-local IDs.
+
+### Security and compatibility
+
+- Container images now default to loopback HTTP and keep shipped application
+  assets root-owned and non-writable. Non-loopback cleartext remains an explicit
+  development choice.
+- Docker, producer and release restore paths require a caller-provided private
+  NuGet configuration and fail closed rather than falling back to public NuGet.
+- Global-tool portable-worker support is same-owner on Linux x64 glibc with
+  GLIBC 2.34 or older requirements, Landlock ABI 3+, seccomp and procfs. This
+  does not claim musl, Windows, macOS, ARM64 or arbitrary cross-UID support.
+
+### Evidence limits
+
+- The reviewed digest-pinned producer run created the expected worker and
+  package assets, but no native import is authorized by packaging alone.
+- Workload-only historical comparison acceptance passed. Comparison after two
+  independent imports remains blocked because the second import produced
+  `WorkerObservationGap` under the unchanged strict 10 ms observation guard.
+
 ## [0.27.0] — 2026-09-18
 
 Highlights: **opt-in outbound HttpClient destination attribution without target

@@ -97,10 +97,12 @@ limit and an internal tar artifact preserving Unix permissions. It does not run
 the worker or any native import. Failed producer output is retained rather than
 retried into success.
 
-The equivalent producer command, **only in an approved environment with Docker**:
+The equivalent producer command, **only in an approved environment with Docker
+and the configured private NuGet source**:
 
 ```bash
-dotnet restore src/DotnetDiagnostics.Core/DotnetDiagnostics.Core.csproj
+dotnet restore src/DotnetDiagnostics.Core/DotnetDiagnostics.Core.csproj \
+  --configfile "$HOME/.nuget/NuGet/NuGet.Config"
 dotnet msbuild src/DotnetDiagnostics.Core/Build/PortableCaptureWorker.proj \
   -p:PortableCaptureWorkerOutput=/absolute/new/portable-worker/linux-x64
 ```
@@ -108,7 +110,23 @@ dotnet msbuild src/DotnetDiagnostics.Core/Build/PortableCaptureWorker.proj \
 The output directory must not already exist. Do not reuse a failed directory or
 replace the container with host compilation. No actual container build was
 established by the initial local preparation: Docker was unavailable there.
-Public metadata/source verification is not compiler-output or distro validation.
+That limitation was subsequently closed by the reviewed digest-pinned producer
+run. Public metadata/source verification alone is still not compiler-output or
+distro validation.
+
+The retained producer evidence for revision
+`a04c0410e27cf27eda7ff3ce1f3e4dd54c6fdfa5` is:
+
+| Property | Observed value |
+|---|---|
+| Workflow run | `36281250444` |
+| Worker size | 53,816 bytes |
+| Worker SHA-256 | `b58a54e4b7822a5ba5c3af7d69dcb30d6e6108c1b2014aea5af1d1dc556ac322` |
+| Archive worker mode | `0755` |
+| Maximum worker GLIBC requirement | `2.34` |
+
+These values identify the reviewed output; they do not authorize import,
+publication, or substitution of an asset built from another revision.
 
 Both host projects import the same `PortableCaptureWorker.targets`. Supply the
 prepared artifact to source builds/publish/tool packing:
@@ -147,15 +165,17 @@ workflow still builds and attests product artifacts; public NuGet/GitHub Release
 publication remains tag-only. Use the nonpublishing preparation workflow for
 initial producer validation.
 
-When the new preparation workflow is not registered on the default branch, the
-existing registered `release.yml` offers a separate **`producer_only=true`**
+When the preparation workflow is not registered on the default branch, the
+registered `release.yml` offers a separate **`producer_only=true`**
 manual mode (default false). This calls only the unchanged reusable producer:
 `pack-tool`, `publish-binaries`, `release`, and `publish-nuget` are explicitly
-skipped. The running job has `contents: read`, inherits no secrets, and produces
-only internal success/failure artifacts. No product packing, attestation, tag,
-package publication or GitHub Release is performed in this mode. The existing
-required `version` input stays required; supply the inert value `producer-only`,
-which no product job consumes.
+skipped. The running job has `contents: read` and receives only the required
+private `NUGET_CONFIG` secret for an explicit `--configfile` restore. The
+configuration is staged under runner temporary storage and removed before
+production or artifact upload. It produces only internal success/failure
+artifacts. No product packing, attestation, tag, package publication or GitHub
+Release is performed in this mode. The existing required `version` input stays
+required; supply the inert value `producer-only`, which no product job consumes.
 
 After independent review and verification of the pushed preparation branch SHA,
 the dispatch body for registered workflow `release.yml` is:
@@ -199,15 +219,32 @@ and intended installing/running identity before release.
 
 Initial support remains **Linux x64 glibc only**, contingent on actual loader and
 confinement availability. Musl, Windows, macOS and ARM64 are not covered.
-The older host-built test worker required GLIBC_2.38 and its SQLite asset required
-GLIBC_2.34; those measurements do not describe the not-yet-built pinned producer
-output. Inspect its recorded ELF requirements and run independently scheduled
-functional acceptance. Landlock ABI >=3, seccomp, procfs and other existing
-runtime checks still fail closed; compatible libc alone is insufficient.
+The reviewed pinned producer worker requires no GLIBC version newer than 2.34.
+The preflight independently checks the worker and SQLite sidecar ELF identity,
+interpreter/dependencies and GLIBC ceiling; compatible libc alone is
+insufficient. Landlock ABI >=3, seccomp, procfs and other existing runtime checks
+still fail closed.
 
-Before release inclusion is enabled by default: execute the approved producer,
-verify its provenance and hashes, inspect actual tool/publish/archive inventories,
-install both tools into fresh locations, verify owner executable permissions,
-test single-file sidecars and Docker, and then run separately scheduled native
-imports through both hosts. Preserve first failures. A layout test or clean
-functional run does not resolve the retained strict watchdog acceptance risk.
+The installed global-tool probe establishes a **same-owner** support boundary:
+the identity that installs the tool must also execute its `0744` worker. It does
+not establish arbitrary cross-UID access. The container uses a separate model:
+root-owned, non-writable application assets with traversal/execution permission
+for runtime UID 10001 and writable access limited to explicit state directories.
+Only the Linux/amd64 image can opt into the prepared worker; Linux/arm64 images
+remain deliberately asset-free.
+
+`scripts/portable-worker-preflight.py` validates the produced and optional
+installed copies without starting `capture-worker`. It checks provenance/source
+identity, hashes, trusted non-symlink ancestry, ownership and runtime access,
+ELF/GLIBC compatibility, exact activation variables and the single selected
+acceptance-test filter. Its report explicitly records `importExecuted: false`.
+Optional Landlock/seccomp probes inspect host prerequisites without importing a
+bundle.
+
+Before release inclusion is enabled by default: verify the pinned producer
+artifact and preflight report against the final revision, inspect actual
+tool/publish/archive inventories, install both tools into fresh same-owner
+locations, verify single-file sidecars and the non-publishing Docker variants,
+and then run separately authorized native imports through both hosts. Preserve
+first failures. A layout test, preflight, or clean workload-only comparison does
+not resolve the retained strict watchdog acceptance risk.

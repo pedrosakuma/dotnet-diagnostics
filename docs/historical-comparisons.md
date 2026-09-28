@@ -126,3 +126,12 @@ They are skipped unless `DOTNET_DIAGNOSTICS_HISTORICAL_ACCEPTANCE=1`; the import
 also requires explicit `DOTNET_DIAGNOSTICS_IMPORT_WORKER` and
 `DOTNET_DIAGNOSTICS_SQLITE_LIBRARY`. These gates do not imply an executed native
 acceptance run or release qualification.
+
+The workload-only acceptance has passed for the reviewed comparison revision.
+The two-import acceptance has **not** passed: the first bundle imported, while
+the second stopped with `WorkerObservationGap` under the unchanged strict 10 ms
+observation guard. Comparison, source deletion and destination reopen therefore
+did not run. This is retained adverse evidence, not a flaky success candidate:
+do not relax the guard or rerun unchanged inputs merely to obtain green. A
+future attempt requires explicit authorization, one invocation of the exact
+selected test, bounded failure output and preservation of the first outcome.
