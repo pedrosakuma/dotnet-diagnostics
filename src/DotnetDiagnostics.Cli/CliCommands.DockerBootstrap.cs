@@ -1010,6 +1010,7 @@ internal static partial class CliCommands
             "--env", "MCP_ALLOW_INSECURE_HTTP=true",
             "--env", "DOTNET_EnableDiagnostics=0",
             "--env", "DOTNET_NOLOGO=1",
+            "--env", "MCP_ARTIFACT_ROOT=/tmp/dotnet-diagnostics-mcp",
             "--env", string.Create(CultureInfo.InvariantCulture, $"TMPDIR={targetTmpPath}"),
             "--env", string.Create(CultureInfo.InvariantCulture, $"MCP_BEARER_TOKEN={bearerToken}"),
             "--env", string.Create(CultureInfo.InvariantCulture, $"MCP_INTERNAL_SCOPE_DELEGATION_KEY={delegationKey}"),

@@ -222,6 +222,8 @@ actual_tmp = next(
 )
 if actual_tmp != expected_tmp:
     raise SystemExit(f"sidecar TMPDIR mismatch: expected {expected_tmp}, got {actual_tmp}")
+if "MCP_ARTIFACT_ROOT=/tmp/dotnet-diagnostics-mcp" not in inspection["Config"]["Env"]:
+    raise SystemExit("sidecar capture root must use its own non-symlink /tmp")
 if inspection.get("HostConfig", {}).get("PortBindings", {}).get("8080/tcp"):
     raise SystemExit("central-aware sidecar unexpectedly published port 8080")
 selected_network = report["dockerNetwork"]

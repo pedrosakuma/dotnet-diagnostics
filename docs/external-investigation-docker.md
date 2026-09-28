@@ -110,6 +110,8 @@ What it does:
   persistent sidecar with that same `--user`, plus `--cap-add SYS_PTRACE` by default;
 - points the sidecar's `TMPDIR` at `/proc/<target-namespace-pid>/root/tmp`, making the target diagnostic socket reachable
   through the shared PID namespace without a host `/proc` bind mount or a pre-authored shared volume;
+- keeps `MCP_ARTIFACT_ROOT` at `/tmp/dotnet-diagnostics-mcp` inside the sidecar: capture storage
+  rejects the `/proc/<pid>/root` magic link used by `TMPDIR` for socket discovery;
 - sets `DOTNET_EnableDiagnostics=0` on the sidecar so only the target's socket is discoverable;
 - generates (or accepts) a sidecar bearer token and `MCP_INTERNAL_SCOPE_DELEGATION_KEY`, then prints
   the exact `Orchestrator__ExternalMcpProfiles__<name>__...` env vars and an equivalent
