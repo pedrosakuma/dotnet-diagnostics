@@ -37,7 +37,8 @@ name: dotnet-diagnostics-ext-inv
 # (collect_thread_snapshot, inspect_heap(source="live"), etc.).
 # EventPipe-only tools (inspect_process, collect_events) do NOT need it.
 #
-# Quick start:
+# Quick start (provide a private NuGet.Config path in NUGET_CONFIG):
+#   export NUGET_CONFIG="$HOME/.nuget/NuGet/NuGet.Config"
 #   docker compose -f deploy/docker-compose.external-investigation.yml up --build -d --wait
 #
 # Acceptance test:
@@ -64,6 +65,8 @@ services:
     build:
       context: ..
       dockerfile: samples/CoreClrSample/Dockerfile
+      secrets:
+        - nugetconfig
     pid: "service:pid-anchor"
     depends_on:
       pid-anchor:
@@ -99,6 +102,8 @@ services:
       dockerfile: deploy/Dockerfile
       args:
         INSTALL_PERF: "false"
+      secrets:
+        - nugetconfig
     pid: "service:pid-anchor"
     depends_on:
       pid-anchor:
@@ -190,3 +195,7 @@ networks:
 
 volumes:
   diagnostics-tmp:
+
+secrets:
+  nugetconfig:
+    file: ${NUGET_CONFIG:?Set NUGET_CONFIG to a private NuGet.Config file}

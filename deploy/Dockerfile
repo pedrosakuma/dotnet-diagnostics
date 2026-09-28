@@ -1,6 +1,8 @@
+# syntax=docker/dockerfile:1
 # Multi-stage Dockerfile for dotnet-diagnostics-mcp server.
 #
-# Build:  docker build -t dotnet-diagnostics:dev -f deploy/Dockerfile .
+# Build:  docker build --secret id=nugetconfig,src="$HOME/.nuget/NuGet/NuGet.Config" \
+#           -t dotnet-diagnostics:dev -f deploy/Dockerfile .
 # Run:    configure ASPNETCORE_URLS and transport security deliberately before exposing a port.
 #
 # When deployed as a Kubernetes sidecar, the server attaches to the target .NET
@@ -26,8 +28,11 @@ COPY src/DotnetDiagnostics.Core/Build/ src/DotnetDiagnostics.Core/Build/
 COPY src/DotnetDiagnostics.Mcp/DotnetDiagnostics.Mcp.csproj src/DotnetDiagnostics.Mcp/
 COPY src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj src/DotnetDiagnostics.Cli/
 
-RUN dotnet restore src/DotnetDiagnostics.Mcp/DotnetDiagnostics.Mcp.csproj \
- && dotnet restore src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj
+RUN --mount=type=secret,id=nugetconfig,target=/run/secrets/NuGet.Config,required=true \
+    dotnet restore src/DotnetDiagnostics.Mcp/DotnetDiagnostics.Mcp.csproj \
+      --configfile /run/secrets/NuGet.Config \
+ && dotnet restore src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj \
+      --configfile /run/secrets/NuGet.Config
 
 # The deny-all .dockerignore also permits optional, already-produced native assets.
 # No native compiler is installed or run here; opting in requires the prepared artifact.

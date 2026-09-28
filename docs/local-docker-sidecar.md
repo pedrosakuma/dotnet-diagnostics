@@ -32,8 +32,12 @@ below are just this repo's own sample targets — the recipe applies unchanged t
 From the repo root:
 
 ```bash
-docker build -t dotnet-diagnostics-mcp:dev -f deploy/Dockerfile .
-docker build -t coreclr-sample:dev   -f samples/CoreClrSample/Dockerfile .
+export NUGET_CONFIG="${NUGET_CONFIG:-$HOME/.nuget/NuGet/NuGet.Config}"
+test -s "$NUGET_CONFIG"
+docker build --secret "id=nugetconfig,src=$NUGET_CONFIG" \
+  -t dotnet-diagnostics-mcp:dev -f deploy/Dockerfile .
+docker build --secret "id=nugetconfig,src=$NUGET_CONFIG" \
+  -t coreclr-sample:dev -f samples/CoreClrSample/Dockerfile .
 ```
 
 > 🔧 **Need a smaller image without `perf`?** Add `--build-arg INSTALL_PERF=false`
@@ -45,7 +49,8 @@ docker build -t coreclr-sample:dev   -f samples/CoreClrSample/Dockerfile .
 > detector will then report `canSampleOffCpu: false`. See issue #104.
 >
 > ```bash
-> docker build --build-arg INSTALL_PERF=false \
+> docker build --secret "id=nugetconfig,src=$NUGET_CONFIG" \
+>   --build-arg INSTALL_PERF=false \
 >   -t dotnet-diagnostics-mcp:dev-lean -f deploy/Dockerfile .
 > ```
 >
@@ -55,6 +60,8 @@ docker build -t coreclr-sample:dev   -f samples/CoreClrSample/Dockerfile .
 The checked-in Compose file is the canonical and reproducible path:
 
 ```bash
+export NUGET_CONFIG="${NUGET_CONFIG:-$HOME/.nuget/NuGet/NuGet.Config}"
+test -s "$NUGET_CONFIG"
 docker compose -f deploy/docker-compose.crash-guard.yml up --build -d --wait
 ```
 

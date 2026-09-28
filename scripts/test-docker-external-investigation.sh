@@ -77,9 +77,17 @@ if [[ "$(id -u)" == "0" ]]; then
 fi
 
 if [[ "${DOCKER_EXT_INV_SKIP_BUILD:-0}" != "1" ]]; then
-  dotnet build DotnetDiagnostics.slnx --configuration Release
-  docker build --tag dotnet-diagnostics-mcp:dev --file deploy/Dockerfile .
-  docker build --tag coreclr-sample:dev --file samples/CoreClrSample/Dockerfile .
+  nuget_config="${NUGET_CONFIG:-${HOME}/.nuget/NuGet/NuGet.Config}"
+  if [[ ! -s "$nuget_config" ]]; then
+    echo "A private NuGet.Config is required; set NUGET_CONFIG to its path." >&2
+    exit 1
+  fi
+  dotnet restore DotnetDiagnostics.slnx --configfile "$nuget_config"
+  dotnet build DotnetDiagnostics.slnx --no-restore --configuration Release
+  docker build --secret "id=nugetconfig,src=$nuget_config" \
+    --tag dotnet-diagnostics-mcp:dev --file deploy/Dockerfile .
+  docker build --secret "id=nugetconfig,src=$nuget_config" \
+    --tag coreclr-sample:dev --file samples/CoreClrSample/Dockerfile .
 fi
 
 cli_dll="src/DotnetDiagnostics.Cli/bin/Release/net10.0/dotnet-diagnostics.dll"

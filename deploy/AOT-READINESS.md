@@ -67,7 +67,8 @@ other .NET workloads on the node, so the on-disk delta per pod is the ~17 MB
 framework-dependent publish:
 
 ```bash
-docker build -t dotnet-diagnostics-mcp:dev -f deploy/Dockerfile .
+docker build --secret "id=nugetconfig,src=${NUGET_CONFIG:-$HOME/.nuget/NuGet/NuGet.Config}" \
+  -t dotnet-diagnostics-mcp:dev -f deploy/Dockerfile .
 ```
 
 For a fully self-contained image (no runtime base image dependency, larger but

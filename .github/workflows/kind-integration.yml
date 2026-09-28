@@ -82,10 +82,26 @@ jobs:
             **/Directory.Packages.props
             **/*.csproj
 
+      - name: Stage caller-provided private NuGet configuration
+        if: needs.changes.outputs.code == 'true'
+        id: nuget
+        env:
+          PRIVATE_NUGET_CONFIG: ${{ secrets.NUGET_CONFIG }}
+        shell: bash
+        run: |
+          if [[ -z "${PRIVATE_NUGET_CONFIG:-}" ]]; then
+            echo "The NUGET_CONFIG Actions secret is required for Docker restore; no public NuGet fallback is permitted." >&2
+            exit 1
+          fi
+          umask 077
+          config="$RUNNER_TEMP/NuGet.Config"
+          printf '%s' "$PRIVATE_NUGET_CONFIG" > "$config"
+          unset PRIVATE_NUGET_CONFIG
+
       - name: Restore + build
         if: needs.changes.outputs.code == 'true'
         run: |
-          dotnet restore
+          dotnet restore --configfile "$RUNNER_TEMP/NuGet.Config"
           dotnet build --no-restore --configuration Release
 
       - name: Setup Docker Buildx
@@ -104,6 +120,8 @@ jobs:
           file: deploy/Dockerfile
           tags: ${{ env.ORCH_IMAGE }}
           load: true
+          secrets: |
+            id=nugetconfig,src=${{ runner.temp }}/NuGet.Config
           cache-from: type=gha,scope=kind-orch
           cache-to: type=gha,mode=max,scope=kind-orch
 
@@ -115,8 +133,14 @@ jobs:
           file: samples/CoreClrSample/Dockerfile
           tags: ${{ env.SAMPLE_IMAGE }}
           load: true
+          secrets: |
+            id=nugetconfig,src=${{ runner.temp }}/NuGet.Config
           cache-from: type=gha,scope=kind-sample
           cache-to: type=gha,mode=max,scope=kind-sample
+
+      - name: Remove staged private NuGet configuration
+        if: always()
+        run: rm -f -- "$RUNNER_TEMP/NuGet.Config"
 
       - name: Create kind cluster
         if: needs.changes.outputs.code == 'true'
