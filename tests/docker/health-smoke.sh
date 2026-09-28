@@ -4,6 +4,12 @@ set -euo pipefail
 image="${1:-dotnet-diagnostics-mcp:health-smoke}"
 container="dotnet-diagnostics-health-smoke-${GITHUB_RUN_ID:-local}-$$"
 token="health-smoke-token"
+nuget_config="${NUGET_CONFIG:-${HOME}/.nuget/NuGet/NuGet.Config}"
+
+if [[ ! -s "$nuget_config" ]]; then
+  echo "A private NuGet.Config is required; set NUGET_CONFIG to its path." >&2
+  exit 1
+fi
 
 cleanup() {
   docker rm -f "$container" >/dev/null 2>&1 || true
@@ -11,6 +17,7 @@ cleanup() {
 trap cleanup EXIT
 
 docker build \
+  --secret "id=nugetconfig,src=$nuget_config" \
   --build-arg INSTALL_PERF=false \
   --tag "$image" \
   --file deploy/Dockerfile \
@@ -21,6 +28,7 @@ docker build \
 docker run --detach \
   --name "$container" \
   --env "MCP_BEARER_TOKEN=$token" \
+  --env "ASPNETCORE_URLS=http://0.0.0.0:8080" \
   --env "MCP_ALLOW_INSECURE_HTTP=true" \
   --publish 127.0.0.1::8080 \
   "$image" >/dev/null

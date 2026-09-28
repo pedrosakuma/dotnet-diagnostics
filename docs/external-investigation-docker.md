@@ -141,7 +141,10 @@ For repository development, build the changed MCP image locally and override the
 explicitly:
 
 ```bash
-docker build -t dotnet-diagnostics-mcp:dev -f deploy/Dockerfile .
+export NUGET_CONFIG="${NUGET_CONFIG:-$HOME/.nuget/NuGet/NuGet.Config}"
+test -s "$NUGET_CONFIG"
+docker build --secret "id=nugetconfig,src=$NUGET_CONFIG" \
+  -t dotnet-diagnostics-mcp:dev -f deploy/Dockerfile .
 dotnet run --project src/DotnetDiagnostics.Cli -c Release -- \
   docker-bootstrap \
   --target-container api \
@@ -250,6 +253,8 @@ issue #712.
 
 ```bash
 # Build images (skip with DOCKER_EXT_INV_SKIP_BUILD=1 if already built)
+export NUGET_CONFIG="${NUGET_CONFIG:-$HOME/.nuget/NuGet/NuGet.Config}"
+test -s "$NUGET_CONFIG"
 docker compose -f deploy/docker-compose.external-investigation.yml up --build -d --wait
 ```
 

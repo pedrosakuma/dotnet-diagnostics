@@ -1,7 +1,9 @@
+# syntax=docker/dockerfile:1
 # Multi-stage Dockerfile for dotnet-diagnostics-mcp server.
 #
-# Build:  docker build -t dotnet-diagnostics-mcp:dev -f deploy/Dockerfile .
-# Run:    docker run --rm -p 8787:8080 -e MCP_BEARER_TOKEN=changeme dotnet-diagnostics-mcp:dev
+# Build:  docker build --secret id=nugetconfig,src="$HOME/.nuget/NuGet/NuGet.Config" \
+#           -t dotnet-diagnostics:dev -f deploy/Dockerfile .
+# Run:    configure ASPNETCORE_URLS and transport security deliberately before exposing a port.
 #
 # When deployed as a Kubernetes sidecar, the server attaches to the target .NET
 # process via its Diagnostic IPC socket; see deploy/k8s/README.md for the
@@ -26,8 +28,11 @@ COPY src/DotnetDiagnostics.Core/Build/ src/DotnetDiagnostics.Core/Build/
 COPY src/DotnetDiagnostics.Mcp/DotnetDiagnostics.Mcp.csproj src/DotnetDiagnostics.Mcp/
 COPY src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj src/DotnetDiagnostics.Cli/
 
-RUN dotnet restore src/DotnetDiagnostics.Mcp/DotnetDiagnostics.Mcp.csproj \
- && dotnet restore src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj
+RUN --mount=type=secret,id=nugetconfig,target=/run/secrets/NuGet.Config,required=true \
+    dotnet restore src/DotnetDiagnostics.Mcp/DotnetDiagnostics.Mcp.csproj \
+      --configfile /run/secrets/NuGet.Config \
+ && dotnet restore src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj \
+      --configfile /run/secrets/NuGet.Config
 
 # The deny-all .dockerignore also permits optional, already-produced native assets.
 # No native compiler is installed or run here; opting in requires the prepared artifact.
@@ -65,8 +70,9 @@ RUN if [ "$INCLUDE_PORTABLE_CAPTURE_WORKER" = "true" ]; then \
 FROM mcr.microsoft.com/dotnet/aspnet@sha256:1fa23fc4872d95fd71c2833ebe65d7e84a43b2d51a31d119516852f13d9505a7 AS runtime
 WORKDIR /app
 
-# Kestrel listens on 8080 by default in our ASPNETCORE_URLS below.
-ENV ASPNETCORE_URLS=http://0.0.0.0:8080 \
+# Loopback is a safe default for cleartext HTTP. Operators exposing the container
+# must explicitly select HTTPS, a trusted proxy, or the development-only override.
+ENV ASPNETCORE_URLS=http://127.0.0.1:8080 \
     DOTNET_EnableDiagnostics=1 \
     DOTNET_NOLOGO=1
 
@@ -108,16 +114,19 @@ COPY --from=build /app/cli /app/cli
 RUN ln -s /app/cli/dotnet-diagnostics /usr/local/bin/dotnet-diagnostics-cli
 RUN mkdir -p /app/.dotnet-diagnostics/bootstrap-profiles \
  && touch /app/.dotnet-diagnostics/bootstrap-profile-support-v1
-RUN chown -R diagnosticsmcp:diagnosticsmcp /app
-# Keep shipped executable inputs separate from writable application state.
-RUN if [ -d /app/NativeAssets ]; then \
-      chown -R root:root /app/NativeAssets /app/cli/NativeAssets; \
-    fi
+# Keep the application and all shipped binaries/assets immutable. Only the
+# profile directory is writable under /app; artifact output uses the writable
+# system temp directory and user-scoped runtime state uses the user's home.
+RUN chown -R root:root /app \
+ && chown diagnosticsmcp:diagnosticsmcp /app/.dotnet-diagnostics/bootstrap-profiles \
+ && chmod 0700 /app/.dotnet-diagnostics/bootstrap-profiles \
+ && find /app -path /app/.dotnet-diagnostics/bootstrap-profiles -prune -o -type d -exec chmod 0555 {} + \
+ && find /app -path /app/.dotnet-diagnostics/bootstrap-profiles -prune -o -type f -exec chmod a-w {} +
 USER diagnosticsmcp
 
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD ["dotnet", "DotnetDiagnostics.Mcp.dll", "--health-check", "--urls", "http://127.0.0.1:8080"]
+    CMD ["dotnet", "DotnetDiagnostics.Mcp.dll", "--health-check"]
 
 ENTRYPOINT ["dotnet", "DotnetDiagnostics.Mcp.dll"]

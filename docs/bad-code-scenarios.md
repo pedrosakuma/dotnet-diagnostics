@@ -11,6 +11,8 @@ We run an inert PID-namespace anchor, the sample, and the sidecar. Both .NET
 containers join the anchor's namespace and share `/tmp`:
 
 ```bash
+export NUGET_CONFIG="${NUGET_CONFIG:-$HOME/.nuget/NuGet/NuGet.Config}"
+test -s "$NUGET_CONFIG"
 docker compose -f deploy/docker-compose.crash-guard.yml up --build -d --wait
 ```
 

@@ -1,6 +1,8 @@
+# syntax=docker/dockerfile:1
 # Dockerfile for BadCodeSample.
 # Build from repo root:
-#   docker build -t badcode-sample:dev -f samples/BadCodeSample/Dockerfile .
+#   docker build --secret id=nugetconfig,src="$HOME/.nuget/NuGet/NuGet.Config" \
+#     -t badcode-sample:dev -f samples/BadCodeSample/Dockerfile .
 
 ARG DOTNET_VERSION=10.0
 
@@ -11,9 +13,13 @@ COPY global.json Directory.Build.props Directory.Packages.props .editorconfig ./
 COPY samples/Directory.Build.props samples/
 COPY samples/BadCodeSample/ samples/BadCodeSample/
 
-RUN dotnet publish samples/BadCodeSample/BadCodeSample.csproj \
+RUN --mount=type=secret,id=nugetconfig,target=/run/secrets/NuGet.Config,required=true \
+    dotnet restore samples/BadCodeSample/BadCodeSample.csproj \
+      --configfile /run/secrets/NuGet.Config \
+ && dotnet publish samples/BadCodeSample/BadCodeSample.csproj \
     -c Release \
     -o /app/publish \
+    --no-restore \
     /p:UseAppHost=false
 
 FROM mcr.microsoft.com/dotnet/aspnet:${DOTNET_VERSION} AS runtime

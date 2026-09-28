@@ -40,7 +40,8 @@ For Kubernetes (AKS or any cluster), use the generic recipes under
 3. **Container images reachable by Azure**:
    - The diagnostic sidecar image: published as
      `ghcr.io/pedrosakuma/dotnet-diagnostics:0.17.0` (or build your own via
-     `docker build -f deploy/Dockerfile .` and push to your registry).
+     `docker build --secret id=nugetconfig,src="$NUGET_CONFIG" -f deploy/Dockerfile .`
+     (set `NUGET_CONFIG` to your private NuGet.Config path) and push to your registry).
    - Your application image, built however you build today.
    - If either lives in a private registry (ACR, GHCR, etc.) you'll need to
      pass `registryServer / registryUsername / registryPassword` parameters.

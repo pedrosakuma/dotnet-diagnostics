@@ -34,6 +34,8 @@ jobs:
     permissions:
       contents: read
     uses: ./.github/workflows/portable-native-packaging.yml
+    secrets:
+      NUGET_CONFIG: ${{ secrets.NUGET_CONFIG }}
 
   # ----- 1) Build + publish the NuGet global-tool package -----
   pack-tool:
@@ -68,6 +70,20 @@ jobs:
           restore-keys: |
             nuget-${{ runner.os }}-
 
+      - name: Stage caller-provided private NuGet configuration
+        env:
+          PRIVATE_NUGET_CONFIG: ${{ secrets.NUGET_CONFIG }}
+        shell: bash
+        run: |
+          if [[ -z "${PRIVATE_NUGET_CONFIG:-}" ]]; then
+            echo "The NUGET_CONFIG Actions secret is required for release restore; no public NuGet fallback is permitted." >&2
+            exit 1
+          fi
+          umask 077
+          config="$RUNNER_TEMP/release-NuGet.Config"
+          printf '%s' "$PRIVATE_NUGET_CONFIG" > "$config"
+          unset PRIVATE_NUGET_CONFIG
+
       - name: Derive version from tag (or workflow_dispatch input)
         id: derive-version
         shell: bash
@@ -80,7 +96,11 @@ jobs:
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
       - name: Restore
-        run: dotnet restore
+        run: dotnet restore --configfile "$RUNNER_TEMP/release-NuGet.Config"
+
+      - name: Remove staged private NuGet configuration
+        if: always()
+        run: rm -f -- "$RUNNER_TEMP/release-NuGet.Config"
 
       - name: Download prepared portable assets
         if: github.event_name == 'workflow_dispatch' && inputs.include_portable_worker
@@ -175,6 +195,20 @@ jobs:
           restore-keys: |
             nuget-${{ runner.os }}-
 
+      - name: Stage caller-provided private NuGet configuration
+        env:
+          PRIVATE_NUGET_CONFIG: ${{ secrets.NUGET_CONFIG }}
+        shell: bash
+        run: |
+          if [[ -z "${PRIVATE_NUGET_CONFIG:-}" ]]; then
+            echo "The NUGET_CONFIG Actions secret is required for binary restore; no public NuGet fallback is permitted." >&2
+            exit 1
+          fi
+          umask 077
+          config="$RUNNER_TEMP/binaries-NuGet.Config"
+          printf '%s' "$PRIVATE_NUGET_CONFIG" > "$config"
+          unset PRIVATE_NUGET_CONFIG
+
       - name: Download Linux-x64 portable sidecars
         if: matrix.rid == 'linux-x64' && needs.pack-tool.outputs.portable_worker == 'true'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -191,6 +225,18 @@ jobs:
           echo "PortableCaptureWorkerAssetsDir=$GITHUB_WORKSPACE/artifacts/portable-worker/linux-x64" >> "$GITHUB_ENV"
           echo "RequirePortableCaptureWorkerAssets=true" >> "$GITHUB_ENV"
 
+      - name: Restore server and CLI for ${{ matrix.rid }}
+        shell: bash
+        run: |
+          dotnet restore src/DotnetDiagnostics.Mcp/DotnetDiagnostics.Mcp.csproj \
+            --runtime "${{ matrix.rid }}" \
+            -p:SelfContained=true \
+            --configfile "$RUNNER_TEMP/binaries-NuGet.Config"
+          dotnet restore src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj \
+            --runtime "${{ matrix.rid }}" \
+            -p:SelfContained=true \
+            --configfile "$RUNNER_TEMP/binaries-NuGet.Config"
+
       - name: Publish self-contained single-file binaries
         shell: bash
         run: |
@@ -201,6 +247,7 @@ jobs:
             -p:PublishSingleFile=true \
             -p:IncludeNativeLibrariesForSelfExtract=true \
             -p:Version=${{ needs.pack-tool.outputs.version }} \
+            --no-restore \
             -o artifacts/server/${{ matrix.rid }}
           dotnet publish src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj \
             -c Release \
@@ -211,7 +258,13 @@ jobs:
             -p:PackAsTool=false \
             -p:Version=${{ needs.pack-tool.outputs.version }} \
             -p:DockerBootstrapImageTag=${{ needs.pack-tool.outputs.version }} \
+            --no-restore \
             -o artifacts/cli/${{ matrix.rid }}
+
+      - name: Remove staged private NuGet configuration
+        if: always()
+        shell: bash
+        run: rm -f -- "$RUNNER_TEMP/binaries-NuGet.Config"
 
       - name: Rename binaries to their command names
         shell: bash

@@ -237,7 +237,10 @@ dotnet-diagnostics-cli docker-bootstrap \
   --acknowledge-risk high
 
 # Repository development with local MCP changes:
-docker build -t dotnet-diagnostics-mcp:dev -f deploy/Dockerfile .
+export NUGET_CONFIG="${NUGET_CONFIG:-$HOME/.nuget/NuGet/NuGet.Config}"
+test -s "$NUGET_CONFIG"
+docker build --secret "id=nugetconfig,src=$NUGET_CONFIG" \
+  -t dotnet-diagnostics-mcp:dev -f deploy/Dockerfile .
 dotnet run --project src/DotnetDiagnostics.Cli -c Release -- \
   docker-bootstrap --target-container api --sidecar-image dotnet-diagnostics-mcp:dev \
   --acknowledge-risk high
