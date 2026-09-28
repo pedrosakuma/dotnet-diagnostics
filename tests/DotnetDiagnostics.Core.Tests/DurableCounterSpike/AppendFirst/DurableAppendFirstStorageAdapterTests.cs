@@ -252,7 +252,11 @@ public sealed class DurableAppendFirstStorageAdapterTests : IDisposable
             var canonicalPath = Path.Combine(staging, "canonical", "records.bin");
             new FileInfo(canonicalPath).Length.Should().BeGreaterThan(0, "the batch is durably flushed despite the ack fault");
 
-            using var frameStream = File.OpenRead(canonicalPath);
+            using var frameStream = new FileStream(
+                canonicalPath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite);
             DurableAppendFirstFrame.ReadNext(frameStream).Outcome.Should().Be(DurableAppendFirstFrameOutcome.Valid);
         }
     }
