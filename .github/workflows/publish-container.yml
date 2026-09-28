@@ -56,7 +56,7 @@ on:
         required: false
         type: string
       include_portable_worker:
-        description: 'Opt in to the reviewed Linux-amd64 portable worker; Linux-arm64 remains asset-free.'
+        description: 'Include the reviewed Linux-amd64 portable worker for manual runs; tag images always include it. Linux-arm64 remains asset-free.'
         required: false
         default: false
         type: boolean
@@ -67,7 +67,7 @@ permissions:
 
 jobs:
   portable-native:
-    if: github.event_name == 'workflow_dispatch' && inputs.include_portable_worker
+    if: github.event_name == 'workflow_dispatch' && inputs.include_portable_worker || github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: read
     uses: ./.github/workflows/portable-native-packaging.yml
@@ -120,14 +120,14 @@ jobs:
         run: python3 -m unittest discover -s tests/packaging -p 'test_*.py' -v
 
       - name: Download prepared Linux-amd64 portable assets
-        if: inputs.include_portable_worker
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') || inputs.include_portable_worker
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: portable-worker-linux-x64
           path: artifacts/portable-download
 
       - name: Require prepared Linux-amd64 portable assets
-        if: inputs.include_portable_worker
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') || inputs.include_portable_worker
         run: |
           mkdir -p artifacts/portable-worker
           tar -xzf artifacts/portable-download/portable-worker-linux-x64.tar.gz -C artifacts/portable-worker
@@ -200,14 +200,14 @@ jobs:
           unset PRIVATE_NUGET_CONFIG
 
       - name: Download prepared Linux-amd64 portable assets
-        if: matrix.platform == 'linux/amd64' && github.event_name == 'workflow_dispatch' && inputs.include_portable_worker
+        if: matrix.platform == 'linux/amd64' && (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' && inputs.include_portable_worker)
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: portable-worker-linux-x64
           path: artifacts/portable-download
 
       - name: Require prepared Linux-amd64 portable assets
-        if: matrix.platform == 'linux/amd64' && github.event_name == 'workflow_dispatch' && inputs.include_portable_worker
+        if: matrix.platform == 'linux/amd64' && (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' && inputs.include_portable_worker)
         run: |
           mkdir -p artifacts/portable-worker
           tar -xzf artifacts/portable-download/portable-worker-linux-x64.tar.gz -C artifacts/portable-worker
@@ -232,7 +232,7 @@ jobs:
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
           build-args: |
             INSTALL_PERF=${{ matrix.install_perf }}
-            INCLUDE_PORTABLE_CAPTURE_WORKER=${{ github.event_name == 'workflow_dispatch' && inputs.include_portable_worker && matrix.platform == 'linux/amd64' }}
+            INCLUDE_PORTABLE_CAPTURE_WORKER=${{ matrix.platform == 'linux/amd64' && (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' && inputs.include_portable_worker) }}
           secret-files: |
             nugetconfig=${{ runner.temp }}/NuGet.Config
           cache-from: type=gha,scope=container-${{ matrix.variant }}-${{ steps.pp.outputs.pair }}

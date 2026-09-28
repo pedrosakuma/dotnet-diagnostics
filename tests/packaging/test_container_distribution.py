@@ -128,9 +128,14 @@ class ContainerDistributionTests(unittest.TestCase):
         )
         self.assertIn("matrix.platform == 'linux/amd64'", WORKFLOW_JOBS["build"])
         self.assertIn(
-            "INCLUDE_PORTABLE_CAPTURE_WORKER=${{ github.event_name == 'workflow_dispatch' && "
-            "inputs.include_portable_worker && matrix.platform == 'linux/amd64' }}",
+            "INCLUDE_PORTABLE_CAPTURE_WORKER=${{ matrix.platform == 'linux/amd64' && "
+            "(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') || "
+            "github.event_name == 'workflow_dispatch' && inputs.include_portable_worker) }}",
             WORKFLOW_JOBS["build"],
+        )
+        self.assertIn(
+            "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')",
+            WORKFLOW_JOBS["portable-native"],
         )
         self.assertIn(
             "uses: ./.github/workflows/portable-native-packaging.yml",
@@ -153,6 +158,7 @@ class ContainerDistributionTests(unittest.TestCase):
 
     def test_existing_push_and_tag_triggers_and_publish_mode_remain(self):
         self.assertIn("branches: [main]\n    tags: ['v*']", WORKFLOW_TEXT)
+        self.assertIn("tag images always include it", WORKFLOW_TEXT)
         self.assertIn("inputs.mode == 'publish'", WORKFLOW_JOBS["build"])
         self.assertIn("inputs.mode == 'publish'", WORKFLOW_JOBS["merge"])
         self.assertIn("needs: [portable-native, validate-inputs]", WORKFLOW_JOBS["build"])

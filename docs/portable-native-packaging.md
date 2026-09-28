@@ -156,14 +156,15 @@ must keep the sidecar directory beside the executable; distributing the executab
 alone does not deliver portable import assets. Unsupported RID-specific outputs
 do not include the Linux-x64 sidecar.
 
-The existing release workflow gains **manual opt-in**
-`include_portable_worker` (default false). When opted in, it calls the producer
-once, reuses its internal artifact for both tool packages and Linux-x64 binaries,
-and requires the sidecars. Existing tag-triggered releases remain unchanged until
-a separately reviewed activation of release inclusion. Dispatching the release
-workflow still builds and attests product artifacts; public NuGet/GitHub Release
-publication remains tag-only. Use the nonpublishing preparation workflow for
-initial producer validation.
+The release workflow includes the portable worker on tag-triggered releases.
+For tag pushes it calls the producer once, reuses its internal artifact for both
+tool packages and Linux-x64 single-file binary archives, and requires the
+sidecars. The `include_portable_worker` dispatch input remains a manual opt-in
+for non-tag release dry runs; `producer_only=true` remains the nonpublishing
+producer validation path. Dispatching the release workflow still builds and
+attests product artifacts only for non-`producer_only` runs; public NuGet/GitHub
+Release publication remains tag-only. Use the nonpublishing preparation workflow
+for initial producer validation.
 
 When the preparation workflow is not registered on the default branch, the
 registered `release.yml` offers a separate **`producer_only=true`**
@@ -201,11 +202,69 @@ retain their prior behavior when `producer_only` is absent or false.
 Docker consumes the same already-prepared artifact; it does not compile one.
 Extract it into `artifacts/portable-worker/linux-x64` in the build context and use
 `--build-arg INCLUDE_PORTABLE_CAPTURE_WORKER=true`. The deny-all `.dockerignore`
-admits only the five named assets. The opt-in amd64 build requires validated
-assets; the default and ARM64 images do not gain import support. No activation
-environment variables are baked into the image. The operator can explicitly use
+admits only the five named assets. Tag-triggered GHCR publication now runs the
+same producer and passes the worker only to Linux/amd64 builds; manual validation
+or publication runs can still opt in with `include_portable_worker`. ARM64 images
+remain deliberately asset-free. No activation environment variables are baked
+into the image. The operator can explicitly use
 `/app/NativeAssets/portable-capture/linux-x64/...` for both hosts; the CLI also
 has its application-adjacent copy under `/app/cli/NativeAssets/...`.
+
+## Installed-host smoke gate
+
+`scripts/portable-installed-host-smoke.py` is the bounded installed-host gate for
+release inclusion. It performs a single pack/install/preflight pass by default
+and records `importExecuted: false` in `manifest.json`; it does **not** run the
+native worker unless `--execute-import` is supplied.
+
+Dry run with reviewed producer assets:
+
+```bash
+DOTNET_CLI_TELEMETRY_OPTOUT=1 \
+DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 \
+DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE=1 \
+DOTNET_NOLOGO=1 \
+python3 scripts/portable-installed-host-smoke.py \
+  --assets-dir /absolute/producer/linux-x64 \
+  --trusted-root /absolute/trusted/root \
+  --private-nuget-config "$HOME/.nuget/NuGet/NuGet.Config" \
+  --work-dir /absolute/evidence/installed-host-smoke-dryrun
+```
+
+The script refuses private NuGet configuration that contains `nuget.org`, creates
+a short-lived install `NuGet.Config` whose only sources are the local package
+folder plus the private source entries copied from the supplied config, passes
+`--configfile` to every restore and `dotnet tool install`, and uses `--no-restore`
+for packing after the explicit private restores. It packs both tool hosts with
+`PortableCaptureWorkerAssetsDir` and `RequirePortableCaptureWorkerAssets=true`,
+installs `dotnet-diagnostics-cli` and `dotnet-diagnostics-mcp` into fresh
+same-owner `--tool-path` directories, locates each installed
+`NativeAssets/portable-capture/linux-x64` copy, and runs
+`scripts/portable-worker-preflight.py` against both installed copies. The manifest
+contains package inventories, installed sidecar modes, preflight output, and the
+exact command records with private config paths redacted.
+
+A real native import requires separate human authorization. Use the same command
+with `--execute-import` only after that authorization:
+
+```bash
+DOTNET_CLI_TELEMETRY_OPTOUT=1 \
+DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 \
+DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE=1 \
+DOTNET_NOLOGO=1 \
+python3 scripts/portable-installed-host-smoke.py \
+  --assets-dir /absolute/producer/linux-x64 \
+  --trusted-root /absolute/trusted/root \
+  --private-nuget-config "$HOME/.nuget/NuGet/NuGet.Config" \
+  --work-dir /absolute/evidence/installed-host-smoke-import \
+  --execute-import
+```
+
+With `--execute-import`, the script activates the worker only through the
+installed hosts' own `NativeAssets` paths. It runs one CLI export/import/offline
+query round trip and one MCP stdio import/offline query round trip against the
+installed MCP tool. It uses bounded subprocess timeouts and no retry loop; first
+failures remain in the manifest.
 
 ## Validation limits
 
@@ -241,20 +300,23 @@ acceptance-test filter. Its report explicitly records `importExecuted: false`.
 Optional Landlock/seccomp probes inspect host prerequisites without importing a
 bundle.
 
-Before release inclusion is enabled by default: verify the pinned producer
-artifact and preflight report against the final revision, inspect actual
-tool/publish/archive inventories, install both tools into fresh same-owner
-locations, verify single-file sidecars and the non-publishing Docker variants,
-and then run separately authorized native imports through both hosts. Preserve
-first failures. A layout test, preflight, or clean workload-only comparison does
-not resolve the retained strict watchdog acceptance risk.
+Release inclusion is now enabled by maintainer decision for tag-triggered
+releases. Keep the evidence bounded: verify the pinned producer artifact and
+preflight report against the final revision, inspect actual tool/publish/archive
+inventories, install both tools into fresh same-owner locations, verify
+single-file sidecars and the Linux/amd64 Docker path, and preserve first
+failures. Native imports through installed hosts remain a separate explicit
+execution gate via `scripts/portable-installed-host-smoke.py --execute-import`;
+a layout test, preflight, or clean workload-only comparison does not resolve the
+retained strict watchdog acceptance risk.
 
 Current status for #1054:
 
 - **Verified with the actual assets from producer run `36281250444`, without an
   import:**
   - the CLI and MCP package inventories;
-  - same-owner tool installs;
+  - same-owner tool installs and installed-copy preflight via
+    `scripts/portable-installed-host-smoke.py`;
   - the Linux/amd64 Docker variant.
 
   See [the packaging checkpoint](https://github.com/pedrosakuma/dotnet-diagnostics/issues/1054#issuecomment-5862579266).
@@ -264,5 +326,5 @@ Current status for #1054:
 - **Not yet run with the producer assets:** native imports through the
   *installed* CLI and MCP hosts. Earlier host-level import flows used pinned
   test assets.
-- **Tag-triggered releases still exclude the worker.** Release inclusion stays
-  a separate, explicit decision.
+- **Tag-triggered releases include the worker.** Installed-host import remains
+  separately gated by the smoke script and explicit `--execute-import` authorization.
