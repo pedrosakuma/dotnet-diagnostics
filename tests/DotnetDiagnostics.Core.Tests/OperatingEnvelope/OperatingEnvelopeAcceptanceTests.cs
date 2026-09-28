@@ -39,7 +39,8 @@ public sealed class OperatingEnvelopeAcceptanceTests
 
         var schedule = OperatingEnvelopeProtocol.CreateSchedule();
         var inputHashes = GetInputHashes();
-        var writer = await OperatingEnvelopeArtifactWriter.CreateAsync(outputDirectory, schedule, inputHashes);
+        var writer = await OperatingEnvelopeArtifactWriter.CreateAsync(
+            outputDirectory, schedule, inputHashes, requireCleanSource: true);
         var runDeadlineTimestamp = Stopwatch.GetTimestamp() + ToStopwatchTicks(schedule.Configuration.RunDeadline);
         using var runDeadline = CreateDeadline(runDeadlineTimestamp);
         var completedPairs = new List<OperatingEnvelopePairResult>();
@@ -135,6 +136,7 @@ public sealed class OperatingEnvelopeAcceptanceTests
         Directory.CreateDirectory(storeRoot);
 
         var samples = new List<LiveSampleProcess>(plan.TargetCount);
+        var sampleProcessIds = new Dictionary<LiveSampleProcess, int>(plan.TargetCount);
         var resources = new OperatingEnvelopeResourceMonitor();
         var cleanupErrors = new List<string>();
         var notes = new List<string>();
@@ -164,7 +166,7 @@ public sealed class OperatingEnvelopeAcceptanceTests
             for (var index = 0; index < plan.TargetCount; index++)
             {
                 CheckDeadline();
-                samples.Add(await LiveSampleProcess.StartPublishedAsync(
+                var sample = await LiveSampleProcess.StartPublishedAsync(
                     "CoreClrSample",
                     new LiveSampleOptions
                     {
@@ -173,7 +175,9 @@ public sealed class OperatingEnvelopeAcceptanceTests
                         DiagnosticTimeout = TimeSpan.FromSeconds(30),
                         HttpTimeout = TimeSpan.FromSeconds(30),
                     },
-                    cellToken.Token));
+                    cellToken.Token);
+                samples.Add(sample);
+                sampleProcessIds.Add(sample, OperatingEnvelopeProcessIdentity.Capture(sample.Process));
             }
 
             warmupStarted = Stopwatch.GetTimestamp();
@@ -301,7 +305,8 @@ public sealed class OperatingEnvelopeAcceptanceTests
                 catch (Exception ex)
                 {
                     targetTerminationTasks.Add(Task.FromException(ex));
-                    cleanupErrors.Add($"Target {sample.ProcessId} termination: {ex.GetType().Name}: {ex.Message}");
+                    cleanupErrors.Add(
+                        $"Target {sampleProcessIds[sample]} termination: {ex.GetType().Name}: {ex.Message}");
                 }
             }
 
@@ -360,15 +365,16 @@ public sealed class OperatingEnvelopeAcceptanceTests
             {
                 foreach (var sample in samples)
                 {
-                    if (!measuredProgress.TryGetValue(sample.ProcessId, out var progress))
+                    var processId = sampleProcessIds[sample];
+                    if (!measuredProgress.TryGetValue(processId, out var progress))
                     {
-                        targetRequests.Add(new(sample.ProcessId,
+                        targetRequests.Add(new(processId,
                             EmptyRequests(MeasuredRequestSlots(config), config.WindowDuration.TotalMilliseconds)));
                         continue;
                     }
 
                     var snapshot = progress.Snapshot(config.WindowDuration.TotalMilliseconds);
-                    targetRequests.Add(new(sample.ProcessId, snapshot.Accounting));
+                    targetRequests.Add(new(processId, snapshot.Accounting));
                     foreach (var note in snapshot.Notes)
                     {
                         if (!notes.Contains(note, StringComparer.Ordinal))

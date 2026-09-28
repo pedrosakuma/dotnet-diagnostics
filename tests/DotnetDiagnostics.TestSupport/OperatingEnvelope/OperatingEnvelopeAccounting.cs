@@ -2,6 +2,15 @@ using System.Diagnostics;
 
 namespace DotnetDiagnostics.TestSupport.OperatingEnvelope;
 
+public static class OperatingEnvelopeProcessIdentity
+{
+    public static int Capture(Process process)
+    {
+        ArgumentNullException.ThrowIfNull(process);
+        return process.Id;
+    }
+}
+
 public enum OperatingEnvelopeRequestOutcome
 {
     Admitted,

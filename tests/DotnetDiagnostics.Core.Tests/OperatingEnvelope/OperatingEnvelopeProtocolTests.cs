@@ -9,6 +9,18 @@ namespace DotnetDiagnostics.Core.Tests.OperatingEnvelope;
 public sealed class OperatingEnvelopeProtocolTests
 {
     [Fact]
+    public void CapturedProcessIdentityRemainsAvailableAfterProcessObjectDisposal()
+    {
+        var process = Process.GetCurrentProcess();
+        var processId = OperatingEnvelopeProcessIdentity.Capture(process);
+
+        process.Dispose();
+
+        Assert.True(processId > 0);
+        Assert.Throws<InvalidOperationException>(() => _ = process.Id);
+    }
+
+    [Fact]
     public void DefaultScheduleHasThreeAlternatingFreshPairsForEveryPopulation()
     {
         var schedule = OperatingEnvelopeProtocol.CreateSchedule();

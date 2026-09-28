@@ -33,6 +33,7 @@ public sealed class OperatingEnvelopeArtifactWriter
         string outputDirectory,
         OperatingEnvelopeSchedule schedule,
         IReadOnlyDictionary<string, string>? inputHashes = null,
+        bool requireCleanSource = false,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(outputDirectory);
@@ -40,6 +41,9 @@ public sealed class OperatingEnvelopeArtifactWriter
         schedule.Configuration.Validate();
         cancellationToken.ThrowIfCancellationRequested();
 
+        var dotnetSdkVersion = await GetDotnetSdkVersionAsync(cancellationToken).ConfigureAwait(false);
+        var sourceRevision = await GetSourceRevisionAsync(requireCleanSource, cancellationToken)
+            .ConfigureAwait(false);
         var root = Path.GetFullPath(outputDirectory);
         Directory.CreateDirectory(root);
         var runId = $"operating-envelope-{DateTimeOffset.UtcNow:yyyyMMddTHHmmssfffZ}-{Guid.NewGuid():N}";
@@ -59,8 +63,8 @@ public sealed class OperatingEnvelopeArtifactWriter
             System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString(),
             Environment.ProcessorCount,
             System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
-            await GetDotnetSdkVersionAsync(cancellationToken).ConfigureAwait(false),
-            await GetSourceRevisionAsync(cancellationToken).ConfigureAwait(false),
+            dotnetSdkVersion,
+            sourceRevision,
             schedule.Configuration,
             configHash,
             new("plan.json", planHash),
@@ -295,28 +299,64 @@ public sealed class OperatingEnvelopeArtifactWriter
         return output;
     }
 
-    private static async Task<string> GetSourceRevisionAsync(CancellationToken cancellationToken)
+    private static async Task<string> GetSourceRevisionAsync(
+        bool requireCleanSource,
+        CancellationToken cancellationToken)
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        if (requireCleanSource)
+        {
+            var status = await RunGitAsync(
+                repositoryRoot,
+                ["status", "--porcelain=v1", "--untracked-files=all"],
+                "git status for run provenance",
+                allowEmptyOutput: true,
+                cancellationToken).ConfigureAwait(false);
+            if (!string.IsNullOrWhiteSpace(status))
+            {
+                throw new InvalidOperationException(
+                    "Operating-envelope evidence requires a clean Git checkout so sourceRevision identifies the exact inputs.");
+            }
+        }
+
+        return await RunGitAsync(
+            repositoryRoot,
+            ["rev-parse", "HEAD"],
+            "git rev-parse HEAD for run provenance",
+            allowEmptyOutput: false,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<string> RunGitAsync(
+        string repositoryRoot,
+        IReadOnlyList<string> arguments,
+        string operation,
+        bool allowEmptyOutput,
+        CancellationToken cancellationToken)
     {
         var startInfo = new ProcessStartInfo("git")
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
-            WorkingDirectory = FindRepositoryRoot(),
+            WorkingDirectory = repositoryRoot,
         };
-        startInfo.ArgumentList.Add("rev-parse");
-        startInfo.ArgumentList.Add("HEAD");
+        foreach (var argument in arguments)
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
+
         using var process = Process.Start(startInfo)
-            ?? throw new InvalidOperationException("Could not start git rev-parse for run provenance.");
+            ?? throw new InvalidOperationException($"Could not start {operation}.");
         var standardOutput = process.StandardOutput.ReadToEndAsync(cancellationToken);
         var standardError = process.StandardError.ReadToEndAsync(cancellationToken);
         await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
         var output = (await standardOutput.ConfigureAwait(false)).Trim();
         var error = (await standardError.ConfigureAwait(false)).Trim();
-        if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(output))
+        if (process.ExitCode != 0 || (!allowEmptyOutput && string.IsNullOrWhiteSpace(output)))
         {
             throw new InvalidOperationException(
-                $"git rev-parse HEAD failed with exit code {process.ExitCode}: {error}");
+                $"{operation} failed with exit code {process.ExitCode}: {error}");
         }
 
         return output;
