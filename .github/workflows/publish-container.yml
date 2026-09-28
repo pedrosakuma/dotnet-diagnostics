@@ -12,7 +12,7 @@ name: Publish container image
 # Tag taxonomy (note: docker/metadata-action's semver patterns strip the leading 'v'):
 #   - push to main             → :main, :edge, :sha-<shortsha>
 #   - push to tag vX.Y.Z       → :X.Y.Z, :X.Y, :X, :latest
-#   - manual workflow_dispatch → :<input-tag>
+#   - manual workflow_dispatch in publish mode → :<input-tag>
 # Lean variant publishes the same tags with a '-lean' suffix appended.
 #
 # Multi-arch strategy:
@@ -33,10 +33,21 @@ on:
     tags: ['v*']
   workflow_dispatch:
     inputs:
-      tag:
-        description: 'Image tag to publish (e.g. "preview-2026-05-19"). The "-lean" variant is appended automatically.'
+      mode:
+        description: 'Publish the normal image variants, or run local-only container validation.'
         required: true
+        default: publish
+        type: choice
+        options: [publish, validate]
+      tag:
+        description: 'Image tag for publish mode (e.g. "preview-2026-05-19"). The "-lean" variant is appended automatically.'
+        required: false
         type: string
+      include_portable_worker:
+        description: 'Opt in to the reviewed Linux-amd64 portable worker; Linux-arm64 remains asset-free.'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -47,9 +58,79 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  portable-native:
+    if: github.event_name == 'workflow_dispatch' && inputs.include_portable_worker
+    permissions:
+      contents: read
+    uses: ./.github/workflows/portable-native-packaging.yml
+
+  validate-inputs:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'publish'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Require a tag for manual publishing
+        env:
+          IMAGE_TAG: ${{ inputs.tag }}
+        run: test -n "$IMAGE_TAG"
+
+  validate-container:
+    name: Validate container without publishing
+    needs: portable-native
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'validate' && !cancelled() && !failure() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+
+      - name: Run deterministic packaging and distribution tests
+        run: python3 -m unittest discover -s tests/packaging -p 'test_*.py' -v
+
+      - name: Download prepared Linux-amd64 portable assets
+        if: inputs.include_portable_worker
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: portable-worker-linux-x64
+          path: artifacts/portable-download
+
+      - name: Require prepared Linux-amd64 portable assets
+        if: inputs.include_portable_worker
+        run: |
+          mkdir -p artifacts/portable-worker
+          tar -xzf artifacts/portable-download/portable-worker-linux-x64.tar.gz -C artifacts/portable-worker
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+
+      - name: Build local validation image (no push)
+        run: |
+          docker buildx build \
+            --load \
+            --platform linux/amd64 \
+            --build-arg INSTALL_PERF=false \
+            --build-arg INCLUDE_PORTABLE_CAPTURE_WORKER=${{ inputs.include_portable_worker }} \
+            --tag dotnet-diagnostics:container-validation \
+            --file deploy/Dockerfile \
+            .
+
+      - name: Verify safe default startup and bundled CLI
+        run: bash tests/docker/container-validation.sh dotnet-diagnostics:container-validation
+
   build:
     name: Build digest (${{ matrix.variant }}, ${{ matrix.platform }})
+    needs: [portable-native, validate-inputs]
+    if: ${{ (github.event_name != 'workflow_dispatch' || inputs.mode == 'publish') && !cancelled() && !failure() }}
     runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
     strategy:
       fail-fast: false
       matrix:
@@ -73,6 +154,19 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
 
+      - name: Download prepared Linux-amd64 portable assets
+        if: matrix.platform == 'linux/amd64' && github.event_name == 'workflow_dispatch' && inputs.include_portable_worker
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: portable-worker-linux-x64
+          path: artifacts/portable-download
+
+      - name: Require prepared Linux-amd64 portable assets
+        if: matrix.platform == 'linux/amd64' && github.event_name == 'workflow_dispatch' && inputs.include_portable_worker
+        run: |
+          mkdir -p artifacts/portable-worker
+          tar -xzf artifacts/portable-download/portable-worker-linux-x64.tar.gz -C artifacts/portable-worker
+
       - name: Log in to GHCR
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
@@ -93,6 +187,7 @@ jobs:
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
           build-args: |
             INSTALL_PERF=${{ matrix.install_perf }}
+            INCLUDE_PORTABLE_CAPTURE_WORKER=${{ github.event_name == 'workflow_dispatch' && inputs.include_portable_worker && matrix.platform == 'linux/amd64' }}
           cache-from: type=gha,scope=container-${{ matrix.variant }}-${{ steps.pp.outputs.pair }}
           cache-to: type=gha,scope=container-${{ matrix.variant }}-${{ steps.pp.outputs.pair }},mode=max
           provenance: true
@@ -115,7 +210,8 @@ jobs:
 
   merge:
     name: Merge manifest (${{ matrix.variant }})
-    needs: build
+    needs: [build, validate-inputs]
+    if: ${{ (github.event_name != 'workflow_dispatch' || inputs.mode == 'publish') && !cancelled() && !failure() }}
     runs-on: ubuntu-latest
     permissions:
       contents: read

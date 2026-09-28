@@ -169,11 +169,12 @@ dotnet-diagnostics-mcp --urls http://127.0.0.1:8787
 # Loopback-only alternative: omit MCP_BEARER_TOKEN and copy the generated ephemeral token from the startup warning.
 ```
 
-For a **container**, the image sets `ASPNETCORE_URLS=http://0.0.0.0:8080` internally
-(non-loopback cleartext). Use the local-dev recipe in
-[`consumer-install.md` → § 1b](./consumer-install.md#1b-container)
-(`-p 127.0.0.1:8787:8080` + `MCP_ALLOW_INSECURE_HTTP=true`) or configure production
-TLS via [§ 1.6](./consumer-install.md#16-transport-security-for-non-loopback-listeners).
+For a **container**, the image binds to `http://127.0.0.1:8080` by default. This
+safe loopback default starts without an insecure-HTTP override, but a Docker port
+mapping cannot expose the listener outside the container. Configure direct HTTPS
+or a trusted TLS-terminating proxy before exposing it; see
+[`consumer-install.md` → § 1b](./consumer-install.md#1b-container) for the
+explicit local-development override and production choices.
 
 Sanity check:
 
