@@ -25,7 +25,8 @@ namespace DotnetDiagnostics.Core.Tests.OperatingEnvelope;
 public sealed class OperatingEnvelopeAcceptanceTests
 {
     private static readonly CaptureAccess Owner = new("operating-envelope-acceptance");
-    private static readonly TimeSpan CleanupDeadline = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan CleanupDeadline =
+        OperatingEnvelopeTaskSettlement.CleanupWindow(LiveSampleProcess.CleanupTimeout);
 
     [OperatingEnvelopeFact]
     public async Task RecordsBoundedMatchedLiveOperatingEnvelope()

@@ -21,6 +21,17 @@ public sealed class OperatingEnvelopeProtocolTests
     }
 
     [Fact]
+    public void CleanupWindowCanObserveTheBoundedTargetTerminationResult()
+    {
+        var window = OperatingEnvelopeTaskSettlement.CleanupWindow(LiveSampleProcess.CleanupTimeout);
+
+        Assert.Equal(TimeSpan.FromSeconds(7), window);
+        Assert.True(window > LiveSampleProcess.CleanupTimeout);
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            OperatingEnvelopeTaskSettlement.CleanupWindow(TimeSpan.Zero));
+    }
+
+    [Fact]
     public void DefaultScheduleHasThreeAlternatingFreshPairsForEveryPopulation()
     {
         var schedule = OperatingEnvelopeProtocol.CreateSchedule();

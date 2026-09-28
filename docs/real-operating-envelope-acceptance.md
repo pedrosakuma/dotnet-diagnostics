@@ -107,7 +107,10 @@ Results retain:
   Cleanup cancels outstanding work, initiates termination of every target, and
   waits for fault-free target termination before it starts the final settlement
   of owned capture/request work and the resource sampler. Target termination
-  and owned task settlement share one absolute bounded cleanup deadline.
+  and owned task settlement share one absolute bounded cleanup deadline. The
+  target helper retains its five-second termination timeout; the harness uses a
+  seven-second outer window so it can observe that bounded result and still
+  settle already-cancelled owned work, rather than racing the same deadline.
   Request accounting is snapshotted only after fault-free post-termination
   settlement. Any task fault, timeout, or cleanup failure writes a `quarantine.json`
   marker identifying the invalid trial and its stop outcome, plus its SHA-256

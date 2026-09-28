@@ -246,6 +246,18 @@ public sealed class OperatingEnvelopeTaskRegistry
 
 public static class OperatingEnvelopeTaskSettlement
 {
+    private static readonly TimeSpan TargetObservationMargin = TimeSpan.FromSeconds(2);
+
+    public static TimeSpan CleanupWindow(TimeSpan targetTerminationTimeout)
+    {
+        if (targetTerminationTimeout <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(targetTerminationTimeout));
+        }
+
+        return targetTerminationTimeout + TargetObservationMargin;
+    }
+
     public static async Task<OperatingEnvelopeTaskSettlementResult> SettleAsync(
         IReadOnlyList<Task> tasks,
         long absoluteDeadlineTimestamp,
