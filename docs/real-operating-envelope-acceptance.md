@@ -3,7 +3,36 @@
 This is the opt-in live acceptance harness for issue #1041. It measures existing
 CoreClrSample workloads against the current ephemeral and SQLite-backed capture
 paths; it adds no product tool, collector, retention policy, or performance
-target. **No live matrix results are claimed here.**
+target.
+
+## Reviewed acceptance evidence
+
+The clean-checkout run
+`operating-envelope-20260928T151658526Z-4ac82bcf2c8a4b73982a979670d12148`
+completed against source revision
+`93f0a1624199cc7938919ce35d548ba92fd0683d` with the selected .NET SDK
+10.0.401. All 42 trials completed, all 21 matched pairs were valid, every
+cleanup reported success, and the run produced no quarantine marker. The
+sealed run occupied 174,382,871 bytes. Its `results-manifest.json` SHA-256 is
+`3827f2c75669d9a4475de5cfbd031517f9a06e92a0f69241cdb75903a3b02604`.
+
+Earlier artifacts remain intentionally retained as adverse or non-authoritative
+evidence:
+
+- The first live attempt exposed a post-disposal `Process.Id` access during
+  cleanup. The target PID is now captured before teardown.
+- A subsequent complete run used binaries built from uncommitted changes, so
+  its recorded `sourceRevision` was not authoritative. Live acceptance now
+  refuses to start from a dirty checkout before creating a run directory.
+- The first clean run then quarantined
+  `queue-thread-pair-01-ephemeral` because the outer five-second settlement
+  deadline raced the target helper's independent five-second termination
+  timeout. The target timeout remains five seconds; the outer window now has a
+  two-second observation margin, and the final clean run completed.
+
+This is evidence for the frozen workload and host described by the run
+manifest. It is not a universal capacity result, losslessness claim, or service
+SLO, and it does not authorize native bundle import.
 
 ## Run only by explicit opt-in
 

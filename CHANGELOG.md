@@ -12,6 +12,10 @@
 - Added retained historical comparison for compatible CPU-sample, heap-snapshot
   and EventCounter artifacts through the existing CLI and MCP comparison
   surfaces. Imported captures use their destination-local IDs.
+- Added the opt-in real operating-envelope acceptance harness for paired
+  ephemeral and durable captures. The reviewed clean run completed all 42
+  trials and 21 matched pairs without quarantine; this remains bounded
+  host-specific evidence, not a product SLO.
 
 ### Security and compatibility
 
@@ -20,6 +24,10 @@
   development choice.
 - Docker, producer and release restore paths require a caller-provided private
   NuGet configuration and fail closed rather than falling back to public NuGet.
+- All automation restore paths now require explicit private NuGet configuration,
+  SDK workload-update checks are disabled, local container acceptance rejects
+  public configs, and required CI blocks untrusted code changes rather than
+  reporting an unvalidated success.
 - Global-tool portable-worker support is same-owner on Linux x64 glibc with
   GLIBC 2.34 or older requirements, Landlock ABI 3+, seccomp and procfs. This
   does not claim musl, Windows, macOS, ARM64 or arbitrary cross-UID support.
@@ -31,6 +39,9 @@
 - Workload-only historical comparison acceptance passed. Comparison after two
   independent imports remains blocked because the second import produced
   `WorkerObservationGap` under the unchanged strict 10 ms observation guard.
+- Operating-envelope adverse attempts remain retained: post-disposal process
+  identity access, non-authoritative dirty-checkout provenance, and a cleanup
+  deadline race were fixed before the final clean 42-trial run was sealed.
 
 ## [0.27.0] — 2026-09-18
 
