@@ -40,7 +40,8 @@ public sealed class OperatingEnvelopeAcceptanceTests
         var schedule = OperatingEnvelopeProtocol.CreateSchedule();
         var inputHashes = GetInputHashes();
         var writer = await OperatingEnvelopeArtifactWriter.CreateAsync(outputDirectory, schedule, inputHashes);
-        using var runDeadline = CreateDeadline(Stopwatch.GetTimestamp() + ToStopwatchTicks(schedule.Configuration.RunDeadline));
+        var runDeadlineTimestamp = Stopwatch.GetTimestamp() + ToStopwatchTicks(schedule.Configuration.RunDeadline);
+        using var runDeadline = CreateDeadline(runDeadlineTimestamp);
         var completedPairs = new List<OperatingEnvelopePairResult>();
         var completedTrials = new List<OperatingEnvelopeTrialResult>();
         var orderedPairs = schedule.Trials.GroupBy(trial => trial.PairId).ToArray();
@@ -53,7 +54,25 @@ public sealed class OperatingEnvelopeAcceptanceTests
                 stop = OperatingEnvelopeStopOutcome.RunDeadlineExceeded;
             }
 
-            var bytesBeforePair = GetDirectoryBytes(writer.RunDirectory);
+            var bytesBeforePair = 0L;
+            if (stop == OperatingEnvelopeStopOutcome.None)
+            {
+                try
+                {
+                    OperatingEnvelopeDeadlineGuard.CheckRun(
+                        runDeadlineTimestamp, Stopwatch.GetTimestamp(), runDeadline);
+                    bytesBeforePair = GetDirectoryBytes(
+                        writer.RunDirectory,
+                        () => OperatingEnvelopeDeadlineGuard.CheckRun(
+                            runDeadlineTimestamp, Stopwatch.GetTimestamp(), runDeadline),
+                        runDeadline.Token);
+                }
+                catch (OperationCanceledException) when (runDeadline.IsCancellationRequested)
+                {
+                    stop = OperatingEnvelopeStopOutcome.RunDeadlineExceeded;
+                }
+            }
+
             var pairReservation = 2L * new CaptureStoreOptions().MaxPackageBytes + 16 * 1024 * 1024;
             if (stop == OperatingEnvelopeStopOutcome.None &&
                 bytesBeforePair + pairReservation > schedule.Configuration.MaximumOutputBytes)
@@ -65,13 +84,21 @@ public sealed class OperatingEnvelopeAcceptanceTests
             foreach (var trialPlan in pair.OrderBy(item => item.OrderInPair))
             {
                 var trial = stop == OperatingEnvelopeStopOutcome.None
-                    ? await RunTrialAsync(trialPlan, writer, runDeadline.Token)
+                    ? await RunTrialAsync(
+                        trialPlan, writer, runDeadline, runDeadlineTimestamp)
                     : CreateNotRunResult(trialPlan, writer.ConfigurationHash, schedule.Configuration, stop);
                 pairTrials.Add(trial);
                 completedTrials.Add(trial);
                 if (trial.StopOutcome != OperatingEnvelopeStopOutcome.None)
                 {
                     stop = trial.StopOutcome;
+                }
+                if (!trial.CleanupSucceeded)
+                {
+                    var reason = trial.Error ?? "One or more trial-owned tasks did not settle during bounded cleanup.";
+                    await writer.WriteQuarantineAsync(trial, reason);
+                    throw new InvalidOperationException(
+                        $"Trial {trial.Plan.TrialId} is quarantined; pair and final evidence were not published: {reason}");
                 }
             }
 
@@ -91,14 +118,18 @@ public sealed class OperatingEnvelopeAcceptanceTests
     private static async Task<OperatingEnvelopeTrialResult> RunTrialAsync(
         OperatingEnvelopeTrialPlan plan,
         OperatingEnvelopeArtifactWriter writer,
-        CancellationToken runCancellationToken)
+        CancellationTokenSource runDeadline,
+        long runDeadlineTimestamp)
     {
         var config = writer.Schedule.Configuration;
         var startedUtc = DateTimeOffset.UtcNow;
         var cellStarted = Stopwatch.GetTimestamp();
-        using var cellDeadline = CreateDeadline(cellStarted + ToStopwatchTicks(config.CellDeadline));
+        var cellDeadlineTimestamp = cellStarted + ToStopwatchTicks(config.CellDeadline);
+        using var cellDeadline = CreateDeadline(cellDeadlineTimestamp);
         using var cellToken = CancellationTokenSource.CreateLinkedTokenSource(
-            runCancellationToken, cellDeadline.Token);
+            runDeadline.Token, cellDeadline.Token);
+        void CheckDeadline() => OperatingEnvelopeDeadlineGuard.CheckTrial(
+            runDeadlineTimestamp, cellDeadlineTimestamp, Stopwatch.GetTimestamp(), runDeadline, cellDeadline);
         var cellDirectory = Path.Combine(writer.RunDirectory, plan.StoreDirectoryName);
         var storeRoot = Path.Combine(cellDirectory, "store");
         Directory.CreateDirectory(storeRoot);
@@ -109,6 +140,9 @@ public sealed class OperatingEnvelopeAcceptanceTests
         var notes = new List<string>();
         var artifacts = new List<OperatingEnvelopeArtifactMeasurement>();
         var targetRequests = new List<OperatingEnvelopeTargetRequests>();
+        var warmupProgress = new List<OperatingEnvelopeRequestProgress>();
+        var measuredProgress = new Dictionary<int, OperatingEnvelopeRequestProgress>();
+        var warmupStarted = 0L;
         var warmupRequests = EmptyRequests(plan.TargetCount * WarmupRequestSlots(config), 0);
         var requests = EmptyRequests(plan.TargetCount * MeasuredRequestSlots(config), config.WindowDuration.TotalMilliseconds);
         OperatingEnvelopeDiagnosticResources diagnosticResources = EmptyDiagnosticResources("Not sampled.");
@@ -117,10 +151,10 @@ public sealed class OperatingEnvelopeAcceptanceTests
         string? error = null;
         var warmupMilliseconds = 0d;
         var cleanupStarted = 0L;
+        var resourceSettlementDeadline = 0L;
         var resourcesStopped = false;
         var ownedTasks = new List<Task>();
         var collectionTasks = new List<Task<ArtifactExecution>>();
-        var requestTasks = new List<Task<TargetLoadResult>>();
         SqliteCaptureStore? store = null;
 
         try
@@ -128,7 +162,7 @@ public sealed class OperatingEnvelopeAcceptanceTests
             store = new SqliteCaptureStore(new RootProvider(storeRoot));
             for (var index = 0; index < plan.TargetCount; index++)
             {
-                cellToken.Token.ThrowIfCancellationRequested();
+                CheckDeadline();
                 samples.Add(await LiveSampleProcess.StartPublishedAsync(
                     "CoreClrSample",
                     new LiveSampleOptions
@@ -141,9 +175,15 @@ public sealed class OperatingEnvelopeAcceptanceTests
                     cellToken.Token));
             }
 
-            var warmupStarted = Stopwatch.GetTimestamp();
-            var warmupResults = await Task.WhenAll(samples.Select((sample, index) =>
-                    SendWarmupRequestsAsync(sample, plan, index, config, cellToken.Token)));
+            warmupStarted = Stopwatch.GetTimestamp();
+            warmupProgress.AddRange(samples.Select(_ =>
+                new OperatingEnvelopeRequestProgress(WarmupRequestSlots(config))));
+            var warmupTasks = samples.Select((sample, index) =>
+                    SendWarmupRequestsAsync(
+                        sample, plan, index, config, warmupProgress[index], cellToken.Token))
+                .ToArray();
+            ownedTasks.AddRange(warmupTasks);
+            var warmupResults = await Task.WhenAll(warmupTasks);
             warmupMilliseconds = ElapsedMilliseconds(warmupStarted);
             notes.AddRange(warmupResults.SelectMany(result => result.Notes));
             warmupRequests = CombineRequests(
@@ -156,24 +196,30 @@ public sealed class OperatingEnvelopeAcceptanceTests
             {
                 if (plan.Population == OperatingEnvelopePopulation.MixedCollectors)
                 {
-                    collectionTasks.Add(CollectSweepAsync(
-                        target.Sample.ProcessId, plan.StorageMode, store, storeRoot, config, cellToken.Token));
+                    var collection = CollectSweepAsync(
+                        target.Sample.ProcessId, plan.StorageMode, store, storeRoot, config, cellToken.Token);
+                    collectionTasks.Add(collection);
+                    ownedTasks.Add(collection);
                 }
                 else
                 {
                     foreach (var job in JobsFor(plan.Population, target.Sample.ProcessId, config))
                     {
-                        collectionTasks.Add(CollectArtifactAsync(
-                            target.Sample.ProcessId, job, plan.StorageMode, store, storeRoot, config, cellToken.Token));
+                        var collection = CollectArtifactAsync(
+                            target.Sample.ProcessId, job, plan.StorageMode, store, storeRoot, config, cellToken.Token);
+                        collectionTasks.Add(collection);
+                        ownedTasks.Add(collection);
                     }
                 }
 
-                requestTasks.Add(DriveMeasuredRequestsAsync(
-                    target.Sample, target.Index, plan, config, cellToken.Token));
+                var requestProgress = new OperatingEnvelopeRequestProgress(MeasuredRequestSlots(config));
+                measuredProgress.Add(target.Sample.ProcessId, requestProgress);
+                var request = DriveMeasuredRequestsAsync(
+                    target.Sample, target.Index, plan, config,
+                    requestProgress, cellToken.Token);
+                ownedTasks.Add(request);
             }
 
-            ownedTasks.AddRange(collectionTasks);
-            ownedTasks.AddRange(requestTasks);
             var workload = Task.WhenAll(ownedTasks);
             try
             {
@@ -185,20 +231,18 @@ public sealed class OperatingEnvelopeAcceptanceTests
             }
 
             var executions = collectionTasks.Select(task => task.Result).ToArray();
-            diagnosticResources = await resources.StopAsync();
+            resourceSettlementDeadline = Stopwatch.GetTimestamp() + ToStopwatchTicks(CleanupDeadline);
+            diagnosticResources = await resources.StopAsync(resourceSettlementDeadline);
             resourcesStopped = true;
+            CheckDeadline();
             foreach (var execution in executions)
             {
-                artifacts.Add(await MeasureStoredArtifactAsync(execution, cellToken.Token));
+                CheckDeadline();
+                var measurementTask = MeasureStoredArtifactAsync(execution, CheckDeadline, cellToken.Token);
+                ownedTasks.Add(measurementTask);
+                artifacts.Add(await measurementTask.WaitAsync(cellToken.Token));
             }
-
-            var targetResults = requestTasks.Select(task => task.Result).ToArray();
-            targetRequests.AddRange(targetResults.Select(result =>
-                new OperatingEnvelopeTargetRequests(result.ProcessId, result.Accounting)));
-            notes.AddRange(targetResults.SelectMany(result => result.Notes));
-            requests = CombineRequests(
-                targetResults.Select(result => result.Accounting).ToArray(),
-                targetResults.Max(result => result.Accounting.MeasurementWindowMilliseconds));
+            CheckDeadline();
 
             if (samples.Any(sample => !sample.IsRunning))
             {
@@ -221,9 +265,9 @@ public sealed class OperatingEnvelopeAcceptanceTests
                 error = null;
             }
         }
-        catch (OperationCanceledException ex) when (cellDeadline.IsCancellationRequested || runCancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException ex) when (cellDeadline.IsCancellationRequested || runDeadline.IsCancellationRequested)
         {
-            stopOutcome = runCancellationToken.IsCancellationRequested
+            stopOutcome = runDeadline.IsCancellationRequested
                 ? OperatingEnvelopeStopOutcome.RunDeadlineExceeded
                 : OperatingEnvelopeStopOutcome.CellDeadlineExceeded;
             outcome = OperatingEnvelopeTrialOutcome.Stopped;
@@ -243,7 +287,22 @@ public sealed class OperatingEnvelopeAcceptanceTests
             {
                 if (ownedTasks.Count > 0)
                 {
-                    await ObserveOwnedTasksAsync(ownedTasks, CleanupDeadline);
+                    var settlementDeadline = cleanupStarted + ToStopwatchTicks(CleanupDeadline);
+                    var settlement = await OperatingEnvelopeTaskSettlement.SettleAsync(
+                        ownedTasks, settlementDeadline);
+                    if (!settlement.Settled)
+                    {
+                        cleanupErrors.Add(
+                            $"Owned collection/request work did not settle before the absolute {CleanupDeadline} cleanup deadline.");
+                    }
+                    if (settlement.Faults.Count > 0)
+                    {
+                        notes.AddRange(settlement.Faults.Select(
+                            fault => $"Owned collection/request task faulted: {fault}"));
+                        outcome = OperatingEnvelopeTrialOutcome.Failed;
+                        stopOutcome = OperatingEnvelopeStopOutcome.CollectionFailed;
+                        error ??= "One or more collection/request tasks faulted.";
+                    }
                 }
             }
             catch (Exception ex)
@@ -251,31 +310,25 @@ public sealed class OperatingEnvelopeAcceptanceTests
                 cleanupErrors.Add($"Owned task cleanup: {ex.GetType().Name}: {ex.Message}");
             }
 
-            targetRequests.Clear();
-            var settledRequestResults = requestTasks
-                .Where(task => task.IsCompletedSuccessfully)
-                .Select(task => task.Result)
-                .ToDictionary(result => result.ProcessId);
             foreach (var sample in samples)
             {
-                if (settledRequestResults.TryGetValue(sample.ProcessId, out var result))
+                if (measuredProgress.TryGetValue(sample.ProcessId, out var progress))
                 {
-                    targetRequests.Add(new(result.ProcessId, result.Accounting));
-                    foreach (var note in result.Notes)
+                    var snapshot = progress.Snapshot(config.WindowDuration.TotalMilliseconds);
+                    targetRequests.Add(new(sample.ProcessId, snapshot.Accounting));
+                    foreach (var note in snapshot.Notes)
                     {
                         if (!notes.Contains(note, StringComparer.Ordinal))
                         {
                             notes.Add(note);
                         }
                     }
-                    continue;
                 }
-
-                var planned = MeasuredRequestSlots(config);
-                var unknown = new OperatingEnvelopeRequestAccounting(
-                    planned, planned, 0, 0, planned, 0, config.WindowDuration.TotalMilliseconds, []);
-                targetRequests.Add(new(sample.ProcessId, unknown));
-                notes.Add($"Target {sample.ProcessId} request worker did not return accounting; all planned request outcomes are unknown.");
+                else
+                {
+                    targetRequests.Add(new(sample.ProcessId,
+                        EmptyRequests(MeasuredRequestSlots(config), config.WindowDuration.TotalMilliseconds)));
+                }
             }
 
             if (targetRequests.Count > 0)
@@ -284,12 +337,35 @@ public sealed class OperatingEnvelopeAcceptanceTests
                     targetRequests.Select(result => result.Accounting).ToArray(),
                     config.WindowDuration.TotalMilliseconds);
             }
+            if (warmupProgress.Count > 0)
+            {
+                var elapsed = warmupStarted == 0 ? 0 : ElapsedMilliseconds(warmupStarted);
+                warmupMilliseconds = elapsed;
+                var warmupSnapshots = warmupProgress
+                    .Select(progress => progress.Snapshot(elapsed))
+                    .ToArray();
+                warmupRequests = CombineRequests(
+                    warmupSnapshots.Select(snapshot => snapshot.Accounting).ToArray(),
+                    elapsed);
+                foreach (var note in warmupSnapshots.SelectMany(snapshot => snapshot.Notes))
+                {
+                    if (!notes.Contains(note, StringComparer.Ordinal))
+                    {
+                        notes.Add(note);
+                    }
+                }
+            }
 
             try
             {
                 if (!resourcesStopped)
                 {
-                    diagnosticResources = await resources.StopAsync();
+                    if (resourceSettlementDeadline == 0)
+                    {
+                        resourceSettlementDeadline = cleanupStarted + ToStopwatchTicks(CleanupDeadline);
+                    }
+
+                    diagnosticResources = await resources.StopAsync(resourceSettlementDeadline);
                 }
             }
             catch (Exception ex)
@@ -320,6 +396,22 @@ public sealed class OperatingEnvelopeAcceptanceTests
                 stopOutcome = OperatingEnvelopeStopOutcome.CleanupFailed;
                 outcome = OperatingEnvelopeTrialOutcome.Stopped;
                 error = string.Join(" | ", cleanupErrors);
+            }
+            else if (stopOutcome == OperatingEnvelopeStopOutcome.None)
+            {
+                try
+                {
+                    CheckDeadline();
+                }
+                catch (OperationCanceledException) when (
+                    cellDeadline.IsCancellationRequested || runDeadline.IsCancellationRequested)
+                {
+                    stopOutcome = runDeadline.IsCancellationRequested
+                        ? OperatingEnvelopeStopOutcome.RunDeadlineExceeded
+                        : OperatingEnvelopeStopOutcome.CellDeadlineExceeded;
+                    outcome = OperatingEnvelopeTrialOutcome.Stopped;
+                    error = $"{stopOutcome}: deadline elapsed before trial cleanup completed.";
+                }
             }
         }
 
@@ -640,8 +732,10 @@ public sealed class OperatingEnvelopeAcceptanceTests
 
     private static async Task<OperatingEnvelopeArtifactMeasurement> MeasureStoredArtifactAsync(
         ArtifactExecution execution,
+        Action checkDeadline,
         CancellationToken cancellationToken)
     {
+        checkDeadline();
         var measurement = execution.Measurement;
         var capture = execution.Capture;
         if (execution.StorageMode != OperatingEnvelopeStorageMode.Durable || capture is null)
@@ -662,14 +756,15 @@ public sealed class OperatingEnvelopeAcceptanceTests
         try
         {
             var beforeHashStarted = Stopwatch.GetTimestamp();
-            var beforeQuery = HashCaptureFiles(execution.StoreRoot, capture.CaptureId);
+            var beforeQuery = await HashCaptureFilesAsync(
+                execution.StoreRoot, capture.CaptureId, checkDeadline, cancellationToken);
             evidenceHashMilliseconds += ElapsedMilliseconds(beforeHashStarted);
             if (capture.State == CaptureState.Sealed)
             {
                 try
                 {
                     var query = await QueryCaptureAsync(
-                        execution.Store, capture, execution.Configuration, cancellationToken);
+                        execution.Store, capture, checkDeadline, cancellationToken);
                     queryOpenMilliseconds = query.OpenMilliseconds;
                     queryMilliseconds = query.QueryMilliseconds;
                     queryCloseMilliseconds = query.CloseMilliseconds;
@@ -692,7 +787,8 @@ public sealed class OperatingEnvelopeAcceptanceTests
             }
 
             var afterHashStarted = Stopwatch.GetTimestamp();
-            files = HashCaptureFiles(execution.StoreRoot, capture.CaptureId);
+            files = await HashCaptureFilesAsync(
+                execution.StoreRoot, capture.CaptureId, checkDeadline, cancellationToken);
             evidenceHashMilliseconds += ElapsedMilliseconds(afterHashStarted);
             if (capture.State == CaptureState.Sealed && !beforeQuery.SequenceEqual(files))
             {
@@ -727,8 +823,16 @@ public sealed class OperatingEnvelopeAcceptanceTests
         long? storeBytes = null;
         if (files.Length > 0)
         {
-            storeBytes = files.Sum(item => new FileInfo(Path.Combine(
-                execution.StoreRoot, item.Path.Replace('/', Path.DirectorySeparatorChar))).Length);
+            long totalBytes = 0;
+            foreach (var file in files)
+            {
+                checkDeadline();
+                totalBytes = checked(totalBytes + new FileInfo(Path.Combine(
+                    execution.StoreRoot, file.Path.Replace('/', Path.DirectorySeparatorChar))).Length);
+                checkDeadline();
+            }
+
+            storeBytes = totalBytes;
         }
 
         return measurement with
@@ -767,13 +871,15 @@ public sealed class OperatingEnvelopeAcceptanceTests
     private static async Task<QueryMeasurement> QueryCaptureAsync(
         SqliteCaptureStore store,
         CaptureInfo capture,
-        OperatingEnvelopeConfiguration config,
+        Action checkDeadline,
         CancellationToken cancellationToken)
     {
+        checkDeadline();
         cancellationToken.ThrowIfCancellationRequested();
         var openStarted = Stopwatch.GetTimestamp();
         var reader = await store.OpenAsync(capture.CaptureId, Owner, cancellationToken);
         var openMilliseconds = ElapsedMilliseconds(openStarted);
+        checkDeadline();
         var queryStarted = Stopwatch.GetTimestamp();
         long records = 0;
         var closeMilliseconds = 0d;
@@ -782,34 +888,36 @@ public sealed class OperatingEnvelopeAcceptanceTests
         {
             foreach (var artifact in capture.Artifacts)
             {
+                checkDeadline();
                 cancellationToken.ThrowIfCancellationRequested();
                 _ = reader.ReadSnapshot(artifact.ArtifactId);
+                checkDeadline();
                 long after = 0;
-                while (true)
-                {
-                    var page = reader.Query(new CaptureRecordQuery(
-                        artifact.ArtifactId, AfterRecordId: after, PageSize: 256));
-                    records += page.Records.Count;
-                    if (page.NextAfterRecordId is not { } next)
+                OperatingEnvelopeQueryPageRunner.ReadAll(
+                    () => reader.Query(new CaptureRecordQuery(
+                        artifact.ArtifactId, AfterRecordId: after, PageSize: 256)),
+                    page => page.NextAfterRecordId is not null,
+                    page =>
                     {
-                        break;
-                    }
+                        records += page.Records.Count;
+                        if (page.NextAfterRecordId is not { } next)
+                        {
+                            return;
+                        }
 
-                    if (next <= after)
-                    {
-                        throw new InvalidDataException("Read-only record query did not advance its keyset cursor.");
-                    }
+                        if (next <= after)
+                        {
+                            throw new InvalidDataException("Read-only record query did not advance its keyset cursor.");
+                        }
 
-                    after = next;
-                }
+                        after = next;
+                    },
+                    checkDeadline,
+                    cancellationToken);
             }
 
+            checkDeadline();
             cancellationToken.ThrowIfCancellationRequested();
-            if (ElapsedMilliseconds(queryStarted) > config.CellDeadline.TotalMilliseconds)
-            {
-                throw new TimeoutException("Read-only query exceeded the cell deadline.");
-            }
-
             queryMilliseconds = ElapsedMilliseconds(queryStarted);
         }
         finally
@@ -819,27 +927,50 @@ public sealed class OperatingEnvelopeAcceptanceTests
             closeMilliseconds = ElapsedMilliseconds(closeStarted);
         }
 
+        checkDeadline();
         return new(openMilliseconds, queryMilliseconds, records, closeMilliseconds);
     }
 
-    private static OperatingEnvelopeArtifactHash[] HashCaptureFiles(string storeRoot, string captureId)
+    private static async Task<OperatingEnvelopeArtifactHash[]> HashCaptureFilesAsync(
+        string storeRoot,
+        string captureId,
+        Action checkDeadline,
+        CancellationToken cancellationToken)
     {
+        checkDeadline();
         var package = Path.Combine(storeRoot, "captures", captureId);
         if (!Directory.Exists(package))
         {
             return [];
         }
 
-        return Directory.EnumerateFiles(package, "*", SearchOption.AllDirectories)
-            .Order(StringComparer.Ordinal)
-            .Select(path =>
-            {
-                using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-                var digest = Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
-                return new OperatingEnvelopeArtifactHash(
-                    Path.GetRelativePath(storeRoot, path).Replace(Path.DirectorySeparatorChar, '/'), digest);
-            })
-            .ToArray();
+        var paths = new List<string>();
+        foreach (var path in Directory.EnumerateFiles(package, "*", SearchOption.AllDirectories))
+        {
+            checkDeadline();
+            cancellationToken.ThrowIfCancellationRequested();
+            paths.Add(path);
+        }
+
+        checkDeadline();
+        paths.Sort(StringComparer.Ordinal);
+        checkDeadline();
+        var hashes = new List<OperatingEnvelopeArtifactHash>(paths.Count);
+        foreach (var path in paths)
+        {
+            checkDeadline();
+            cancellationToken.ThrowIfCancellationRequested();
+            await using var stream = new FileStream(
+                path, FileMode.Open, FileAccess.Read, FileShare.Read,
+                bufferSize: 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+            checkDeadline();
+            var digest = await OperatingEnvelopeEvidenceHasher.HashAsync(
+                stream, checkDeadline, cancellationToken);
+            hashes.Add(new(
+                Path.GetRelativePath(storeRoot, path).Replace(Path.DirectorySeparatorChar, '/'), digest));
+        }
+
+        return hashes.ToArray();
     }
 
     private static async Task<TargetLoadResult> SendWarmupRequestsAsync(
@@ -847,15 +978,10 @@ public sealed class OperatingEnvelopeAcceptanceTests
         OperatingEnvelopeTrialPlan plan,
         int targetIndex,
         OperatingEnvelopeConfiguration config,
+        OperatingEnvelopeRequestProgress progress,
         CancellationToken cancellationToken)
     {
         var planned = WarmupRequestSlots(config);
-        var latencies = new List<double>(planned);
-        var offered = 0;
-        var admitted = 0;
-        var rejected = 0;
-        var unknown = 0;
-        var notes = new List<string>();
         using var client = CreateClient(sample.BaseUrl);
         var started = Stopwatch.GetTimestamp();
         for (var index = 0; index < planned; index++)
@@ -880,7 +1006,7 @@ public sealed class OperatingEnvelopeAcceptanceTests
                 break;
             }
 
-            offered++;
+            progress.MarkOffered(index);
             var requestStarted = Stopwatch.GetTimestamp();
             try
             {
@@ -890,35 +1016,31 @@ public sealed class OperatingEnvelopeAcceptanceTests
                 var path = paths[(index + targetIndex) % paths.Count];
                 using var response = await client.GetAsync(path,
                     HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-                latencies.Add(ElapsedMilliseconds(requestStarted));
-                if (response.IsSuccessStatusCode)
-                {
-                    admitted++;
-                }
-                else
-                {
-                    rejected++;
-                }
+                progress.Complete(
+                    index,
+                    response.IsSuccessStatusCode
+                        ? OperatingEnvelopeRequestOutcome.Admitted
+                        : OperatingEnvelopeRequestOutcome.Rejected,
+                    ElapsedMilliseconds(requestStarted));
             }
             catch (HttpRequestException ex)
             {
-                latencies.Add(ElapsedMilliseconds(requestStarted));
-                unknown++;
-                notes.Add($"Warmup request {index}: {ex.GetType().Name}: {ex.Message}");
+                progress.Complete(index, OperatingEnvelopeRequestOutcome.Unknown,
+                    ElapsedMilliseconds(requestStarted));
+                progress.AddNote($"Warmup request {index}: {ex.GetType().Name}: {ex.Message}");
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                latencies.Add(ElapsedMilliseconds(requestStarted));
-                unknown++;
-                notes.Add($"Warmup request {index} outcome is unknown because the trial deadline expired.");
+                progress.Complete(index, OperatingEnvelopeRequestOutcome.Unknown,
+                    ElapsedMilliseconds(requestStarted));
+                progress.AddNote($"Warmup request {index} outcome is unknown because the trial deadline expired.");
                 break;
             }
         }
 
         var elapsed = ElapsedMilliseconds(started);
-        var accounting = new OperatingEnvelopeRequestAccounting(
-            planned, offered, admitted, rejected, unknown, planned - offered, elapsed, latencies.AsReadOnly()).Validate();
-        return new(sample.ProcessId, accounting, notes.AsReadOnly());
+        var snapshot = progress.Snapshot(elapsed);
+        return new(sample.ProcessId, snapshot.Accounting, snapshot.Notes);
     }
 
     private static async Task<TargetLoadResult> DriveMeasuredRequestsAsync(
@@ -926,23 +1048,15 @@ public sealed class OperatingEnvelopeAcceptanceTests
         int targetIndex,
         OperatingEnvelopeTrialPlan plan,
         OperatingEnvelopeConfiguration config,
+        OperatingEnvelopeRequestProgress progress,
         CancellationToken cellCancellationToken)
     {
         var planned = MeasuredRequestSlots(config);
         if (plan.MeasuredRequestPaths.Count == 0)
         {
-            return new(sample.ProcessId,
-                new OperatingEnvelopeRequestAccounting(0, 0, 0, 0, 0, 0,
-                    config.WindowDuration.TotalMilliseconds, []),
-                []);
+            return new(sample.ProcessId, progress.Snapshot(config.WindowDuration.TotalMilliseconds).Accounting, []);
         }
 
-        var latencies = new List<double>(planned);
-        var notes = new List<string>();
-        var offered = 0;
-        var admitted = 0;
-        var rejected = 0;
-        var unknown = 0;
         var start = Stopwatch.GetTimestamp();
         var end = start + ToStopwatchTicks(config.WindowDuration);
         using var windowDeadline = CreateDeadline(end);
@@ -988,52 +1102,48 @@ public sealed class OperatingEnvelopeAcceptanceTests
             }
 
             var path = plan.MeasuredRequestPaths[(slot + targetIndex) % plan.MeasuredRequestPaths.Count];
-            offered++;
+            progress.MarkOffered(slot);
             var requestStarted = Stopwatch.GetTimestamp();
             try
             {
                 using var response = await client.GetAsync(path,
                     HttpCompletionOption.ResponseHeadersRead, linked.Token);
-                latencies.Add(ElapsedMilliseconds(requestStarted));
-                if (response.IsSuccessStatusCode)
-                {
-                    admitted++;
-                }
-                else
-                {
-                    rejected++;
-                }
+                progress.Complete(
+                    slot,
+                    response.IsSuccessStatusCode
+                        ? OperatingEnvelopeRequestOutcome.Admitted
+                        : OperatingEnvelopeRequestOutcome.Rejected,
+                    ElapsedMilliseconds(requestStarted));
             }
             catch (OperationCanceledException) when (windowDeadline.IsCancellationRequested &&
                                                      !cellCancellationToken.IsCancellationRequested)
             {
-                latencies.Add(ElapsedMilliseconds(requestStarted));
-                unknown++;
+                progress.Complete(slot, OperatingEnvelopeRequestOutcome.Unknown,
+                    ElapsedMilliseconds(requestStarted));
                 break;
             }
             catch (OperationCanceledException) when (cellCancellationToken.IsCancellationRequested)
             {
-                latencies.Add(ElapsedMilliseconds(requestStarted));
-                unknown++;
-                notes.Add($"Request slot {slot} outcome is unknown because the trial deadline expired.");
+                progress.Complete(slot, OperatingEnvelopeRequestOutcome.Unknown,
+                    ElapsedMilliseconds(requestStarted));
+                progress.AddNote($"Request slot {slot} outcome is unknown because the trial deadline expired.");
                 break;
             }
             catch (HttpRequestException ex)
             {
-                latencies.Add(ElapsedMilliseconds(requestStarted));
-                unknown++;
-                if (notes.Count < config.MaximumRequestsPerCell)
+                progress.Complete(slot, OperatingEnvelopeRequestOutcome.Unknown,
+                    ElapsedMilliseconds(requestStarted));
+                var progressSnapshot = progress.Snapshot(config.WindowDuration.TotalMilliseconds);
+                if (progressSnapshot.Notes.Count < config.MaximumRequestsPerCell)
                 {
-                    notes.Add($"Request slot {slot}: {ex.GetType().Name}: {ex.Message}");
+                    progress.AddNote($"Request slot {slot}: {ex.GetType().Name}: {ex.Message}");
                 }
             }
         }
 
         var elapsed = Math.Min(config.WindowDuration.TotalMilliseconds, ElapsedMilliseconds(start));
-        var accounting = new OperatingEnvelopeRequestAccounting(
-            planned, offered, admitted, rejected, unknown, planned - offered,
-            elapsed, latencies.AsReadOnly()).Validate();
-        return new(sample.ProcessId, accounting, notes.AsReadOnly());
+        var snapshot = progress.Snapshot(elapsed);
+        return new(sample.ProcessId, snapshot.Accounting, snapshot.Notes);
     }
 
     private static HttpClient CreateClient(string baseUrl) => new()
@@ -1251,35 +1361,19 @@ public sealed class OperatingEnvelopeAcceptanceTests
     private static OperatingEnvelopeDiagnosticResources EmptyDiagnosticResources(string note) =>
         new(null, null, null, null, null, null, [note]);
 
-    private static async Task ObserveOwnedTasksAsync(IReadOnlyList<Task> tasks, TimeSpan timeout)
+    private static long GetDirectoryBytes(
+        string directory,
+        Action checkDeadline,
+        CancellationToken cancellationToken)
     {
-        var settled = Task.WhenAll(tasks);
-        try
-        {
-            await settled.WaitAsync(timeout);
-        }
-        catch (TimeoutException)
-        {
-            _ = settled.ContinueWith(static task => _ = task.Exception, CancellationToken.None,
-                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
-                TaskScheduler.Default);
-            throw new TimeoutException($"Owned collection/request work did not settle within {timeout}.");
-        }
-        catch (OperationCanceledException) when (settled.IsCanceled)
-        {
-        }
-        catch (Exception ex) when (settled.IsFaulted)
-        {
-            throw new InvalidOperationException("Owned collection/request work faulted during cleanup.", ex);
-        }
-    }
-
-    private static long GetDirectoryBytes(string directory)
-    {
+        checkDeadline();
         long bytes = 0;
         foreach (var path in Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories))
         {
+            checkDeadline();
+            cancellationToken.ThrowIfCancellationRequested();
             bytes = checked(bytes + new FileInfo(path).Length);
+            checkDeadline();
         }
 
         return bytes;
@@ -1381,7 +1475,7 @@ public sealed class OperatingEnvelopeAcceptanceTests
             _sampling = SampleUntilStoppedAsync(_stop.Token);
         }
 
-        public async Task<OperatingEnvelopeDiagnosticResources> StopAsync()
+        public async Task<OperatingEnvelopeDiagnosticResources> StopAsync(long settlementDeadlineTimestamp)
         {
             if (_sampling is null || _stop is null || _diagnosticProcess is null)
             {
@@ -1389,12 +1483,16 @@ public sealed class OperatingEnvelopeAcceptanceTests
             }
 
             _stop.Cancel();
-            try
+            var settlement = await OperatingEnvelopeTaskSettlement.SettleAsync(
+                [_sampling], settlementDeadlineTimestamp);
+            if (!settlement.Settled)
             {
-                await _sampling;
+                throw new TimeoutException("The diagnostic resource sampler did not settle before its cleanup deadline.");
             }
-            catch (OperationCanceledException) when (_stop.IsCancellationRequested)
+            if (settlement.Faults.Count > 0)
             {
+                throw new InvalidOperationException(
+                    $"The diagnostic resource sampler faulted: {string.Join("; ", settlement.Faults)}");
             }
 
             Sample();
@@ -1414,6 +1512,22 @@ public sealed class OperatingEnvelopeAcceptanceTests
 
         public void Dispose()
         {
+            if (_sampling is { IsCompleted: false } sampling)
+            {
+                var stop = _stop;
+                var diagnosticProcess = _diagnosticProcess;
+                _stop = null;
+                _diagnosticProcess = null;
+                _ = sampling.ContinueWith(completed =>
+                {
+                    _ = completed.Exception;
+                    diagnosticProcess?.Dispose();
+                    stop?.Dispose();
+                }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+                return;
+            }
+
             _stop?.Dispose();
             _diagnosticProcess?.Dispose();
         }

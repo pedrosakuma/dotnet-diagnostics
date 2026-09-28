@@ -1,4 +1,249 @@
+using System.Diagnostics;
+
 namespace DotnetDiagnostics.TestSupport.OperatingEnvelope;
+
+public enum OperatingEnvelopeRequestOutcome
+{
+    Admitted,
+    Rejected,
+    Unknown,
+}
+
+public sealed record OperatingEnvelopeRequestProgressSnapshot(
+    OperatingEnvelopeRequestAccounting Accounting,
+    IReadOnlyList<string> Notes);
+
+public sealed class OperatingEnvelopeRequestProgress(int planned)
+{
+    private readonly object _gate = new();
+    private readonly RequestSlotState[] _slots = CreateSlots(planned);
+    private readonly List<double> _latencies = [];
+    private readonly List<string> _notes = [];
+
+    public OperatingEnvelopeRequestProgressSnapshot Snapshot(double measurementWindowMilliseconds)
+    {
+        lock (_gate)
+        {
+            var offered = 0;
+            var admitted = 0;
+            var rejected = 0;
+            var unknown = 0;
+            foreach (var slot in _slots)
+            {
+                switch (slot)
+                {
+                    case RequestSlotState.Offered:
+                        offered++;
+                        unknown++;
+                        break;
+                    case RequestSlotState.Admitted:
+                        offered++;
+                        admitted++;
+                        break;
+                    case RequestSlotState.Rejected:
+                        offered++;
+                        rejected++;
+                        break;
+                    case RequestSlotState.Unknown:
+                        offered++;
+                        unknown++;
+                        break;
+                }
+            }
+
+            var accounting = new OperatingEnvelopeRequestAccounting(
+                planned,
+                offered,
+                admitted,
+                rejected,
+                unknown,
+                planned - offered,
+                measurementWindowMilliseconds,
+                _latencies.ToArray()).Validate();
+            return new(accounting, _notes.ToArray());
+        }
+    }
+
+    public void MarkOffered(int slot)
+    {
+        lock (_gate)
+        {
+            if (_slots[slot] != RequestSlotState.NotOffered)
+            {
+                throw new InvalidOperationException($"Request slot {slot} was already offered or completed.");
+            }
+
+            _slots[slot] = RequestSlotState.Offered;
+        }
+    }
+
+    public void Complete(int slot, OperatingEnvelopeRequestOutcome outcome, double latencyMilliseconds)
+    {
+        if (!double.IsFinite(latencyMilliseconds) || latencyMilliseconds < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(latencyMilliseconds));
+        }
+
+        lock (_gate)
+        {
+            if (_slots[slot] != RequestSlotState.Offered)
+            {
+                throw new InvalidOperationException($"Request slot {slot} was not in flight.");
+            }
+
+            _slots[slot] = outcome switch
+            {
+                OperatingEnvelopeRequestOutcome.Admitted => RequestSlotState.Admitted,
+                OperatingEnvelopeRequestOutcome.Rejected => RequestSlotState.Rejected,
+                OperatingEnvelopeRequestOutcome.Unknown => RequestSlotState.Unknown,
+                _ => throw new ArgumentOutOfRangeException(nameof(outcome)),
+            };
+            _latencies.Add(latencyMilliseconds);
+        }
+    }
+
+    public void AddNote(string note)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(note);
+        lock (_gate)
+        {
+            _notes.Add(note);
+        }
+    }
+
+    private static RequestSlotState[] CreateSlots(int planned)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(planned);
+        return new RequestSlotState[planned];
+    }
+
+    private enum RequestSlotState : byte
+    {
+        NotOffered,
+        Offered,
+        Admitted,
+        Rejected,
+        Unknown,
+    }
+}
+
+public static class OperatingEnvelopeDeadlineGuard
+{
+    public static void CheckRun(
+        long runDeadlineTimestamp,
+        long nowTimestamp,
+        CancellationTokenSource runDeadline)
+    {
+        ArgumentNullException.ThrowIfNull(runDeadline);
+        if (nowTimestamp >= runDeadlineTimestamp)
+        {
+            runDeadline.Cancel();
+        }
+
+        runDeadline.Token.ThrowIfCancellationRequested();
+    }
+
+    public static void CheckTrial(
+        long runDeadlineTimestamp,
+        long cellDeadlineTimestamp,
+        long nowTimestamp,
+        CancellationTokenSource runDeadline,
+        CancellationTokenSource cellDeadline)
+    {
+        ArgumentNullException.ThrowIfNull(runDeadline);
+        ArgumentNullException.ThrowIfNull(cellDeadline);
+        if (nowTimestamp >= runDeadlineTimestamp)
+        {
+            runDeadline.Cancel();
+        }
+        else if (nowTimestamp >= cellDeadlineTimestamp)
+        {
+            cellDeadline.Cancel();
+        }
+
+        runDeadline.Token.ThrowIfCancellationRequested();
+        cellDeadline.Token.ThrowIfCancellationRequested();
+    }
+}
+
+public static class OperatingEnvelopeQueryPageRunner
+{
+    public static void ReadAll<TPage>(
+        Func<TPage> readPage,
+        Func<TPage, bool> hasMore,
+        Action<TPage> visitPage,
+        Action checkDeadline,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(readPage);
+        ArgumentNullException.ThrowIfNull(hasMore);
+        ArgumentNullException.ThrowIfNull(visitPage);
+        ArgumentNullException.ThrowIfNull(checkDeadline);
+
+        while (true)
+        {
+            checkDeadline();
+            cancellationToken.ThrowIfCancellationRequested();
+            var page = readPage();
+            checkDeadline();
+            cancellationToken.ThrowIfCancellationRequested();
+            visitPage(page);
+            if (!hasMore(page))
+            {
+                return;
+            }
+        }
+    }
+}
+
+public sealed record OperatingEnvelopeTaskSettlementResult(
+    bool Settled,
+    IReadOnlyList<string> Faults);
+
+public static class OperatingEnvelopeTaskSettlement
+{
+    public static async Task<OperatingEnvelopeTaskSettlementResult> SettleAsync(
+        IReadOnlyList<Task> tasks,
+        long absoluteDeadlineTimestamp,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(tasks);
+        var all = Task.WhenAll(tasks);
+        while (!all.IsCompleted)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var remainingTicks = absoluteDeadlineTimestamp - Stopwatch.GetTimestamp();
+            if (remainingTicks <= 0)
+            {
+                ObserveLateFaults(all);
+                return new(false, []);
+            }
+
+            var delay = Task.Delay(
+                TimeSpan.FromSeconds((double)remainingTicks / Stopwatch.Frequency),
+                cancellationToken);
+            if (await Task.WhenAny(all, delay).ConfigureAwait(false) != all)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                ObserveLateFaults(all);
+                return new(false, []);
+            }
+        }
+
+        var faults = tasks.Where(task => task.IsFaulted)
+            .SelectMany(task => task.Exception!.Flatten().InnerExceptions)
+            .Select(exception => $"{exception.GetType().Name}: {exception.Message}")
+            .ToArray();
+        return new(true, faults);
+    }
+
+    private static void ObserveLateFaults(Task task)
+    {
+        _ = task.ContinueWith(static completed => _ = completed.Exception, CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+}
 
 public sealed record OperatingEnvelopeRequestAccounting(
     int Planned,

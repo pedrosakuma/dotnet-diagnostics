@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text.Json;
 using DotnetDiagnostics.TestSupport.OperatingEnvelope;
@@ -82,6 +83,163 @@ public sealed class OperatingEnvelopeProtocolTests
     }
 
     [Fact]
+    public void RequestProgressDistinguishesInFlightUnknownFromNotOfferedSlots()
+    {
+        var progress = new OperatingEnvelopeRequestProgress(planned: 5);
+        progress.MarkOffered(0);
+        progress.MarkOffered(2);
+        progress.Complete(2, OperatingEnvelopeRequestOutcome.Admitted, 4);
+        progress.MarkOffered(3);
+        progress.Complete(3, OperatingEnvelopeRequestOutcome.Rejected, 6);
+
+        var snapshot = progress.Snapshot(1_000);
+
+        Assert.Equal(3, snapshot.Accounting.Offered);
+        Assert.Equal(1, snapshot.Accounting.Admitted);
+        Assert.Equal(1, snapshot.Accounting.Rejected);
+        Assert.Equal(1, snapshot.Accounting.Unknown);
+        Assert.Equal(2, snapshot.Accounting.NotOffered);
+        Assert.Equal(new[] { 4d, 6d }, snapshot.Accounting.LatencyMilliseconds);
+        snapshot.Accounting.Validate();
+    }
+
+    [Fact]
+    public async Task RequestProgressCanBeSnapshottedWhileWorkerUpdatesSlots()
+    {
+        const int planned = 16;
+        var progress = new OperatingEnvelopeRequestProgress(planned);
+        var firstOffer = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var continueWorker = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var worker = Task.Run(() =>
+        {
+            for (var slot = 0; slot < planned; slot++)
+            {
+                progress.MarkOffered(slot);
+                if (slot == 0)
+                {
+                    firstOffer.SetResult();
+                    continueWorker.Task.GetAwaiter().GetResult();
+                }
+
+                progress.Complete(slot, OperatingEnvelopeRequestOutcome.Admitted, slot);
+            }
+        });
+
+        await firstOffer.Task;
+        var inFlight = progress.Snapshot(1_000).Accounting;
+        Assert.Equal(1, inFlight.Offered);
+        Assert.Equal(1, inFlight.Unknown);
+        Assert.Equal(planned - 1, inFlight.NotOffered);
+        continueWorker.SetResult();
+        await worker;
+
+        var completed = progress.Snapshot(1_000).Accounting;
+        Assert.Equal(planned, completed.Offered);
+        Assert.Equal(planned, completed.Admitted);
+        Assert.Equal(0, completed.Unknown);
+        Assert.Equal(0, completed.NotOffered);
+    }
+
+    [Fact]
+    public void DeadlineGuardEnforcesAbsoluteRunAndCellDeadlines()
+    {
+        using var runDeadline = new CancellationTokenSource();
+        using var cellDeadline = new CancellationTokenSource();
+        Assert.Throws<OperationCanceledException>(() =>
+            OperatingEnvelopeDeadlineGuard.CheckTrial(
+                runDeadlineTimestamp: 100,
+                cellDeadlineTimestamp: 200,
+                nowTimestamp: 100,
+                runDeadline,
+                cellDeadline));
+        Assert.True(runDeadline.IsCancellationRequested);
+        Assert.False(cellDeadline.IsCancellationRequested);
+
+        using var secondRunDeadline = new CancellationTokenSource();
+        using var secondCellDeadline = new CancellationTokenSource();
+        Assert.Throws<OperationCanceledException>(() =>
+            OperatingEnvelopeDeadlineGuard.CheckTrial(
+                runDeadlineTimestamp: 300,
+                cellDeadlineTimestamp: 200,
+                nowTimestamp: 200,
+                secondRunDeadline,
+                secondCellDeadline));
+        Assert.False(secondRunDeadline.IsCancellationRequested);
+        Assert.True(secondCellDeadline.IsCancellationRequested);
+    }
+
+    [Fact]
+    public async Task EvidenceHashingChecksCancellationBetweenChunks()
+    {
+        var contents = new byte[] { 1, 2, 3, 4, 5, 6 };
+        await using var completeStream = new MemoryStream(contents);
+        var actualHash = await OperatingEnvelopeEvidenceHasher.HashAsync(
+            completeStream, static () => { }, CancellationToken.None, chunkSize: 2);
+        Assert.Equal(
+            Convert.ToHexString(SHA256.HashData(contents)).ToLowerInvariant(),
+            actualHash);
+
+        using var cancellation = new CancellationTokenSource();
+        await using var stream = new CancellingReadStream([1, 2, 3, 4, 5, 6], cancellation);
+        var checks = 0;
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            OperatingEnvelopeEvidenceHasher.HashAsync(
+                stream,
+                () =>
+                {
+                    checks++;
+                    cancellation.Token.ThrowIfCancellationRequested();
+                },
+                cancellation.Token,
+                chunkSize: 2));
+
+        Assert.True(checks >= 2);
+    }
+
+    [Fact]
+    public void QueryPageRunnerChecksDeadlineBeforeAndAfterEverySynchronousPage()
+    {
+        var checks = 0;
+        var reads = 0;
+        var visited = new List<int>();
+
+        Assert.Throws<OperationCanceledException>(() =>
+            OperatingEnvelopeQueryPageRunner.ReadAll(
+                () => ++reads,
+                page => page < 3,
+                visited.Add,
+                () =>
+                {
+                    checks++;
+                    if (checks == 3)
+                    {
+                        throw new OperationCanceledException("Absolute deadline reached.");
+                    }
+                },
+                CancellationToken.None));
+
+        Assert.Equal(1, reads);
+        Assert.Equal(new[] { 1 }, visited);
+        Assert.Equal(3, checks);
+    }
+
+    [Fact]
+    public async Task TaskSettlementUsesAbsoluteBoundAndReportsWhenWorkRemainsUnsettled()
+    {
+        var pending = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var timedOut = await OperatingEnvelopeTaskSettlement.SettleAsync(
+            [pending.Task], Stopwatch.GetTimestamp() - 1);
+        Assert.False(timedOut.Settled);
+
+        pending.SetResult();
+        var settled = await OperatingEnvelopeTaskSettlement.SettleAsync(
+            [pending.Task], Stopwatch.GetTimestamp() + Stopwatch.Frequency);
+        Assert.True(settled.Settled);
+        Assert.Empty(settled.Faults);
+    }
+
+    [Fact]
     public void PairValidationKeepsMeasuredLossSeparateFromInvalidExecution()
     {
         var schedule = OperatingEnvelopeProtocol.CreateSchedule();
@@ -157,6 +315,53 @@ public sealed class OperatingEnvelopeProtocolTests
         }
     }
 
+    [Fact]
+    public async Task QuarantinedRunCannotPublishPairOrFinalEvidence()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "operating-envelope-tests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var schedule = OperatingEnvelopeProtocol.CreateSchedule();
+            var writer = await OperatingEnvelopeArtifactWriter.CreateAsync(root, schedule);
+            const string quarantineReason = "An owned task did not settle.";
+            var trial = Trial(schedule.Trials[0], writer.ConfigurationHash) with
+            {
+                Outcome = OperatingEnvelopeTrialOutcome.Stopped,
+                StopOutcome = OperatingEnvelopeStopOutcome.CleanupFailed,
+                CleanupSucceeded = false,
+                Error = quarantineReason,
+            };
+            await writer.WriteQuarantineAsync(trial, quarantineReason);
+
+            var pairPlans = OperatingEnvelopeProtocol.GetPair(schedule, "idle-counters-pair-01");
+            var outcomes = pairPlans.Select(plan => Trial(plan, writer.ConfigurationHash)).ToArray();
+            var pair = OperatingEnvelopePairValidation.Validate(
+                pairPlans[0].PairId, pairPlans[0].Population, outcomes);
+            await Assert.ThrowsAsync<InvalidOperationException>(() => writer.WritePairAsync(pair, outcomes));
+            await Assert.ThrowsAsync<InvalidOperationException>(() => writer.WriteFinalManifestAsync());
+
+            Assert.True(File.Exists(Path.Combine(writer.RunDirectory, "quarantine.json")));
+            Assert.True(File.Exists(Path.Combine(writer.RunDirectory, "quarantine.sha256")));
+            Assert.False(File.Exists(Path.Combine(writer.RunDirectory, "results-manifest.json")));
+            Assert.False(File.Exists(Path.Combine(writer.RunDirectory, "results.csv")));
+            using var quarantine = JsonDocument.Parse(await File.ReadAllTextAsync(
+                Path.Combine(writer.RunDirectory, "quarantine.json")));
+            Assert.True(quarantine.RootElement.GetProperty("trialInvalid").GetBoolean());
+            Assert.Equal("cleanupFailed", quarantine.RootElement.GetProperty("stopOutcome").GetString());
+            var quarantineBytes = await File.ReadAllBytesAsync(Path.Combine(writer.RunDirectory, "quarantine.json"));
+            var quarantineHash = Convert.ToHexString(SHA256.HashData(quarantineBytes)).ToLowerInvariant();
+            Assert.Equal(quarantineHash + "\n",
+                await File.ReadAllTextAsync(Path.Combine(writer.RunDirectory, "quarantine.sha256")));
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
     private static OperatingEnvelopeTrialResult Trial(
         OperatingEnvelopeTrialPlan plan,
         string configurationHash)
@@ -199,5 +404,25 @@ public sealed class OperatingEnvelopeProtocolTests
             [],
             [],
             null);
+    }
+
+    private sealed class CancellingReadStream(byte[] data, CancellationTokenSource cancellation)
+        : MemoryStream(data)
+    {
+        private bool _cancelled;
+
+        public override async ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            var read = await base.ReadAsync(buffer, cancellationToken);
+            if (!_cancelled && read > 0)
+            {
+                _cancelled = true;
+                cancellation.Cancel();
+            }
+
+            return read;
+        }
     }
 }

@@ -90,6 +90,20 @@ Results retain:
   query verification, and target/resource/cleanup outcomes. Failed or unrun
   trials are retained with explicit stop outcomes; there are no retries or
   replacement runs.
+- Package hashing reads bounded chunks and checks the absolute cell and run
+  deadlines between chunks. Read-only queries check both deadlines before and
+  after each synchronous page/snapshot operation. The store reader exposes
+  synchronous page APIs without cancellation; a call already executing cannot
+  be preempted, so it runs inside an owned trial task that is awaited only to
+  the deadline. Deadline checks surround each call; if it remains blocked
+  through the bounded settlement window, the run is quarantined.
+- After cancellation or target termination, all owned capture/request tasks
+  and the diagnostic resource sampler receive a separate bounded settlement
+  window. If settlement or cleanup fails, the run writes a `quarantine.json`
+  marker identifying the invalid trial and its stop outcome, plus its SHA-256
+  sidecar; it publishes no report for that pair and does not write `results.csv`
+  or a final results manifest. Treat every artifact under that run directory
+  as quarantined; do not interpret partial package files as sealed evidence.
 
 `Pair IsValid` means both mode trials completed the requested collection with
 the same declared configuration. It does not mean zero loss, a passing

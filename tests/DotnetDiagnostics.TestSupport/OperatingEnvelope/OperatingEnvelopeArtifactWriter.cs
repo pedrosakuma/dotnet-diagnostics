@@ -13,6 +13,7 @@ public sealed class OperatingEnvelopeArtifactWriter
     private readonly List<OperatingEnvelopePairResult> _pairs = [];
     private readonly List<OperatingEnvelopeTrialResult> _trials = [];
     private readonly List<OperatingEnvelopeArtifactHash> _writtenArtifacts = [];
+    private bool _quarantined;
 
     private OperatingEnvelopeArtifactWriter(string runDirectory, OperatingEnvelopeSchedule schedule,
         string configurationHash)
@@ -72,6 +73,7 @@ public sealed class OperatingEnvelopeArtifactWriter
         IReadOnlyList<OperatingEnvelopeTrialResult> trials,
         CancellationToken cancellationToken = default)
     {
+        ThrowIfQuarantined();
         ArgumentNullException.ThrowIfNull(pair);
         ArgumentNullException.ThrowIfNull(trials);
         if (_pairs.Any(existing => existing.PairId == pair.PairId))
@@ -102,6 +104,7 @@ public sealed class OperatingEnvelopeArtifactWriter
 
     public async Task WriteFinalManifestAsync(CancellationToken cancellationToken = default)
     {
+        ThrowIfQuarantined();
         cancellationToken.ThrowIfCancellationRequested();
         if (File.Exists(Path.Combine(RunDirectory, "results-manifest.json")))
         {
@@ -121,6 +124,34 @@ public sealed class OperatingEnvelopeArtifactWriter
         var bytes = JsonSerializer.SerializeToUtf8Bytes(manifest, JsonOptions);
         await WriteImmutableAsync("results-manifest.json", bytes, cancellationToken).ConfigureAwait(false);
         await WriteImmutableAsync("results-manifest.sha256", Encoding.ASCII.GetBytes(Hash(bytes) + "\n"),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task WriteQuarantineAsync(
+        OperatingEnvelopeTrialResult trial,
+        string reason,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(trial);
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        if (_quarantined)
+        {
+            throw new InvalidOperationException("The run is already quarantined.");
+        }
+
+        _quarantined = true;
+        var quarantine = new OperatingEnvelopeQuarantineManifest(
+            OperatingEnvelopeProtocol.Version,
+            trial.Plan.TrialId,
+            true,
+            trial.Outcome,
+            trial.StopOutcome,
+            trial.CleanupSucceeded,
+            reason,
+            DateTimeOffset.UtcNow);
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(quarantine, JsonOptions);
+        await WriteImmutableAsync("quarantine.json", bytes, cancellationToken).ConfigureAwait(false);
+        await WriteImmutableAsync("quarantine.sha256", Encoding.ASCII.GetBytes(Hash(bytes) + "\n"),
             cancellationToken).ConfigureAwait(false);
     }
 
@@ -149,6 +180,15 @@ public sealed class OperatingEnvelopeArtifactWriter
 
         var relative = Path.GetRelativePath(RunDirectory, fullPath).Replace(Path.DirectorySeparatorChar, '/');
         _writtenArtifacts.Add(new(relative, Hash(bytes)));
+    }
+
+    private void ThrowIfQuarantined()
+    {
+        if (_quarantined)
+        {
+            throw new InvalidOperationException(
+                "Quarantined runs cannot publish pair reports or a results manifest.");
+        }
     }
 
     private static byte[] SerializeCsv(
@@ -321,3 +361,13 @@ public sealed record OperatingEnvelopeResultsManifest(
     int ValidPairCount,
     int InvalidPairCount,
     IReadOnlyList<OperatingEnvelopeArtifactHash> Artifacts);
+
+public sealed record OperatingEnvelopeQuarantineManifest(
+    string ProtocolVersion,
+    string TrialId,
+    bool TrialInvalid,
+    OperatingEnvelopeTrialOutcome Outcome,
+    OperatingEnvelopeStopOutcome StopOutcome,
+    bool CleanupSucceeded,
+    string Reason,
+    DateTimeOffset QuarantinedUtc);
