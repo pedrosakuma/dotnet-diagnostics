@@ -153,7 +153,8 @@ public sealed class OperatingEnvelopeAcceptanceTests
         var cleanupStarted = 0L;
         var resourceSettlementDeadline = 0L;
         var resourcesStopped = false;
-        var ownedTasks = new List<Task>();
+        var settlementClean = false;
+        var tasks = new OperatingEnvelopeTaskRegistry();
         var collectionTasks = new List<Task<ArtifactExecution>>();
         SqliteCaptureStore? store = null;
 
@@ -182,7 +183,10 @@ public sealed class OperatingEnvelopeAcceptanceTests
                     SendWarmupRequestsAsync(
                         sample, plan, index, config, warmupProgress[index], cellToken.Token))
                 .ToArray();
-            ownedTasks.AddRange(warmupTasks);
+            foreach (var warmupTask in warmupTasks)
+            {
+                tasks.AddMeasured(warmupTask);
+            }
             var warmupResults = await Task.WhenAll(warmupTasks);
             warmupMilliseconds = ElapsedMilliseconds(warmupStarted);
             notes.AddRange(warmupResults.SelectMany(result => result.Notes));
@@ -191,7 +195,7 @@ public sealed class OperatingEnvelopeAcceptanceTests
                     warmupMilliseconds);
 
             resources.Start(samples);
-            ownedTasks.Add(resources.SamplingTask);
+            tasks.AddCleanupOnly(resources.SamplingTask);
             var targetPlans = samples.Select((sample, index) => (Sample: sample, Index: index)).ToArray();
             foreach (var target in targetPlans)
             {
@@ -200,7 +204,7 @@ public sealed class OperatingEnvelopeAcceptanceTests
                     var collection = CollectSweepAsync(
                         target.Sample.ProcessId, plan.StorageMode, store, storeRoot, config, cellToken.Token);
                     collectionTasks.Add(collection);
-                    ownedTasks.Add(collection);
+                    tasks.AddMeasured(collection);
                 }
                 else
                 {
@@ -209,7 +213,7 @@ public sealed class OperatingEnvelopeAcceptanceTests
                         var collection = CollectArtifactAsync(
                             target.Sample.ProcessId, job, plan.StorageMode, store, storeRoot, config, cellToken.Token);
                         collectionTasks.Add(collection);
-                        ownedTasks.Add(collection);
+                        tasks.AddMeasured(collection);
                     }
                 }
 
@@ -218,13 +222,12 @@ public sealed class OperatingEnvelopeAcceptanceTests
                 var request = DriveMeasuredRequestsAsync(
                     target.Sample, target.Index, plan, config,
                     requestProgress, cellToken.Token);
-                ownedTasks.Add(request);
+                tasks.AddMeasured(request);
             }
 
-            var workload = Task.WhenAll(ownedTasks);
             try
             {
-                await workload.WaitAsync(cellToken.Token);
+                await tasks.WaitForMeasuredAsync(cellToken.Token);
             }
             catch (OperationCanceledException) when (cellToken.IsCancellationRequested)
             {
@@ -240,7 +243,7 @@ public sealed class OperatingEnvelopeAcceptanceTests
             {
                 CheckDeadline();
                 var measurementTask = MeasureStoredArtifactAsync(execution, CheckDeadline, cellToken.Token);
-                ownedTasks.Add(measurementTask);
+                tasks.AddMeasured(measurementTask);
                 artifacts.Add(await measurementTask.WaitAsync(cellToken.Token));
             }
             CheckDeadline();
@@ -305,7 +308,8 @@ public sealed class OperatingEnvelopeAcceptanceTests
             try
             {
                 var settlement = await OperatingEnvelopeTaskSettlement.SettleAfterTargetsAsync(
-                    targetTerminationTasks, () => ownedTasks, cleanupDeadline);
+                    targetTerminationTasks, () => tasks.OwnedTasks, cleanupDeadline);
+                settlementClean = settlement.CanFinalize;
                 if (!settlement.TargetsSettled)
                 {
                     cleanupErrors.Add(
@@ -317,18 +321,16 @@ public sealed class OperatingEnvelopeAcceptanceTests
                 {
                     cleanupErrors.Add("At least one target's termination could not be confirmed.");
                 }
-                if (!settlement.OwnedTasksSettled)
+                if (settlement.TargetsSettled && settlement.TargetFaults.Count == 0 &&
+                    !settlement.OwnedTasksSettled)
                 {
                     cleanupErrors.Add(
                         $"Owned work did not settle after target termination before the shared {CleanupDeadline} cleanup deadline.");
                 }
                 if (settlement.OwnedTaskFaults.Count > 0)
                 {
-                    notes.AddRange(settlement.OwnedTaskFaults.Select(
+                    cleanupErrors.AddRange(settlement.OwnedTaskFaults.Select(
                         fault => $"Owned collection/request task faulted: {fault}"));
-                    outcome = OperatingEnvelopeTrialOutcome.Failed;
-                    stopOutcome = OperatingEnvelopeStopOutcome.CollectionFailed;
-                    error ??= "One or more collection/request tasks faulted after target termination.";
                 }
             }
             catch (Exception ex)
@@ -354,7 +356,7 @@ public sealed class OperatingEnvelopeAcceptanceTests
             }
             resources.Dispose();
 
-            if (cleanupErrors.Count == 0)
+            if (cleanupErrors.Count == 0 && settlementClean)
             {
                 foreach (var sample in samples)
                 {
@@ -401,6 +403,11 @@ public sealed class OperatingEnvelopeAcceptanceTests
                         }
                     }
                 }
+            }
+
+            if (!settlementClean && cleanupErrors.Count == 0)
+            {
+                cleanupErrors.Add("Post-termination task settlement did not establish quiescence.");
             }
 
             if (cleanupErrors.Count > 0)

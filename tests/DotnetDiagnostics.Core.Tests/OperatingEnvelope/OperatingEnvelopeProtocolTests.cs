@@ -240,6 +240,42 @@ public sealed class OperatingEnvelopeProtocolTests
     }
 
     [Fact]
+    public async Task MeasuredWorkFinishesWithoutWaitingForResourceSampler()
+    {
+        var registry = new OperatingEnvelopeTaskRegistry();
+        var measured = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sampler = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        registry.AddMeasured(measured.Task);
+        registry.AddCleanupOnly(sampler.Task);
+
+        var workload = registry.WaitForMeasuredAsync(CancellationToken.None);
+        measured.SetResult();
+        await workload.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.False(sampler.Task.IsCompleted);
+
+        sampler.SetResult();
+        var settlement = await OperatingEnvelopeTaskSettlement.SettleAfterTargetsAsync(
+            [Task.CompletedTask], () => registry.OwnedTasks,
+            Stopwatch.GetTimestamp() + Stopwatch.Frequency);
+        Assert.True(settlement.CanFinalize);
+    }
+
+    [Fact]
+    public async Task OwnedTaskFaultPreventsAccountingFinalization()
+    {
+        var registry = new OperatingEnvelopeTaskRegistry();
+        registry.AddMeasured(Task.FromException(new IOException("capture worker failed")));
+
+        var settlement = await OperatingEnvelopeTaskSettlement.SettleAfterTargetsAsync(
+            [Task.CompletedTask], () => registry.OwnedTasks,
+            Stopwatch.GetTimestamp() + Stopwatch.Frequency);
+        Assert.True(settlement.TargetsSettled);
+        Assert.True(settlement.OwnedTasksSettled);
+        Assert.Contains(settlement.OwnedTaskFaults, fault => fault.Contains("capture worker failed", StringComparison.Ordinal));
+        Assert.False(settlement.CanFinalize);
+    }
+
+    [Fact]
     public async Task OwnedTasksAreNotSettledUntilTargetsHaveTerminated()
     {
         var targetTermination = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -286,6 +322,26 @@ public sealed class OperatingEnvelopeProtocolTests
         Assert.False(settlement.TargetsSettled);
         Assert.False(settlement.OwnedTasksSettled);
         Assert.False(getOwnedTasksCalled);
+    }
+
+    [Fact]
+    public async Task FaultedTargetTerminationDoesNotStartOwnedSettlement()
+    {
+        var requested = false;
+        var settlement = await OperatingEnvelopeTaskSettlement.SettleAfterTargetsAsync(
+            [Task.FromException(new IOException("termination failed"))],
+            () =>
+            {
+                requested = true;
+                return [Task.CompletedTask];
+            },
+            Stopwatch.GetTimestamp() + Stopwatch.Frequency);
+
+        Assert.True(settlement.TargetsSettled);
+        Assert.Contains(settlement.TargetFaults, fault => fault.Contains("termination failed", StringComparison.Ordinal));
+        Assert.False(settlement.OwnedTasksSettled);
+        Assert.False(settlement.CanFinalize);
+        Assert.False(requested);
     }
 
     [Fact]

@@ -204,7 +204,36 @@ public sealed record OperatingEnvelopePostTerminationSettlementResult(
     bool TargetsSettled,
     IReadOnlyList<string> TargetFaults,
     bool OwnedTasksSettled,
-    IReadOnlyList<string> OwnedTaskFaults);
+    IReadOnlyList<string> OwnedTaskFaults)
+{
+    public bool CanFinalize =>
+        TargetsSettled && TargetFaults.Count == 0 &&
+        OwnedTasksSettled && OwnedTaskFaults.Count == 0;
+}
+
+public sealed class OperatingEnvelopeTaskRegistry
+{
+    private readonly List<Task> _measured = [];
+    private readonly List<Task> _owned = [];
+
+    public IReadOnlyList<Task> OwnedTasks => _owned;
+
+    public void AddMeasured(Task task)
+    {
+        ArgumentNullException.ThrowIfNull(task);
+        _measured.Add(task);
+        _owned.Add(task);
+    }
+
+    public void AddCleanupOnly(Task task)
+    {
+        ArgumentNullException.ThrowIfNull(task);
+        _owned.Add(task);
+    }
+
+    public Task WaitForMeasuredAsync(CancellationToken cancellationToken) =>
+        Task.WhenAll(_measured).WaitAsync(cancellationToken);
+}
 
 public static class OperatingEnvelopeTaskSettlement
 {
@@ -254,9 +283,9 @@ public static class OperatingEnvelopeTaskSettlement
 
         var targets = await SettleAsync(
             targetTerminationTasks, absoluteDeadlineTimestamp, cancellationToken).ConfigureAwait(false);
-        if (!targets.Settled)
+        if (!targets.Settled || targets.Faults.Count > 0)
         {
-            return new(false, targets.Faults, false, []);
+            return new(targets.Settled, targets.Faults, false, []);
         }
 
         var ownedTasks = getOwnedTasks();

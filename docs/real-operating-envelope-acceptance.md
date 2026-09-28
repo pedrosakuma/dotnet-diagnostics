@@ -97,12 +97,14 @@ Results retain:
   be preempted, so it runs inside an owned trial task that is awaited only to
   the deadline. Deadline checks surround each call; if it remains blocked
   through the bounded settlement window, the run is quarantined.
-- Cleanup cancels outstanding work, initiates termination of every target, and
-  waits for target termination before it starts the final settlement of owned
-  capture/request work and the resource sampler. Target termination and owned
-  task settlement share one absolute bounded cleanup deadline. Request
-  accounting is snapshotted only after that post-termination settlement
-  succeeds. If settlement or cleanup fails, the run writes a `quarantine.json`
+- The resource sampler runs alongside measured collectors and requests, but
+  does not block their completion; it is stopped and tracked for cleanup.
+  Cleanup cancels outstanding work, initiates termination of every target, and
+  waits for fault-free target termination before it starts the final settlement
+  of owned capture/request work and the resource sampler. Target termination
+  and owned task settlement share one absolute bounded cleanup deadline.
+  Request accounting is snapshotted only after fault-free post-termination
+  settlement. Any task fault, timeout, or cleanup failure writes a `quarantine.json`
   marker identifying the invalid trial and its stop outcome, plus its SHA-256
   sidecar; it publishes no report for that pair and does not write `results.csv`
   or a final results manifest. Treat every artifact under that run directory
