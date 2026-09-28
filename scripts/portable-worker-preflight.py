@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
+import errno
 import hashlib
 import json
 import os
@@ -122,6 +124,7 @@ def validate_directory(
     trusted_root: Path,
     expected_hashes: dict[str, str],
     allow_producer_metadata: bool,
+    runtime_uid: int | None = None,
 ) -> dict[str, object]:
     if not directory.is_absolute() or not trusted_root.is_absolute():
         raise ValueError("Asset and trusted-root paths must be absolute")
@@ -151,7 +154,33 @@ def validate_directory(
     worker = directory / "capture-worker"
     if not worker.stat().st_mode & stat.S_IXUSR:
         raise ValueError("capture-worker is not executable by its owner")
-    return {"path": str(directory), "modes": modes}
+    if runtime_uid is not None and worker.stat().st_uid != runtime_uid:
+        raise ValueError(
+            f"{worker} owner UID {worker.stat().st_uid} does not match intended runtime UID {runtime_uid}"
+        )
+    return {"path": str(directory), "modes": modes, "ownerUid": worker.stat().st_uid}
+
+
+def probe_kernel() -> dict[str, object]:
+    libc = ctypes.CDLL(None, use_errno=True)
+    landlock_create_ruleset = 444
+    landlock_create_ruleset_version = 1
+    abi = libc.syscall(landlock_create_ruleset, 0, 0, landlock_create_ruleset_version)
+    if abi < 0:
+        code = ctypes.get_errno()
+        if code in (errno.ENOSYS, errno.EOPNOTSUPP, errno.EINVAL):
+            raise ValueError(f"Landlock ABI query is unavailable: errno {code}")
+        raise OSError(code, os.strerror(code))
+    if abi < 3:
+        raise ValueError(f"Landlock ABI {abi} is below the required ABI 3")
+    pr_get_seccomp = 21
+    seccomp_mode = libc.prctl(pr_get_seccomp, 0, 0, 0, 0)
+    if seccomp_mode < 0:
+        code = ctypes.get_errno()
+        if code in (errno.ENOSYS, errno.EINVAL):
+            raise ValueError(f"seccomp query is unavailable: errno {code}")
+        raise OSError(code, os.strerror(code))
+    return {"landlockAbi": abi, "currentProcessSeccompMode": seccomp_mode}
 
 
 def main() -> int:
@@ -161,6 +190,8 @@ def main() -> int:
     parser.add_argument("--repo-root", required=True, type=Path)
     parser.add_argument("--expected-revision", required=True)
     parser.add_argument("--installed-dir", action="append", default=[], type=Path)
+    parser.add_argument("--runtime-uid", type=int, default=os.geteuid())
+    parser.add_argument("--probe-kernel", action="store_true")
     parser.add_argument("--readelf", default="readelf")
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
@@ -208,7 +239,13 @@ def main() -> int:
         allow_producer_metadata=True,
     )
     installed = [
-        validate_directory(path, path.parent, expected_hashes, allow_producer_metadata=False)
+        validate_directory(
+            path,
+            path.parent,
+            expected_hashes,
+            allow_producer_metadata=False,
+            runtime_uid=args.runtime_uid,
+        )
         for path in args.installed_dir
     ]
     elf = validate_elf(
@@ -226,8 +263,10 @@ def main() -> int:
         "producerRevision": revision,
         "producer": producer,
         "installedCopies": installed,
+        "intendedRuntimeUid": args.runtime_uid,
         "hashes": expected_hashes,
         "elf": elf,
+        "kernel": probe_kernel() if args.probe_kernel else {"status": "not-probed"},
         "activation": environment,
         "acceptance": {
             "filter": ACCEPTANCE_FILTER,

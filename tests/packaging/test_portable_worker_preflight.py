@@ -81,6 +81,7 @@ class PortableWorkerPreflightTests(unittest.TestCase):
                 "--repo-root", str(ROOT),
                 "--expected-revision", self.revision,
                 "--installed-dir", str(self.installed),
+                "--runtime-uid", str(os.geteuid()),
                 "--readelf", str(self.readelf),
                 "--output", str(self.output),
                 *extra,
@@ -104,6 +105,8 @@ class PortableWorkerPreflightTests(unittest.TestCase):
         self.assertEqual(str(self.assets / "capture-worker"),
                          report["activation"]["DOTNET_DIAGNOSTICS_IMPORT_WORKER"])
         self.assertEqual("0755", report["producer"]["modes"]["capture-worker"])
+        self.assertEqual(os.geteuid(), report["intendedRuntimeUid"])
+        self.assertEqual("not-probed", report["kernel"]["status"])
 
     def test_rejects_revision_mismatch(self):
         self.revision = "b" * 40
@@ -134,6 +137,11 @@ class PortableWorkerPreflightTests(unittest.TestCase):
         result = self.run_preflight()
         self.assertNotEqual(0, result.returncode)
         self.assertIn("writable by group or other users", result.stderr)
+
+    def test_rejects_installed_worker_owned_by_another_runtime_identity(self):
+        result = self.run_preflight("--runtime-uid", str(os.geteuid() + 1))
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("does not match intended runtime UID", result.stderr)
 
     def test_rejects_newer_glibc_requirement(self):
         self.readelf.write_text(
