@@ -1,6 +1,7 @@
 using DotnetDiagnostics.Cli;
 using DotnetDiagnostics.Core.Safety;
 using FluentAssertions;
+using System.Text.Json;
 
 namespace DotnetDiagnostics.Cli.Tests;
 
@@ -44,8 +45,11 @@ public sealed class CliDurableCaptureValidationTests
             ["collect", "--kind", "counters", "--persist", "--capture-root", root, "--explain-risk", "--json"],
             stdout, stderr, CancellationToken.None);
         exit.Should().Be(0);
-        stdout.ToString().Should().Contain("writes-artifact").And.Contain(Path.Combine(root, "captures"))
-            .And.Contain("\"executed\": false");
+        using var response = JsonDocument.Parse(stdout.ToString());
+        response.RootElement.GetProperty("safety").GetProperty("sideEffects")
+            .EnumerateArray().Select(effect => effect.GetString()).Should().Contain("writes-artifact");
+        response.RootElement.GetProperty("artifactPath").GetString().Should().Be(Path.Combine(root, "captures"));
+        response.RootElement.GetProperty("executed").GetBoolean().Should().BeFalse();
         Directory.Exists(root).Should().BeFalse();
     }
 
