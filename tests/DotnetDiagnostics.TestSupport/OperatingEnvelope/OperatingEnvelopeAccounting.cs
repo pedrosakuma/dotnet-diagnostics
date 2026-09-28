@@ -200,6 +200,12 @@ public sealed record OperatingEnvelopeTaskSettlementResult(
     bool Settled,
     IReadOnlyList<string> Faults);
 
+public sealed record OperatingEnvelopePostTerminationSettlementResult(
+    bool TargetsSettled,
+    IReadOnlyList<string> TargetFaults,
+    bool OwnedTasksSettled,
+    IReadOnlyList<string> OwnedTaskFaults);
+
 public static class OperatingEnvelopeTaskSettlement
 {
     public static async Task<OperatingEnvelopeTaskSettlementResult> SettleAsync(
@@ -235,6 +241,29 @@ public static class OperatingEnvelopeTaskSettlement
             .Select(exception => $"{exception.GetType().Name}: {exception.Message}")
             .ToArray();
         return new(true, faults);
+    }
+
+    public static async Task<OperatingEnvelopePostTerminationSettlementResult> SettleAfterTargetsAsync(
+        IReadOnlyList<Task> targetTerminationTasks,
+        Func<IReadOnlyList<Task>> getOwnedTasks,
+        long absoluteDeadlineTimestamp,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(targetTerminationTasks);
+        ArgumentNullException.ThrowIfNull(getOwnedTasks);
+
+        var targets = await SettleAsync(
+            targetTerminationTasks, absoluteDeadlineTimestamp, cancellationToken).ConfigureAwait(false);
+        if (!targets.Settled)
+        {
+            return new(false, targets.Faults, false, []);
+        }
+
+        var ownedTasks = getOwnedTasks();
+        ArgumentNullException.ThrowIfNull(ownedTasks);
+        var work = await SettleAsync(
+            ownedTasks, absoluteDeadlineTimestamp, cancellationToken).ConfigureAwait(false);
+        return new(true, targets.Faults, work.Settled, work.Faults);
     }
 
     private static void ObserveLateFaults(Task task)

@@ -191,6 +191,7 @@ public sealed class OperatingEnvelopeAcceptanceTests
                     warmupMilliseconds);
 
             resources.Start(samples);
+            ownedTasks.Add(resources.SamplingTask);
             var targetPlans = samples.Select((sample, index) => (Sample: sample, Index: index)).ToArray();
             foreach (var target in targetPlans)
             {
@@ -283,26 +284,51 @@ public sealed class OperatingEnvelopeAcceptanceTests
         finally
         {
             cleanupStarted = Stopwatch.GetTimestamp();
+            var cleanupDeadline = cleanupStarted + ToStopwatchTicks(CleanupDeadline);
+            cellToken.Cancel();
+            resources.RequestStop();
+
+            var targetTerminationTasks = new List<Task>(samples.Count);
+            foreach (var sample in samples)
+            {
+                try
+                {
+                    targetTerminationTasks.Add(sample.DisposeAsync().AsTask());
+                }
+                catch (Exception ex)
+                {
+                    targetTerminationTasks.Add(Task.FromException(ex));
+                    cleanupErrors.Add($"Target {sample.ProcessId} termination: {ex.GetType().Name}: {ex.Message}");
+                }
+            }
+
             try
             {
-                if (ownedTasks.Count > 0)
+                var settlement = await OperatingEnvelopeTaskSettlement.SettleAfterTargetsAsync(
+                    targetTerminationTasks, () => ownedTasks, cleanupDeadline);
+                if (!settlement.TargetsSettled)
                 {
-                    var settlementDeadline = cleanupStarted + ToStopwatchTicks(CleanupDeadline);
-                    var settlement = await OperatingEnvelopeTaskSettlement.SettleAsync(
-                        ownedTasks, settlementDeadline);
-                    if (!settlement.Settled)
-                    {
-                        cleanupErrors.Add(
-                            $"Owned collection/request work did not settle before the absolute {CleanupDeadline} cleanup deadline.");
-                    }
-                    if (settlement.Faults.Count > 0)
-                    {
-                        notes.AddRange(settlement.Faults.Select(
-                            fault => $"Owned collection/request task faulted: {fault}"));
-                        outcome = OperatingEnvelopeTrialOutcome.Failed;
-                        stopOutcome = OperatingEnvelopeStopOutcome.CollectionFailed;
-                        error ??= "One or more collection/request tasks faulted.";
-                    }
+                    cleanupErrors.Add(
+                        $"Target termination did not settle before the absolute {CleanupDeadline} cleanup deadline.");
+                }
+                cleanupErrors.AddRange(settlement.TargetFaults.Select(
+                    fault => $"Target termination faulted: {fault}"));
+                if (settlement.TargetFaults.Count > 0)
+                {
+                    cleanupErrors.Add("At least one target's termination could not be confirmed.");
+                }
+                if (!settlement.OwnedTasksSettled)
+                {
+                    cleanupErrors.Add(
+                        $"Owned work did not settle after target termination before the shared {CleanupDeadline} cleanup deadline.");
+                }
+                if (settlement.OwnedTaskFaults.Count > 0)
+                {
+                    notes.AddRange(settlement.OwnedTaskFaults.Select(
+                        fault => $"Owned collection/request task faulted: {fault}"));
+                    outcome = OperatingEnvelopeTrialOutcome.Failed;
+                    stopOutcome = OperatingEnvelopeStopOutcome.CollectionFailed;
+                    error ??= "One or more collection/request tasks faulted after target termination.";
                 }
             }
             catch (Exception ex)
@@ -310,10 +336,35 @@ public sealed class OperatingEnvelopeAcceptanceTests
                 cleanupErrors.Add($"Owned task cleanup: {ex.GetType().Name}: {ex.Message}");
             }
 
-            foreach (var sample in samples)
+            try
             {
-                if (measuredProgress.TryGetValue(sample.ProcessId, out var progress))
+                if (!resourcesStopped)
                 {
+                    diagnosticResources = await resources.StopAsync(cleanupDeadline);
+                }
+            }
+            catch (Exception ex)
+            {
+                cleanupErrors.Add($"Resource sampler cleanup: {ex.GetType().Name}: {ex.Message}");
+            }
+
+            foreach (var note in resources.Notes)
+            {
+                notes.Add(note);
+            }
+            resources.Dispose();
+
+            if (cleanupErrors.Count == 0)
+            {
+                foreach (var sample in samples)
+                {
+                    if (!measuredProgress.TryGetValue(sample.ProcessId, out var progress))
+                    {
+                        targetRequests.Add(new(sample.ProcessId,
+                            EmptyRequests(MeasuredRequestSlots(config), config.WindowDuration.TotalMilliseconds)));
+                        continue;
+                    }
+
                     var snapshot = progress.Snapshot(config.WindowDuration.TotalMilliseconds);
                     targetRequests.Add(new(sample.ProcessId, snapshot.Accounting));
                     foreach (var note in snapshot.Notes)
@@ -324,72 +375,33 @@ public sealed class OperatingEnvelopeAcceptanceTests
                         }
                     }
                 }
-                else
-                {
-                    targetRequests.Add(new(sample.ProcessId,
-                        EmptyRequests(MeasuredRequestSlots(config), config.WindowDuration.TotalMilliseconds)));
-                }
-            }
 
-            if (targetRequests.Count > 0)
-            {
-                requests = CombineRequests(
-                    targetRequests.Select(result => result.Accounting).ToArray(),
-                    config.WindowDuration.TotalMilliseconds);
-            }
-            if (warmupProgress.Count > 0)
-            {
-                var elapsed = warmupStarted == 0 ? 0 : ElapsedMilliseconds(warmupStarted);
-                warmupMilliseconds = elapsed;
-                var warmupSnapshots = warmupProgress
-                    .Select(progress => progress.Snapshot(elapsed))
-                    .ToArray();
-                warmupRequests = CombineRequests(
-                    warmupSnapshots.Select(snapshot => snapshot.Accounting).ToArray(),
-                    elapsed);
-                foreach (var note in warmupSnapshots.SelectMany(snapshot => snapshot.Notes))
+                if (targetRequests.Count > 0)
                 {
-                    if (!notes.Contains(note, StringComparer.Ordinal))
+                    requests = CombineRequests(
+                        targetRequests.Select(result => result.Accounting).ToArray(),
+                        config.WindowDuration.TotalMilliseconds);
+                }
+
+                if (warmupProgress.Count > 0)
+                {
+                    var elapsed = warmupStarted == 0 ? 0 : ElapsedMilliseconds(warmupStarted);
+                    warmupMilliseconds = elapsed;
+                    var warmupSnapshots = warmupProgress
+                        .Select(progress => progress.Snapshot(elapsed))
+                        .ToArray();
+                    warmupRequests = CombineRequests(
+                        warmupSnapshots.Select(snapshot => snapshot.Accounting).ToArray(),
+                        elapsed);
+                    foreach (var note in warmupSnapshots.SelectMany(snapshot => snapshot.Notes))
                     {
-                        notes.Add(note);
+                        if (!notes.Contains(note, StringComparer.Ordinal))
+                        {
+                            notes.Add(note);
+                        }
                     }
                 }
             }
-
-            try
-            {
-                if (!resourcesStopped)
-                {
-                    if (resourceSettlementDeadline == 0)
-                    {
-                        resourceSettlementDeadline = cleanupStarted + ToStopwatchTicks(CleanupDeadline);
-                    }
-
-                    diagnosticResources = await resources.StopAsync(resourceSettlementDeadline);
-                }
-            }
-            catch (Exception ex)
-            {
-                cleanupErrors.Add($"Resource sampler cleanup: {ex.GetType().Name}: {ex.Message}");
-            }
-
-            foreach (var sample in samples)
-            {
-                try
-                {
-                    await sample.DisposeAsync();
-                }
-                catch (Exception ex)
-                {
-                    cleanupErrors.Add($"Target {sample.ProcessId} cleanup: {ex.GetType().Name}: {ex.Message}");
-                }
-            }
-
-            foreach (var note in resources.Notes)
-            {
-                notes.Add(note);
-            }
-            resources.Dispose();
 
             if (cleanupErrors.Count > 0)
             {
@@ -1443,6 +1455,8 @@ public sealed class OperatingEnvelopeAcceptanceTests
         private readonly int[] _diagnosticGcStart = new int[3];
 
         public IReadOnlyList<string> Notes => _notes.AsReadOnly();
+        public Task SamplingTask => _sampling
+            ?? throw new InvalidOperationException("Resource sampling has not started.");
 
         public IReadOnlyList<OperatingEnvelopeTargetResources> Targets =>
             _targets.Select(sample => new OperatingEnvelopeTargetResources(
@@ -1482,7 +1496,7 @@ public sealed class OperatingEnvelopeAcceptanceTests
                 return EmptyDiagnosticResources("Resource sampling did not start.");
             }
 
-            _stop.Cancel();
+            RequestStop();
             var settlement = await OperatingEnvelopeTaskSettlement.SettleAsync(
                 [_sampling], settlementDeadlineTimestamp);
             if (!settlement.Settled)
@@ -1506,9 +1520,13 @@ public sealed class OperatingEnvelopeAcceptanceTests
                 GC.CollectionCount(2) - _diagnosticGcStart[2],
                 _notes.AsReadOnly());
             _diagnosticProcess.Dispose();
+            _diagnosticProcess = null;
             _stop.Dispose();
+            _stop = null;
             return result;
         }
+
+        public void RequestStop() => _stop?.Cancel();
 
         public void Dispose()
         {

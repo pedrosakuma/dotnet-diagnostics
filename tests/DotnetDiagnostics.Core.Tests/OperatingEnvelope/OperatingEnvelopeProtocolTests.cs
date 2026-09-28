@@ -240,6 +240,55 @@ public sealed class OperatingEnvelopeProtocolTests
     }
 
     [Fact]
+    public async Task OwnedTasksAreNotSettledUntilTargetsHaveTerminated()
+    {
+        var targetTermination = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var ownedWork = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var ownedSettlementRequested = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var settlement = OperatingEnvelopeTaskSettlement.SettleAfterTargetsAsync(
+            [targetTermination.Task],
+            () =>
+            {
+                Assert.True(targetTermination.Task.IsCompletedSuccessfully);
+                ownedSettlementRequested.SetResult();
+                return [ownedWork.Task];
+            },
+            Stopwatch.GetTimestamp() + Stopwatch.Frequency);
+
+        Assert.False(ownedSettlementRequested.Task.IsCompleted);
+        targetTermination.SetResult();
+        await ownedSettlementRequested.Task;
+        Assert.False(settlement.IsCompleted);
+        ownedWork.SetResult();
+
+        var result = await settlement;
+        Assert.True(result.TargetsSettled);
+        Assert.True(result.OwnedTasksSettled);
+        Assert.Empty(result.TargetFaults);
+        Assert.Empty(result.OwnedTaskFaults);
+    }
+
+    [Fact]
+    public async Task UnsettledTargetTerminationPreventsOwnedSettlementAndQuarantinesRun()
+    {
+        var targetTermination = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var getOwnedTasksCalled = false;
+        var settlement = await OperatingEnvelopeTaskSettlement.SettleAfterTargetsAsync(
+            [targetTermination.Task],
+            () =>
+            {
+                getOwnedTasksCalled = true;
+                return [];
+            },
+            Stopwatch.GetTimestamp() - 1);
+
+        Assert.False(settlement.TargetsSettled);
+        Assert.False(settlement.OwnedTasksSettled);
+        Assert.False(getOwnedTasksCalled);
+    }
+
+    [Fact]
     public void PairValidationKeepsMeasuredLossSeparateFromInvalidExecution()
     {
         var schedule = OperatingEnvelopeProtocol.CreateSchedule();
