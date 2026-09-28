@@ -237,7 +237,7 @@ public sealed partial class MonitoredRunnerTests
         oldExecution.Should().Throw<DurableStorageExperimentException>();
         PrevalidationProtocol.ValidateShape(manifest with
             { ContextSummaryFieldMapSha256 = PrevalidationProtocol.LegacyContextSummaryFieldMapSha256 }, true);
-        MonitoredFile.HashFile(Path.Combine(FindRepositoryRoot(), SampledLossProtocol.Path))
+        MonitoredFile.HashRepositoryFile(Path.Combine(FindRepositoryRoot(), SampledLossProtocol.Path))
             .Should().Be(SampledLossProtocol.ProtocolSha256);
     }
 

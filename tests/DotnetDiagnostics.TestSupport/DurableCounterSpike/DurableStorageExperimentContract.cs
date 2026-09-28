@@ -486,8 +486,8 @@ internal static class DurableStorageExperimentFoundation
 
         var protocolPath = ResolveRepositoryFile(repositoryRoot, manifest.ProtocolJson);
         var fixturePath = ResolveRepositoryFile(repositoryRoot, manifest.FixtureManifest);
-        var protocolHash = HashFile(protocolPath);
-        var fixtureHash = HashFile(fixturePath);
+        var protocolHash = HashRepositoryTextFile(protocolPath);
+        var fixtureHash = HashRepositoryTextFile(fixturePath);
         RequireHash(manifest.ProtocolJsonSha256, protocolHash, "ProtocolHashMismatch");
         RequireHash(manifest.FixtureManifestSha256, fixtureHash, "FixtureHashMismatch");
 
@@ -586,10 +586,38 @@ internal static class DurableStorageExperimentFoundation
         }
     }
 
-    private static string HashFile(string path)
+    internal static string HashRepositoryTextFile(string path)
     {
-        using var stream = File.OpenRead(path);
-        return Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+        var bytes = File.ReadAllBytes(path);
+        return Convert.ToHexString(SHA256.HashData(NormalizeRepositoryText(bytes))).ToLowerInvariant();
+    }
+
+    internal static byte[] NormalizeRepositoryText(ReadOnlySpan<byte> bytes)
+    {
+        var crlfCount = 0;
+        for (var i = 0; i + 1 < bytes.Length; i++)
+        {
+            if (bytes[i] == '\r' && bytes[i + 1] == '\n')
+            {
+                crlfCount++;
+                i++;
+            }
+        }
+        if (crlfCount == 0)
+        {
+            return bytes.ToArray();
+        }
+        var normalized = new byte[bytes.Length - crlfCount];
+        var destination = 0;
+        for (var source = 0; source < bytes.Length; source++)
+        {
+            if (bytes[source] == '\r' && source + 1 < bytes.Length && bytes[source + 1] == '\n')
+            {
+                continue;
+            }
+            normalized[destination++] = bytes[source];
+        }
+        return normalized;
     }
 }
 

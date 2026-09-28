@@ -44,10 +44,10 @@ internal static class ObservedUnlinkedProtocol
             && MonitoredFile.IsResolvedSha256(binding.RuntimeEnvironmentSha256)
             && binding.ManagedBinaries.Count is > 0 and <= 256, "ObservedUnlinkedPolicyMismatch");
         if (repository is null) return;
-        PrevalidationProtocol.Require(MonitoredFile.HashFile(
+        PrevalidationProtocol.Require(MonitoredFile.HashRepositoryFile(
             MonitoredPathRules.ResolveRepositoryFile(repository, Path)) == ProtocolSha256,
             "ObservedUnlinkedProtocolChanged");
-        PrevalidationProtocol.Require(MonitoredFile.HashFile(
+        PrevalidationProtocol.Require(MonitoredFile.HashRepositoryFile(
             MonitoredPathRules.ResolveRepositoryFile(repository, SampledLossProtocol.Path))
             == SampledLossProtocol.ProtocolSha256, "ObservedUnlinkedInheritedProtocolChanged");
         PrevalidationProtocol.Require(binding.RuntimeEnvironmentSha256 == PrevalidationProtocol.RuntimeEnvironmentHash(),

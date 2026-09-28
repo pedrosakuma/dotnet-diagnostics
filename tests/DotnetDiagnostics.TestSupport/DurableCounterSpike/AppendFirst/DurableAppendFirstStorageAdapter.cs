@@ -424,7 +424,9 @@ internal sealed class DurableAppendFirstStorageAdapter : IDurableCounterStorageA
                     finalPipelineQuality, RetainedRecords: index.CountRows(), VolatileTailUnknown: false);
                 DurableStorageQualityRules.Validate(terminalQuality);
 
-                index.SealForLiveReading(terminalQuality);
+                index.CloseForSeal();
+                await index.DisposeAsync().ConfigureAwait(false);
+                index = null;
 
                 var canonicalMember = BuildMember(
                     _canonicalPath,
@@ -439,6 +441,7 @@ internal sealed class DurableAppendFirstStorageAdapter : IDurableCounterStorageA
                 var result = new DurableStoragePreSealResult(
                     [canonicalMember], [queryMember], finalBytes, _configurationDigest);
                 DurableStorageSealRules.ValidatePreSeal(result, _limits);
+                index = DurableAppendFirstQueryIndex.OpenReadOnly(_queryPath, _limits, terminalQuality);
                 _reader = index;
                 index = null;
                 return result;
@@ -449,16 +452,16 @@ internal sealed class DurableAppendFirstStorageAdapter : IDurableCounterStorageA
                 // never rewrite the already-committed admission outcomes on the canonical
                 // log: only the half-built derived index (if any) is discarded.
                 _sealFailed = true;
-                if (index is not null)
+                try
                 {
-                    try
+                    if (index is not null)
                     {
                         await index.DisposeAsync().ConfigureAwait(false);
                     }
-                    finally
-                    {
-                        TryDelete(_queryPath);
-                    }
+                }
+                finally
+                {
+                    TryDelete(_queryPath);
                 }
                 throw;
             }

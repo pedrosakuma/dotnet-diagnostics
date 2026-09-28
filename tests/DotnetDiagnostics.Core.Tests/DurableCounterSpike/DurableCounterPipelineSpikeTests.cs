@@ -474,7 +474,8 @@ public sealed class DurableCounterPipelineSpikeTests
             root.GetProperty("protocolJson").GetString()
                 ?? throw new InvalidOperationException("Fixture manifest protocol path was empty."));
         var protocolBytes = File.ReadAllBytes(protocolPath);
-        var actualProtocolHash = Convert.ToHexString(SHA256.HashData(protocolBytes)).ToLowerInvariant();
+        var actualProtocolHash = Convert.ToHexString(SHA256.HashData(
+            DurableStorageExperimentFoundation.NormalizeRepositoryText(protocolBytes))).ToLowerInvariant();
         using var protocolDocument = JsonDocument.Parse(protocolBytes);
         var protocol = protocolDocument.RootElement;
         var protocolLimits = protocol.GetProperty("limits");

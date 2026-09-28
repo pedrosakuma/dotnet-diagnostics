@@ -756,7 +756,11 @@ public sealed class DurableSqliteStorageAdapterTests : IDisposable
                 path => Path.GetRelativePath(root, path),
                 path =>
                 {
-                    using var stream = File.OpenRead(path);
+                    using var stream = new FileStream(
+                        path,
+                        FileMode.Open,
+                        FileAccess.Read,
+                        FileShare.ReadWrite | FileShare.Delete);
                     return new FileStamp(
                         stream.Length,
                         Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant());

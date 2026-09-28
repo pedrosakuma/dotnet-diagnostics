@@ -161,12 +161,7 @@ public sealed class CaptureWriter : IAsyncDisposable
         {
             EnsureActive();
             Interlocked.Increment(ref _offered);
-            if (!Monitor.TryEnter(_gate))
-            {
-                Interlocked.Increment(ref _queueRejected);
-                return false;
-            }
-            try
+            lock (_gate)
             {
                 if (artifactId is null || !_artifacts.ContainsKey(artifactId) || !TryOwn(record, out var owned, out var size))
                 {
@@ -197,7 +192,6 @@ public sealed class CaptureWriter : IAsyncDisposable
                 Interlocked.Increment(ref _accepted);
                 return true;
             }
-            finally { Monitor.Exit(_gate); }
         }
         finally { Interlocked.Decrement(ref _offersInFlight); }
     }

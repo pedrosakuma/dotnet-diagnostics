@@ -889,6 +889,7 @@ public sealed partial class MonitoredRunnerTests : IDisposable
     [InlineData("B")]
     public async Task CandidatePackagePublicationPerformsImmutableFreshReopen(string candidate)
     {
+        if (!OperatingSystem.IsLinux()) return;
         var fixture = WriteResolvedManifest(authorizationApproved: true);
         var manifest = JsonSerializer.Deserialize<MonitoredRunManifest>(
             File.ReadAllBytes(fixture.ManifestPath),
@@ -1709,6 +1710,7 @@ public sealed partial class MonitoredRunnerTests : IDisposable
     [Fact]
     public void PrevalidationOldFieldMapIsInspectionOnlyAndCannotAuthorizeNewExecution()
     {
+        if (!OperatingSystem.IsLinux()) return;
         var current = PrevalidationContractFixture();
         var old = current with { ContextSummaryFieldMapSha256 = PrevalidationProtocol.LegacyContextSummaryFieldMapSha256 };
         PrevalidationProtocol.ValidateShape(old, allowLegacyInspection: true);

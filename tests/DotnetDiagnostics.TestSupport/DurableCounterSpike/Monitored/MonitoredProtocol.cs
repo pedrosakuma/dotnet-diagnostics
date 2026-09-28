@@ -209,7 +209,7 @@ internal static class MonitoredSuccessorProtocolValidator
         var baselineBytes = MonitoredFile.ReadBounded(baselinePath, 1_048_576);
         var proposalBytes = MonitoredFile.ReadBounded(proposalPath, 1_048_576);
         var successorBytes = MonitoredFile.ReadBounded(successorPath, 1_048_576);
-        var baselineHash = MonitoredFile.HashBytes(baselineBytes);
+        var baselineHash = MonitoredFile.HashRepositoryBytes(baselineBytes);
         if (!string.Equals(
                 baselineHash,
                 MonitoredProtocolVersions.BaselineProtocolSha256,
@@ -267,7 +267,7 @@ internal static class MonitoredSuccessorProtocolValidator
 
         return new MonitoredProtocolValidation(
             successorPath,
-            MonitoredFile.HashBytes(successorBytes),
+            MonitoredFile.HashRepositoryBytes(successorBytes),
             successor.GetProperty("monitoring").Clone(),
             successor.GetProperty("storageSemantics").Clone());
     }
@@ -2119,6 +2119,12 @@ internal static class MonitoredFile
         using var stream = File.OpenRead(path);
         return Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
     }
+
+    internal static string HashRepositoryFile(string path)
+        => HashRepositoryBytes(File.ReadAllBytes(path));
+
+    internal static string HashRepositoryBytes(ReadOnlySpan<byte> bytes)
+        => HashBytes(DurableStorageExperimentFoundation.NormalizeRepositoryText(bytes));
 
     internal static string HashBytes(ReadOnlySpan<byte> bytes)
         => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();

@@ -223,7 +223,8 @@ public sealed partial class DurableCaptureStoreTests
         Assert.Equal(V1ProducerCommit, provenance.RootElement.GetProperty("ProducerCommit").GetString());
         Assert.Equal("10.0.201", provenance.RootElement.GetProperty("ProducerSdk").GetString());
         Assert.Equal(provenance.RootElement.GetProperty("GeneratorSourceSha256").GetString(),
-            Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(Path.Combine(fixtureDirectory, "generator.cs.txt")))));
+            Convert.ToHexString(SHA256.HashData(DurableCounterSpike.DurableStorageExperimentFoundation.NormalizeRepositoryText(
+                File.ReadAllBytes(Path.Combine(fixtureDirectory, "generator.cs.txt"))))));
         Assert.All(provenance.RootElement.GetProperty("PackageVersions").EnumerateObject(),
             static version => Assert.Equal(1, version.Value.GetInt32()));
         var archiveName = sealedPackage ? "sealed-v1.zip" : "interrupted-v1.zip";

@@ -364,7 +364,7 @@ internal static class DurableSqliteRecovery
             source,
             FileMode.Open,
             FileAccess.Read,
-            FileShare.Read,
+            FileShare.ReadWrite | FileShare.Delete,
             bufferSize,
             FileOptions.SequentialScan);
         using var output = new FileStream(

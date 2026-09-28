@@ -74,6 +74,18 @@ public sealed class DurableStorageExperimentFoundationTests : IDisposable
     }
 
     [Fact]
+    public void RepositoryTextHashesAreIndependentOfCheckoutLineEndings()
+    {
+        var lf = Path.Combine(_workspace, "lf.json");
+        var crlf = Path.Combine(_workspace, "crlf.json");
+        File.WriteAllText(lf, "{\n  \"revision\": 3\n}\n");
+        File.WriteAllText(crlf, "{\r\n  \"revision\": 3\r\n}\r\n");
+
+        DurableStorageExperimentFoundation.HashRepositoryTextFile(crlf)
+            .Should().Be(DurableStorageExperimentFoundation.HashRepositoryTextFile(lf));
+    }
+
+    [Fact]
     public void HashMismatchAndUnknownAdapterFailInsteadOfFallingBack()
     {
         var repositoryRoot = FindRepositoryRoot();
@@ -470,6 +482,9 @@ public sealed class DurableStorageExperimentFoundationTests : IDisposable
                     StringComparison.Ordinal)
                 && !path.Contains(
                     $"{Path.DirectorySeparatorChar}.git{Path.DirectorySeparatorChar}",
+                    StringComparison.Ordinal)
+                && !path.Contains(
+                    $"{Path.DirectorySeparatorChar}TestResults{Path.DirectorySeparatorChar}",
                     StringComparison.Ordinal))
             .ToDictionary(
                 path => Path.GetRelativePath(repositoryRoot, path),

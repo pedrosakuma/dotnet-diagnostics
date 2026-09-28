@@ -23,11 +23,11 @@ public sealed partial class MonitoredRunnerTests
         Action legacyInspection = () => PrevalidationProtocol.ValidateShape(manifest with
         { Schema = ObservedUnlinkedProtocol.PrevalidationManifestSchema }, allowLegacyInspection: true);
         legacyInspection.Should().Throw<DurableStorageExperimentException>();
-        MonitoredFile.HashFile(Path.Combine(FindRepositoryRoot(), UnifiedActiveProtocol.Path))
+        MonitoredFile.HashRepositoryFile(Path.Combine(FindRepositoryRoot(), UnifiedActiveProtocol.Path))
             .Should().Be(UnifiedActiveProtocol.ProtocolSha256);
-        MonitoredFile.HashFile(Path.Combine(FindRepositoryRoot(), ObservedUnlinkedProtocol.Path))
+        MonitoredFile.HashRepositoryFile(Path.Combine(FindRepositoryRoot(), ObservedUnlinkedProtocol.Path))
             .Should().Be(ObservedUnlinkedProtocol.ProtocolSha256);
-        MonitoredFile.HashFile(Path.Combine(FindRepositoryRoot(), SampledLossProtocol.Path))
+        MonitoredFile.HashRepositoryFile(Path.Combine(FindRepositoryRoot(), SampledLossProtocol.Path))
             .Should().Be(SampledLossProtocol.ProtocolSha256);
     }
 

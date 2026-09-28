@@ -201,7 +201,7 @@ internal static class PrevalidationProtocol
             "PrevalidationRuntimeEnvironmentChanged");
         var repository = Path.GetFullPath(repositoryRoot);
         if (manifest.SampledLoss is { } sampled) DescriptorObservationPolicy.ValidateBinding(sampled, repository);
-        Require(MonitoredFile.HashFile(MonitoredPathRules.ResolveRepositoryFile(repository, AddendumPath))
+        Require(MonitoredFile.HashRepositoryFile(MonitoredPathRules.ResolveRepositoryFile(repository, AddendumPath))
             == AddendumSha256, "PrevalidationAddendumChanged");
         MonitoredSuccessorProtocolValidator.Validate(repository, MonitoredProtocolVersions.SuccessorProtocolPath);
         MonitoredRunManifestValidator.ValidateCommits(manifest.SourceCommits);

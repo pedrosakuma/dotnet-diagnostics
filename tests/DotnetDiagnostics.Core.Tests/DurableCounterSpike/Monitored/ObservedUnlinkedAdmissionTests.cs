@@ -271,6 +271,6 @@ public sealed partial class MonitoredRunnerTests
 
     [Fact]
     public void ObservedUnlinkedContractHashMatchesExactProspectiveFile()
-        => MonitoredFile.HashFile(Path.Combine(FindRepositoryRoot(), ObservedUnlinkedProtocol.Path))
+        => MonitoredFile.HashRepositoryFile(Path.Combine(FindRepositoryRoot(), ObservedUnlinkedProtocol.Path))
             .Should().Be(ObservedUnlinkedProtocol.ProtocolSha256);
 }
