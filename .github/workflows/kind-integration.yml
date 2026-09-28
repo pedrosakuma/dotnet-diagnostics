@@ -64,9 +64,11 @@ jobs:
       BEARER_TOKEN: kind-test-bearer-token
       KIND_LOCAL_PORT: "5130"
     steps:
-      - name: Skip secret-dependent Kind validation for untrusted pull request
+      - name: Reject unvalidated code changes from untrusted pull request
         if: needs.changes.outputs.code == 'true' && needs.changes.outputs.trusted_source != 'true'
-        run: echo "Skipping Kind Integration because fork and Dependabot pull requests do not receive the private NUGET_CONFIG secret."
+        run: |
+          echo "Kind Integration cannot validate code changes because fork and Dependabot pull requests do not receive the private NUGET_CONFIG secret." >&2
+          exit 1
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: needs.changes.outputs.code == 'true' && needs.changes.outputs.trusted_source == 'true'

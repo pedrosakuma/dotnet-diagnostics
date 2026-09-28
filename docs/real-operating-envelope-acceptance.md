@@ -162,6 +162,8 @@ each denominator and unknown population. The HTTP results describe this fixed,
 low-rate request schedule; they do not calibrate general application demand.
 The harness records target impact and storage/query costs on the declared host,
 but does not infer universal rates, losslessness, or a production SLO. It does
-not change collector quotas or persistence durability settings. These artifacts
-are prospective acceptance inputs for review under #1041/#1054, not measured
-evidence until the gated matrix is deliberately run and independently assessed.
+not change collector quotas or persistence durability settings. The reviewed
+run identified above is bounded measured evidence for its declared host,
+workload, and revision. Future run artifacts remain prospective acceptance
+inputs under #1041/#1054 until deliberately executed and independently
+assessed.

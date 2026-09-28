@@ -382,7 +382,7 @@ class ContainerDistributionTests(unittest.TestCase):
             binary_upload_steps,
         )
 
-    def test_kind_required_context_skips_secret_dependent_work_for_untrusted_prs(self):
+    def test_kind_required_context_fails_closed_for_untrusted_code_prs(self):
         changes_job = KIND_WORKFLOW.split("  changes:\n", 1)[1].split("\n  kind:\n", 1)[0]
         kind_job = KIND_WORKFLOW.split("  kind:\n", 1)[1]
         self.assertIn("trusted_source:", changes_job)
@@ -391,8 +391,13 @@ class ContainerDistributionTests(unittest.TestCase):
         self.assertIn("github.actor != 'dependabot[bot]'", changes_job)
         self.assertIn("name: Kind Integration (ubuntu-latest)", KIND_WORKFLOW)
         self.assertIn("needs: changes", kind_job)
-        self.assertIn("Skip secret-dependent Kind validation for untrusted pull request", kind_job)
-        self.assertIn("Skipping Kind Integration because fork and Dependabot pull requests do not receive", kind_job)
+        self.assertIn("Reject unvalidated code changes from untrusted pull request", kind_job)
+        self.assertIn("Kind Integration cannot validate code changes because fork and Dependabot", kind_job)
+        reject_step = kind_job.split(
+            "- name: Reject unvalidated code changes from untrusted pull request",
+            1,
+        )[1].split("\n      - ", 1)[0]
+        self.assertIn("exit 1", reject_step)
         for line in kind_job.splitlines():
             if "needs.changes.outputs.code == 'true'" in line and "trusted_source" not in line:
                 self.fail(f"Kind code step lacks the trusted-source gate: {line}")
