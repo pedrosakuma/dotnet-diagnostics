@@ -224,7 +224,7 @@ internal sealed class DurableAppendFirstStorageAdapter : IDurableCounterStorageA
         _queryPath = Path.Combine(queryDirectory, "index.db");
 
         var stream = new FileStream(
-            _canonicalPath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.Read, bufferSize: 4096, useAsync: true);
+            _canonicalPath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.ReadWrite, bufferSize: 4096, useAsync: true);
         _canonicalWriter = new DurableAppendFirstInstrumentedCanonicalWriter(stream, faults, fileOperations);
     }
 
