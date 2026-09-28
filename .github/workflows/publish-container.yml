@@ -36,6 +36,8 @@ env:
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
   DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE: true
   DOTNET_NOLOGO: true
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
 
 on:
   push:
@@ -62,10 +64,6 @@ on:
 permissions:
   contents: read
   packages: write
-
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   portable-native:

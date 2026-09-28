@@ -17,6 +17,7 @@ KIND_WORKFLOW = (ROOT / ".github/workflows/kind-integration.yml").read_text()
 EXTERNAL_WORKFLOW = (ROOT / ".github/workflows/docker-external-investigation.yml").read_text()
 PORTABLE_WORKFLOW = (ROOT / ".github/workflows/portable-native-packaging.yml").read_text()
 RELEASE_WORKFLOW = (ROOT / ".github/workflows/release.yml").read_text()
+CI_WORKFLOW = (ROOT / ".github/workflows/ci.yml").read_text()
 CRASH_COMPOSE = (ROOT / "deploy/docker-compose.crash-guard.yml").read_text()
 EXTERNAL_COMPOSE = (ROOT / "deploy/docker-compose.external-investigation.yml").read_text()
 WORKFLOW_JOBS = dict(re.findall(
@@ -24,6 +25,10 @@ WORKFLOW_JOBS = dict(re.findall(
     WORKFLOW_TEXT.split("\njobs:\n", 1)[1],
     re.M | re.S,
 ))
+ALL_WORKFLOWS = {
+    path.name: path.read_text()
+    for path in (ROOT / ".github/workflows").glob("*.yml")
+}
 
 
 class ContainerDistributionTests(unittest.TestCase):
@@ -36,8 +41,57 @@ class ContainerDistributionTests(unittest.TestCase):
         )
         for name in expected:
             self.assertRegex(DOCKERFILE, rf"(?m)^(?:ENV )?\s*{name}=1(?:\s*\\)?$")
-            for workflow in (WORKFLOW_TEXT, PORTABLE_WORKFLOW, RELEASE_WORKFLOW):
+            for workflow in (
+                WORKFLOW_TEXT,
+                PORTABLE_WORKFLOW,
+                RELEASE_WORKFLOW,
+                CI_WORKFLOW,
+                KIND_WORKFLOW,
+                EXTERNAL_WORKFLOW,
+            ):
                 self.assertRegex(workflow, rf"(?m)^\s+{name}: true$")
+            for dockerfile in SAMPLE_DOCKERFILES.values():
+                self.assertIn(f"{name}=1", dockerfile)
+
+        self.assertEqual(1, len(re.findall(r"(?m)^env:$", WORKFLOW_TEXT)))
+
+    def test_required_ci_restores_use_private_config_and_block_untrusted_code(self):
+        self.assertIn("trusted_source:", CI_WORKFLOW)
+        self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", CI_WORKFLOW)
+        self.assertIn("github.actor != 'dependabot[bot]'", CI_WORKFLOW)
+        self.assertIn("code: ${{ steps.filter.outputs.code }}", CI_WORKFLOW)
+        self.assertGreaterEqual(
+            CI_WORKFLOW.count("Block untrusted code validation without private NuGet"),
+            2,
+        )
+        self.assertIn(
+            "Failing instead of restoring from public sources or reporting an unvalidated success.",
+            CI_WORKFLOW,
+        )
+        self.assertIn(
+            "Failing instead of accepting unvalidated Windows checks.",
+            CI_WORKFLOW,
+        )
+        self.assertNotIn(
+            "Untrusted code PR: secret-dependent Windows jobs skipped without public NuGet fallback.",
+            CI_WORKFLOW,
+        )
+        self.assertEqual(5, CI_WORKFLOW.count("Stage caller-provided private NuGet configuration"))
+        self.assertEqual(4, len(re.findall(r"\bdotnet restore --configfile ", CI_WORKFLOW)))
+        self.assertNotRegex(CI_WORKFLOW, r"(?m)^\s*run: dotnet restore\s*$")
+        self.assertEqual(5, CI_WORKFLOW.count("Remove staged private NuGet configuration"))
+
+    def test_every_dotnet_workflow_disables_background_checks_and_configures_restore(self):
+        for name, workflow in ALL_WORKFLOWS.items():
+            if not re.search(r"(?m)^\s*(?:run:\s*)?dotnet\s", workflow):
+                continue
+            self.assertIn("DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE", workflow, name)
+            normalized = re.sub(r"\\\n\s*", " ", workflow)
+            for line in normalized.splitlines():
+                command = line.strip()
+                if "dotnet restore" not in command or command.startswith("#"):
+                    continue
+                self.assertIn("--configfile", command, f"{name}: {command}")
 
     def test_safe_loopback_default_has_no_global_insecure_http_override(self):
         self.assertIn("ENV ASPNETCORE_URLS=http://127.0.0.1:8080", DOCKERFILE)
@@ -371,11 +425,17 @@ class ContainerDistributionTests(unittest.TestCase):
     def test_local_docker_build_callers_pass_private_config_as_secret(self):
         health_smoke = (ROOT / "tests/docker/health-smoke.sh").read_text()
         external_script = (ROOT / "scripts/test-docker-external-investigation.sh").read_text()
-        fallback = 'nuget_config="${NUGET_CONFIG:-${HOME}/.nuget/NuGet/NuGet.Config}"'
-        self.assertIn(fallback, health_smoke)
-        self.assertIn(fallback, external_script)
+        fallback = '${NUGET_CONFIG:-${HOME}/.nuget/NuGet/NuGet.Config}'
+        self.assertNotIn(fallback, health_smoke)
+        self.assertNotIn(fallback, external_script)
+        self.assertIn('if [[ -z "${NUGET_CONFIG:-}" ]]', health_smoke)
+        self.assertIn('if [[ -z "${NUGET_CONFIG:-}" ]]', external_script)
+        self.assertIn('nuget_config="$NUGET_CONFIG"', health_smoke)
+        self.assertIn('nuget_config="$NUGET_CONFIG"', external_script)
         self.assertIn('if [[ ! -s "$nuget_config" ]]', health_smoke)
         self.assertIn('if [[ ! -s "$nuget_config" ]]', external_script)
+        self.assertIn("api\\.nuget\\.org", health_smoke)
+        self.assertIn("api\\.nuget\\.org", external_script)
         self.assertIn('--secret "id=nugetconfig,src=$nuget_config"', health_smoke)
         self.assertEqual(2, external_script.count('--secret "id=nugetconfig,src=$nuget_config"'))
         self.assertIn('dotnet restore DotnetDiagnostics.slnx --configfile "$nuget_config"',

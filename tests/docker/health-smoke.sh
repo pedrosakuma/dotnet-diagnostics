@@ -4,10 +4,18 @@ set -euo pipefail
 image="${1:-dotnet-diagnostics-mcp:health-smoke}"
 container="dotnet-diagnostics-health-smoke-${GITHUB_RUN_ID:-local}-$$"
 token="health-smoke-token"
-nuget_config="${NUGET_CONFIG:-${HOME}/.nuget/NuGet/NuGet.Config}"
 
+if [[ -z "${NUGET_CONFIG:-}" ]]; then
+  echo "NUGET_CONFIG must explicitly name a private NuGet.Config; the user-level default is not accepted." >&2
+  exit 1
+fi
+nuget_config="$NUGET_CONFIG"
 if [[ ! -s "$nuget_config" ]]; then
-  echo "A private NuGet.Config is required; set NUGET_CONFIG to its path." >&2
+  echo "The private NuGet.Config does not exist or is empty: $nuget_config" >&2
+  exit 1
+fi
+if grep -Eiq 'api\.nuget\.org|(^|[^[:alnum:].-])nuget\.org([^[:alnum:].-]|$)' "$nuget_config"; then
+  echo "The supplied NuGet.Config references NuGet.org; no public package or audit source is permitted." >&2
   exit 1
 fi
 

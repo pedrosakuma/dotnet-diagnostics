@@ -18,6 +18,7 @@ env:
   DOTNET_NOLOGO: true
   DOTNET_CLI_TELEMETRY_OPTOUT: true
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE: true
 
 # Cancel in-progress runs for the same PR when a new commit is pushed.
 # main is excluded so a fast-follow merge after a green PR still gets recorded.
@@ -30,11 +31,16 @@ jobs:
   # matrix. The expensive jobs below still RUN (and report success) — they just
   # skip their heavy steps when `code` is false. Skipping the whole job instead
   # would leave the required status checks pending forever and deadlock branch
-  # protection. `code` is true whenever any non-markdown file changed.
+  # protection. `code` reports only whether a non-markdown file changed.
+  # `trusted_source` is separate: required compile/test gates explicitly fail
+  # untrusted code PRs because they cannot receive the private NuGet
+  # configuration and must never fall back to public package sources.
   changes:
     name: Detect changes
     runs-on: ubuntu-latest
     outputs:
+      requested_code: ${{ steps.filter.outputs.code }}
+      trusted_source: ${{ github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]') }}
       code: ${{ steps.filter.outputs.code }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -64,8 +70,14 @@ jobs:
       matrix:
         os: [ubuntu-latest]
     steps:
+      - name: Block untrusted code validation without private NuGet
+        if: needs.changes.outputs.code == 'true' && needs.changes.outputs.trusted_source != 'true'
+        run: |
+          echo "::error::Code-changing fork and Dependabot PRs cannot access the private NUGET_CONFIG secret. Failing instead of restoring from public sources or reporting an unvalidated success."
+          exit 1
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code == 'true' && needs.changes.outputs.trusted_source == 'true'
         with:
           persist-credentials: false
 
@@ -92,7 +104,7 @@ jobs:
       # `actions/cache` step in every measured cell. Full data + methodology
       # in docs/ci-nuget-cache.md.
       - name: Setup .NET 10
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code == 'true' && needs.changes.outputs.trusted_source == 'true'
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           global-json-file: global.json
@@ -111,7 +123,7 @@ jobs:
       # not touch the pinned net10.0 SDK from global.json. Ubuntu-only: this is the job that runs
       # Test (Core) and the multi-target smoke suite.
       - name: Install .NET 8 / 9 runtimes for cross-version tests
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code == 'true' && needs.changes.outputs.trusted_source == 'true'
         shell: bash
         run: |
           curl -sSL https://dot.net/v1/dotnet-install.sh -o dotnet-install.sh
@@ -119,9 +131,24 @@ jobs:
           bash dotnet-install.sh --channel 9.0 --runtime dotnet --install-dir "$DOTNET_ROOT"
           rm dotnet-install.sh
 
+      - name: Stage caller-provided private NuGet configuration
+        if: needs.changes.outputs.code == 'true'
+        id: nuget
+        env:
+          PRIVATE_NUGET_CONFIG: ${{ secrets.NUGET_CONFIG }}
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:PRIVATE_NUGET_CONFIG)) {
+            throw "The NUGET_CONFIG Actions secret is required; no public NuGet fallback is permitted."
+          }
+          $config = Join-Path $env:RUNNER_TEMP "ci-NuGet.Config"
+          [System.IO.File]::WriteAllText($config, $env:PRIVATE_NUGET_CONFIG, [System.Text.UTF8Encoding]::new($false))
+          "path=$config" >> $env:GITHUB_OUTPUT
+          Remove-Item Env:PRIVATE_NUGET_CONFIG
+
       - name: Restore
         if: needs.changes.outputs.code == 'true'
-        run: dotnet restore
+        run: dotnet restore --configfile "${{ steps.nuget.outputs.path }}"
 
       - name: Build
         if: needs.changes.outputs.code == 'true'
@@ -183,7 +210,7 @@ jobs:
       # release/tag time otherwise. Packing here catches a broken tool package on every PR.
       - name: Pack smoke (CLI tool)
         if: needs.changes.outputs.code == 'true'
-        run: dotnet pack src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj --no-build --configuration Release -o artifacts/nupkg-smoke
+        run: dotnet pack src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj --no-build --no-restore --configuration Release -o artifacts/nupkg-smoke
 
       - name: Test (Server integration)
         if: ${{ always() && needs.changes.outputs.code == 'true' }}
@@ -224,6 +251,15 @@ jobs:
             TestResults/**/*.dmp
             TestResults/**/*crashreport*
           if-no-files-found: ignore
+
+      - name: Remove staged private NuGet configuration
+        if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        shell: pwsh
+        run: |
+          $path = "${{ steps.nuget.outputs.path }}"
+          if (-not [string]::IsNullOrWhiteSpace($path)) {
+            Remove-Item -Force -ErrorAction SilentlyContinue $path
+          }
 
   # --- Windows isolation model (issue #861) ---------------------------------
   #
@@ -276,9 +312,24 @@ jobs:
             **/Directory.Packages.props
             **/*.csproj
 
+      - name: Stage caller-provided private NuGet configuration
+        if: needs.changes.outputs.code == 'true'
+        id: nuget
+        env:
+          PRIVATE_NUGET_CONFIG: ${{ secrets.NUGET_CONFIG }}
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:PRIVATE_NUGET_CONFIG)) {
+            throw "The NUGET_CONFIG Actions secret is required; no public NuGet fallback is permitted."
+          }
+          $config = Join-Path $env:RUNNER_TEMP "ci-NuGet.Config"
+          [System.IO.File]::WriteAllText($config, $env:PRIVATE_NUGET_CONFIG, [System.Text.UTF8Encoding]::new($false))
+          "path=$config" >> $env:GITHUB_OUTPUT
+          Remove-Item Env:PRIVATE_NUGET_CONFIG
+
       - name: Restore
         if: needs.changes.outputs.code == 'true'
-        run: dotnet restore
+        run: dotnet restore --configfile "${{ steps.nuget.outputs.path }}"
 
       - name: Build
         if: needs.changes.outputs.code == 'true'
@@ -316,6 +367,15 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+      - name: Remove staged private NuGet configuration
+        if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        shell: pwsh
+        run: |
+          $path = "${{ steps.nuget.outputs.path }}"
+          if (-not [string]::IsNullOrWhiteSpace($path)) {
+            Remove-Item -Force -ErrorAction SilentlyContinue $path
+          }
+
   windows-core-test:
     name: Windows Core tests
     needs: [changes, windows-build]
@@ -349,9 +409,24 @@ jobs:
       # every conditioned import actually resolves; the artifact download
       # below still supplies the actual build output so this restore does
       # NOT trigger a rebuild.
+      - name: Stage caller-provided private NuGet configuration
+        if: needs.changes.outputs.code == 'true'
+        id: nuget
+        env:
+          PRIVATE_NUGET_CONFIG: ${{ secrets.NUGET_CONFIG }}
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:PRIVATE_NUGET_CONFIG)) {
+            throw "The NUGET_CONFIG Actions secret is required; no public NuGet fallback is permitted."
+          }
+          $config = Join-Path $env:RUNNER_TEMP "ci-NuGet.Config"
+          [System.IO.File]::WriteAllText($config, $env:PRIVATE_NUGET_CONFIG, [System.Text.UTF8Encoding]::new($false))
+          "path=$config" >> $env:GITHUB_OUTPUT
+          Remove-Item Env:PRIVATE_NUGET_CONFIG
+
       - name: Restore
         if: needs.changes.outputs.code == 'true'
-        run: dotnet restore
+        run: dotnet restore --configfile "${{ steps.nuget.outputs.path }}"
 
       # Same rationale as the Linux `build-test` job's equivalent step: this
       # job is the one that runs Test (Core) and the multi-target runtime
@@ -426,6 +501,15 @@ jobs:
             TestResults/**/*crashreport*
           if-no-files-found: ignore
 
+      - name: Remove staged private NuGet configuration
+        if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        shell: pwsh
+        run: |
+          $path = "${{ steps.nuget.outputs.path }}"
+          if (-not [string]::IsNullOrWhiteSpace($path)) {
+            Remove-Item -Force -ErrorAction SilentlyContinue $path
+          }
+
   windows-mcp-test:
     name: Windows CLI, BenchmarkDotNet & MCP integration tests
     needs: [changes, windows-build]
@@ -452,9 +536,24 @@ jobs:
       # fresh restore on THIS VM is required so `obj/*.nuget.g.{props,targets}`
       # imports (shipped via the artifact below) actually resolve against a
       # populated NuGet global-packages folder, rather than silently no-op-ing.
+      - name: Stage caller-provided private NuGet configuration
+        if: needs.changes.outputs.code == 'true'
+        id: nuget
+        env:
+          PRIVATE_NUGET_CONFIG: ${{ secrets.NUGET_CONFIG }}
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:PRIVATE_NUGET_CONFIG)) {
+            throw "The NUGET_CONFIG Actions secret is required; no public NuGet fallback is permitted."
+          }
+          $config = Join-Path $env:RUNNER_TEMP "ci-NuGet.Config"
+          [System.IO.File]::WriteAllText($config, $env:PRIVATE_NUGET_CONFIG, [System.Text.UTF8Encoding]::new($false))
+          "path=$config" >> $env:GITHUB_OUTPUT
+          Remove-Item Env:PRIVATE_NUGET_CONFIG
+
       - name: Restore
         if: needs.changes.outputs.code == 'true'
-        run: dotnet restore
+        run: dotnet restore --configfile "${{ steps.nuget.outputs.path }}"
 
       - name: Download build output (Windows)
         if: needs.changes.outputs.code == 'true'
@@ -482,7 +581,7 @@ jobs:
       # release/tag time otherwise. Packing here catches a broken tool package on every PR.
       - name: Pack smoke (CLI tool)
         if: ${{ always() && needs.changes.outputs.code == 'true' }}
-        run: dotnet pack src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj --no-build --configuration Release -o artifacts/nupkg-smoke
+        run: dotnet pack src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj --no-build --no-restore --configuration Release -o artifacts/nupkg-smoke
 
       # Same fail-closed semantics as Linux, with the isolation from #861.
       - name: Test (Server integration)
@@ -520,6 +619,15 @@ jobs:
             TestResults/**/*crashreport*
           if-no-files-found: ignore
 
+      - name: Remove staged private NuGet configuration
+        if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        shell: pwsh
+        run: |
+          $path = "${{ steps.nuget.outputs.path }}"
+          if (-not [string]::IsNullOrWhiteSpace($path)) {
+            Remove-Item -Force -ErrorAction SilentlyContinue $path
+          }
+
   # Aggregator that republishes the split Windows jobs' combined result under
   # the exact required-check name branch protection already expects
   # (`Build & Test (windows-latest)`), so this split needs no branch-
@@ -552,12 +660,16 @@ jobs:
         env:
           CHANGES_RESULT: ${{ needs.changes.result }}
           CODE: ${{ needs.changes.outputs.code }}
+          REQUESTED_CODE: ${{ needs.changes.outputs.requested_code }}
+          TRUSTED_SOURCE: ${{ needs.changes.outputs.trusted_source }}
           BUILD_RESULT: ${{ needs.windows-build.result }}
           CORE_RESULT: ${{ needs.windows-core-test.result }}
           MCP_RESULT: ${{ needs.windows-mcp-test.result }}
         run: |
           echo "changes:             $CHANGES_RESULT"
           echo "changes.code:        $CODE"
+          echo "changes.requested:   $REQUESTED_CODE"
+          echo "changes.trusted:     $TRUSTED_SOURCE"
           echo "windows-build:       $BUILD_RESULT"
           echo "windows-core-test:   $CORE_RESULT"
           echo "windows-mcp-test:    $MCP_RESULT"
@@ -575,21 +687,27 @@ jobs:
             exit 1
           fi
 
-          # Docs-only PRs: the three jobs above skip themselves at the job
-          # level, so "skipped" is the expected, successful outcome here.
-          # Require CODE to be the explicit string "false" (not just "not
-          # true") now that we know `changes` succeeded.
+          # Docs-only changes skip the three secret-dependent jobs at job
+          # level. Untrusted code PRs also skip those jobs, but the required
+          # gate must fail rather than report unvalidated success.
           if [[ "$CODE" == "false" ]]; then
             if [[ "$BUILD_RESULT" == "skipped" && "$CORE_RESULT" == "skipped" && "$MCP_RESULT" == "skipped" ]]; then
-              echo "Docs-only change: split Windows jobs skipped as expected."
-              exit 0
+              if [[ "$REQUESTED_CODE" == "false" ]]; then
+                echo "Docs-only change: split Windows jobs skipped as expected."
+                exit 0
+              fi
             fi
-            echo "::error::Docs-only change but split Windows jobs did not all report 'skipped' (build=$BUILD_RESULT, core=$CORE_RESULT, mcp=$MCP_RESULT)."
+            echo "::error::Docs-only CI did not produce the expected skipped Windows jobs (requested=$REQUESTED_CODE, trusted=$TRUSTED_SOURCE, build=$BUILD_RESULT, core=$CORE_RESULT, mcp=$MCP_RESULT)."
             exit 1
           fi
 
           if [[ "$CODE" != "true" ]]; then
             echo "::error::Unexpected 'changes.outputs.code' value: '$CODE' (expected 'true' or 'false')."
+            exit 1
+          fi
+
+          if [[ "$TRUSTED_SOURCE" != "true" ]]; then
+            echo "::error::Code-changing fork and Dependabot PRs cannot access the private NUGET_CONFIG secret. Failing instead of accepting unvalidated Windows checks."
             exit 1
           fi
 
@@ -603,14 +721,46 @@ jobs:
     needs: changes
     runs-on: ubuntu-latest
     steps:
+      - name: Block untrusted code validation without private NuGet
+        if: needs.changes.outputs.code == 'true' && needs.changes.outputs.trusted_source != 'true'
+        run: |
+          echo "::error::Code-changing fork and Dependabot PRs cannot access the private NUGET_CONFIG secret. Failing instead of restoring from public sources or reporting an unvalidated success."
+          exit 1
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: needs.changes.outputs.code == 'true'
         with:
           persist-credentials: false
 
+      - name: Stage caller-provided private NuGet configuration
+        if: needs.changes.outputs.code == 'true'
+        id: nuget
+        env:
+          PRIVATE_NUGET_CONFIG: ${{ secrets.NUGET_CONFIG }}
+        shell: bash
+        run: |
+          if [[ -z "${PRIVATE_NUGET_CONFIG:-}" ]]; then
+            echo "The NUGET_CONFIG Actions secret is required; no public NuGet fallback is permitted." >&2
+            exit 1
+          fi
+          umask 077
+          config="$RUNNER_TEMP/ci-NuGet.Config"
+          printf '%s' "$PRIVATE_NUGET_CONFIG" > "$config"
+          echo "path=$config" >> "$GITHUB_OUTPUT"
+          unset PRIVATE_NUGET_CONFIG
+
       - name: Wait for healthy image and invoke MCP
         if: needs.changes.outputs.code == 'true'
+        env:
+          NUGET_CONFIG: ${{ steps.nuget.outputs.path }}
         run: tests/docker/health-smoke.sh
+
+      - name: Remove staged private NuGet configuration
+        if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        shell: bash
+        run: |
+          path="${{ steps.nuget.outputs.path }}"
+          [[ -z "$path" ]] || rm -f -- "$path"
 
   # B5.5 (issue #186): make sure the Helm chart still renders for all three
   # bearer-token shapes (legacy single-bearer, scoped `bearerTokens` list, and

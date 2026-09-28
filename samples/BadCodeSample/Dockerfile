@@ -9,6 +9,11 @@ ARG DOTNET_VERSION=10.0
 FROM mcr.microsoft.com/dotnet/sdk:${DOTNET_VERSION} AS build
 WORKDIR /src
 
+ENV DOTNET_CLI_TELEMETRY_OPTOUT=1 \
+    DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 \
+    DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE=1 \
+    DOTNET_NOLOGO=1
+
 COPY global.json Directory.Build.props Directory.Packages.props .editorconfig ./
 COPY samples/Directory.Build.props samples/
 COPY samples/BadCodeSample/ samples/BadCodeSample/

@@ -16,6 +16,7 @@ env:
   DOTNET_NOLOGO: true
   DOTNET_CLI_TELEMETRY_OPTOUT: true
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE: true
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -241,7 +242,7 @@ jobs:
           DOTNET_DBG_MCP_KIND_RESPONSE_PATH: ${{ github.workspace }}/TestResults/kind-mcp-responses.jsonl
         run: |
           dotnet test tests/DotnetDiagnostics.Mcp.IntegrationTests/DotnetDiagnostics.Mcp.IntegrationTests.csproj \
-            --no-build --configuration Release \
+            --no-build --no-restore --configuration Release \
             --filter "Category=KindIntegration" \
             --blame-hang-timeout 5m \
             --logger "trx;LogFileName=kind-test-results.trx" \
