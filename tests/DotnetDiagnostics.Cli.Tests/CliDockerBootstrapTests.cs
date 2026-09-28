@@ -70,6 +70,50 @@ public sealed class CliDockerBootstrapTests
         result.Human.Should().Contain("did not apply the profile");
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DockerBootstrap_ExitedSidecarRetainedOnlyWhenRequested(bool retainFailedSidecar)
+    {
+        var fake = new FakeDockerBootstrapPlatform(
+            commandResults:
+            [
+                new CliCommands.DockerCliResult(0, TargetInspect("{}"), string.Empty),
+                new CliCommands.DockerCliResult(0, ProcStatus(), string.Empty),
+                new CliCommands.DockerCliResult(0, "sidecar-id\n", string.Empty),
+                new CliCommands.DockerCliResult(0, """[{"Id":"sidecar-id","State":{"Running":false,"Status":"exited"}}]""", string.Empty),
+                new CliCommands.DockerCliResult(0, "sidecar-id\n", string.Empty),
+            ]);
+
+        using var _ = CliCommands.PushDockerBootstrapPlatformForCurrentAsyncFlow(fake);
+        var args = new List<string> { "docker-bootstrap", "--target-container", "api" };
+        if (retainFailedSidecar)
+        {
+            args.Add("--retain-failed-sidecar");
+        }
+
+        var options = CliOptions.Parse(args, out var error)!;
+        error.Should().BeNull();
+        var result = await CliCommands.DockerBootstrapAsync(options, CancellationToken.None);
+
+        result.IsError.Should().BeTrue();
+        var envelope = (DiagnosticResult<CliCommands.DockerBootstrapReport>)result.Envelope;
+        envelope.Error!.Kind.Should().Be("Timeout");
+        if (retainFailedSidecar)
+        {
+            fake.Invocations.Should().HaveCount(4);
+            result.Human.Should().Contain("left for inspection");
+            envelope.Error.Message.Should().Contain("docker logs");
+        }
+        else
+        {
+            fake.Invocations.Should().HaveCount(5);
+            fake.Invocations[4].Arguments.Should().Equal("rm", "-f", "api-dotnet-diagnostics");
+            result.Human.Should().Contain("removed it automatically");
+            envelope.Error.Message.Should().Contain("removed before its logs");
+        }
+    }
+
     [Fact]
     public async Task DockerBootstrap_ProfileUrlHostnameWithoutAllowCidr_ReturnsUsageErrorEnvelope()
     {

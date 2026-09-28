@@ -156,6 +156,8 @@ docker-bootstrap options:
       --delegation-key <secret>     Operator-supplied MCP_INTERNAL_SCOPE_DELEGATION_KEY.
                                     Default: generated.
       --wait <seconds>              Health-check wait timeout (default: 90).
+      --retain-failed-sidecar       Leave a newly started sidecar for inspection if it fails
+                                    its health check. Remove it manually after inspecting logs.
       --no-sys-ptrace               Do not add SYS_PTRACE to the sidecar. Default OFF.
       --apply                       Apply the profile to a supported Dockerized central using
                                     an operator-owned 0600 config file, then restart and health-check it.
@@ -177,7 +179,7 @@ notes:
   dotnet-diagnostics-cli docker-bootstrap --target-container api --profile-name api-sidecar --host-port 18892 --acknowledge-risk high
   dotnet-diagnostics-cli docker-bootstrap --target-container api --profile-url http://host.docker.internal:18892/mcp --allow-cidr 172.17.0.1/32 --acknowledge-risk high
 """,
-            ["--target-container", "--central-container", "--sidecar-name", "--sidecar-image", "--profile-name", "--profile-url", "--allow-cidr", "--host-port", "--bearer-token", "--delegation-key", "--wait", "--no-sys-ptrace", "--apply", "--replace"]),
+            ["--target-container", "--central-container", "--sidecar-name", "--sidecar-image", "--profile-name", "--profile-url", "--allow-cidr", "--host-port", "--bearer-token", "--delegation-key", "--wait", "--retain-failed-sidecar", "--no-sys-ptrace", "--apply", "--replace"]),
         new(
             "processes",
             "List attachable .NET processes.",

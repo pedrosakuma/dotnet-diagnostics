@@ -164,6 +164,7 @@ matching central configuration or apply it to a compatible Dockerized central au
 | `--bearer-token` | `string?` | generated | Operator-supplied sidecar bearer token. When omitted, the CLI generates a random 32-byte hex value and prints it in the output. |
 | `--delegation-key` | `string?` | generated | Operator-supplied `MCP_INTERNAL_SCOPE_DELEGATION_KEY`. When omitted, the CLI generates a random 32-byte hex value and prints it in the output. |
 | `--wait` | `int?` | `90` | Seconds to wait for the sidecar health check to report `healthy`. |
+| `--retain-failed-sidecar` | flag | off | Leave a newly created sidecar in place if its health check fails, so `docker inspect` and `docker logs` remain available. Remove it manually after inspection; existing sidecars are never removed on health failure. |
 | `--no-sys-ptrace` | flag | off | Skip `--cap-add SYS_PTRACE`. Leave this off unless you knowingly want EventPipe-only coverage. |
 | `--apply` | flag | off | Require `--central-container`, atomically write a mode-`0600` bootstrap-owned profile file through `docker exec` stdin, restart the existing central container, and wait for health. |
 | `--replace` | flag | off | With `--apply`, replace a different profile only when the existing file carries bootstrap ownership metadata. |

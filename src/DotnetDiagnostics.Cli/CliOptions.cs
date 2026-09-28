@@ -338,6 +338,9 @@ internal sealed record CliOptions
     /// <summary>Maximum seconds to wait for the sidecar health check to report healthy (<c>--wait</c>). Null applies the default (90).</summary>
     public int? WaitSeconds { get; init; }
 
+    /// <summary>Leave a newly created sidecar in place on health-check failure for inspection (<c>--retain-failed-sidecar</c>).</summary>
+    public bool RetainFailedSidecar { get; init; }
+
     /// <summary>Opt out of <c>SYS_PTRACE</c> on the sidecar (<c>--no-sys-ptrace</c>). Default off.</summary>
     public bool NoSysPtrace { get; init; }
 
@@ -589,6 +592,7 @@ internal sealed record CliOptions
             new StringOptionDescriptor((state, value) => state.AllowedCidrs.Add(value), "--allow-cidr"),
             new IntOptionDescriptor((state, value) => state.HostPort = value, "--host-port"),
             new IntOptionDescriptor((state, value) => state.WaitSeconds = value, "--wait"),
+            new FlagOptionDescriptor(state => state.RetainFailedSidecar = true, "--retain-failed-sidecar"),
             new FlagOptionDescriptor(state => state.ApplyBootstrapProfile = true, "--apply"),
             new FlagOptionDescriptor(state => state.ReplaceBootstrapProfile = true, "--replace"),
             new IntOptionDescriptor((state, value) => state.TopTypes = value, "--top-types"),
@@ -849,6 +853,8 @@ internal sealed record CliOptions
 
         public int? WaitSeconds { get; set; }
 
+        public bool RetainFailedSidecar { get; set; }
+
         public bool NoSysPtrace { get; set; }
 
         public bool ApplyBootstrapProfile { get; set; }
@@ -974,6 +980,7 @@ internal sealed record CliOptions
                 AllowedCidrs = AllowedCidrs,
                 HostPort = HostPort,
                 WaitSeconds = WaitSeconds,
+                RetainFailedSidecar = RetainFailedSidecar,
                 NoSysPtrace = NoSysPtrace,
                 ApplyBootstrapProfile = ApplyBootstrapProfile,
                 ReplaceBootstrapProfile = ReplaceBootstrapProfile,

@@ -160,6 +160,7 @@ dotnet "$cli_dll" docker-bootstrap \
   --bearer-token "$sidecar_token" \
   --delegation-key "$delegation_key" \
   --apply \
+  --retain-failed-sidecar \
   --wait 120 \
   --acknowledge-risk high \
   --json | tee "$bootstrap_json"
