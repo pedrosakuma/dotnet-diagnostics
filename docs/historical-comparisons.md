@@ -127,6 +127,18 @@ also requires explicit `DOTNET_DIAGNOSTICS_IMPORT_WORKER` and
 `DOTNET_DIAGNOSTICS_SQLITE_LIBRARY`. These gates do not imply an executed native
 acceptance run or release qualification.
 
+`LiveKindsPortableAcceptanceTests` adds a separate opt-in acceptance for issue
+#1054's live-kind transfer gap. It starts a real child `CoreClrSample`, retains
+live CPU, counter, heap, thread, and batch-composition captures, exports a
+labelled `.ddcapture` bundle, imports it into an independent destination with
+the native worker, deletes the source store, then queries and compares the
+imported evidence after the target has exited. It is skipped unless
+`DOTNET_DIAGNOSTICS_LIVE_KINDS_PORTABLE_ACCEPTANCE=1`,
+`DOTNET_DIAGNOSTICS_IMPORT_WORKER`, and
+`DOTNET_DIAGNOSTICS_SQLITE_LIBRARY` are all set. This new gated test has been
+added for separately authorized native execution; it has not yet been executed
+natively for release qualification.
+
 The workload-only acceptance has passed for the reviewed comparison revision.
 The first two-import attempt did **not** pass: the first bundle imported, while
 the second stopped with `WorkerObservationGap` under the unchanged strict 10 ms
