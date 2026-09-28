@@ -49,8 +49,12 @@ class ProducerOnlyWorkflowTests(unittest.TestCase):
         self.assertEqual(set(JOBS), {"portable-native", *PRODUCTS})
         for job in PRODUCTS:
             self.assertIn("!inputs.producer_only", condition(job))
-        self.assertEqual(condition("portable-native"),
-                         "github.event_name == 'workflow_dispatch' && (inputs.producer_only || inputs.include_portable_worker)")
+        self.assertEqual(
+            condition("portable-native"),
+            "github.event_name == 'workflow_dispatch' && "
+            "(inputs.producer_only || inputs.include_portable_worker) || "
+            "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')",
+        )
 
     def test_mode_matrix_preserves_normal_conditions_and_disables_products(self):
         scenarios = (("push", "refs/tags/v1.2.3"), ("push", "refs/heads/main"),
@@ -64,7 +68,11 @@ class ProducerOnlyWorkflowTests(unittest.TestCase):
                           "success": state == "success", "failure": state == "failure",
                           "cancelled": state == "cancelled"}
                 active = {job: bool(evaluate(condition(job), values)) for job in JOBS}
-                self.assertEqual(active["portable-native"], event == "workflow_dispatch" and bool(producer or include))
+                self.assertEqual(
+                    active["portable-native"],
+                    (event == "workflow_dispatch" and bool(producer or include))
+                    or (event == "push" and ref.startswith("refs/tags/v")),
+                )
                 if producer:
                     self.assertFalse(any(active[job] for job in PRODUCTS))
                 else:
@@ -126,6 +134,7 @@ class ProducerOnlyWorkflowTests(unittest.TestCase):
         self.assertRegex(inputs, r"(?s)producer_only:\n.*?required: false\n        default: false\n        type: boolean")
         self.assertRegex(inputs, r"(?s)version:\n.*?required: true\n        type: string")
         self.assertIn("tags:\n      - 'v*'", inputs)
+        self.assertIn("tag releases always include it", inputs)
 
     def test_no_downstream_workflow_run_trigger(self):
         for path in WORKFLOWS.glob("*.y*ml"):
