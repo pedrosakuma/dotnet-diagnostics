@@ -67,6 +67,8 @@ jobs:
     permissions:
       contents: read
     uses: ./.github/workflows/portable-native-packaging.yml
+    secrets:
+      NUGET_CONFIG: ${{ secrets.NUGET_CONFIG }}
 
   validate-inputs:
     if: github.event_name == 'workflow_dispatch' && inputs.mode == 'publish'

@@ -15,6 +15,8 @@ WORKFLOW_TEXT = (ROOT / ".github/workflows/publish-container.yml").read_text()
 DOCKERIGNORE = (ROOT / ".dockerignore").read_text()
 KIND_WORKFLOW = (ROOT / ".github/workflows/kind-integration.yml").read_text()
 EXTERNAL_WORKFLOW = (ROOT / ".github/workflows/docker-external-investigation.yml").read_text()
+PORTABLE_WORKFLOW = (ROOT / ".github/workflows/portable-native-packaging.yml").read_text()
+RELEASE_WORKFLOW = (ROOT / ".github/workflows/release.yml").read_text()
 CRASH_COMPOSE = (ROOT / "deploy/docker-compose.crash-guard.yml").read_text()
 EXTERNAL_COMPOSE = (ROOT / "deploy/docker-compose.external-investigation.yml").read_text()
 WORKFLOW_JOBS = dict(re.findall(
@@ -187,6 +189,71 @@ class ContainerDistributionTests(unittest.TestCase):
                         r"(?s)file: samples/CoreClrSample/Dockerfile.*?"
                         r"secrets:\s*\|\s*id=nugetconfig,src=\$\{\{ runner\.temp \}\}/NuGet\.Config",
                     )
+
+    def test_reusable_portable_producer_fails_closed_and_restores_with_private_config(self):
+        self.assertRegex(
+            PORTABLE_WORKFLOW,
+            r"(?s)workflow_call:\n\s+secrets:\n\s+NUGET_CONFIG:\n"
+            r"\s+description:.*\n\s+required: true",
+        )
+        self.assertIn("PRIVATE_NUGET_CONFIG: ${{ secrets.NUGET_CONFIG }}", PORTABLE_WORKFLOW)
+        self.assertIn('if [[ -z "${PRIVATE_NUGET_CONFIG:-}" ]]', PORTABLE_WORKFLOW)
+        self.assertIn("no public NuGet fallback is permitted", PORTABLE_WORKFLOW)
+        self.assertIn('printf \'%s\' "$PRIVATE_NUGET_CONFIG" > "$config"', PORTABLE_WORKFLOW)
+        self.assertIn(
+            'dotnet restore src/DotnetDiagnostics.Core/DotnetDiagnostics.Core.csproj '
+            '--configfile "$RUNNER_TEMP/portable-worker-NuGet.Config"',
+            PORTABLE_WORKFLOW,
+        )
+        self.assertIn('rm -f -- "$RUNNER_TEMP/portable-worker-NuGet.Config"', PORTABLE_WORKFLOW)
+        self.assertIn("if: always()", PORTABLE_WORKFLOW)
+        self.assertNotRegex(PORTABLE_WORKFLOW, r"(?m)^\s+path:.*NuGet\.Config")
+        self.assertNotRegex(PORTABLE_WORKFLOW, r"(?m)^\s*(?:cat|tee)\s+.*NuGet\.Config")
+        self.assertNotIn("echo \"$PRIVATE_NUGET_CONFIG\"", PORTABLE_WORKFLOW)
+        self.assertNotIn("NuGet.Config", (ROOT / ".dockerignore").read_text())
+        restore_index = PORTABLE_WORKFLOW.index("dotnet restore ")
+        cleanup_index = PORTABLE_WORKFLOW.index('rm -f -- "$RUNNER_TEMP/portable-worker-NuGet.Config"')
+        produce_index = PORTABLE_WORKFLOW.index("Produce once in the immutable Linux-x64 compiler container")
+        self.assertLess(restore_index, cleanup_index)
+        self.assertLess(cleanup_index, produce_index)
+        artifact_steps = re.findall(
+            r"(?ms)^\s+- uses: actions/upload-artifact@[^\n]+\n(.*?)(?=^\s+-|\Z)",
+            PORTABLE_WORKFLOW,
+        )
+        self.assertTrue(
+            all("NuGet.Config" not in step and "RUNNER_TEMP" not in step
+                for step in artifact_steps),
+            artifact_steps,
+        )
+
+    def test_every_reusable_portable_producer_caller_passes_private_config_explicitly(self):
+        for name, workflow in (
+            ("release", RELEASE_WORKFLOW),
+            ("publish-container", WORKFLOW_TEXT),
+        ):
+            with self.subTest(workflow=name):
+                producer_call = workflow.split("uses: ./.github/workflows/portable-native-packaging.yml", 1)[1]
+                self.assertRegex(
+                    producer_call,
+                    r"(?s)secrets:\n\s+NUGET_CONFIG: \$\{\{ secrets\.NUGET_CONFIG \}\}",
+                )
+
+    def test_release_restore_uses_private_config_and_cleans_up_staging(self):
+        self.assertIn("PRIVATE_NUGET_CONFIG: ${{ secrets.NUGET_CONFIG }}", RELEASE_WORKFLOW)
+        self.assertIn('if [[ -z "${PRIVATE_NUGET_CONFIG:-}" ]]', RELEASE_WORKFLOW)
+        self.assertIn("dotnet restore --configfile \"$RUNNER_TEMP/release-NuGet.Config\"",
+                      RELEASE_WORKFLOW)
+        self.assertIn('rm -f -- "$RUNNER_TEMP/release-NuGet.Config"', RELEASE_WORKFLOW)
+        self.assertNotRegex(RELEASE_WORKFLOW, r"(?m)^\s+path:.*release-NuGet\.Config")
+        upload_steps = re.findall(
+            r"(?ms)^\s+- uses: actions/upload-artifact@[^\n]+\n(.*?)(?=^\s+-|\Z)",
+            RELEASE_WORKFLOW,
+        )
+        self.assertTrue(
+            all("release-NuGet.Config" not in step and "RUNNER_TEMP" not in step
+                for step in upload_steps),
+            upload_steps,
+        )
 
     def test_registry_publish_permissions_and_digest_promotion_are_preserved(self):
         build = WORKFLOW_JOBS["build"]
