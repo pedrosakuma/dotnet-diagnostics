@@ -14,6 +14,7 @@ public sealed class OperatingEnvelopeArtifactWriter
     private readonly List<OperatingEnvelopeTrialResult> _trials = [];
     private readonly List<OperatingEnvelopeArtifactHash> _writtenArtifacts = [];
     private bool _quarantined;
+    private bool _finalizationStarted;
     private bool _finalized;
 
     private OperatingEnvelopeArtifactWriter(string runDirectory, OperatingEnvelopeSchedule schedule,
@@ -107,12 +108,8 @@ public sealed class OperatingEnvelopeArtifactWriter
     {
         ThrowIfNotWritable();
         cancellationToken.ThrowIfCancellationRequested();
-        if (File.Exists(Path.Combine(RunDirectory, "results-manifest.json")))
-        {
-            throw new InvalidOperationException("The results manifest is immutable and has already been written.");
-        }
-
-        await WriteImmutableAsync("results.csv", SerializeCsv(_trials, _pairs), cancellationToken)
+        _finalizationStarted = true;
+        await WriteImmutableAsync("results.csv", SerializeCsv(_trials, _pairs), cancellationToken, finalArtifact: true)
             .ConfigureAwait(false);
         var manifest = new OperatingEnvelopeResultsManifest(
             OperatingEnvelopeProtocol.Version,
@@ -123,9 +120,10 @@ public sealed class OperatingEnvelopeArtifactWriter
             _pairs.Count(pair => !pair.IsValid),
             _writtenArtifacts.OrderBy(item => item.Path, StringComparer.Ordinal).ToArray());
         var bytes = JsonSerializer.SerializeToUtf8Bytes(manifest, JsonOptions);
-        await WriteImmutableAsync("results-manifest.json", bytes, cancellationToken).ConfigureAwait(false);
+        await WriteImmutableAsync("results-manifest.json", bytes, cancellationToken, finalArtifact: true)
+            .ConfigureAwait(false);
         await WriteImmutableAsync("results-manifest.sha256", Encoding.ASCII.GetBytes(Hash(bytes) + "\n"),
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken, finalArtifact: true).ConfigureAwait(false);
         _finalized = true;
     }
 
@@ -164,11 +162,12 @@ public sealed class OperatingEnvelopeArtifactWriter
         await WriteImmutableAsync(relativePath, bytes, cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task WriteImmutableAsync(string relativePath, byte[] bytes, CancellationToken cancellationToken)
+    private async Task WriteImmutableAsync(
+        string relativePath, byte[] bytes, CancellationToken cancellationToken, bool finalArtifact = false)
     {
-        if (_finalized)
+        if (_finalized || (_finalizationStarted && !finalArtifact))
         {
-            throw new InvalidOperationException("Finalized runs cannot write additional evidence.");
+            throw new InvalidOperationException("Runs undergoing or past finalization cannot write additional evidence.");
         }
 
         var fullPath = Path.GetFullPath(Path.Combine(RunDirectory, relativePath));
@@ -192,9 +191,9 @@ public sealed class OperatingEnvelopeArtifactWriter
 
     private void ThrowIfNotWritable()
     {
-        if (_finalized)
+        if (_finalizationStarted)
         {
-            throw new InvalidOperationException("Finalized runs cannot write additional evidence.");
+            throw new InvalidOperationException("Runs undergoing or past finalization cannot write additional evidence.");
         }
 
         if (_quarantined)

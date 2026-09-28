@@ -63,11 +63,12 @@ SHA-256 hashes for the plan, run manifest, per-trial/per-pair reports, pair
 CSVs, and result CSV, plus a sidecar hash for the results manifest itself.
 Durable package members are independently hashed before and after read-only
 querying. A hash mismatch, missing package, or incomplete write remains an
-explicit failure; reports are never rewritten to hide it. After the final
-manifest and its hash sidecar are written, the run is sealed: further pair,
-quarantine, and evidence writes are rejected. A partial finalization failure
-does not seal the run, but create-only files are not overwritten on retry;
-retain the partial run as incomplete evidence.
+explicit failure; reports are never rewritten to hide it. From the start of
+finalization, further pair, quarantine, and other public evidence writes are
+rejected. The run is fully sealed only after the final manifest and its hash
+sidecar succeed. A failed finalization remains terminal and cannot be retried;
+create-only files are never overwritten. Retain partial files as incomplete
+evidence, not as a sealed run.
 
 Results retain:
 

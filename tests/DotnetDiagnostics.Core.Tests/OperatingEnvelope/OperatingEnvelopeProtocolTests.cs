@@ -486,6 +486,51 @@ public sealed class OperatingEnvelopeProtocolTests
         }
     }
 
+    [Theory]
+    [InlineData("results.csv")]
+    [InlineData("results-manifest.json")]
+    [InlineData("results-manifest.sha256")]
+    public async Task FailedFinalizationPermanentlyRejectsFurtherEvidence(string blockedArtifact)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "operating-envelope-tests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var schedule = OperatingEnvelopeProtocol.CreateSchedule();
+            var writer = await OperatingEnvelopeArtifactWriter.CreateAsync(root, schedule);
+            var blockedPath = Path.Combine(writer.RunDirectory, blockedArtifact);
+            const string existingContents = "create-only collision";
+            await File.WriteAllTextAsync(blockedPath, existingContents);
+
+            await Assert.ThrowsAsync<IOException>(() => writer.WriteFinalManifestAsync());
+            Assert.Equal(existingContents, await File.ReadAllTextAsync(blockedPath));
+            var filesAfterFailure = Directory.EnumerateFiles(writer.RunDirectory, "*", SearchOption.AllDirectories)
+                .Order(StringComparer.Ordinal).ToArray();
+
+            var pairPlans = OperatingEnvelopeProtocol.GetPair(schedule, "idle-counters-pair-01");
+            var outcomes = pairPlans.Select(plan => Trial(plan, writer.ConfigurationHash)).ToArray();
+            var pair = OperatingEnvelopePairValidation.Validate(
+                pairPlans[0].PairId, pairPlans[0].Population, outcomes);
+            await Assert.ThrowsAsync<InvalidOperationException>(() => writer.WritePairAsync(pair, outcomes));
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                writer.WriteQuarantineAsync(outcomes[0], "Cannot append to failed finalization."));
+            await Assert.ThrowsAsync<InvalidOperationException>(() => writer.WriteFinalManifestAsync());
+
+            Assert.Equal(filesAfterFailure,
+                Directory.EnumerateFiles(writer.RunDirectory, "*", SearchOption.AllDirectories)
+                    .Order(StringComparer.Ordinal).ToArray());
+            Assert.False(File.Exists(Path.Combine(writer.RunDirectory, "pairs", $"{pair.PairId}.json")));
+            Assert.False(File.Exists(Path.Combine(writer.RunDirectory, "quarantine.json")));
+            Assert.Equal(existingContents, await File.ReadAllTextAsync(blockedPath));
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
     private static OperatingEnvelopeTrialResult Trial(
         OperatingEnvelopeTrialPlan plan,
         string configurationHash)
