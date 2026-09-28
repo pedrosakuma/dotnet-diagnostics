@@ -89,7 +89,11 @@ class ProducerOnlyWorkflowTests(unittest.TestCase):
             self.assertEqual(actual, permissions)
         producer = JOBS["portable-native"]
         self.assertIn("uses: ./.github/workflows/portable-native-packaging.yml", producer)
-        self.assertNotRegex(producer, r"\bsecrets\b")
+        secrets = re.search(r"^    secrets:\n(.*?)(?=^    \S|\Z)", producer, re.M | re.S)[1]
+        self.assertEqual(
+            {"NUGET_CONFIG": "${{ secrets.NUGET_CONFIG }}"},
+            dict(re.findall(r"^      ([\w-]+): (.+)$", secrets, re.M)),
+        )
         self.assertNotIn("steps:", producer)
         reusable = (WORKFLOWS / "portable-native-packaging.yml").read_text()
         self.assertIn("\npermissions:\n  contents: read\n", reusable)
