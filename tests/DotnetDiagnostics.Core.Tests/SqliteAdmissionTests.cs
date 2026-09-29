@@ -413,6 +413,75 @@ public sealed class SqliteAdmissionTests(ITestOutputHelper output) : IDisposable
         Assert.Equal(4, input.Position);
     }
 
+    [Theory]
+    [InlineData("[" + "1,2,3" + "]", "Wire.Truncated")]
+    [InlineData("[1,2,", "Snapshot.JsonDepthOrSyntax")]
+    [InlineData("11111111111111111111111111111112", "Wire.ArtifactId")]
+    [InlineData("1111111111111111111111111111111A", "Wire.ArtifactId")]
+    public async Task SnapshotCellsAreValidatedOnlyOnceCompleteAndIdentifiersMatchExactly(string payload, string reason)
+    {
+        var id = payload.Length == 32 ? payload : Artifact;
+        var json = payload.Length == 32 ? "[1]" : payload;
+        using var input = new MemoryStream(SnapshotRow(id, Encoding.UTF8.GetBytes(json), chunk: 2));
+        var error = await Assert.ThrowsAsync<CaptureStoreException>(() =>
+            SqliteAdmissionWire.ReadAsync(input, Stream.Null, Request, new(), CancellationToken.None));
+        Assert.Contains(reason, error.Message);
+    }
+
+    [Fact]
+    public async Task LargeSnapshotCellDoesNotAllocateInProportionToItsSize()
+    {
+        var json = Encoding.UTF8.GetBytes("[" + string.Join(",", Enumerable.Repeat("\"0123456789abcdef\"", 300_000)) + "]");
+        Assert.True(json.Length > 5 * 1024 * 1024);
+        var wire = SnapshotRow(Artifact, json, chunk: 65535);
+        async Task<long> Measure()
+        {
+            using var input = new MemoryStream(wire);
+            var before = GC.GetAllocatedBytesForCurrentThread();
+            var error = await Assert.ThrowsAsync<CaptureStoreException>(() =>
+                SqliteAdmissionWire.ReadAsync(input, Stream.Null, Request, new(), CancellationToken.None));
+            var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+            Assert.Contains("Wire.Truncated", error.Message);
+            return allocated;
+        }
+        await Measure();
+        Assert.True(await Measure() < 1024 * 1024);
+    }
+
+    private static byte[] SnapshotRow(string id, byte[] json, int chunk)
+    {
+        using var wire = new MemoryStream();
+        void Frame(ReadOnlySpan<byte> body)
+        {
+            Span<byte> length = stackalloc byte[4];
+            BinaryPrimitives.WriteUInt32LittleEndian(length, (uint)body.Length);
+            wire.Write(length);
+            wire.Write(body);
+        }
+        void Cell(byte type, ReadOnlySpan<byte> value, int size)
+        {
+            var header = new byte[6];
+            header[0] = 2;
+            header[1] = type;
+            BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(2), (uint)value.Length);
+            Frame(header);
+            for (var offset = 0; offset < value.Length; offset += size)
+            {
+                var part = value.Slice(offset, Math.Min(size, value.Length - offset));
+                var body = new byte[part.Length + 1];
+                body[0] = 3;
+                part.CopyTo(body.AsSpan(1));
+                Frame(body);
+            }
+        }
+        Frame([1, 5, 3]);
+        Cell(3, Encoding.ASCII.GetBytes(id), 32);
+        Cell(1, new byte[8], 8);
+        Cell(4, json, chunk);
+        Frame([4]);
+        return wire.ToArray();
+    }
+
     [Fact]
     public async Task PartialChildFrameCannotCompleteAdmission()
     {

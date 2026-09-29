@@ -103,9 +103,15 @@ triggers garbage collections on the supervisor thread. Before this, the
 bound to the launched task, so after the child is reaped a read fails instead
 of following a reused PID. A failed read goes through the existing exit-probe
 path. Zero RSS still needs confirmed exit, and a malformed record counts as
-unavailable observation. This removes one source of gaps but does not make the
-supervisor immune to them. GC suspensions caused by other threads in the same
-host, and OS scheduling delays, still stop it. The 10 ms policy is unchanged.
+unavailable observation. The admission reader rents its snapshot buffer, sized
+to `MaxSnapshotBytes`, from the shared array pool before the first observation.
+It checks artifact identifiers as fixed-size keys, so validating up to 8 MiB
+snapshots no longer allocates in proportion to their size inside the monitored
+window. Snapshot validation still runs once per completed cell, so error
+precedence is unchanged. These changes remove the supervisor's own allocations
+but do not make it immune to gaps. GC suspensions caused by other threads in the
+same host, and OS scheduling delays, still stop it. The 10 ms policy is unchanged.
+
 Cancellation, overflow, timeout, malformed protocol and unsuccessful exit
 cannot produce capability success. Cleanup kills and waits for the child;
 process-tree killing is not relied upon for isolation. Positively confirmed exit

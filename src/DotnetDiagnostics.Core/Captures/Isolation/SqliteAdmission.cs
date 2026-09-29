@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
@@ -192,152 +193,148 @@ internal static class SqliteAdmissionWire
         var remaining = 0;
         var idBytes = new byte[32];
         var idOffset = -1;
-        var artifactIds = request.Artifacts.Select(static a => a.ArtifactId).ToHashSet(StringComparer.Ordinal);
-        var seenArtifacts = new HashSet<string>(StringComparer.Ordinal);
-        byte[]? snapshot = null;
+        // Wire identifiers are exactly 32 lowercase hex digits, so each maps losslessly to a
+        // UInt128 key and per-row lookups need no string. Descriptor IDs of any other shape can
+        // never match a wire identifier and are left out.
+        var artifactIds = new HashSet<UInt128>();
+        foreach (var artifact in request.Artifacts)
+            if (ArtifactKey(CapturePackage.Utf8.GetBytes(artifact.ArtifactId)) is { } key) artifactIds.Add(key);
+        var seenArtifacts = new HashSet<UInt128>();
+        // One pooled buffer sized to the snapshot bound is taken here, before the caller's first
+        // worker observation, so no snapshot-sized allocation happens inside the monitored window.
+        var snapshot = ArrayPool<byte>.Shared.Rent(limits.Store.MaxSnapshotBytes);
+        var snapshotLength = -1;
         var snapshotOffset = 0;
-        while (true)
+        try
         {
-            await Exact(source, prefix, token).ConfigureAwait(false);
-            var length = BinaryPrimitives.ReadUInt32LittleEndian(prefix);
-            if (length is < 1 or > 65536) throw IsolatedCaptureWorker.Limit("WorkerFrameBytes");
-            wire = checked(wire + 4 + length);
-            if (wire > 512L * 1024 * 1024) throw IsolatedCaptureWorker.Limit("WorkerWireBytes");
-            await Exact(source, buffer.AsMemory(0, (int)length), token).ConfigureAwait(false);
-            var tag = buffer[0];
-            if (tag == 127)
+            while (true)
             {
-                if (length > 128) throw IsolatedCaptureWorker.CorruptAdmission("Wire.ErrorFrame");
-                for (var i = 1; i < length; i++)
-                    if (buffer[i] > 127) throw IsolatedCaptureWorker.CorruptAdmission("Wire.ErrorReason");
-                var reason = CapturePackage.Utf8.GetString(buffer, 1, (int)length - 1);
-                if (reason.Length == 0 || reason.Any(static c => !char.IsAsciiLetterOrDigit(c) && c != '.'))
-                    throw IsolatedCaptureWorker.CorruptAdmission("Wire.ErrorReason");
-                if (reason.StartsWith("Limit.", StringComparison.Ordinal)) throw IsolatedCaptureWorker.Limit(reason);
-                if (reason is "Format.Unsupported" || reason.EndsWith("Unavailable", StringComparison.Ordinal))
-                    throw IsolatedCaptureWorker.Unsupported(reason);
-                throw IsolatedCaptureWorker.CorruptAdmission(reason);
-            }
-            if (tag == 1)
-            {
-                if (length != 3 || table != -1 || buffer[1] > 5 || buffer[1] < previousTable ||
-                    buffer[2] != Columns[buffer[1]]) throw IsolatedCaptureWorker.CorruptAdmission("Wire.Row");
-                table = buffer[1]; previousTable = table; column = 0;
-                if (++rows[table] > limits.RowsPerTable || ++total > limits.RowsPerCapture)
-                    throw IsolatedCaptureWorker.Limit("WorkerRows");
-                if (table is 2 or 5 && rows[table] > limits.Store.MaxArtifacts)
-                    throw IsolatedCaptureWorker.Limit("Artifacts");
-            }
-            else if (tag == 2)
-            {
-                if (length != 6 || table < 0 || remaining != 0 || column >= Columns[table])
-                    throw IsolatedCaptureWorker.CorruptAdmission("Wire.Cell");
-                var type = buffer[1];
-                var size = BinaryPrimitives.ReadUInt32LittleEndian(buffer.AsSpan(2));
-                if (type is < 1 or > 5 || type == 5 && size != 0 || type is 1 or 2 && size != 8)
-                    throw IsolatedCaptureWorker.CorruptAdmission("Wire.StorageClass");
-                var expected = ExpectedType(table, column);
-                var nullable = table == 3 && column >= 2 || table == 4 && column >= 4;
-                if (type != expected && !(nullable && type == 5))
-                    throw IsolatedCaptureWorker.CorruptAdmission("Wire.StorageClass");
-                var maximum = type == 4 ? limits.Store.MaxSnapshotBytes : table == 2 && column > 0 ? 1024 :
-                    type == 3 && (table == 2 || table == 3 || table == 5) ? 32 : limits.Store.MaxRecordBytes;
-                if (size > maximum) throw IsolatedCaptureWorker.Limit(type == 4 ? "SnapshotBytes" : "CellBytes");
-                if (type == 4 && size == 0) throw IsolatedCaptureWorker.CorruptAdmission("Snapshot.Empty");
-                var identifier = table is 2 or 5 && column == 0 || table == 3 && column == 1;
-                if (identifier && size != 32) throw IsolatedCaptureWorker.CorruptAdmission("Wire.ArtifactId");
-                idOffset = identifier ? 0 : -1;
-                remaining = (int)size;
-                if (type == 4)
+                await Exact(source, prefix, token).ConfigureAwait(false);
+                var length = BinaryPrimitives.ReadUInt32LittleEndian(prefix);
+                if (length is < 1 or > 65536) throw IsolatedCaptureWorker.Limit("WorkerFrameBytes");
+                wire = checked(wire + 4 + length);
+                if (wire > 512L * 1024 * 1024) throw IsolatedCaptureWorker.Limit("WorkerWireBytes");
+                await Exact(source, buffer.AsMemory(0, (int)length), token).ConfigureAwait(false);
+                var tag = buffer[0];
+                if (tag == 127)
                 {
-                    snapshot = new byte[remaining];
-                    snapshotOffset = 0;
+                    if (length > 128) throw IsolatedCaptureWorker.CorruptAdmission("Wire.ErrorFrame");
+                    for (var i = 1; i < length; i++)
+                        if (buffer[i] > 127) throw IsolatedCaptureWorker.CorruptAdmission("Wire.ErrorReason");
+                    var reason = CapturePackage.Utf8.GetString(buffer, 1, (int)length - 1);
+                    if (reason.Length == 0 || reason.Any(static c => !char.IsAsciiLetterOrDigit(c) && c != '.'))
+                        throw IsolatedCaptureWorker.CorruptAdmission("Wire.ErrorReason");
+                    if (reason.StartsWith("Limit.", StringComparison.Ordinal)) throw IsolatedCaptureWorker.Limit(reason);
+                    if (reason is "Format.Unsupported" || reason.EndsWith("Unavailable", StringComparison.Ordinal))
+                        throw IsolatedCaptureWorker.Unsupported(reason);
+                    throw IsolatedCaptureWorker.CorruptAdmission(reason);
                 }
-                if (remaining == 0) column++;
-            }
-            else if (tag == 3)
-            {
-                var count = (int)length - 1;
-                if (table < 0 || count == 0 || count > remaining) throw IsolatedCaptureWorker.CorruptAdmission("Wire.CellChunk");
-                if (snapshot is not null)
+                if (tag == 1)
                 {
-                    buffer.AsSpan(1, count).CopyTo(snapshot.AsSpan(snapshotOffset));
-                    snapshotOffset += count;
+                    if (length != 3 || table != -1 || buffer[1] > 5 || buffer[1] < previousTable ||
+                        buffer[2] != Columns[buffer[1]]) throw IsolatedCaptureWorker.CorruptAdmission("Wire.Row");
+                    table = buffer[1]; previousTable = table; column = 0;
+                    if (++rows[table] > limits.RowsPerTable || ++total > limits.RowsPerCapture)
+                        throw IsolatedCaptureWorker.Limit("WorkerRows");
+                    if (table is 2 or 5 && rows[table] > limits.Store.MaxArtifacts)
+                        throw IsolatedCaptureWorker.Limit("Artifacts");
                 }
-                if (idOffset >= 0)
+                else if (tag == 2)
                 {
-                    buffer.AsSpan(1, count).CopyTo(idBytes.AsSpan(idOffset));
-                    idOffset += count;
+                    if (length != 6 || table < 0 || remaining != 0 || column >= Columns[table])
+                        throw IsolatedCaptureWorker.CorruptAdmission("Wire.Cell");
+                    var type = buffer[1];
+                    var size = BinaryPrimitives.ReadUInt32LittleEndian(buffer.AsSpan(2));
+                    if (type is < 1 or > 5 || type == 5 && size != 0 || type is 1 or 2 && size != 8)
+                        throw IsolatedCaptureWorker.CorruptAdmission("Wire.StorageClass");
+                    var expected = ExpectedType(table, column);
+                    var nullable = table == 3 && column >= 2 || table == 4 && column >= 4;
+                    if (type != expected && !(nullable && type == 5))
+                        throw IsolatedCaptureWorker.CorruptAdmission("Wire.StorageClass");
+                    var maximum = type == 4 ? limits.Store.MaxSnapshotBytes : table == 2 && column > 0 ? 1024 :
+                        type == 3 && (table == 2 || table == 3 || table == 5) ? 32 : limits.Store.MaxRecordBytes;
+                    if (size > maximum) throw IsolatedCaptureWorker.Limit(type == 4 ? "SnapshotBytes" : "CellBytes");
+                    if (type == 4 && size == 0) throw IsolatedCaptureWorker.CorruptAdmission("Snapshot.Empty");
+                    var identifier = table is 2 or 5 && column == 0 || table == 3 && column == 1;
+                    if (identifier && size != 32) throw IsolatedCaptureWorker.CorruptAdmission("Wire.ArtifactId");
+                    idOffset = identifier ? 0 : -1;
+                    remaining = (int)size;
+                    if (type == 4)
+                    {
+                        snapshotLength = remaining;
+                        snapshotOffset = 0;
+                    }
+                    if (remaining == 0) column++;
                 }
-                remaining -= count;
-                if (remaining == 0)
+                else if (tag == 3)
                 {
-                    column++;
+                    var count = (int)length - 1;
+                    if (table < 0 || count == 0 || count > remaining) throw IsolatedCaptureWorker.CorruptAdmission("Wire.CellChunk");
+                    if (snapshotLength >= 0)
+                    {
+                        buffer.AsSpan(1, count).CopyTo(snapshot.AsSpan(snapshotOffset));
+                        snapshotOffset += count;
+                    }
                     if (idOffset >= 0)
                     {
-                        if (idBytes.Any(static b => b is not (>= (byte)'0' and <= (byte)'9') and not (>= (byte)'a' and <= (byte)'f')))
-                            throw IsolatedCaptureWorker.CorruptAdmission("Wire.ArtifactId");
-                        var id = CapturePackage.Utf8.GetString(idBytes);
-                        if (!artifactIds.Contains(id) || table == 2 && !seenArtifacts.Add(id))
-                            throw IsolatedCaptureWorker.CorruptAdmission("Wire.ArtifactId");
-                        idOffset = -1;
+                        buffer.AsSpan(1, count).CopyTo(idBytes.AsSpan(idOffset));
+                        idOffset += count;
                     }
-                    if (snapshot is not null)
+                    remaining -= count;
+                    if (remaining == 0)
                     {
-                        tokens += CountSnapshotTokens(snapshot, limits.TokensPerSnapshot);
-                        if (tokens > limits.TokensPerCapture) throw IsolatedCaptureWorker.Limit("TokensPerCapture");
-                        snapshot = null;
+                        column++;
+                        if (idOffset >= 0)
+                        {
+                            if (ArtifactKey(idBytes) is not { } id || !artifactIds.Contains(id) || table == 2 && !seenArtifacts.Add(id))
+                                throw IsolatedCaptureWorker.CorruptAdmission("Wire.ArtifactId");
+                            idOffset = -1;
+                        }
+                        if (snapshotLength >= 0)
+                        {
+                            tokens += CountSnapshotTokens(snapshot.AsSpan(0, snapshotLength), limits.TokensPerSnapshot);
+                            if (tokens > limits.TokensPerCapture) throw IsolatedCaptureWorker.Limit("TokensPerCapture");
+                            snapshotLength = -1;
+                        }
                     }
                 }
-            }
-            else if (tag == 4)
-            {
-                if (length != 1 || table < 0 || remaining != 0 || column != Columns[table])
-                    throw IsolatedCaptureWorker.CorruptAdmission("Wire.RowEnd");
-                table = -1;
-            }
-            else if (tag == 5)
-            {
-                if (length != (request.IncludeUsage ? 73 : 65) || table != -1 || rows[0] != 1 || rows[2] != request.Artifacts.Count ||
-                    rows[3] != request.Persisted) throw IsolatedCaptureWorker.CorruptAdmission("Wire.Completion");
-                for (var i = 0; i < 6; i++)
-                    if (BinaryPrimitives.ReadInt64LittleEndian(buffer.AsSpan(1 + i * 8)) != rows[i])
-                        throw IsolatedCaptureWorker.CorruptAdmission("Wire.Population");
-                var logical = BinaryPrimitives.ReadInt64LittleEndian(buffer.AsSpan(49));
-                var work = BinaryPrimitives.ReadInt64LittleEndian(buffer.AsSpan(57));
-                if (logical < 0 || logical > limits.Store.MaxLogicalBytes || work < 0 || work > limits.VmInstructions)
-                    throw IsolatedCaptureWorker.CorruptAdmission("Wire.Budget");
-                var cpu = request.IncludeUsage ? BinaryPrimitives.ReadInt64LittleEndian(buffer.AsSpan(65)) : 0;
-                if (cpu < 0 || cpu > limits.Worker.CpuTime.Ticks / 10) throw IsolatedCaptureWorker.Limit("WorkerCpuTime");
-                BinaryPrimitives.WriteUInt32LittleEndian(prefix, 65);
+                else if (tag == 4)
+                {
+                    if (length != 1 || table < 0 || remaining != 0 || column != Columns[table])
+                        throw IsolatedCaptureWorker.CorruptAdmission("Wire.RowEnd");
+                    table = -1;
+                }
+                else if (tag == 5)
+                {
+                    if (length != (request.IncludeUsage ? 73 : 65) || table != -1 || rows[0] != 1 || rows[2] != request.Artifacts.Count ||
+                        rows[3] != request.Persisted) throw IsolatedCaptureWorker.CorruptAdmission("Wire.Completion");
+                    for (var i = 0; i < 6; i++)
+                        if (BinaryPrimitives.ReadInt64LittleEndian(buffer.AsSpan(1 + i * 8)) != rows[i])
+                            throw IsolatedCaptureWorker.CorruptAdmission("Wire.Population");
+                    var logical = BinaryPrimitives.ReadInt64LittleEndian(buffer.AsSpan(49));
+                    var work = BinaryPrimitives.ReadInt64LittleEndian(buffer.AsSpan(57));
+                    if (logical < 0 || logical > limits.Store.MaxLogicalBytes || work < 0 || work > limits.VmInstructions)
+                        throw IsolatedCaptureWorker.CorruptAdmission("Wire.Budget");
+                    var cpu = request.IncludeUsage ? BinaryPrimitives.ReadInt64LittleEndian(buffer.AsSpan(65)) : 0;
+                    if (cpu < 0 || cpu > limits.Worker.CpuTime.Ticks / 10) throw IsolatedCaptureWorker.Limit("WorkerCpuTime");
+                    BinaryPrimitives.WriteUInt32LittleEndian(prefix, 65);
+                    await evidence.WriteAsync(prefix, token).ConfigureAwait(false);
+                    await evidence.WriteAsync(buffer.AsMemory(0, 65), token).ConfigureAwait(false);
+                    if (await source.ReadAsync(prefix.AsMemory(0, 1), token).ConfigureAwait(false) != 0)
+                        throw IsolatedCaptureWorker.CorruptAdmission("Wire.Trailing");
+                    await evidence.FlushAsync(token).ConfigureAwait(false);
+                    return new(Array.AsReadOnly(rows), logical, work, wire, 0, 0, TimeSpan.Zero)
+                        { CpuTime = TimeSpan.FromTicks(cpu * 10) };
+                }
+                else throw IsolatedCaptureWorker.CorruptAdmission("Wire.Tag");
                 await evidence.WriteAsync(prefix, token).ConfigureAwait(false);
-                await evidence.WriteAsync(buffer.AsMemory(0, 65), token).ConfigureAwait(false);
-                if (await source.ReadAsync(prefix.AsMemory(0, 1), token).ConfigureAwait(false) != 0)
-                    throw IsolatedCaptureWorker.CorruptAdmission("Wire.Trailing");
-                await evidence.FlushAsync(token).ConfigureAwait(false);
-                return new(Array.AsReadOnly(rows), logical, work, wire, 0, 0, TimeSpan.Zero)
-                    { CpuTime = TimeSpan.FromTicks(cpu * 10) };
+                await evidence.WriteAsync(buffer.AsMemory(0, (int)length), token).ConfigureAwait(false);
             }
-            else throw IsolatedCaptureWorker.CorruptAdmission("Wire.Tag");
-            await evidence.WriteAsync(prefix, token).ConfigureAwait(false);
-            await evidence.WriteAsync(buffer.AsMemory(0, (int)length), token).ConfigureAwait(false);
         }
-    }
-
-    private static int ExpectedType(int table, int column) => table switch
-    {
-        0 => 1,
-        1 => column == 0 ? 1 : 3,
-        2 => 3,
-        3 => column == 1 ? 3 : column == 6 ? 2 : 1,
-        4 => column == 6 ? 2 : 1,
-        _ => column == 0 ? 3 : column == 1 ? 1 : 4
-    };
-
-    private static async Task Exact(Stream source, Memory<byte> bytes, CancellationToken token)
-    {
-        try { await source.ReadExactlyAsync(bytes, token).ConfigureAwait(false); }
-        catch (EndOfStreamException) { throw IsolatedCaptureWorker.CorruptAdmission("Wire.Truncated"); }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(snapshot);
+        }
     }
 
     private static long CountSnapshotTokens(ReadOnlySpan<byte> json, int maximum)
@@ -355,5 +352,39 @@ internal static class SqliteAdmissionWire
         {
             throw CapturePackage.Error(CaptureErrorCode.CorruptPackage, "Snapshot.JsonDepthOrSyntax", ex);
         }
+    }
+
+    private static UInt128? ArtifactKey(ReadOnlySpan<byte> id)
+    {
+        if (id.Length != 32) return null;
+        UInt128 key = 0;
+        foreach (var digit in id)
+        {
+            int value = digit switch
+            {
+                >= (byte)'0' and <= (byte)'9' => digit - '0',
+                >= (byte)'a' and <= (byte)'f' => digit - 'a' + 10,
+                _ => -1
+            };
+            if (value < 0) return null;
+            key = (key << 4) | (uint)value;
+        }
+        return key;
+    }
+
+    private static int ExpectedType(int table, int column) => table switch
+    {
+        0 => 1,
+        1 => column == 0 ? 1 : 3,
+        2 => 3,
+        3 => column == 1 ? 3 : column == 6 ? 2 : 1,
+        4 => column == 6 ? 2 : 1,
+        _ => column == 0 ? 3 : column == 1 ? 1 : 4
+    };
+
+    private static async Task Exact(Stream source, Memory<byte> bytes, CancellationToken token)
+    {
+        try { await source.ReadExactlyAsync(bytes, token).ConfigureAwait(false); }
+        catch (EndOfStreamException) { throw IsolatedCaptureWorker.CorruptAdmission("Wire.Truncated"); }
     }
 }

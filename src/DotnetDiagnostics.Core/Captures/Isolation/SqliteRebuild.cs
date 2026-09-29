@@ -81,15 +81,23 @@ internal static partial class IsolatedCaptureWorker
             BinaryPrimitives.WriteInt64LittleEndian(header.AsSpan(3), request.MaxDatabaseBytes);
             BinaryPrimitives.WriteInt64LittleEndian(header.AsSpan(11), request.RemainingVmInstructions);
             await destination.WriteAsync(header, token).ConfigureAwait(false);
-            var buffer = new byte[PortableBounds.BufferBytes];
-            long sent = header.Length;
-            while (true)
+            // Pooled, so streaming the validated frames does not allocate inside the monitored window.
+            var buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(PortableBounds.BufferBytes);
+            try
             {
-                var read = await validatedFrames.ReadAsync(buffer, token).ConfigureAwait(false);
-                if (read == 0) break;
-                sent = checked(sent + read);
-                PortableBounds.Check("WorkerWireBytes", sent, 512L * 1024 * 1024);
-                await destination.WriteAsync(buffer.AsMemory(0, read), token).ConfigureAwait(false);
+                long sent = header.Length;
+                while (true)
+                {
+                    var read = await validatedFrames.ReadAsync(buffer.AsMemory(0, PortableBounds.BufferBytes), token).ConfigureAwait(false);
+                    if (read == 0) break;
+                    sent = checked(sent + read);
+                    PortableBounds.Check("WorkerWireBytes", sent, 512L * 1024 * 1024);
+                    await destination.WriteAsync(buffer.AsMemory(0, read), token).ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                System.Buffers.ArrayPool<byte>.Shared.Return(buffer);
             }
         }
 
