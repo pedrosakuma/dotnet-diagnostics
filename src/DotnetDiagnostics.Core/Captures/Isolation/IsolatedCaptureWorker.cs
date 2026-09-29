@@ -166,7 +166,12 @@ internal static partial class IsolatedCaptureWorker
             sending = Task.Run(() => send(process.StandardInput.BaseStream, io.Token), CancellationToken.None);
             Await(sending);
             process.StandardInput.Close();
-            Await(frame);
+            try { Await(frame); }
+            catch (CaptureStoreException responseFailure)
+                when (responseFailure.Message.StartsWith("Wire.Truncated:", StringComparison.Ordinal))
+            {
+                ThrowResponseFailure(responseFailure);
+            }
             Await(errors);
             while (!process.HasExited) { Check(); Thread.Sleep(50); }
             Check();
@@ -244,6 +249,25 @@ internal static partial class IsolatedCaptureWorker
                 Check();
             }
             task.GetAwaiter().GetResult();
+        }
+        void ThrowResponseFailure(Exception responseFailure)
+        {
+            while (!process.HasExited) { Check(); Thread.Sleep(50); }
+            Await(errors!);
+            MonitorReport report;
+            try { report = ParseMonitorReport(errors.GetAwaiter().GetResult(), nonce); }
+            catch (Exception reportFailure)
+            {
+                throw CapturePackage.Error(CaptureErrorCode.StorageFailure,
+                    "Worker response ended before the native monitor produced a valid final report.",
+                    new AggregateException(responseFailure, reportFailure));
+            }
+            if (report.Outcome == "Exited" && report.Exit == 0 && report.WorkerStderrRetained == 0)
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(responseFailure).Throw();
+            if (report.Outcome == "Exited" && report.Exit == 78) throw Unsupported("WorkerUnavailable", responseFailure);
+            ThrowMonitorFailure(report);
+            throw CapturePackage.Error(CaptureErrorCode.StorageFailure,
+                "Worker exited before completing its response; no admission result exists.", responseFailure);
         }
     }
 

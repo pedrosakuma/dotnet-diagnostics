@@ -96,6 +96,26 @@ public sealed class SqliteAdmissionTests(ITestOutputHelper output) : IDisposable
         await IsolatedCaptureWorker.AdmitSqliteAsync(Request, Stream.Null);
     }
 
+    [Fact]
+    public async Task NativeLimitReportTakesPrecedenceOverTruncatedAdmissionWire()
+    {
+        if (!Linux) return;
+        CreateKnownSql("");
+        var partial = Path.Combine(_root, "partial-wire.sqlite");
+        File.Move(Database, partial);
+        var request = Request with
+        {
+            Executable = Path.Combine(AppContext.BaseDirectory, "capture-worker-fixture"),
+            Database = partial
+        };
+        var error = await Assert.ThrowsAsync<CaptureStoreException>(() =>
+            IsolatedCaptureWorker.AdmitSqliteAsync(request, Stream.Null,
+                new() { Worker = new() { CpuTime = TimeSpan.FromMilliseconds(1), WallTime = TimeSpan.FromSeconds(2) } }));
+        Assert.Equal(CaptureErrorCode.CapacityExceeded, error.Code);
+        Assert.Contains("WorkerCpuTime", error.Message);
+        Assert.DoesNotContain("Wire.Truncated", error.ToString());
+    }
+
     [Theory]
     [InlineData("DROP INDEX ix_occurrence_name; CREATE INDEX ix_occurrence_name ON occurrences(name_id,artifact_id,id);", "Schema.Definition")]
     [InlineData("DROP INDEX ix_occurrence_name; CREATE UNIQUE INDEX ix_occurrence_name ON occurrences(artifact_id,name_id,id);", "Schema.Definition")]

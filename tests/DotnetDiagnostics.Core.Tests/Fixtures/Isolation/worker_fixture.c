@@ -36,6 +36,16 @@ int main(int argc, char **argv)
         fflush(stdout);
         while (1) pause();
     }
+    if (argc == 7 && strcmp(argv[6], "--admit") == 0 && strstr(argv[5], "partial-wire") != NULL) {
+        printf("READY 1 %s 7\n", argv[1]);
+        fflush(stdout);
+        unsigned char request;
+        if (read(STDIN_FILENO, &request, 1) != 1) return 3;
+        const unsigned char partial_prefix[2] = { 1, 0 };
+        if (write(STDOUT_FILENO, partial_prefix, sizeof(partial_prefix)) != (ssize_t)sizeof(partial_prefix)) return 4;
+        volatile unsigned long long value = 1;
+        while (1) value = value * 6364136223846793005ULL + 1;
+    }
     if (argc != 9) return 2;
     if (strstr(argv[4], "no-landlock") != NULL || strstr(argv[4], "no-seccomp") != NULL) {
         int blocked = strstr(argv[4], "no-landlock") != NULL ? SYS_landlock_create_ruleset : SYS_seccomp;
