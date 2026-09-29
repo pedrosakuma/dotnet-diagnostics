@@ -7,7 +7,7 @@ namespace DotnetDiagnostics.Core.Tests;
 internal static class HistoricalAcceptanceDiagnostics
 {
     internal const int MaximumDepth = 4;
-    internal const int MaximumFields = 12;
+    internal const int MaximumFields = 15;
     internal const int MaximumStringLength = 64;
     internal const int MaximumBytes = 4096;
     internal const int MaximumLines = 1;
@@ -15,6 +15,7 @@ internal static class HistoricalAcceptanceDiagnostics
     [
         "WorkerLastValidSampleTicks", "WorkerCurrentTicks", "WorkerGapTicks", "WorkerGapLimitTicks",
         "WorkerPollStartedTicks", "WorkerLastCompletedPollDurationTicks", "WorkerMetricsStartedTicks", "WorkerMetricsFinishedTicks",
+        "WorkerGcPauseDeltaTicks", "WorkerGcCountDelta", "WorkerSupervisorThreadCpuDeltaTicks",
     ];
     private static readonly Dictionary<string, string[]> StateFields = new(StringComparer.Ordinal)
     {

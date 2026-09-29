@@ -117,6 +117,7 @@ internal static partial class IsolatedCaptureWorker
         Task? frame = null;
         Task? sending = null;
         Task<string>? errors = null;
+        WorkerProcfsSampler? sampler = null;
         var started = false;
         ProtocolOutcome<T>? outcome = null;
         Exception? failure = null;
@@ -126,6 +127,10 @@ internal static partial class IsolatedCaptureWorker
             try { started = process.Start(); }
             catch (System.ComponentModel.Win32Exception ex) { throw Unsupported("WorkerLaunchUnavailable", ex); }
             if (!started) throw Unsupported("WorkerLaunchUnavailable");
+            // Bind the stat handle before any poll; a failure here is retried by the first poll,
+            // whose exit probe decides between confirmed exit and unavailable observation.
+            try { sampler = WorkerProcfsSampler.Open(process.Id); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException) { }
             errors = ReadBoundedAsync(process.StandardError.BaseStream, OutputLimit, false, io.Token);
             var handshake = ReadBoundedAsync(process.StandardOutput.BaseStream, 256, true, io.Token);
             frame = handshake;
@@ -188,6 +193,7 @@ internal static partial class IsolatedCaptureWorker
         }
         finally
         {
+            sampler?.Dispose();
             io.Cancel();
             ObserveIoFailure(frame);
             ObserveIoFailure(sending);
@@ -220,9 +226,8 @@ internal static partial class IsolatedCaptureWorker
                 observations.PollStage = "Metrics";
                 observations.MetricsStartedAt = wall.Elapsed;
                 observations.MetricsFinishedAt = null;
-                process.Refresh();
-                var rss = process.WorkingSet64;
-                var cpu = process.TotalProcessorTime;
+                sampler ??= OpenSampler(process.Id);
+                sampler.Read(out var rss, out var cpu);
                 if (rss == 0)
                 {
                     observations.PollStage = "ZeroRssExitConfirmation";
@@ -252,6 +257,12 @@ internal static partial class IsolatedCaptureWorker
                 observations.PollStage = "MetricFailureExitProbe";
                 observations.MetricUnavailable(ex, () => process.HasExited, () => wall.Elapsed);
             }
+        }
+        static WorkerProcfsSampler OpenSampler(int processId)
+        {
+            try { return WorkerProcfsSampler.Open(processId); }
+            catch (UnauthorizedAccessException ex) { throw new IOException("Worker stat record is unavailable.", ex); }
+            catch (PlatformNotSupportedException ex) { throw Unsupported("WorkerPlatformUnavailable", ex); }
         }
         void Await(Task task, bool mandatory)
         {
@@ -303,6 +314,9 @@ internal static partial class IsolatedCaptureWorker
 internal sealed class CaptureWorkerObservation(CaptureWorkerLimits limits)
 {
     private TimeSpan? _last;
+    private SupervisorRuntimeSnapshot _atLast;
+    /// <summary>Supervisor-side GC and thread-CPU readings, captured with each valid sample for gap diagnostics.</summary>
+    internal Func<SupervisorRuntimeSnapshot> RuntimeSnapshot { get; init; } = SupervisorRuntimeSnapshot.Capture;
     internal string ProtocolPhase { get; set; } = "Unspecified";
     internal string PollStage { get; set; } = "Unspecified";
     internal TimeSpan? PollStartedAt { get; set; }
@@ -392,6 +406,11 @@ internal sealed class CaptureWorkerObservation(CaptureWorkerLimits limits)
             if (MetricsFinishedAt is { } end) error.Data["WorkerMetricsFinishedTicks"] = end.Ticks;
             if (Sender is { } sender) error.Data["WorkerSenderStatus"] = sender.Status.ToString();
             if (Receiver is { } receiver) error.Data["WorkerReceiverStatus"] = receiver.Status.ToString();
+            var current = RuntimeSnapshot();
+            error.Data["WorkerGcPauseDeltaTicks"] = (current.GcPause - _atLast.GcPause).Ticks;
+            error.Data["WorkerGcCountDelta"] = current.GcCount - _atLast.GcCount;
+            if (current.ThreadCpu is { } threadNow && _atLast.ThreadCpu is { } threadLast)
+                error.Data["WorkerSupervisorThreadCpuDeltaTicks"] = (threadNow - threadLast).Ticks;
             throw error;
         }
     }
@@ -401,8 +420,19 @@ internal sealed class CaptureWorkerObservation(CaptureWorkerLimits limits)
         if (rss <= 0 || cpu < TimeSpan.Zero) throw IsolatedCaptureWorker.Unsupported("WorkerObservationUnavailable");
         CheckGap(now);
         _last = now;
+        _atLast = RuntimeSnapshot();
         PeakRss = Math.Max(PeakRss, rss);
         if (rss > limits.ResidentBytes) throw IsolatedCaptureWorker.Limit("WorkerResidentBytes");
         if (cpu > limits.CpuTime) throw IsolatedCaptureWorker.Limit("WorkerCpuTime");
     }
+}
+
+/// <summary>
+/// Process-wide GC pause/count and the calling thread's CPU time. Deltas between a valid sample and a
+/// failed gap check separate supervisor suspension (GC pause, little thread CPU) from supervisor work.
+/// </summary>
+internal readonly record struct SupervisorRuntimeSnapshot(TimeSpan GcPause, long GcCount, TimeSpan? ThreadCpu)
+{
+    internal static SupervisorRuntimeSnapshot Capture() =>
+        new(GC.GetTotalPauseDuration(), GC.CollectionCount(0), SupervisorThreadClock.Current());
 }

@@ -89,7 +89,8 @@ public sealed class HistoricalAcceptanceDiagnosticsTests
             error = new InvalidOperationException("never emitted", error);
             foreach (var field in new[] { "WorkerLastValidSampleTicks", "WorkerCurrentTicks", "WorkerGapTicks",
                 "WorkerGapLimitTicks", "WorkerPollStartedTicks", "WorkerLastCompletedPollDurationTicks",
-                "WorkerMetricsStartedTicks", "WorkerMetricsFinishedTicks" })
+                "WorkerMetricsStartedTicks", "WorkerMetricsFinishedTicks", "WorkerGcPauseDeltaTicks",
+                "WorkerGcCountDelta", "WorkerSupervisorThreadCpuDeltaTicks" })
                 error.Data[field] = long.MaxValue;
             error.Data["WorkerProtocolPhase"] = "Receiving";
             error.Data["WorkerPollStage"] = "Record";

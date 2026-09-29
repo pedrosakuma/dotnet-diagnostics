@@ -94,6 +94,18 @@ over **10 ms** invalidates the result and terminates the child; it is not
 recorded as successful monitoring. This uses ordinary scheduling, not timer
 resolution/priority changes or a real-time guarantee. RSS is a sampled stop
 threshold with possible overshoot, **not** a kernel hard-RSS/cgroup guarantee.
+
+Each poll reads resident pages and user+system CPU ticks from one
+`/proc/<pid>/stat` handle opened right after launch and re-read at offset 0 into
+a preallocated buffer. The poll path is allocation-free, so it no longer
+triggers garbage collections on the supervisor thread. Before this, the
+`Process.Refresh` path allocated about 7 KiB per poll. The held handle stays
+bound to the launched task, so after the child is reaped a read fails instead
+of following a reused PID. A failed read goes through the existing exit-probe
+path. Zero RSS still needs confirmed exit, and a malformed record counts as
+unavailable observation. This removes one source of gaps but does not make the
+supervisor immune to them. GC suspensions caused by other threads in the same
+host, and OS scheduling delays, still stop it. The 10 ms policy is unchanged.
 Cancellation, overflow, timeout, malformed protocol and unsuccessful exit
 cannot produce capability success. Cleanup kills and waits for the child;
 process-tree killing is not relied upon for isolation. Positively confirmed exit
@@ -110,7 +122,7 @@ capabilities. The live test does not assume scheduler delivery within 10 ms.
 ### Bounded observation-gap diagnostics
 
 `WorkerObservationGap` retains its existing exception type, code and message.
-Its `CaptureStoreException.Data` contains at most 12 fixed scalar fields, created
+Its `CaptureStoreException.Data` contains at most 15 fixed scalar fields, created
 only on failure. All times are elapsed monotonic `TimeSpan` ticks (100 ns units)
 from that worker supervisor's stopwatch, not UTC or raw hardware counter ticks.
 
@@ -130,6 +142,14 @@ from that worker supervisor's stopwatch, not UTC or raw hardware counter ticks.
   Missing completion means no completed positive-RSS sample timestamp was
   recorded for that window; it is not a zero-duration read. Endpoint differences
   include any scheduling delay within the window, not just native syscall cost.
+- `WorkerGcPauseDeltaTicks` and `WorkerGcCountDelta` are the process-wide
+  `GC.GetTotalPauseDuration()` and gen0 collection-count increases since the
+  last valid sample. They are read once when each valid sample is recorded and
+  once when the gap is detected. Optional `WorkerSupervisorThreadCpuDeltaTicks`
+  (Linux `CLOCK_THREAD_CPUTIME_ID`) is the supervisor thread's CPU time over the
+  same interval. A large GC pause delta points to runtime suspension; low thread
+  CPU with no GC pause points to descheduling; thread CPU close to the gap points
+  to supervisor work. These are correlations, not proof of cause.
 - Optional `WorkerSenderStatus` and `WorkerReceiverStatus` snapshot managed task
   status while constructing the exception. They are not native exit evidence,
   input-consumption acknowledgments, or task completion timestamps.
@@ -138,8 +158,8 @@ Tracking retains only the latest scalar timings/task references; it does not
 keep an event history, read additional process metrics on failure, or record
 paths, payloads or process IDs. Added clock reads have finite overhead and may
 perturb timing; they do not redefine the valid-sample timestamp, reset a window,
-alter scheduling or excuse a gap. The diagnostic fields alone cannot attribute
-an interval to OS scheduling, GC or a specific syscall.
+alter scheduling or excuse a gap. The GC and thread-CPU deltas narrow the
+attribution, but they cannot name a specific syscall or scheduler event.
 
 The four publication authorization integration cases retain the first enriched
 gap in a test-scoped first-chance exception observer, including failures later
