@@ -11,11 +11,11 @@ internal static class HistoricalAcceptanceDiagnostics
     internal const int MaximumStringLength = 64;
     internal const int MaximumBytes = 4096;
     internal const int MaximumLines = 1;
-    private static readonly string[] TickFields =
+    private static readonly string[] NumericFields =
     [
-        "WorkerLastValidSampleTicks", "WorkerCurrentTicks", "WorkerGapTicks", "WorkerGapLimitTicks",
-        "WorkerPollStartedTicks", "WorkerLastCompletedPollDurationTicks", "WorkerMetricsStartedTicks", "WorkerMetricsFinishedTicks",
-        "WorkerGcPauseDeltaTicks", "WorkerGcCountDelta", "WorkerSupervisorThreadCpuDeltaTicks",
+        "WorkerGapLastValidNs", "WorkerGapNowNs", "WorkerGapNs", "WorkerGapLimitNs",
+        "WorkerMonitorThreadCpuDeltaNs", "WorkerMonitorInvCtxSwDelta", "WorkerMonitorLocked",
+        "WorkerSamples", "WorkerWallNs", "WorkerCpuNs", "WorkerPeakRss",
     ];
     private static readonly Dictionary<string, string[]> StateFields = new(StringComparer.Ordinal)
     {
@@ -48,7 +48,7 @@ internal static class HistoricalAcceptanceDiagnostics
         while (current is not null && depth < MaximumDepth)
         {
             var fields = new Dictionary<string, object>(StringComparer.Ordinal);
-            foreach (var name in TickFields)
+            foreach (var name in NumericFields)
                 Add(name, current.Data[name], static value => value is long);
             foreach (var (name, allowed) in StateFields)
                 Add(name, current.Data[name], value => value is string text && text.Length <= MaximumStringLength &&

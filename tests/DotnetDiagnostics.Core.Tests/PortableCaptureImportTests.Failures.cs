@@ -189,7 +189,7 @@ public sealed partial class PortableCaptureImportTests
         {
             // Keep one enriched failure even when the importer returns a partial result.
             // No stack capture, payload inspection, clock read or output on the worker thread.
-            if (args.Exception is CaptureStoreException error && error.Data.Contains("WorkerGapTicks"))
+            if (args.Exception is CaptureStoreException error && error.Data.Contains("WorkerGapNs"))
                 Interlocked.CompareExchange(ref _first, error, null);
         }
 
@@ -200,7 +200,7 @@ public sealed partial class PortableCaptureImportTests
             if (error is null) return;
             var fields = error.Data.Cast<System.Collections.DictionaryEntry>()
                 .Where(static pair => pair.Key is string key && key.StartsWith("Worker", StringComparison.Ordinal))
-                .Take(12).ToDictionary(static pair => (string)pair.Key, static pair => pair.Value, StringComparer.Ordinal);
+                .Take(15).ToDictionary(static pair => (string)pair.Key, static pair => pair.Value, StringComparer.Ordinal);
             _output.WriteLine("First worker gap diagnostics: " + JsonSerializer.Serialize(fields));
         }
     }

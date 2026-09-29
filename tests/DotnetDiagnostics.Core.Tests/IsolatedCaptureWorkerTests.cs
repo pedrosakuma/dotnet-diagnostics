@@ -96,27 +96,75 @@ public sealed class IsolatedCaptureWorkerTests(ITestOutputHelper output) : IDisp
         finally { Stop(helper); }
     }
 
-    [Theory]
-    [InlineData(100, false)]
-    [InlineData(100, true)]
-    [InlineData(120000, false)]
-    [InlineData(120000, true)]
-    public void WallDeadlineIsEnforcedWithAndWithoutMandatoryObservations(int milliseconds, bool mandatory)
+    [Fact]
+    public async Task NativeMonitorEnforcesCpuAndRetainsOnlyBoundedStderr()
     {
-        var limit = TimeSpan.FromMilliseconds(milliseconds);
-        var observations = new CaptureWorkerObservation(new() { WallTime = limit });
-        for (var elapsed = 0; elapsed <= milliseconds; elapsed += 10)
+        if (!SupportedPlatform) return;
+        using var helper = StartHelper();
+        var address = await helper.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        try
         {
-            var now = TimeSpan.FromMilliseconds(elapsed);
-            observations.CheckWallTime(now);
-            if (mandatory) observations.Record(now, 1000, TimeSpan.Zero);
+            var cpu = await Assert.ThrowsAsync<CaptureStoreException>(() =>
+                IsolatedCaptureWorker.ProbeTrustedFixtureAsync(
+                    Request(CreateFixture("cpu.db"), helper.Id, address!) with { Executable = Helper },
+                    new() { CpuTime = TimeSpan.FromMilliseconds(1), WallTime = TimeSpan.FromSeconds(2) }));
+            Assert.Equal(CaptureErrorCode.CapacityExceeded, cpu.Code);
+            Assert.Contains("WorkerCpuTime", cpu.Message);
+
+            var stderr = await Assert.ThrowsAsync<CaptureStoreException>(() =>
+                IsolatedCaptureWorker.ProbeTrustedFixtureAsync(
+                    Request(CreateFixture("stderr.db"), helper.Id, address!) with { Executable = Helper },
+                    new() { WallTime = TimeSpan.FromSeconds(2) }));
+            Assert.Equal(CaptureErrorCode.StorageFailure, stderr.Code);
+            Assert.Contains("WorkerStderr", stderr.Message);
+            Assert.InRange(Assert.IsType<int>(stderr.Data["WorkerStderrBytes"]), 1, 256);
+            var hex = Assert.IsType<string>(stderr.Data["WorkerStderrHex"]);
+            Assert.Equal((int)stderr.Data["WorkerStderrBytes"]! * 2, hex.Length);
         }
-        var expired = limit + TimeSpan.FromTicks(1);
-        observations.CheckGap(expired);
-        var error = Assert.Throws<CaptureStoreException>(() => observations.CheckWallTime(expired));
-        Assert.Equal(CaptureErrorCode.CapacityExceeded, error.Code);
-        Assert.StartsWith("WorkerWallTime:", error.Message);
-        Assert.Equal(mandatory ? TimeSpan.FromMilliseconds(10) : TimeSpan.Zero, observations.MaximumGap);
+        finally { Stop(helper); }
+    }
+
+    [Theory]
+    [InlineData("self-gap-stall.db")]
+    [InlineData("self-gap-exit.db")]
+    public async Task NativeMonitorStopAlwaysInvalidatesIncludingAcrossWorkerExit(string name)
+    {
+        if (!SupportedPlatform) return;
+        using var helper = StartHelper();
+        var address = await helper.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        try
+        {
+            var error = await Assert.ThrowsAsync<CaptureStoreException>(() =>
+                IsolatedCaptureWorker.ProbeTrustedFixtureAsync(
+                    Request(CreateFixture(name), helper.Id, address!) with { Executable = Helper },
+                    new() { WallTime = TimeSpan.FromSeconds(2) }));
+            Assert.Equal(CaptureErrorCode.CapacityExceeded, error.Code);
+            Assert.Contains("WorkerObservationGap", error.Message);
+            Assert.True(Assert.IsType<long>(error.Data["WorkerGapNs"]) > 10_000_000);
+            Assert.True(error.Data.Contains("WorkerMonitorThreadCpuDeltaNs"));
+            Assert.True(error.Data.Contains("WorkerMonitorInvCtxSwDelta"));
+        }
+        finally { Stop(helper); }
+    }
+
+    [Fact]
+    public async Task SanitizedNativeMonitorDetectsTheDeterministicGap()
+    {
+        if (!SupportedPlatform) return;
+        using var helper = StartHelper();
+        var address = await helper.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        try
+        {
+            var error = await Assert.ThrowsAsync<CaptureStoreException>(() =>
+                IsolatedCaptureWorker.ProbeTrustedFixtureAsync(
+                    Request(CreateFixture("self-gap-stall.db"), helper.Id, address!) with
+                    {
+                        Executable = Path.Combine(AppContext.BaseDirectory, "capture-worker-fixture-asan")
+                    }, new() { WallTime = TimeSpan.FromSeconds(2) }));
+            Assert.Equal(CaptureErrorCode.CapacityExceeded, error.Code);
+            Assert.Contains("WorkerObservationGap", error.Message);
+        }
+        finally { Stop(helper); }
     }
 
     [Fact]
@@ -126,38 +174,60 @@ public sealed class IsolatedCaptureWorkerTests(ITestOutputHelper output) : IDisp
         var fixture = CreateFixture("stall.db");
         using var helper = StartHelper();
         var address = await helper.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(5));
-        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+        using var cancellation = new CancellationTokenSource();
+        PortableWorkerIdentity? worker = null;
+        PortableWorkerIdentity? monitor = null;
         try
         {
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-                IsolatedCaptureWorker.ProbeTrustedFixtureAsync(Request(fixture, helper.Id, address!) with { Executable = Helper },
-                    cancellationToken: cancellation.Token));
+                IsolatedCaptureWorker.ProbeTrustedFixtureAsync(Request(fixture, helper.Id, address!) with
+                {
+                    Executable = Helper,
+                    BeforeInputWithMonitor = (workerIdentity, monitorIdentity) =>
+                    {
+                        worker = workerIdentity;
+                        monitor = monitorIdentity;
+                        cancellation.CancelAfter(TimeSpan.FromMilliseconds(50));
+                    }
+                }, cancellationToken: cancellation.Token));
+            Assert.NotNull(worker);
+            Assert.NotNull(monitor);
+            worker.RequireGone();
+            monitor.RequireGone();
         }
         finally { Stop(helper); }
     }
 
     [Fact]
-    public void ObservationGapOverTenMillisecondsInvalidatesInsteadOfRecordingSuccess()
+    public async Task CancellationAfterIdentityPersistenceButBeforeAckNeverRunsTheWorker()
     {
-        var observations = new CaptureWorkerObservation(new());
-        observations.Record(TimeSpan.Zero, 1000, TimeSpan.Zero);
-        observations.Record(TimeSpan.FromMilliseconds(10), 1000, TimeSpan.Zero);
-        var error = Assert.Throws<CaptureStoreException>(() =>
-            observations.Record(TimeSpan.FromMilliseconds(20.001), 1000, TimeSpan.Zero));
-        Assert.Equal(CaptureErrorCode.CapacityExceeded, error.Code);
-        Assert.Contains("WorkerObservationGap", error.Message);
-    }
-
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public void ResourceThresholdsAreCheckedAtObservation(bool resident)
-    {
-        var observations = new CaptureWorkerObservation(new());
-        observations.Record(TimeSpan.Zero, 256L * 1024 * 1024, TimeSpan.FromSeconds(60));
-        var error = Assert.Throws<CaptureStoreException>(() => observations.Record(TimeSpan.FromMilliseconds(1),
-            256L * 1024 * 1024 + (resident ? 1 : 0), TimeSpan.FromSeconds(60) + (resident ? TimeSpan.Zero : TimeSpan.FromTicks(1))));
-        Assert.Contains(resident ? "WorkerResidentBytes" : "WorkerCpuTime", error.Message);
+        if (!SupportedPlatform) return;
+        var fixture = CreateFixture("stall.db");
+        using var helper = StartHelper();
+        var address = await helper.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        using var cancellation = new CancellationTokenSource();
+        PortableWorkerIdentity? worker = null;
+        PortableWorkerIdentity? monitor = null;
+        try
+        {
+            var request = Request(fixture, helper.Id, address!) with
+            {
+                Executable = Helper,
+                BeforeInputWithMonitor = (workerIdentity, monitorIdentity) =>
+                {
+                    worker = workerIdentity;
+                    monitor = monitorIdentity;
+                    cancellation.Cancel();
+                }
+            };
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                IsolatedCaptureWorker.ProbeTrustedFixtureAsync(request, cancellationToken: cancellation.Token));
+            Assert.NotNull(worker);
+            Assert.NotNull(monitor);
+            worker.RequireGone();
+            monitor.RequireGone();
+        }
+        finally { Stop(helper); }
     }
 
     [Fact]
@@ -207,18 +277,6 @@ public sealed class IsolatedCaptureWorkerTests(ITestOutputHelper output) : IDisp
             Assert.Contains(reason, error.Message);
         }
         finally { Stop(helper); }
-    }
-
-    [Theory]
-    [InlineData(0, 0)]
-    [InlineData(-1, 0)]
-    [InlineData(1000, -1)]
-    public void UnavailableObservationNeverBecomesZeroCostSuccess(long rss, int cpuTicks)
-    {
-        var error = Assert.Throws<CaptureStoreException>(() => new CaptureWorkerObservation(new())
-            .Record(TimeSpan.Zero, rss, TimeSpan.FromTicks(cpuTicks)));
-        Assert.Equal(CaptureErrorCode.UnsupportedFormat, error.Code);
-        Assert.Contains("WorkerObservationUnavailable", error.Message);
     }
 
     private string CreateFixture(string name)

@@ -37,6 +37,7 @@ internal sealed partial class PortableCaptureStorage
     {
         using var admission = SqliteCaptureStore.PortableAdmission(_store.PortableRoot());
         Receipt.Import?.Worker?.RequireGone();
+        Receipt.Import?.Monitor?.RequireGone();
         Receipt.Import?.ParentIo?.RequireGone();
         DeleteImportWork(DirectoryPath);
         Receipt = Receipt with { ReservationBytes = PortableBounds.ReceiptReservation };
@@ -69,6 +70,7 @@ internal sealed partial class PortableCaptureStorage
     {
         var journal = receipt.Import!;
         journal.Worker?.RequireGone();
+        journal.Monitor?.RequireGone();
         journal.ParentIo?.RequireGone();
         if (journal.Terminal) return receipt;
         var watch = Stopwatch.StartNew();
@@ -105,7 +107,8 @@ internal sealed partial class PortableCaptureStorage
         var complete = entries.Length > 0 && entries.All(static entry => entry.State == PortableEntryState.Published);
         var result = journal.Result with { Entries = entries, Complete = complete,
             Failure = complete ? null : new(CaptureErrorCode.Incomplete, "ImportInterrupted", null, null, null, null) };
-        receipt = receipt with { Import = journal with { Result = result, Terminal = true, Worker = null, ParentIo = null } };
+        receipt = receipt with { Import = journal with { Result = result, Terminal = true, Worker = null, Monitor = null,
+            ParentIo = null } };
         WriteReceipt(directory, receipt);
         return receipt;
     }

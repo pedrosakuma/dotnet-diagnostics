@@ -16,7 +16,7 @@ internal sealed record PortableExportReceipt(string OwnerId, PortableOperationKe
 internal sealed record PortableTransferJournal(bool Upload, long ReceivedBytes);
 internal sealed record PortableImportPlan(string EntryId, string CaptureId, string? SealHash);
 internal sealed record PortableImportJournal(PortableImportResult Result, PortableImportPlan[] Plans, bool Terminal,
-    PortableWorkerIdentity? Worker = null, PortableWorkerIdentity? ParentIo = null);
+    PortableWorkerIdentity? Worker = null, PortableWorkerIdentity? Monitor = null, PortableWorkerIdentity? ParentIo = null);
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(PortableIndex))]

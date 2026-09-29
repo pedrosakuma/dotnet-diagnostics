@@ -422,11 +422,13 @@ static int probe_sqlite(const char *uri)
 
 #include "sqlite_admission.h"
 #include "sqlite_rebuild.h"
+#include "worker_monitor.h"
 
 int main(int argc, char **argv)
 {
     extern char **environ;
     require(environ[0] == NULL, "WorkerEnvironmentNotEmpty");
+    if (argc > 1 && strcmp(argv[1], "--monitor") == 0) return monitor_main(argc, argv);
     int admission = argc == 7 && strcmp(argv[6], "--admit") == 0;
     rebuilding = argc == 7 && strcmp(argv[6], "--rebuild") == 0;
     int availability = argc == 7 && strcmp(argv[6], "--available") == 0;

@@ -7,6 +7,7 @@ internal sealed record SqliteRebuildRequest(string Executable, string SqliteLibr
     long MaxDatabaseBytes, long RemainingVmInstructions, CaptureWorkerLimits Limits)
 {
     internal Action<int>? BeforeInput { get; init; }
+    internal Action<PortableWorkerIdentity, PortableWorkerIdentity>? BeforeInputWithMonitor { get; init; }
     internal Action? AfterExit { get; init; }
 }
 
@@ -66,7 +67,7 @@ internal static partial class IsolatedCaptureWorker
             foreach (var argument in new[] { nonce, request.SqliteLibrary, request.PrivateDirectory,
                 new Uri(database).AbsoluteUri, database, "--rebuild" }) start.ArgumentList.Add(argument);
             var result = RunProtocol(start, nonce, request.Limits, Send, Receive, cancellationToken,
-                request.BeforeInput, request.AfterExit);
+                request.BeforeInput, request.AfterExit, request.BeforeInputWithMonitor);
             if (Directory.EnumerateFileSystemEntries(request.PrivateDirectory).Any(path => path != database))
                 throw CapturePackage.Error(CaptureErrorCode.CorruptPackage, "Rebuild.UnexpectedMember");
             using var output = new FileStream(database, FileMode.Open, FileAccess.Read, FileShare.Read);

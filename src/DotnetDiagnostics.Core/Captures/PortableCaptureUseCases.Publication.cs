@@ -77,6 +77,7 @@ public sealed partial class PortableCaptureUseCases
             try
             {
                 storage.SaveImport(new(Result, _plans, true, ioOutstanding ? storage.Receipt.Import?.Worker : null,
+                    ioOutstanding ? storage.Receipt.Import?.Monitor : null,
                     ioOutstanding ? storage.Receipt.Import?.ParentIo : null));
                 storage.CleanImport();
             }

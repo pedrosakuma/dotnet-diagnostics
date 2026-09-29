@@ -117,7 +117,7 @@ public sealed partial class PortableCaptureUseCases
                         sourceDirectory, Path.Combine(sourceDirectory, CapturePackage.Database), CapturePackage.FormatOf(sourceManifest),
                         sourceManifest.Info.Artifacts, sourceManifest.Info.Quality.Persisted)
                     {
-                        IncludeUsage = true, BeforeInput = Started, AfterExit = Exited
+                        IncludeUsage = true, BeforeInputWithMonitor = Started, AfterExit = Exited
                     };
                     admission = await IsolatedCaptureWorker.AdmitSqliteAsync(native, evidence, new()
                     {
@@ -161,7 +161,7 @@ public sealed partial class PortableCaptureUseCases
                 using (var frames = OpenRead(entry.Frames))
                     _ = await IsolatedCaptureWorker.RebuildValidatedAsync(new(_importWorker!.Executable, _importWorker.SqliteLibrary,
                         destination, _store.PortableStoreOptions.MaxDatabaseBytes, 200_000_000 - entry.Admission.VmInstructions,
-                        new() { CpuTime = cpu, WallTime = wall }) { BeforeInput = Started, AfterExit = Exited }, frames, token).ConfigureAwait(false);
+                        new() { CpuTime = cpu, WallTime = wall }) { BeforeInputWithMonitor = Started, AfterExit = Exited }, frames, token).ConfigureAwait(false);
                 WritePrivate(Path.Combine(destination, CapturePackage.Manifest), entry.ManifestBytes);
                 using (SafeArtifactPath.CreateRestrictedFile(Path.Combine(destination, CapturePackage.Lease))) { }
                 var seal = new CaptureSeal(CapturePackage.Hash(Path.Combine(destination, CapturePackage.Manifest)),
@@ -183,16 +183,17 @@ public sealed partial class PortableCaptureUseCases
             return publication.Fail(error, index, cancellationToken.IsCancellationRequested, ioOutstanding);
         }
 
-        void Started(int processId)
+        void Started(PortableWorkerIdentity worker, PortableWorkerIdentity monitor)
         {
             ioOutstanding = true;
-            storage.SaveImport(storage.Receipt.Import! with { Worker = PortableWorkerIdentity.Capture(processId),
+            storage.SaveImport(storage.Receipt.Import! with { Worker = worker,
+                Monitor = monitor,
                 ParentIo = PortableWorkerIdentity.Capture(Environment.ProcessId) });
         }
         void Exited()
         {
             ioOutstanding = false;
-            storage.SaveImport(storage.Receipt.Import! with { Worker = null, ParentIo = null });
+            storage.SaveImport(storage.Receipt.Import! with { Worker = null, Monitor = null, ParentIo = null });
         }
     }
 

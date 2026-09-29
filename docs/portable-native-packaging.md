@@ -46,6 +46,10 @@ producer entrypoint. It is **not** imported into ordinary application builds.
 Its Python standard-library helper resolves the existing
 `SQLitePCLRaw.lib.e_sqlite3/3.53.3` asset from Core's `project.assets.json`, then
 compiles the existing `capture_worker.c` once in a Docker container.
+The resulting single `capture-worker` binary contains both the trusted native
+monitor (`--monitor`) and the contained worker modes; no separate monitor asset
+is packaged. The monitor emits the `MONITOR`/`ACK` pre-release handshake, then
+the contained worker emits the existing `READY`/`GO` protocol.
 
 The approved preparation pin is the official `gcc:14-bookworm` **linux/amd64
 manifest**, not its mutable tag or multi-platform index:

@@ -9,6 +9,7 @@ internal sealed record CaptureWorkerProbe(string Executable, string SqliteLibrar
     string TrustedFixture, string BenignMarker, int HelperProcessId, string HelperAddress, string HelperExecutable)
 {
     internal bool WritableProfile { get; init; }
+    internal Action<PortableWorkerIdentity, PortableWorkerIdentity>? BeforeInputWithMonitor { get; init; }
 }
 
 internal sealed record CaptureWorkerCapabilities(int LandlockAbi, int SqliteVersion, int DeniedProbes,
@@ -86,7 +87,8 @@ internal static partial class IsolatedCaptureWorker
             start.ArgumentList.Add(argument);
         if (probe.WritableProfile) start.ArgumentList.Add("--writable-profile-probe");
         var outcome = RunProtocol(start, nonce, limits, "GO\n"u8.ToArray(),
-            (stream, ct) => ReadBoundedAsync(stream, OutputLimit, false, ct), token);
+            (stream, ct) => ReadBoundedAsync(stream, OutputLimit, false, ct), token,
+            beforeInputWithMonitor: probe.BeforeInputWithMonitor);
         var text = outcome.Result;
         var result = text.TrimEnd('\n').Split(' ');
         if (result.Length != 7 || result[0] != "RESULT" || result[1] != "1" || result[2] != nonce ||
@@ -103,22 +105,25 @@ internal static partial class IsolatedCaptureWorker
 
     private static ProtocolOutcome<T> RunProtocol<T>(ProcessStartInfo start, string nonce, CaptureWorkerLimits limits,
         byte[] request, Func<Stream, CancellationToken, Task<T>> receive, CancellationToken token,
-        Action<int>? beforeInput = null, Action? afterExit = null)
-        => RunProtocol(start, nonce, limits, (stream, ct) => stream.WriteAsync(request, ct).AsTask(), receive, token, beforeInput, afterExit);
+        Action<int>? beforeInput = null, Action? afterExit = null,
+        Action<PortableWorkerIdentity, PortableWorkerIdentity>? beforeInputWithMonitor = null)
+        => RunProtocol(start, nonce, limits, (stream, ct) => stream.WriteAsync(request, ct).AsTask(), receive, token,
+            beforeInput, afterExit, beforeInputWithMonitor);
 
     private static ProtocolOutcome<T> RunProtocol<T>(ProcessStartInfo start, string nonce, CaptureWorkerLimits limits,
         Func<Stream, CancellationToken, Task> send, Func<Stream, CancellationToken, Task<T>> receive, CancellationToken token,
-        Action<int>? beforeInput = null, Action? afterExit = null)
+        Action<int>? beforeInput = null, Action? afterExit = null,
+        Action<PortableWorkerIdentity, PortableWorkerIdentity>? beforeInputWithMonitor = null)
     {
+        PrepareMonitorStart(start, limits);
         using var process = new Process { StartInfo = start };
         var wall = Stopwatch.StartNew();
-        var observations = new CaptureWorkerObservation(limits);
         using var io = new CancellationTokenSource();
         Task? frame = null;
         Task? sending = null;
         Task<string>? errors = null;
-        WorkerProcfsSampler? sampler = null;
         var started = false;
+        PortableWorkerIdentity? workerIdentity = null;
         ProtocolOutcome<T>? outcome = null;
         Exception? failure = null;
         try
@@ -127,55 +132,77 @@ internal static partial class IsolatedCaptureWorker
             try { started = process.Start(); }
             catch (System.ComponentModel.Win32Exception ex) { throw Unsupported("WorkerLaunchUnavailable", ex); }
             if (!started) throw Unsupported("WorkerLaunchUnavailable");
-            // Bind the stat handle before any poll; a failure here is retried by the first poll,
-            // whose exit probe decides between confirmed exit and unavailable observation.
-            try { sampler = WorkerProcfsSampler.Open(process.Id); }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException) { }
-            errors = ReadBoundedAsync(process.StandardError.BaseStream, OutputLimit, false, io.Token);
+            var monitorIdentity = PortableWorkerIdentity.Capture(process.Id);
+            errors = ReadBoundedAsync(process.StandardError.BaseStream, 1024, false, io.Token);
+            var monitorLine = ReadBoundedAsync(process.StandardOutput.BaseStream, 256, true, io.Token);
+            frame = monitorLine;
+            Await(frame);
+            var monitor = ParseMonitorHandshake(monitorLine.GetAwaiter().GetResult(), nonce);
+            workerIdentity = PortableWorkerIdentity.Capture(monitor.WorkerPid);
+            if (workerIdentity.StartTime != monitor.WorkerStartTime) throw Unsupported("WorkerMonitorIdentityMismatch");
+            beforeInputWithMonitor?.Invoke(workerIdentity, monitorIdentity);
+            beforeInput?.Invoke(monitor.WorkerPid);
+            Check();
+            process.StandardInput.BaseStream.Write("ACK\n"u8);
+            process.StandardInput.BaseStream.Flush();
             var handshake = ReadBoundedAsync(process.StandardOutput.BaseStream, 256, true, io.Token);
             frame = handshake;
-            observations.ProtocolPhase = "Handshake";
-            Await(frame, mandatory: false);
+            Await(frame);
             var ready = handshake.GetAwaiter().GetResult().TrimEnd('\n').Split(' ');
             if (ready.Length == 2 && ready[0] == "UNSUPPORTED") throw Unsupported(ready[1]);
             if (ready.Length != 4 || ready[0] != "READY" || ready[1] != "1" || ready[2] != nonce ||
                 !int.TryParse(ready[3], CultureInfo.InvariantCulture, out var abi) || abi < 3)
+            {
+                if (handshake.GetAwaiter().GetResult().Length == 0 &&
+                    (process.HasExited || process.WaitForExit(1000)) &&
+                    ((IAsyncResult)errors).AsyncWaitHandle.WaitOne(1000))
+                {
+                    ThrowMonitorFailure(ParseMonitorReport(errors.GetAwaiter().GetResult(), nonce));
+                }
                 throw Unsupported("WorkerHandshakeInvalid");
-            beforeInput?.Invoke(process.Id);
+            }
             var response = receive(process.StandardOutput.BaseStream, io.Token);
             frame = response;
-            observations.Receiver = response;
-            observations.ProtocolPhase = "InitialObservation";
-            Observe();
             sending = Task.Run(() => send(process.StandardInput.BaseStream, io.Token), CancellationToken.None);
-            observations.Sender = sending;
-            observations.ProtocolPhase = "Sending";
-            Await(sending, mandatory: true);
-            observations.ProtocolPhase = "ClosingInput";
+            Await(sending);
             process.StandardInput.Close();
-            observations.ProtocolPhase = "Receiving";
-            Await(frame, mandatory: true);
-            observations.ProtocolPhase = "Stderr";
-            Await(errors, mandatory: true);
-            observations.ProtocolPhase = "ExitWait";
-            while (!process.HasExited) { Check(); Observe(); Thread.Sleep(1); }
-            Observe();
-            observations.ProtocolPhase = "FinalChecks";
+            Await(frame);
+            Await(errors);
+            while (!process.HasExited) { Check(); Thread.Sleep(50); }
             Check();
-            observations.CheckGap(wall.Elapsed);
-            if (process.ExitCode == 78) throw Unsupported(response.GetAwaiter().GetResult()?.ToString()?.Trim() ?? "WorkerUnavailable");
-            if (process.ExitCode != 0 || errors.GetAwaiter().GetResult().Length != 0)
+            var report = ParseMonitorReport(errors.GetAwaiter().GetResult(), nonce);
+            if (report.Outcome == "Exited" && report.Exit == 78)
+            {
+                var unsupported = response.GetAwaiter().GetResult()?.ToString()?.TrimEnd('\n').Split(' ');
+                throw Unsupported(unsupported is { Length: 2 } && unsupported[0] == "UNSUPPORTED"
+                    ? unsupported[1] : "WorkerUnavailable");
+            }
+            if (process.ExitCode != 0 || report.Outcome != "Exited" || report.Exit != 0 ||
+                report.WorkerStderrRetained != 0 || report.Samples <= 0)
+            {
+                ThrowMonitorFailure(report);
                 throw CapturePackage.Error(CaptureErrorCode.StorageFailure, "Worker exited unsuccessfully; no admission result exists.");
-            outcome = new(response.GetAwaiter().GetResult(), abi, observations.PeakRss, observations.MaximumGap, wall.Elapsed);
+            }
+            outcome = new(response.GetAwaiter().GetResult(), abi, report.PeakRss,
+                TimeSpan.FromTicks(report.MaxGapNs / 100), TimeSpan.FromTicks(report.WallNs / 100));
         }
-        catch (Exception ex) { failure = ex; }
+        catch (Exception ex)
+        {
+            if (Environment.GetEnvironmentVariable("WORKER_DEBUG") == "1")
+            {
+                Console.Error.WriteLine("WORKER_DEBUG failure: " + ex);
+                foreach (var key in ex.Data.Keys) Console.Error.WriteLine($"WORKER_DEBUG data {key}={ex.Data[key]}");
+            }
+            failure = ex;
+        }
         try
         {
             if (started && !process.HasExited)
             {
-                process.Kill(); // Containment denies child creation; this is not the containment mechanism.
+                process.Kill(); // The monitor's parent-death signal terminates its worker child.
                 if (!process.WaitForExit(5000))
                     throw CapturePackage.Error(CaptureErrorCode.StorageFailure, "Worker termination could not be confirmed.");
+                ConfirmWorkerGone(workerIdentity);
             }
             io.Cancel();
             var pending = new[] { frame, sending, errors }.Where(static task => task is not null).Select(static task =>
@@ -188,12 +215,13 @@ internal static partial class IsolatedCaptureWorker
         }
         catch (Exception ex)
         {
+            if (Environment.GetEnvironmentVariable("WORKER_DEBUG") == "1")
+                Console.Error.WriteLine("WORKER_DEBUG cleanup: " + ex);
             failure = CapturePackage.Error(CaptureErrorCode.StorageFailure, "Worker cleanup failed; no result is accepted.",
                 failure is null ? ex : new AggregateException(failure, ex));
         }
         finally
         {
-            sampler?.Dispose();
             io.Cancel();
             ObserveIoFailure(frame);
             ObserveIoFailure(sending);
@@ -205,80 +233,147 @@ internal static partial class IsolatedCaptureWorker
         void Check()
         {
             token.ThrowIfCancellationRequested();
-            observations.CheckWallTime(wall.Elapsed);
+            if (wall.Elapsed > limits.WallTime) throw Limit("WorkerWallTime");
             if (errors?.IsFaulted == true) errors.GetAwaiter().GetResult();
         }
-        void Observe()
-        {
-            observations.PollStartedAt = wall.Elapsed;
-            try { ObserveCore(); }
-            finally { observations.LastCompletedPollDuration = wall.Elapsed - observations.PollStartedAt.Value; }
-        }
-        void ObserveCore()
-        {
-            observations.PollStage = "Check";
-            Check();
-            if (observations.Completed) return;
-            observations.PollStage = "ExitProbe";
-            if (process.HasExited) { observations.ConfirmExit(wall.Elapsed); return; }
-            try
-            {
-                observations.PollStage = "Metrics";
-                observations.MetricsStartedAt = wall.Elapsed;
-                observations.MetricsFinishedAt = null;
-                sampler ??= OpenSampler(process.Id);
-                sampler.Read(out var rss, out var cpu);
-                if (rss == 0)
-                {
-                    observations.PollStage = "ZeroRssExitConfirmation";
-                    // Zero RSS is not exit evidence. Only this child's confirmed
-                    // termination within the last valid sample's deadline qualifies.
-                    var confirmed = observations.WaitForConfirmedExit(() => wall.Elapsed, process.WaitForExit, token);
-                    observations.ConfirmExit(confirmed);
-                    return;
-                }
-                var sampledAt = wall.Elapsed;
-                observations.MetricsFinishedAt = sampledAt;
-                observations.PollStage = "Record";
-                observations.Record(sampledAt, rss, cpu);
-            }
-            catch (InvalidOperationException) when (process.HasExited)
-            {
-                observations.PollStage = "MetricFailureConfirmedExit";
-                observations.ConfirmExit(wall.Elapsed);
-            }
-            catch (System.ComponentModel.Win32Exception ex)
-            {
-                observations.PollStage = "MetricFailureExitProbe";
-                observations.MetricUnavailable(ex, () => process.HasExited, () => wall.Elapsed);
-            }
-            catch (IOException ex)
-            {
-                observations.PollStage = "MetricFailureExitProbe";
-                observations.MetricUnavailable(ex, () => process.HasExited, () => wall.Elapsed);
-            }
-        }
-        static WorkerProcfsSampler OpenSampler(int processId)
-        {
-            try { return WorkerProcfsSampler.Open(processId); }
-            catch (UnauthorizedAccessException ex) { throw new IOException("Worker stat record is unavailable.", ex); }
-            catch (PlatformNotSupportedException ex) { throw Unsupported("WorkerPlatformUnavailable", ex); }
-        }
-        void Await(Task task, bool mandatory)
+        void Await(Task task)
         {
             while (!task.IsCompleted)
             {
+                if (((IAsyncResult)task).AsyncWaitHandle.WaitOne(50)) break;
                 Check();
-                if (mandatory) Observe();
-                Thread.Sleep(1);
-            }
-            if (mandatory)
-            {
-                observations.PollStage = "AwaitCompletionGap";
-                observations.CheckGap(wall.Elapsed);
             }
             task.GetAwaiter().GetResult();
         }
+    }
+
+    private static void ConfirmWorkerGone(PortableWorkerIdentity? workerIdentity)
+    {
+        if (workerIdentity is null) return;
+        var deadline = Stopwatch.GetTimestamp() + Stopwatch.Frequency * 5;
+        while (true)
+        {
+            try
+            {
+                workerIdentity.RequireGone();
+                return;
+            }
+            catch (CaptureStoreException) when (Stopwatch.GetTimestamp() < deadline)
+            {
+                Thread.Sleep(50);
+            }
+        }
+    }
+
+    internal sealed record MonitorHandshake(int WorkerPid, long WorkerStartTime);
+
+    internal sealed record MonitorReport(string Outcome, int Exit, int Signal, long PeakRss, long MaxGapNs, long Samples,
+        long GapLastValidNs, long GapNowNs, long GapNs, long WallNs, long CpuNs,
+        int Locked, int WorkerStderrRetained, string WorkerStderrHex,
+        long MonitorThreadCpuDeltaNs, long MonitorInvoluntaryContextSwitchDelta);
+
+    private static void PrepareMonitorStart(ProcessStartInfo start, CaptureWorkerLimits limits)
+    {
+        var worker = start.ArgumentList.ToArray();
+        start.ArgumentList.Clear();
+        start.ArgumentList.Add("--monitor");
+        start.ArgumentList.Add(ToNanoseconds(limits.WallTime).ToString(CultureInfo.InvariantCulture));
+        start.ArgumentList.Add(ToNanoseconds(limits.CpuTime).ToString(CultureInfo.InvariantCulture));
+        start.ArgumentList.Add(limits.ResidentBytes.ToString(CultureInfo.InvariantCulture));
+        start.ArgumentList.Add("--");
+        foreach (var argument in worker) start.ArgumentList.Add(argument);
+
+        static long ToNanoseconds(TimeSpan value) => checked(value.Ticks * 100);
+    }
+
+    internal static MonitorHandshake ParseMonitorHandshake(string line, string nonce)
+    {
+        var parts = line.TrimEnd('\n').Split(' ');
+        if (parts.Length == 2 && parts[0] == "UNSUPPORTED") throw Unsupported(parts[1]);
+        if (parts.Length != 5 || parts[0] != "MONITOR" || parts[1] != "1" || parts[2] != nonce ||
+            !int.TryParse(parts[3], NumberStyles.None, CultureInfo.InvariantCulture, out var pid) || pid <= 0 ||
+            !long.TryParse(parts[4], NumberStyles.None, CultureInfo.InvariantCulture, out var startTime) || startTime <= 0)
+            throw Unsupported("WorkerMonitorHandshakeInvalid");
+        return new(pid, startTime);
+    }
+
+    internal static MonitorReport ParseMonitorReport(string text, string nonce)
+    {
+        if (text.Length > 1024 || !text.EndsWith('\n') || text.IndexOf('\n') != text.Length - 1)
+            throw Unsupported("WorkerMonitorReportInvalid");
+        var parts = text.TrimEnd('\n').Split(' ');
+        var keys = new[] { "outcome", "exit", "signal", "peakRss", "maxGapNs", "samples",
+            "gapLastValidNs", "gapNowNs", "gapNs", "wallNs", "cpuNs", "locked", "workerStderrRetained",
+            "workerStderrHex", "monitorThreadCpuDeltaNs", "monitorInvCtxSwDelta" };
+        if (parts.Length != keys.Length + 3 || parts[0] != "MONITOR-RESULT" || parts[1] != "1" || parts[2] != nonce)
+            throw Unsupported("WorkerMonitorReportInvalid");
+        var values = new string[keys.Length];
+        for (var i = 0; i < keys.Length; i++)
+        {
+            var prefix = keys[i] + "=";
+            if (!parts[i + 3].StartsWith(prefix, StringComparison.Ordinal)) throw Unsupported("WorkerMonitorReportInvalid");
+            values[i] = parts[i + 3][prefix.Length..];
+        }
+        var outcomes = new[] { "Exited", "WorkerObservationGap", "WorkerResidentBytes", "WorkerCpuTime",
+            "WorkerWallTime", "WorkerSignaled", "MonitorFailure" };
+        if (!outcomes.Contains(values[0], StringComparer.Ordinal) ||
+            !int.TryParse(values[1], NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var exit) ||
+            !int.TryParse(values[2], NumberStyles.None, CultureInfo.InvariantCulture, out var signal) ||
+            !long.TryParse(values[3], NumberStyles.None, CultureInfo.InvariantCulture, out var peakRss) ||
+            !long.TryParse(values[4], NumberStyles.None, CultureInfo.InvariantCulture, out var maxGapNs) ||
+            !long.TryParse(values[5], NumberStyles.None, CultureInfo.InvariantCulture, out var samples) ||
+            !long.TryParse(values[6], NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var gapLast) ||
+            !long.TryParse(values[7], NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var gapNow) ||
+            !long.TryParse(values[8], NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var gapNs) ||
+            !long.TryParse(values[9], NumberStyles.None, CultureInfo.InvariantCulture, out var wallNs) ||
+            !long.TryParse(values[10], NumberStyles.None, CultureInfo.InvariantCulture, out var cpuNs) ||
+            !int.TryParse(values[11], NumberStyles.None, CultureInfo.InvariantCulture, out var locked) ||
+            !int.TryParse(values[12], NumberStyles.None, CultureInfo.InvariantCulture, out var stderrBytes) ||
+            !long.TryParse(values[14], NumberStyles.None, CultureInfo.InvariantCulture, out var monitorCpu) ||
+            !long.TryParse(values[15], NumberStyles.None, CultureInfo.InvariantCulture, out var monitorSwitches) ||
+            locked is not (0 or 1) || stderrBytes is < 0 or > 256 ||
+            (stderrBytes == 0 ? values[13] != "-" :
+                values[13].Length != stderrBytes * 2 || values[13].Any(static c => !char.IsAsciiHexDigit(c))) ||
+            (values[0] == "Exited" && (exit < 0 || signal != 0)) ||
+            (values[0] == "WorkerSignaled" && signal == 0))
+            throw Unsupported("WorkerMonitorReportInvalid");
+        return new(values[0], exit, signal, peakRss, maxGapNs, samples, gapLast, gapNow, gapNs, wallNs, cpuNs, locked,
+            stderrBytes, values[13], monitorCpu, monitorSwitches);
+    }
+
+    internal static void ThrowMonitorFailure(MonitorReport report)
+    {
+        if (report.WorkerStderrRetained != 0)
+        {
+            var error = CapturePackage.Error(CaptureErrorCode.StorageFailure,
+                "WorkerStderr: worker wrote to stderr; no admission result exists.");
+            error.Data["WorkerStderrBytes"] = report.WorkerStderrRetained;
+            error.Data["WorkerStderrHex"] = report.WorkerStderrHex;
+            throw error;
+        }
+        if (report.Outcome is "WorkerObservationGap" or "WorkerResidentBytes" or "WorkerCpuTime" or "WorkerWallTime")
+        {
+            var error = Limit(report.Outcome);
+            if (report.Outcome == "WorkerObservationGap")
+            {
+                error.Data["WorkerGapLastValidNs"] = report.GapLastValidNs;
+                error.Data["WorkerGapNowNs"] = report.GapNowNs;
+                error.Data["WorkerGapNs"] = report.GapNs;
+                error.Data["WorkerGapLimitNs"] = 10_000_000L;
+                error.Data["WorkerMonitorThreadCpuDeltaNs"] = report.MonitorThreadCpuDeltaNs;
+                error.Data["WorkerMonitorInvCtxSwDelta"] = report.MonitorInvoluntaryContextSwitchDelta;
+                error.Data["WorkerMonitorLocked"] = (long)report.Locked;
+                error.Data["WorkerSamples"] = report.Samples;
+                error.Data["WorkerWallNs"] = report.WallNs;
+                error.Data["WorkerCpuNs"] = report.CpuNs;
+                error.Data["WorkerPeakRss"] = report.PeakRss;
+            }
+            throw error;
+        }
+        if (report.Outcome == "MonitorFailure") throw Unsupported("WorkerMonitorFailure");
+        if (report.Outcome == "WorkerSignaled")
+            throw CapturePackage.Error(CaptureErrorCode.StorageFailure,
+                FormattableString.Invariant($"WorkerSignaled: signal={report.Signal}; no admission result exists."));
     }
 
     private static void ObserveIoFailure(Task? task)
@@ -309,130 +404,4 @@ internal static partial class IsolatedCaptureWorker
         CapturePackage.Error(CaptureErrorCode.CapacityExceeded, reason + ": worker result invalidated; no input admitted.");
     internal static CaptureStoreException Unsupported(string reason, Exception? inner = null) =>
         CapturePackage.Error(CaptureErrorCode.UnsupportedFormat, reason + ": isolated import is unavailable.", inner);
-}
-
-internal sealed class CaptureWorkerObservation(CaptureWorkerLimits limits)
-{
-    private TimeSpan? _last;
-    private SupervisorRuntimeSnapshot _atLast;
-    /// <summary>Supervisor-side GC and thread-CPU readings, captured with each valid sample for gap diagnostics.</summary>
-    internal Func<SupervisorRuntimeSnapshot> RuntimeSnapshot { get; init; } = SupervisorRuntimeSnapshot.Capture;
-    internal string ProtocolPhase { get; set; } = "Unspecified";
-    internal string PollStage { get; set; } = "Unspecified";
-    internal TimeSpan? PollStartedAt { get; set; }
-    internal TimeSpan? LastCompletedPollDuration { get; set; }
-    internal TimeSpan? MetricsStartedAt { get; set; }
-    internal TimeSpan? MetricsFinishedAt { get; set; }
-    internal Task? Sender { get; set; }
-    internal Task? Receiver { get; set; }
-    internal long PeakRss { get; private set; }
-    internal TimeSpan MaximumGap { get; private set; }
-    internal void CheckWallTime(TimeSpan elapsed)
-    {
-        if (elapsed > limits.WallTime) throw IsolatedCaptureWorker.Limit("WorkerWallTime");
-    }
-    internal bool Completed { get; private set; }
-    internal void MetricUnavailable(Exception error, Func<bool> hasExited, Func<TimeSpan> elapsed)
-    {
-        bool exited;
-        try { exited = hasExited(); }
-        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException or InvalidOperationException)
-        {
-            throw IsolatedCaptureWorker.Unsupported("WorkerObservationUnavailable", ex);
-        }
-        if (!exited) throw IsolatedCaptureWorker.Unsupported("WorkerObservationUnavailable", error);
-        ConfirmExit(elapsed());
-    }
-    internal void ConfirmExit(TimeSpan observedAt)
-    {
-        if (Completed) return;
-        if (_last is null) throw IsolatedCaptureWorker.Unsupported("WorkerObservationUnavailable");
-        CheckWallTime(observedAt);
-        CheckGap(observedAt);
-        Completed = true;
-    }
-    internal TimeSpan WaitForConfirmedExit(Func<TimeSpan> elapsed, Func<int, bool> waitForExit,
-        CancellationToken cancellationToken)
-    {
-        var now = elapsed();
-        CheckStop(now);
-        if (_last is not { } last) throw IsolatedCaptureWorker.Unsupported("WorkerObservationUnavailable");
-        var deadline = last + TimeSpan.FromMilliseconds(10);
-        while (true)
-        {
-            // Floor to the Process API's whole milliseconds. A sub-millisecond
-            // remainder permits only a nonblocking exit probe, never a rounded-up wait.
-            var remaining = deadline - now;
-            var wallRemaining = limits.WallTime - now;
-            var wait = (int)Math.Min(remaining.TotalMilliseconds, wallRemaining.TotalMilliseconds);
-            bool exited;
-            try { exited = waitForExit(wait); }
-            catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException or InvalidOperationException)
-            {
-                CheckStop(elapsed());
-                throw IsolatedCaptureWorker.Unsupported("WorkerObservationUnavailable", ex);
-            }
-            now = elapsed();
-            CheckStop(now);
-            if (exited) return now;
-            if (now == deadline) throw IsolatedCaptureWorker.Unsupported("WorkerObservationUnavailable");
-        }
-
-        void CheckStop(TimeSpan time)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            CheckWallTime(time);
-            CheckGap(time);
-        }
-    }
-    internal void CheckGap(TimeSpan now)
-    {
-        if (Completed) return;
-        if (_last is not { } previous) return;
-        var gap = now - previous;
-        if (gap > MaximumGap) MaximumGap = gap;
-        if (gap < TimeSpan.Zero || gap > TimeSpan.FromMilliseconds(10))
-        {
-            var error = IsolatedCaptureWorker.Limit("WorkerObservationGap");
-            error.Data["WorkerLastValidSampleTicks"] = previous.Ticks;
-            error.Data["WorkerCurrentTicks"] = now.Ticks;
-            error.Data["WorkerGapTicks"] = gap.Ticks;
-            error.Data["WorkerGapLimitTicks"] = TimeSpan.FromMilliseconds(10).Ticks;
-            error.Data["WorkerProtocolPhase"] = ProtocolPhase;
-            error.Data["WorkerPollStage"] = PollStage;
-            if (PollStartedAt is { } poll) error.Data["WorkerPollStartedTicks"] = poll.Ticks;
-            if (LastCompletedPollDuration is { } duration) error.Data["WorkerLastCompletedPollDurationTicks"] = duration.Ticks;
-            if (MetricsStartedAt is { } start) error.Data["WorkerMetricsStartedTicks"] = start.Ticks;
-            if (MetricsFinishedAt is { } end) error.Data["WorkerMetricsFinishedTicks"] = end.Ticks;
-            if (Sender is { } sender) error.Data["WorkerSenderStatus"] = sender.Status.ToString();
-            if (Receiver is { } receiver) error.Data["WorkerReceiverStatus"] = receiver.Status.ToString();
-            var current = RuntimeSnapshot();
-            error.Data["WorkerGcPauseDeltaTicks"] = (current.GcPause - _atLast.GcPause).Ticks;
-            error.Data["WorkerGcCountDelta"] = current.GcCount - _atLast.GcCount;
-            if (current.ThreadCpu is { } threadNow && _atLast.ThreadCpu is { } threadLast)
-                error.Data["WorkerSupervisorThreadCpuDeltaTicks"] = (threadNow - threadLast).Ticks;
-            throw error;
-        }
-    }
-    internal void Record(TimeSpan now, long rss, TimeSpan cpu)
-    {
-        if (Completed) throw IsolatedCaptureWorker.Unsupported("WorkerAlreadyExited");
-        if (rss <= 0 || cpu < TimeSpan.Zero) throw IsolatedCaptureWorker.Unsupported("WorkerObservationUnavailable");
-        CheckGap(now);
-        _last = now;
-        _atLast = RuntimeSnapshot();
-        PeakRss = Math.Max(PeakRss, rss);
-        if (rss > limits.ResidentBytes) throw IsolatedCaptureWorker.Limit("WorkerResidentBytes");
-        if (cpu > limits.CpuTime) throw IsolatedCaptureWorker.Limit("WorkerCpuTime");
-    }
-}
-
-/// <summary>
-/// Process-wide GC pause/count and the calling thread's CPU time. Deltas between a valid sample and a
-/// failed gap check separate supervisor suspension (GC pause, little thread CPU) from supervisor work.
-/// </summary>
-internal readonly record struct SupervisorRuntimeSnapshot(TimeSpan GcPause, long GcCount, TimeSpan? ThreadCpu)
-{
-    internal static SupervisorRuntimeSnapshot Capture() =>
-        new(GC.GetTotalPauseDuration(), GC.CollectionCount(0), SupervisorThreadClock.Current());
 }

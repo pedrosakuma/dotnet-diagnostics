@@ -82,90 +82,58 @@ and native interrupt. The cumulative VM stop is 200,000,000 instructions.
 This is capability evidence, not 200 million instructions of performance
 evidence or validation of the eventual capture-schema allowlist.
 
-A bounded nonce/version handshake precedes the parent's `GO` frame. The
-parent starts mandatory observation **before** sending `GO`; startup is also
-wall-time bounded. Defaults remain 60 seconds CPU, 120 seconds wall and
-256 MiB RSS; internal operator limits can only decrease them. The kernel CPU
-rlimit supplements parent CPU sampling. Handshake stdout is capped at 256
-bytes, remaining stdout and stderr at 4 KiB each, with bounded lookahead.
+The host launches the same native binary in `--monitor` mode. The monitor forks
+and releases the contained worker only after it has written
+`MONITOR 1 <nonce> <workerPid> <workerStartTime>`, the host has validated the
+worker's `/proc/<pid>/stat` start time, durably recorded the identities and sent
+`ACK\n`. `MONITOR` therefore precedes the worker's existing `READY` line, and
+the `READY`/`GO`/data protocol is unchanged. An older binary that lacks monitor
+support fails explicitly; there is no managed-polling fallback.
 
-The parent measures actual inter-observation gaps. Any mandatory-window gap
-over **10 ms** invalidates the result and terminates the child; it is not
-recorded as successful monitoring. This uses ordinary scheduling, not timer
-resolution/priority changes or a real-time guarantee. RSS is a sampled stop
-threshold with possible overshoot, **not** a kernel hard-RSS/cgroup guarantee.
+The mandatory observation window starts when the monitor releases the worker for
+exec. A single-threaded native loop wakes every 1 ms with
+`clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME)`, checks the 10 ms gap before
+any other work, probes one nonblocking stderr byte, checks exit with pidfd
+`waitid`, then reads a held `/proc/<pid>/stat` descriptor for RSS and CPU. Any
+gap over **10 ms**, negative gap, stderr byte, RSS/CPU/wall breach or malformed
+observation kills and reaps the worker. RSS remains a sampled threshold with
+possible overshoot, not a kernel hard-RSS/cgroup guarantee. `RLIMIT_AS` is not
+installed yet; the address-space baseline must be measured first.
 
-Each poll reads resident pages and user+system CPU ticks from one
-`/proc/<pid>/stat` handle opened right after launch and re-read at offset 0 into
-a preallocated buffer. The poll path is allocation-free, so it no longer
-triggers garbage collections on the supervisor thread. Before this, the
-`Process.Refresh` path allocated about 7 KiB per poll. The held handle stays
-bound to the launched task, so after the child is reaped a read fails instead
-of following a reused PID. A failed read goes through the existing exit-probe
-path. Zero RSS still needs confirmed exit, and a malformed record counts as
-unavailable observation. The admission reader rents its snapshot buffer, sized
-to `MaxSnapshotBytes`, from the shared array pool before the first observation.
-It checks artifact identifiers as fixed-size keys, so validating up to 8 MiB
-snapshots no longer allocates in proportion to their size inside the monitored
-window. Snapshot validation still runs once per completed cell, so error
-precedence is unchanged. These changes remove the supervisor's own allocations
-but do not make it immune to gaps. GC suspensions caused by other threads in the
-same host, and OS scheduling delays, still stop it. The 10 ms policy is unchanged.
+The monitor never parses archive data. Worker stderr is captured through a
+nonblocking pipe; at most 256 bytes are retained and hex-encoded in the final
+`MONITOR-RESULT` report. The report has one fixed, strictly parsed schema with
+the nonce, outcome, exit status, sampled RSS/CPU/wall values, sample count, gap
+evidence, lock status, bounded stderr evidence, monitor-thread CPU and
+involuntary-context-switch delta. Unknown, duplicate, reordered, multiline or
+over-1-KiB reports are rejected. `mlockall(MCL_CURRENT|MCL_FUTURE)` is
+best-effort and reported as `locked=0|1`. The managed host now performs only
+coarse 50 ms cancellation and wall checks; managed GC can delay cancellation
+but cannot create an observation gap. A shared host can still deschedule the
+native monitor for more than 10 ms; this fails closed as
+`WorkerObservationGap` and is not excused.
 
 Cancellation, overflow, timeout, malformed protocol and unsuccessful exit
-cannot produce capability success. Cleanup kills and waits for the child;
-process-tree killing is not relied upon for isolation. Positively confirmed exit
-within the last valid sample's deadline ends the RSS window, allowing bounded
-parent-only evidence finalization. It does not extend wall or cancellation limits.
-Cleanup cancels and joins I/O before invoking the durable exit callback. Failure
-to confirm I/O completion within five seconds invalidates the operation.
-
-Deadline regression tests use explicit elapsed times to cover the wall-budget
-boundary with and without mandatory observations. A real stalled child may hit
-either the wall deadline or the observation-gap guard first; both must reject
-capabilities. The live test does not assume scheduler delivery within 10 ms.
+cannot produce capability success. Cancellation kills and waits for the monitor;
+the worker receives `SIGKILL` through its parent-death signal. Cleanup then
+confirms the recorded worker identity is gone; process-tree killing is not relied
+upon for isolation. Cleanup cancels and joins I/O before invoking the durable
+exit callback. Failure to confirm process or I/O completion within five seconds
+invalidates the operation.
 
 ### Bounded observation-gap diagnostics
 
 `WorkerObservationGap` retains its existing exception type, code and message.
 Its `CaptureStoreException.Data` contains at most 15 fixed scalar fields, created
-only on failure. All times are elapsed monotonic `TimeSpan` ticks (100 ns units)
-from that worker supervisor's stopwatch, not UTC or raw hardware counter ticks.
-
-- `WorkerLastValidSampleTicks`, `WorkerCurrentTicks`, `WorkerGapTicks` and
-  `WorkerGapLimitTicks` contain the exact inputs to the failed guard; the limit
-  remains 100,000 ticks. A rejected sample never advances the last valid sample.
-- `WorkerProtocolPhase` identifies handshake, initial observation, sending,
-  input closure, receiving, stderr drain, exit wait or final checks.
-  `WorkerPollStage` identifies the most recent poll step or the completion-gap
-  check. Neither field claims a native process state.
-- Optional `WorkerPollStartedTicks` and
-  `WorkerLastCompletedPollDurationTicks` describe the latest poll start and
-  last fully completed poll duration. On a failure inside a poll, the duration
-  belongs to the preceding completed poll, not the failing one.
-- Optional `WorkerMetricsStartedTicks` and `WorkerMetricsFinishedTicks` bound
-  the latest refresh/RSS/CPU-read window through the existing sample timestamp.
-  Missing completion means no completed positive-RSS sample timestamp was
-  recorded for that window; it is not a zero-duration read. Endpoint differences
-  include any scheduling delay within the window, not just native syscall cost.
-- `WorkerGcPauseDeltaTicks` and `WorkerGcCountDelta` are the process-wide
-  `GC.GetTotalPauseDuration()` and gen0 collection-count increases since the
-  last valid sample. They are read once when each valid sample is recorded and
-  once when the gap is detected. Optional `WorkerSupervisorThreadCpuDeltaTicks`
-  (Linux `CLOCK_THREAD_CPUTIME_ID`) is the supervisor thread's CPU time over the
-  same interval. A large GC pause delta points to runtime suspension; low thread
-  CPU with no GC pause points to descheduling; thread CPU close to the gap points
-  to supervisor work. These are correlations, not proof of cause.
-- Optional `WorkerSenderStatus` and `WorkerReceiverStatus` snapshot managed task
-  status while constructing the exception. They are not native exit evidence,
-  input-consumption acknowledgments, or task completion timestamps.
-
-Tracking retains only the latest scalar timings/task references; it does not
-keep an event history, read additional process metrics on failure, or record
-paths, payloads or process IDs. Added clock reads have finite overhead and may
-perturb timing; they do not redefine the valid-sample timestamp, reset a window,
-alter scheduling or excuse a gap. The GC and thread-CPU deltas narrow the
-attribution, but they cannot name a specific syscall or scheduler event.
+only on failure. The managed fields now come from the native monitor report:
+`WorkerGapLastValidNs`, `WorkerGapNowNs`, `WorkerGapNs`, `WorkerGapLimitNs`,
+`WorkerMonitorThreadCpuDeltaNs`, `WorkerMonitorInvCtxSwDelta`,
+`WorkerMonitorLocked`, `WorkerSamples`, `WorkerWallNs`, `WorkerCpuNs` and
+`WorkerPeakRss`. The monitor thread CPU delta and involuntary-context-switch
+delta replace the former managed GC pause and supervisor-thread fields, because
+the guard no longer runs in managed code. These diagnostics indicate whether
+the monitor spent CPU or was descheduled; they do not identify a specific
+kernel event, alter scheduling, reset a window or excuse a gap.
 
 The four publication authorization integration cases retain the first enriched
 gap in a test-scoped first-chance exception observer, including failures later
@@ -185,8 +153,9 @@ It changed neither the 10 ms policy nor acceptance status; no repeat was run.
 
 The Core pipeline now supplies archive and semantic admission, quality/origin
 preservation, separate trusted-schema rebuild, per-store validator admission and
-owner-bound publication. Before input it durably records native and parent-I/O
-identities (boot ID, PID namespace and PID). Cleanup requires confirmed
+owner-bound publication. Before input it durably records the monitor, worker and
+parent-I/O identities (boot ID, PID namespace, PID and process start time).
+Cleanup requires confirmed
 termination/quiescence; an inaccessible or reused live PID conservatively retains
 storage. Persisted PIDs are never signalled. Pending parent I/O cannot be declared
 dead merely because the native parser exited.

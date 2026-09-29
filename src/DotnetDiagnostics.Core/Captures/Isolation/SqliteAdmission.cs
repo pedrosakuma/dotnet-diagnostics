@@ -10,6 +10,7 @@ internal sealed record SqliteAdmissionRequest(string Executable, string SqliteLi
     string Database, CaptureFormatVersions Format, IReadOnlyList<CaptureArtifactInfo> Artifacts, long Persisted)
 {
     internal Action<int>? BeforeInput { get; init; }
+    internal Action<PortableWorkerIdentity, PortableWorkerIdentity>? BeforeInputWithMonitor { get; init; }
     internal Action? AfterExit { get; init; }
     internal bool IncludeUsage { get; init; }
 }
@@ -81,7 +82,7 @@ internal static partial class IsolatedCaptureWorker
             {
                 result = RunProtocol(start, nonce, limits.Worker, payload,
                     (stream, token) => SqliteAdmissionWire.ReadAsync(stream, evidence, request, limits, token), cancellationToken,
-                    request.BeforeInput, request.AfterExit);
+                    request.BeforeInput, request.AfterExit, request.BeforeInputWithMonitor);
             }
             catch (IOException ex)
             {

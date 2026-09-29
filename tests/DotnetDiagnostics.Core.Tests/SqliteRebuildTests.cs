@@ -9,43 +9,6 @@ namespace DotnetDiagnostics.Core.Tests;
 public sealed class SqliteRebuildTests
 {
     [Fact]
-    public void UnobservableExitDoesNotConvertAMetricFailureIntoSuccess()
-    {
-        var observations = new CaptureWorkerObservation(new());
-        observations.Record(TimeSpan.Zero, 100, TimeSpan.Zero);
-        var failure = Assert.Throws<CaptureStoreException>(() => observations.MetricUnavailable(
-            new IOException("Purpose-created metric fault"),
-            () => throw new System.ComponentModel.Win32Exception("Purpose-created exit fault"), () => TimeSpan.Zero));
-        Assert.Contains("WorkerObservationUnavailable", failure.Message);
-        Assert.False(observations.Completed);
-    }
-
-    [Theory]
-    [InlineData(false, 50000, "WorkerObservationUnavailable")]
-    [InlineData(true, 99999, null)]
-    [InlineData(true, 100000, null)]
-    [InlineData(true, 100001, "WorkerObservationGap")]
-    [InlineData(true, 1200000001, "WorkerWallTime")]
-    public void MetricReadFailureRequiresConfirmedExitWithinTheOriginalDeadline(bool exited, long ticks, string? reason)
-    {
-        var observations = new CaptureWorkerObservation(new());
-        observations.Record(TimeSpan.Zero, 100, TimeSpan.Zero);
-        var error = new System.ComponentModel.Win32Exception("Purpose-created process-information failure");
-        if (reason is null)
-        {
-            observations.MetricUnavailable(error, () => exited, () => TimeSpan.FromTicks(ticks));
-            Assert.True(observations.Completed);
-        }
-        else
-        {
-            var failure = Assert.Throws<CaptureStoreException>(() =>
-                observations.MetricUnavailable(error, () => exited, () => TimeSpan.FromTicks(ticks)));
-            Assert.Contains(reason, failure.Message);
-            Assert.False(observations.Completed);
-        }
-    }
-
-    [Fact]
     public async Task CancellationDrainsEvidenceWritesBeforeExitCallbackAndReturn()
     {
         if (!OperatingSystem.IsLinux() || RuntimeInformation.ProcessArchitecture != Architecture.X64) return;
@@ -90,30 +53,6 @@ public sealed class SqliteRebuildTests
             try { await Task.Delay(Timeout.Infinite, cancellationToken); }
             finally { Settled = true; }
         }
-    }
-
-    [Theory]
-    [InlineData(99999, true)]
-    [InlineData(100000, true)]
-    [InlineData(100001, false)]
-    public void ExitTransitionPreservesLastValidDeadlineAndEndsOnlyTheRssWindow(long ticks, bool allowed)
-    {
-        var observations = new CaptureWorkerObservation(new());
-        observations.Record(TimeSpan.Zero, 100, TimeSpan.Zero);
-        if (!allowed)
-        {
-            var error = Assert.Throws<CaptureStoreException>(() => observations.ConfirmExit(TimeSpan.FromTicks(ticks)));
-            Assert.Contains("WorkerObservationGap", error.Message);
-            Assert.False(observations.Completed);
-            return;
-        }
-        observations.ConfirmExit(TimeSpan.FromTicks(ticks));
-        observations.CheckGap(TimeSpan.FromSeconds(1));
-        Assert.True(observations.Completed);
-        Assert.Equal(TimeSpan.FromTicks(ticks), observations.MaximumGap);
-        var wall = Assert.Throws<CaptureStoreException>(() => observations.CheckWallTime(TimeSpan.FromSeconds(121)));
-        Assert.Contains("WorkerWallTime", wall.Message);
-        Assert.Throws<CaptureStoreException>(() => observations.Record(TimeSpan.FromSeconds(1), 100, TimeSpan.Zero));
     }
 
     [Fact]

@@ -1,123 +1,127 @@
+using System.Diagnostics;
+using System.Runtime.InteropServices;
 using DotnetDiagnostics.Core.Captures;
 
 namespace DotnetDiagnostics.Core.Tests;
 
+[Collection("PortableExportResources")]
 public sealed class WorkerGapDiagnosticsTests
 {
-    [Theory]
-    [InlineData(99999)]
-    [InlineData(100000)]
-    public void AtOrBelowTenMillisecondsKeepsTheOriginalSampleAndExitBehavior(long delta)
+    private static string Helper => Path.Combine(AppContext.BaseDirectory, "capture-worker-fixture");
+    private static bool SupportedPlatform => OperatingSystem.IsLinux() &&
+        RuntimeInformation.ProcessArchitecture == Architecture.X64;
+
+    [Fact]
+    public void StrictReportParserAcceptsTheFixedSchema()
     {
-        var first = TimeSpan.FromTicks(400000);
-        var next = first + TimeSpan.FromTicks(delta);
-        var observations = new CaptureWorkerObservation(new());
-        observations.Record(first, 100, TimeSpan.Zero);
-        observations.CheckGap(next);
-        observations.Record(next, 100, TimeSpan.Zero);
-        observations.ConfirmExit(next + TimeSpan.FromMilliseconds(10));
-        Assert.True(observations.Completed);
-        observations.CheckGap(TimeSpan.FromHours(1));
+        const string nonce = "0123456789abcdef0123456789abcdef";
+        var report = IsolatedCaptureWorker.ParseMonitorReport(Report(nonce,
+            outcome: "Exited", exit: 0, peakRss: 4096, maxGapNs: 2_000_000, samples: 4), nonce);
+
+        Assert.Equal("Exited", report.Outcome);
+        Assert.Equal(4096, report.PeakRss);
+        Assert.Equal(4, report.Samples);
+        Assert.Equal("-", report.WorkerStderrHex);
     }
 
     [Theory]
-    [InlineData(false, 100001)]
-    [InlineData(true, 100001)]
-    [InlineData(false, -1)]
-    public void RejectedSampleOrExitRetainsExactLastValidTimestampAndBoundedDiagnostics(bool exit, long delta)
+    [InlineData("MONITOR_RESULT")]
+    [InlineData("MONITOR-RESULT 2")]
+    [InlineData("outcome=Unknown")]
+    [InlineData("exit=0 exit=0")]
+    [InlineData("workerStderrHex=0g")]
+    public void StrictReportParserRejectsMalformedUnknownDuplicateOrOutOfOrderFields(string mutation)
     {
-        var first = TimeSpan.FromTicks(400000);
-        var now = first + TimeSpan.FromTicks(delta);
-        var observations = new CaptureWorkerObservation(new()) { RuntimeSnapshot = static () => default };
-        observations.Record(first, 100, TimeSpan.Zero);
-        var error = Assert.Throws<CaptureStoreException>(() =>
+        const string nonce = "0123456789abcdef0123456789abcdef";
+        var valid = Report(nonce, outcome: "Exited", exit: 0);
+        var malformed = mutation switch
         {
-            if (exit) observations.ConfirmExit(now);
-            else observations.Record(now, 100, TimeSpan.Zero);
-        });
-        Assert.Equal(CaptureErrorCode.CapacityExceeded, error.Code);
-        Assert.Equal("WorkerObservationGap: worker result invalidated; no input admitted.", error.Message);
-        Assert.Equal(first.Ticks, error.Data["WorkerLastValidSampleTicks"]);
-        Assert.Equal(now.Ticks, error.Data["WorkerCurrentTicks"]);
-        Assert.Equal(delta, error.Data["WorkerGapTicks"]);
-        Assert.Equal(100000L, error.Data["WorkerGapLimitTicks"]);
-        Assert.Equal("Unspecified", error.Data["WorkerProtocolPhase"]);
-        Assert.Equal("Unspecified", error.Data["WorkerPollStage"]);
-        Assert.Equal(0L, error.Data["WorkerGcPauseDeltaTicks"]);
-        Assert.Equal(0L, error.Data["WorkerGcCountDelta"]);
-        Assert.False(error.Data.Contains("WorkerSupervisorThreadCpuDeltaTicks"));
-        Assert.Equal(8, error.Data.Count);
-        Assert.False(observations.Completed);
-        var again = Assert.Throws<CaptureStoreException>(() => observations.CheckGap(first + TimeSpan.FromTicks(100001)));
-        Assert.Equal(first.Ticks, again.Data["WorkerLastValidSampleTicks"]);
-    }
-
-    [Theory]
-    [InlineData("Sending", "AwaitCompletionGap", false)]
-    [InlineData("Receiving", "Record", true)]
-    [InlineData("ExitWait", "ZeroRssExitConfirmation", false)]
-    public void DiagnosticSnapshotReportsOnlySuppliedTimingAndTaskObservations(string phase, string stage, bool metricFinished)
-    {
-        var receiver = new TaskCompletionSource();
-        var observations = new CaptureWorkerObservation(new())
-        {
-            ProtocolPhase = phase, PollStage = stage,
-            PollStartedAt = TimeSpan.FromTicks(100), LastCompletedPollDuration = TimeSpan.FromTicks(30),
-            MetricsStartedAt = TimeSpan.FromTicks(120),
-            MetricsFinishedAt = metricFinished ? TimeSpan.FromTicks(140) : null,
-            Sender = Task.CompletedTask, Receiver = receiver.Task,
-            RuntimeSnapshot = () => new(TimeSpan.Zero, 0, TimeSpan.Zero)
+            "MONITOR_RESULT" => valid.Replace("MONITOR-RESULT", mutation, StringComparison.Ordinal),
+            "MONITOR-RESULT 2" => valid.Replace("MONITOR-RESULT 1", mutation, StringComparison.Ordinal),
+            "outcome=Unknown" => valid.Replace("outcome=Exited", mutation, StringComparison.Ordinal),
+            "exit=0 exit=0" => valid.Replace("exit=0 signal=0", mutation, StringComparison.Ordinal),
+            _ => valid.Replace("workerStderrHex=-", "workerStderrRetained=1 workerStderrHex=0g",
+                StringComparison.Ordinal)
         };
-        observations.Record(TimeSpan.Zero, 100, TimeSpan.Zero);
-        var error = Assert.Throws<CaptureStoreException>(() => observations.CheckGap(TimeSpan.FromTicks(100001)));
-        Assert.Equal(phase, error.Data["WorkerProtocolPhase"]);
-        Assert.Equal(stage, error.Data["WorkerPollStage"]);
-        Assert.Equal(100L, error.Data["WorkerPollStartedTicks"]);
-        Assert.Equal(30L, error.Data["WorkerLastCompletedPollDurationTicks"]);
-        Assert.Equal(120L, error.Data["WorkerMetricsStartedTicks"]);
-        Assert.Equal(metricFinished, error.Data.Contains("WorkerMetricsFinishedTicks"));
-        Assert.Equal(TaskStatus.RanToCompletion.ToString(), error.Data["WorkerSenderStatus"]);
-        Assert.Equal(TaskStatus.WaitingForActivation.ToString(), error.Data["WorkerReceiverStatus"]);
-        Assert.Equal(metricFinished ? 15 : 14, error.Data.Count);
-        receiver.SetResult();
-        observations.ProtocolPhase = "FinalChecks";
-        Assert.Equal(phase, error.Data["WorkerProtocolPhase"]);
-        Assert.Equal(TaskStatus.WaitingForActivation.ToString(), error.Data["WorkerReceiverStatus"]);
-    }
 
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public void GapReportsSupervisorGcAndThreadCpuDeltasSinceTheLastValidSample(bool threadCpu)
-    {
-        var snapshots = new Queue<SupervisorRuntimeSnapshot>([
-            new(TimeSpan.FromTicks(5), 1, threadCpu ? TimeSpan.FromTicks(50) : null),
-            new(TimeSpan.FromTicks(10), 2, threadCpu ? TimeSpan.FromTicks(100) : null),
-            new(TimeSpan.FromTicks(90010), 5, threadCpu ? TimeSpan.FromTicks(5100) : null),
-        ]);
-        var observations = new CaptureWorkerObservation(new()) { RuntimeSnapshot = snapshots.Dequeue };
-        observations.Record(TimeSpan.Zero, 100, TimeSpan.Zero);
-        observations.Record(TimeSpan.FromMilliseconds(1), 100, TimeSpan.Zero);
-        var error = Assert.Throws<CaptureStoreException>(() => observations.CheckGap(TimeSpan.FromMilliseconds(12)));
-        Assert.Equal(90000L, error.Data["WorkerGcPauseDeltaTicks"]);
-        Assert.Equal(3L, error.Data["WorkerGcCountDelta"]);
-        Assert.Equal(threadCpu, error.Data.Contains("WorkerSupervisorThreadCpuDeltaTicks"));
-        if (threadCpu) Assert.Equal(5000L, error.Data["WorkerSupervisorThreadCpuDeltaTicks"]);
-        Assert.Empty(snapshots);
+        var error = Assert.Throws<CaptureStoreException>(() =>
+            IsolatedCaptureWorker.ParseMonitorReport(malformed, nonce));
+        Assert.Equal(CaptureErrorCode.UnsupportedFormat, error.Code);
+        Assert.Contains("WorkerMonitorReportInvalid", error.Message);
     }
 
     [Fact]
-    public void WallDeadlineAndCancellationStillPreemptExitReconciliationWithoutInventingGapDiagnostics()
+    public void OversizedOrMultiLineReportIsRejected()
     {
-        var observations = new CaptureWorkerObservation(new() { WallTime = TimeSpan.FromMilliseconds(20) });
-        observations.Record(TimeSpan.Zero, 100, TimeSpan.Zero);
-        var wall = Assert.Throws<CaptureStoreException>(() => observations.ConfirmExit(TimeSpan.FromMilliseconds(21)));
-        Assert.StartsWith("WorkerWallTime:", wall.Message);
-        Assert.Empty(wall.Data);
-        using var cancelled = new CancellationTokenSource();
-        cancelled.Cancel();
-        Assert.ThrowsAny<OperationCanceledException>(() => observations.WaitForConfirmedExit(
-            () => TimeSpan.FromMilliseconds(21), _ => throw new InvalidOperationException("Must not probe exit"), cancelled.Token));
-        Assert.False(observations.Completed);
+        const string nonce = "0123456789abcdef0123456789abcdef";
+        Assert.Throws<CaptureStoreException>(() =>
+            IsolatedCaptureWorker.ParseMonitorReport(new string('x', 1025), nonce));
+        Assert.Throws<CaptureStoreException>(() =>
+            IsolatedCaptureWorker.ParseMonitorReport(Report(nonce, "Exited", 0) + "\n", nonce));
     }
+
+    [Fact]
+    public void GapFailureRetainsOnlyBoundedNativeDiagnostics()
+    {
+        var report = new IsolatedCaptureWorker.MonitorReport("WorkerObservationGap", -1, 0, 8192, 12_000_000, 9,
+            3_000_000, 15_000_000, 12_000_000, 15_000_000, 1_000_000, 1, 0, "-", 10_000, 1);
+        var error = Assert.Throws<CaptureStoreException>(() => IsolatedCaptureWorker.ThrowMonitorFailure(report));
+
+        Assert.Equal(CaptureErrorCode.CapacityExceeded, error.Code);
+        Assert.Equal(12_000_000L, error.Data["WorkerGapNs"]);
+        Assert.Equal(10_000L, error.Data["WorkerMonitorThreadCpuDeltaNs"]);
+        Assert.Equal(1L, error.Data["WorkerMonitorInvCtxSwDelta"]);
+        Assert.Equal(11, error.Data.Count);
+    }
+
+    [Fact]
+    public async Task KillingAnUnacknowledgedMonitorNeverExecutesOrLeavesTheWorker()
+    {
+        if (!SupportedPlatform) return;
+        using var monitor = StartMonitor("stall", TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(1));
+        var line = await monitor.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        var parts = line!.Split(' ');
+        var workerPid = int.Parse(parts[3], System.Globalization.CultureInfo.InvariantCulture);
+
+        monitor.Kill();
+        Assert.True(monitor.WaitForExit(5000));
+        await AssertProcessGoneAsync(workerPid);
+    }
+
+    private static Process StartMonitor(string mode, TimeSpan wall, TimeSpan cpu)
+    {
+        var nonce = Guid.NewGuid().ToString("N");
+        var start = new ProcessStartInfo(Helper)
+        {
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        start.Environment.Clear();
+        foreach (var argument in new[]
+        {
+            "--monitor", checked(wall.Ticks * 100).ToString(System.Globalization.CultureInfo.InvariantCulture),
+            checked(cpu.Ticks * 100).ToString(System.Globalization.CultureInfo.InvariantCulture),
+            (256L * 1024 * 1024).ToString(System.Globalization.CultureInfo.InvariantCulture), "--",
+            nonce, "sqlite", "/tmp", mode, "marker", "1", "1", Helper
+        })
+            start.ArgumentList.Add(argument);
+        return Process.Start(start)!;
+    }
+
+    private static async Task AssertProcessGoneAsync(int processId)
+    {
+        var deadline = Stopwatch.StartNew();
+        while (Directory.Exists($"/proc/{processId}") && deadline.Elapsed < TimeSpan.FromSeconds(5))
+            await Task.Delay(10);
+        Assert.False(Directory.Exists($"/proc/{processId}"));
+    }
+
+    private static string Report(string nonce, string outcome, int exit, int signal = 0, long peakRss = 0,
+        long maxGapNs = 0, long samples = 0) =>
+        $"MONITOR-RESULT 1 {nonce} outcome={outcome} exit={exit} signal={signal} peakRss={peakRss} " +
+        $"maxGapNs={maxGapNs} samples={samples} gapLastValidNs=0 gapNowNs=0 gapNs=0 wallNs=1 cpuNs=0 " +
+        "locked=0 workerStderrRetained=0 workerStderrHex=- monitorThreadCpuDeltaNs=0 monitorInvCtxSwDelta=0\n";
+
 }
