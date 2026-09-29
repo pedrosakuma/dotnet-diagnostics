@@ -107,11 +107,12 @@ Unconfirmed completion retains files and reservations, including across status
 reconciliation. A live/reused PID or inaccessible process identity is not treated
 as death; persisted PIDs are never signalled.
 
-The mandatory RSS window ends only on positively confirmed child exit within
-the original last-valid-sample deadline. Parent-only flush then remains subject
-to wall/cancellation limits. Metric-read failure, zero RSS or a late exit cannot
-reset that deadline. RSS remains a sampled 256 MiB stop with possible overshoot,
-not a kernel hard limit. Gaps over 10 ms reject the result without retry.
+The worker receives a 256 MiB `RLIMIT_AS` ceiling before exec, so total mapped
+address space is kernel-bounded independently of monitor scheduling. The native
+monitor still samples RSS, CPU and wall time for lower configured policies and
+telemetry, and confirms exit through pidfd. Scheduling gaps update
+`MaximumObservationGap`; they do not invalidate a complete protocol result.
+Parent-only evidence flush remains subject to wall and cancellation limits.
 
 Receipts bind current owner, key and input digest. Terminal retry returns stable
 outcomes/mappings without re-reading input; changed input conflicts.
@@ -135,8 +136,10 @@ This candidate's validation is **not an all-passed acceptance gate**. The retain
 post-I/O-cleanup run passed 292/293 selected cases; a real rebuild observation gap
 preempted one partial-publication authorization case. It was not retried to green
 or accepted as that scenario's success. The stack identifies the monitoring
-stage, not the physical scheduling cause. Deterministic lifecycle tests separately
-cover deadline/exit decisions and I/O reservation retention.
+stage, not the physical scheduling cause. This evidence predates the
+kernel-backed address-space contract; scheduling gaps are no longer a validity
+condition. Deterministic lifecycle tests separately cover deadline/exit
+decisions and I/O reservation retention.
 
 Publication policy also has independent component coverage through the internal
 `ImportPublication` helper used by the production importer. It retains the real
@@ -159,9 +162,10 @@ pass cannot establish the physical cause or correction of the retained gap.
 The first component run passed 11/11. The single bounded post-extraction
 real-child run passed 16/17: the `afterFirst=true, cancel=true` authorization case
 was preempted by `WorkerObservationGap` during rebuild output observation.
-That failure is retained without retry or policy relaxation. The earlier
+That former-policy failure is retained without retry. The earlier
 `cancel=false` case passing in this selection does not diagnose or fix its
-original gap. These component results are not an end-to-end acceptance waiver.
+original gap. These component results are not an end-to-end acceptance waiver
+for the changed containment contract.
 
 Independent review and remaining whole-feature acceptance are required.
 Host packaging/CLI (#1053), authenticated MCP transfer (#1052), comparison

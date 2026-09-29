@@ -90,15 +90,19 @@ worker's `/proc/<pid>/stat` start time, durably recorded the identities and sent
 the `READY`/`GO`/data protocol is unchanged. An older binary that lacks monitor
 support fails explicitly; there is no managed-polling fallback.
 
-The mandatory observation window starts when the monitor releases the worker for
-exec. A single-threaded native loop wakes every 1 ms with
-`clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME)`, checks the 10 ms gap before
-any other work, probes one nonblocking stderr byte, checks exit with pidfd
-`waitid`, then reads a held `/proc/<pid>/stat` descriptor for RSS and CPU. Any
-gap over **10 ms**, negative gap, stderr byte, RSS/CPU/wall breach or malformed
-observation kills and reaps the worker. RSS remains a sampled threshold with
-possible overshoot, not a kernel hard-RSS/cgroup guarantee. `RLIMIT_AS` is not
-installed yet; the address-space baseline must be measured first.
+Before exec, the monitor installs a 256 MiB `RLIMIT_AS` ceiling in the child.
+The worker therefore cannot map more address space even when the monitor is not
+scheduled. Its existing `RLIMIT_CPU`, file-size and descriptor limits and the
+SQLite 32 MiB hard heap remain independent kernel/library boundaries.
+
+A single-threaded native loop wakes nominally every 1 ms with
+`clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME)`, probes one nonblocking stderr
+byte, checks exit with pidfd `waitid`, then reads a held `/proc/<pid>/stat`
+descriptor for RSS and CPU. RSS/CPU/wall breaches, negative clocks, stderr or
+malformed observations kill and reap the worker. A delayed wake updates
+`maxGapNs` and its associated scheduler telemetry but does not invalidate a
+complete successful result. Linux scheduling is not a deterministic integrity
+boundary.
 
 The monitor never parses archive data. Worker stderr is captured through a
 nonblocking pipe; at most 256 bytes are retained and hex-encoded in the final
@@ -107,11 +111,10 @@ the nonce, outcome, exit status, sampled RSS/CPU/wall values, sample count, gap
 evidence, lock status, bounded stderr evidence, monitor-thread CPU and
 involuntary-context-switch delta. Unknown, duplicate, reordered, multiline or
 over-1-KiB reports are rejected. `mlockall(MCL_CURRENT|MCL_FUTURE)` is
-best-effort and reported as `locked=0|1`. The managed host now performs only
-coarse 50 ms cancellation and wall checks; managed GC can delay cancellation
-but cannot create an observation gap. A shared host can still deschedule the
-native monitor for more than 10 ms; this fails closed as
-`WorkerObservationGap` and is not excused.
+best-effort and reported as `locked=0|1`. The managed host performs coarse
+50 ms cancellation and wall checks. Managed GC or host scheduling may delay
+observation and cancellation, but cannot bypass the worker's kernel-backed
+resource ceilings or turn partial output into success.
 
 Cancellation, overflow, timeout, malformed protocol and unsuccessful exit
 cannot produce capability success. Cancellation kills and waits for the monitor;
@@ -121,33 +124,14 @@ upon for isolation. Cleanup cancels and joins I/O before invoking the durable
 exit callback. Failure to confirm process or I/O completion within five seconds
 invalidates the operation.
 
-### Bounded observation-gap diagnostics
+### Observation telemetry
 
-`WorkerObservationGap` retains its existing exception type, code and message.
-Its `CaptureStoreException.Data` contains at most 15 fixed scalar fields, created
-only on failure. The managed fields now come from the native monitor report:
-`WorkerGapLastValidNs`, `WorkerGapNowNs`, `WorkerGapNs`, `WorkerGapLimitNs`,
-`WorkerMonitorThreadCpuDeltaNs`, `WorkerMonitorInvCtxSwDelta`,
-`WorkerMonitorLocked`, `WorkerSamples`, `WorkerWallNs`, `WorkerCpuNs` and
-`WorkerPeakRss`. The monitor thread CPU delta and involuntary-context-switch
-delta replace the former managed GC pause and supervisor-thread fields, because
-the guard no longer runs in managed code. These diagnostics indicate whether
-the monitor spent CPU or was descheduled; they do not identify a specific
-kernel event, alter scheduling, reset a window or excuse a gap.
-
-The four publication authorization integration cases retain the first enriched
-gap in a test-scoped first-chance exception observer, including failures later
-converted into partial results. It stores one exception reference and prints
-only its bounded scalar fields after the test; it does not trace successful
-polls or write output on the worker thread. This observer is not production
-instrumentation. A pass of this single instrumented selection is inconclusive
-about earlier gaps, not evidence of a fix.
-
-The first instrumented Linux run executed all four authorization variants and
-passed 4/4, with no gap diagnostic emitted. The deterministic diagnostic/deadline
-selection passed 23/23. Consequently this investigation captured no new failing
-interval and cannot distinguish a physical cause for the retained earlier gaps.
-It changed neither the 10 ms policy nor acceptance status; no repeat was run.
+The fixed report retains `maxGapNs`, the timestamps associated with the largest
+interval, monitor-thread CPU and involuntary-context-switch deltas, lock status,
+sample count, wall/CPU and peak RSS. These fields describe sampling quality and
+scheduler behavior. They are not a deadline, retry signal or validity rule.
+Resource-limit failures expose bounded scalar samples through acceptance
+diagnostics; successful runs retain `MaximumObservationGap` in their result.
 
 ## Remaining integration
 

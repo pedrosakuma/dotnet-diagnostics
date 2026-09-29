@@ -31,14 +31,19 @@
 - Global-tool portable-worker support is same-owner on Linux x64 glibc with
   GLIBC 2.34 or older requirements, Landlock ABI 3+, seccomp and procfs. This
   does not claim musl, Windows, macOS, ARM64 or arbitrary cross-UID support.
+- The isolated worker now receives a kernel-enforced 256 MiB address-space
+  ceiling before exec, in addition to its CPU, file, descriptor and SQLite-heap
+  limits. Monitor scheduling gaps are recorded as telemetry rather than treated
+  as evidence that an otherwise complete worker result is invalid.
 
 ### Evidence limits
 
 - The reviewed digest-pinned producer run created the expected worker and
   package assets, but no native import is authorized by packaging alone.
-- Workload-only historical comparison acceptance passed. Comparison after two
-  independent imports remains blocked because the second import produced
-  `WorkerObservationGap` under the unchanged strict 10 ms observation guard.
+- Workload-only historical comparison acceptance passed. Earlier native runs
+  exposed scheduler gaps above 10 ms; those remain adverse evidence for the
+  former sampled-watchdog design, not evidence of data loss. Fresh native
+  acceptance remains required for the kernel-backed containment contract.
 - Operating-envelope adverse attempts remain retained: post-disposal process
   identity access, non-authoritative dirty-checkout provenance, and a cleanup
   deadline race were fixed before the final clean 42-trial run was sealed.

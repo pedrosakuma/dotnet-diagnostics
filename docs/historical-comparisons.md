@@ -136,30 +136,28 @@ imported evidence after the target has exited. It is skipped unless
 `DOTNET_DIAGNOSTICS_LIVE_KINDS_PORTABLE_ACCEPTANCE=1`,
 `DOTNET_DIAGNOSTICS_IMPORT_WORKER`, and
 `DOTNET_DIAGNOSTICS_SQLITE_LIBRARY` are all set. This new gated test has been
-added for separately authorized native execution; it has not yet been executed
-natively for release qualification.
+added for separately authorized native execution.
 
 The workload-only acceptance has passed for the reviewed comparison revision.
 The first two-import attempt did **not** pass: the first bundle imported, while
 the second stopped with `WorkerObservationGap` under the unchanged strict 10 ms
 observation guard. Comparison, source deletion and destination reopen therefore
-did not run. That failure is retained adverse evidence.
+did not run. Later live-kind runs exposed the same scheduler-dependent policy,
+including an 11.59 ms native-monitor interval with only 28.5 microseconds of
+monitor CPU. Those failures are retained adverse evidence for the former
+sampled-watchdog contract, not evidence of corrupted or lost capture data.
 
 A separately authorized single invocation of the same case then **passed** at
 the unchanged reviewed source `3981c561`, with the worker and SQLite assets
-from producer run `36281250444`. It ran on a quiet shared host, and the 10 ms
-guard was unchanged. Both bundles imported under distinct local identities. The
+from producer run `36281250444`. Both bundles imported under distinct local identities. The
 comparison returned the exact expected delta after source deletion and
 destination reopen, and cleanup left no worker or test host running. The result
 is recorded in [#1054](https://github.com/pedrosakuma/dotnet-diagnostics/issues/1054#issuecomment-5877773502).
 Compared with the integrated candidate, the acceptance test is unchanged. In
 Core, the only differences are the capture ingestion path in `CaptureWriter.cs`
 and the worker's compile-time header fallback, which the producer assets already
-include. The other product changes are in CLI Docker bootstrap. This is
-source-level reconciliation, not a re-execution at the final revision.
+include. The other product changes are in CLI Docker bootstrap.
 
-The pass does not explain or fix the earlier gaps. The gap did not recur, so its
-root cause remains unproven. The strict observation policy can still reject
-valid imports on busy or preempted schedulers, and callers should treat that
-rejection as a failed import, never as admission. Do not relax the guard or
-rerun unchanged inputs merely to obtain green.
+The integrated candidate now uses kernel-backed address-space containment and
+records monitor scheduling gaps as telemetry. That contract requires fresh
+native acceptance; the earlier pass does not qualify the changed worker.

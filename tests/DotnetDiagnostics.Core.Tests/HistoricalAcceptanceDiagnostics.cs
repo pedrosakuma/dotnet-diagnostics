@@ -13,14 +13,10 @@ internal static class HistoricalAcceptanceDiagnostics
     internal const int MaximumLines = 1;
     private static readonly string[] NumericFields =
     [
-        "WorkerGapLastValidNs", "WorkerGapNowNs", "WorkerGapNs", "WorkerGapLimitNs",
-        "WorkerMonitorThreadCpuDeltaNs", "WorkerMonitorInvCtxSwDelta", "WorkerMonitorLocked",
-        "WorkerSamples", "WorkerWallNs", "WorkerCpuNs", "WorkerPeakRss",
+        "WorkerSamples", "WorkerWallNs", "WorkerCpuNs", "WorkerPeakRss", "WorkerMaximumObservationGapNs",
     ];
     private static readonly Dictionary<string, string[]> StateFields = new(StringComparer.Ordinal)
     {
-        ["WorkerProtocolPhase"] = ["Unspecified", "Handshake", "InitialObservation", "Sending", "ClosingInput", "Receiving", "Stderr", "ExitWait", "FinalChecks"],
-        ["WorkerPollStage"] = ["Unspecified", "Check", "ExitProbe", "Metrics", "ZeroRssExitConfirmation", "Record", "MetricFailureConfirmedExit", "MetricFailureExitProbe", "AwaitCompletionGap"],
         ["WorkerSenderStatus"] = Enum.GetNames<TaskStatus>(),
         ["WorkerReceiverStatus"] = Enum.GetNames<TaskStatus>(),
     };

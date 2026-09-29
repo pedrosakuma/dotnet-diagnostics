@@ -539,7 +539,7 @@ below govern isolated untrusted admission, not the trusted local store reader.
 | Import-worker time / whole operation | 60 seconds CPU and 120 seconds wall per import entry; 600 seconds wall per export or import operation |
 | Copy buffers / metadata | 64 KiB per stream, at most four live buffers / 4 MiB retained metadata outside snapshots |
 | Import-worker native heap / SQLite cache | 32 MiB hard SQLite heap limit / 8 MiB cache, mmap disabled |
-| Import-worker resident-memory stop | 256 MiB, watchdog samples at most 10 ms apart and terminates on exceedance |
+| Import-worker process memory | 256 MiB kernel `RLIMIT_AS`; RSS remains sampled telemetry and can enforce lower configured policies |
 | Host retained portable buffers | 32 MiB per active operation, reserved before allocation; never retain all snapshots |
 | Portable operations / validators | 2 active operations per store, 1 per owner; 1 import validation worker per store |
 | Store writer slots | Existing limit 2 total, shared with ordinary writers; imports do not add slots |

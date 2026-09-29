@@ -11,7 +11,7 @@
 #define SYS_pidfd_send_signal 424
 #endif
 
-#define MONITOR_GAP_NS 10000000LL
+#define MONITOR_ADDRESS_SPACE_BYTES (256LL * 1024LL * 1024LL)
 #define MONITOR_STDIN_BYTES 4
 #define MONITOR_STDERR_RETAIN 256
 #define MONITOR_STAT_BUFFER 1024
@@ -119,6 +119,51 @@ static int monitor_read_stat(int stat_fd, struct monitor_stat *stat)
     if (count <= 0 || count >= (ssize_t)sizeof(buffer)) return 0;
     buffer[count] = '\0';
     return monitor_parse_stat_bytes(buffer, (size_t)count, stat);
+}
+
+static int monitor_cpu_ns(const struct monitor_stat *stat, long ticks, long long *cpu_ns)
+{
+    if (stat->utime > LLONG_MAX - stat->stime) return 0;
+    long long clocks = stat->utime + stat->stime;
+    *cpu_ns = (clocks / ticks) * 1000000000LL + (clocks % ticks) * 1000000000LL / ticks;
+    return 1;
+}
+
+static void monitor_record_exit(pid_t child, const siginfo_t *info, int stat_fd, long ticks, long long start_ns,
+    const struct monitor_limits *limits, struct monitor_result *result)
+{
+    struct monitor_stat final_stat;
+    long long cpu;
+    if (!monitor_read_stat(stat_fd, &final_stat) || !monitor_cpu_ns(&final_stat, ticks, &cpu)) {
+        result->outcome = "MonitorFailure";
+        return;
+    }
+    struct rusage usage;
+    memset(&usage, 0, sizeof(usage));
+    int status;
+    pid_t reaped;
+    do { reaped = wait4(child, &status, WNOHANG, &usage); } while (reaped < 0 && errno == EINTR);
+    if (reaped != child || usage.ru_maxrss < 0 || (long long)usage.ru_maxrss > LLONG_MAX / 1024LL) {
+        result->outcome = "MonitorFailure";
+        return;
+    }
+    long long rss = (long long)usage.ru_maxrss * 1024LL;
+    if (rss > result->peak_rss) result->peak_rss = rss;
+    result->cpu_ns = cpu;
+    result->wall_ns = monitor_now_ns() - start_ns;
+    if (rss > limits->resident_bytes) {
+        result->outcome = "WorkerResidentBytes";
+    } else if (cpu > limits->cpu_ns) {
+        result->outcome = "WorkerCpuTime";
+    } else if (result->wall_ns > limits->wall_ns) {
+        result->outcome = "WorkerWallTime";
+    } else if (info->si_code == CLD_EXITED) {
+        result->outcome = "Exited";
+        result->exit_code = info->si_status;
+    } else {
+        result->outcome = "WorkerSignaled";
+        result->signal_number = info->si_status;
+    }
 }
 
 static int monitor_full_write(int fd, const char *buffer, size_t length)
@@ -254,6 +299,11 @@ static void monitor_child_exec(int self_fd, int sync_read, int stderr_write, int
     if (dup2(stderr_write, STDERR_FILENO) != STDERR_FILENO) _exit(126);
     if (stderr_write != STDERR_FILENO) close(stderr_write);
     if (!monitor_close_child_fds(self_fd, sync_read)) _exit(126);
+    struct rlimit address_space = {
+        .rlim_cur = (rlim_t)MONITOR_ADDRESS_SPACE_BYTES,
+        .rlim_max = (rlim_t)MONITOR_ADDRESS_SPACE_BYTES
+    };
+    if (setrlimit(RLIMIT_AS, &address_space) != 0) _exit(126);
     unsigned char release;
     ssize_t count;
     do { count = read(sync_read, &release, 1); } while (count < 0 && errno == EINTR);
@@ -381,9 +431,13 @@ static int monitor_main(int argc, char **argv)
         while ((sleep_result = clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &deadline, NULL)) == EINTR) { }
         long long now = monitor_now_ns();
         long long gap = now - last_ns;
-        if (gap > result.max_gap_ns) result.max_gap_ns = gap;
-        if (gap < 0 || gap > MONITOR_GAP_NS) {
-            result.outcome = "WorkerObservationGap";
+        if (gap < 0) {
+            result.outcome = "MonitorFailure";
+            monitor_kill_child(child, pidfd);
+            break;
+        }
+        if (gap > result.max_gap_ns) {
+            result.max_gap_ns = gap;
             result.gap_last_valid_ns = last_ns - start_ns;
             result.gap_now_ns = now - start_ns;
             result.gap_ns = gap;
@@ -392,8 +446,6 @@ static int monitor_main(int argc, char **argv)
             (void)getrusage(RUSAGE_THREAD, &usage_gap);
             result.thread_cpu_delta_ns = monitor_thread_cpu_ns() - cpu_last;
             result.involuntary_context_switch_delta = usage_gap.ru_nivcsw - invcsw_last;
-            monitor_kill_child(child, pidfd);
-            break;
         }
         unsigned char probe;
         ssize_t stderr_count = read(stderr_pipe[0], &probe, 1);
@@ -415,13 +467,7 @@ static int monitor_main(int argc, char **argv)
             break;
         }
         if (info.si_pid != 0) {
-            if (info.si_code == CLD_EXITED) {
-                result.outcome = "Exited";
-                result.exit_code = info.si_status;
-            } else {
-                result.outcome = "WorkerSignaled";
-                result.signal_number = info.si_status;
-            }
+            monitor_record_exit(child, &info, stat_fd, ticks, start_ns, &limits, &result);
             break;
         }
         struct monitor_stat stat;
@@ -432,9 +478,13 @@ static int monitor_main(int argc, char **argv)
         }
         long long completed = monitor_now_ns();
         gap = completed - last_ns;
-        if (gap > result.max_gap_ns) result.max_gap_ns = gap;
-        if (gap < 0 || gap > MONITOR_GAP_NS) {
-            result.outcome = "WorkerObservationGap";
+        if (gap < 0) {
+            result.outcome = "MonitorFailure";
+            monitor_kill_child(child, pidfd);
+            break;
+        }
+        if (gap > result.max_gap_ns) {
+            result.max_gap_ns = gap;
             result.gap_last_valid_ns = last_ns - start_ns;
             result.gap_now_ns = completed - start_ns;
             result.gap_ns = gap;
@@ -443,8 +493,6 @@ static int monitor_main(int argc, char **argv)
             (void)getrusage(RUSAGE_THREAD, &usage_gap);
             result.thread_cpu_delta_ns = monitor_thread_cpu_ns() - cpu_last;
             result.involuntary_context_switch_delta = usage_gap.ru_nivcsw - invcsw_last;
-            monitor_kill_child(child, pidfd);
-            break;
         }
         last_ns = completed;
         result.samples++;
@@ -453,14 +501,18 @@ static int monitor_main(int argc, char **argv)
         memset(&usage_last, 0, sizeof(usage_last));
         (void)getrusage(RUSAGE_THREAD, &usage_last);
         invcsw_last = usage_last.ru_nivcsw;
-        long long rss = stat.rss_pages * (long long)page_size;
-        if (stat.rss_pages > LLONG_MAX / page_size || stat.utime > LLONG_MAX - stat.stime) {
+        if (stat.rss_pages > LLONG_MAX / page_size) {
             result.outcome = "MonitorFailure";
             monitor_kill_child(child, pidfd);
             break;
         }
-        long long clocks = stat.utime + stat.stime;
-        long long cpu = (clocks / ticks) * 1000000000LL + (clocks % ticks) * 1000000000LL / ticks;
+        long long rss = stat.rss_pages * (long long)page_size;
+        long long cpu;
+        if (!monitor_cpu_ns(&stat, ticks, &cpu)) {
+            result.outcome = "MonitorFailure";
+            monitor_kill_child(child, pidfd);
+            break;
+        }
         if (rss == 0) {
             memset(&info, 0, sizeof(info));
             do { wait_result = waitid(P_PIDFD, (id_t)pidfd, &info, WEXITED | WNOHANG | WNOWAIT); }
@@ -471,13 +523,7 @@ static int monitor_main(int argc, char **argv)
                 break;
             }
             if (info.si_pid != 0) {
-                if (info.si_code == CLD_EXITED) {
-                    result.outcome = "Exited";
-                    result.exit_code = info.si_status;
-                } else {
-                    result.outcome = "WorkerSignaled";
-                    result.signal_number = info.si_status;
-                }
+                monitor_record_exit(child, &info, stat_fd, ticks, start_ns, &limits, &result);
                 break;
             }
         }
@@ -507,7 +553,7 @@ static int monitor_main(int argc, char **argv)
     struct rusage usage_end;
     memset(&usage_end, 0, sizeof(usage_end));
     (void)getrusage(RUSAGE_THREAD, &usage_end);
-    if (strcmp(result.outcome, "WorkerObservationGap") != 0) {
+    if (result.max_gap_ns == 0) {
         result.thread_cpu_delta_ns = monitor_thread_cpu_ns() - cpu_start;
         result.involuntary_context_switch_delta = usage_end.ru_nivcsw - usage_start.ru_nivcsw;
     }

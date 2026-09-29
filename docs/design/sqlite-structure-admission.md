@@ -30,19 +30,14 @@ main file is independently complete. SQLite hard heap is configured before
 open; connection limits, defensive/trusted-schema/extension settings and
 authorizer/progress hooks precede every application query.
 
-The shared supervisor retains CPU/wall/RSS/gap enforcement and bounded I/O.
-A zero-RSS observation does not establish whether the child is exiting or
-telemetry is unavailable. Exit confirmation may use only the remaining time
-before the **last valid RSS sample plus 10 ms**, also bounded by the original
-wall deadline and cancellation. Whole-millisecond waits are rounded down;
-sub-millisecond remainders permit only nonblocking exit probes. Zero RSS never
-becomes a valid zero-cost sample or advances either deadline. Only confirmed
-exit observed within that window can conclude this reconciliation. Still
-unconfirmed at the exact deadline is unavailable; observation beyond it is a
-gap failure, even if exit is then confirmed. Exit-observation errors also fail
-closed. No host settings, priorities, validation retries or new time allowance
-are used. A process-metric read failure can also reconcile a positively confirmed
-exit within that same original window; the read failure alone is not evidence.
+The worker enters exec with a kernel-enforced 256 MiB address-space ceiling,
+plus CPU, file-size and descriptor rlimits. SQLite separately enforces its
+32 MiB hard heap and 8 MiB cache limits. The supervisor samples RSS, CPU and
+wall time for telemetry and any lower caller policy, but its scheduling cadence
+is not an integrity boundary. Exit is confirmed with pidfd `waitid`; a complete
+result remains valid after a scheduling delay, while truncated output,
+unsuccessful exit, stderr, cancellation and unconfirmed cleanup still fail
+closed. A metric-read failure is not evidence of exit.
 Confirmed exit ends only RSS observation, not wall/cancellation enforcement or
 the requirement to drain pending output. Cleanup joins cancelled I/O before
 receipt finalization; unconfirmed I/O retains staging and reservations.

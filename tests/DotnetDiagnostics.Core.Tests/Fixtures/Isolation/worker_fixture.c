@@ -80,6 +80,48 @@ int main(int argc, char **argv)
         fflush(stdout);
     }
     if (strstr(argv[4], "crash") != NULL) return 42;
+    if (strstr(argv[4], "as-limit") != NULL) {
+        void *allocation = mmap(NULL, 257ULL * 1024ULL * 1024ULL, PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (allocation != MAP_FAILED) return 45;
+        printf("RESULT 1 %s 21 123 3031000 1000\n", argv[1]);
+        fflush(stdout);
+        return 0;
+    }
+    if (strstr(argv[4], "cpu-exit") != NULL) {
+        volatile unsigned long long value = 1;
+        struct timespec started;
+        if (clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &started) != 0) return 46;
+        for (;;) {
+            value = value * 6364136223846793005ULL + 1;
+            struct timespec now;
+            if (clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &now) != 0) return 47;
+            long long elapsed = (now.tv_sec - started.tv_sec) * 1000000000LL + now.tv_nsec - started.tv_nsec;
+            if (elapsed >= 20000000LL) break;
+        }
+        printf("RESULT 1 %s 21 123 3031000 1000\n", argv[1]);
+        fflush(stdout);
+        return value == 0;
+    }
+    if (strstr(argv[4], "rss-exit") != NULL) {
+        pid_t monitor = getppid();
+        pid_t resumer = fork();
+        if (resumer < 0) return 48;
+        if (resumer == 0) {
+            usleep(30000);
+            kill(monitor, SIGCONT);
+            _exit(0);
+        }
+        kill(monitor, SIGSTOP);
+        size_t length = 32ULL * 1024ULL * 1024ULL;
+        unsigned char *allocation = mmap(NULL, length, PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (allocation == MAP_FAILED) return 49;
+        for (size_t offset = 0; offset < length; offset += 4096) allocation[offset] = 1;
+        printf("RESULT 1 %s 21 123 3031000 1000\n", argv[1]);
+        fflush(stdout);
+        return allocation[0] == 0;
+    }
     if (strstr(argv[4], "stderr") != NULL) {
         for (int i = 0; i < 4096; i++) fputc('e', stderr);
         fflush(stderr);
@@ -99,7 +141,11 @@ int main(int argc, char **argv)
             _exit(0);
         }
         kill(monitor, SIGSTOP);
-        if (strstr(argv[4], "exit") != NULL) return 0;
+        if (strstr(argv[4], "exit") != NULL) {
+            printf("RESULT 1 %s 21 123 3031000 1000\n", argv[1]);
+            fflush(stdout);
+            return 0;
+        }
         while (1) pause();
     }
     if (strstr(argv[4], "exit") != NULL) return 0;

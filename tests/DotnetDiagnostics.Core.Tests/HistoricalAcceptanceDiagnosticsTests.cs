@@ -34,8 +34,7 @@ public sealed class HistoricalAcceptanceDiagnosticsTests
         await HistoricalAcceptanceDiagnostics.RunAsync(() => Task.CompletedTask, lines.Add);
         Assert.Empty(lines);
         var original = new CaptureStoreException(CaptureErrorCode.CapacityExceeded, "private-message");
-        original.Data["WorkerGapNs"] = 10_000_001L;
-        original.Data["WorkerGapLimitNs"] = 10_000_000L;
+        original.Data["WorkerMaximumObservationGapNs"] = 10_000_001L;
         var thrown = await Assert.ThrowsAsync<CaptureStoreException>(() =>
             HistoricalAcceptanceDiagnostics.RunAsync(() => Task.FromException(original), lines.Add));
         Assert.Same(original, thrown);
@@ -43,8 +42,7 @@ public sealed class HistoricalAcceptanceDiagnosticsTests
         Assert.DoesNotContain("private-message", line);
         using var json = JsonDocument.Parse(line);
         var fields = json.RootElement.GetProperty("chain")[0].GetProperty("fields");
-        Assert.Equal(10_000_001L, fields.GetProperty("WorkerGapNs").GetInt64());
-        Assert.Equal(10_000_000L, fields.GetProperty("WorkerGapLimitNs").GetInt64());
+        Assert.Equal(10_000_001L, fields.GetProperty("WorkerMaximumObservationGapNs").GetInt64());
     }
 
     [Fact]
@@ -65,9 +63,7 @@ public sealed class HistoricalAcceptanceDiagnosticsTests
     public void FiniteStateAllowlistRedactsUnknownStringsInsteadOfPersistingPatterns(string sensitive)
     {
         var error = new InvalidOperationException(sensitive);
-        error.Data["WorkerProtocolPhase"] = sensitive;
-        error.Data["WorkerPollStage"] = new string('x', 10000) + sensitive;
-        error.Data["WorkerGapNs"] = sensitive;
+        error.Data["WorkerMaximumObservationGapNs"] = sensitive;
         error.Data["UnknownField"] = sensitive;
         error.Data["WorkerSenderStatus"] = new UnsafeScalar();
         var text = HistoricalAcceptanceDiagnostics.Format(error);
@@ -75,7 +71,7 @@ public sealed class HistoricalAcceptanceDiagnosticsTests
         Assert.DoesNotContain("UnknownField", text);
         Assert.DoesNotContain(new string('x', 64), text);
         using var json = JsonDocument.Parse(text);
-        Assert.Equal(4, json.RootElement.GetProperty("rejectedValues").GetInt32());
+        Assert.Equal(2, json.RootElement.GetProperty("rejectedValues").GetInt32());
         Assert.Empty(json.RootElement.GetProperty("chain")[0].GetProperty("fields").EnumerateObject());
     }
 
@@ -86,12 +82,9 @@ public sealed class HistoricalAcceptanceDiagnosticsTests
         for (var depth = 0; depth < 20; depth++)
         {
             error = new InvalidOperationException("never emitted", error);
-            foreach (var field in new[] { "WorkerGapLastValidNs", "WorkerGapNowNs", "WorkerGapNs",
-                "WorkerGapLimitNs", "WorkerMonitorThreadCpuDeltaNs", "WorkerMonitorInvCtxSwDelta",
-                "WorkerMonitorLocked", "WorkerSamples", "WorkerWallNs", "WorkerCpuNs", "WorkerPeakRss" })
+            foreach (var field in new[] { "WorkerSamples", "WorkerWallNs", "WorkerCpuNs",
+                "WorkerPeakRss", "WorkerMaximumObservationGapNs" })
                 error.Data[field] = long.MaxValue;
-            error.Data["WorkerProtocolPhase"] = "Receiving";
-            error.Data["WorkerPollStage"] = "Record";
             error.Data["WorkerSenderStatus"] = "RanToCompletion";
             error.Data["WorkerReceiverStatus"] = "WaitingForActivation";
         }
@@ -112,12 +105,13 @@ public sealed class HistoricalAcceptanceDiagnosticsTests
     public void InnerExceptionFieldsAndOnlyScalarReadinessEvidenceAreRetained()
     {
         var inner = new InvalidOperationException("inner payload");
-        inner.Data["WorkerGapNs"] = -1L;
+        inner.Data["WorkerMaximumObservationGapNs"] = -1L;
         var diagnostics = new HttpReadinessDiagnostics();
         diagnostics.Response(503);
         diagnostics.DeadlineExpired();
         using var json = JsonDocument.Parse(HistoricalAcceptanceDiagnostics.Format(new InvalidOperationException("outer payload", inner), diagnostics));
-        Assert.Equal(-1L, json.RootElement.GetProperty("chain")[1].GetProperty("fields").GetProperty("WorkerGapNs").GetInt64());
+        Assert.Equal(-1L, json.RootElement.GetProperty("chain")[1].GetProperty("fields")
+            .GetProperty("WorkerMaximumObservationGapNs").GetInt64());
         Assert.Equal(503, json.RootElement.GetProperty("readiness").GetProperty("LastStatusCode").GetInt32());
         Assert.Equal("DeadlineExpired", json.RootElement.GetProperty("readiness").GetProperty("Completion").GetString());
         Assert.Equal("not-retained", json.RootElement.GetProperty("sampleStreams").GetString());

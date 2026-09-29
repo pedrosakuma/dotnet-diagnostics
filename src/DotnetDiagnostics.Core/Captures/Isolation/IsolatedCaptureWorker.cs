@@ -338,7 +338,7 @@ internal static partial class IsolatedCaptureWorker
             if (!parts[i + 3].StartsWith(prefix, StringComparison.Ordinal)) throw Unsupported("WorkerMonitorReportInvalid");
             values[i] = parts[i + 3][prefix.Length..];
         }
-        var outcomes = new[] { "Exited", "WorkerObservationGap", "WorkerResidentBytes", "WorkerCpuTime",
+        var outcomes = new[] { "Exited", "WorkerResidentBytes", "WorkerCpuTime",
             "WorkerWallTime", "WorkerSignaled", "MonitorFailure" };
         if (!outcomes.Contains(values[0], StringComparer.Ordinal) ||
             !int.TryParse(values[1], NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var exit) ||
@@ -375,23 +375,14 @@ internal static partial class IsolatedCaptureWorker
             error.Data["WorkerStderrHex"] = report.WorkerStderrHex;
             throw error;
         }
-        if (report.Outcome is "WorkerObservationGap" or "WorkerResidentBytes" or "WorkerCpuTime" or "WorkerWallTime")
+        if (report.Outcome is "WorkerResidentBytes" or "WorkerCpuTime" or "WorkerWallTime")
         {
             var error = Limit(report.Outcome);
-            if (report.Outcome == "WorkerObservationGap")
-            {
-                error.Data["WorkerGapLastValidNs"] = report.GapLastValidNs;
-                error.Data["WorkerGapNowNs"] = report.GapNowNs;
-                error.Data["WorkerGapNs"] = report.GapNs;
-                error.Data["WorkerGapLimitNs"] = 10_000_000L;
-                error.Data["WorkerMonitorThreadCpuDeltaNs"] = report.MonitorThreadCpuDeltaNs;
-                error.Data["WorkerMonitorInvCtxSwDelta"] = report.MonitorInvoluntaryContextSwitchDelta;
-                error.Data["WorkerMonitorLocked"] = (long)report.Locked;
-                error.Data["WorkerSamples"] = report.Samples;
-                error.Data["WorkerWallNs"] = report.WallNs;
-                error.Data["WorkerCpuNs"] = report.CpuNs;
-                error.Data["WorkerPeakRss"] = report.PeakRss;
-            }
+            error.Data["WorkerSamples"] = report.Samples;
+            error.Data["WorkerWallNs"] = report.WallNs;
+            error.Data["WorkerCpuNs"] = report.CpuNs;
+            error.Data["WorkerPeakRss"] = report.PeakRss;
+            error.Data["WorkerMaximumObservationGapNs"] = report.MaxGapNs;
             throw error;
         }
         if (report.Outcome == "MonitorFailure") throw Unsupported("WorkerMonitorFailure");

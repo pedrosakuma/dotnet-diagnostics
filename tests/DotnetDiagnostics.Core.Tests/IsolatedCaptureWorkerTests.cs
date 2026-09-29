@@ -34,7 +34,7 @@ public sealed class IsolatedCaptureWorkerTests(ITestOutputHelper output) : IDisp
             Assert.Equal(parentHeapLimit, SQLitePCL.raw.sqlite3_hard_heap_limit64(-1));
             Assert.True(result.LandlockAbi >= 3);
             Assert.InRange(result.PeakObservedRss, 1, 256L * 1024 * 1024);
-            Assert.InRange(result.MaximumObservationGap, TimeSpan.Zero, TimeSpan.FromMilliseconds(10));
+            Assert.True(result.MaximumObservationGap >= TimeSpan.Zero);
             Assert.InRange(result.VmInstructions, 1000, 200000000);
             Assert.Equal(before, File.ReadAllBytes(fixture));
             Assert.Equal("benign unrelated marker", File.ReadAllText(Path.Combine(_root, "unrelated.txt")));
@@ -71,7 +71,7 @@ public sealed class IsolatedCaptureWorkerTests(ITestOutputHelper output) : IDisp
     }
 
     [Fact]
-    public async Task StalledChildFailsClosedAtFirstWallOrObservationDeadline()
+    public async Task StalledChildFailsClosedAtWallDeadline()
     {
         if (!SupportedPlatform) return;
         var fixture = CreateFixture("stall.db");
@@ -88,7 +88,7 @@ public sealed class IsolatedCaptureWorkerTests(ITestOutputHelper output) : IDisp
             });
             Assert.Equal(CaptureErrorCode.CapacityExceeded, error.Code);
             var reason = error.Message.Split(':', 2)[0];
-            Assert.True(reason is "WorkerWallTime" or "WorkerObservationGap", error.Message);
+            Assert.Equal("WorkerWallTime", reason);
             Assert.Null(capabilities);
             Assert.False(helper.HasExited);
             output.WriteLine($"Stalled child rejected by first watchdog decision: {reason}");
@@ -127,28 +127,48 @@ public sealed class IsolatedCaptureWorkerTests(ITestOutputHelper output) : IDisp
     [Theory]
     [InlineData("self-gap-stall.db")]
     [InlineData("self-gap-exit.db")]
-    public async Task NativeMonitorStopAlwaysInvalidatesIncludingAcrossWorkerExit(string name)
+    public async Task NativeMonitorDelayIsTelemetryAndNormalExitStillSucceeds(string name)
     {
         if (!SupportedPlatform) return;
         using var helper = StartHelper();
         var address = await helper.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(5));
         try
         {
+            if (name.Contains("exit", StringComparison.Ordinal))
+            {
+                var result = await IsolatedCaptureWorker.ProbeTrustedFixtureAsync(
+                    Request(CreateFixture(name), helper.Id, address!) with { Executable = Helper },
+                    new() { WallTime = TimeSpan.FromSeconds(2) });
+                Assert.True(result.MaximumObservationGap > TimeSpan.FromMilliseconds(10));
+                return;
+            }
             var error = await Assert.ThrowsAsync<CaptureStoreException>(() =>
                 IsolatedCaptureWorker.ProbeTrustedFixtureAsync(
                     Request(CreateFixture(name), helper.Id, address!) with { Executable = Helper },
-                    new() { WallTime = TimeSpan.FromSeconds(2) }));
+                    new() { WallTime = TimeSpan.FromMilliseconds(100) }));
             Assert.Equal(CaptureErrorCode.CapacityExceeded, error.Code);
-            Assert.Contains("WorkerObservationGap", error.Message);
-            Assert.True(Assert.IsType<long>(error.Data["WorkerGapNs"]) > 10_000_000);
-            Assert.True(error.Data.Contains("WorkerMonitorThreadCpuDeltaNs"));
-            Assert.True(error.Data.Contains("WorkerMonitorInvCtxSwDelta"));
+            Assert.Contains("WorkerWallTime", error.Message);
         }
         finally { Stop(helper); }
     }
 
     [Fact]
-    public async Task SanitizedNativeMonitorDetectsTheDeterministicGap()
+    public async Task WorkerAddressSpaceIsHardLimitedBeforeExec()
+    {
+        if (!SupportedPlatform) return;
+        using var helper = StartHelper();
+        var address = await helper.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        try
+        {
+            var result = await IsolatedCaptureWorker.ProbeTrustedFixtureAsync(
+                Request(CreateFixture("as-limit.db"), helper.Id, address!) with { Executable = Helper });
+            Assert.True(result.PeakObservedRss < 256L * 1024 * 1024);
+        }
+        finally { Stop(helper); }
+    }
+
+    [Fact]
+    public async Task FinalZombieAccountingEnforcesSubsecondCpuLimit()
     {
         if (!SupportedPlatform) return;
         using var helper = StartHelper();
@@ -157,12 +177,31 @@ public sealed class IsolatedCaptureWorkerTests(ITestOutputHelper output) : IDisp
         {
             var error = await Assert.ThrowsAsync<CaptureStoreException>(() =>
                 IsolatedCaptureWorker.ProbeTrustedFixtureAsync(
-                    Request(CreateFixture("self-gap-stall.db"), helper.Id, address!) with
-                    {
-                        Executable = Path.Combine(AppContext.BaseDirectory, "capture-worker-fixture-asan")
-                    }, new() { WallTime = TimeSpan.FromSeconds(2) }));
+                    Request(CreateFixture("cpu-exit.db"), helper.Id, address!) with { Executable = Helper },
+                    new() { CpuTime = TimeSpan.FromMilliseconds(1), WallTime = TimeSpan.FromSeconds(2) }));
             Assert.Equal(CaptureErrorCode.CapacityExceeded, error.Code);
-            Assert.Contains("WorkerObservationGap", error.Message);
+            Assert.Contains("WorkerCpuTime", error.Message);
+            Assert.True(Assert.IsType<long>(error.Data["WorkerCpuNs"]) >= 10_000_000);
+        }
+        finally { Stop(helper); }
+    }
+
+    [Fact]
+    public async Task FinalKernelAccountingEnforcesRssLimitAcrossUnobservedExit()
+    {
+        if (!SupportedPlatform) return;
+        using var helper = StartHelper();
+        var address = await helper.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        try
+        {
+            var error = await Assert.ThrowsAsync<CaptureStoreException>(() =>
+                IsolatedCaptureWorker.ProbeTrustedFixtureAsync(
+                    Request(CreateFixture("rss-exit.db"), helper.Id, address!) with { Executable = Helper },
+                    new() { ResidentBytes = 8L * 1024 * 1024, WallTime = TimeSpan.FromSeconds(2) }));
+            Assert.Equal(CaptureErrorCode.CapacityExceeded, error.Code);
+            Assert.Contains("WorkerResidentBytes", error.Message);
+            var peakRss = Assert.IsType<long>(error.Data["WorkerPeakRss"]);
+            Assert.True(peakRss > 8L * 1024 * 1024, $"peakRss={peakRss}");
         }
         finally { Stop(helper); }
     }

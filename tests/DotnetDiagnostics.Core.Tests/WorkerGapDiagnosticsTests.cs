@@ -61,17 +61,19 @@ public sealed class WorkerGapDiagnosticsTests
     }
 
     [Fact]
-    public void GapFailureRetainsOnlyBoundedNativeDiagnostics()
+    public void ObservationGapIsTelemetryOnSuccessfulExit()
     {
-        var report = new IsolatedCaptureWorker.MonitorReport("WorkerObservationGap", -1, 0, 8192, 12_000_000, 9,
-            3_000_000, 15_000_000, 12_000_000, 15_000_000, 1_000_000, 1, 0, "-", 10_000, 1);
-        var error = Assert.Throws<CaptureStoreException>(() => IsolatedCaptureWorker.ThrowMonitorFailure(report));
+        const string nonce = "0123456789abcdef0123456789abcdef";
+        var text = Report(nonce, "Exited", 0)
+            .Replace("maxGapNs=0", "maxGapNs=12000000", StringComparison.Ordinal)
+            .Replace("gapLastValidNs=0", "gapLastValidNs=3000000", StringComparison.Ordinal)
+            .Replace("gapNowNs=0", "gapNowNs=15000000", StringComparison.Ordinal)
+            .Replace("gapNs=0", "gapNs=12000000", StringComparison.Ordinal);
+        var report = IsolatedCaptureWorker.ParseMonitorReport(text, nonce);
 
-        Assert.Equal(CaptureErrorCode.CapacityExceeded, error.Code);
-        Assert.Equal(12_000_000L, error.Data["WorkerGapNs"]);
-        Assert.Equal(10_000L, error.Data["WorkerMonitorThreadCpuDeltaNs"]);
-        Assert.Equal(1L, error.Data["WorkerMonitorInvCtxSwDelta"]);
-        Assert.Equal(11, error.Data.Count);
+        Assert.Equal("Exited", report.Outcome);
+        Assert.Equal(12_000_000, report.MaxGapNs);
+        Assert.Equal(12_000_000, report.GapNs);
     }
 
     [Fact]
