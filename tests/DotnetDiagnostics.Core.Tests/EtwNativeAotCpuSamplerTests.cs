@@ -142,13 +142,16 @@ public class EtwNativeAotCpuSamplerTests
         var sampler = new EtwNativeAotCpuSampler();
         var pid = Environment.ProcessId;
 
-        // Generate some CPU load on the current process.
-        var cts = new CancellationTokenSource();
-        var loadTask = Task.Run(() => BurnManagedCpu(cts.Token), cts.Token);
+        using var cts = new CancellationTokenSource();
+        var loadTask = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromSeconds(2), cts.Token);
+            BurnManagedCpu(cts.Token);
+        }, cts.Token);
 
         try
         {
-            var result = await sampler.SampleAsync(pid, TimeSpan.FromSeconds(3), topN: 50);
+            var result = await sampler.SampleAsync(pid, TimeSpan.FromSeconds(7), topN: 50);
 
             result.Should().NotBeNull();
             result.Summary.ProcessId.Should().Be(pid);
@@ -158,7 +161,8 @@ public class EtwNativeAotCpuSamplerTests
                 "should have identified at least one hotspot");
             result.Summary.TopHotspots.Should().Contain(
                 hotspot => hotspot.Frame.Method.Contains(nameof(BurnManagedCpu), StringComparison.Ordinal),
-                "CLR event-derived names must survive strict native PDB validation");
+                "the workload is JIT-compiled after ETW starts and CLR event-derived names must survive strict native PDB validation. " +
+                string.Join(" ", result.Summary.Notes));
             result.Summary.Notes.Should().Contain(note => note.Contains("CLR JIT/loader/rundown", StringComparison.Ordinal));
 
             result.Artifact.Root.Should().NotBeNull();

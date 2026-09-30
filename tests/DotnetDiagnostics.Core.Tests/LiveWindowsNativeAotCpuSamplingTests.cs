@@ -106,7 +106,19 @@ public sealed class LiveWindowsNativeAotCpuSamplingTests(ITestOutputHelper outpu
         sampleProcess = null;
         if (publishDirectory is not null && Directory.Exists(publishDirectory))
         {
-            Directory.Delete(publishDirectory, recursive: true);
+            for (var attempt = 0; ; attempt++)
+            {
+                try
+                {
+                    Directory.Delete(publishDirectory, recursive: true);
+                    break;
+                }
+                catch (Exception ex) when (
+                    (ex is IOException or UnauthorizedAccessException) && attempt < 20)
+                {
+                    await Task.Delay(250);
+                }
+            }
         }
     }
 
