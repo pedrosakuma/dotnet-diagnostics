@@ -1,15 +1,16 @@
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection.PortableExecutable;
 using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using FluentAssertions;
-using Microsoft.Diagnostics.Tracing.Session;
+using Xunit.Abstractions;
 
 namespace DotnetDiagnostics.Core.Tests;
 
 [Collection("LiveProcess")]
-public sealed class LiveWindowsNativeAotCpuSamplingTests : IAsyncLifetime
+public sealed class LiveWindowsNativeAotCpuSamplingTests(ITestOutputHelper output) : IAsyncLifetime
 {
     private Process? sampleProcess;
     private string? publishDirectory;
@@ -50,6 +51,7 @@ public sealed class LiveWindowsNativeAotCpuSamplingTests : IAsyncLifetime
         var pdbPath = Path.Combine(publishDirectory, "NativeAotSample.pdb");
         File.Exists(executablePath).Should().BeTrue("the NativeAOT executable must be published");
         File.Exists(pdbPath).Should().BeTrue("the NativeAOT PDB is required to verify DIA symbol resolution");
+        VerifyPdbIdentityControls(executablePath, pdbPath);
 
         var port = ReserveLoopbackPort();
         baseAddress = new Uri($"http://127.0.0.1:{port}/");
@@ -72,10 +74,18 @@ public sealed class LiveWindowsNativeAotCpuSamplingTests : IAsyncLifetime
         _ = DrainAsync(sampleProcess.StandardOutput);
         _ = DrainAsync(sampleProcess.StandardError);
 
-        await WaitForTargetAsync(sampleProcess.Id, CancellationToken.None);
-        using var client = new HttpClient { BaseAddress = baseAddress, Timeout = TimeSpan.FromSeconds(5) };
-        using var response = await SendWorkloadAsync(client, CancellationToken.None);
-        response.StatusCode.Should().Be(HttpStatusCode.OK, await response.Content.ReadAsStringAsync());
+        try
+        {
+            await WaitForTargetAsync(sampleProcess.Id, CancellationToken.None);
+            using var client = new HttpClient { BaseAddress = baseAddress, Timeout = TimeSpan.FromSeconds(5) };
+            using var response = await SendWorkloadAsync(client, CancellationToken.None);
+            response.StatusCode.Should().Be(HttpStatusCode.OK, await response.Content.ReadAsStringAsync());
+        }
+        catch
+        {
+            await DisposeAsync();
+            throw;
+        }
     }
 
     public async Task DisposeAsync()
@@ -87,6 +97,7 @@ public sealed class LiveWindowsNativeAotCpuSamplingTests : IAsyncLifetime
         }
 
         sampleProcess?.Dispose();
+        sampleProcess = null;
         if (publishDirectory is not null && Directory.Exists(publishDirectory))
         {
             Directory.Delete(publishDirectory, recursive: true);
@@ -112,6 +123,17 @@ public sealed class LiveWindowsNativeAotCpuSamplingTests : IAsyncLifetime
                 TimeSpan.FromSeconds(5),
                 topN: 50);
 
+            output.WriteLine($"Samples={result.Summary.TotalSamples}; symbolSource={result.Summary.SymbolSource}");
+            foreach (var note in result.Summary.Notes)
+            {
+                output.WriteLine(note);
+            }
+            foreach (var hotspot in result.Summary.TopHotspots.Where(hotspot =>
+                hotspot.Frame.Method.Contains("BurnCpu", StringComparison.Ordinal)))
+            {
+                output.WriteLine($"{hotspot.Frame.Module}!{hotspot.Frame.Method}: inclusive={hotspot.InclusiveSamples}, exclusive={hotspot.ExclusiveSamples}");
+            }
+
             result.Summary.TotalSamples.Should().BeGreaterThan(0);
             result.Summary.SymbolSource.Should().Be(
                 NativeAotSymbolDemangler.SymbolSource.PdbResolved,
@@ -129,6 +151,38 @@ public sealed class LiveWindowsNativeAotCpuSamplingTests : IAsyncLifetime
             cancellation.Cancel();
             await workload;
         }
+    }
+
+    private void VerifyPdbIdentityControls(string executablePath, string pdbPath)
+    {
+        using var stream = File.OpenRead(executablePath);
+        using var image = new PEReader(stream);
+        var entry = image.ReadDebugDirectory().Single(entry => entry.Type == DebugDirectoryEntryType.CodeView);
+        var identity = image.ReadCodeViewDebugDirectoryData(entry);
+
+        EtwPdbSymbolResolver.TryOpenPdb(pdbPath, identity.Guid, identity.Age, out var matching, out var status)
+            .Should().BeTrue($"the shipped DIA library must open the exact fixture PDB (status={status})");
+        using (matching)
+        {
+            matching.Should().NotBeNull();
+        }
+
+        foreach (var (signature, age) in new[]
+        {
+            (Guid.NewGuid(), identity.Age),
+            (identity.Guid, identity.Age + 1),
+        })
+        {
+            var opened = EtwPdbSymbolResolver.TryOpenPdb(pdbPath, signature, age, out var rejected, out status);
+            using (rejected)
+            {
+                opened.Should().BeFalse("mismatched GUID or age must never be accepted");
+                status.Should().Be(NativeSymbolResolverOpenStatus.PdbRejected);
+                rejected.Should().BeNull();
+            }
+        }
+
+        output.WriteLine($"Offline DIA controls: matching GUID={identity.Guid}, age={identity.Age} accepted; wrong GUID and wrong age rejected.");
     }
 
     private static async Task PublishAsync(string projectPath, string outputDirectory, CancellationToken cancellationToken)

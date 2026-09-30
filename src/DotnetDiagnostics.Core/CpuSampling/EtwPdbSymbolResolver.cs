@@ -109,16 +109,40 @@ internal sealed class EtwPdbSymbolResolver : IDisposable
         out NativeSymbolResolverOpenStatus status)
     {
         resolver = null;
-        if (module.PdbSignature == Guid.Empty || module.PdbAge < 0)
+        if (module.PdbSignature == Guid.Empty || module.PdbAge < 0 || string.IsNullOrWhiteSpace(module.PdbName))
         {
             status = NativeSymbolResolverOpenStatus.MissingPdbIdentity;
             return false;
         }
 
-        var pdbPath = symbolReader.FindSymbolFilePathForModule(module.FilePath);
+        var pdbPath = symbolReader.FindSymbolFilePath(
+            module.PdbName, module.PdbSignature, module.PdbAge, module.FilePath);
         if (string.IsNullOrWhiteSpace(pdbPath))
         {
             status = NativeSymbolResolverOpenStatus.MatchingPdbUnavailable;
+            return false;
+        }
+
+        return TryOpenPdb(pdbPath, module.PdbSignature, module.PdbAge, out resolver, out status);
+    }
+
+    internal static bool TryOpenPdb(
+        string pdbPath,
+        Guid pdbSignature,
+        int pdbAge,
+        out EtwPdbSymbolResolver? resolver,
+        out NativeSymbolResolverOpenStatus status)
+    {
+        resolver = null;
+        if (pdbSignature == Guid.Empty || pdbAge < 0)
+        {
+            status = NativeSymbolResolverOpenStatus.MissingPdbIdentity;
+            return false;
+        }
+
+        if (!OperatingSystem.IsWindows())
+        {
+            status = NativeSymbolResolverOpenStatus.DiaUnavailable;
             return false;
         }
 
@@ -126,13 +150,13 @@ internal sealed class EtwPdbSymbolResolver : IDisposable
         IDiaSession? session = null;
         try
         {
-            dataSource = new DiaSourceClass();
-            var expectedSignature = module.PdbSignature;
+            dataSource = NativeDiaLoader.CreateDataSource();
+            var expectedSignature = pdbSignature;
             dataSource.loadAndValidateDataFromPdb(
                 pdbPath,
                 ref expectedSignature,
                 0,
-                checked((uint)module.PdbAge));
+                checked((uint)pdbAge));
             dataSource.openSession(out session);
             if (session is null)
             {
@@ -143,8 +167,8 @@ internal sealed class EtwPdbSymbolResolver : IDisposable
             resolver = new EtwPdbSymbolResolver(
                 dataSource,
                 session,
-                module.PdbSignature,
-                module.PdbAge);
+                pdbSignature,
+                pdbAge);
             dataSource = null;
             session = null;
             status = NativeSymbolResolverOpenStatus.Ready;
@@ -155,6 +179,11 @@ internal sealed class EtwPdbSymbolResolver : IDisposable
             status = dataSource is null
                 ? NativeSymbolResolverOpenStatus.DiaUnavailable
                 : NativeSymbolResolverOpenStatus.PdbRejected;
+            return false;
+        }
+        catch (Exception ex) when (ex is DllNotFoundException or BadImageFormatException or EntryPointNotFoundException)
+        {
+            status = NativeSymbolResolverOpenStatus.DiaUnavailable;
             return false;
         }
         finally

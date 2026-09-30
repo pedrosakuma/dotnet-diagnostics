@@ -133,7 +133,11 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
             var captureStopwatch = Stopwatch.StartNew();
             await CaptureEtwAsync(sessionName, etlPath, duration, cancellationToken).ConfigureAwait(false);
             var captureDuration = captureStopwatch.Elapsed;
-            var processed = ProcessEtl(etlPath, processId, startedAt, duration, topN, sourceResolution);
+            // Kernel ImageLoad events alone do not carry PDB signatures. The standard ETW
+            // merge adds ImageID/DbgID records while the captured images are still available.
+            var mergedEtlPath = Path.Combine(captureDir, "trace-merged.etl");
+            TraceEventSession.Merge([etlPath], mergedEtlPath, TraceEventMergeOptions.ImageIDsOnly);
+            var processed = ProcessEtl(mergedEtlPath, processId, startedAt, duration, topN, sourceResolution);
             return processed.Result with
             {
                 Summary = processed.Result.Summary with
