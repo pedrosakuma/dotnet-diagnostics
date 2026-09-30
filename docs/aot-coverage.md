@@ -70,9 +70,15 @@ Legend: `✅` works · `⚠️` works with caveats (footnote) · `❌` unavailab
 | `start_investigation` / `export_investigation_summary` / `compare_to_baseline` | ✅ | ✅ | ✅ | ✅ |
 
 The Windows ETW CPU sampler validates the selected PDB identity against the
-module identity captured in ETL and checks each sampled RVA against the DIA
-function's half-open range before aggregating its name. This guarantee is scoped
-to Windows on-CPU sampling; other ETW collectors have their own symbol paths.
+module identity recorded by the standard ETW image-ID merge and checks each
+sampled RVA against the DIA function's half-open range before aggregating its
+name. Image-ID enrichment runs locally after capture, while the images are
+available; missing identities remain unresolved rather than falling back to an
+unchecked current file. DIA is loaded from the architecture-matched DLL shipped
+with TraceEvent, without requiring machine-wide COM registration. CLR JIT/loader/
+rundown names remain a separate event-derived path for CoreCLR OS sampling.
+This guarantee is scoped to Windows on-CPU sampling; other ETW collectors have
+their own symbol paths.
 
 [^stale]: Resolved in [#108](https://github.com/pedrosakuma/dotnet-diagnostics/issues/108): stale diagnostic sockets and Linux TID collisions are filtered out via thread-group-leader validation. Affected `v0.3.0` and `v0.3.1`; fixed on `main`.
 [^aot-eventsource]: The provider must be embedded in the AOT binary at publish time. Sources added via assembly load after publish are not reachable.

@@ -42,13 +42,27 @@ public sealed class LiveWindowsNativeAotCpuSamplingTests(ITestOutputHelper outpu
             Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(publishDirectory);
 
+        try
+        {
+            await StartTargetAsync(publishDirectory);
+        }
+        catch
+        {
+            await DisposeAsync();
+            throw;
+        }
+    }
+
+    private async Task StartTargetAsync(string directory)
+    {
         var sampleProject = Path.GetFullPath(Path.Combine(
             AppContext.BaseDirectory,
             "..", "..", "..", "..", "..", "samples", "NativeAotSample", "NativeAotSample.csproj"));
-        await PublishAsync(sampleProject, publishDirectory, CancellationToken.None);
+        using var publishDeadline = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        await PublishAsync(sampleProject, directory, publishDeadline.Token);
 
-        var executablePath = Path.Combine(publishDirectory, "NativeAotSample.exe");
-        var pdbPath = Path.Combine(publishDirectory, "NativeAotSample.pdb");
+        var executablePath = Path.Combine(directory, "NativeAotSample.exe");
+        var pdbPath = Path.Combine(directory, "NativeAotSample.pdb");
         File.Exists(executablePath).Should().BeTrue("the NativeAOT executable must be published");
         File.Exists(pdbPath).Should().BeTrue("the NativeAOT PDB is required to verify DIA symbol resolution");
         VerifyPdbIdentityControls(executablePath, pdbPath);
@@ -62,7 +76,7 @@ public sealed class LiveWindowsNativeAotCpuSamplingTests(ITestOutputHelper outpu
             RedirectStandardError = true,
             UseShellExecute = false,
             CreateNoWindow = true,
-            WorkingDirectory = publishDirectory,
+            WorkingDirectory = directory,
         };
         startInfo.ArgumentList.Add("--urls");
         startInfo.ArgumentList.Add(baseAddress.ToString().TrimEnd('/'));
@@ -74,18 +88,10 @@ public sealed class LiveWindowsNativeAotCpuSamplingTests(ITestOutputHelper outpu
         _ = DrainAsync(sampleProcess.StandardOutput);
         _ = DrainAsync(sampleProcess.StandardError);
 
-        try
-        {
-            await WaitForTargetAsync(sampleProcess.Id, CancellationToken.None);
-            using var client = new HttpClient { BaseAddress = baseAddress, Timeout = TimeSpan.FromSeconds(5) };
-            using var response = await SendWorkloadAsync(client, CancellationToken.None);
-            response.StatusCode.Should().Be(HttpStatusCode.OK, await response.Content.ReadAsStringAsync());
-        }
-        catch
-        {
-            await DisposeAsync();
-            throw;
-        }
+        await WaitForTargetAsync(sampleProcess.Id, CancellationToken.None);
+        using var client = new HttpClient { BaseAddress = baseAddress, Timeout = TimeSpan.FromSeconds(5) };
+        using var response = await SendWorkloadAsync(client, CancellationToken.None);
+        response.StatusCode.Should().Be(HttpStatusCode.OK, await response.Content.ReadAsStringAsync());
     }
 
     public async Task DisposeAsync()
@@ -206,7 +212,19 @@ public sealed class LiveWindowsNativeAotCpuSamplingTests(ITestOutputHelper outpu
             ?? throw new InvalidOperationException("Failed to start NativeAOT publish.");
         var stdout = DrainAsync(process.StandardOutput);
         var stderr = DrainAsync(process.StandardError);
-        await process.WaitForExitAsync(cancellationToken);
+        try
+        {
+            await process.WaitForExitAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+            await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+            throw;
+        }
         var output = await stdout;
         var error = await stderr;
         if (process.ExitCode != 0)

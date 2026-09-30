@@ -235,8 +235,8 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
         var symbolPath = _symbolPathBuilder.BuildForProcess(processId, sourceResolution?.SymbolPath);
         var symbolicationStopwatch = Stopwatch.StartNew();
 
-        // Convert ETL → ETLX. Disable remote symbol resolution during conversion
-        // to avoid network hangs. We resolve symbols locally afterward via LookupSymbolsForModule.
+        // Keep the TraceLog method table event-only (CLR JIT/rundown). Native names
+        // are resolved separately through DIA, never interned by TraceEvent.
         var options = new TraceLogOptions
         {
             LocalSymbolsOnly = true,
@@ -276,6 +276,7 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
         var builder = new CallTreeBuilder();
         long total = 0;
         long resolvedFrames = 0;
+        long managedFrames = 0;
         long unresolvedFrames = 0;
         long outOfRangeFrames = 0;
         long missingRangeFrames = 0;
@@ -306,11 +307,23 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
             while (current is not null)
             {
                 var moduleName = current.CodeAddress?.ModuleFile?.Name ?? string.Empty;
-                var resolution = nativeSymbols.Resolve(current.CodeAddress);
-                var methodName = resolution.CanInternName && resolution.Name is not null
-                    ? resolution.Name
-                    : ResolveUnresolvedMethodName(current);
-                if (resolution.CanInternName)
+                // With TraceLog symbol lookup disabled, this name comes only from CLR events,
+                // not TraceEvent's unvalidated native PDB display-name table.
+                var managedName = current.CodeAddress?.FullMethodName;
+                var hasManagedName = !string.IsNullOrEmpty(managedName) && managedName != "?";
+                var resolution = hasManagedName
+                    ? NativeSymbolResolution.Unavailable(NativeSymbolRangeStatus.Unavailable)
+                    : nativeSymbols.Resolve(current.CodeAddress);
+                var methodName = hasManagedName
+                    ? managedName!
+                    : resolution.CanInternName && resolution.Name is not null
+                        ? resolution.Name
+                        : ResolveUnresolvedMethodName(current);
+                if (hasManagedName)
+                {
+                    managedFrames++;
+                }
+                else if (resolution.CanInternName)
                 {
                     resolvedFrames++;
                 }
@@ -386,14 +399,18 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
 
         var root = builder.Build();
 
-        // Classify symbol source: if any frame was resolved to a real method name via PDB,
-        // report PdbResolved; if only addresses, report Stripped.
+        // Preserve the legacy aggregate label for named ETW frames. Notes distinguish
+        // CLR event names from native PDB/DIA names; neither implies full module coverage.
         var symbolSource = total == 0
             ? NativeAotSymbolDemangler.SymbolSource.Unknown
-            : resolvedFrames > 0
+            : resolvedFrames > 0 || managedFrames > 0
                 ? NativeAotSymbolDemangler.SymbolSource.PdbResolved
                 : NativeAotSymbolDemangler.SymbolSource.Stripped;
         var notes = new List<string>();
+        if (managedFrames > 0)
+        {
+            notes.Add($"Windows ETW resolved {managedFrames:N0} sampled frame(s) from CLR JIT/loader/rundown events, independently of native PDB/DIA resolution.");
+        }
         if (unresolvedFrames > 0)
         {
             notes.Add(
