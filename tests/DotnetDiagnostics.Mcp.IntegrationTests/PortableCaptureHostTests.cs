@@ -83,7 +83,6 @@ public sealed class PortableCaptureHostTests : IAsyncLifetime
             entries = new[] { new { captureId = capture.CaptureId, label = "different" } } })).Error!.Detail.Should().Be("InvalidInput");
         var cancelled = Data(await Call("transfer-cancel", new { transferId = id }));
         cancelled.GetProperty("state").GetString().Should().Be("Cancelled");
-        await Task.Delay(30);
         Directory.GetFiles(Path.Combine(_root, "captures", ".portable"), "bundle.ddcapture", SearchOption.AllDirectories)
             .Should().BeEmpty();
         (await Call("download-chunk", new { transferId = id, offset = 0, count = PortableCaptureTools.ChunkBytes }))

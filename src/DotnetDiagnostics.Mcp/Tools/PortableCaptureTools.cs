@@ -94,6 +94,7 @@ public sealed class PortableCaptureTools(
                 transfer.Refresh = refresh;
             }
             if (!transfer.Gate.Wait(0, cancellationToken)) throw Error(CaptureErrorCode.Busy, "Transfer call is already active.");
+            var releaseGate = true;
             try
             {
                 await CurrentAsync(transfer.Refresh, transfer.Owner, cancellationToken).ConfigureAwait(false);
@@ -108,7 +109,10 @@ public sealed class PortableCaptureTools(
                     transfer.Lifetime.Cancel();
                     if (!Terminal(transfer.State)) transfer.State = "Cancelled";
                     transfer.TerminalUtc ??= clock.GetUtcNow();
-                    _ = CleanupAsync(transfer);
+                    var cleanup = CleanupAsync(transfer);
+                    transfer.Gate.Release();
+                    releaseGate = false;
+                    await cleanup.ConfigureAwait(false);
                     return Bound(Status(transfer));
                 }
                 if (action == "import-commit" && transfer.Upload is not null && Terminal(transfer.State))
@@ -199,7 +203,10 @@ public sealed class PortableCaptureTools(
                 _ = CleanupAsync(transfer);
                 throw;
             }
-            finally { transfer.Gate.Release(); }
+            finally
+            {
+                if (releaseGate) transfer.Gate.Release();
+            }
         }
         catch (CaptureStoreException exception)
         {
