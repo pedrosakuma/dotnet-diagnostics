@@ -8,7 +8,44 @@ namespace DotnetDiagnostics.ScenarioEvaluation.Tests;
 public sealed class CopilotCliAgentTransport : IAgentModelTransport
 {
     private const int MinimumCliAiCredits = 30;
+    // JSON mode emits full session events, not only the answer. Keep those domains independent.
+    internal const int MaximumCliEventEnvelopeBytes = 262_144;
+    internal const int MaximumCliFramingBytes = 1_048_576;
+    internal const int MaximumCliStderrBytes = 32_768;
     private const string UnavailableToolSentinel = "blinded-harness-no-cli-tools";
+    // Copilot CLI 1.0.86 and 1.0.87 install a wildcard listener in prompt mode, then their
+    // JSON writer excludes a fixed set before serializing each remaining event. This list is
+    // the non-tool subset emitted by prompt setup and a normal model turn, using schema names.
+    private static readonly HashSet<string> IgnoredCliEventTypes = new(StringComparer.Ordinal)
+    {
+        "assistant.idle",
+        "assistant.message_delta",
+        "assistant.message_start",
+        "assistant.reasoning",
+        "assistant.reasoning_delta",
+        "assistant.turn_end",
+        "assistant.turn_start",
+        "capabilities.changed",
+        "commands.changed",
+        "mcp.prompts.list_changed",
+        "mcp.resources.list_changed",
+        "mcp.tools.list_changed",
+        "model.call_failure",
+        "model.call_finished",
+        "model.call_start",
+        "result",
+        "session.custom_agents_updated",
+        "session.extensions_loaded",
+        "session.info",
+        "session.mcp_server_status_changed",
+        "session.mcp_servers_loaded",
+        "session.skills_loaded",
+        "session.start",
+        "session.tools_updated",
+        "session.usage_checkpoint",
+        "session.warning",
+        "user.message",
+    };
     internal const string ProtocolInstructions =
         """
         You are a model transport, not a coding agent. The Copilot CLI has deliberately provided
@@ -93,6 +130,27 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
         IReadOnlyList<JsonObject> messages,
         IReadOnlyList<AgentToolDefinition> tools,
         CancellationToken cancellationToken)
+        => await InvokeIsolatedAsync(
+            configuration,
+            BuildPrompt(messages, tools),
+            ParseOutput,
+            cancellationToken).ConfigureAwait(false);
+
+    internal async Task<string> CompleteStructuredJsonAsync(
+        AgentModelConfiguration configuration,
+        string prompt,
+        CancellationToken cancellationToken)
+        => await InvokeIsolatedAsync(
+            configuration,
+            prompt,
+            ParseStructuredJsonOutput,
+            cancellationToken).ConfigureAwait(false);
+
+    private async Task<T> InvokeIsolatedAsync<T>(
+        AgentModelConfiguration configuration,
+        string prompt,
+        Func<string, T> parseOutput,
+        CancellationToken cancellationToken)
     {
         var invocationId = Guid.NewGuid();
         var workingDirectory = Path.Combine(_workRoot, invocationId.ToString("n"));
@@ -104,7 +162,6 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
                 workingDirectory,
                 configuration.MaximumResponseBytes,
                 cancellationToken).ConfigureAwait(false);
-            var prompt = BuildPrompt(messages, tools);
             var startInfo = CreateStartInfo(configuration, prompt, workingDirectory, invocationId);
             using var process = new Process { StartInfo = startInfo };
             if (!process.Start())
@@ -113,18 +170,23 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
             }
 
             process.StandardInput.Close();
-            var stdoutTask = ReadBoundedAsync(
-                process.StandardOutput,
+            var stdoutTask = ReadCliOutputAsync(
+                process.StandardOutput.BaseStream,
                 configuration.MaximumResponseBytes,
                 cancellationToken);
             var stderrTask = ReadBoundedAsync(
-                process.StandardError,
-                Math.Min(configuration.MaximumResponseBytes, 32_768),
+                process.StandardError.BaseStream,
+                MaximumCliStderrBytes,
+                "stderr",
+                nameof(MaximumCliStderrBytes),
                 cancellationToken);
             try
             {
-                await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-                await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false);
+                await WaitForProcessAndReadersAsync(
+                    process,
+                    stdoutTask,
+                    stderrTask,
+                    cancellationToken).ConfigureAwait(false);
             }
             catch
             {
@@ -140,7 +202,7 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
                     await stderrTask.ConfigureAwait(false)));
             }
 
-            return ParseOutput(await stdoutTask.ConfigureAwait(false));
+            return parseOutput((await stdoutTask.ConfigureAwait(false)).AssistantContent);
         }
         catch (AgentTransportException)
         {
@@ -252,12 +314,25 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
         }
 
         process.StandardInput.Close();
-        var stdoutTask = ReadBoundedAsync(process.StandardOutput, 4_096, cancellationToken);
-        var stderrTask = ReadBoundedAsync(process.StandardError, 4_096, cancellationToken);
+        var stdoutTask = ReadBoundedAsync(
+            process.StandardOutput.BaseStream,
+            4_096,
+            "version-probe stdout",
+            "MaximumVersionProbeBytes",
+            cancellationToken);
+        var stderrTask = ReadBoundedAsync(
+            process.StandardError.BaseStream,
+            4_096,
+            "version-probe stderr",
+            "MaximumVersionProbeBytes",
+            cancellationToken);
         try
         {
-            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-            await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false);
+            await WaitForProcessAndReadersAsync(
+                process,
+                stdoutTask,
+                stderrTask,
+                cancellationToken).ConfigureAwait(false);
         }
         catch
         {
@@ -273,17 +348,26 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
                 await stderrTask.ConfigureAwait(false)));
         }
 
-        var version = (await stdoutTask.ConfigureAwait(false))
+        return ParseVersionOutput(await stdoutTask.ConfigureAwait(false));
+    }
+
+    internal static string ParseVersionOutput(string output)
+    {
+        const string prefix = "GitHub Copilot CLI ";
+        var line = output
             .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .FirstOrDefault();
-        if (string.IsNullOrWhiteSpace(version)
-            || !version.StartsWith("GitHub Copilot CLI ", StringComparison.Ordinal))
+        var versionText = line?.StartsWith(prefix, StringComparison.Ordinal) == true
+            ? line[prefix.Length..].TrimEnd('.')
+            : null;
+        if (string.IsNullOrWhiteSpace(versionText)
+            || !Version.TryParse(versionText, out _))
         {
             throw new AgentTransportException(
                 "Copilot CLI version probe did not return the expected product/version line.");
         }
 
-        return version;
+        return prefix + versionText;
     }
 
     internal ProcessStartInfo CreateVersionStartInfo()
@@ -319,17 +403,24 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
 
         process.StandardInput.Close();
         var stdoutTask = ReadBoundedAsync(
-            process.StandardOutput,
+            process.StandardOutput.BaseStream,
             Math.Min(maximumResponseBytes, 65_536),
+            "isolation-preflight stdout",
+            "MaximumIsolationPreflightStdoutBytes",
             cancellationToken);
         var stderrTask = ReadBoundedAsync(
-            process.StandardError,
+            process.StandardError.BaseStream,
             Math.Min(maximumResponseBytes, 16_384),
+            "isolation-preflight stderr",
+            "MaximumIsolationPreflightStderrBytes",
             cancellationToken);
         try
         {
-            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-            await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false);
+            await WaitForProcessAndReadersAsync(
+                process,
+                stdoutTask,
+                stderrTask,
+                cancellationToken).ConfigureAwait(false);
         }
         catch
         {
@@ -352,7 +443,20 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
     {
         using var document = JsonDocument.Parse(json);
         var root = document.RootElement;
-        if (!root.TryGetProperty("errors", out var errors)
+        if (root.ValueKind == JsonValueKind.Array)
+        {
+            if (root.GetArrayLength() != 0)
+            {
+                throw new AgentTransportException(
+                    "Copilot CLI isolation preflight found a nonempty array-format plugin inventory; "
+                    + "its entries cannot establish an isolated profile.");
+            }
+
+            return;
+        }
+
+        if (root.ValueKind != JsonValueKind.Object
+            || !root.TryGetProperty("errors", out var errors)
             || errors.ValueKind != JsonValueKind.Array
             || errors.GetArrayLength() != 0
             || !root.TryGetProperty("plugins", out var plugins)
@@ -363,6 +467,17 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
 
         foreach (var plugin in plugins.EnumerateArray())
         {
+            if (plugin.ValueKind != JsonValueKind.Object
+                || (plugin.TryGetProperty("enabled", out var enabledValue)
+                    && enabledValue.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                || (plugin.TryGetProperty("scope", out var scopeValue)
+                    && scopeValue.ValueKind is not (JsonValueKind.String or JsonValueKind.Null))
+                || (plugin.TryGetProperty("source", out var sourceValue)
+                    && sourceValue.ValueKind is not (JsonValueKind.String or JsonValueKind.Null)))
+            {
+                throw new AgentTransportException("Copilot CLI isolation preflight returned an invalid inventory.");
+            }
+
             var enabled = !plugin.TryGetProperty("enabled", out var enabledElement)
                 || enabledElement.ValueKind != JsonValueKind.False;
             var scope = plugin.TryGetProperty("scope", out var scopeElement)
@@ -421,43 +536,12 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
 
     internal static AgentModelTurn ParseOutput(string jsonLines)
     {
-        string? accepted = null;
-        foreach (var line in jsonLines.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        if (LooksLikeCliEvent(jsonLines))
         {
-            using var document = JsonDocument.Parse(line);
-            var eventRoot = document.RootElement;
-            RejectCliToolActivity(eventRoot);
-            if (eventRoot.ValueKind != JsonValueKind.Object
-                || !eventRoot.TryGetProperty("type", out var type)
-                || type.ValueKind != JsonValueKind.String
-                || type.GetString() != "assistant.message"
-                || !eventRoot.TryGetProperty("data", out var data)
-                || data.ValueKind != JsonValueKind.Object)
-            {
-                continue;
-            }
-
-            if (data.TryGetProperty("toolRequests", out var toolRequests)
-                && toolRequests.ValueKind == JsonValueKind.Array
-                && toolRequests.GetArrayLength() != 0)
-            {
-                throw new JsonException("Copilot CLI reported tool activity despite the empty tool boundary.");
-            }
-
-            if (data.TryGetProperty("content", out var content)
-                && content.ValueKind == JsonValueKind.String
-                && TryParseDecision(content.GetString()!, out var normalized))
-            {
-                if (accepted is not null)
-                {
-                    throw new JsonException("Copilot CLI emitted more than one decision.");
-                }
-
-                accepted = normalized;
-            }
+            jsonLines = ExtractSingleAssistantContent(jsonLines, "decision");
         }
 
-        if (accepted is null)
+        if (!TryParseDecision(jsonLines, out var accepted))
         {
             throw new JsonException("Copilot CLI did not emit the required structured decision.");
         }
@@ -488,6 +572,58 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
             null);
     }
 
+    internal static string ParseStructuredJsonOutput(string jsonLines)
+        => LooksLikeCliEvent(jsonLines)
+            ? ExtractSingleAssistantContent(jsonLines, "structured response")
+            : jsonLines;
+
+    private static bool LooksLikeCliEvent(string value)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(value.Split('\n', 2)[0]);
+            return document.RootElement.ValueKind == JsonValueKind.Object
+                && document.RootElement.TryGetProperty("type", out var type)
+                && type.ValueKind == JsonValueKind.String;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static string ExtractSingleAssistantContent(string jsonLines, string responseName)
+    {
+        string? accepted = null;
+        foreach (var line in jsonLines.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            using var document = JsonDocument.Parse(line);
+            var root = document.RootElement;
+            RejectCliToolActivity(root);
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("type", out var type)
+                || type.ValueKind != JsonValueKind.String
+                || type.GetString() != "assistant.message"
+                || !root.TryGetProperty("data", out var data)
+                || data.ValueKind != JsonValueKind.Object
+                || !data.TryGetProperty("content", out var content)
+                || content.ValueKind != JsonValueKind.String)
+            {
+                continue;
+            }
+
+            if (accepted is not null)
+            {
+                throw new JsonException($"Copilot CLI emitted more than one {responseName}.");
+            }
+
+            accepted = content.GetString()!;
+        }
+
+        return accepted
+            ?? throw new JsonException($"Copilot CLI did not emit the required {responseName}.");
+    }
+
     private static void RejectCliToolActivity(JsonElement root)
     {
         if (root.ValueKind == JsonValueKind.Object
@@ -500,6 +636,49 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
             throw new JsonException(
                 "Copilot CLI reported tool activity despite the empty tool boundary.");
         }
+
+        if (ContainsNonemptyToolRequests(root))
+        {
+            throw new JsonException(
+                "Copilot CLI reported tool activity despite the empty tool boundary.");
+        }
+    }
+
+    private static bool ContainsNonemptyToolRequests(JsonElement element)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in element.EnumerateObject())
+            {
+                if ((property.NameEquals("toolRequests")
+                        && (property.Value.ValueKind != JsonValueKind.Array
+                            || property.Value.GetArrayLength() != 0))
+                    || property.NameEquals("toolCall")
+                    || property.NameEquals("toolCalls")
+                    || property.NameEquals("toolCallId")
+                    || property.NameEquals("toolName"))
+                {
+                    return true;
+                }
+
+                if (ContainsNonemptyToolRequests(property.Value))
+                {
+                    return true;
+                }
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in element.EnumerateArray())
+            {
+                if (ContainsNonemptyToolRequests(item))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     internal static string BuildPrompt(
@@ -581,30 +760,258 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
         }
     }
 
-    private static async Task<string> ReadBoundedAsync(
-        StreamReader reader,
-        int maximumBytes,
+    internal static async Task<CliOutputReadResult> ReadCliOutputAsync(
+        Stream stream,
+        int maximumResponseBytes,
         CancellationToken cancellationToken)
     {
-        var builder = new StringBuilder(Math.Min(maximumBytes, 16_384));
-        var buffer = new char[4096];
+        ArgumentOutOfRangeException.ThrowIfLessThan(maximumResponseBytes, 1);
+        var maximumEventBytes = checked(
+            (maximumResponseBytes * 6) + MaximumCliEventEnvelopeBytes);
+        var framingBytes = 0;
+        string? assistantContent = null;
+        void AddFramingBytes(int additionalBytes)
+        {
+            framingBytes = checked(framingBytes + additionalBytes);
+            if (framingBytes > MaximumCliFramingBytes)
+            {
+                throw new AgentTransportException(
+                    "Copilot CLI framing exceeded "
+                    + $"MaximumCliFramingBytes={MaximumCliFramingBytes} UTF-8 bytes "
+                    + $"(observed {framingBytes}).");
+            }
+        }
+
+        await ReadUtf8LinesAsync(
+            stream,
+            maximumEventBytes,
+            (line, lineBytes, delimiterBytes) =>
+            {
+                if (IsJsonWhitespace(line.Span))
+                {
+                    AddFramingBytes(checked(lineBytes + delimiterBytes));
+                    return;
+                }
+
+                using var document = JsonDocument.Parse(line);
+                var root = document.RootElement;
+                if (root.ValueKind != JsonValueKind.Object
+                    || !root.TryGetProperty("type", out var typeElement)
+                    || typeElement.ValueKind != JsonValueKind.String
+                    || string.IsNullOrWhiteSpace(typeElement.GetString()))
+                {
+                    throw new JsonException("Copilot CLI emitted an event without a valid type discriminator.");
+                }
+
+                RejectCliToolActivity(root);
+                var eventType = typeElement.GetString()!;
+                if (eventType == "assistant.message")
+                {
+                    if (assistantContent is not null)
+                    {
+                        throw new JsonException("Copilot CLI emitted more than one assistant answer.");
+                    }
+
+                    if (!root.TryGetProperty("data", out var data)
+                        || data.ValueKind != JsonValueKind.Object
+                        || !data.TryGetProperty("content", out var content)
+                        || content.ValueKind != JsonValueKind.String)
+                    {
+                        throw new JsonException("Copilot CLI assistant answer did not contain string content.");
+                    }
+
+                    assistantContent = content.GetString()!;
+                    var payloadBytes = Encoding.UTF8.GetByteCount(assistantContent);
+                    if (payloadBytes > maximumResponseBytes)
+                    {
+                        throw new AgentTransportException(
+                            "Copilot CLI assistant payload exceeded "
+                            + $"MaximumResponseBytes={maximumResponseBytes} UTF-8 bytes "
+                            + $"(observed {payloadBytes}).");
+                    }
+
+                    var envelopeBytes = checked(
+                        Math.Max(0, lineBytes - payloadBytes) + delimiterBytes);
+                    if (envelopeBytes > MaximumCliEventEnvelopeBytes)
+                    {
+                        throw new AgentTransportException(
+                            "Copilot CLI assistant event envelope exceeded "
+                            + $"MaximumCliEventEnvelopeBytes={MaximumCliEventEnvelopeBytes} UTF-8 bytes "
+                            + $"(observed {envelopeBytes}).");
+                    }
+
+                    AddFramingBytes(envelopeBytes);
+                }
+                else
+                {
+                    if (!IgnoredCliEventTypes.Contains(eventType))
+                    {
+                        throw new JsonException(
+                            $"Copilot CLI emitted unsupported event type '{eventType}'.");
+                    }
+
+                    AddFramingBytes(checked(lineBytes + delimiterBytes));
+                }
+            },
+            "stdout event",
+            "MaximumCliEventBytes",
+            cancellationToken).ConfigureAwait(false);
+
+        return new CliOutputReadResult(
+            assistantContent
+                ?? throw new JsonException("Copilot CLI did not emit the required assistant answer."),
+            framingBytes);
+    }
+
+    private static bool IsJsonWhitespace(ReadOnlySpan<byte> value)
+    {
+        foreach (var character in value)
+        {
+            if (character is not ((byte)' ' or (byte)'\t' or (byte)'\r'))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static async Task<string> ReadBoundedAsync(
+        Stream stream,
+        int maximumBytes,
+        string streamName,
+        string budgetName,
+        CancellationToken cancellationToken)
+    {
+        using var content = new MemoryStream(Math.Min(maximumBytes, 16_384));
+        var buffer = new byte[4096];
         var byteCount = 0;
         while (true)
         {
-            var read = await reader.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+            var read = await stream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
             if (read == 0)
             {
-                return builder.ToString();
+                return Encoding.UTF8.GetString(content.GetBuffer(), 0, checked((int)content.Length));
             }
 
-            byteCount += Encoding.UTF8.GetByteCount(buffer.AsSpan(0, read));
+            byteCount = checked(byteCount + read);
             if (byteCount > maximumBytes)
             {
-                throw new AgentTransportException("Copilot CLI output exceeded the configured response-byte budget.");
+                throw new AgentTransportException(
+                    $"Copilot CLI {streamName} exceeded {budgetName}={maximumBytes} UTF-8 bytes "
+                    + $"(observed at least {byteCount}).");
             }
 
-            builder.Append(buffer, 0, read);
+            content.Write(buffer, 0, read);
         }
+    }
+
+    private static async Task ReadUtf8LinesAsync(
+        Stream stream,
+        int maximumLineBytes,
+        Action<ReadOnlyMemory<byte>, int, int> consumeLine,
+        string streamName,
+        string budgetName,
+        CancellationToken cancellationToken)
+    {
+        using var line = new MemoryStream(Math.Min(maximumLineBytes, 16_384));
+        var buffer = new byte[4096];
+        while (true)
+        {
+            var read = await stream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+            if (read == 0)
+            {
+                if (line.Length != 0)
+                {
+                    consumeLine(
+                        line.GetBuffer().AsMemory(0, checked((int)line.Length)),
+                        checked((int)line.Length),
+                        0);
+                }
+
+                return;
+            }
+
+            var segmentStart = 0;
+            for (var index = 0; index < read; index++)
+            {
+                if (buffer[index] != (byte)'\n')
+                {
+                    continue;
+                }
+
+                AppendBounded(
+                    line,
+                    buffer.AsSpan(segmentStart, index - segmentStart),
+                    maximumLineBytes,
+                    streamName,
+                    budgetName);
+                consumeLine(
+                    line.GetBuffer().AsMemory(0, checked((int)line.Length)),
+                    checked((int)line.Length),
+                    1);
+                line.SetLength(0);
+
+                segmentStart = index + 1;
+            }
+
+            AppendBounded(
+                line,
+                buffer.AsSpan(segmentStart, read - segmentStart),
+                maximumLineBytes,
+                streamName,
+                budgetName);
+        }
+    }
+
+    private static void AppendBounded(
+        MemoryStream destination,
+        ReadOnlySpan<byte> value,
+        int maximumBytes,
+        string streamName,
+        string budgetName)
+    {
+        var observed = checked(destination.Length + value.Length);
+        if (observed > maximumBytes)
+        {
+            throw new AgentTransportException(
+                $"Copilot CLI {streamName} exceeded {budgetName}={maximumBytes} UTF-8 bytes "
+                + $"(observed at least {observed}).");
+        }
+
+        destination.Write(value);
+    }
+
+    private static async Task WaitForProcessAndReadersAsync<TStdout, TStderr>(
+        Process process,
+        Task<TStdout> stdoutTask,
+        Task<TStderr> stderrTask,
+        CancellationToken cancellationToken)
+    {
+        var exitTask = process.WaitForExitAsync(cancellationToken);
+        var stdoutObserved = false;
+        var stderrObserved = false;
+        while (!exitTask.IsCompleted)
+        {
+            var completed = await Task.WhenAny(
+                exitTask,
+                stdoutObserved ? Task.Delay(Timeout.Infinite, cancellationToken) : stdoutTask,
+                stderrObserved ? Task.Delay(Timeout.Infinite, cancellationToken) : stderrTask)
+                .ConfigureAwait(false);
+            if (completed == stdoutTask)
+            {
+                await stdoutTask.ConfigureAwait(false);
+                stdoutObserved = true;
+            }
+            else if (completed == stderrTask)
+            {
+                await stderrTask.ConfigureAwait(false);
+                stderrObserved = true;
+            }
+        }
+
+        await exitTask.ConfigureAwait(false);
+        await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false);
     }
 
     private static async Task KillOwnedProcessTreeAsync(Process process)
@@ -627,6 +1034,8 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
                 innerException: exception);
         }
     }
+
+    internal sealed record CliOutputReadResult(string AssistantContent, int FramingBytes);
 
     private static void RemoveSensitiveOrAmbientEnvironment(
         IDictionary<string, string?> environment)
