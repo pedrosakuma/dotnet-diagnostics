@@ -1,8 +1,12 @@
+using System.Text.Json.Serialization;
+
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
+builder.Services.ConfigureHttpJsonOptions(options =>
+    options.SerializerOptions.TypeInfoResolverChain.Insert(0, NativeAotJsonSerializerContext.Default));
 
 var app = builder.Build();
 
@@ -56,3 +60,6 @@ static class CpuSamplingWorkload
         return value;
     }
 }
+
+[JsonSerializable(typeof(WeatherForecast[]))]
+internal sealed partial class NativeAotJsonSerializerContext : JsonSerializerContext;

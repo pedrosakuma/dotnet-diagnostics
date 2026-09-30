@@ -75,7 +75,7 @@ public sealed class LiveWindowsNativeAotCpuSamplingTests : IAsyncLifetime
         await WaitForTargetAsync(sampleProcess.Id, CancellationToken.None);
         using var client = new HttpClient { BaseAddress = baseAddress, Timeout = TimeSpan.FromSeconds(5) };
         using var response = await SendWorkloadAsync(client, CancellationToken.None);
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        response.StatusCode.Should().Be(HttpStatusCode.OK, await response.Content.ReadAsStringAsync());
     }
 
     public async Task DisposeAsync()
@@ -113,7 +113,13 @@ public sealed class LiveWindowsNativeAotCpuSamplingTests : IAsyncLifetime
                 topN: 50);
 
             result.Summary.TotalSamples.Should().BeGreaterThan(0);
-            result.Summary.SymbolSource.Should().Be(NativeAotSymbolDemangler.SymbolSource.PdbResolved);
+            result.Summary.SymbolSource.Should().Be(
+                NativeAotSymbolDemangler.SymbolSource.PdbResolved,
+                string.Join(
+                    Environment.NewLine,
+                    result.Summary.Notes.Concat(
+                        result.Summary.TopHotspots.Select(hotspot =>
+                            $"{hotspot.Frame.Module}!{hotspot.Frame.Method}: {hotspot.InclusiveSamples}"))));
             result.Summary.TopHotspots.Should().Contain(
                 hotspot => hotspot.Frame.Method.Contains("BurnCpu", StringComparison.Ordinal),
                 "the known no-inline NativeAOT workload must resolve through its matching PDB function range");

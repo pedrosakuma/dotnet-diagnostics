@@ -662,3 +662,60 @@ tests passed, but live Windows DIA/ETW integration was not run here. This does
 not recover the missing historical ICU image identity/load base, prove
 historical function coverage, establish external symbol-server availability,
 or close the broader #987 feasibility and provenance work.
+
+### Local Windows validation handoff (2026-09-30)
+
+**Result: live DIA/ETW acceptance failed; PR #1072 remains draft.** Testing started
+at `eea0e273d030ed7aa9d15f6ee94405191d070f6a` on Windows x64
+`10.0.26300`, with SDK `10.0.401` selected by the repository's
+`latestFeature` roll-forward and test-host runtime `10.0.12`.
+`DIAG_REQUIRE_WINDOWS_DIA_ETW=1` was set, so missing elevation could not
+silently satisfy the test.
+
+The integration test invokes the product's `EtwNativeAotCpuSampler.SampleAsync`
+directly through Core. It publishes the repository-owned NativeAOT sample and
+drives `/cpu` during a five-second kernel ETW capture. This is **not** CLI or MCP
+end-to-end evidence, an ICU workload, or historical capture replay.
+
+Six invocations of the dedicated NativeAOT live test were attempted, preserving
+the following failures. Four reached the capture path; there was also one
+standalone HTTP reproduction without profiling. No invocation established the
+expected named `BurnCpu` hotspot.
+
+| Attempt | Configuration and outcome |
+|---|---|
+| 1 | Sample publish failed before capture: `vswhere.exe` was absent from PATH, corrupting the discovered linker command. |
+| 2 | Adding the already-installed Visual Studio Installer directory to process-local PATH allowed publish. `/cpu` returned HTTP 500 before capture. |
+| 3 | Registering source-generated JSON metadata for `WeatherForecast[]` repaired endpoint initialization. ETW samples were collected, but `SymbolSource` was `Stripped`, not `PdbResolved`. |
+| 4 | With failure diagnostics added, the same resolver reported `MissingPdbIdentity=29`, zero accepted names and 93,168 unresolved sampled frame occurrences. These are frame occurrences, not distinct PCs or total CPU samples. |
+| 5 | A temporary `LookupSymbolsForModule` preflight experiment exceeded the test's 240-second execution timeout. It did not establish a safe identity-hydration path or the reason for the timeout. |
+| 6 | A temporary local PE CodeView fallback reached `new DiaSourceClass()` but failed with `BadImageFormatException`, HRESULT `0x800700C1`, during COM class-factory activation. No DIA function-range result was obtained. |
+
+The two resolver experiments were removed. Reading the current file at a module
+path alone does not establish its identity against the image captured in ETW.
+Do not weaken the missing-identity guard or substitute this fallback merely to
+make the test pass. The observed COM activation failure also requires a
+deployment-safe solution, not machine-wide COM registration changes.
+
+Retained adjustments are limited to the sample's source-generated JSON context
+and more informative live-test failures (HTTP response body plus symbol notes
+and bounded top-hotspot output). The production resolver remains unchanged by
+this validation pass. The source-level half-open-range controls are not a
+substitute for the still-failing live acceptance.
+
+A subsequent HTTP-only smoke check of the corrected NativeAOT publish returned
+200 for both `/cpu` and `/weatherforecast`. The offline-only
+`EtwPdbSymbolResolverTests` selection passed all seven cases. A broader
+`EtwPdbSymbolResolverTests|EtwNativeAotCpuSamplerTests` selection was interrupted
+after exceeding the initial 180-second wait: it also includes live self-profiling
+and cancellation cases on elevated Windows and must not be reported as an
+offline-only run or a pass. Its exact capture progress was not retained.
+Two surviving sample processes from the dedicated fixture were identified by
+their unique publish paths and start times and terminated by PID.
+
+Before readiness, resolve captured-image/PDB identity acquisition and DIA
+activation, then predeclare a bounded new validation batch, including the
+public CLI or MCP path. Keep #987 open: historical ICU image/load-base identity,
+sampled function coverage, per-module provenance, and external-symbol
+availability remain unresolved. Neither this test nor a green general Windows
+suite would close those criteria.
