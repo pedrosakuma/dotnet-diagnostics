@@ -642,3 +642,23 @@ validation.
 [^current-lookup]: [Current native lookup and undecoration](https://github.com/microsoft/perfview/blob/4aab31822f3329632a5b566fd8a286d08881760e/src/TraceEvent/Symbols/NativeSymbolModule.cs#L57-L120), [display mapping](https://github.com/microsoft/perfview/blob/4aab31822f3329632a5b566fd8a286d08881760e/src/TraceEvent/Symbols/NativeSymbolModule.cs#L131-L170), and [lookup interface](https://github.com/microsoft/perfview/blob/4aab31822f3329632a5b566fd8a286d08881760e/src/TraceEvent/Symbols/ISymbolLookup.cs#L3-L8).
 [^current-storage]: [Current lookup/interning](https://github.com/microsoft/perfview/blob/4aab31822f3329632a5b566fd8a286d08881760e/src/TraceEvent/TraceLog.cs#L9162-L9208), [creation/serialization](https://github.com/microsoft/perfview/blob/4aab31822f3329632a5b566fd8a286d08881760e/src/TraceEvent/TraceLog.cs#L10302-L10322), and [stored fields](https://github.com/microsoft/perfview/blob/4aab31822f3329632a5b566fd8a286d08881760e/src/TraceEvent/TraceLog.cs#L10353-L10364).
 [^file-found]: [OnSymbolFileFound is a file-identity callback](https://github.com/microsoft/perfview/blob/4aab31822f3329632a5b566fd8a286d08881760e/src/TraceEvent/Symbols/SymbolReader.cs#L1004-L1008).
+
+## Follow-up implementation status (2026-09-30)
+
+The separately authorized #987 correction now uses the public DIA API directly
+for Windows ETW CPU symbolization. It validates the selected PDB against the
+module's recorded GUID and age, queries the selected function for each sampled
+RVA, and carries typed range status, PDB provenance, and function bounds before
+the name enters CPU aggregation. Only non-empty names with a verified
+half-open range are retained. Missing PDBs, identity failures, failed lookups,
+zero-length ranges, and addresses outside the reported range stay as raw
+module PCs. The implementation does not parse TraceEvent warning text or use
+name-prefix heuristics, so a valid decorated name is not rejected by spelling.
+
+Repository-owned tests cover the half-open start/end boundary, missing ranges,
+out-of-range controls, PDB identity provenance, and valid decorated names. The
+targeting environment for this implementation was Linux: these deterministic
+tests passed, but live Windows DIA/ETW integration was not run here. This does
+not recover the missing historical ICU image identity/load base, prove
+historical function coverage, establish external symbol-server availability,
+or close the broader #987 feasibility and provenance work.

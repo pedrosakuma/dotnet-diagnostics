@@ -2197,7 +2197,9 @@ surface the same split:
   managed names recovered from the AOT `.symbols.map` sidecar when present).
 - **NativeAOT / Windows** — NT Kernel Logger `PerfInfo/SampledProfile` via
   ETW; admin elevation (or `SeSystemProfilePrivilege`) required. Frames are
-  native; managed names recovered from the PE export table + PDB.
+  native; PDB/DIA function names are retained only when the sampled RVA falls
+  inside the matching function's half-open range. Missing, mismatched,
+  zero-length, or out-of-range symbols remain raw module PCs.
 
 Confirm the dispatch path up front with `inspect_process(view="capabilities")` →
 `data.canSampleCpu`. Coverage and AOT caveats are summarized in
