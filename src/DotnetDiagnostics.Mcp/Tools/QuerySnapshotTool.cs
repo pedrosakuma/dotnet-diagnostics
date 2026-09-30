@@ -139,7 +139,7 @@ public sealed partial class QuerySnapshotTool
         INativeAddressResolver addressResolver,
         IFrameVariableResolver frameVariableResolver,
         [Description("Drilldown handle; required unless latestOfKind is supplied.")] string? handle = null,
-        [Description("Kind-specific view; omit for the default. CPU/allocation call trees: call-tree|top-methods|by-module|by-namespace|hot-path|caller-callee|triage|diff. Heap: top-types|retention-paths|roots-by-kind|finalizer-queue|fragmentation|static-fields|delegate-targets|duplicate-strings|gchandles|timers|alc|object|gcroot|objsize|async|diff|growth. Thread: threads-summary|stack|lock-graph|deadlocks|top-blocked|unique-stacks|async-stalls|wait-chains|threadpool|resolve-address|frame-vars. Off-CPU: topStacks|byThread|stack. Collection handles expose their documented summary, grouping, event, timeline, and detail views; see tool-reference.md for kind-specific parameters.")] string? view = null,
+        [Description("Kind-specific view; omit for default. Durable selectors add bounded records and composition children. Historical views never reattach; see tool-reference.md.")] string? view = null,
         [Description("Ranked entries: defaults 50 heap/thread/collection, 25 off-CPU/diff. Inline caps: threads 8, locks 12, retention paths 10; full evidence stays behind the handle.")] int? topN = null,
         [Description("Heap top-types/growth: bytes|instances. CPU top-methods: exclusive|inclusive|running. Running is on-CPU self samples only for OS backends; otherwise frequency candidates, not scheduler state.")] string rankBy = "bytes",
         [Description("Heap view='retention-paths' only: case-insensitive substring matched against TypeFullName.")] string? typeFullName = null,
@@ -167,11 +167,55 @@ public sealed partial class QuerySnapshotTool
         [Description("Thread/lock paging offset 0..256; prefer cursor.")] int offset = 0,
         [Description("nextThreadCursor/nextLockCursor/nextWaiterCursor continuation, bound to handle/view/lock. Cannot combine with nonzero offset.")] string? cursor = null,
         [Description("Sample top-methods: display MoveNext as its async method; asyncFolded reports matches. No stronger CPU evidence. Default false.")] bool foldAsync = false,
-        [Description("Latest non-expired handle of this kind. Supply exactly one of handle/latestOfKind; optionally narrow by latestOfKindProcessId.")] string? latestOfKind = null,
+        [Description("Latest non-expired kind, optionally narrowed by latestOfKindProcessId; excludes handle/captureId.")] string? latestOfKind = null,
         [Description("latestOfKind: optional OS PID filter.")] int? latestOfKindProcessId = null,
         [Description("GC handle for activities gc-overlay.")] string? gcHandle = null,
+        [Description("Durable ID; requires artifactId, excludes handle/latestOfKind. No live fallback.")]
+        string? captureId = null,
+        [Description("Artifact ID within captureId (from capture.artifacts).")]
+        string? artifactId = null,
+        [Description("view='records': inclusive UTC lower timestamp bound.")]
+        DateTimeOffset? recordFrom = null,
+        [Description("view='records': inclusive UTC upper timestamp bound.")]
+        DateTimeOffset? recordTo = null,
+        [Description("view='records': exact category filter.")]
+        string? recordCategory = null,
+        [Description("view='records': exact name filter (not a substring).")]
+        string? recordName = null,
+        [Description("view='records': continuation from nextAfterRecordId; default 0.")]
+        long afterRecordId = 0,
+        [Description("view='records': row limit 1..1000, default 100; a separate byte budget may return fewer.")]
+        int recordPageSize = 100,
+        DurableCaptureTools? durableCaptures = null,
         CancellationToken cancellationToken = default)
     {
+        if (captureId is not null)
+        {
+            if (handle is not null || latestOfKind is not null || latestOfKindProcessId is not null)
+                return InvalidArgument(nameof(captureId), "cannot be combined with handle or latestOfKind selectors");
+            if (string.IsNullOrWhiteSpace(captureId) || string.IsNullOrWhiteSpace(artifactId))
+                return InvalidArgument(nameof(artifactId), "a nonempty captureId and artifactId are required");
+            if (durableCaptures is null)
+                return DurableCaptureTools.Unavailable<object>();
+            if (string.Equals(view?.Trim(), "records", StringComparison.OrdinalIgnoreCase))
+                return await durableCaptures.QueryRecordsAsync(
+                    principalAccessor, captureId, artifactId, recordFrom, recordTo, threadId,
+                    recordCategory, recordName, afterRecordId, recordPageSize, cancellationToken).ConfigureAwait(false);
+
+            var prepared = await durableCaptures.PrepareAsync(
+                principalAccessor, captureId, artifactId, view, cancellationToken).ConfigureAwait(false);
+            if (prepared.Error is not null)
+                return prepared.Error;
+            handle = prepared.Handle;
+        }
+        else if (artifactId is not null)
+        {
+            return InvalidArgument(nameof(artifactId), "requires captureId");
+        }
+        else if (string.Equals(view?.Trim(), "records", StringComparison.OrdinalIgnoreCase))
+        {
+            return InvalidArgument(nameof(captureId), "view='records' requires explicit captureId and artifactId");
+        }
         if (string.IsNullOrWhiteSpace(handle) && string.IsNullOrWhiteSpace(latestOfKind))
         {
             return InvalidArgument(nameof(handle), "is required (or supply `latestOfKind` to resolve the most recently registered handle of a kind)");
@@ -194,6 +238,18 @@ public sealed partial class QuerySnapshotTool
                     RecoveryHintForKind(latestOfKind!, latestOfKindProcessId));
             }
             handle = resolved.Id;
+        }
+
+        if (durableCaptures is not null)
+        {
+            foreach (var selectedHandle in new[] { handle, baselineHandle, gcHandle }
+                .Concat(comparisonHandles ?? Array.Empty<string>()).Where(static value => value is not null))
+            {
+                var denial = await durableCaptures.ValidateHandleAsync(
+                    principalAccessor, selectedHandle!, view, cancellationToken).ConfigureAwait(false);
+                if (denial is not null)
+                    return denial;
+            }
         }
 
         var principal = principalAccessor.Current;
@@ -269,7 +325,9 @@ public sealed partial class QuerySnapshotTool
             CancellationToken = cancellationToken,
         };
 
-        return await handler(context).ConfigureAwait(false);
+        var result = await handler(context).ConfigureAwait(false);
+        return durableCaptures is null ? result : await durableCaptures.DecorateQueryAsync(
+            result, principalAccessor, handle, lookup.Value.Handle.ExpiresAt, cancellationToken).ConfigureAwait(false);
     }
 
     public static Task<DiagnosticResult<object>> QuerySnapshotPaged(
@@ -1159,7 +1217,7 @@ public sealed partial class QuerySnapshotTool
         return lookupResult;
     }
 
-    private static bool AuthorizeKind(
+    internal static bool AuthorizeKind(
         BearerPrincipal? principal,
         string kind,
         string? view,

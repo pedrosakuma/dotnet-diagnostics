@@ -127,6 +127,7 @@ public sealed class MemoryDiagnosticHandleStore : IDiagnosticHandleStore
             entryCount,
             _maxEntries,
             handle.ExpiresAt);
+        CaptureRecording.CaptureRecordingContext.ArtifactRegistered(handle, artifact);
         return handle;
     }
 

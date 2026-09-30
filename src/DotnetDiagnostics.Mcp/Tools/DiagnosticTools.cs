@@ -1261,20 +1261,15 @@ public sealed class DiagnosticTools
         Name = DiagnosticOperationCatalog.CollectThreadSnapshot,
         Title = "Capture managed threads + locks from a live process or dump",
         Destructive = false,
-        ReadOnly = true,
+        ReadOnly = false,
         Idempotent = false,
         UseStructuredContent = true)]
     [Description(
-        "Captures a single-point-in-time snapshot of all managed threads (state, stack frames with " +
-        "MethodIdentity handoff, inferred wait reason) plus the SyncBlock-based lock graph (object " +
-        "address, owning thread, waiter count). Supply at most ONE of processId or dumpFilePath: " +
-        "processId attaches via ClrMD with suspend (typically sub-second on ≤100 threads); " +
-        "dumpFilePath analyses an already-captured WithHeap/Full dump offline. When both are omitted " +
-        "the server auto-selects a live .NET process (live mode). Summary returns a bounded 6-thread × 6-frame " +
-        "decision-oriented page with no locks; detail/raw return 8 threads × 7 frames plus 12 locks with at most " +
-        "8 waiter ids each. The handle (~10min TTL) retains the capture for stable query_snapshot pages " +
-        "(8 threads × 8 frames or 12 locks per page, plus exact per-lock waiter paging). Handles survive producer " +
-        "PID exit until TTL; only the live-only 'resolve-address' and 'frame-vars' views still require the original live process.")]
+        "Capture managed threads, MethodIdentity stack frames, inferred waits and SyncBlock locks. " +
+        "Supply processId for a suspending ClrMD attach or dumpFilePath for offline WithHeap/Full analysis; omit both to auto-select. " +
+        "Summary: 6 threads x 6 frames, no locks. Detail/raw: 8 x 7 plus 12 locks x 8 waiters. " +
+        "The ~10min handle survives PID exit; query_snapshot pages retain 8 x 8 frames or 12 locks, with per-lock waiter paging. " +
+        "resolve-address/frame-vars need the original live target and are unavailable on durable historical handles.")]
     public static Task<DiagnosticResult<ThreadSnapshotQueryResult>> CollectThreadSnapshot(
         IThreadSnapshotInspector inspector,
         IDiagnosticHandleStore handles,
@@ -1292,8 +1287,13 @@ public sealed class DiagnosticTools
         [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
         string? investigationHandleId = null,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
+        [Description("Persist private SQLite evidence; default false. Historical views never reattach.")]
+        bool persist = false,
+        DurableCaptureTools? durableCaptures = null,
         CancellationToken cancellationToken = default)
-        => DiagnosticToolThreadingAndJit.CollectThreadSnapshot(
+        => DurableCaptureTools.CollectAsync(
+            durableCaptures, principalAccessor, persist, "collect_thread_snapshot", "thread-snapshot",
+            ct => DiagnosticToolThreadingAndJit.CollectThreadSnapshot(
             inspector,
             handles,
             resolver,
@@ -1308,7 +1308,7 @@ public sealed class DiagnosticTools
             depth,
             investigationHandleId,
             deprecation,
-            cancellationToken);
+            ct), cancellationToken);
 
     [RequireScope("ptrace")]
     [McpServerTool(
@@ -1545,7 +1545,7 @@ public sealed class DiagnosticTools
         "and feed it back via `compare_to_baseline` on the next deploy. When the operator opts in " +
         "(MCP_INVESTIGATION_OTEL=1) the summary is also emitted as an OpenTelemetry span for " +
         "durable, queryable investigation history; off by default.")]
-    public static Task<DiagnosticResult<ExportedInvestigationSummary>> ExportInvestigationSummary(
+    public static async Task<DiagnosticResult<ExportedInvestigationSummary>> ExportInvestigationSummary(
         IInvestigationSummaryExporter exporter,
         IDiagnosticHandleStore handles,
         DotnetDiagnostics.Mcp.Observability.IInvestigationTelemetryEmitter telemetry,
@@ -1562,10 +1562,21 @@ public sealed class DiagnosticTools
         [Description("Optional free-form notes appended to the summary.")] string? notes = null,
         [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
         string? investigationHandleId = null,
+        DurableCaptureTools? durableCaptures = null,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        return Task.FromResult(DiagnosticToolInvestigationPlanning.ExportInvestigationSummary(
+        if (durableCaptures is not null)
+        {
+            foreach (var selected in new[] { handle }.Concat(additionalHandles ?? Array.Empty<string>()))
+            {
+                var denial = await durableCaptures.ValidateHandleAsync(
+                    principalAccessor, selected, null, cancellationToken).ConfigureAwait(false);
+                if (denial is not null)
+                    return new(denial.Summary, denial.Hints, denial.Error);
+            }
+        }
+        return DiagnosticToolInvestigationPlanning.ExportInvestigationSummary(
             exporter,
             handles,
             telemetry,
@@ -1580,7 +1591,7 @@ public sealed class DiagnosticTools
             fixPullRequestUrl,
             fixDescription,
             notes,
-            investigationHandleId));
+            investigationHandleId);
     }
 
     [RequireScope("investigation-export")]
@@ -1592,13 +1603,10 @@ public sealed class DiagnosticTools
         Idempotent = true,
         UseStructuredContent = true)]
     [Description(
-        "Diffs either two InvestigationSummary JSON documents (produced by export_investigation_summary) " +
-        "or 2..N persisted ComparableSnapshot JSON documents. Legacy summaries return the same " +
-        "SummaryDiff as before; comparable snapshots return either the full SnapshotJourneyDiff when small " +
-        "or a compact verdict/headline/top-deltas summary with a journey://diff/{handle} Resource link for large local matrices; " +
-        "proxied full results stay inline because dynamic pod Resources are not forwarded. " +
-        "Pass JSON bodies only; the stateless sidecar never reads comparison inputs from file paths.")]
-    public static DiagnosticResult<object> CompareToBaseline(
+        "Compares summary/snapshot JSON or explicit local durable captureComparison references. " +
+        "Legacy SummaryDiff/journey behavior is unchanged. Durable CPU/heap/counters return qualified retained differences, " +
+        "both identities/quality and incompatibilities, never causal verdicts. No live attach or arbitrary input paths.")]
+    public static Task<DiagnosticResult<object>> CompareToBaseline(
         ISummaryComparer comparer,
         IDiagnosticHandleStore handles,
         IPrincipalAccessor principalAccessor,
@@ -1609,8 +1617,22 @@ public sealed class DiagnosticTools
         [Description("ComparableSnapshot journey only: inline verbosity. `full` returns the full matrix; local large results may use a journey://diff/{handle} Resource link, while proxied results stay inline because dynamic pod Resources are not forwarded. `compact` returns verdict/headline/counts/notes plus top-N deltas. Defaults to `full`.")] string depth = "full",
         [Description("ComparableSnapshot journey only: `trend` (default) compares ordered captures over time; `dispersion` compares unordered replicas for outliers.")] string? mode = null,
         [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
-        string? investigationHandleId = null)
-        => DiagnosticToolBaselineComparison.CompareToBaseline(
+        string? investigationHandleId = null,
+        [Description("Exclusive durable input: {baseline:{captureId,artifactId},candidate:{captureId,artifactId}}. Whole retained snapshots; no filters or remote stores.")]
+        JsonElement? captureComparison = null,
+        DurableCaptureTools? durableCaptures = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (captureComparison is { } comparison)
+        {
+            if (baselineSummaryJson is not null || currentSummaryJson is not null || snapshotsJson is not null ||
+                mode is not null || topN != 25 || depth != "full")
+                return Task.FromResult(DiagnosticResult.Fail<object>("Durable references cannot be mixed with legacy inputs or projection options.",
+                    new DiagnosticError("InvalidArgument", "Use only captureComparison for durable comparison.")));
+            return durableCaptures is null ? Task.FromResult(DurableCaptureTools.Unavailable<object>())
+                : durableCaptures.CompareAsync(principalAccessor, comparison, cancellationToken);
+        }
+        return Task.FromResult(DiagnosticToolBaselineComparison.CompareToBaseline(
             comparer,
             handles,
             principalAccessor,
@@ -1620,7 +1642,8 @@ public sealed class DiagnosticTools
             topN,
             depth,
             mode,
-            investigationHandleId);
+            investigationHandleId));
+    }
 
     private static DiagnosticResult<T> InvalidArg<T>(string parameterName, string requirement)
         => DiagnosticResult.Fail<T>(

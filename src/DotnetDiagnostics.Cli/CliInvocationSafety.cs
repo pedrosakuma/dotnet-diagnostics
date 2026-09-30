@@ -42,6 +42,12 @@ internal static class CliInvocationSafety
     {
         ArgumentNullException.ThrowIfNull(options);
         var request = CreateDiagnosticRequest(options, handles);
+        if (options.Persist && options.Command != "session")
+        {
+            request = new InvocationSafetyRequest(request.Operation,
+                request.Arguments.Select(static pair => KeyValuePair.Create<string, string?>(pair.Key, pair.Value))
+                    .Append(KeyValuePair.Create<string, string?>("persist", "true")), request.Children);
+        }
         return options.Launch
             ? new InvocationSafetyRequest(
                 DiagnosticOperationCatalog.LaunchProcess,
@@ -69,6 +75,10 @@ internal static class CliInvocationSafety
                 ("dumpType", options.DumpType),
                 ("outputDirectory", options.OutDir)),
             "query" => Query(options, handles),
+            "captures" => InvocationSafetyRequest.Create(
+                DiagnosticOperationCatalog.GetBytes,
+                ("kind", DiagnosticOperationCatalog.ByteKinds.Captures),
+                ("captureAction", options.CaptureAction == "show" ? "describe" : options.CaptureAction)),
             "get-bytes" => InvocationSafetyRequest.Create(
                 DiagnosticOperationCatalog.GetBytes,
                 ("kind", options.Kind)),
@@ -165,6 +175,13 @@ internal static class CliInvocationSafety
         CliOptions options,
         IDiagnosticHandleStore? handles)
     {
+        if (options.CaptureId is not null)
+        {
+            return InvocationSafetyRequest.Create(
+                DiagnosticOperationCatalog.QuerySnapshot,
+                ("captureId", options.CaptureId),
+                ("view", options.View));
+        }
         var handleKind = options.Handle is { Length: > 0 } handle
             ? handles?.LookupWithKind(handle).Lookup?.Kind
             : null;

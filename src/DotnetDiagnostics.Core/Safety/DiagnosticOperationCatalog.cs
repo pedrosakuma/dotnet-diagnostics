@@ -220,8 +220,9 @@ public static class DiagnosticOperationCatalog
         public const string Trace = "trace";
         public const string List = "list";
         public const string Delete = "delete";
+        public const string Captures = "captures";
 
-        public static IReadOnlyList<string> All { get; } = [Module, Dump, Trace, List, Delete];
+        public static IReadOnlyList<string> All { get; } = [Module, Dump, Trace, List, Delete, Captures];
         public static IReadOnlyList<string> Cli { get; } = [Module, Dump, Trace];
     }
 
@@ -265,6 +266,7 @@ public static class DiagnosticOperationCatalog
         {
             var views = new List<string>();
 
+            Add(["records", "children"]);
             Add(HeapSnapshotQueryDispatcher.ProjectionViews);
             Add([ObjectView, GcRoot, ObjectSize, DuplicateStrings, Diff, Growth]);
             Add(ThreadSnapshotQueryDispatcher.SessionViews);

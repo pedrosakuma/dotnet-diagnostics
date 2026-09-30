@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Diagnostics.Tracing;
+using DotnetDiagnostics.Core.CaptureRecording;
+using DotnetDiagnostics.Core.Security;
 using System.Globalization;
 using DotnetDiagnostics.Core.Internal;
 using Microsoft.Diagnostics.NETCore.Client;
@@ -22,6 +24,7 @@ public sealed class EventPipeCrashGuardCollector : ICrashGuardCollector
     private const long ExceptionKeyword = 0x8000;
     private const long StackKeyword = 0x40000000;
     private static readonly char[] StackLineSeparators = ['\r', '\n'];
+    internal const int RecordedStackFrameLimit = 128;
 
     private readonly ILogger<EventPipeCrashGuardCollector> _logger;
     internal EventPipeProvider? ReadinessProvider { get; init; }
@@ -40,6 +43,8 @@ public sealed class EventPipeCrashGuardCollector : ICrashGuardCollector
         int maxRecent = 100,
         CancellationToken cancellationToken = default)
     {
+        var observationSink = CaptureRecordingContext.Current;
+        var observationRedactor = observationSink is null ? null : new SensitiveDataRedactor();
         if (duration <= TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(nameof(duration), "Duration must be positive.");
@@ -86,6 +91,10 @@ public sealed class EventPipeCrashGuardCollector : ICrashGuardCollector
                 source.Clr.ExceptionStart += traceEvent =>
                 {
                     var captured = CaptureException(traceEvent, "ExceptionThrown_V1", isUnhandled: false, notes);
+                    if (observationSink is not null)
+                        RecordCrashObservation(observationSink, captured.Timestamp, captured.ThreadId, captured.EventName,
+                            false, traceEvent.ExceptionType, traceEvent.ExceptionMessage, captured.ExceptionHResult,
+                            captured.ManagedStack, observationRedactor!);
                     RecordException(captured, exceptions, counts, gate, maxRecent, ref total, ref lastObservedException, ref explicitUnhandledException);
                     ExceptionObserved?.Invoke(captured);
                 };
@@ -105,6 +114,11 @@ public sealed class EventPipeCrashGuardCollector : ICrashGuardCollector
 
                     Interlocked.Exchange(ref unhandledObserved, 1);
                     var captured = CaptureDynamicException(traceEvent, eventName, notes);
+                    if (observationSink is not null)
+                        RecordCrashObservation(observationSink, ToUtc(traceEvent.TimeStamp), traceEvent.ThreadID, eventName,
+                            true, TryReadPayloadString(traceEvent, "ExceptionType", "ExceptionTypeName", "TypeName", "Exception"),
+                            TryReadPayloadString(traceEvent, "ExceptionMessage", "Message", "ExceptionMessageText"),
+                            TryReadPayloadString(traceEvent, "ExceptionHRESULT", "HResult"), captured?.ManagedStack, observationRedactor!);
                     if (captured is not null)
                     {
                         RecordException(captured, exceptions, counts, gate, maxRecent, ref total, ref lastObservedException, ref explicitUnhandledException);
@@ -215,7 +229,7 @@ public sealed class EventPipeCrashGuardCollector : ICrashGuardCollector
             .ThenBy(c => c.ExceptionType, StringComparer.Ordinal)
             .ToList();
 
-        return new CrashGuardSnapshot(
+        var snapshot = new CrashGuardSnapshot(
             ProcessId: processId,
             StartedAt: startedAt,
             Duration: DateTimeOffset.UtcNow - startedAt,
@@ -228,6 +242,71 @@ public sealed class EventPipeCrashGuardCollector : ICrashGuardCollector
             FinalException: finalException,
             Notes: notes.Keys.OrderBy(static note => note, StringComparer.Ordinal).ToList())
         { RecentCap = maxRecent, Observation = observation };
+        RecordRetainedEvidence(observationSink, snapshot, finalEvidence.InferredFromExit);
+        return snapshot;
+    }
+
+    internal static void RecordRetainedEvidence(ICaptureObservationSink? sink, CrashGuardSnapshot snapshot, bool inferredFromExit)
+    {
+        if (sink is null) return;
+        var redactor = new SensitiveDataRedactor();
+        sink.ReportSourceLoss(RuntimeProvider, snapshot.Observation?.EventsLost);
+        sink.TryAppend(ProviderObservationProjection.Create(
+            "crashguard.retention.aggregate", null, null, "crashguard",
+            ("provider", RuntimeProvider), ("processExited", snapshot.ProcessExited), ("exitCode", snapshot.ExitCode),
+            ("totalExceptions", snapshot.TotalExceptions), ("retainedExceptions", snapshot.Exceptions.Count),
+            ("recentCap", snapshot.RecentCap), ("finalInferredFromExit", inferredFromExit),
+            ("unhandledExceptionObserved", snapshot.UnhandledExceptionObserved),
+            ("streamCompleted", snapshot.Observation?.StreamCompleted), ("drainCompleted", snapshot.Observation?.DrainCompleted),
+            ("eventsLost", snapshot.Observation?.EventsLost), ("processingError", snapshot.Observation?.ProcessingError),
+            ("shutdownError", snapshot.Observation?.ShutdownError),
+            ("explicitCrashEventObserved", snapshot.Observation?.ExplicitCrashEventObserved),
+            ("exitObservedDuringWindow", snapshot.Observation?.ExitObservedDuringWindow)));
+        for (var index = 0; index < snapshot.Exceptions.Count; index++)
+            RecordRetainedException(sink, snapshot.Exceptions[index], index, "retained", redactor);
+        if (snapshot.FinalException is { } final)
+            RecordRetainedException(sink, final, -1, inferredFromExit ? "final-inferred-from-exit" : "final-evidence", redactor);
+        if (snapshot.Observation?.LastObservedException is { } last)
+            RecordRetainedException(sink, last, -2, "last-observed-not-proof-of-termination", redactor);
+    }
+
+    internal static void RecordCrashObservation(ICaptureObservationSink sink, DateTimeOffset timestamp, int threadId,
+        string eventName, bool isUnhandled, string? type, string? message, string? hresult,
+        IReadOnlyList<string>? stack, SensitiveDataRedactor redactor)
+    {
+        var retained = Math.Min(stack?.Count ?? 0, RecordedStackFrameLimit);
+        var fields = new List<CaptureObservationField>(retained + 9)
+        {
+            CaptureObservationField.String("provider", RuntimeProvider),
+            CaptureObservationField.String("exceptionType", redactor.Redact(type)),
+            CaptureObservationField.String("message", redactor.Redact(message)),
+            CaptureObservationField.String("hResult", redactor.Redact(hresult)),
+            CaptureObservationField.Bool("explicitUnhandledEvent", isUnhandled),
+            CaptureObservationField.String("interpretation", "First-chance exceptions do not establish process termination."),
+            CaptureObservationField.Int64("omittedStackFrames", (stack?.Count ?? 0) - retained),
+            CaptureObservationField.Int64("stackFrameLimit", RecordedStackFrameLimit),
+            CaptureObservationField.Bool("stackAvailable", stack is not null),
+        };
+        for (var i = 0; i < retained; i++)
+            fields.Add(CaptureObservationField.String("stack." + i.ToString(CultureInfo.InvariantCulture), redactor.Redact(stack![i])));
+        sink.TryAppend(new CaptureObservation("crashguard.exception.observed", timestamp, threadId, eventName, fields));
+    }
+
+    private static void RecordRetainedException(ICaptureObservationSink sink, CrashGuardExceptionEvent exception, int index,
+        string role, SensitiveDataRedactor redactor)
+    {
+        var retained = Math.Min(exception.ManagedStack.Count, RecordedStackFrameLimit);
+        sink.TryAppend(ProviderObservationProjection.Create(
+            "crashguard.retained-evidence", exception.Timestamp, exception.ThreadId, exception.EventName,
+            ("provider", RuntimeProvider), ("exceptionType", redactor.Redact(exception.ExceptionType)),
+            ("exceptionMessage", redactor.Redact(exception.ExceptionMessage)), ("hResult", redactor.Redact(exception.ExceptionHResult)),
+            ("isUnhandled", exception.IsUnhandled), ("role", role), ("evidenceIndex", index),
+            ("managedFrameCount", exception.ManagedStack.Count), ("omittedStackFrames", exception.ManagedStack.Count - retained),
+            ("stackFrameLimit", RecordedStackFrameLimit)));
+        for (var frame = 0; frame < retained; frame++)
+            sink.TryAppend(ProviderObservationProjection.Create(
+                "crashguard.retained-frame", exception.Timestamp, exception.ThreadId, redactor.Redact(exception.ManagedStack[frame]),
+                ("provider", RuntimeProvider), ("evidenceIndex", index), ("role", role), ("frameIndex", frame)));
     }
 
     private static void RecordException(

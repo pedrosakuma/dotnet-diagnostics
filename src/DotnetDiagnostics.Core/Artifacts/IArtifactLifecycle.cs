@@ -12,7 +12,7 @@ public interface IArtifactLifecycle
     string Root { get; }
 
     /// <summary>
-    /// Lists every regular file under the root (recursively), newest first. Ages are computed
+    /// Lists regular files under the root, excluding managed capture packages, newest first. Ages are computed
     /// relative to <paramref name="nowUtc"/> (defaults to <see cref="DateTimeOffset.UtcNow"/>).
     /// </summary>
     IReadOnlyList<ArtifactInfo> List(DateTimeOffset? nowUtc = null);

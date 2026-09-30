@@ -112,7 +112,7 @@ public sealed class CollectBatchTool
         Name = ToolName,
         Title = "Run several bounded-time collectors in one call against one process",
         Destructive = false,
-        ReadOnly = true,
+        ReadOnly = false,
         Idempotent = false,
         UseStructuredContent = true)]
     [Description(
@@ -177,8 +177,19 @@ public sealed class CollectBatchTool
         string depth = "full",
         [Description("Opt in to redacted HTTP authority evidence for the activities entry only; requires that entry. Native tags are unchanged.")]
         bool includeHttpDestination = false,
+        [Description("Opt in to one durable SQLite capture containing all batch child artifacts. Default false.")]
+        bool persist = false,
+        [Description("Route through this attached investigation.")]
+        string? investigationHandleId = null,
+        DurableCaptureTools? durableCaptures = null,
         CancellationToken cancellationToken = default)
     {
+        return await DurableCaptureTools.CollectAsync(
+            durableCaptures, principalAccessor, persist, "collect_batch", "batch",
+            ExecuteAsync, cancellationToken).ConfigureAwait(false);
+
+        async Task<DiagnosticResult<CollectBatchReport>> ExecuteAsync(CancellationToken cancellationToken)
+        {
         if (durationSeconds < 1)
         {
             return DiagnosticResult.Fail<CollectBatchReport>(
@@ -245,7 +256,8 @@ public sealed class CollectBatchTool
             {
                 if (tool == ToolCollectSample)
                 {
-                    var sampleResult = await CollectSampleTool.CollectSample(
+                    var sampleResult = await DurableCaptureTools.ChildAsync(durableCaptures, kind,
+                        $"{tool}:{kind}", childToken => CollectSampleTool.CollectSample(
                         cpuSampler,
                         offCpuSampler,
                         allocationSampler,
@@ -262,11 +274,12 @@ public sealed class CollectBatchTool
                         kind: kind,
                         processId: pid,
                         durationSeconds: durationSeconds,
-                        cancellationToken: ct).ConfigureAwait(false);
+                        cancellationToken: childToken), ct).ConfigureAwait(false);
                     return Project(tool, kind, sampleResult, compactDepth);
                 }
 
-                var eventsResult = await CollectEventsTool.CollectEvents(
+                var eventsResult = await DurableCaptureTools.ChildAsync(durableCaptures, kind,
+                    $"{tool}:{kind}", childToken => CollectEventsTool.CollectEvents(
                     counterCollector,
                     exceptionCollector,
                     crashGuardCollector,
@@ -305,7 +318,7 @@ public sealed class CollectBatchTool
                     maxInstrumentTimeSeries: collectGen2Meter && kind == "counters"
                         ? Gen2MeterMaxTimeSeries
                         : 1000,
-                    cancellationToken: ct).ConfigureAwait(false);
+                    cancellationToken: childToken), ct).ConfigureAwait(false);
                 return Project(tool, kind, eventsResult, compactDepth);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -345,6 +358,7 @@ public sealed class CollectBatchTool
             : $"Batch over {durationSeconds}s against pid {pid}: {results.Length} entr{(results.Length == 1 ? "y" : "ies")} requested, {failureCount} failed.";
 
         return DiagnosticResult.Ok(report, summary);
+        }
     }
 
     /// <summary>

@@ -3,6 +3,7 @@ using System.Text.Json;
 using DotnetDiagnostics.Cli;
 using DotnetDiagnostics.Core.Activities;
 using DotnetDiagnostics.Core.Capabilities;
+using DotnetDiagnostics.Core.Captures;
 using DotnetDiagnostics.Core.Collection;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Gc;
@@ -20,6 +21,43 @@ public sealed class CliGcActivitiesTests
     internal static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private const string Command = "collect --kind gc-activities --duration 3 --source test-source --trace-id " + Trace +
         " --max-matched-activities 2 --max-events 1 --max-gc-events 7 --top 1 --json";
+
+    [Fact]
+    public async Task PersistedWorkflowKeepsBothChildrenInOneLogicalCapture()
+    {
+        var root = Path.Combine(Environment.CurrentDirectory, ".validation", "cli-durable-gc-activities-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var boundary = new Boundary();
+            using var services = Services(boundary, boundary, Environment.ProcessId);
+            var (exit, json) = await ExecuteAsync(services, [.. Command.Split(' '), "--persist", "--capture-root", root]);
+            exit.Should().Be(0, json.ToString());
+            boundary.AssertArguments();
+            var captured = json.GetProperty("capture").Deserialize<CaptureInfo>(JsonOptions)!;
+            captured.State.Should().Be(CaptureState.Sealed);
+            captured.Artifacts.Select(a => a.Kind).Should().Contain(CollectionHandleKinds.GcEvents)
+                .And.Contain(CollectionHandleKinds.Activities);
+            var store = new SqliteCaptureStore(new CliCaptureRootProvider(root));
+            (await store.ListAsync(CliCaptureRootProvider.CurrentAccess())).Captures.Should().ContainSingle();
+            using var fresh = Services(new Boundary(), new Boundary(), Environment.ProcessId);
+            foreach (var (kind, view) in new[]
+            {
+                (CollectionHandleKinds.GcEvents, "summary"),
+                (CollectionHandleKinds.Activities, "activities"),
+            })
+            {
+                var artifact = captured.Artifacts.Single(a => a.Kind == kind);
+                var (queryExit, query) = await ExecuteAsync(fresh,
+                    ["query", "--capture-id", captured.CaptureId, "--artifact-id", artifact.ArtifactId,
+                        "--capture-root", root, "--view", view, "--json"]);
+                queryExit.Should().Be(0, query.ToString());
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
 
     [Fact]
     public async Task OneShot_ParsesDispatchesRealCoordinatorAndSerializesUsefulOverlayWithIndependentBudgets()

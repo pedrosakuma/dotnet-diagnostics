@@ -23,6 +23,14 @@ internal sealed class EfCoreBridgeEventParser(SensitiveDataRedactor redactor) : 
         var sourceName = DbEventPipeParsing.FirstNonEmpty(
             DbEventPipeParsing.ConvertToString(traceEvent.PayloadByName("ActivitySourceName")),
             DbEventPipeParsing.ConvertToString(traceEvent.PayloadByName("SourceName")));
+        HandleCompletion(sourceName, arguments,
+            new DateTimeOffset(traceEvent.TimeStamp.ToUniversalTime(), TimeSpan.Zero),
+            traceEvent.RelatedActivityID, traceEvent.ActivityID, traceEvent.ThreadID, state);
+    }
+
+    internal void HandleCompletion(string? sourceName, IReadOnlyDictionary<string, string> arguments,
+        DateTimeOffset stoppedAt, Guid relatedActivityId, Guid activityId, long? threadId, DbEventAggregationState state)
+    {
         if (!string.Equals(sourceName, EfCoreSourceName, StringComparison.Ordinal))
         {
             return;
@@ -47,9 +55,10 @@ internal sealed class EfCoreBridgeEventParser(SensitiveDataRedactor redactor) : 
                     DbEventPipeParsing.GetTag(tags, "db.name"),
                     DbEventPipeParsing.GetTag(tags, "db.namespace"))));
         var sanitizedConnectionString = redactor.Redact(rawConnectionString) ?? string.Empty;
-        var stoppedAt = new DateTimeOffset(traceEvent.TimeStamp.ToUniversalTime(), TimeSpan.Zero);
         var duration = DbEventPipeParsing.ParseDuration(arguments);
-        var startedAt = DbEventPipeParsing.ParseStartedAt(arguments) ?? (duration is { } observedDuration ? stoppedAt - observedDuration : stoppedAt);
+        var explicitStart = DbEventPipeParsing.ParseStartedAt(arguments);
+        var canDeriveStart = duration is { } observedDuration && observedDuration.Ticks <= stoppedAt.UtcTicks;
+        var startedAt = explicitStart ?? (canDeriveStart ? stoppedAt.ToUniversalTime() - duration!.Value : stoppedAt);
         state.CompleteCommand(
             new PendingCommand(
                 Provider: EfCoreSourceName,
@@ -60,10 +69,13 @@ internal sealed class EfCoreBridgeEventParser(SensitiveDataRedactor redactor) : 
                 ScopeId: DbEventPipeParsing.BuildScopeId(
                     DbEventPipeParsing.GetArgument(arguments, "TraceId"),
                     DbEventPipeParsing.GetArgument(arguments, "ParentSpanId"),
-                    traceEvent.RelatedActivityID,
-                    traceEvent.ActivityID),
-                StartedAt: startedAt),
+                    relatedActivityId,
+                    activityId),
+                StartedAt: startedAt)
+            {
+                CaptureTimingUnavailable = explicitStart > stoppedAt || (explicitStart is null && !canDeriveStart),
+            },
             stoppedAt,
-            Math.Max(0, (duration ?? (stoppedAt - startedAt)).TotalMilliseconds));
+            Math.Max(0, (duration ?? (stoppedAt - startedAt)).TotalMilliseconds), threadId);
     }
 }

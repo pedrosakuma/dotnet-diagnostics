@@ -2,6 +2,52 @@
 
 ## [Unreleased]
 
+### Added
+
+- Prepared opt-in Linux-x64 portable import-worker packaging for the CLI and MCP
+  hosts, including a digest-pinned producer, provenance and hash validation,
+  non-executing installed-asset preflight, and an amd64-only container path.
+  Activation still requires both explicit environment variables; ordinary
+  builds and ARM64 containers remain asset-free.
+- Added retained historical comparison for compatible CPU-sample, heap-snapshot
+  and EventCounter artifacts through the existing CLI and MCP comparison
+  surfaces. Imported captures use their destination-local IDs.
+- Added the opt-in real operating-envelope acceptance harness for paired
+  ephemeral and durable captures. The reviewed clean run completed all 42
+  trials and 21 matched pairs without quarantine; this remains bounded
+  host-specific evidence, not a product SLO.
+
+### Security and compatibility
+
+- Container images now default to loopback HTTP and keep shipped application
+  assets root-owned and non-writable. Non-loopback cleartext remains an explicit
+  development choice.
+- Docker, producer and release restore paths require a caller-provided private
+  NuGet configuration and fail closed rather than falling back to public NuGet.
+- All automation restore paths now require explicit private NuGet configuration,
+  SDK workload-update checks are disabled, local container acceptance rejects
+  public configs, and required CI blocks untrusted code changes rather than
+  reporting an unvalidated success.
+- Global-tool portable-worker support is same-owner on Linux x64 glibc with
+  GLIBC 2.34 or older requirements, Landlock ABI 3+, seccomp and procfs. This
+  does not claim musl, Windows, macOS, ARM64 or arbitrary cross-UID support.
+- The isolated worker now receives a kernel-enforced 256 MiB address-space
+  ceiling before exec, in addition to its CPU, file, descriptor and SQLite-heap
+  limits. Monitor scheduling gaps are recorded as telemetry rather than treated
+  as evidence that an otherwise complete worker result is invalid.
+
+### Evidence limits
+
+- The reviewed digest-pinned producer run created the expected worker and
+  package assets, but no native import is authorized by packaging alone.
+- Workload-only historical comparison acceptance passed. Earlier native runs
+  exposed scheduler gaps above 10 ms; those remain adverse evidence for the
+  former sampled-watchdog design, not evidence of data loss. Fresh native
+  acceptance remains required for the kernel-backed containment contract.
+- Operating-envelope adverse attempts remain retained: post-disposal process
+  identity access, non-authoritative dirty-checkout provenance, and a cleanup
+  deadline race were fixed before the final clean 42-trial run was sealed.
+
 ## [0.27.0] — 2026-09-18
 
 Highlights: **opt-in outbound HttpClient destination attribution without target

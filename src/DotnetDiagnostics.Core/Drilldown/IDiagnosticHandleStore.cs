@@ -49,7 +49,9 @@ public interface IDiagnosticHandleStore
     {
         var handle = Register(processId, kind, artifact, ttl, evictWhenProcessExits, origin);
         DiagnosticHandleMetadata.Record(this, handle.Id, producingTool);
-        return handle with { ProducingTool = producingTool };
+        var annotated = handle with { ProducingTool = producingTool };
+        CaptureRecording.CaptureRecordingContext.ArtifactRegistered(annotated, artifact);
+        return annotated;
     }
 
     /// <summary>

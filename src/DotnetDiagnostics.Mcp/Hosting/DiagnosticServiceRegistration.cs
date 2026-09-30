@@ -70,7 +70,12 @@ internal static class DiagnosticServiceRegistration
         // is registered by the host-neutral Core entry point (#284). Everything below is the
         // small set of registrations that intentionally stay host-specific.
         services.AddDiagnosticCoreServices(securityOptions, configuredSymbolPath, handleStoreOptions);
+        services.TryAddSingleton<DurableCaptureTools>();
         services.TryAddSingleton<TimeProvider>(TimeProvider.System);
+        services.TryAddSingleton(PortableTransferOptions.FromConfiguration(configuration));
+        services.AddHttpContextAccessor();
+        services.TryAddSingleton<PortableCaptureTools>();
+        services.AddHostedService(static services => services.GetRequiredService<PortableCaptureTools>());
         services.TryAddSingleton<EphemeralAttachmentLifetime>();
         services.AddHostedService<EphemeralAttachmentExpiryService>();
 

@@ -117,6 +117,7 @@ public sealed partial class CollectEventsTool
         public required LegacyDiagnosticsFlagDeprecation? Deprecation { get; init; }
         public required RequestContext<CallToolRequestParams>? RequestContext { get; init; }
         public required BearerPrincipal? Principal { get; init; }
+        public bool Persist { get; init; }
 
         public bool GatingRequested => !string.IsNullOrWhiteSpace(TriggerWhen) || !string.IsNullOrWhiteSpace(CaptureKind);
     }
@@ -506,6 +507,7 @@ public sealed partial class CollectEventsTool
             context.MaxMatchedActivities,
             context.IncludeHttpDestination,
             new SensitiveDataRedactor(context.SecurityOptions),
+            context.Persist,
             cancellationToken);
 
     private static Task<DiagnosticResult<CollectEventsEnvelope>> RunReplicaCountersKindAsync(CollectEventsDispatchContext context, int effectiveDuration, CancellationToken cancellationToken)
@@ -515,6 +517,7 @@ public sealed partial class CollectEventsTool
             context.InvestigationHandleIds,
             effectiveDuration,
             context.IntervalSeconds,
+            context.Persist,
             cancellationToken);
 
     private static async Task<DiagnosticResult<CollectEventsEnvelope>> RunTimedCollectionAsync<TInner>(

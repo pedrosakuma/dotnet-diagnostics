@@ -1,6 +1,8 @@
 using System.Diagnostics.Tracing;
 using System.Globalization;
+using DotnetDiagnostics.Core.CaptureRecording;
 using DotnetDiagnostics.Core.Internal;
+using DotnetDiagnostics.Core.Security;
 using Microsoft.Diagnostics.NETCore.Client;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Extensions.Logging;
@@ -56,34 +58,33 @@ public sealed class EventPipeExceptionCollector : IExceptionCollector
         var recent = new List<ManagedExceptionEvent>(Math.Min(maxRecent, 128));
         var counts = new Dictionary<string, int>(StringComparer.Ordinal);
         var total = 0;
+        var recording = CaptureRecordingContext.Current;
+        var redactor = recording is null ? null : new SensitiveDataRedactor();
 
         var processingTask = Task.Run(() =>
         {
+            long? sourceLoss = null;
             try
             {
                 using var source = new EventPipeEventSource(session.EventStream);
                 source.Clr.ExceptionStart += traceEvent =>
                 {
                     total++;
-                    var type = traceEvent.ExceptionType ?? "(unknown)";
-                    counts[type] = counts.TryGetValue(type, out var current) ? current + 1 : 1;
-
-                    if (recent.Count < maxRecent)
-                    {
-                        recent.Add(new ManagedExceptionEvent(
-                            Timestamp: new DateTimeOffset(traceEvent.TimeStamp.ToUniversalTime(), TimeSpan.Zero),
-                            ExceptionType: type,
-                            ExceptionMessage: traceEvent.ExceptionMessage ?? string.Empty,
-                            ExceptionHResult: "0x" + traceEvent.ExceptionHRESULT.ToString("X", CultureInfo.InvariantCulture),
-                            ThreadId: traceEvent.ThreadID));
-                    }
+                    RecordException(traceEvent.TimeStamp, traceEvent.ThreadID,
+                        traceEvent.ExceptionType, traceEvent.ExceptionMessage, traceEvent.ExceptionHRESULT,
+                        recent, counts, maxRecent, recording, redactor);
                 };
 
                 source.Process();
+                sourceLoss = source.EventsLost;
             }
             catch (Exception ex)
             {
                 _logger.LogDebug(ex, "EventPipe exception source ended for pid {Pid}.", processId);
+            }
+            finally
+            {
+                EventPipeCollectionRunner.ReportSourceLoss(recording, sourceLoss);
             }
         }, cancellationToken);
 
@@ -113,5 +114,19 @@ public sealed class EventPipeExceptionCollector : IExceptionCollector
             TotalExceptions: total,
             ByType: byType,
             Recent: recent) { RecentCap = maxRecent };
+    }
+
+    internal static void RecordException(DateTime timestamp, int threadId, string? type, string? message, int hresult,
+        List<ManagedExceptionEvent> recent, Dictionary<string, int> counts, int maxRecent,
+        ICaptureObservationSink? recording, SensitiveDataRedactor? redactor)
+    {
+        var key = type ?? "(unknown)";
+        counts[key] = counts.TryGetValue(key, out var current) ? current + 1 : 1;
+        if (recording is not null)
+            RuntimeObservationProjection.Exception(recording, new DateTimeOffset(timestamp.ToUniversalTime()),
+                threadId, type, message, hresult, redactor!);
+        if (recent.Count < maxRecent)
+            recent.Add(new ManagedExceptionEvent(new DateTimeOffset(timestamp.ToUniversalTime()), key,
+                message ?? string.Empty, "0x" + hresult.ToString("X", CultureInfo.InvariantCulture), threadId));
     }
 }

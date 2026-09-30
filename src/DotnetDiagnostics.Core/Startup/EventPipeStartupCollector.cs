@@ -1,4 +1,5 @@
 using System.Diagnostics.Tracing;
+using DotnetDiagnostics.Core.CaptureRecording;
 using System.Globalization;
 using DotnetDiagnostics.Core.Internal;
 using DotnetDiagnostics.Core.Launch;
@@ -94,6 +95,7 @@ public sealed class EventPipeStartupCollector : IStartupCollector
         Func<ValueTask>? resumeAsync,
         CancellationToken cancellationToken)
     {
+        var observationSink = CaptureRecordingContext.Current;
         var providers = new[]
         {
             new EventPipeProvider(RuntimeProvider, EventLevel.Verbose, LoaderKeyword),
@@ -138,7 +140,7 @@ public sealed class EventPipeStartupCollector : IStartupCollector
         notes.Add("Static constructor timing is not exposed as a clean EventPipe event by this collector; no static-constructor duration is inferred.");
         notes.Add("JIT-at-startup is covered by collect_events(kind=\"jit\"); startup does not duplicate JIT events.");
         notes.Add("DependencyInjection ServiceProviderBuilt can be replayed when the provider is enabled for already-built providers; observed DI activity duration is the span between captured DI events, not an exact container-build stopwatch.");
-        var capture = new StartupCaptureBuffer();
+        var capture = new StartupCaptureBuffer(observationSink);
         var sync = new object();
 
         var processingTask = Task.Run(() =>
@@ -170,9 +172,11 @@ public sealed class EventPipeStartupCollector : IStartupCollector
                 };
 
                 source.Process();
+                observationSink?.ReportSourceLoss("startup", source.EventsLost);
             }
             catch (Exception ex)
             {
+                observationSink?.ReportSourceLoss("startup", null);
                 _logger.LogDebug(ex, "Startup EventPipe source ended for pid {Pid}.", processId);
             }
         }, cancellationToken);
@@ -247,6 +251,13 @@ public sealed class EventPipeStartupCollector : IStartupCollector
             snapshotNotes = notes.ToList();
         }
 
+        observationSink?.TryAppend(ProviderObservationProjection.Create(
+            "startup.retention.aggregate", null, null, "startup",
+            ("coldStart", coldStart), ("totalAssemblyLoads", totalAssemblyLoads),
+            ("totalModuleLoads", totalModuleLoads), ("totalDiEvents", totalDiEvents),
+            ("totalTimelineEvents", totalTimelineEvents), ("snapshotTruncated", truncated),
+            ("maxRetainedAssemblyLoads", MaxRetainedAssemblyLoads), ("maxRetainedModuleLoads", MaxRetainedModuleLoads),
+            ("maxRetainedDiEvents", MaxRetainedDiEvents), ("maxRetainedTimelineEvents", MaxRetainedTimelineEvents)));
         if (totalAssemblyLoads == 0 && totalModuleLoads == 0)
         {
             snapshotNotes.Add("No assembly or module load events were observed in the collection window.");
@@ -481,7 +492,7 @@ public sealed class EventPipeStartupCollector : IStartupCollector
         return null;
     }
 
-    internal sealed class StartupCaptureBuffer
+    internal sealed class StartupCaptureBuffer(ICaptureObservationSink? observationSink = null)
     {
         private readonly Dictionary<string, RawLoadAggregate> _assembliesByName = new(StringComparer.Ordinal);
         private readonly Dictionary<string, RawLoadAggregate> _modulesByName = new(StringComparer.Ordinal);
@@ -513,6 +524,9 @@ public sealed class EventPipeStartupCollector : IStartupCollector
 
         public void AddAssembly(StartupAssemblyLoad load)
         {
+            observationSink?.TryAppend(ProviderObservationProjection.Create(
+                "startup.assembly", load.Timestamp, null, load.EventName,
+                ("provider", RuntimeProvider), ("assemblyName", load.AssemblyName), ("assemblyId", load.AssemblyId)));
             TotalAssemblyLoads++;
             RecordAggregate(_assembliesByName, load.AssemblyName, load.Timestamp);
             TryCapture(AssemblyLoads, MaxRetainedAssemblyLoads, load);
@@ -521,6 +535,10 @@ public sealed class EventPipeStartupCollector : IStartupCollector
 
         public void AddModule(StartupModuleLoad load)
         {
+            observationSink?.TryAppend(ProviderObservationProjection.Create(
+                "startup.module", load.Timestamp, null, load.EventName,
+                ("provider", RuntimeProvider), ("moduleName", load.ModuleName), ("modulePath", load.ModulePath),
+                ("moduleId", load.ModuleId), ("assemblyId", load.AssemblyId)));
             TotalModuleLoads++;
             RecordAggregate(_modulesByName, load.ModuleName, load.Timestamp);
             TryCapture(ModuleLoads, MaxRetainedModuleLoads, load);
@@ -529,6 +547,14 @@ public sealed class EventPipeStartupCollector : IStartupCollector
 
         public void AddDiEvent(StartupDiEvent diEvent)
         {
+            observationSink?.TryAppend(ProviderObservationProjection.Create(
+                "startup.di", diEvent.Timestamp, null, diEvent.EventName,
+                ("provider", DependencyInjectionProvider), ("serviceType", diEvent.ServiceType),
+                ("serviceProviderHashCode", diEvent.ServiceProviderHashCode),
+                ("singletonServices", diEvent.SingletonServices), ("scopedServices", diEvent.ScopedServices),
+                ("transientServices", diEvent.TransientServices), ("closedGenericServices", diEvent.ClosedGenericServices),
+                ("openGenericServices", diEvent.OpenGenericServices), ("nodeCount", diEvent.NodeCount),
+                ("methodSize", diEvent.MethodSize), ("chunkIndex", diEvent.ChunkIndex), ("chunkCount", diEvent.ChunkCount)));
             TotalDiEvents++;
             _firstDiEventAt ??= diEvent.Timestamp;
             _lastDiEventAt = diEvent.Timestamp;
@@ -569,6 +595,9 @@ public sealed class EventPipeStartupCollector : IStartupCollector
 
         private void AddTimeline(StartupTimelineEvent timelineEvent)
         {
+            observationSink?.TryAppend(ProviderObservationProjection.Create(
+                "startup.timeline", timelineEvent.Timestamp, null, timelineEvent.EventName,
+                ("timelineCategory", timelineEvent.Category), ("name", timelineEvent.Name)));
             TotalTimelineEvents++;
             TryCapture(Timeline, MaxRetainedTimelineEvents, timelineEvent);
         }

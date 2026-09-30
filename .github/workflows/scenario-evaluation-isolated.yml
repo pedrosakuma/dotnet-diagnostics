@@ -22,6 +22,7 @@ env:
   DOTNET_NOLOGO: true
   DOTNET_CLI_TELEMETRY_OPTOUT: true
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE: true
 
 jobs:
   scenario-evaluation:
@@ -65,15 +66,38 @@ jobs:
           restore-keys: |
             scenario-eval-${{ runner.os }}-
 
+      - name: Stage caller-provided private NuGet configuration
+        id: nuget
+        env:
+          PRIVATE_NUGET_CONFIG: ${{ secrets.NUGET_CONFIG }}
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:PRIVATE_NUGET_CONFIG)) {
+            throw "The NUGET_CONFIG Actions secret is required; no public NuGet fallback is permitted."
+          }
+          $config = Join-Path $env:RUNNER_TEMP "scenario-NuGet.Config"
+          [System.IO.File]::WriteAllText($config, $env:PRIVATE_NUGET_CONFIG, [System.Text.UTF8Encoding]::new($false))
+          "path=$config" >> $env:GITHUB_OUTPUT
+          Remove-Item Env:PRIVATE_NUGET_CONFIG
+
       - name: Restore
         shell: bash
-        run: dotnet restore
+        run: dotnet restore --configfile "${{ steps.nuget.outputs.path }}"
 
       - name: Build scenario evaluation suite
         shell: bash
         run: >-
           dotnet build tests/DotnetDiagnostics.ScenarioEvaluation.Tests/DotnetDiagnostics.ScenarioEvaluation.Tests.csproj
           --configuration Release --no-restore
+
+      - name: Remove staged private NuGet configuration
+        if: always()
+        shell: pwsh
+        run: |
+          $path = "${{ steps.nuget.outputs.path }}"
+          if (-not [string]::IsNullOrWhiteSpace($path)) {
+            Remove-Item -Force -ErrorAction SilentlyContinue $path
+          }
 
       - name: Validate isolated subprocess supervision
         shell: bash

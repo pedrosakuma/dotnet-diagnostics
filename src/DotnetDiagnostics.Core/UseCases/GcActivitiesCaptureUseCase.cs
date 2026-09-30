@@ -1,5 +1,6 @@
 using DotnetDiagnostics.Core.Activities;
 using DotnetDiagnostics.Core.Collection;
+using DotnetDiagnostics.Core.CaptureRecording;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.Internal;
@@ -92,12 +93,14 @@ public static class GcActivitiesCaptureUseCase
         // Startup already has a 30s budget per collector; concurrent session-control calls may queue.
         deadline.CancelAfter(duration + TimeSpan.FromSeconds(65));
         using var monitoring = new CancellationTokenSource();
+        var gcRecording = CaptureRecordingContext.CreateChild(CollectionHandleKinds.GcEvents, "gc");
+        var activityRecording = CaptureRecordingContext.CreateChild(CollectionHandleKinds.Activities, "activities");
         var targetExit = CancelOnExitAsync(pid, deadline, monitoring.Token);
-        var gcTask = CaptureAsync(() => gcCollector.CollectAsync(pid, duration, options.MaxGcEvents, deadline.Token));
+        var gcTask = CaptureAsync(() => gcCollector.CollectAsync(pid, duration, options.MaxGcEvents, deadline.Token), gcRecording);
         var activityTask = CaptureAsync(async () => HttpDestinationPrivacy.Redact(
             await activityCollector.CollectAsync(pid, duration, options.Sources,
                 options.MaxActivities, options.TraceId, options.MaxMatchedActivities, options.IncludeHttpDestination, deadline.Token)
-                .ConfigureAwait(false), redactor));
+                .ConfigureAwait(false), redactor), activityRecording);
         await Task.WhenAll(gcTask, activityTask).ConfigureAwait(false);
         await monitoring.CancelAsync().ConfigureAwait(false);
         await targetExit.ConfigureAwait(false);
@@ -168,9 +171,15 @@ public static class GcActivitiesCaptureUseCase
 
         CorrelatedCaptureSide<GcSummary> BuildGcSide(GcSummary? value, string? error)
         {
-            if (value is null) return new("failed", requestedStart, requestedStart + duration, null, null, null, null, error);
+            using var scope = gcRecording is null ? null : CaptureRecordingContext.Enter(gcRecording);
+            if (value is null)
+            {
+                gcRecording?.ReportCompletion(error is null ? null : new DiagnosticError("CollectorFailed", error), gc.Cancelled);
+                return new("failed", requestedStart, requestedStart + duration, null, null, null, null, error);
+            }
             var problem = value.Suspension is not { IsAuthoritative: true } ? $"GC measurement unavailable: {value.Suspension?.Status ?? "legacy-unknown"}." : null;
             var handle = Register(value, CollectionHandleKinds.GcEvents, ref error);
+            gcRecording?.ReportCompletion(error is null ? null : new DiagnosticError("CollectorFailed", error), gc.Cancelled, value);
             return new(error is null && problem is null ? "captured" : "partial", requestedStart, requestedStart + duration,
                 value.Suspension?.ObservationStart ?? value.StartedAt,
                 value.Suspension?.ObservationEnd ?? value.StartedAt + value.Duration, handle, value, error ?? problem);
@@ -178,10 +187,16 @@ public static class GcActivitiesCaptureUseCase
 
         CorrelatedCaptureSide<ActivityCapture> BuildActivitySide(ActivityCapture? value, string? error)
         {
-            if (value is null) return new("failed", requestedStart, requestedStart + duration, null, null, null, null, error);
+            using var scope = activityRecording is null ? null : CaptureRecordingContext.Enter(activityRecording);
+            if (value is null)
+            {
+                activityRecording?.ReportCompletion(error is null ? null : new DiagnosticError("CollectorFailed", error), activities.Cancelled);
+                return new("failed", requestedStart, requestedStart + duration, null, null, null, null, error);
+            }
             var problem = value.Observation is not { Completion: "normal-stop", EventsLost: 0 }
                 ? $"Activity stream coverage unavailable: {value.Observation?.Completion ?? "legacy-unknown"}; events lost={value.Observation?.EventsLost.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "unknown"}." : null;
             var handle = Register(value, CollectionHandleKinds.Activities, ref error);
+            activityRecording?.ReportCompletion(error is null ? null : new DiagnosticError("CollectorFailed", error), activities.Cancelled, value);
             return new(error is null && problem is null ? "captured" : "partial", requestedStart, requestedStart + duration,
                 value.StartedAt, value.StartedAt + value.Duration, handle, value, error ?? problem);
         }
@@ -210,16 +225,18 @@ public static class GcActivitiesCaptureUseCase
                 error = identityError;
                 return null;
             }
-            try { return handles.Register(pid, kind, value, TimeSpan.FromMinutes(10), evictWhenProcessExits: false, origin: HandleOrigin.Live); }
+            try { return handles.RegisterWithMetadata(pid, kind, value, TimeSpan.FromMinutes(10), evictWhenProcessExits: false, origin: HandleOrigin.Live, producingTool: "collect_events"); }
             catch (Exception ex) { error = $"Artifact registration failed: {ex.Message}"; return null; }
         }
     }
 
-    private static async Task<(T? Value, string? Error)> CaptureAsync<T>(Func<Task<T>> collect) where T : class
+    private static async Task<(T? Value, string? Error, bool Cancelled)> CaptureAsync<T>(
+        Func<Task<T>> collect, ICaptureObservationSink? recording) where T : class
     {
-        try { return (await collect().ConfigureAwait(false), null); }
-        catch (OperationCanceledException) { return (null, "Collection cancelled or its bounded deadline elapsed."); }
-        catch (Exception ex) { return (null, $"{ex.GetType().Name}: {ex.Message}"); }
+        using var scope = recording is null ? null : CaptureRecordingContext.Enter(recording);
+        try { return (await collect().ConfigureAwait(false), null, false); }
+        catch (OperationCanceledException) { return (null, "Collection cancelled or its bounded deadline elapsed.", true); }
+        catch (Exception ex) { return (null, $"{ex.GetType().Name}: {ex.Message}", false); }
     }
 
     internal static string? Validate(GcActivitiesCaptureOptions options)

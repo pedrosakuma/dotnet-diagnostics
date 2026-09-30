@@ -288,6 +288,8 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
             }
         }
 
+        var observationSink = DotnetDiagnostics.Core.CaptureRecording.CaptureRecordingContext.Current;
+        observationSink?.ReportSourceLoss("sample.cpu.etw", traceLog.EventsLost);
         var aggregationStopwatch = Stopwatch.StartNew();
         var events = traceLog.Events
             .Where(e => e is SampledProfileTraceData && e.ProcessID == processId);
@@ -320,6 +322,10 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
 
             if (frames.Count == 0) continue;
             total++;
+            if (observationSink is not null)
+                DotnetDiagnostics.Core.CaptureRecording.SamplerObservationProjection.Sample(observationSink, "sample.cpu.etw",
+                    "trace-relative-seconds", ev.TimeStampRelativeMSec / 1000, ev.ThreadID,
+                    frames.Select(f => new DotnetDiagnostics.Core.CaptureRecording.SamplerObservationProjection.Frame(f.Module, f.Display)));
 
             // frames is leaf→root; reverse to root→leaf for CallTreeBuilder.
             frames.Reverse();

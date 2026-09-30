@@ -15,19 +15,22 @@ public sealed class LiveSampleProcess : IAsyncDisposable
     private readonly TaskCompletionSource<string> _listeningUrlTcs;
     private readonly StreamReader _stdoutReader;
     private readonly StreamReader _stderrReader;
+    private readonly Func<CancellationToken, Task>? _beforeTermination;
     private Task _stdout = Task.CompletedTask;
     private Task _stderr = Task.CompletedTask;
     private Task? _disposal;
     private readonly object _disposeGate = new();
     internal static readonly TimeSpan CleanupTimeout = TimeSpan.FromSeconds(5);
 
-    private LiveSampleProcess(Process process, string sampleDll, TaskCompletionSource<string> listeningUrlTcs)
+    private LiveSampleProcess(Process process, string sampleDll, TaskCompletionSource<string> listeningUrlTcs,
+        Func<CancellationToken, Task>? beforeTermination = null)
     {
         _process = process;
         SampleDll = sampleDll;
         _listeningUrlTcs = listeningUrlTcs;
         _stdoutReader = process.StandardOutput;
         _stderrReader = process.StandardError;
+        _beforeTermination = beforeTermination;
     }
 
     /// <summary>The spawned process.</summary>
@@ -63,6 +66,7 @@ public sealed class LiveSampleProcess : IAsyncDisposable
     {
         cancellationToken.ThrowIfCancellationRequested();
         options ??= new LiveSampleOptions();
+        options.HttpDiagnostics?.Reset();
         var harvestUrl = options.HarvestListeningUrl || options.WaitForHttpReady;
 
         var sampleDll = SampleLocator.LocateSampleDll(sampleName)
@@ -98,10 +102,14 @@ public sealed class LiveSampleProcess : IAsyncDisposable
             ?? throw SkipException.ForReason($"Failed to start {sampleName}.");
 
         var listeningUrlTcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var sample = new LiveSampleProcess(process, sampleDll, listeningUrlTcs);
+        var sample = new LiveSampleProcess(process, sampleDll, listeningUrlTcs, options.BeforeTermination);
 
         await CompleteStartupAsync(async () =>
         {
+            if (options.ProcessStarted is not null)
+            {
+                await options.ProcessStarted(process).ConfigureAwait(false);
+            }
             // Keep the existing line readers, but retain their completion for owned cleanup.
             sample._stdout = Task.Run(async () =>
             {
@@ -134,7 +142,8 @@ public sealed class LiveSampleProcess : IAsyncDisposable
 
             if (options.WaitForHttpReady)
             {
-                sample._baseUrl = await sample.WaitForListeningUrlAsync(options.HttpTimeout, options.ReadinessPath, cancellationToken).ConfigureAwait(false);
+                sample._baseUrl = await sample.WaitForListeningUrlAsync(options.HttpTimeout, options.ReadinessPath,
+                    options.HttpDiagnostics, cancellationToken).ConfigureAwait(false);
             }
             cancellationToken.ThrowIfCancellationRequested();
         }, sample.DisposeAsync).ConfigureAwait(false);
@@ -164,10 +173,14 @@ public sealed class LiveSampleProcess : IAsyncDisposable
         => WaitForListeningUrlAsync(timeout, readinessPath, CancellationToken.None);
 
     /// <summary>Waits for the URL and HTTP readiness without relabeling caller cancellation as a timeout.</summary>
-    public async Task<string> WaitForListeningUrlAsync(TimeSpan timeout, string readinessPath, CancellationToken cancellationToken)
+    public Task<string> WaitForListeningUrlAsync(TimeSpan timeout, string readinessPath, CancellationToken cancellationToken)
+        => WaitForListeningUrlAsync(timeout, readinessPath, null, cancellationToken);
+
+    private async Task<string> WaitForListeningUrlAsync(TimeSpan timeout, string readinessPath,
+        HttpReadinessDiagnostics? diagnostics, CancellationToken cancellationToken)
     {
         var url = await WaitForUrlAsync(_listeningUrlTcs.Task, SampleDll, timeout, TimeProvider.System, cancellationToken).ConfigureAwait(false);
-        await DiagnosticReadiness.WaitForHttpReadyAsync(url, timeout, readinessPath, cancellationToken).ConfigureAwait(false);
+        await DiagnosticReadiness.WaitForHttpReadyAsync(url, timeout, readinessPath, diagnostics, cancellationToken).ConfigureAwait(false);
         _baseUrl = url;
         return url;
     }
@@ -208,7 +221,8 @@ public sealed class LiveSampleProcess : IAsyncDisposable
                     try { _process.Kill(entireProcessTree: true); }
                     catch (InvalidOperationException) when (_process.HasExited) { }
                 }
-            }, _process.WaitForExitAsync(), _stdout, _stderr, CleanupTimeout, TimeProvider.System).ConfigureAwait(false);
+            }, _process.WaitForExitAsync(), _stdout, _stderr, CleanupTimeout, TimeProvider.System,
+                _beforeTermination).ConfigureAwait(false);
         }
         catch (Exception error) { failures.Add(error); }
         DisposeResource(_stdoutReader, failures);
@@ -225,12 +239,21 @@ public sealed class LiveSampleProcess : IAsyncDisposable
     }
 
     internal static async Task ObserveCleanupAsync(Action terminate, Task exit, Task stdout, Task stderr,
-        TimeSpan timeout, TimeProvider timeProvider)
+        TimeSpan timeout, TimeProvider timeProvider, Func<CancellationToken, Task>? beforeTermination = null)
     {
         using var deadline = new CancellationTokenSource(timeout, timeProvider);
         Exception? terminationFailure = null;
+        if (beforeTermination is not null)
+        {
+            try { await beforeTermination(deadline.Token).WaitAsync(deadline.Token).ConfigureAwait(false); }
+            catch (Exception error) { terminationFailure = error; }
+        }
         try { terminate(); }
-        catch (Exception error) { terminationFailure = error; }
+        catch (Exception error)
+        {
+            terminationFailure = terminationFailure is null ? error
+                : new AggregateException("Owned termination handoff and signal failed.", terminationFailure, error);
+        }
         var settled = Task.WhenAll(exit, stdout, stderr);
         try
         {

@@ -2,12 +2,40 @@ using System.Text;
 using System.Text.Json;
 using DotnetDiagnostics.Cli;
 using DotnetDiagnostics.Core;
+using DotnetDiagnostics.Core.Captures;
 using FluentAssertions;
 
 namespace DotnetDiagnostics.Cli.Tests;
 
 public sealed class CliCommandExecutionOutputTests
 {
+    [Fact]
+    public async Task DurableCaptureMetadataPreservesDataAndPartialQualityInBothOutputs()
+    {
+        var captureId = Guid.NewGuid().ToString("D");
+        var artifactId = Guid.NewGuid().ToString("D");
+        var result = new CliCommandResult(false, false, DiagnosticResult.Ok(new { Evidence = 42 }, "captured"), "captured")
+        {
+            Capture = new CaptureInfo(captureId, "local-owner", "gc", null, DateTimeOffset.UtcNow,
+                CaptureState.Sealed, [new CaptureArtifactInfo(artifactId, "gc-events", "gc")],
+                new CaptureQuality(Offered: 2, Accepted: 1, Persisted: 1, QueueRejected: 1)),
+            CaptureViews = new Dictionary<string, IReadOnlyList<string>>
+            {
+                [artifactId] = ["records", "summary"],
+            },
+        };
+        var options = new CliOptions { Command = "collect", Kind = "gc", Persist = true };
+        var human = await RenderAsync(result, options, CliExecutionContext.OneShot, false, null);
+        var json = await RenderAsync(result, options, CliExecutionContext.OneShot, true, null);
+        human.Should().Contain(captureId).And.Contain(artifactId).And.Contain("incomplete=True");
+        using var document = JsonDocument.Parse(json);
+        document.RootElement.GetProperty("data").GetProperty("evidence").GetInt32().Should().Be(42);
+        var capture = document.RootElement.GetProperty("capture");
+        capture.GetProperty("quality").GetProperty("isIncomplete").GetBoolean().Should().BeTrue();
+        capture.GetProperty("artifacts")[0].GetProperty("supportedViews")[0].GetString().Should().Be("records");
+        document.RootElement.TryGetProperty("handleNotice", out _).Should().BeFalse();
+    }
+
     [Fact]
     public async Task SessionOutput_OmitsBoundPidFromHints_WithoutRewritingPayloadData()
     {

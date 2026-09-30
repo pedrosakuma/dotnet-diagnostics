@@ -25,9 +25,12 @@ public sealed class TraceSessionResources
         "JSON snapshot of the artifact registered under a drill-down handle. " +
         "For cpu-sample and allocation-sample handles the body is the full call tree; for other kinds it's the typed payload. " +
         "Returns an error contents block when the handle is unknown or expired.")]
-    public static string ReadSession(IDiagnosticHandleStore handles, string handle)
+    public static string ReadSession(IDiagnosticHandleStore handles, string handle,
+        Tools.DurableCaptureTools? durableCaptures = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(handle);
+        if (durableCaptures?.IsDurableHandle(handle) == true)
+            return Tools.DurableCaptureTools.ResourceDenial;
 
         var cpu = handles.TryGet<CpuSampleTraceArtifact>(handle);
         if (cpu is not null)

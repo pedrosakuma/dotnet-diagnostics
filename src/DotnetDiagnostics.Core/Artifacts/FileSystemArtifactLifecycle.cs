@@ -27,6 +27,8 @@ public sealed class FileSystemArtifactLifecycle : IArtifactLifecycle
         {
             return Array.Empty<ArtifactInfo>();
         }
+        if (SafeArtifactPath.IsManagedCapturePath(Root, Root))
+            return Array.Empty<ArtifactInfo>();
 
         var results = new List<ArtifactInfo>();
         // Skip reparse points (symlinks/junctions) so enumeration cannot escape the root into
@@ -39,6 +41,8 @@ public sealed class FileSystemArtifactLifecycle : IArtifactLifecycle
         };
         foreach (var path in Directory.EnumerateFiles(Root, "*", options))
         {
+            if (SafeArtifactPath.IsManagedCapturePath(Root, path))
+                continue;
             try
             {
                 results.Add(Describe(new FileInfo(path), now));

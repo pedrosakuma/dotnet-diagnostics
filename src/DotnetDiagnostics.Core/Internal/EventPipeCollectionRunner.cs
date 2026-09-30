@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using DotnetDiagnostics.Core.CaptureRecording;
 using Microsoft.Diagnostics.NETCore.Client;
 using Microsoft.Diagnostics.Tracing;
 
@@ -22,16 +23,19 @@ internal static class EventPipeCollectionRunner
         ArgumentNullException.ThrowIfNull(onProcessingError);
 
         var stopRequested = 0;
+        var recording = CaptureRecordingContext.Current;
         var shutdownFailed = false;
         var completion = new Completion("unknown", null, TimeSpan.Zero);
         var processingTask = Task.Run(() =>
         {
             var watch = Stopwatch.StartNew();
+            long? sourceLoss = null;
             try
             {
                 using var source = new EventPipeEventSource(session.EventStream);
                 configure(source);
                 source.Process();
+                sourceLoss = source.EventsLost;
                 completion = new Completion(Volatile.Read(ref stopRequested) == 0 ? "early" : "normal",
                     source.EventsLost, watch.Elapsed);
                 onDrained?.Invoke(source.EventsLost, Volatile.Read(ref stopRequested) == 0,
@@ -41,6 +45,10 @@ internal static class EventPipeCollectionRunner
             {
                 completion = new Completion("source-failure", null, watch.Elapsed);
                 onProcessingError(ex);
+            }
+            finally
+            {
+                ReportSourceLoss(recording, sourceLoss);
             }
         }, cancellationToken);
 
@@ -84,4 +92,7 @@ internal static class EventPipeCollectionRunner
             completion = completion with { Status = "unknown", EventsLost = null };
         return completion;
     }
+
+    internal static void ReportSourceLoss(ICaptureObservationSink? sink, long? count)
+        => sink?.ReportSourceLoss("EventPipe", count);
 }

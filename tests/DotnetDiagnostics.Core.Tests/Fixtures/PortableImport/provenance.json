@@ -1,0 +1,17 @@
+{
+  "generator": "Python standard-library SQLite and explicit ZIP structs; no production exporter",
+  "sqliteVersion": "3.45.1",
+  "archiveSha256": "bbdc6584acb14da9b21fc2d5170252aab2cf307fbcda1f554a05b6f1938c9ea1",
+  "members": {
+    "v1": {
+      "manifest.json": "f145fce031e3c5d54df18f09043e7853b55cfc4723dbe7a9b69018bdcfab313a",
+      "capture.sqlite": "559cc48e51d8cf6dfc769013fcab2a4b4c4635281cafe0f06bcf2e4e2103493d",
+      "seal.json": "56a1da14719f95aaabe825d314c3461cf9b2a30c50bb5e38592be2bf5b54cc30"
+    },
+    "v2": {
+      "manifest.json": "0e0fafdf17ef6f2cdc52142c1d2d3dc905e9302191bcc7a3905b47de8aa830ea",
+      "capture.sqlite": "81b1e84b42aa7840447fac4d58638e091dd4c2bf35e4f47be868a21f4a5199d1",
+      "seal.json": "65141b852654eb61684d56ec4bb47361c4f05b5436c9f1fccc519ae263b43b12"
+    }
+  }
+}

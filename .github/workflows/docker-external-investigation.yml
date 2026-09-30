@@ -62,6 +62,7 @@ env:
   DOTNET_NOLOGO: true
   DOTNET_CLI_TELEMETRY_OPTOUT: true
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE: true
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -91,9 +92,24 @@ jobs:
           restore-keys: |
             nuget-${{ runner.os }}-
 
+      - name: Stage caller-provided private NuGet configuration
+        id: nuget
+        env:
+          PRIVATE_NUGET_CONFIG: ${{ secrets.NUGET_CONFIG }}
+        shell: bash
+        run: |
+          if [[ -z "${PRIVATE_NUGET_CONFIG:-}" ]]; then
+            echo "The NUGET_CONFIG Actions secret is required for Docker restore; no public NuGet fallback is permitted." >&2
+            exit 1
+          fi
+          umask 077
+          config="$RUNNER_TEMP/NuGet.Config"
+          printf '%s' "$PRIVATE_NUGET_CONFIG" > "$config"
+          unset PRIVATE_NUGET_CONFIG
+
       - name: Restore + build
         run: |
-          dotnet restore
+          dotnet restore --configfile "$RUNNER_TEMP/NuGet.Config"
           dotnet build --no-restore --configuration Release
 
       - name: Setup Docker Buildx
@@ -107,6 +123,8 @@ jobs:
           file: deploy/Dockerfile
           build-args: |
             INSTALL_PERF=false
+          secret-files: |
+            nugetconfig=${{ runner.temp }}/NuGet.Config
           tags: dotnet-diagnostics-mcp:dev
           load: true
           cache-from: type=gha,scope=ext-inv-mcp
@@ -120,8 +138,14 @@ jobs:
           file: samples/CoreClrSample/Dockerfile
           tags: coreclr-sample:dev
           load: true
+          secret-files: |
+            nugetconfig=${{ runner.temp }}/NuGet.Config
           cache-from: type=gha,scope=ext-inv-sample
           cache-to: type=gha,mode=max,scope=ext-inv-sample
+
+      - name: Remove staged private NuGet configuration
+        if: always()
+        run: rm -f -- "$RUNNER_TEMP/NuGet.Config"
 
       - name: Run docker-bootstrap external-investigation acceptance test
         run: |

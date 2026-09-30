@@ -46,16 +46,23 @@ public static class DiagnosticCoreServiceRegistration
     /// </param>
     /// <param name="configuredSymbolPath">Optional symbol search path forwarded to <see cref="SymbolPathBuilder"/>.</param>
     /// <param name="handleStoreOptions">Validated bounded handle-store settings supplied by the host.</param>
+    /// <param name="captureStoreOptions">Optional host-configured durable capture bounds; registration creates no capture files.</param>
     public static IServiceCollection AddDiagnosticCoreServices(
         this IServiceCollection services,
         SecurityOptions securityOptions,
         string? configuredSymbolPath = null,
-        DiagnosticHandleStoreOptions? handleStoreOptions = null)
+        DiagnosticHandleStoreOptions? handleStoreOptions = null,
+        Captures.CaptureStoreOptions? captureStoreOptions = null)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(securityOptions);
         handleStoreOptions ??= new DiagnosticHandleStoreOptions();
         handleStoreOptions.Validate();
+        captureStoreOptions ??= new Captures.CaptureStoreOptions();
+        captureStoreOptions.Validate();
+        services.AddSingleton(captureStoreOptions);
+        services.AddSingleton<Captures.SqliteCaptureStore>();
+        services.AddSingleton<UseCases.DurableCaptureUseCases>();
 
         // B4 security gates (issue #165). The caller binds SecurityOptions from the
         // `Diagnostics` configuration section; B5 (issue #166) will retrofit these into the

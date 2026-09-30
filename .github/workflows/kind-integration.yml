@@ -16,6 +16,7 @@ env:
   DOTNET_NOLOGO: true
   DOTNET_CLI_TELEMETRY_OPTOUT: true
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE: true
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -29,6 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       code: ${{ steps.filter.outputs.code }}
+      trusted_source: ${{ github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -62,8 +64,14 @@ jobs:
       BEARER_TOKEN: kind-test-bearer-token
       KIND_LOCAL_PORT: "5130"
     steps:
+      - name: Reject unvalidated code changes from untrusted pull request
+        if: needs.changes.outputs.code == 'true' && needs.changes.outputs.trusted_source != 'true'
+        run: |
+          echo "Kind Integration cannot validate code changes because fork and Dependabot pull requests do not receive the private NUGET_CONFIG secret." >&2
+          exit 1
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code == 'true' && needs.changes.outputs.trusted_source == 'true'
         with:
           persist-credentials: false
 
@@ -73,7 +81,7 @@ jobs:
       # cache invalidation. See docs/ci-nuget-cache.md for the measurements
       # and metric definitions.
       - name: Setup .NET 10
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code == 'true' && needs.changes.outputs.trusted_source == 'true'
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           global-json-file: global.json
@@ -82,14 +90,30 @@ jobs:
             **/Directory.Packages.props
             **/*.csproj
 
-      - name: Restore + build
-        if: needs.changes.outputs.code == 'true'
+      - name: Stage caller-provided private NuGet configuration
+        if: needs.changes.outputs.code == 'true' && needs.changes.outputs.trusted_source == 'true'
+        id: nuget
+        env:
+          PRIVATE_NUGET_CONFIG: ${{ secrets.NUGET_CONFIG }}
+        shell: bash
         run: |
-          dotnet restore
+          if [[ -z "${PRIVATE_NUGET_CONFIG:-}" ]]; then
+            echo "The NUGET_CONFIG Actions secret is required for Docker restore; no public NuGet fallback is permitted." >&2
+            exit 1
+          fi
+          umask 077
+          config="$RUNNER_TEMP/NuGet.Config"
+          printf '%s' "$PRIVATE_NUGET_CONFIG" > "$config"
+          unset PRIVATE_NUGET_CONFIG
+
+      - name: Restore + build
+        if: needs.changes.outputs.code == 'true' && needs.changes.outputs.trusted_source == 'true'
+        run: |
+          dotnet restore --configfile "$RUNNER_TEMP/NuGet.Config"
           dotnet build --no-restore --configuration Release
 
       - name: Setup Docker Buildx
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code == 'true' && needs.changes.outputs.trusted_source == 'true'
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
 
       # `cache-from`/`cache-to: type=gha` reuses Docker layers across runs via
@@ -97,41 +121,49 @@ jobs:
       # a PR's writes are reused on subsequent pushes to the same PR. `load: true`
       # makes the built image available to `kind load` below.
       - name: Build orchestrator image
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code == 'true' && needs.changes.outputs.trusted_source == 'true'
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: deploy/Dockerfile
           tags: ${{ env.ORCH_IMAGE }}
           load: true
+          secret-files: |
+            nugetconfig=${{ runner.temp }}/NuGet.Config
           cache-from: type=gha,scope=kind-orch
           cache-to: type=gha,mode=max,scope=kind-orch
 
       - name: Build sample image
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code == 'true' && needs.changes.outputs.trusted_source == 'true'
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: samples/CoreClrSample/Dockerfile
           tags: ${{ env.SAMPLE_IMAGE }}
           load: true
+          secret-files: |
+            nugetconfig=${{ runner.temp }}/NuGet.Config
           cache-from: type=gha,scope=kind-sample
           cache-to: type=gha,mode=max,scope=kind-sample
 
+      - name: Remove staged private NuGet configuration
+        if: ${{ always() && needs.changes.outputs.trusted_source == 'true' }}
+        run: rm -f -- "$RUNNER_TEMP/NuGet.Config"
+
       - name: Create kind cluster
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code == 'true' && needs.changes.outputs.trusted_source == 'true'
         uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
         with:
           cluster_name: p6-kind
 
       - name: Load images into kind
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code == 'true' && needs.changes.outputs.trusted_source == 'true'
         run: |
           kind load docker-image "${ORCH_IMAGE}" --name p6-kind
           kind load docker-image "${SAMPLE_IMAGE}" --name p6-kind
 
       - name: Install orchestrator (Helm)
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code == 'true' && needs.changes.outputs.trusted_source == 'true'
         run: |
           kubectl create namespace "${ORCH_NAMESPACE}"
           kubectl -n "${ORCH_NAMESPACE}" create secret generic kind-acceptance-token \
@@ -168,19 +200,19 @@ jobs:
             "deployment/${ORCH_DEPLOY}" --timeout=3m
 
       - name: Apply p6 sample manifests
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code == 'true' && needs.changes.outputs.trusted_source == 'true'
         run: |
           kubectl apply -f deploy/k8s/p6-sample/
 
       - name: Wait for sample pods to be Ready
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code == 'true' && needs.changes.outputs.trusted_source == 'true'
         run: |
           kubectl -n "${SAMPLE_NAMESPACE}" wait --for=condition=Available deploy/p6-sample-a --timeout=3m
           kubectl -n "${SAMPLE_NAMESPACE}" wait --for=condition=Available deploy/p6-sample-b --timeout=3m
           kubectl -n "${SAMPLE_NAMESPACE}" get pods -o wide
 
       - name: Port-forward orchestrator service (background)
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code == 'true' && needs.changes.outputs.trusted_source == 'true'
         run: |
           ORCH_SVC=$(kubectl -n "${ORCH_NAMESPACE}" get svc \
             -l app.kubernetes.io/instance=dotnet-dbg-mcp \
@@ -202,7 +234,7 @@ jobs:
           exit 1
 
       - name: Run kind integration test
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code == 'true' && needs.changes.outputs.trusted_source == 'true'
         env:
           DOTNET_DBG_MCP_KIND_TEST: "1"
           DOTNET_DBG_MCP_ORCH_URL: http://127.0.0.1:5130
@@ -212,7 +244,7 @@ jobs:
           DOTNET_DBG_MCP_KIND_RESPONSE_PATH: ${{ github.workspace }}/TestResults/kind-mcp-responses.jsonl
         run: |
           dotnet test tests/DotnetDiagnostics.Mcp.IntegrationTests/DotnetDiagnostics.Mcp.IntegrationTests.csproj \
-            --no-build --configuration Release \
+            --no-build --no-restore --configuration Release \
             --filter "Category=KindIntegration" \
             --blame-hang-timeout 5m \
             --logger "trx;LogFileName=kind-test-results.trx" \
@@ -220,7 +252,7 @@ jobs:
             --results-directory TestResults
 
       - name: Diagnostics on failure
-        if: ${{ failure() && needs.changes.outputs.code == 'true' }}
+        if: ${{ failure() && needs.changes.outputs.code == 'true' && needs.changes.outputs.trusted_source == 'true' }}
         run: |
           {
             echo "===== orchestrator describe ====="
@@ -242,14 +274,14 @@ jobs:
           } 2>&1 | tee kind-diagnostics.log
 
       - name: Stop port-forward
-        if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        if: ${{ always() && needs.changes.outputs.code == 'true' && needs.changes.outputs.trusted_source == 'true' }}
         run: |
           if [ -f port-forward.pid ]; then
             kill "$(cat port-forward.pid)" 2>/dev/null || true
           fi
 
       - name: Upload kind test artifacts
-        if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        if: ${{ always() && needs.changes.outputs.code == 'true' && needs.changes.outputs.trusted_source == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: kind-integration-results

@@ -1,5 +1,8 @@
 name: dotnet-diagnostics-crash-guard
 
+# Set NUGET_CONFIG to the caller's private NuGet.Config before `docker compose
+# up --build`; build secrets are mounted only while restoring packages.
+
 services:
   # Docker's `pid: service:<target>` ties every joined process to that target's
   # namespace PID 1. If the target exits, Linux kills the diagnostics sidecar
@@ -14,6 +17,8 @@ services:
     build:
       context: ..
       dockerfile: samples/BadCodeSample/Dockerfile
+      secrets:
+        - nugetconfig
     pid: "service:pid-anchor"
     depends_on:
       pid-anchor:
@@ -32,6 +37,8 @@ services:
       dockerfile: deploy/Dockerfile
       args:
         INSTALL_PERF: "false"
+      secrets:
+        - nugetconfig
     pid: "service:pid-anchor"
     depends_on:
       pid-anchor:
@@ -60,3 +67,7 @@ services:
 
 volumes:
   diagnostics-tmp:
+
+secrets:
+  nugetconfig:
+    file: ${NUGET_CONFIG:?Set NUGET_CONFIG to a private NuGet.Config file}

@@ -8,7 +8,7 @@ ship from this repository and run the **same Core diagnostics engine**, but they
 | Consumer | A human, a shell script, a CI job | An LLM, via an MCP client |
 | Surface | Sub-commands you type | MCP tools the model calls |
 | Transport | None — in-process, one-shot or REPL | Streamable HTTP (bearer auth) or stdio |
-| State | One-shot inline results, or a `session` REPL holding queryable handles | MCP session holding handles |
+| State | One-shot inline results, a `session` REPL holding queryable handles, or opt-in local durable captures | MCP session holding handles |
 | Install | `dotnet tool install -g dotnet-diagnostics-cli` | `dotnet tool install -g dotnet-diagnostics-mcp` |
 
 If you want an LLM to drive diagnostics, use the **server** — see [`client-setup.md`](./client-setup.md) and
@@ -164,6 +164,7 @@ matching central configuration or apply it to a compatible Dockerized central au
 | `--bearer-token` | `string?` | generated | Operator-supplied sidecar bearer token. When omitted, the CLI generates a random 32-byte hex value and prints it in the output. |
 | `--delegation-key` | `string?` | generated | Operator-supplied `MCP_INTERNAL_SCOPE_DELEGATION_KEY`. When omitted, the CLI generates a random 32-byte hex value and prints it in the output. |
 | `--wait` | `int?` | `90` | Seconds to wait for the sidecar health check to report `healthy`. |
+| `--retain-failed-sidecar` | flag | off | Leave a newly created sidecar in place if its health check fails, so `docker inspect` and `docker logs` remain available. Remove it manually after inspection; existing sidecars are never removed on health failure. |
 | `--no-sys-ptrace` | flag | off | Skip `--cap-add SYS_PTRACE`. Leave this off unless you knowingly want EventPipe-only coverage. |
 | `--apply` | flag | off | Require `--central-container`, atomically write a mode-`0600` bootstrap-owned profile file through `docker exec` stdin, restart the existing central container, and wait for health. |
 | `--replace` | flag | off | With `--apply`, replace a different profile only when the existing file carries bootstrap ownership metadata. |
@@ -237,7 +238,10 @@ dotnet-diagnostics-cli docker-bootstrap \
   --acknowledge-risk high
 
 # Repository development with local MCP changes:
-docker build -t dotnet-diagnostics-mcp:dev -f deploy/Dockerfile .
+export NUGET_CONFIG="${NUGET_CONFIG:-$HOME/.nuget/NuGet/NuGet.Config}"
+test -s "$NUGET_CONFIG"
+docker build --secret "id=nugetconfig,src=$NUGET_CONFIG" \
+  -t dotnet-diagnostics-mcp:dev -f deploy/Dockerfile .
 dotnet run --project src/DotnetDiagnostics.Cli -c Release -- \
   docker-bootstrap --target-container api --sidecar-image dotnet-diagnostics-mcp:dev \
   --acknowledge-risk high
@@ -707,6 +711,16 @@ dotnet-diagnostics-cli get-bytes --kind trace --dump-file ./cpu.nettrace --out .
 
 ### `compare`
 
+For offline retained CPU, heap, or EventCounter comparisons, supply all four
+`--baseline-capture-id`, `--baseline-artifact-id`, `--candidate-capture-id`, and
+`--candidate-artifact-id` selectors, optionally with `--capture-root`.
+This returns `dotnet-diagnostics/historical-comparison/v1`, not a causal verdict.
+Imported captures use their new local IDs. It does not attach, register handles,
+or accept filters, file inputs, `--save`, or `--mode` alongside these selectors.
+See [historical comparisons](./historical-comparisons.md) for the supported matrix,
+explicit examples, null/delta semantics, authorization, and finite bounds.
+The existing file-based behavior below is unchanged.
+
 Compare two or more saved comparable snapshots from `collect --save`. Human output keeps the compact verdict, first→last headline, and top metric/key deltas in the terminal; `--json` emits the full `SnapshotJourneyDiff`, and `--save` writes that full matrix to a file. Local MCP `compare_to_baseline` / `query_snapshot(view="diff")` calls use a `journey://diff/{handle}` Resource link when the matrix is large. Proxied pod calls return full results inline because dynamic pod Resources are not forwarded.
 
 For ThreadPool snapshots, only provenance-backed runtime `Starvation` and
@@ -801,8 +815,8 @@ the ranked stack output, `nativeContentionEvidence`, and the shared `session que
 
 Re-render a previously-collected handle under a different view **without re-collecting**.
 
-This is **only meaningful inside a `session`** — drill-down handles live for the lifetime of the host, and
-the one-shot CLI builds a fresh host per command and exits. Run one-shot, `query` returns a `NotSupported`
+Temporary handles are **only meaningful inside a `session`** — drill-down handles live for the lifetime of the host, and
+the one-shot CLI builds a fresh host per command and exits. Run one-shot, `query --handle` returns a `NotSupported`
 envelope (exit 1) that redirects you to `dotnet-diagnostics session`, where a `collect` (or `inspect-heap` /
 `dump`) issues a handle you can drill into in the same session; for a one-shot answer instead, re-run the
 originating command with `--depth detail` / `--json` to get the full result inline.
@@ -810,11 +824,247 @@ Inside `session`, `query --handle <id> --view <view>` works against the live han
 An alias `query --latest-of-kind <kind> --view <view>` resolves to the most recently registered
 non-expired handle of that kind instead of requiring you to copy a handle id (see below).
 
+For persisted evidence, use `query --capture-id <id> --artifact-id <id> --view <view>`.
+This works in a fresh CLI process, even after the original temporary handle expires.
+The durable selector cannot be combined with `--handle`, `--latest-of-kind`, `--gc-handle`,
+or `--pid`. Capture and artifact IDs are exact, case-sensitive lower-case GUIDs in N
+format (32 hexadecimal characters without hyphens), not
+paths or interchangeable session handles.
+
+### Durable captures: `--persist` and `captures`
+
+Persistence is opt-in: `collect --persist` and `inspect-heap --persist` retain a local
+SQLite capture while preserving the ordinary diagnostic result's `data`. With no
+`--persist`, collection and handle lifetimes remain unchanged. A capture advertises
+its ID, artifact IDs, quality, and supported offline views. Grouped workflows retain
+their child artifacts in one logical capture, not unrelated packages.
+Collection output and `captures show` include `capture.artifacts[].composition` for
+group roots: bounded child references, parent IDs, admission/source-loss evidence,
+and completion errors/cancellation. Query a group with `--view children`, including
+when reusing its temporary handle in the same session. This authorized composition
+view does not use a typed snapshot dispatcher; select a child artifact ID for its
+advertised offline views. Ordinary snapshots without views are not treated as groups.
+
+```bash
+dotnet-diagnostics-cli collect --kind gc --pid 1234 --duration 10 \
+  --persist --capture-root ./diagnostic-evidence --json
+dotnet-diagnostics-cli captures list --capture-root ./diagnostic-evidence --json
+dotnet-diagnostics-cli captures show --capture-root ./diagnostic-evidence --capture-id <id>
+dotnet-diagnostics-cli query --capture-root ./diagnostic-evidence \
+  --capture-id <id> --artifact-id <artifact-id> --view records --page-size 100 --json
+dotnet-diagnostics-cli captures recover --capture-root ./diagnostic-evidence --capture-id <id>
+dotnet-diagnostics-cli captures delete --capture-root ./diagnostic-evidence --capture-id <id> --acknowledge-risk high
+```
+
+**Root and ownership.** `--capture-root <directory>` selects a dedicated stable root.
+Otherwise a nonempty `MCP_ARTIFACT_ROOT` is used; otherwise the root is
+`dotnet-diagnostics` under the current user's local application-data directory
+(typically `$XDG_DATA_HOME/dotnet-diagnostics` or `~/.local/share/dotnet-diagnostics`
+on Linux and `%LOCALAPPDATA%\dotnet-diagnostics` on Windows). Packages live under
+`<capture-root>/captures/`, protected by the capture-store marker. No session scratch
+directory or `dump --out` override is silently used as the persistent root.
+Ownership is a stable nonsecret local OS identity; there is no bearer token and no
+automatic all-owners privilege. Filesystem permissions remain an additional boundary.
+
+**Lifecycle.** `captures list` accepts `--page-size` (1..100) and
+`--after-capture-id` from the previous page. `captures show`, `delete`, and `recover`
+require `--capture-id`. Recovery is explicit and creates a **new derived package**;
+deletion requires `--acknowledge-risk high` in non-interactive use (or the session's
+high-risk confirmation). `--explain-risk` describes these local-OS operations
+without reading or mutating packages.
+Ordinary reads never repair or mutate the original. Captures survive process restart
+and REPL exit until explicitly deleted. There is no automatic 24-hour raw-artifact
+pruning of capture packages and no daemon or global database.
+
+#### Portable bundles: `captures export`, `import`, and `import-result`
+
+Portability is an explicit durable-storage operation, not a change to the default
+ephemeral collection behavior. The CLI calls Core directly: no MCP connection,
+HTTP endpoint, bearer token, or daemon is involved. The
+[portable capture contract](./design/portable-capture-contract.md) defines format,
+admission, ownership, and partial-publication semantics.
+
+```bash
+# Choose each sealed capture explicitly; duplicate selections/labels are allowed.
+dotnet-diagnostics-cli captures export --capture-root "./source evidence" \
+  --entry <capture-id-a>=baseline --entry "<capture-id-b>=after change" \
+  --file "./comparison set.ddcapture" --acknowledge-risk high --json
+
+# Requires the trusted worker configuration below.
+dotnet-diagnostics-cli captures import --capture-root "./destination evidence" \
+  --file "./comparison set.ddcapture" --acknowledge-risk high --json
+
+# Use the operation pair returned by import; this needs neither input nor worker.
+dotnet-diagnostics-cli captures import-result --capture-root "./destination evidence" \
+  --operation-id <operation-id> --requested-utc <original-ISO-8601-timestamp> --json
+
+# Query with the NEW local identifiers from data.import.entries[].mapping.
+dotnet-diagnostics-cli query --capture-root "./destination evidence" \
+  --capture-id <local-capture-id> --artifact-id <local-artifact-id> --view records --json
+```
+
+`--entry <capture-id>[=<label>]` is repeatable, with 1..16 entries in supplied
+order. Capture IDs must be exact lower-case, 32-character GUIDs, never names or
+paths. The first `=` separates the ID from the optional label; later `=` characters
+belong to the label. Labels are at most 256 UTF-8 bytes without control characters.
+They are display data, not selectors, output paths, authority, or source renames.
+The output filename is independent of every label and immutable source identity.
+Quote each whole argument when it contains spaces; neither command executes shell
+fragments from arguments. Import accepts the whole bundle, not label-based subsets.
+
+`--file` names a binary file, not stdin/stdout (`-` is rejected); `--json` selects
+the **outcome envelope**, never a JSON encoding of the archive. Export writes in
+64 KiB chunks to a random, exclusively created sibling `.ddcapture-*.pending`,
+flushes and checks size/SHA-256, then publishes with a no-overwrite rename.
+The destination parent must already exist. Existing destinations are never replaced.
+Output inside the managed `captures/` directory is rejected. On Unix the sibling
+is created with owner read/write permissions; Windows inherits directory ACLs.
+Use trusted local directories whose parents cannot be replaced by another user.
+Existing symlink/reparse paths are rejected; this is not a race-proof filesystem
+sandbox against a hostile process sharing write permission to those directories.
+Do not use devices, pipes, mutable producer files, or network-mounted destinations.
+Import hashes the bounded input file before Core independently admits its ZIP,
+SQLite schema/data and compatibility. A matching hash is **not trust**.
+
+Both file paths are bounded at 512 MiB; Core's additional format, work, memory,
+concurrency and store limits still apply. The CLI's operation deadline is 600
+seconds including local hashing/copying. Cancellation/failure can perform bounded
+receipt/metadata lookups afterward (up to 10 seconds each). Handled export failures
+remove only the temporary file created by that invocation; cleanup failure is
+reported separately. An abrupt kill can leave that sibling behind. Inspect its
+exact path and operation state before manually removing it; do not delete the
+capture store or glob-delete other operations' staging.
+
+**Trusted import assets and current platform limit.** Set both absolute paths in
+the CLI host's environment:
+
+```bash
+export DOTNET_DIAGNOSTICS_IMPORT_WORKER=/opt/dotnet-diagnostics/trusted/portable-capture-worker
+export DOTNET_DIAGNOSTICS_SQLITE_LIBRARY=/opt/dotnet-diagnostics/trusted/libe_sqlite3.so
+```
+
+These are operator-trusted executable/library inputs, never paths supplied by a
+bundle. Use the matching reviewed worker and SQLite runtime assets, installed in
+directories unmodifiable by untrusted users. Explicitly opted-in producer builds
+can include the [prepared native sidecars](./portable-native-packaging.md).
+Installed hosts do **not** automatically discover or activate them, download them,
+search test output, or accept foreign SQLite in the CLI process. Both environment
+variables remain required, including in Docker. Producer execution and installed
+cross-host validation remain integration/release gates. The current confined worker requires
+supported Linux isolation features; other platforms, missing assets, or unavailable
+isolation fail explicitly (`ImportWorkerUnavailable` or the underlying Core
+failure). There is no less-isolated fallback. Export and receipt lookup do not
+require worker configuration.
+
+**Local risk and ownership.** Export/import require `--acknowledge-risk high` in
+non-interactive use, or the interactive session's high-risk confirmation.
+These actions use the canonical Core safety profiles shared with MCP.
+`import-result` is Moderate/Warn: receipt reconciliation can write metadata and
+delete unpublished private staging, but does not delete published captures or
+attach to a live target.
+`--explain-risk` performs no import/export and does not open packages.
+Acknowledgment concerns whole captures, including potentially sensitive records;
+it does not grant all-owners access or trust input SQL. The current OS-local owner
+is supplied to Core for every source read, import, publication, and receipt lookup.
+Imported source ownership is retained only as provenance. Each published entry
+gets new local capture/artifact IDs, and typed references are remapped. Immutable
+origin and immediate-source provenance, quality and unknown-tail/loss indicators
+remain visible in `data.captures[].portableSource` and `quality`.
+No native trace/dump dependency is smuggled into the initial format; dependent
+views can remain unavailable even when records are readable offline.
+
+**Outcome and retry identity.** Both human and JSON output retain the structured
+operation key, export metadata or import entries/mappings, provenance, and failures.
+`data.outputPublished` means the export file's final rename succeeded; an export
+hash alone does not establish publication. `data.import.complete` means all entries
+published, **not** that their diagnostic evidence is lossless. Multi-entry import
+is not one cross-directory transaction: after cancellation or failure, already
+published entries remain usable. Inspect each entry state and mapping. Unpublished
+entries have no local mapping. `failure`, `receiptFailure`, and `cleanupFailure`
+are distinct; a failed receipt lookup is not proof that nothing published.
+
+Exit `0` means the command completed; `1` means a structured failure or incomplete
+publication, `2` means argument/safety rejection, and `130` means cancellation,
+which can include useful partial results. Do not discard stdout on nonzero exit.
+For crash-safe orchestration, supply **both** `--operation-id` and `--requested-utc`
+before the first invocation and retain them externally. Omitted pairs are generated
+and returned, but a killed process cannot return its generated key.
+The ID is a lower-case N-format GUID; the timestamp must include an explicit UTC
+offset. Reuse the exact original pair, input bytes and export selection/labels on
+retry, never a fresh timestamp. Core binds receipts to the current owner and original
+request; a new key is a new operation, not deduplication. Core's first-use freshness
+and receipt retention rules apply (five minutes and 24 hours respectively);
+export byte retention is shorter. `import-result` reads/reconciles the retained
+receipt without requiring the bundle or a live target. Normal CLI `import` retries
+still require readable input and configured assets; use `import-result` when those
+are unavailable. Do not blindly repeat a partial import under a new key.
+
+The same syntax works in `session`, inheriting `--capture-root` unless overridden.
+Session-level `--persist` is not applied to these commands. There is no portable
+multi-capture comparison command in this change.
+
+**Records query.** `--view records` exposes bounded typed records, not arbitrary SQL:
+Each artifact advertises `recordStreamAvailable` and, when recorded, its own
+`recordStream` admission/source-loss evidence. The `records` view appears only
+for declared occurrence streams or retained rows. A declared zero-event stream
+can return an empty page; snapshot-only evidence and reference-only group roots
+return an actionable error, not a misleading observed-zero result.
+Within a session, the same filters work with `query --handle <durable-handle>
+--view records`; each read rechecks capture ownership, deletion, and stream
+availability. Ordinary ephemeral handles do not gain a records stream.
+
+| Option | Meaning |
+|---|---|
+| `--from`, `--to` | Inclusive ISO-8601 timestamp bounds with an explicit UTC offset. |
+| `--thread-id` | Exact thread identifier filter. |
+| `--category` | One exact category filter. |
+| `--name` | Exact record-name filter. |
+| `--after-record-id` | Exclusive nonnegative continuation ID from the previous page. |
+| `--page-size` | Requested row cap, 1..1000; the Core byte budget may shorten the page. |
+
+Durable EventPipe CPU samples can use `sample.cpu.eventpipe.stack-ref.v1` rows.
+Resolve a sample's `record.name` in the **same artifact** using
+`--category definition.cpu-stack.v1 --name <sample-name>`. The definition retains
+the full interpreted stack and common evidence metadata; the sample retains its
+thread, relative time, and weight. Definitions are not sample occurrences.
+Inline `sample.cpu.eventpipe` fallback rows remain self-contained. See the
+[versioned CPU record contract](./resource-boundedness.md#durable-cpu-stack-definitions-and-occurrences).
+
+Snapshot queries allow **only the advertised offline views**. Historical process IDs
+do not authorize reattachment: live memory readers, frame variables, and native
+companions that require the original target remain unavailable after restoration.
+Original producer handles from a persisted collection are also capture-bound:
+ownership, deletion, and offline-view checks apply each time they are queried.
+Ordinary non-persisted handles keep their existing behavior.
+CPU-efficiency aggregates are retained as typed snapshots, but currently have no
+supported snapshot drilldown view; retaining a snapshot does not imply that
+`query --view summary` is available. Collection output still includes the aggregate.
+Their `records` view exposes projected `snapshot.*` facts marked
+`sourceOccurrence=false` and `derivedRetainedRow=true`, not source events.
+Source loss remains unknown; these rows do not establish a complete event history.
+Capture quality reports known losses, interrupted evidence, and unknown source loss;
+persisted does not mean complete. Normalized retained records and compatibility
+snapshots are not a promise to retain every raw runtime event.
+
+`dump`, `get-bytes`, raw method bytes, exported `.nettrace` files, and native companion
+files are not copied into the SQLite package by these flags. No command exports the
+raw SQLite database. Generic artifact reads/deletes cannot bypass capture ownership
+or package protection, including when re-rooted inside a marked package.
+
 ### `session`
 
 Start the stateful REPL — covered in the next section. Accepts `--launch -- <app> [args]` at startup
 to spawn the target as a child and bind it for the whole session (zero-privilege live attach under
 `ptrace_scope=1`; see the [Linux note](#linux-ptrace-note)). The child is killed when the session ends.
+
+`session --persist --capture-root <directory>` opts eligible `collect` and
+`inspect-heap` commands into persistence. Capture commands and durable queries inherit
+the stable root; an explicit per-command `--capture-root` overrides it. Dump/export
+scratch roots are independent. Exiting the REPL deletes only its scratch artifacts,
+not durable captures.
+One session accepts at most 32 distinct capture roots; exceeding `MaximumRoots`
+returns an explicit capacity error. Start another session rather than evicting
+existing durable-handle authorization bindings.
 
 ## The `session` REPL
 

@@ -277,8 +277,10 @@ public sealed class EtwNativeAllocSampler : INativeAllocSampler
             catch { /* best effort */ }
         }
 
-        var stacks = ExtractAllocationStacks(traceLog, processId);
-        var aggregate = NativeAllocStackAggregator.Aggregate(stacks, topN);
+        var observationSink = DotnetDiagnostics.Core.CaptureRecording.CaptureRecordingContext.Current;
+        observationSink?.ReportSourceLoss("sample.native-alloc.etw-virtualalloc", traceLog.EventsLost);
+        var stacks = ExtractAllocationStacks(traceLog, processId, observationSink);
+        var aggregate = NativeAllocStackAggregator.Aggregate(stacks, topN, recordObservations: false);
 
         var notes = new List<string>
         {
@@ -318,7 +320,8 @@ public sealed class EtwNativeAllocSampler : INativeAllocSampler
     /// </summary>
     private static IEnumerable<IReadOnlyList<(string Module, string Method)>> ExtractAllocationStacks(
         TraceLog traceLog,
-        int processId)
+        int processId,
+        DotnetDiagnostics.Core.CaptureRecording.ICaptureObservationSink? observationSink)
     {
         foreach (var ev in traceLog.Events)
         {
@@ -343,6 +346,11 @@ public sealed class EtwNativeAllocSampler : INativeAllocSampler
 
             if (frames.Count > 0)
             {
+                if (observationSink is not null)
+                    DotnetDiagnostics.Core.CaptureRecording.SamplerObservationProjection.Sample(observationSink,
+                        "sample.native-alloc.etw-virtualalloc", "trace-relative-seconds", ev.TimeStampRelativeMSec / 1000,
+                        ev.ThreadID, frames.Select(f => new DotnetDiagnostics.Core.CaptureRecording.SamplerObservationProjection.Frame(f.Module, f.Method)),
+                        samplePeriod: 1);
                 yield return frames;
             }
         }

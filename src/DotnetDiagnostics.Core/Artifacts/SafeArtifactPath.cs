@@ -12,6 +12,8 @@ namespace DotnetDiagnostics.Core.Artifacts;
 ///   <item>Caller-supplied paths are interpreted as <b>relative</b> sub-paths under that root.</item>
 ///   <item>Absolute paths, <c>..</c> traversal, and symlink escapes are rejected with
 ///         <see cref="ArtifactPathException"/>.</item>
+///   <item>The <c>captures/</c> namespace is reserved for managed capture operations.
+///         Generic file operations cannot bypass package ownership or lifecycle leases.</item>
 ///   <item>Directories are created with POSIX mode <c>0700</c>; files written with
 ///         <see cref="SetRestrictiveFilePermissions(string)"/> end up <c>0600</c>.</item>
 /// </list>
@@ -43,6 +45,13 @@ public static class SafeArtifactPath
         string? requestedRelative,
         string defaultRelative,
         string parameterName = "outputDirectory")
+        => ResolveDirectoryCore(root, requestedRelative, defaultRelative, parameterName, allowCapture: false);
+
+    internal static string ResolveCaptureDirectory(string root, string relativePath)
+        => ResolveDirectoryCore(root, relativePath, relativePath, nameof(relativePath), allowCapture: true);
+
+    private static string ResolveDirectoryCore(
+        string root, string? requestedRelative, string defaultRelative, string parameterName, bool allowCapture)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
         ArgumentNullException.ThrowIfNull(defaultRelative);
@@ -54,6 +63,7 @@ public static class SafeArtifactPath
 
         var combined = Path.GetFullPath(Path.Combine(canonicalRoot, relative));
         EnsureUnderRoot(combined, canonicalRoot, parameterName);
+        if (!allowCapture) RejectCapturePath(canonicalRoot, combined, parameterName);
 
         // Resolve any symlinked ancestors BEFORE creating the directory. CreateDirectory
         // would happily follow an attacker-controlled symlink in the middle of the path
@@ -61,6 +71,7 @@ public static class SafeArtifactPath
         // we caught the escape afterwards.
         var resolvedBeforeCreate = ResolveSymlinks(combined);
         EnsureUnderRoot(resolvedBeforeCreate, canonicalRoot, parameterName);
+        if (!allowCapture) RejectCapturePath(canonicalRoot, resolvedBeforeCreate, parameterName);
 
         Directory.CreateDirectory(combined);
 
@@ -68,6 +79,7 @@ public static class SafeArtifactPath
         // with a symlink between the pre-check and the create call.
         var resolvedAfterCreate = ResolveSymlinks(combined);
         EnsureUnderRoot(resolvedAfterCreate, canonicalRoot, parameterName);
+        if (!allowCapture) RejectCapturePath(canonicalRoot, resolvedAfterCreate, parameterName);
 
         ApplyDirectoryPermissions(combined);
         return combined;
@@ -82,6 +94,12 @@ public static class SafeArtifactPath
         string root,
         string requestedPath,
         string parameterName = "path")
+        => ResolvePathCore(root, requestedPath, parameterName, allowCapture: false);
+
+    internal static string ResolveCapturePath(string root, string requestedPath)
+        => ResolvePathCore(root, requestedPath, nameof(requestedPath), allowCapture: true);
+
+    private static string ResolvePathCore(string root, string requestedPath, string parameterName, bool allowCapture)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
         ArgumentException.ThrowIfNullOrWhiteSpace(requestedPath);
@@ -93,10 +111,46 @@ public static class SafeArtifactPath
             ? Path.GetFullPath(requestedPath)
             : Path.GetFullPath(Path.Combine(canonicalRoot, requestedPath));
         EnsureUnderRoot(combined, canonicalRoot, parameterName);
+        if (!allowCapture) RejectCapturePath(canonicalRoot, combined, parameterName);
 
         var resolved = ResolveSymlinks(combined);
         EnsureUnderRoot(resolved, canonicalRoot, parameterName);
+        if (!allowCapture) RejectCapturePath(canonicalRoot, resolved, parameterName);
         return resolved;
+    }
+
+    internal static bool IsManagedCapturePath(string root, string path)
+        => IsCapturePath(CanonicaliseRoot(root), ResolveSymlinks(Path.GetFullPath(path)));
+
+    private static void RejectCapturePath(string root, string path, string parameterName)
+    {
+        if (IsCapturePath(root, path))
+            throw new ArtifactPathException(parameterName,
+                "managed capture packages require capture lifecycle/query operations; generic file access is not permitted.");
+    }
+
+    private static bool IsCapturePath(string root, string path)
+    {
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        var relative = Path.GetRelativePath(root, path);
+        if (string.Equals(relative, "captures", comparison)
+            || relative.StartsWith("captures" + Path.DirectorySeparatorChar, comparison))
+            return true;
+
+        // The marker keeps CLI re-rooting or a symlink alias from bypassing package ownership and leases.
+        for (var directory = path; !string.IsNullOrEmpty(directory); directory = Path.GetDirectoryName(directory))
+        {
+            if (!string.Equals(Path.GetFileName(directory), "captures", comparison))
+                continue;
+            try
+            {
+                _ = File.GetAttributes(Path.Combine(directory, ".capture-store"));
+                return true;
+            }
+            catch (FileNotFoundException) { }
+            catch (DirectoryNotFoundException) { }
+        }
+        return false;
     }
 
     /// <summary>

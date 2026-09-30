@@ -59,4 +59,5 @@
     <ProjectReference Include="..\DotnetDiagnostics.Core\DotnetDiagnostics.Core.csproj" />
   </ItemGroup>
 
+  <Import Project="../DotnetDiagnostics.Core/Build/PortableCaptureWorker.targets" />
 </Project>

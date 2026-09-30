@@ -26,6 +26,12 @@ permissions:
   actions: read
   contents: read
 
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE: true
+
 jobs:
   hosted-cohort:
     name: Hosted allocation ${{ matrix.cohort }}
@@ -38,6 +44,8 @@ jobs:
       matrix:
         cohort: [1, 2, 3]
     uses: ./.github/workflows/paired-performance-experiment.yml
+    secrets:
+      NUGET_CONFIG: ${{ secrets.NUGET_CONFIG }}
     with:
       baseline_ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || inputs.baseline_ref || 'main' }}
       candidate_ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || inputs.candidate_ref || github.sha }}
@@ -58,6 +66,8 @@ jobs:
           && inputs.baseline_ref == 'main'
           && (inputs.candidate_ref == '' || inputs.candidate_ref == 'main')))
     uses: ./.github/workflows/paired-performance-experiment.yml
+    secrets:
+      NUGET_CONFIG: ${{ secrets.NUGET_CONFIG }}
     with:
       baseline_ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || inputs.baseline_ref || 'main' }}
       candidate_ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || inputs.candidate_ref || github.sha }}
@@ -89,6 +99,22 @@ jobs:
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           global-json-file: global.json
+
+      - name: Stage caller-provided private NuGet configuration
+        id: nuget
+        env:
+          PRIVATE_NUGET_CONFIG: ${{ secrets.NUGET_CONFIG }}
+        shell: bash
+        run: |
+          if [[ -z "${PRIVATE_NUGET_CONFIG:-}" ]]; then
+            echo "The NUGET_CONFIG Actions secret is required; no public NuGet fallback is permitted." >&2
+            exit 1
+          fi
+          umask 077
+          config="$RUNNER_TEMP/paired-calibration-NuGet.Config"
+          printf '%s' "$PRIVATE_NUGET_CONFIG" > "$config"
+          echo "path=$config" >> "$GITHUB_OUTPUT"
+          unset PRIVATE_NUGET_CONFIG
 
       - name: Download current independent cohorts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -133,9 +159,16 @@ jobs:
       - name: Build calibration analyzer
         shell: bash
         run: |
-          dotnet restore benchmarks/DiagnosedBenchmarks/DiagnosedBenchmarks.csproj
+          dotnet restore benchmarks/DiagnosedBenchmarks/DiagnosedBenchmarks.csproj \
+            --configfile "${{ steps.nuget.outputs.path }}"
           dotnet build benchmarks/DiagnosedBenchmarks/DiagnosedBenchmarks.csproj \
             --configuration Release --no-restore
+
+      - name: Remove staged private NuGet configuration
+        if: always()
+        run: |
+          path="${{ steps.nuget.outputs.path }}"
+          [[ -z "$path" ]] || rm -f -- "$path"
 
       - name: Aggregate exact-compatible cohorts
         shell: bash
@@ -155,7 +188,7 @@ jobs:
           done
           dotnet run \
             --project benchmarks/DiagnosedBenchmarks/DiagnosedBenchmarks.csproj \
-            --configuration Release --no-build -- \
+            --configuration Release --no-build --no-restore -- \
             perf-regression calibration-report \
             "${cohort_args[@]}" \
             --output-evidence artifacts/calibration/output/evidence.json \

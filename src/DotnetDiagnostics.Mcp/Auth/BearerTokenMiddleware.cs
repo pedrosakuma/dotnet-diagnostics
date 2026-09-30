@@ -125,6 +125,19 @@ internal sealed class BearerTokenMiddleware
                     return;
                 }
 
+                var scopeFactory = context.RequestServices.GetRequiredService<IServiceScopeFactory>();
+                context.Items[PortablePrincipalRefresh.ItemKey] =
+                    new Func<CancellationToken, ValueTask<BearerPrincipal?>>(async token =>
+                    {
+                        if (!_attachmentLifetime.IsActive) return null;
+                        await using var scope = scopeFactory.CreateAsyncScope();
+                        var fresh = new DefaultHttpContext { RequestServices = scope.ServiceProvider };
+                        fresh.Request.Headers.Authorization = "Bearer " + presented;
+                        var service = scope.ServiceProvider.GetRequiredService<IAuthenticationService>();
+                        var refreshed = await service.AuthenticateAsync(fresh, scheme).WaitAsync(token).ConfigureAwait(false);
+                        return refreshed.Succeeded ? fresh.GetBearerPrincipal() : null;
+                    });
+
                 _logger.LogDebug("Bearer auth allowed for principal {TokenName}.", jwtPrincipal.Name);
                 await _next(context).ConfigureAwait(false);
                 return;
@@ -148,6 +161,12 @@ internal sealed class BearerTokenMiddleware
         }
 
         context.SetBearerPrincipal(principal);
+        context.Items[PortablePrincipalRefresh.ItemKey] =
+            new Func<CancellationToken, ValueTask<BearerPrincipal?>>(token =>
+            {
+                token.ThrowIfCancellationRequested();
+                return ValueTask.FromResult(_attachmentLifetime.IsActive ? _resolver.TryResolve(presented) : null);
+            });
         _logger.LogDebug("Bearer auth allowed for principal {TokenName}.", principal.Name);
 
         await _next(context).ConfigureAwait(false);

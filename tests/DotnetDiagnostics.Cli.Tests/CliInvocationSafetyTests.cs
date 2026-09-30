@@ -8,10 +8,11 @@ namespace DotnetDiagnostics.Cli.Tests;
 public sealed class CliInvocationSafetyTests
 {
     [Fact]
-    public void EveryCliCommand_HasCanonicalSafetyMapping()
+    public void EveryCliCommand_HasExplicitSafetyMapping()
     {
         var options = new Dictionary<string, CliOptions>(StringComparer.Ordinal)
         {
+            ["captures"] = new() { Command = "captures", CaptureAction = "list" },
             ["docker-bootstrap"] = new() { Command = "docker-bootstrap" },
             ["processes"] = new() { Command = "processes" },
             ["capabilities"] = new() { Command = "capabilities" },
@@ -39,6 +40,33 @@ public sealed class CliInvocationSafetyTests
                 $"CLI command '{pair.Key}' must map to a registered Core operation");
             safety.Reason.Should().NotBeNullOrWhiteSpace();
         }
+    }
+
+    [Theory]
+    [InlineData("list", "list")]
+    [InlineData("show", "describe")]
+    [InlineData("delete", "delete")]
+    [InlineData("recover", "recover")]
+    public void CaptureLifecycle_UsesTheSameCoreRequestAsMcp(string command, string action)
+    {
+        var cli = CliInvocationSafety.Resolve(new CliOptions { Command = "captures", CaptureAction = command });
+        var shared = InvocationSafetyResolver.Resolve(InvocationSafetyRequest.Create(
+            DiagnosticOperationCatalog.GetBytes, ("kind", "captures"), ("captureAction", action)));
+        cli.Should().BeEquivalentTo(shared);
+    }
+
+    [Fact]
+    public void PersistedLaunch_RetainsNestedRiskAndStorageSideEffect()
+    {
+        var request = CliInvocationSafety.CreateRequest(new CliOptions
+        {
+            Command = "collect", Kind = "counters", Persist = true, Launch = true,
+        });
+        request.Children.Should().ContainSingle().Which.Arguments["persist"].Should().Be("true");
+        var safety = InvocationSafetyResolver.Resolve(request);
+        safety.RiskLevel.Should().Be(InvocationRiskLevel.High);
+        safety.SideEffects.Should().Contain(InvocationSideEffect.WritesArtifact);
+        safety.TargetImpact.Should().Contain(TargetImpact.ProcessTermination);
     }
 
     [Fact]

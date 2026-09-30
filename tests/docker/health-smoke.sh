@@ -5,12 +5,27 @@ image="${1:-dotnet-diagnostics-mcp:health-smoke}"
 container="dotnet-diagnostics-health-smoke-${GITHUB_RUN_ID:-local}-$$"
 token="health-smoke-token"
 
+if [[ -z "${NUGET_CONFIG:-}" ]]; then
+  echo "NUGET_CONFIG must explicitly name a private NuGet.Config; the user-level default is not accepted." >&2
+  exit 1
+fi
+nuget_config="$NUGET_CONFIG"
+if [[ ! -s "$nuget_config" ]]; then
+  echo "The private NuGet.Config does not exist or is empty: $nuget_config" >&2
+  exit 1
+fi
+if grep -Eiq 'api\.nuget\.org|(^|[^[:alnum:].-])nuget\.org([^[:alnum:].-]|$)' "$nuget_config"; then
+  echo "The supplied NuGet.Config references NuGet.org; no public package or audit source is permitted." >&2
+  exit 1
+fi
+
 cleanup() {
   docker rm -f "$container" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
 docker build \
+  --secret "id=nugetconfig,src=$nuget_config" \
   --build-arg INSTALL_PERF=false \
   --tag "$image" \
   --file deploy/Dockerfile \
@@ -21,6 +36,7 @@ docker build \
 docker run --detach \
   --name "$container" \
   --env "MCP_BEARER_TOKEN=$token" \
+  --env "ASPNETCORE_URLS=http://0.0.0.0:8080" \
   --env "MCP_ALLOW_INSECURE_HTTP=true" \
   --publish 127.0.0.1::8080 \
   "$image" >/dev/null

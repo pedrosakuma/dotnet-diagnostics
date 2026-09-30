@@ -15,6 +15,71 @@ public sealed class ToolScopeDelegationTests
     private static readonly ToolScopeResolutionPolicies StrictPolicies = new(null, null, null, null);
 
     [Fact]
+    public void DurableQuery_DelegatesStableOwnerAndCurrentSensitiveScopes()
+    {
+        var registry = ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable);
+        var arguments = Arguments(new
+        {
+            captureId = "opaque-capture",
+            artifactId = "opaque-artifact",
+            view = "records",
+            afterRecordId = 4,
+            recordPageSize = 20,
+        });
+        var caller = new BearerPrincipal("display-only",
+            ImmutableHashSet.Create("eventpipe", "sensitive-parameter-read"), "trusted-owner-key");
+        var authorization = registry.Authorize("query_snapshot", arguments, caller, true, StrictPolicies);
+        var request = ToolScopeDelegation.Add(
+            new CallToolRequestParams { Name = "query_snapshot", Arguments = arguments },
+            authorization, caller, Secret);
+        ToolScopeDelegation.TryConsume(request, registry, StrictPolicies, Secret, TimeProvider.System,
+            out var delegated, out var failure).Should().BeTrue(failure);
+        delegated!.OwnershipKey.Should().Be("trusted-owner-key");
+        delegated.Scopes.Should().BeEquivalentTo("eventpipe", "sensitive-parameter-read");
+        request.Arguments!["captureId"].GetString().Should().Be("opaque-capture");
+        request.Arguments["artifactId"].GetString().Should().Be("opaque-artifact");
+        request.Arguments["afterRecordId"].GetInt64().Should().Be(4);
+        request.Arguments["recordPageSize"].GetInt32().Should().Be(20);
+    }
+
+    [Theory]
+    [InlineData("root")]
+    [InlineData("*")]
+    public void DurableQuery_DelegatesRootAuthorityWithoutImplicitSensitiveModifiers(string wildcard)
+    {
+        var registry = ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable);
+        var arguments = Arguments(new { captureId = "capture", artifactId = "artifact", view = "summary" });
+        var caller = new BearerPrincipal("root-display", ImmutableHashSet.Create(wildcard), "root-owner-key");
+        var authorization = registry.Authorize("query_snapshot", arguments, caller, true, StrictPolicies);
+        var request = ToolScopeDelegation.Add(
+            new CallToolRequestParams { Name = "query_snapshot", Arguments = arguments },
+            authorization, caller, Secret);
+        ToolScopeDelegation.TryConsume(request, registry, StrictPolicies, Secret, TimeProvider.System,
+            out var delegated, out var failure).Should().BeTrue(failure);
+        delegated!.HasScope(BearerPrincipal.RootScope).Should().BeTrue();
+        delegated.HasExplicitScope("sensitive-parameter-read").Should().BeFalse();
+        delegated.HasExplicitScope("sensitive-heap-read").Should().BeFalse();
+        delegated.OwnershipKey.Should().Be("root-owner-key");
+    }
+
+    [Fact]
+    public void PersistOptIn_IsForwardedAndBoundToDelegationSignature()
+    {
+        var registry = ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable);
+        var arguments = Arguments(new { kind = "counters", persist = true });
+        var caller = Principal("read-counters");
+        var authorization = registry.Authorize("collect_events", arguments, caller, true, StrictPolicies);
+        var request = ToolScopeDelegation.Add(
+            new CallToolRequestParams { Name = "collect_events", Arguments = arguments },
+            authorization, caller, Secret);
+        request.Arguments!["persist"].GetBoolean().Should().BeTrue();
+        request.Arguments["persist"] = JsonSerializer.SerializeToElement(false);
+        ToolScopeDelegation.TryConsume(request, registry, StrictPolicies, Secret, TimeProvider.System,
+            out _, out var failure).Should().BeFalse();
+        failure.Should().Contain("does not match");
+    }
+
+    [Fact]
     public void Delegation_Contains_Only_Least_Required_Scopes()
     {
         var registry = ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable);

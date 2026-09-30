@@ -203,8 +203,28 @@ public sealed partial class CollectEventsTool
         int maxMatchedActivities = 200,
         [Description("activities/distributed_trace: opt in to redacted HTTP scheme/host/port evidence joined by W3C IDs, separate from unchanged native tags. Missing/ambiguous evidence stays unavailable.")]
         bool includeHttpDestination = false,
+        [Description("Persist private SQLite evidence; default false. Raw files remain separate.")]
+        bool persist = false,
+        DurableCaptureTools? durableCaptures = null,
         CancellationToken cancellationToken = default)
     {
+        if (persist && kind?.Trim().ToLowerInvariant() is "distributed_trace" or "replica_counters")
+        {
+            if (principalAccessor.Current is null)
+                return DiagnosticResult.Fail<CollectEventsEnvelope>("Durable fan-out requires a current authenticated principal.",
+                    new DiagnosticError("InsufficientScope", "Durable fan-out requires a current authenticated principal."));
+            var remoteResult = await ExecuteAsync(cancellationToken).ConfigureAwait(false);
+            return BoundRemoteResult(remoteResult with
+            {
+                Cancelled = remoteResult.Cancelled || cancellationToken.IsCancellationRequested,
+            });
+        }
+        return await DurableCaptureTools.CollectAsync(
+            durableCaptures, principalAccessor, persist, "collect_events", kind,
+            ExecuteAsync, cancellationToken).ConfigureAwait(false);
+
+        async Task<DiagnosticResult<CollectEventsEnvelope>> ExecuteAsync(CancellationToken cancellationToken)
+        {
         if (!ToolDispatchGuards.TryValidateDiscriminator<CollectEventsEnvelope>(
                 kind, AllowedKinds, nameof(kind), out var canonicalKind, out var dispatchFailure))
         {
@@ -322,10 +342,26 @@ public sealed partial class CollectEventsTool
             Deprecation = deprecation,
             RequestContext = requestContext,
             Principal = principal,
+            Persist = persist,
         };
 
         var effectiveDuration = durationSeconds ?? handler.DefaultDurationSeconds(context);
         return await handler.ExecuteAsync(context, effectiveDuration, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private static DiagnosticResult<CollectEventsEnvelope> BoundRemoteResult(DiagnosticResult<CollectEventsEnvelope> result)
+    {
+        var bounded = DurableCaptureTools.Bound(result);
+        if (ReferenceEquals(bounded, result) || result.Data is not { RemoteCaptures: { } references } data)
+            return bounded;
+        return DurableCaptureTools.Bound(result with
+        {
+            Summary = "Remote captures were retained on their collecting hosts; the inline aggregate exceeded the wire budget. Use the host-qualified references.",
+            Error = bounded.Error,
+            Data = new CollectEventsEnvelope(data.Kind, RemoteCaptures: references),
+            Hints = [],
+        });
     }
 
     /// <summary>
@@ -457,6 +493,7 @@ public sealed partial class CollectEventsTool
         int maxMatchedActivities,
         bool includeHttpDestination,
         SensitiveDataRedactor redactor,
+        bool persist,
         CancellationToken cancellationToken)
     {
         if (!ActivityTraceProjector.TryNormalizeTraceId(traceId, out var normalizedTraceId))
@@ -528,6 +565,7 @@ public sealed partial class CollectEventsTool
             maxMatchedActivities,
             includeHttpDestination,
             redactor,
+            persist,
             cancellationToken)
             .ConfigureAwait(false);
 
@@ -538,7 +576,11 @@ public sealed partial class CollectEventsTool
                 message,
                 new DiagnosticError("NoActiveInvestigation", message),
                 new NextActionHint("list_orchestrator", "List candidate Pods, then attach_to_pod to the replicas serving this trace.",
-                    new Dictionary<string, object?> { ["kind"] = "pods" }));
+                    new Dictionary<string, object?> { ["kind"] = "pods" })) with
+            {
+                Data = persist ? new CollectEventsEnvelope("distributed_trace",
+                    PodErrors: fanout.PodErrors, RemoteCaptures: fanout.RemoteCaptures) : null,
+            };
         }
 
         var timeline = fanout.Timeline;
@@ -558,7 +600,7 @@ public sealed partial class CollectEventsTool
                 new NextActionHint("list_orchestrator", "Verify the attached Pods are still reachable, then re-run with the same traceId.",
                     new Dictionary<string, object?> { ["kind"] = "investigations" }))
                 with
-            { Data = new CollectEventsEnvelope("distributed_trace", DistributedTrace: null, PodErrors: fanout.PodErrors) };
+            { Data = new CollectEventsEnvelope("distributed_trace", DistributedTrace: null, PodErrors: fanout.PodErrors, RemoteCaptures: fanout.RemoteCaptures) };
         }
 
         if (timeline.SpanCount == 0)
@@ -594,7 +636,7 @@ public sealed partial class CollectEventsTool
         {
             summary += $" {pod.PodName}: matching={pod.Retention?.MatchingActivities?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "unknown"}, dropped matching={pod.Retention?.DroppedMatchingActivities?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "unknown"}.";
         }
-        var envelope = new CollectEventsEnvelope("distributed_trace", DistributedTrace: timeline, PodErrors: fanout.PodErrors);
+        var envelope = new CollectEventsEnvelope("distributed_trace", DistributedTrace: timeline, PodErrors: fanout.PodErrors, RemoteCaptures: fanout.RemoteCaptures);
         return DiagnosticResult.Ok(envelope, summary, hints.ToArray());
     }
 
@@ -609,6 +651,7 @@ public sealed partial class CollectEventsTool
         IReadOnlyList<string>? investigationHandleIds,
         int? durationSeconds,
         int intervalSeconds,
+        bool persist,
         CancellationToken cancellationToken)
     {
         var effectiveDuration = durationSeconds ?? 5;
@@ -650,6 +693,7 @@ public sealed partial class CollectEventsTool
             ResolveInvestigationHandleIds(investigationHandleIds, requestContext, sessionBinder),
             effectiveDuration,
             intervalSeconds,
+            persist,
             cancellationToken)
             .ConfigureAwait(false);
 
@@ -660,7 +704,11 @@ public sealed partial class CollectEventsTool
                 message,
                 new DiagnosticError("NoActiveInvestigation", message),
                 new NextActionHint("list_orchestrator", "List candidate Pods, then attach_to_pod to each replica.",
-                    new Dictionary<string, object?> { ["kind"] = "pods" }));
+                    new Dictionary<string, object?> { ["kind"] = "pods" })) with
+            {
+                Data = persist ? new CollectEventsEnvelope("replica_counters",
+                    PodErrors: fanout.PodErrors, RemoteCaptures: fanout.RemoteCaptures) : null,
+            };
         }
 
         if (fanout.Skew is null)
@@ -672,7 +720,7 @@ public sealed partial class CollectEventsTool
                 new NextActionHint("list_orchestrator", "Verify the attached Pods are still reachable, then re-run.",
                     new Dictionary<string, object?> { ["kind"] = "investigations" }))
                 with
-            { Data = new CollectEventsEnvelope("replica_counters", ReplicaCounters: null, PodErrors: fanout.PodErrors) };
+            { Data = new CollectEventsEnvelope("replica_counters", ReplicaCounters: null, PodErrors: fanout.PodErrors, RemoteCaptures: fanout.RemoteCaptures) };
         }
 
         var skew = fanout.Skew;
@@ -693,7 +741,7 @@ public sealed partial class CollectEventsTool
             summary += $" {fanout.PodErrors.Count} Pod(s) could not be collected (see data.podErrors).";
         }
 
-        var skewEnvelope = new CollectEventsEnvelope("replica_counters", ReplicaCounters: skew, PodErrors: fanout.PodErrors);
+        var skewEnvelope = new CollectEventsEnvelope("replica_counters", ReplicaCounters: skew, PodErrors: fanout.PodErrors, RemoteCaptures: fanout.RemoteCaptures);
         return DiagnosticResult.Ok(skewEnvelope, summary, hints.ToArray());
     }
 }
@@ -728,4 +776,5 @@ public sealed record CollectEventsEnvelope(
     GatedCaptureResult? GatedCapture = null,
     DistributedTraceTimeline? DistributedTrace = null,
     ReplicaCounterSkew? ReplicaCounters = null,
-    IReadOnlyList<string>? PodErrors = null);
+    IReadOnlyList<string>? PodErrors = null,
+    IReadOnlyList<RemoteCaptureReference>? RemoteCaptures = null);

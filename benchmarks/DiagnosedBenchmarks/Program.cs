@@ -1,6 +1,11 @@
 using BenchmarkDotNet.Running;
 using DiagnosedBenchmarks;
 
+if (args.Length > 0 && string.Equals(args[0], "experimental-sqlite-capacity", StringComparison.Ordinal))
+{
+    return SqliteCapacityCommand.Run(args[1..]);
+}
+
 if (args.Length > 0 && string.Equals(args[0], "loadgen", StringComparison.OrdinalIgnoreCase))
 {
     return await SampleLoadGenerator.RunAsync(args[1..]).ConfigureAwait(false);
@@ -14,6 +19,11 @@ if (args.Length > 0 && string.Equals(args[0], "analyze-traces", StringComparison
 if (args.Length > 0 && string.Equals(args[0], "perf-regression", StringComparison.OrdinalIgnoreCase))
 {
     return PerfRegressionSpikeRunner.Run(args[1..]);
+}
+
+if (args.Length > 0 && string.Equals(args[0], "durable-capture-spike", StringComparison.OrdinalIgnoreCase))
+{
+    return DurableStorageSpikeCommand.Run(args[1..]);
 }
 
 if (args.Length >= 2 && string.Equals(args[0], "--analyze-nettrace", StringComparison.Ordinal))

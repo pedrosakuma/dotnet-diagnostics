@@ -34,6 +34,20 @@ part of both surfaces.
 
 ## Reproduce
 
+### Durable capture integration validation (2026-09-25)
+
+The SQLite capture integration, including shared persistence/lifecycle safety
+classification, measures **281,743 bytes** for all 17 tools and **248,803 bytes**
+for the default 13 with SDK **10.0.201** on Linux. This was measured by the real
+HTTP `ToolCatalogBudgetTests`, not a hand-built schema. The tool counts and
+**282,000-byte ceiling remain unchanged**, leaving **257 bytes** of headroom.
+
+The first integrated safety measurement was **282,353 bytes**. Shortening
+redundant `get_bytes` parameter prose recovered **610 bytes** while retaining
+path confinement, chunk limits, module selection, and explicit routing guidance.
+No schema fields or safety metadata were removed. This is an integration
+measurement, not release acceptance or Windows validation.
+
 ### Issue #986 validation (2026-09-18)
 
 The CrashGuard observation contract at

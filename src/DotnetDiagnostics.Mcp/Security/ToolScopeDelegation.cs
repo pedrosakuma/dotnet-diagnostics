@@ -133,7 +133,14 @@ internal static class ToolScopeDelegation
         var principal = new BearerPrincipal(
             DelegatedPrincipalName,
             scopes,
-            PrincipalOwnershipKey.ForSystem(DelegatedPrincipalName));
+            payload.OwnershipKey ?? PrincipalOwnershipKey.ForSystem(DelegatedPrincipalName));
+        if (string.IsNullOrWhiteSpace(payload.OwnershipKey) &&
+            (request.Name == "query_snapshot" || request.Name == "get_bytes" ||
+             arguments.ContainsKey("persist")))
+        {
+            failure = "durable-capable invocations require a signed caller ownership key";
+            return false;
+        }
         var authorization = registry.Authorize(
             request.Name,
             arguments,
@@ -193,7 +200,8 @@ internal static class ToolScopeDelegation
             RequestHash: ComputeRequestHash(request),
             Scopes: GetDelegatedScopes(request.Name, authorization, caller).Order(StringComparer.Ordinal).ToArray(),
             ExpiresAtUnixSeconds: (now + Lifetime).ToUnixTimeSeconds(),
-            Nonce: Base64UrlEncode(RandomNumberGenerator.GetBytes(18)));
+            Nonce: Base64UrlEncode(RandomNumberGenerator.GetBytes(18)),
+            OwnershipKey: caller.OwnershipKey);
         var payloadBytes = JsonSerializer.SerializeToUtf8Bytes(payload);
         return Base64UrlEncode(payloadBytes) + "." + Base64UrlEncode(ComputeSignature(secret, payloadBytes));
     }
@@ -223,6 +231,24 @@ internal static class ToolScopeDelegation
         scopes.UnionWith(authorization.AdditionalScopes);
         scopes.UnionWith(authorization.ExplicitAdditionalScopes);
         scopes.UnionWith(authorization.ModifierScopes);
+        if (toolName is "query_snapshot" or "get_bytes")
+        {
+            // Durable artifacts are resolved on the sidecar, not on the orchestrator.
+            // Carry current authority (never authority stored in a package) in the signed,
+            // invocation-bound delegation, including the caller's cross-owner privilege.
+            foreach (var scope in DurableCaptureDelegationScopes)
+            {
+                if (principal.HasScope(scope))
+                    scopes.Add(scope);
+            }
+            foreach (var scope in DurableCaptureModifierScopes)
+            {
+                if (principal.HasExplicitScope(scope))
+                    scopes.Add(scope);
+            }
+            if (principal.HasScope(BearerPrincipal.RootScope))
+                scopes.Add(BearerPrincipal.RootScope);
+        }
         if (string.Equals(toolName, "query_snapshot", StringComparison.Ordinal) &&
             principal.HasExplicitScope(ToolInvocationScopeResolver.SensitiveParameterReadScope))
         {
@@ -247,6 +273,11 @@ internal static class ToolScopeDelegation
 
         return scopes.ToImmutable();
     }
+
+    private static readonly string[] DurableCaptureDelegationScopes =
+        ["read-counters", "eventpipe", "heap-read", "ptrace", "investigation-export"];
+    private static readonly string[] DurableCaptureModifierScopes =
+        ["sensitive-heap-read", "sensitive-parameter-read", "eventsource-any"];
 
     private static string ComputeRequestHash(CallToolRequestParams request)
     {
@@ -415,7 +446,8 @@ internal static class ToolScopeDelegation
         string RequestHash,
         string[] Scopes,
         long ExpiresAtUnixSeconds,
-        string Nonce);
+        string Nonce,
+        string? OwnershipKey = null);
 }
 
 internal sealed class ToolScopeDelegationKeyProvider

@@ -39,7 +39,10 @@ internal static class ReplicaCounterFanout
     internal sealed record FanoutResult(
         ReplicaCounterSkew? Skew,
         int AttachedActivePods,
-        IReadOnlyList<string> PodErrors);
+        IReadOnlyList<string> PodErrors)
+    {
+        public IReadOnlyList<RemoteCaptureReference>? RemoteCaptures { get; init; }
+    }
 
     private sealed record ProcessResolution(
         InvestigationHandle Handle,
@@ -65,7 +68,7 @@ internal static class ReplicaCounterFanout
             DefaultSelectorResolutionTimeout,
             cancellationToken);
 
-    internal static async Task<FanoutResult> CompareAsync(
+    internal static Task<FanoutResult> CompareAsync(
         IInvestigationStore store,
         IInvestigationProxyClient proxy,
         BearerPrincipal? callerPrincipal,
@@ -74,21 +77,41 @@ internal static class ReplicaCounterFanout
         int intervalSeconds,
         TimeSpan selectorResolutionTimeout,
         CancellationToken cancellationToken)
+        => CompareAsync(store, proxy, callerPrincipal, investigationHandleIds, durationSeconds,
+            intervalSeconds, selectorResolutionTimeout, false, cancellationToken);
+
+    internal static Task<FanoutResult> CompareAsync(
+        IInvestigationStore store, IInvestigationProxyClient proxy, BearerPrincipal? callerPrincipal,
+        IReadOnlyList<string>? investigationHandleIds, int durationSeconds, int intervalSeconds,
+        bool persist, CancellationToken cancellationToken)
+        => CompareAsync(store, proxy, callerPrincipal, investigationHandleIds, durationSeconds,
+            intervalSeconds, DefaultSelectorResolutionTimeout, persist, cancellationToken);
+
+    internal static async Task<FanoutResult> CompareAsync(
+        IInvestigationStore store, IInvestigationProxyClient proxy, BearerPrincipal? callerPrincipal,
+        IReadOnlyList<string>? investigationHandleIds, int durationSeconds, int intervalSeconds,
+        TimeSpan selectorResolutionTimeout, bool persist, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(proxy);
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(selectorResolutionTimeout, TimeSpan.Zero);
 
+        if (persist && (callerPrincipal is null || !RemoteCaptureReference.ValidSelection(investigationHandleIds)))
+            return new(null, 0, ["Durable fan-out requires a current principal and at most 16 bounded investigation IDs. No collection started."]);
         var errors = new List<string>();
         var handles = ResolveHandles(store, callerPrincipal, investigationHandleIds, errors);
+        if (persist && handles.Length > RemoteCaptureReference.MaximumTargets)
+            return new(null, handles.Length, ["Durable fan-out exceeds 16 targets; select a smaller explicit set. No collection started."]);
         var readings = new List<ReplicaCounterReading>(handles.Length);
+        var remoteCaptures = persist ? new List<RemoteCaptureReference>(handles.Length) : null;
         var arguments = BuildCountersArguments(durationSeconds, intervalSeconds);
+        if (persist) arguments["persist"] = JsonSerializer.SerializeToElement(true);
 
         // Phase 1 resolves every transport-neutral selector concurrently. No collection starts
         // until every resolution has completed or failed, otherwise slow Pod-local discovery
         // shifts that replica's EventPipe window later than its peers.
         var resolutionTasks = handles
-            .Select(handle => ResolveAsync(proxy, handle, selectorResolutionTimeout, cancellationToken))
+            .Select(handle => ResolveAsync(proxy, handle, selectorResolutionTimeout, persist, cancellationToken))
             .ToArray();
         var resolutions = await Task.WhenAll(resolutionTasks).ConfigureAwait(false);
 
@@ -98,6 +121,7 @@ internal static class ReplicaCounterFanout
             if (!resolution.Succeeded)
             {
                 errors.Add($"Target '{resolution.Handle.TargetDisplayName}' (handle {resolution.Handle.HandleId}): {resolution.Failure}");
+                remoteCaptures?.Add(RemoteCaptureReference.Read(resolution.Handle, "counters", null, resolution.Failure));
                 continue;
             }
 
@@ -116,12 +140,23 @@ internal static class ReplicaCounterFanout
                 arguments,
                 collectionDeadline,
                 collectionTimeoutSeconds,
+                persist,
                 cancellationToken))
             .ToArray();
         var results = await Task.WhenAll(collectionTasks).ConfigureAwait(false);
 
-        foreach (var (handle, snapshot, failure) in results)
+        foreach (var (handle, snapshot, failure, wireResult) in results)
         {
+            if (persist)
+            {
+                var reference = RemoteCaptureReference.Read(handle, "counters", wireResult, failure);
+                remoteCaptures!.Add(reference);
+                if (reference.Error is not null)
+                {
+                    errors.Add($"Target '{handle.TargetDisplayName}' (handle {handle.HandleId}): {reference.Error.Message}");
+                    continue;
+                }
+            }
             if (snapshot is null)
             {
                 errors.Add($"Target '{handle.TargetDisplayName}' (handle {handle.HandleId}): {failure}");
@@ -133,17 +168,18 @@ internal static class ReplicaCounterFanout
 
         if (readings.Count == 0)
         {
-            return new FanoutResult(null, handles.Length, errors);
+            return new FanoutResult(null, handles.Length, errors) { RemoteCaptures = remoteCaptures };
         }
 
         var skew = ReplicaCounterSkewAnalyzer.Analyze(readings);
-        return new FanoutResult(skew, handles.Length, errors);
+        return new FanoutResult(skew, handles.Length, errors) { RemoteCaptures = remoteCaptures };
     }
 
     private static async Task<ProcessResolution> ResolveAsync(
         IInvestigationProxyClient proxy,
         InvestigationHandle handle,
         TimeSpan selectorResolutionTimeout,
+        bool persist,
         CancellationToken cancellationToken)
     {
         if (handle.ProcessSelector is null)
@@ -164,6 +200,10 @@ internal static class ReplicaCounterFanout
                 ? new ProcessResolution(handle, false, null, failure)
                 : new ProcessResolution(handle, true, processId, string.Empty);
         }
+        catch (OperationCanceledException) when (persist && cancellationToken.IsCancellationRequested)
+        {
+            return new ProcessResolution(handle, false, null, "Process selection cancelled; collection did not start.");
+        }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
@@ -182,12 +222,13 @@ internal static class ReplicaCounterFanout
         }
     }
 
-    private static async Task<(InvestigationHandle Handle, CounterSnapshot? Snapshot, string Failure)> CollectAsync(
+    private static async Task<(InvestigationHandle Handle, CounterSnapshot? Snapshot, string Failure, CallToolResult? WireResult)> CollectAsync(
         IInvestigationProxyClient proxy,
         ProcessResolution resolution,
         Dictionary<string, JsonElement> arguments,
         long deadline,
         int timeoutSeconds,
+        bool persist,
         CancellationToken cancellationToken)
     {
         var handle = resolution.Handle;
@@ -197,7 +238,7 @@ internal static class ReplicaCounterFanout
         var remaining = GetRemaining(deadline);
         if (remaining <= TimeSpan.Zero)
         {
-            return (handle, null, $"timed out after {timeoutSeconds}s");
+            return (handle, null, $"timed out after {timeoutSeconds}s", null);
         }
 
         using var perPodCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -216,7 +257,11 @@ internal static class ReplicaCounterFanout
             var request = new CallToolRequestParams { Name = "collect_events", Arguments = countersArguments };
             var result = await proxy.CallToolAsync(handle, request, perPodCts.Token).ConfigureAwait(false);
             var snapshot = TryExtractSnapshot(result, out var failure);
-            return (handle, snapshot, failure);
+            return (handle, snapshot, failure, result);
+        }
+        catch (OperationCanceledException) when (persist && cancellationToken.IsCancellationRequested)
+        {
+            return (handle, null, "Collection cancelled; no remote capture result was confirmed. Inspect that host's capture inventory.", null);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -224,11 +269,11 @@ internal static class ReplicaCounterFanout
         }
         catch (OperationCanceledException)
         {
-            return (handle, null, $"timed out after {timeoutSeconds}s");
+            return (handle, null, $"timed out after {timeoutSeconds}s", null);
         }
         catch (Exception ex)
         {
-            return (handle, null, ex.Message);
+            return (handle, null, ex.Message, null);
         }
     }
 

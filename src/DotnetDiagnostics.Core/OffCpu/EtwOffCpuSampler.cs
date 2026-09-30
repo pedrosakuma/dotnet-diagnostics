@@ -318,6 +318,7 @@ public sealed class EtwOffCpuSampler : IOffCpuSampler
         // a thread that briefly migrates between cores is still attributed to one off-CPU span.
         var pending = new Dictionary<int, (double Ts, string State, List<OffCpuFrame> Stack, string Comm)>();
         var builder = OffCpuAggregator.CreateBuilder();
+        DotnetDiagnostics.Core.CaptureRecording.CaptureRecordingContext.Current?.ReportSourceLoss("sample.off-cpu.etw", traceLog.EventsLost);
         long switches = 0;
         double maxTs = double.MinValue;
 
@@ -362,7 +363,9 @@ public sealed class EtwOffCpuSampler : IOffCpuSampler
                                 DurationMicros: micros,
                                 PrevState: p.State,
                                 BlockingStack: p.Stack,
-                                Syscall: ResolveSyscallLabel(cs.NewThreadID, p.Ts, p.State, lastIoByThread)));
+                                OutTimestampSeconds: p.Ts,
+                                Syscall: ResolveSyscallLabel(cs.NewThreadID, p.Ts, p.State, lastIoByThread),
+                                SourceClock: "trace-relative-seconds"));
                         }
                     }
                 }
@@ -391,7 +394,9 @@ public sealed class EtwOffCpuSampler : IOffCpuSampler
                         PrevState: kv.Value.State,
                         BlockingStack: kv.Value.Stack,
                         IsCensored: true,
-                        Syscall: ResolveSyscallLabel(kv.Key, kv.Value.Ts, kv.Value.State, lastIoByThread)));
+                        OutTimestampSeconds: kv.Value.Ts,
+                        Syscall: ResolveSyscallLabel(kv.Key, kv.Value.Ts, kv.Value.State, lastIoByThread),
+                        SourceClock: "trace-relative-seconds"));
                 }
             }
         }

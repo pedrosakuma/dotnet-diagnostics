@@ -1,5 +1,6 @@
 using System.Globalization;
 using DotnetDiagnostics.Core.Memory;
+using DotnetDiagnostics.Core.CaptureRecording;
 
 namespace DotnetDiagnostics.Core.CpuSampling;
 
@@ -29,15 +30,24 @@ internal sealed class PerfScriptAggregationBuilder
     private readonly string? _modulePath;
     private NativeAotSymbolDemangler.SymbolSource _symbolSource = NativeAotSymbolDemangler.SymbolSource.Unknown;
     private bool _anyMangledFrameDemangled;
+    private readonly ICaptureObservationSink? _sink;
+    private readonly string _category;
+    private readonly long? _samplePeriod;
 
     public PerfScriptAggregationBuilder(
         NativeAotMethodMap? methodMap = null,
         string? moduleName = null,
-        string? modulePath = null)
+        string? modulePath = null,
+        string observationCategory = "sample.cpu.perf",
+        long? samplePeriod = null)
     {
         _methodMap = methodMap;
         _moduleName = moduleName;
         _modulePath = modulePath;
+        _sink = CaptureRecordingContext.Current;
+        _category = observationCategory;
+        _samplePeriod = samplePeriod;
+        _sink?.ReportSourceLoss(observationCategory, null);
     }
 
     public long TotalSamples { get; private set; }
@@ -100,6 +110,15 @@ internal sealed class PerfScriptAggregationBuilder
         }
 
         var leafKey = rootToLeaf[^1].Key;
+        if (_sink is not null)
+        {
+            SamplerObservationProjection.Sample(_sink, _category, "perf-monotonic-seconds", sample.TimestampSeconds,
+                sample.ThreadId,
+                rootToLeaf.AsEnumerable().Reverse().Select(f => new SamplerObservationProjection.Frame(f.Module, f.Display,
+                    f.Identity ?? _identities.GetValueOrDefault(new SymbolRef(f.Module, f.Display)))),
+                samplePeriod: _samplePeriod,
+                additional: [CaptureObservationField.Int64("headerProcessOrThreadId", sample.ProcessId)]);
+        }
         _exclusive[leafKey] = _exclusive.GetValueOrDefault(leafKey) + 1;
 
         var seen = new HashSet<string>(StringComparer.Ordinal);

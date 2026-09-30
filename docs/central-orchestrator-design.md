@@ -886,8 +886,12 @@ To reproduce locally:
 
 ```bash
 # 1. Build images
-docker build -t dotnet-diagnostics-mcp:p6 -f deploy/Dockerfile .
-docker build -t coreclr-sample:p6 -f samples/CoreClrSample/Dockerfile .
+export NUGET_CONFIG="${NUGET_CONFIG:-$HOME/.nuget/NuGet/NuGet.Config}"
+test -s "$NUGET_CONFIG"
+docker build --secret "id=nugetconfig,src=$NUGET_CONFIG" \
+  -t dotnet-diagnostics-mcp:p6 -f deploy/Dockerfile .
+docker build --secret "id=nugetconfig,src=$NUGET_CONFIG" \
+  -t coreclr-sample:p6 -f samples/CoreClrSample/Dockerfile .
 
 # 2. Create a kind cluster and load images
 kind create cluster --name p6-kind

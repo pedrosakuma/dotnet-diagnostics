@@ -1,0 +1,633 @@
+{
+  "revision": 4,
+  "status": "adopted-awaiting-runner-readiness",
+  "tracking": {
+    "issue": 1008,
+    "parent": 999,
+    "dc4": 1009,
+    "dc5": 1003,
+    "proposal": 1022
+  },
+  "scope": {
+    "os": "Linux",
+    "targetFramework": "net10.0",
+    "sdk": "10.0.201",
+    "sample": "samples/CoreClrSample",
+    "powerLossClaim": false
+  },
+  "limits": {
+    "recordEncodedBytes": 4096,
+    "providerUtf8Bytes": 128,
+    "nameUtf8Bytes": 256,
+    "displayNameUtf8Bytes": 512,
+    "unitUtf8Bytes": 64,
+    "distinctKeys": 128,
+    "ownedBufferBytes": 2097152,
+    "ownedRecords": 321,
+    "queueRecords": 256,
+    "inCopyRecords": 1,
+    "batchRecords": 64,
+    "batchOwnedBytes": 262144,
+    "batchMaxAgeMs": 100,
+    "packagePeakBytesIncludingRecovery": 268435456,
+    "packageFinalBytes": 268435456,
+    "historyPackages": 64,
+    "historyBytes": 2147483648,
+    "campaignWorkspaceBytes": 3221225472,
+    "readerLeases": 8,
+    "readerBufferBytes": 8388608,
+    "derivedCacheBytes": 0,
+    "resultBytes": 1048576,
+    "pageRows": 100,
+    "diagnosticPeakWorkingSetBytes": 536870912,
+    "harnessPeakWorkingSetBytes": 268435456,
+    "targetPeakWorkingSetBytes": 805306368,
+    "memoryPollMs": 100,
+    "activeCaptures": 1,
+    "drainSeconds": 5,
+    "finalizeSeconds": 10,
+    "reopenAndFirstQuerySeconds": 2,
+    "stdoutBytesPerExecution": 8388608,
+    "stderrBytesPerExecution": 8388608,
+    "minFreeRootBytes": 8589934592,
+    "minAvailableEffectiveMemoryBytes": 2147483648
+  },
+  "recordSemantics": {
+    "sequence": "positive unique int64 source-callback order assigned before admission",
+    "sourceTime": "nullable int64 relative ticks at 100 ns; clock domain and origin required",
+    "value": "finite double; nonfinite values rejected explicitly",
+    "kind": [
+      "Mean",
+      "Sum"
+    ],
+    "sumMeaning": "per-interval increment, not cumulative",
+    "intervalStates": [
+      "missing",
+      "valid",
+      "nonpositive",
+      "nonfinite"
+    ],
+    "resetState": "unknown",
+    "coverageGapMultiplier": 3,
+    "coverageGapRule": "strictly greater than multiplier*current valid interval; unknown with unavailable/regressing time or invalid interval",
+    "gapComputedBeforeStorageAdmission": true,
+    "operationalTimestampsInLogicalOracle": false
+  },
+  "fixture": {
+    "generated": {
+      "appliesTo": [
+        "Q1",
+        "P0",
+        "N1",
+        "B1",
+        "M1",
+        "O1",
+        "C1",
+        "F1",
+        "F2",
+        "F3",
+        "F4",
+        "F5"
+      ],
+      "keys": 8,
+      "keyIndex": "(sequence-1) mod 8",
+      "sourceTimeStepMs": 10,
+      "valueFormula": "100-(sequence mod 50)",
+      "intervalSeconds": 1,
+      "displayScaleTicks": 10000000
+    },
+    "stressEncodedBytes": 512,
+    "q1Records": 1024,
+    "q2Records": 16,
+    "q2ContentRejectionOrdinals": [
+      14,
+      15,
+      16
+    ],
+    "q2": {
+      "explicitTable": true,
+      "generatedRulesApply": false,
+      "sequenceIsOrdinal": true,
+      "records": [
+        {
+          "ordinal": 1,
+          "key": 0,
+          "kind": "Mean",
+          "value": 100,
+          "sourceTimeMs": 0,
+          "intervalSeconds": 1,
+          "displayScaleTicks": 10000000
+        },
+        {
+          "ordinal": 2,
+          "key": 1,
+          "kind": "Sum",
+          "value": 10,
+          "sourceTimeMs": 0,
+          "intervalSeconds": 1,
+          "displayScaleTicks": 10000000
+        },
+        {
+          "ordinal": 3,
+          "key": 1,
+          "kind": "Sum",
+          "value": 5,
+          "sourceTimeMs": 1000,
+          "intervalSeconds": 1,
+          "displayScaleTicks": 10000000
+        },
+        {
+          "ordinal": 4,
+          "key": 0,
+          "kind": "Mean",
+          "value": 100,
+          "sourceTimeMs": 1000,
+          "intervalSeconds": null,
+          "displayScaleTicks": 10000000
+        },
+        {
+          "ordinal": 5,
+          "key": 0,
+          "kind": "Mean",
+          "value": 100,
+          "sourceTimeMs": 2000,
+          "intervalSeconds": 0,
+          "displayScaleTicks": 10000000
+        },
+        {
+          "ordinal": 6,
+          "key": 0,
+          "kind": "Mean",
+          "value": 100,
+          "sourceTimeMs": 3000,
+          "intervalSeconds": -1,
+          "displayScaleTicks": 10000000
+        },
+        {
+          "ordinal": 7,
+          "key": 0,
+          "kind": "Mean",
+          "value": 100,
+          "sourceTimeMs": 4000,
+          "intervalSeconds": 1,
+          "displayScaleTicks": null
+        },
+        {
+          "ordinal": 8,
+          "key": 0,
+          "kind": "Mean",
+          "value": 100,
+          "sourceTimeMs": 5000,
+          "intervalSeconds": 1,
+          "displayScaleTicks": 0
+        },
+        {
+          "ordinal": 9,
+          "key": 1,
+          "kind": "Sum",
+          "value": 5,
+          "sourceTimeMs": 5000,
+          "intervalSeconds": 1,
+          "displayScaleTicks": 10000000
+        },
+        {
+          "ordinal": 10,
+          "key": 1,
+          "kind": "Sum",
+          "value": 5,
+          "sourceTimeMs": 4000,
+          "intervalSeconds": 1,
+          "displayScaleTicks": 10000000
+        },
+        {
+          "ordinal": 11,
+          "key": 1,
+          "kind": "Sum",
+          "value": 5,
+          "sourceTimeMs": 4000,
+          "intervalSeconds": 1,
+          "displayScaleTicks": 10000000
+        },
+        {
+          "ordinal": 12,
+          "key": 1,
+          "kind": "Sum",
+          "value": 5,
+          "sourceTimeMs": null,
+          "intervalSeconds": 1,
+          "displayScaleTicks": 10000000
+        },
+        {
+          "ordinal": 13,
+          "key": 0,
+          "kind": "Mean",
+          "value": 100,
+          "sourceTimeMs": 6000,
+          "intervalSeconds": 1,
+          "displayScaleTicks": 10000000,
+          "encodedBytes": 4096
+        },
+        {
+          "ordinal": 14,
+          "key": 0,
+          "kind": "Mean",
+          "value": 100,
+          "sourceTimeMs": 7000,
+          "intervalSeconds": 1,
+          "displayScaleTicks": 10000000,
+          "encodedBytes": 4097
+        },
+        {
+          "ordinal": 15,
+          "key": 0,
+          "kind": "Mean",
+          "value": 100,
+          "sourceTimeMs": 8000,
+          "intervalSeconds": 1,
+          "displayScaleTicks": 10000000,
+          "nameUtf8Bytes": 257
+        },
+        {
+          "ordinal": 16,
+          "key": 0,
+          "kind": "Mean",
+          "value": null,
+          "sourceNonfiniteValue": "NaN",
+          "sourceTimeMs": 9000,
+          "intervalSeconds": 1,
+          "displayScaleTicks": 10000000
+        }
+      ]
+    },
+    "independentExpectedOutputsRequired": true
+  },
+  "durabilityProfile": {
+    "id": "P1",
+    "scope": "process-crash only; package power-loss durability not claimed",
+    "candidateA": {
+      "journalMode": "WAL",
+      "synchronous": "FULL",
+      "cacheSize": -2048,
+      "mmapSize": 0,
+      "readBackPragmas": true,
+      "ack": "successful batch transaction commit"
+    },
+    "candidateB": {
+      "framing": "batch length, sequence membership, checksum, commit footer",
+      "flush": "FileStream.Flush(true) once per batch",
+      "ack": "complete batch flush returned",
+      "queryIndex": "built before seal"
+    },
+    "recoveryInvariant": "Acks subset-of Recovered subset-of Offered; complete batches only; no duplicates; unknown volatile tail",
+    "ackGapCaseRequired": true
+  },
+  "cases": [
+    {
+      "id": "P0",
+      "class": "candidate-blind-readiness",
+      "candidates": [
+        "shared"
+      ],
+      "records": 1024,
+      "feeder": "batch-barrier"
+    },
+    {
+      "id": "P1",
+      "class": "candidate-blind-readiness",
+      "candidates": [
+        "E"
+      ],
+      "workload": "liveProfile"
+    },
+    {
+      "id": "Q1",
+      "class": "semantic",
+      "candidates": [
+        "A",
+        "B"
+      ],
+      "records": 1024,
+      "feeder": "batch-barrier",
+      "innerDeadlineSeconds": 10
+    },
+    {
+      "id": "Q2",
+      "class": "semantic",
+      "candidates": [
+        "A",
+        "B"
+      ],
+      "records": 16,
+      "feeder": "batch-barrier",
+      "innerDeadlineSeconds": 10
+    },
+    {
+      "id": "N1",
+      "class": "stress",
+      "candidates": [
+        "A",
+        "B"
+      ],
+      "offersPerSecond": 100,
+      "durationSeconds": 10,
+      "records": 1000
+    },
+    {
+      "id": "B1",
+      "class": "stress",
+      "candidates": [
+        "A",
+        "B"
+      ],
+      "records": 4096,
+      "writerHeldBeforeDequeue": true,
+      "releaseAfterAllOffers": true,
+      "feederDeadlineSeconds": 5
+    },
+    {
+      "id": "M1",
+      "class": "stress",
+      "candidates": [
+        "A",
+        "B"
+      ],
+      "records": 4096,
+      "writerHeldBeforeDequeue": true,
+      "releaseAfterAllOffers": true,
+      "feederDeadlineSeconds": 5,
+      "ownedBufferBytesOverride": 262144
+    },
+    {
+      "id": "O1",
+      "class": "stress",
+      "candidates": [
+        "A",
+        "B"
+      ],
+      "offersPerSecond": 5000,
+      "durationSeconds": 10,
+      "records": 50000
+    },
+    {
+      "id": "C1",
+      "class": "stress",
+      "candidates": [
+        "A",
+        "B"
+      ],
+      "offersPerSecond": 1000,
+      "stopAfterOffer": 1000
+    },
+    {
+      "id": "F1",
+      "class": "isolated-fault",
+      "candidates": [
+        "A",
+        "B"
+      ],
+      "maxOfferedRecords": 4096,
+      "injection": "A max_page_count=current allocated pages after first commit; B storage-full exception on next batch write; require actual trigger"
+    },
+    {
+      "id": "F2",
+      "class": "isolated-fault",
+      "candidates": [
+        "A",
+        "B"
+      ],
+      "initialCommittedRecords": 64,
+      "nextBatchRecords": 64,
+      "injection": "kill exact writer PID at pre-commit barrier"
+    },
+    {
+      "id": "F3",
+      "class": "isolated-fault",
+      "candidates": [
+        "A",
+        "B"
+      ],
+      "initialCommittedRecords": 64,
+      "nextBatchRecords": 64,
+      "injection": "kill exact writer PID at post-commit/pre-ack barrier"
+    },
+    {
+      "id": "F4",
+      "class": "isolated-fault",
+      "candidates": [
+        "A",
+        "B"
+      ],
+      "records": 128,
+      "injection": "kill exact writer PID after manifest/index completion before seal"
+    },
+    {
+      "id": "F5",
+      "class": "isolated-fault",
+      "candidates": [
+        "A",
+        "B"
+      ],
+      "captureAttempts": 2,
+      "injection": "hold first writer; second must reject immediately at concurrency gate"
+    },
+    {
+      "id": "L1",
+      "class": "live",
+      "candidates": [
+        "E",
+        "A",
+        "B"
+      ],
+      "workload": "liveProfile",
+      "order": [
+        "E",
+        "A",
+        "B"
+      ]
+    },
+    {
+      "id": "L2",
+      "class": "live",
+      "candidates": [
+        "E",
+        "A",
+        "B"
+      ],
+      "workload": "liveProfile",
+      "order": [
+        "B",
+        "E",
+        "A"
+      ]
+    },
+    {
+      "id": "L3",
+      "class": "live",
+      "candidates": [
+        "E",
+        "A",
+        "B"
+      ],
+      "workload": "liveProfile",
+      "order": [
+        "A",
+        "B",
+        "E"
+      ]
+    }
+  ],
+  "liveProfile": {
+    "endpoint": "/cpu-burn?ms=10",
+    "requestsPerSecond": 20,
+    "maxInFlightRequests": 2,
+    "requestTimeoutSeconds": 1,
+    "followRedirects": false,
+    "readinessDeadlineSeconds": 10,
+    "warmupSeconds": 10,
+    "collectionStartSeconds": 10,
+    "collectionDurationSeconds": 34,
+    "measurementStartSeconds": 12,
+    "measurementEndSeconds": 42,
+    "loadStopSeconds": 44,
+    "counterIntervalSeconds": 1,
+    "providers": [
+      "System.Runtime",
+      "Microsoft.AspNetCore.Hosting",
+      "Microsoft-AspNetCore-Server-Kestrel"
+    ],
+    "maxRetainedRequestSamples": 1000,
+    "freshTargetAndDiagnosticProcessPerEpisode": true
+  },
+  "decision": {
+    "minAchievedStressOfferRatio": 0.95,
+    "minBaselineSuccessfulScheduleRatio": 0.95,
+    "maxBaselineP95MaxMinRatio": 1.5,
+    "minMedianPairedSuccessfulCompletionRatio": 0.95,
+    "maxMedianPairedErrorRateIncrease": 0.005,
+    "maxMedianPairedP95Increase": {
+      "floorMs": 5,
+      "baselineFraction": 0.15,
+      "operator": "max"
+    },
+    "comparativeRatioTolerance": 1.1,
+    "minO1CommittedCountRatioVsOtherEligibleCandidate": 0.95,
+    "normalAndLiveValidOffersMustAllCommit": true,
+    "comparativeMetrics": [
+      "median N1/O1 diagnostic CPU seconds per committed record",
+      "median N1/O1 final bytes per committed logical byte",
+      "median N1/O1 reopen plus first-query seconds"
+    ],
+    "bothEligibleAndBothWithinTolerance": "A simplicity tie-break",
+    "neitherDominatesOrRequiredEvidenceMissing": "inconclusive/trade-off",
+    "productionApproval": false,
+    "recommendationScope": "monitored-scope-only"
+  },
+  "execution": {
+    "plannedExecutions": 35,
+    "maxAttemptsPerExecution": 1,
+    "maxSecondsPerExecution": 120,
+    "maxCampaignSeconds": 4200,
+    "automaticRetries": false,
+    "sequence": "P0,P1; Q1,Q2,N1,B1,M1,O1,C1,F1,F2,F3,F4,F5 alternating AB/BA by case index; L1,L2,L3",
+    "candidateBlindReadinessMayChangeBudgets": false,
+    "outcomes": [
+      "pass",
+      "failed-candidate",
+      "inconclusive-infra",
+      "inconclusive-source",
+      "invalid-injection",
+      "inconclusive-unknown",
+      "not-run"
+    ],
+    "unknownFailureAutomaticallyAttributedToCandidate": false
+  },
+  "contextCost": {
+    "unit": "UTF-8 bytes",
+    "components": [
+      "current unchanged catalog",
+      "summary",
+      "first 100-row series page",
+      "qualityReport",
+      "next series page"
+    ],
+    "futureCatalogCostClaimed": false,
+    "modelCalls": 0
+  },
+  "freeze": {
+    "resolvedManifestRequiredBeforeExecution": true,
+    "requiredIdentities": [
+      "protocolCommit",
+      "protocolJsonSha256",
+      "pipelineCommit",
+      "adapterCommit",
+      "fixtureSha256",
+      "oracleSha256",
+      "runtimeBinary",
+      "hostFacts",
+      "clockConversion",
+      "runnerCommit",
+      "monitorCommit",
+      "monitorComponentEvidenceSha256",
+      "attributionMapSha256",
+      "evidenceEncodingSha256"
+    ],
+    "unresolvedRunValuesAllowed": false,
+    "budgetChangesAfterCandidateDataRequireNewCampaign": true
+  },
+  "baseline": {
+    "revision": 3,
+    "path": "durable-capture-comparison-protocol.json",
+    "sha256": "faaced68f26a53b7841713d4b1fe1044ce0dd3b277bbac2a9c6f9b6a09f498dd"
+  },
+  "monitoring": {
+    "pollTargetMs": 100,
+    "maximumActiveStageGapMs": 1000,
+    "maximumTrackedIdentitiesPerSweep": 4096,
+    "maximumObservedPathUtf8Bytes": 4096,
+    "maximumSummaryUtf8Bytes": 1024,
+    "maximumSummaryRecordsPerExecution": 2048,
+    "identityAndCombinedOutputFeasibilityEvidenceRequiredBeforeAdoption": true,
+    "evidenceUsesExistingStdoutBudget": true,
+    "instrumentationCostIncluded": true,
+    "monitorOwner": "harness-in-every-arm",
+    "unequalObservationWorkIsDeclaredScopeLimitation": true,
+    "intrinsicEnginePerformanceClaimed": false,
+    "discoveryDomain": [
+      "declared-private-package-recovery-history-evidence-roots",
+      "open-descriptors-of-verified-owned-live-workers-and-harness"
+    ],
+    "knownChargedClassesOutsideDomainMustBeCoveredBeforeExecution": true,
+    "intentionalKillBoundary": {
+      "preKillObservationAtDeclaredBarrierRequired": true,
+      "confirmedDeathAndQuiescentSurvivingRootInventoryRequired": true,
+      "monitorReferencesReleasedBeforeKill": true,
+      "expectedDescriptorTableDisappearanceIsIncompleteByItself": false,
+      "unexpectedLossOfVisibilityRemainsIncomplete": true
+    },
+    "rootOnlyScanSufficient": false,
+    "nonAtomicSweepsAreInstantaneousPeaks": false,
+    "unobservedTransientPeaks": "unknown",
+    "incompleteCoverageEligible": false,
+    "incompleteMonitoringStopsCampaign": true,
+    "observedExcessStopsCampaign": true,
+    "ambiguousAbortAutomaticallyBlamesCandidate": false
+  },
+  "storageSemantics": {
+    "aggregateStoragePeak": "observed-threshold-and-abort-not-point-of-growth-proof",
+    "activeHistoryAndWorkspaceGrowth": "same-numeric-limits-with-declared-transient-growth-uncertainty",
+    "exactQuiescentFinalLimitsPreserved": true,
+    "eligibilityRequiresCompleteMonitoringAndNoUnresolvedThresholdAlarm": true,
+    "ambiguousSweepExcess": "inconclusive-not-candidate-violation",
+    "confirmedStorageViolationRequiresAttributedQuiescentEvidence": true,
+    "recommendationScope": "monitored-scope-only",
+    "originalHardAggregateGuaranteeEstablished": false,
+    "productionApproval": false
+  },
+  "readiness": {
+    "maintainerAdopted": true,
+    "executionConditionallyAuthorized": true,
+    "runnerReadinessRequired": true,
+    "independentRunnerReviewRequired": true,
+    "anyExecutionPerformed": false
+  }
+}

@@ -17,8 +17,8 @@ internal sealed class SqlClientEventParser(SensitiveDataRedactor redactor) : IEv
             var payload = DbEventPipeParsing.ExtractCounterPayload(traceEvent);
             if (payload is not null)
             {
-                var stats = state.GetOrAddPoolStats(traceEvent.ProviderName);
-                stats.ObserveCounter(payload.Name, payload.Value);
+                state.RecordPoolCounter(traceEvent.ProviderName, payload.Name, payload.Value,
+                    new DateTimeOffset(traceEvent.TimeStamp.ToUniversalTime(), TimeSpan.Zero), traceEvent.ThreadID);
             }
 
             return;
@@ -55,7 +55,7 @@ internal sealed class SqlClientEventParser(SensitiveDataRedactor redactor) : IEv
             var objectId = DbEventPipeParsing.PayloadInt32(traceEvent, 0);
             state.TryCompletePendingCommand(
                 DbEventPipeParsing.BuildProviderObjectKey(traceEvent.ProviderName, objectId),
-                new DateTimeOffset(traceEvent.TimeStamp.ToUniversalTime(), TimeSpan.Zero));
+                new DateTimeOffset(traceEvent.TimeStamp.ToUniversalTime(), TimeSpan.Zero), traceEvent.ThreadID);
             return;
         }
 

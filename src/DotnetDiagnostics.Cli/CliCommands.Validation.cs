@@ -11,6 +11,10 @@ internal static partial class CliCommands
     {
         ArgumentNullException.ThrowIfNull(options);
         error = null;
+        if (!TryValidateCaptures(options, out error))
+        {
+            return false;
+        }
         if (options.IncludeHttpDestination && (options.Command != "collect" || options.Kind is not ("activities" or "gc-activities")))
         {
             error = "--include-http-destination requires 'collect --kind activities' / 'gc-activities'.";
@@ -681,6 +685,19 @@ internal static partial class CliCommands
         ArgumentNullException.ThrowIfNull(options);
         error = null;
 
+        if (options.HasHistoricalReferences)
+        {
+            if (new[] { options.BaselineCaptureId, options.BaselineArtifactId,
+                options.CandidateCaptureId, options.CandidateArtifactId }.Any(id => id is null || !IsCaptureId(id)))
+                error = "Historical compare requires all four explicit baseline/candidate capture/artifact GUID selectors.";
+            else if (options.ComparePaths.Count != 0 || options.Mode is not null || options.SavePath is not null ||
+                options.View is not null || options.RecordFrom is not null || options.RecordTo is not null ||
+                options.RecordName is not null || options.ThreadId is not null || options.TypeFilter is not null ||
+                options.RootMethodFilter is not null || options.ProviderFilter is not null ||
+                options.Top is not null || options.Depth is not null || options.HasPid || options.Handle is not null)
+                error = "Historical compare accepts whole retained snapshots only; paths, live targets, filters and projection options are unsupported.";
+            return error is null;
+        }
         if (options.ComparePaths.Count < 2)
         {
             error = "The 'compare' command requires at least two snapshot JSON paths.";

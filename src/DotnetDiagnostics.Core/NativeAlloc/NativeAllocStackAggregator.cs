@@ -1,4 +1,5 @@
 using DotnetDiagnostics.Core.CpuSampling;
+using DotnetDiagnostics.Core.CaptureRecording;
 
 namespace DotnetDiagnostics.Core.NativeAlloc;
 
@@ -27,9 +28,11 @@ internal static class NativeAllocStackAggregator
     /// (the allocator call site first), matching the order TraceLog and perf emit frames.
     /// </param>
     /// <param name="topN">Maximum number of hotspots returned in <see cref="Result.Hotspots"/>.</param>
+    /// <param name="recordObservations">False when the backend already emitted timestamped/thread-attributed observations.</param>
     public static Result Aggregate(
         IEnumerable<IReadOnlyList<(string Module, string Method)>> leafToRootStacks,
-        int topN)
+        int topN,
+        bool recordObservations = true)
     {
         ArgumentNullException.ThrowIfNull(leafToRootStacks);
         if (topN <= 0)
@@ -42,6 +45,8 @@ internal static class NativeAllocStackAggregator
         var modules = new Dictionary<string, string>(StringComparer.Ordinal);
         var builder = new CallTreeBuilder();
         long total = 0;
+        var observationSink = recordObservations ? CaptureRecordingContext.Current : null;
+        observationSink?.ReportSourceLoss("sample.native-alloc.etw-virtualalloc", null);
 
         foreach (var stack in leafToRootStacks)
         {
@@ -67,6 +72,10 @@ internal static class NativeAllocStackAggregator
             }
 
             total++;
+            if (observationSink is not null)
+                SamplerObservationProjection.Sample(observationSink, "sample.native-alloc.etw-virtualalloc", "unavailable",
+                    null, null, frames.Select(f => new SamplerObservationProjection.Frame(f.Module, f.Display)),
+                    samplePeriod: 1);
             frames.Reverse();
 
             var leafKey = frames[^1].Key;

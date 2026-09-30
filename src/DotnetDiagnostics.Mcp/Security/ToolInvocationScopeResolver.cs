@@ -125,7 +125,12 @@ internal static class ToolInvocationScopeResolver
                 break;
 
             case "get_bytes":
-                if (Matches(arguments, "kind", "delete"))
+                if (Matches(arguments, "kind", "captures"))
+                {
+                    Add(additional, InvestigationExportScope);
+                }
+                if (Matches(arguments, "kind", "delete") ||
+                    (Matches(arguments, "kind", "captures") && Matches(arguments, "captureAction", "delete")))
                 {
                     Add(modifiers, DeleteArtifactScope);
                 }

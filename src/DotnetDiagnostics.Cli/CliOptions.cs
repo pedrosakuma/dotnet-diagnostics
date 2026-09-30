@@ -10,6 +10,27 @@ internal sealed record CliOptions
 {
     /// <summary>The sub-command (e.g. <c>processes</c>), or null when none was supplied.</summary>
     public string? Command { get; init; }
+    public bool Persist { get; init; }
+    public string? CaptureRoot { get; init; }
+    public string? CaptureAction { get; init; }
+    public string? CaptureId { get; init; }
+    public IReadOnlyList<string> CaptureEntries { get; init; } = Array.Empty<string>();
+    public string? CaptureFile { get; init; }
+    public string? OperationId { get; init; }
+    public string? RequestedUtc { get; init; }
+    public string? ArtifactId { get; init; }
+    public string? BaselineCaptureId { get; init; }
+    public string? BaselineArtifactId { get; init; }
+    public string? CandidateCaptureId { get; init; }
+    public string? CandidateArtifactId { get; init; }
+    public bool HasHistoricalReferences => BaselineCaptureId is not null || BaselineArtifactId is not null ||
+        CandidateCaptureId is not null || CandidateArtifactId is not null;
+    public string? RecordFrom { get; init; }
+    public string? RecordTo { get; init; }
+    public string? RecordName { get; init; }
+    public long? AfterRecordId { get; init; }
+    public int? PageSize { get; init; }
+    public string? AfterCaptureId { get; init; }
 
     /// <summary>Target OS process id (<c>--pid</c>). Optional — collectors auto-resolve the lone visible .NET process.</summary>
     public int? Pid { get; init; }
@@ -317,6 +338,9 @@ internal sealed record CliOptions
     /// <summary>Maximum seconds to wait for the sidecar health check to report healthy (<c>--wait</c>). Null applies the default (90).</summary>
     public int? WaitSeconds { get; init; }
 
+    /// <summary>Leave a newly created sidecar in place on health-check failure for inspection (<c>--retain-failed-sidecar</c>).</summary>
+    public bool RetainFailedSidecar { get; init; }
+
     /// <summary>Opt out of <c>SYS_PTRACE</c> on the sidecar (<c>--no-sys-ptrace</c>). Default off.</summary>
     public bool NoSysPtrace { get; init; }
 
@@ -360,6 +384,11 @@ internal sealed record CliOptions
     public bool SuspendStartup { get; init; }
 
     private static readonly Dictionary<string, OptionDescriptor> OptionLookup = CreateOptionLookup();
+    private static readonly HashSet<string> HistoricalOptions = new(StringComparer.Ordinal)
+    {
+        "--baseline-capture-id", "--baseline-artifact-id", "--candidate-capture-id", "--candidate-artifact-id",
+        "--capture-root", "--json", "--explain-risk", "--acknowledge-risk", "--help", "-h",
+    };
 
     /// <summary>
     /// Parses <paramref name="args"/>. Returns a populated <see cref="CliOptions"/> on success, or
@@ -371,6 +400,7 @@ internal sealed record CliOptions
         error = null;
 
         var state = new ParseState();
+        var supplied = new HashSet<string>(StringComparer.Ordinal);
         for (var i = 0; i < args.Count; i++)
         {
             var token = args[i];
@@ -389,6 +419,7 @@ internal sealed record CliOptions
 
             if (OptionLookup.TryGetValue(token, out var descriptor))
             {
+                supplied.Add(token);
                 if (!descriptor.TryApply(args, ref i, state, out error))
                 {
                     return null;
@@ -405,6 +436,12 @@ internal sealed record CliOptions
 
             if (state.Command is not null)
             {
+                if (state.Command == "captures" && state.CaptureAction is null)
+                {
+                    state.CaptureAction = token;
+                    continue;
+                }
+
                 if (string.Equals(state.Command, "compare", StringComparison.Ordinal))
                 {
                     state.ComparePaths.Add(token);
@@ -425,7 +462,13 @@ internal sealed record CliOptions
             state.Command = token;
         }
 
-        return state.Build();
+        var result = state.Build();
+        if (result.HasHistoricalReferences && (supplied.Any(option => !HistoricalOptions.Contains(option)) || result.LaunchArgs.Count != 0))
+        {
+            error = "Historical compare supports explicit references, --capture-root, --json and safety/help options only.";
+            return null;
+        }
+        return result;
     }
 
     private static bool TryTakeInt(IReadOnlyList<string> args, ref int i, string flag, out int value, out string? error)
@@ -503,6 +546,24 @@ internal sealed record CliOptions
             new FlagOptionDescriptor(state => state.FoldAsync = true, "--fold-async"),
             new FlagOptionDescriptor(state => state.Launch = true, "--launch"),
             new FlagOptionDescriptor(state => state.SuspendStartup = true, "--suspend-startup"),
+            new FlagOptionDescriptor(state => state.Persist = true, "--persist"),
+            new StringOptionDescriptor((state, value) => state.CaptureRoot = value, "--capture-root"),
+            new StringOptionDescriptor((state, value) => state.CaptureId = value, "--capture-id"),
+            new StringOptionDescriptor((state, value) => state.CaptureEntries.Add(value), "--entry"),
+            new StringOptionDescriptor((state, value) => state.CaptureFile = value, "--file"),
+            new StringOptionDescriptor((state, value) => state.OperationId = value, "--operation-id"),
+            new StringOptionDescriptor((state, value) => state.RequestedUtc = value, "--requested-utc"),
+            new StringOptionDescriptor((state, value) => state.ArtifactId = value, "--artifact-id"),
+            new StringOptionDescriptor((state, value) => state.BaselineCaptureId = value, "--baseline-capture-id"),
+            new StringOptionDescriptor((state, value) => state.BaselineArtifactId = value, "--baseline-artifact-id"),
+            new StringOptionDescriptor((state, value) => state.CandidateCaptureId = value, "--candidate-capture-id"),
+            new StringOptionDescriptor((state, value) => state.CandidateArtifactId = value, "--candidate-artifact-id"),
+            new StringOptionDescriptor((state, value) => state.RecordFrom = value, "--from"),
+            new StringOptionDescriptor((state, value) => state.RecordTo = value, "--to"),
+            new StringOptionDescriptor((state, value) => state.RecordName = value, "--name"),
+            new LongOptionDescriptor((state, value) => state.AfterRecordId = value, "--after-record-id"),
+            new IntOptionDescriptor((state, value) => state.PageSize = value, "--page-size"),
+            new StringOptionDescriptor((state, value) => state.AfterCaptureId = value, "--after-capture-id"),
             new PidOptionDescriptor("--pid", "-p"),
             new StringOptionDescriptor((state, value) => state.CommandLineContains = value, "--command-line-contains"),
             new StringOptionDescriptor((state, value) => state.Kind = value, "--kind"),
@@ -531,6 +592,7 @@ internal sealed record CliOptions
             new StringOptionDescriptor((state, value) => state.AllowedCidrs.Add(value), "--allow-cidr"),
             new IntOptionDescriptor((state, value) => state.HostPort = value, "--host-port"),
             new IntOptionDescriptor((state, value) => state.WaitSeconds = value, "--wait"),
+            new FlagOptionDescriptor(state => state.RetainFailedSidecar = true, "--retain-failed-sidecar"),
             new FlagOptionDescriptor(state => state.ApplyBootstrapProfile = true, "--apply"),
             new FlagOptionDescriptor(state => state.ReplaceBootstrapProfile = true, "--replace"),
             new IntOptionDescriptor((state, value) => state.TopTypes = value, "--top-types"),
@@ -595,6 +657,25 @@ internal sealed record CliOptions
 
     private sealed class ParseState
     {
+        public bool Persist { get; set; }
+        public string? CaptureRoot { get; set; }
+        public List<string> CaptureEntries { get; } = [];
+        public string? CaptureFile { get; set; }
+        public string? OperationId { get; set; }
+        public string? RequestedUtc { get; set; }
+        public string? CaptureAction { get; set; }
+        public string? CaptureId { get; set; }
+        public string? ArtifactId { get; set; }
+        public string? BaselineCaptureId { get; set; }
+        public string? BaselineArtifactId { get; set; }
+        public string? CandidateCaptureId { get; set; }
+        public string? CandidateArtifactId { get; set; }
+        public string? RecordFrom { get; set; }
+        public string? RecordTo { get; set; }
+        public string? RecordName { get; set; }
+        public long? AfterRecordId { get; set; }
+        public int? PageSize { get; set; }
+        public string? AfterCaptureId { get; set; }
         public string? Command { get; set; }
 
         public int? Pid { get; set; }
@@ -772,6 +853,8 @@ internal sealed record CliOptions
 
         public int? WaitSeconds { get; set; }
 
+        public bool RetainFailedSidecar { get; set; }
+
         public bool NoSysPtrace { get; set; }
 
         public bool ApplyBootstrapProfile { get; set; }
@@ -787,6 +870,25 @@ internal sealed record CliOptions
         public CliOptions Build() =>
             new()
             {
+                Persist = Persist,
+                CaptureRoot = CaptureRoot,
+                CaptureEntries = CaptureEntries.ToArray(),
+                CaptureFile = CaptureFile,
+                OperationId = OperationId,
+                RequestedUtc = RequestedUtc,
+                CaptureAction = CaptureAction,
+                CaptureId = CaptureId,
+                ArtifactId = ArtifactId,
+                BaselineCaptureId = BaselineCaptureId,
+                BaselineArtifactId = BaselineArtifactId,
+                CandidateCaptureId = CandidateCaptureId,
+                CandidateArtifactId = CandidateArtifactId,
+                RecordFrom = RecordFrom,
+                RecordTo = RecordTo,
+                RecordName = RecordName,
+                AfterRecordId = AfterRecordId,
+                PageSize = PageSize,
+                AfterCaptureId = AfterCaptureId,
                 Command = Command,
                 Pid = Pid,
                 PidName = PidName,
@@ -878,6 +980,7 @@ internal sealed record CliOptions
                 AllowedCidrs = AllowedCidrs,
                 HostPort = HostPort,
                 WaitSeconds = WaitSeconds,
+                RetainFailedSidecar = RetainFailedSidecar,
                 NoSysPtrace = NoSysPtrace,
                 ApplyBootstrapProfile = ApplyBootstrapProfile,
                 ReplaceBootstrapProfile = ReplaceBootstrapProfile,

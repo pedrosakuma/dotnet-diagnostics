@@ -49,15 +49,23 @@ public static class DiagnosticReadiness
 
     /// <summary>The same readiness gate with caller cancellation, propagated as
     /// <see cref="OperationCanceledException"/> rather than a readiness timeout.</summary>
-    public static async Task WaitForHttpReadyAsync(string baseUrl, TimeSpan timeout, string readinessPath,
+    public static Task WaitForHttpReadyAsync(string baseUrl, TimeSpan timeout, string readinessPath,
         CancellationToken cancellationToken)
+        => WaitForHttpReadyAsync(baseUrl, timeout, readinessPath, null, cancellationToken);
+
+    internal static async Task WaitForHttpReadyAsync(string baseUrl, TimeSpan timeout, string readinessPath,
+        HttpReadinessDiagnostics? diagnostics, CancellationToken cancellationToken)
     {
         using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
-        await WaitForHttpReadyAsync(http, timeout, readinessPath, TimeProvider.System, cancellationToken).ConfigureAwait(false);
+        await WaitForHttpReadyAsync(http, timeout, readinessPath, TimeProvider.System, diagnostics, cancellationToken).ConfigureAwait(false);
     }
 
-    internal static async Task WaitForHttpReadyAsync(HttpClient http, TimeSpan timeout, string readinessPath,
+    internal static Task WaitForHttpReadyAsync(HttpClient http, TimeSpan timeout, string readinessPath,
         TimeProvider timeProvider, CancellationToken cancellationToken = default)
+        => WaitForHttpReadyAsync(http, timeout, readinessPath, timeProvider, null, cancellationToken);
+
+    internal static async Task WaitForHttpReadyAsync(HttpClient http, TimeSpan timeout, string readinessPath,
+        TimeProvider timeProvider, HttpReadinessDiagnostics? diagnostics, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (timeout <= TimeSpan.Zero) throw HttpTimeout(http, readinessPath);
@@ -70,15 +78,19 @@ public static class DiagnosticReadiness
                 linked.Token.ThrowIfCancellationRequested();
                 try
                 {
+                    diagnostics?.Started();
                     using var response = await http.GetAsync(readinessPath, linked.Token).ConfigureAwait(false);
+                    diagnostics?.Response((int)response.StatusCode);
                     if (response.IsSuccessStatusCode)
                     {
                         linked.Token.ThrowIfCancellationRequested();
+                        diagnostics?.Succeeded();
                         return;
                     }
                 }
                 catch (HttpRequestException)
                 {
+                    diagnostics?.TransportFailure();
                     // Socket not fully ready yet; retry until the same deadline.
                 }
                 await Task.Delay(TimeSpan.FromMilliseconds(250), timeProvider, linked.Token).ConfigureAwait(false);
@@ -86,7 +98,13 @@ public static class DiagnosticReadiness
         }
         catch (OperationCanceledException) when (deadline.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
+            diagnostics?.DeadlineExpired();
             throw HttpTimeout(http, readinessPath);
+        }
+        catch (OperationCanceledException)
+        {
+            diagnostics?.Cancelled(cancellationToken.IsCancellationRequested);
+            throw;
         }
     }
 

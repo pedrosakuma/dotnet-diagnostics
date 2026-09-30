@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using DotnetDiagnostics.Core.CaptureRecording;
 using System.Diagnostics.Tracing;
 using System.Globalization;
 using DotnetDiagnostics.Core.Artifacts;
@@ -103,6 +104,7 @@ public sealed class EventPipeCpuSampler : ICpuSampler
         var exportPath = exportTrace ? ResolveExportPath(processId) : null;
         var tracePath = exportPath ?? Path.Combine(Path.GetTempPath(), $"diagnosticsmcp-{processId}-{Guid.NewGuid():N}.nettrace");
         var startedAt = DateTimeOffset.UtcNow;
+        var observationSink = CaptureRecordingContext.Current;
         var totalStopwatch = Stopwatch.StartNew();
 
         try
@@ -112,13 +114,14 @@ public sealed class EventPipeCpuSampler : ICpuSampler
             {
                 SafeArtifactPath.SetRestrictiveFilePermissions(exportPath);
             }
-            var aggregate = AggregateHotspots(
+            var aggregate = await AggregateHotspotsAsync(
                 tracePath,
                 processId,
                 topN,
                 sourceResolution,
                 methodInstantiationResolution,
-                cancellationToken);
+                observationSink,
+                cancellationToken).ConfigureAwait(false);
             // Rank self-time (exclusive) across the WHOLE merged tree, not the inclusive-capped
             // TopHotspots — the true global leaf can sit outside the inclusive top-N on a deep stack.
             // Same ranking the query_snapshot(view="top-methods", rankBy="exclusive") view uses.
@@ -140,12 +143,14 @@ public sealed class EventPipeCpuSampler : ICpuSampler
                 SelfSamples = aggregate.SelfSamples,
                 TopSelfTime = topSelfTime,
                 Timings = timings,
+                Notes = aggregate.RecordingNotes ?? [],
             };
             var relativeTrace = exportPath is null ? null : RelativeToRoot(exportPath);
             var artifact = new CpuSampleTraceArtifact(processId, startedAt, duration, aggregate.Total, aggregate.Root, aggregate.Sources, aggregate.Identities, TracePath: relativeTrace)
             {
                 Evidence = CpuSampleEvidence.EventPipeSampleProfiler,
                 SelfSamples = aggregate.SelfSamples,
+                Notes = aggregate.RecordingNotes ?? [],
             };
             return new CpuSampleResult(summary, artifact);
         }
@@ -240,12 +245,13 @@ public sealed class EventPipeCpuSampler : ICpuSampler
         }
     }
 
-    private CpuAggregationResult AggregateHotspots(
+    private async ValueTask<CpuAggregationResult> AggregateHotspotsAsync(
         string tracePath,
         int pid,
         int topN,
         SourceResolutionOptions? sourceResolution,
         MethodInstantiationResolutionOptions? methodInstantiationResolution,
+        ICaptureObservationSink? observationSink,
         CancellationToken cancellationToken)
     {
         var symbolicationStopwatch = Stopwatch.StartNew();
@@ -253,6 +259,7 @@ public sealed class EventPipeCpuSampler : ICpuSampler
         try
         {
             using var traceLog = new TraceLog(etlxPath);
+            observationSink?.ReportSourceLoss("sample.cpu.eventpipe", traceLog.EventsLost);
             var symbolicationDuration = symbolicationStopwatch.Elapsed;
             var process = traceLog.Processes.LastProcessWithID(pid);
             if (process is null)
@@ -286,9 +293,12 @@ public sealed class EventPipeCpuSampler : ICpuSampler
             long unknownSamples = 0;
             long waitingSamples = 0;
             var aggregationStopwatch = Stopwatch.StartNew();
+            var replayStacks = observationSink is IReplayCaptureObservationSink replaySink
+                ? new CpuReplayStackObservationWriter(replaySink) : null;
 
             foreach (var traceEvent in process.EventsInProcess)
             {
+                if (observationSink is not null) cancellationToken.ThrowIfCancellationRequested();
                 if (traceEvent.ProviderName != "Microsoft-DotNETCore-SampleProfiler" ||
                     traceEvent.EventName != "Thread/Sample")
                 {
@@ -335,6 +345,18 @@ public sealed class EventPipeCpuSampler : ICpuSampler
                 }
 
                 // stack is leaf→root; reverse to root→leaf for tree traversal.
+                if (replayStacks is not null)
+                {
+                    await replayStacks.AppendAsync(traceEvent.ThreadID, traceEvent.TimeStampRelativeMSec,
+                        stackFrames, cancellationToken).ConfigureAwait(false);
+                }
+                else if (observationSink is not null)
+                {
+                    // Collection is already stopped and drained. Pace this offline replay instead
+                    // of dropping its bounded local input when the storage queue is temporarily full.
+                    await EmitReplayObservationAsync(observationSink, traceEvent.ThreadID,
+                        traceEvent.TimeStampRelativeMSec, stackFrames, cancellationToken).ConfigureAwait(false);
+                }
                 stackFrames.Reverse();
 
                 var leafKey = stackFrames[^1].Key;
@@ -457,12 +479,35 @@ public sealed class EventPipeCpuSampler : ICpuSampler
                 sourceLineResolutionDuration,
                 aggregationDuration,
                 methodInstantiationResolutionDuration,
-                selfSamples);
+                selfSamples,
+                replayStacks?.GetNotes());
         }
         finally
         {
             TryDelete(etlxPath);
         }
+    }
+
+    /// <summary>
+    /// Admits one copied CPU observation during post-collection TraceLog replay. This must not
+    /// be called by live EventPipe/native callbacks. Queue waits are cancellable; hard rejection
+    /// remains the sink's accounted result. No additional producer queue or retry is introduced.
+    /// </summary>
+    internal static ValueTask<bool> EmitReplayObservationAsync(
+        ICaptureObservationSink sink, int threadId, double relativeMilliseconds,
+        IReadOnlyList<(string Key, string Module, string Display)> frames,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var observation = SamplerObservationProjection.BuildSample("sample.cpu.eventpipe", "trace-relative-seconds",
+            relativeMilliseconds / 1000, threadId,
+            frames.Select(f => new SamplerObservationProjection.Frame(f.Module, f.Display)),
+            additional: [CaptureObservationField.String("evidence", "sample-profiler-thread-sample-not-proven-on-cpu")]);
+        // Only scalar/string copies reach admission; no TraceEvent, stack or TraceLog is handed
+        // to the sink. One observation is awaited before the next replay event is interpreted.
+        return sink is IReplayCaptureObservationSink replay
+            ? replay.AppendReplayAsync(observation, cancellationToken)
+            : ValueTask.FromResult(sink.TryAppend(observation));
     }
 
     internal static SelfSampleBreakdown ClassifyLeafEvidence(string methodDisplay)
@@ -1001,7 +1046,8 @@ public sealed class EventPipeCpuSampler : ICpuSampler
         TimeSpan SourceLineResolutionDuration,
         TimeSpan AggregationDuration,
         TimeSpan MethodInstantiationResolutionDuration,
-        SelfSampleBreakdown? SelfSamples);
+        SelfSampleBreakdown? SelfSamples,
+        IReadOnlyList<string>? RecordingNotes = null);
 
     private static CallTreeNode EmptyRoot() => new(new SampledFrame(string.Empty, "<root>"), 0, 0, Array.Empty<CallTreeNode>());
 

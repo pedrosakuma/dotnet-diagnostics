@@ -307,22 +307,24 @@ internal static partial class CliCommands
 
         if (health is not null)
         {
-            var cleanup = sidecarCreated
+            var cleanup = sidecarCreated && !options.RetainFailedSidecar
                 ? await CleanupBootstrapResourcesBestEffortAsync(platform, disconnectCommand, removeCommand, networkConnected).ConfigureAwait(false)
                 : DockerCleanupResult.Success;
             return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
-                cleanup.Succeeded
-                    ? sidecarCreated
+                !cleanup.Succeeded
+                    ? $"Sidecar container '{sidecarName}' did not become healthy, and automatic cleanup also failed."
+                    : sidecarCreated && !options.RetainFailedSidecar
                         ? $"Sidecar container '{sidecarName}' did not become healthy; the bootstrap removed it automatically."
-                        : $"Existing sidecar container '{sidecarName}' did not become healthy; it was left untouched."
-                    : $"Sidecar container '{sidecarName}' did not become healthy, and automatic cleanup also failed.",
+                        : $"Sidecar container '{sidecarName}' did not become healthy; it was left for inspection.",
                 new DiagnosticError(
                     "Timeout",
-                    cleanup.Succeeded
-                        ? health
-                        : string.Create(
+                    !cleanup.Succeeded
+                        ? string.Create(
                             CultureInfo.InvariantCulture,
-                            $"{health} Cleanup failure: {cleanup.Message} Run '{removeCommand.ToDisplayString()}' manually."))),
+                            $"{health} Cleanup failure: {cleanup.Message} Run '{removeCommand.ToDisplayString()}' manually.")
+                        : sidecarCreated && !options.RetainFailedSidecar
+                            ? $"The sidecar was removed before its logs could be inspected. {health}"
+                            : health)),
                 static (_, _) => { });
         }
 
@@ -1008,6 +1010,7 @@ internal static partial class CliCommands
             "--env", "MCP_ALLOW_INSECURE_HTTP=true",
             "--env", "DOTNET_EnableDiagnostics=0",
             "--env", "DOTNET_NOLOGO=1",
+            "--env", "MCP_ARTIFACT_ROOT=/tmp/dotnet-diagnostics-mcp",
             "--env", string.Create(CultureInfo.InvariantCulture, $"TMPDIR={targetTmpPath}"),
             "--env", string.Create(CultureInfo.InvariantCulture, $"MCP_BEARER_TOKEN={bearerToken}"),
             "--env", string.Create(CultureInfo.InvariantCulture, $"MCP_INTERNAL_SCOPE_DELEGATION_KEY={delegationKey}"),

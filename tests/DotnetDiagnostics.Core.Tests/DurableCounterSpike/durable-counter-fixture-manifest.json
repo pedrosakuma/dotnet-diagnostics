@@ -1,0 +1,16 @@
+{
+  "schema": "dc4-counter-fixture-manifest/1",
+  "protocolRevision": 3,
+  "protocolJson": "docs/design/durable-capture-comparison-protocol.json",
+  "protocolJsonSha256": "faaced68f26a53b7841713d4b1fe1044ce0dd3b277bbac2a9c6f9b6a09f498dd",
+  "generatorRevision": "dc3-revision-3",
+  "canonicalEncoding": "System.Text.Json web defaults; one UTF-8 JSON value plus LF per logical row; finite doubles use invariant round-trip strings; named nonfinite source values use protocol tokens",
+  "q1Records": 1024,
+  "q2Rows": 16,
+  "q1InputSha256": "e4fefbefddac4193103038771b5f3f2d7c3a1c01e0af9db4853b1b51780c6a16",
+  "q1OracleSha256": "9e46cddd49925945f6450921129c48126038d7a07df0107b1a6259b4a52318e3",
+  "q2InputSha256": "1e757f6f1f3328eddf6dbc848eeef4c72a38291c93806ec9204b6e72955c2154",
+  "q2OracleSha256": "e59999f9ab66b9dbc58404bde6c1e359ad01c13dd0be43b28862b94561eb821b",
+  "containsSyntheticDataOnly": true,
+  "experimentExecuted": false
+}

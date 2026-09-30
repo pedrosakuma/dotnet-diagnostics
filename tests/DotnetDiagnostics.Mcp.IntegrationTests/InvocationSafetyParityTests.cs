@@ -90,6 +90,7 @@ public sealed class InvocationSafetyParityTests
         var arguments = DeserializeArguments(
             """
             {
+              "persist": true,
               "requests": [
                 { "tool": "collect_events", "kind": "counters" },
                 { "tool": "collect_sample", "kind": "off_cpu" }
@@ -104,6 +105,38 @@ public sealed class InvocationSafetyParityTests
         safety.RiskLevel.Should().Be(InvocationRiskLevel.High);
         safety.ApprovalPolicy.Should().Be(InvocationApprovalPolicy.Acknowledge);
         safety.TargetImpact.Should().Contain(TargetImpact.KernelTracing);
+        safety.SideEffects.Should().Contain(InvocationSideEffect.WritesArtifact);
+    }
+
+    [Theory]
+    [InlineData("list", InvocationRiskLevel.Low)]
+    [InlineData("describe", InvocationRiskLevel.Low)]
+    [InlineData("delete", InvocationRiskLevel.High)]
+    [InlineData("recover", InvocationRiskLevel.Moderate)]
+    public void McpNormalizer_CaptureLifecycleUsesSharedCoreClassification(string action, InvocationRiskLevel risk)
+    {
+        var safety = McpInvocationSafety.Resolve(
+            DiagnosticOperationCatalog.GetBytes,
+            DeserializeArguments($$"""{"kind":"captures","captureAction":"{{action}}"}"""));
+        var shared = InvocationSafetyResolver.Resolve(InvocationSafetyRequest.Create(
+            DiagnosticOperationCatalog.GetBytes, ("kind", "captures"), ("captureAction", action)));
+        safety.Should().BeEquivalentTo(shared);
+        safety.RiskLevel.Should().Be(risk);
+    }
+
+    [Theory]
+    [InlineData("cpu-efficiency-sample")]
+    [InlineData("requests-now")]
+    public void McpNormalizer_RecordOnlyHandlesUseOfflineRecordSafety(string kind)
+    {
+        var handles = new MemoryDiagnosticHandleStore();
+        var handle = handles.Register(123, kind, new object(), TimeSpan.FromMinutes(1),
+            evictWhenProcessExits: false);
+        var safety = McpInvocationSafety.Resolve(
+            DiagnosticOperationCatalog.QuerySnapshot,
+            DeserializeArguments($$"""{"handle":"{{handle.Id}}","view":"records"}"""), handles);
+        safety.RiskLevel.Should().Be(InvocationRiskLevel.Moderate);
+        safety.TargetImpact.Should().BeEmpty();
     }
 
     [Fact]

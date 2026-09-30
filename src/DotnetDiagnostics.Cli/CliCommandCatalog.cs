@@ -20,6 +20,7 @@ internal static class CliCommandCatalog
         "--json",
         "--explain-risk",
         "--acknowledge-risk",
+        "--capture-root",
         "--launch",
         "-h",
         "--help",
@@ -39,9 +40,13 @@ internal static class CliCommandCatalog
         "--target-container", "--central-container", "--sidecar-name", "--sidecar-image", "--profile-name", "--profile-url",
         "--bearer-token", "--delegation-key", "--allow-cidr", "--host-port", "--wait",
         "--acknowledge-risk",
+        "--capture-root", "--capture-id", "--artifact-id", "--from", "--to", "--name",
+        "--after-record-id", "--page-size", "--after-capture-id",
+        "--entry", "--file", "--operation-id", "--requested-utc",
     ];
 
     public static readonly IReadOnlyList<string> DepthValues = ["summary", "detail", "raw"];
+    public static readonly IReadOnlyList<string> CaptureActions = ["list", "show", "delete", "recover", "export", "import", "import-result"];
     public static readonly IReadOnlyList<string> CpuBackendValues = ["automatic", "eventpipe", "os"];
     public static readonly IReadOnlyList<string> CompareModes = ["trend", "dispersion"];
     public static readonly IReadOnlyList<string> AcknowledgementValues = ["high", "critical"];
@@ -72,6 +77,8 @@ Options:
   -p, --pid <pid|name>          Target OS process id, or visible .NET process name/prefix
                                 (auto-resolved when only one is visible).
       --json                    Emit the raw DiagnosticResult envelope as JSON.
+      --capture-root <directory>
+                                Stable capture store root, independent of --out and session scratch.
       --explain-risk            Print the resolved Core safety descriptor without executing.
       --acknowledge-risk <level>
                                 Non-interactive acknowledgement for high/critical operations.
@@ -92,6 +99,37 @@ Options:
 
     public static readonly IReadOnlyList<CliCommandDescriptor> CommandDescriptors =
     [
+        new(
+            "captures",
+            "Manage durable local captures and explicitly export/import portable bundles.",
+"""
+captures options:
+  list                          List the current local OS owner's captures.
+  show --capture-id <id>        Show artifacts, state, ownership, and capture quality.
+  delete --capture-id <id>      Explicitly delete a capture; requires --acknowledge-risk high.
+  recover --capture-id <id>     Create a new derived package from interrupted evidence.
+  export --entry <id>[=<label>] --file <path>
+                               Export 1-16 explicit entries (repeat --entry); no overwrite.
+                               Labels are display data, at most 256 UTF-8 bytes.
+  import --file <path>          Import through an explicitly configured isolated worker.
+  import-result                Read the current owner's persisted import outcome.
+      --operation-id <id>       Retry/result identity; use with --requested-utc <ISO-8601>.
+      --requested-utc <time>    Original operation timestamp, unchanged on retry.
+                               Import/export print their operation key even on failure.
+                               Use --json for structured outcomes, mappings and provenance.
+                               No binary stdin/stdout; use trusted local directories.
+      --capture-root <directory> Stable root (MCP_ARTIFACT_ROOT, then local application data).
+      --page-size <int>         List page size, 1..100 (default 100).
+      --after-capture-id <id>    List continuation from the previous page.
+""",
+"""
+  dotnet-diagnostics-cli captures list --json
+  dotnet-diagnostics-cli captures show --capture-id <id>
+  dotnet-diagnostics-cli captures recover --capture-id <id>
+  dotnet-diagnostics-cli captures export --entry <id>=baseline --file ./baseline.ddcapture --acknowledge-risk high
+  dotnet-diagnostics-cli captures import --file ./baseline.ddcapture --acknowledge-risk high
+""",
+            ["--capture-id", "--page-size", "--after-capture-id", "--entry", "--file", "--operation-id", "--requested-utc"]),
         new(
             "docker-bootstrap",
             "Start a Docker sidecar for a running target container and print the matching external-profile config for the central MCP.",
@@ -118,6 +156,8 @@ docker-bootstrap options:
       --delegation-key <secret>     Operator-supplied MCP_INTERNAL_SCOPE_DELEGATION_KEY.
                                     Default: generated.
       --wait <seconds>              Health-check wait timeout (default: 90).
+      --retain-failed-sidecar       Leave a newly started sidecar for inspection if it fails
+                                    its health check. Remove it manually after inspecting logs.
       --no-sys-ptrace               Do not add SYS_PTRACE to the sidecar. Default OFF.
       --apply                       Apply the profile to a supported Dockerized central using
                                     an operator-owned 0600 config file, then restart and health-check it.
@@ -139,7 +179,7 @@ notes:
   dotnet-diagnostics-cli docker-bootstrap --target-container api --profile-name api-sidecar --host-port 18892 --acknowledge-risk high
   dotnet-diagnostics-cli docker-bootstrap --target-container api --profile-url http://host.docker.internal:18892/mcp --allow-cidr 172.17.0.1/32 --acknowledge-risk high
 """,
-            ["--target-container", "--central-container", "--sidecar-name", "--sidecar-image", "--profile-name", "--profile-url", "--allow-cidr", "--host-port", "--bearer-token", "--delegation-key", "--wait", "--no-sys-ptrace", "--apply", "--replace"]),
+            ["--target-container", "--central-container", "--sidecar-name", "--sidecar-image", "--profile-name", "--profile-url", "--allow-cidr", "--host-port", "--bearer-token", "--delegation-key", "--wait", "--retain-failed-sidecar", "--no-sys-ptrace", "--apply", "--replace"]),
         new(
             "processes",
             "List attachable .NET processes.",
@@ -176,6 +216,7 @@ processes options:
             "Open an EventPipe session and collect events (--kind required).",
 """
 collect options:
+      --persist                 Opt in to a durable SQLite capture, including grouped child artifacts.
       --kind <kind>             Required. One of: counters, exceptions, crash-guard, gc, datas,
                                 catalog, event_source, activities, gc-activities, logs, jit, threadpool,
                                 contention, db, kestrel, networking, requests, startup, sweep,
@@ -258,6 +299,7 @@ collect options:
   dotnet-diagnostics-cli collect --kind startup --suspend-startup --launch --acknowledge-risk high -- dotnet App.dll  # cold start
 """,
             [
+                "--persist",
                 "--kind",
                 "-d",
                 "--duration",
@@ -324,6 +366,7 @@ inspect views:
             "Walk the managed heap of a live process or a .dmp (--source live|dump|gcdump).",
 """
 inspect-heap options:
+      --persist                 Persist the managed snapshot for supported offline views; not the dump.
       --source <live|dump|gcdump>  Snapshot source (default: inferred — dump when --dump-file is set, else live).
       --dump-file <path>        --source dump: path to a previously-captured .dmp.
       --top-types <int>         Top-N type count (default 20).
@@ -343,6 +386,7 @@ inspect-heap options:
   dotnet-diagnostics-cli inspect-heap --launch --acknowledge-risk high -- dotnet App.dll   # ptrace_scope=1, no privilege
 """,
             [
+                "--persist",
                 "--source",
                 "--dump-file",
                 "--top-types",
@@ -372,13 +416,21 @@ dump options:
             ["--dump-type", "--out", "--confirm"]),
         new(
             "query",
-            "Drill-down query (unsupported in the one-shot CLI — see notes).",
+            "Query a session handle or a durable capture artifact without recollecting.",
 """
 query options:
+      --capture-id <id>         Durable capture GUID, mutually exclusive with --handle/--latest-of-kind/--pid.
+      --artifact-id <id>        Artifact GUID within --capture-id; required with that selector.
+      --from <timestamp>        records: inclusive ISO-8601 timestamp with UTC offset.
+      --to <timestamp>          records: inclusive ISO-8601 timestamp with UTC offset.
+      --category <text>         records: exact category filter (one).
+      --name <text>             records: exact record-name filter.
+      --after-record-id <int>   records: exclusive continuation from the previous page.
+      --page-size <int>         records: bounded page size, 1..1000 (default 100).
       --handle <id>             Session drill-down handle. Exactly one of --handle/--latest-of-kind is required.
       --latest-of-kind <kind>   Session query: alias for --handle — resolves to the most recently registered
                                 non-expired handle of this kind (e.g. cpu-sample); narrow with --pid.
-      --view <name>             Session drill-down view.
+      --view <name>             Existing drill-down view, records, or children for a durable group.
       --trace-id <32-hex>       Session query: required for an activities handle with --view trace.
       --gc-handle <id>          Session query: GC capture for activities --view gc-overlay.
       --top <int>               Session query: cap ranked rows/groups; wins when --top-types is also set.
@@ -393,8 +445,10 @@ query options:
       --address <decimal|0xhex> Session query: heap object/root address or exact thread-snapshot lock address.
       --stack-rank <int>        Session query: 1-based rank for the off-CPU 'stack' view.
   Note: handles are process-local. A one-shot command's handle disappears when that command exits,
-  so one-shot 'query' always returns a NotSupported envelope (exit 1). Use --depth detail / --json
-  for inline evidence, or run both the originating command and query inside one 'session' REPL.
+  so one-shot 'query --handle' returns a NotSupported envelope (exit 1). Use --capture-id plus
+  --artifact-id to reopen persisted evidence across processes. Only advertised offline views are
+  allowed: historical process IDs never authorize a live attach. records accepts typed filters,
+  not SQL. Use --depth detail / --json for inline evidence, or use one 'session' REPL.
 
   Thread-snapshot views (session only):
     threads-summary  Up to 8 decisive threads per page, with state and up to 8 frames.
@@ -412,6 +466,8 @@ query options:
 """,
             string.Empty,
             [
+                "--capture-id", "--artifact-id", "--from", "--to", "--category", "--name",
+                "--after-record-id", "--page-size",
                 "--handle",
                 "--gc-handle",
                 "--latest-of-kind",
@@ -465,8 +521,10 @@ compare options:
 """
   dotnet-diagnostics-cli compare ./before.json ./after.json
   dotnet-diagnostics-cli compare ./a.json ./b.json ./c.json --mode dispersion --save ./matrix.json
+  dotnet-diagnostics-cli compare --capture-root ./captures --baseline-capture-id <id> --baseline-artifact-id <id> --candidate-capture-id <id> --candidate-artifact-id <id> --json
+  Historical references compare whole retained CPU/heap/counter snapshots; no filters, paths, live attach, or causal verdicts.
 """,
-            ["--json", "--save", "--mode"]),
+            ["--json", "--save", "--mode", "--capture-root", "--baseline-capture-id", "--baseline-artifact-id", "--candidate-capture-id", "--candidate-artifact-id"]),
         new(
             "investigate",
             "Plan a .NET performance investigation and get the recommended first step.",
@@ -507,6 +565,9 @@ export-summary options:
             "Start a stateful REPL that keeps collected handles queryable across commands.",
 """
 session notes:
+  --persist opts eligible collect/inspect-heap commands into persistence for this session.
+  --capture-root <directory> selects a stable root inherited by commands unless explicitly overridden.
+  Session exit cleans scratch artifacts only; durable captures survive until explicitly deleted.
   Builds the diagnostic host once and reads commands from stdin until 'exit'/'quit'/EOF. Handles
   published by 'collect' stay alive (until they expire or the target exits), so you can drill in with
   'query --handle <id> --view <view>' without re-collecting. Ctrl-C cancels the running command and
@@ -528,7 +589,7 @@ session notes:
 
   dotnet-diagnostics-cli session --launch --acknowledge-risk high -- dotnet App.dll   # binds the launched child for the session
 """,
-            []),
+            ["--persist"]),
         new(
             "completion",
             "Emit a shell-completion script for bash, zsh or PowerShell.",

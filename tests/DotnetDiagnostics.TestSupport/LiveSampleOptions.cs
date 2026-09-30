@@ -7,6 +7,9 @@ namespace DotnetDiagnostics.TestSupport;
 /// </summary>
 public sealed record LiveSampleOptions
 {
+    internal Func<System.Diagnostics.Process, Task>? ProcessStarted { get; init; }
+    internal Func<CancellationToken, Task>? BeforeTermination { get; init; }
+
     /// <summary>Extra environment variables layered on top of the harness defaults
     /// (<c>DOTNET_NOLOGO=1</c>, <c>ASPNETCORE_ENVIRONMENT=Development</c>). Overrides win.</summary>
     public IReadOnlyDictionary<string, string>? Environment { get; init; }
@@ -25,6 +28,9 @@ public sealed record LiveSampleOptions
 
     /// <summary>Readiness path polled when <see cref="WaitForHttpReady"/> is set. Defaults to <c>/</c>.</summary>
     public string ReadinessPath { get; init; } = "/";
+
+    /// <summary>Optional scalar HTTP probe evidence; stream contents are not retained.</summary>
+    public HttpReadinessDiagnostics? HttpDiagnostics { get; init; }
 
     /// <summary>Timeout for the diagnostic-endpoint readiness gate.</summary>
     public TimeSpan DiagnosticTimeout { get; init; } = TimeSpan.FromSeconds(30);

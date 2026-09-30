@@ -63,10 +63,16 @@ then install the new one. The legacy id has been unlisted on NuGet.org.
 
 ### 1b. Container
 
-> **Local dev only — internal cleartext.** The container image sets `ASPNETCORE_URLS=http://0.0.0.0:8080`,
-> which is a non-loopback cleartext binding. `MCP_ALLOW_INSECURE_HTTP=true` is required to start;
-> `-p 127.0.0.1:8787:8080` restricts host-side access to loopback. Do not use this recipe for
-> production — configure TLS or a trusted proxy instead (see [§ 1.6](#16-transport-security-for-non-loopback-listeners)).
+The image defaults to `ASPNETCORE_URLS=http://127.0.0.1:8080`, so it starts with
+loopback-only cleartext and does not require `MCP_ALLOW_INSECURE_HTTP`. A Docker
+port mapping alone cannot expose that listener outside the container; choose an
+explicit transport configuration when connecting from another container or host.
+For production, use direct TLS or a trusted TLS-terminating proxy as described in
+[§ 1.6](#16-transport-security-for-non-loopback-listeners).
+
+> **Local development only — internal cleartext.** The following explicit overrides
+> bind the listener to the container interface and enable the server's prominently
+> warned unsafe development mode. Never use this configuration in production.
 
 ```bash
 docker run -d \
@@ -74,9 +80,15 @@ docker run -d \
   --restart unless-stopped \
   -p 127.0.0.1:8787:8080 \
   -e MCP_BEARER_TOKEN=$(openssl rand -hex 32) \
+  -e ASPNETCORE_URLS=http://0.0.0.0:8080 \
   -e MCP_ALLOW_INSECURE_HTTP=true \
   ghcr.io/pedrosakuma/dotnet-diagnostics:latest
 ```
+
+The portable capture worker is excluded from ordinary main/tag and default manual
+container builds. A maintainer can explicitly opt in through
+`publish-container.yml`'s `include_portable_worker` input; it is bundled only in
+the Linux-amd64 image. Linux-arm64 images remain asset-free.
 
 Do **not** omit `-e MCP_BEARER_TOKEN=...` here: this container binds `0.0.0.0:8080` internally, so the server refuses to start without credentials. For non-loopback production deployments, `Auth__BearerTokens__*` or OIDC are also valid up-front choices.
 

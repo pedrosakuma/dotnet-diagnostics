@@ -63,6 +63,7 @@ internal static class SessionReplCompletion
 
         return prevToken switch
         {
+            "captures" => CliCommandCatalog.CaptureActions,
             "--kind" => string.Equals(command, "get-bytes", StringComparison.Ordinal)
                 ? CliCommandCatalog.ByteKinds
                 : CliCommandCatalog.CollectKinds,

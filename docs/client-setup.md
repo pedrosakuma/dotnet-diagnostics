@@ -21,6 +21,99 @@ This is the MCP server's **start here** doc: pick one transport track first, the
 
 For permission-shaped failures on the HTTP track, make `inspect_process(view="preflight")` your first troubleshooting step before retrying a more expensive tool.
 
+### Optional durable SQLite evidence
+
+The default tool catalog and ephemeral collection behavior remain unchanged.
+To retain a supported collection across server restarts, pass `persist=true`
+to the existing collection tool and save the returned `capture.captureId` and
+artifact IDs. `collect_batch` persists one package with child artifacts.
+Use `view="children"` on the parent artifact for composition references and
+per-child quality/errors; select a child artifact for retained evidence.
+Reopen through `query_snapshot(captureId=..., artifactId=..., view=...)`;
+manage packages through `get_bytes(kind="captures", captureAction=...)`.
+See [durable capture contracts](./tool-reference.md#durable-captures-through-the-existing-tools).
+
+Configure a stable operator-controlled `MCP_ARTIFACT_ROOT` and preserve that
+directory across process/container restarts. Clients cannot choose a SQLite
+path or send SQL. No history files are created merely by registering services;
+collection remains opt-in. Raw trace export still requires `exportTrace=true`.
+The raw-artifact TTL reaper does not delete private capture packages.
+
+HTTP captures belong to the current authenticated ownership key; display names
+and saved package metadata are not credentials. Reopening under reduced scopes
+can be denied even for the same owner. The existing stdio synthetic principal
+policy applies locally. Missing principals never gain root privileges on the
+durable path. Through orchestrator routing, signed delegation preserves the
+caller's ownership identity and current permissions.
+Distributed trace and replica-counter fan-out persist on each collecting host,
+not on the orchestrator. Save each `data.remoteCaptures` host/investigation ID
+alongside its host-local capture and artifact IDs, then include
+`investigationHandleId` when querying or managing that package. Durable fan-out
+is limited to 16 hosts per call. Preserving only the orchestrator's artifact
+directory does not preserve remote captures; preserve each collecting host's
+configured artifact root.
+
+Stdio's default `root` scope does **not** include literal `module-bytes-read`.
+To authorize local capture lifecycle access, explicitly launch the local host
+with `--stdio --Stdio:CaptureBytes=true`. This startup configuration is not a
+tool argument and is not applied to HTTP callers, including a remote principal
+named `stdio-root`. Sensitive retained evidence still needs the appropriate
+explicit modifier. For example:
+
+```sh
+dotnet-diagnostics-mcp --stdio --Stdio:CaptureBytes=true \
+  --Stdio:CaptureModifiers:0=sensitive-heap-read
+```
+
+The supported local capture modifiers are `sensitive-heap-read`,
+`sensitive-parameter-read`, and `eventsource-any`. Configure only the ones needed;
+modifiers without `Stdio:CaptureBytes=true`, and unknown modifiers, fail startup.
+This does not enable capture deletion or live privileged instrumentation.
+
+Both MCP transports bound incoming JSON-RPC frames to 1 MiB **before** SDK
+deserialization. `get_bytes` frames with a `captureAction` argument have a stricter
+64 KiB encoded bound (including padding, escaping, and the stdio newline).
+HTTP enforces actual bytes even without `Content-Length`; excess returns 413.
+Stdio rejects an oversized line before dispatch and closes the transport.
+Ordinary non-capture requests retain the 1 MiB allowance. This is request
+admission, not a change to response budgets.
+
+Portable capture bytes use the same `get_bytes` tool on both transports.
+HTTP transfers require a session-capable MCP client using protocol `2025-11-25`
+or earlier. SDK 2.2's default `2026-07-28` HTTP protocol is stateless; transfer
+initiation returns `SessionRequired` rather than weakening session ownership.
+The endpoint's default hybrid behavior is unchanged, and operation-key result
+reconciliation remains available without an active transfer session.
+For the .NET MCP client, set `McpClientOptions.ProtocolVersion = "2025-11-25"`.
+Stdio transfers belong to that subprocess and need the local capture-byte opt-in.
+
+Portable import is enabled only when **both** trusted operator variables are set:
+
+```sh
+export DOTNET_DIAGNOSTICS_IMPORT_WORKER=/opt/diagnostics/portable/capture-worker
+export DOTNET_DIAGNOSTICS_SQLITE_LIBRARY=/opt/diagnostics/portable/libe_sqlite3.so
+```
+
+These are explicit absolute asset paths, not discovery defaults or a promise
+that those example files are installed. Both absent means
+`ImportWorkerUnavailable`; partial or invalid configuration fails startup.
+No automatic packaged-asset discovery, in-process SQLite admission, Windows
+fallback, or archive-supplied executable is used. The current safe worker
+supports Linux x64 only; configured assets must also match the host's native ABI
+and support the required isolation facilities.
+
+See [portable capture transfer](./tool-reference.md#portable-capture-transfer)
+for the exact action fields and client sequence. Clients must write returned
+chunks to their own selected file and verify the advertised whole-archive hash;
+a server-local archive is not a completed download. Treat archives as sensitive.
+HTTP enforces at most 16 concurrent buffered MCP request frames without a waiter
+queue and a 30-second body-read deadline; overflow returns 429 with retry delay.
+
+Historical views use retained evidence, never a stored PID to reattach. Queries
+do not repair interrupted captures: request explicit `captureAction="recover"`
+to create a new derived package. Inspect quality and error details rather than
+assuming an incomplete capture is complete or an unavailable view is empty.
+
 ## 1. Run the server
 
 ### Option A: `--stdio` (local dev)
@@ -76,11 +169,12 @@ dotnet-diagnostics-mcp --urls http://127.0.0.1:8787
 # Loopback-only alternative: omit MCP_BEARER_TOKEN and copy the generated ephemeral token from the startup warning.
 ```
 
-For a **container**, the image sets `ASPNETCORE_URLS=http://0.0.0.0:8080` internally
-(non-loopback cleartext). Use the local-dev recipe in
-[`consumer-install.md` → § 1b](./consumer-install.md#1b-container)
-(`-p 127.0.0.1:8787:8080` + `MCP_ALLOW_INSECURE_HTTP=true`) or configure production
-TLS via [§ 1.6](./consumer-install.md#16-transport-security-for-non-loopback-listeners).
+For a **container**, the image binds to `http://127.0.0.1:8080` by default. This
+safe loopback default starts without an insecure-HTTP override, but a Docker port
+mapping cannot expose the listener outside the container. Configure direct HTTPS
+or a trusted TLS-terminating proxy before exposing it; see
+[`consumer-install.md` → § 1b](./consumer-install.md#1b-container) for the
+explicit local-development override and production choices.
 
 Sanity check:
 

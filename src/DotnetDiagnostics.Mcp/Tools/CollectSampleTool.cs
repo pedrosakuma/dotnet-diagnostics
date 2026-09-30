@@ -53,7 +53,7 @@ public sealed class CollectSampleTool
         Name = ToolName,
         Title = "Collect a bounded-time sample (cpu | off_cpu | allocation | native-alloc | native-lock-contention | method-params)",
         Destructive = false,
-        ReadOnly = true,
+        ReadOnly = false,
         Idempotent = false,
         UseStructuredContent = true)]
     [Description(
@@ -127,8 +127,17 @@ public sealed class CollectSampleTool
         string? investigationHandleId = null,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
         RequestContext<CallToolRequestParams>? requestContext = null,
+        [Description("Persist private SQLite evidence; default false. Raw traces still require exportTrace.")]
+        bool persist = false,
+        DurableCaptureTools? durableCaptures = null,
         CancellationToken cancellationToken = default)
     {
+        return await DurableCaptureTools.CollectAsync(
+            durableCaptures, principalAccessor, persist, "collect_sample", kind,
+            ExecuteAsync, cancellationToken).ConfigureAwait(false);
+
+        async Task<DiagnosticResult<CollectSampleEnvelope>> ExecuteAsync(CancellationToken cancellationToken)
+        {
         if (!DiscriminatorDispatch.TryValidate<CollectSampleEnvelope>(
                 kind, AllowedKinds, nameof(kind), out var canonicalKind, out var dispatchFailure))
         {
@@ -249,6 +258,7 @@ public sealed class CollectSampleTool
                 $"Unhandled kind '{canonicalKind}'.",
                 new DiagnosticError("InvalidArgument", $"Unhandled kind '{canonicalKind}'.", nameof(kind))),
         };
+        }
     }
 
     private static async Task<DiagnosticResult<CollectSampleEnvelope>> CollectMethodParametersAsync(

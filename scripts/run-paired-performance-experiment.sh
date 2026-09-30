@@ -76,6 +76,18 @@ checkout_ref "$pr_ref" "$refs_root/pr" pull_request
 
 main_sha=$(git -C "$refs_root/main" rev-parse HEAD)
 pr_sha=$(git -C "$refs_root/pr" rev-parse HEAD)
+if [[ -z "${NUGET_CONFIG:-}" ]]; then
+  echo "NUGET_CONFIG must explicitly name a private NuGet.Config." >&2
+  exit 1
+fi
+if [[ ! -s "$NUGET_CONFIG" ]]; then
+  echo "The private NuGet.Config does not exist or is empty: $NUGET_CONFIG" >&2
+  exit 1
+fi
+if grep -Eiq 'api\.nuget\.org|(^|[^[:alnum:].-])nuget\.org([^[:alnum:].-]|$)' "$NUGET_CONFIG"; then
+  echo "The supplied NuGet.Config references NuGet.org; no public package or audit source is permitted." >&2
+  exit 1
+fi
 main_sdk=$(cd "$refs_root/main" && dotnet --version)
 pr_sdk=$(cd "$refs_root/pr" && dotnet --version)
 if [[ "$main_sdk" != "$pr_sdk" ]]; then
@@ -90,7 +102,8 @@ build_ref() {
   started=$(now_ns)
   (
     cd "$directory"
-    dotnet restore benchmarks/DiagnosedBenchmarks/DiagnosedBenchmarks.csproj
+    dotnet restore benchmarks/DiagnosedBenchmarks/DiagnosedBenchmarks.csproj \
+      --configfile "$NUGET_CONFIG"
     dotnet build benchmarks/DiagnosedBenchmarks/DiagnosedBenchmarks.csproj \
       --no-restore --configuration Release
   )
@@ -111,7 +124,7 @@ measure_ref() {
   (
     cd "$directory/benchmarks/DiagnosedBenchmarks"
     dotnet run --project . \
-      --configuration Release --no-build -- \
+      --configuration Release --no-build --no-restore -- \
       perf-regression measure \
       --run-id "$run_prefix-$label-$pair" \
       --output "$output" \
@@ -148,7 +161,7 @@ diagnostic_started=$(now_ns)
 (
   cd "$refs_root/pr/benchmarks/DiagnosedBenchmarks"
   dotnet run --project . \
-    --configuration Release --no-build -- \
+    --configuration Release --no-build --no-restore -- \
     perf-regression diagnose \
     --output "$compact_root/diagnostic.json" \
     --artifacts "$raw_root/pull_request/diagnostic" \

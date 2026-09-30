@@ -1,3 +1,6 @@
+using DotnetDiagnostics.Core.CaptureRecording;
+using F = DotnetDiagnostics.Core.CaptureRecording.CaptureObservationField;
+
 namespace DotnetDiagnostics.Core.Gc;
 
 /// <summary>Single-parser-thread bounded state; no event clones, TTL, or inferred endpoints.</summary>
@@ -21,13 +24,15 @@ internal sealed class GcCaptureState
     private DateTimeOffset? _lastPauseEnd;
     private bool _unreliable;
     private bool _sawBoundary;
+    private readonly ICaptureObservationSink? _sink;
 
-    internal GcCaptureState(int cap)
+    internal GcCaptureState(int cap, ICaptureObservationSink? sink = null)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(cap, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(cap, MaxRetainedIntervals);
         _cap = cap;
-        Collections = new GcEventAggregation(cap);
+        _sink = sink;
+        Collections = new GcEventAggregation(cap, sink);
     }
 
     internal GcEventAggregation Collections { get; }
@@ -37,6 +42,8 @@ internal sealed class GcCaptureState
         _limitations.TryGetValue(category, out var count);
         _limitations[category] = count == long.MaxValue ? count : count + 1;
         _unreliable |= unreliable;
+        _sink?.TryAppend(new("gc.correlation", null, null, category,
+            [F.Bool("affectsSuspensionReliability", unreliable), F.String("timing", "not-associated-with-a-reliable-interval")]));
     }
 
     private bool Identity(int clr, int version)
@@ -134,6 +141,15 @@ internal sealed class GcCaptureState
                 _maxTicks = Math.Max(_maxTicks, ticks);
                 _lastPauseEnd = at;
                 _observed = _observed == long.MaxValue ? _observed : _observed + 1;
+                _sink?.TryAppend(new("gc.suspension", at, thread, null,
+                [
+                    RuntimeObservationProjection.Time("startedAt", start),
+                    F.Int64("durationTicks", ticks), F.Int64("acquisitionTicks", (start - state.Begin).Ticks),
+                    F.Int64("clrInstanceId", clr), F.Int64("reason", state.Reason),
+                    F.Int64("gcCountAtSuspend", state.Count),
+                    F.String("correlation", "ordered-runtime-thread-boundaries; gcCountAtSuspend is not a collection join"),
+                    F.String("quality", "local pair only; capture-wide loss and correlation limits apply"),
+                ]));
                 if (_intervals.Count < _cap)
                 {
                     state.RetainedIndex = _intervals.Count;
@@ -145,6 +161,14 @@ internal sealed class GcCaptureState
         }
         if (phase == 2)
         {
+            if (state.IsGc)
+                _sink?.TryAppend(new("gc.restart", at, thread, null,
+                [
+                    F.Int64("clrInstanceId", clr), F.Int64("gcCountAtSuspend", state.Count),
+                    RuntimeObservationProjection.Time("restartStartedAt", state.RestartAt),
+                    F.Int64("restartTicks", (at - state.RestartAt).Ticks),
+                    F.String("correlation", "ordered-runtime-thread-boundaries"),
+                ]));
             if (state.RetainedIndex is { } index)
                 _intervals[index] = _intervals[index] with { RestartDuration = at - state.RestartAt };
             _suspensions.Remove(key);

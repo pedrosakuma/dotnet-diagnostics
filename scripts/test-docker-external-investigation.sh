@@ -77,9 +77,25 @@ if [[ "$(id -u)" == "0" ]]; then
 fi
 
 if [[ "${DOCKER_EXT_INV_SKIP_BUILD:-0}" != "1" ]]; then
-  dotnet build DotnetDiagnostics.slnx --configuration Release
-  docker build --tag dotnet-diagnostics-mcp:dev --file deploy/Dockerfile .
-  docker build --tag coreclr-sample:dev --file samples/CoreClrSample/Dockerfile .
+  if [[ -z "${NUGET_CONFIG:-}" ]]; then
+    echo "NUGET_CONFIG must explicitly name a private NuGet.Config; the user-level default is not accepted." >&2
+    exit 1
+  fi
+  nuget_config="$NUGET_CONFIG"
+  if [[ ! -s "$nuget_config" ]]; then
+    echo "The private NuGet.Config does not exist or is empty: $nuget_config" >&2
+    exit 1
+  fi
+  if grep -Eiq 'api\.nuget\.org|(^|[^[:alnum:].-])nuget\.org([^[:alnum:].-]|$)' "$nuget_config"; then
+    echo "The supplied NuGet.Config references NuGet.org; no public package or audit source is permitted." >&2
+    exit 1
+  fi
+  dotnet restore DotnetDiagnostics.slnx --configfile "$nuget_config"
+  dotnet build DotnetDiagnostics.slnx --no-restore --configuration Release
+  docker build --secret "id=nugetconfig,src=$nuget_config" \
+    --tag dotnet-diagnostics-mcp:dev --file deploy/Dockerfile .
+  docker build --secret "id=nugetconfig,src=$nuget_config" \
+    --tag coreclr-sample:dev --file samples/CoreClrSample/Dockerfile .
 fi
 
 cli_dll="src/DotnetDiagnostics.Cli/bin/Release/net10.0/dotnet-diagnostics.dll"
@@ -144,6 +160,7 @@ dotnet "$cli_dll" docker-bootstrap \
   --bearer-token "$sidecar_token" \
   --delegation-key "$delegation_key" \
   --apply \
+  --retain-failed-sidecar \
   --wait 120 \
   --acknowledge-risk high \
   --json | tee "$bootstrap_json"
@@ -205,6 +222,8 @@ actual_tmp = next(
 )
 if actual_tmp != expected_tmp:
     raise SystemExit(f"sidecar TMPDIR mismatch: expected {expected_tmp}, got {actual_tmp}")
+if "MCP_ARTIFACT_ROOT=/tmp/dotnet-diagnostics-mcp" not in inspection["Config"]["Env"]:
+    raise SystemExit("sidecar capture root must use its own non-symlink /tmp")
 if inspection.get("HostConfig", {}).get("PortBindings", {}).get("8080/tcp"):
     raise SystemExit("central-aware sidecar unexpectedly published port 8080")
 selected_network = report["dockerNetwork"]

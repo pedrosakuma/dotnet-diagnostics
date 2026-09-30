@@ -8,6 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Activities;
+using DotnetDiagnostics.Core.Captures;
 using DotnetDiagnostics.Mcp.Orchestrator.Investigations;
 using DotnetDiagnostics.Mcp.Security;
 using DotnetDiagnostics.Mcp.Tools;
@@ -28,6 +29,90 @@ public sealed class DistributedTraceCorrelatorTests
     private const string TraceId = "0af7651916cd43dd8448eb211c80319c";
 
     [Fact]
+    public async Task DurableFanout_CancellationDoesNotDiscardConfirmedSiblingCapture()
+    {
+        var store = new MemoryInvestigationStore();
+        store.Add(ActiveHandle("inv-good", "good"));
+        store.Add(ActiveHandle("inv-cancelled", "cancelled"));
+        var capture = new CaptureInfo(new string('1', 32), "owner", "activities", null, DateTimeOffset.UtcNow,
+            CaptureState.Sealed, [new(new string('2', 32), "activities", "activities")], new());
+        var proxy = new StubProxyClient { ["good"] = ActivitiesResult(CaptureWith(), "good", capture) };
+        proxy.Throw["cancelled"] = new OperationCanceledException();
+
+        var result = await DistributedTraceCorrelator.CorrelateAsync(store, proxy, Principal("owner"),
+            null, TraceId, 1, 200, null, 200, false, null, true, CancellationToken.None);
+
+        result.RemoteCaptures.Should().HaveCount(2);
+        result.RemoteCaptures!.Single(item => item.InvestigationHandleId == "inv-good").CaptureId
+            .Should().Be(capture.CaptureId);
+        var cancelled = result.RemoteCaptures.Single(item => item.InvestigationHandleId == "inv-cancelled");
+        cancelled.CaptureId.Should().BeNull();
+        cancelled.Error!.Message.Should().Contain("no remote capture result was confirmed");
+    }
+
+    [Fact]
+    public async Task DurableFanout_RejectsMoreThanSixteenTargetsBeforeAnyCollection()
+    {
+        var store = new MemoryInvestigationStore();
+        for (var index = 0; index < 17; index++)
+            store.Add(ActiveHandle($"inv-{index}", $"pod-{index}"));
+        var proxy = new StubProxyClient();
+        var result = await DistributedTraceCorrelator.CorrelateAsync(store, proxy, Principal("owner"),
+            null, TraceId, 1, 200, null, 200, false, null, true, CancellationToken.None);
+        proxy.Calls.Should().BeEmpty();
+        result.PodErrors.Should().ContainSingle().Which.Should().Contain("16 targets");
+    }
+
+    [Fact]
+    public async Task DurableFanout_ForwardsPersistence_AndRetainsHostQualifiedIdsAndFailures()
+    {
+        var store = new MemoryInvestigationStore();
+        store.Add(ActiveHandle("inv-good", "good"));
+        store.Add(ActiveHandle("inv-failed", "failed"));
+        store.Add(ActiveHandle("inv-old", "old"));
+        var capture = new CaptureInfo(new string('1', 32), "owner", "activities", null, DateTimeOffset.UtcNow,
+            CaptureState.Sealed, [new(new string('2', 32), "activities", "activities")],
+            new CaptureQuality(Offered: 2, Accepted: 1, Persisted: 1, QueueRejected: 1, SourceRejected: null));
+        var interrupted = capture with { CaptureId = new string('3', 32), State = CaptureState.Interrupted };
+        var proxy = new StubProxyClient
+        {
+            ["good"] = ActivitiesResult(CaptureWith(), "good", capture),
+            ["failed"] = ActivitiesResult(CaptureWith(), "failed", interrupted, new("CaptureStoreError", "writer failed")),
+            ["old"] = ActivitiesResult(CaptureWith(), "old"),
+        };
+
+        var result = await DistributedTraceCorrelator.CorrelateAsync(store, proxy, Principal("owner"),
+            null, TraceId, 1, 200, null, 200, false, null, true, CancellationToken.None);
+
+        proxy.Requests.Should().OnlyContain(request => request.Arguments!["persist"].GetBoolean());
+        result.RemoteCaptures.Should().HaveCount(3);
+        var good = result.RemoteCaptures!.Single(item => item.InvestigationHandleId == "inv-good");
+        good.CaptureId.Should().Be(capture.CaptureId);
+        good.Quality!.QueueRejected.Should().Be(1);
+        good.Quality.SourceRejected.Should().BeNull();
+        good.Artifacts.Single().ArtifactId.Should().Be(new string('2', 32));
+        good.Error.Should().BeNull();
+        var failed = result.RemoteCaptures.Single(item => item.InvestigationHandleId == "inv-failed");
+        failed.CaptureId.Should().Be(interrupted.CaptureId);
+        failed.Error!.Kind.Should().Be("CaptureStoreError");
+        result.RemoteCaptures.Single(item => item.InvestigationHandleId == "inv-old").Error!.Kind
+            .Should().Be("RemoteCaptureMissing");
+        result.PodErrors.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task DurableFanout_RejectsMissingPrincipalBeforeCallingAnyHost()
+    {
+        var store = new MemoryInvestigationStore();
+        store.Add(ActiveHandle("inv", "pod"));
+        var proxy = new StubProxyClient();
+        var result = await DistributedTraceCorrelator.CorrelateAsync(store, proxy, null,
+            null, TraceId, 1, 200, null, 200, false, null, true, CancellationToken.None);
+        proxy.Calls.Should().BeEmpty();
+        result.PodErrors.Should().ContainSingle().Which.Should().Contain("principal");
+    }
+
+    [Fact]
     public async Task CorrelateAsync_ForwardsTargetTraceInActualArguments()
     {
         var store = new MemoryInvestigationStore();
@@ -37,6 +122,7 @@ public sealed class DistributedTraceCorrelatorTests
             store, proxy, null, null, TraceId, 5, 1, null, CancellationToken.None);
         proxy.Requests.Single().Arguments.Should().ContainKey("traceId")
             .WhoseValue.GetString().Should().Be(TraceId);
+        proxy.Requests.Single().Arguments.Should().NotContainKey("persist");
     }
 
     [Fact]
@@ -288,10 +374,11 @@ public sealed class DistributedTraceCorrelatorTests
         BySource: Array.Empty<ActivitySourceSummary>(),
         ByOperation: Array.Empty<ActivityOperationSummary>());
 
-    private static CallToolResult ActivitiesResult(ActivityCapture capture, string podName)
+    private static CallToolResult ActivitiesResult(ActivityCapture capture, string podName,
+        CaptureInfo? persisted = null, DiagnosticError? error = null)
     {
         var envelope = new CollectEventsEnvelope("activities", Activities: capture);
-        var result = DiagnosticResult.Ok(envelope, $"collected on {podName}");
+        var result = DiagnosticResult.Ok(envelope, $"collected on {podName}") with { Capture = persisted, Error = error };
         var json = JsonSerializer.Serialize(result, SerializeOptions);
         return new CallToolResult
         {

@@ -9,6 +9,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Counters;
+using DotnetDiagnostics.Core.Captures;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Mcp.Orchestrator.Investigations;
 using DotnetDiagnostics.Mcp.Security;
@@ -27,6 +28,29 @@ namespace DotnetDiagnostics.Mcp.IntegrationTests.Orchestrator;
 /// </summary>
 public sealed class ReplicaCounterFanoutTests
 {
+    [Fact]
+    public async Task DurableReplicaFanout_QualifiesIdenticalLocalIdsWithTheirCollectingHosts()
+    {
+        var store = new MemoryInvestigationStore();
+        store.Add(ActiveHandle("inv-a", "pod-a"));
+        store.Add(ActiveHandle("inv-b", "pod-b"));
+        var capture = new CaptureInfo(new string('1', 32), "owner", "counters", null, DateTimeOffset.UtcNow,
+            CaptureState.Sealed, [new(new string('2', 32), "counters", "counters")], new CaptureQuality());
+        var proxy = new StubProxyClient
+        {
+            ["pod-a"] = CountersResult(1, 10, 0, 1, "pod-a", capture),
+            ["pod-b"] = CountersResult(2, 20, 0, 2, "pod-b", capture),
+        };
+        var result = await ReplicaCounterFanout.CompareAsync(store, proxy, Principal("owner"),
+            null, 1, 1, true, CancellationToken.None);
+        result.RemoteCaptures.Should().HaveCount(2);
+        result.RemoteCaptures!.Select(item => item.CaptureId).Should().OnlyContain(id => id == capture.CaptureId);
+        result.RemoteCaptures.Select(item => item.Host).Distinct().Should().HaveCount(2);
+        result.RemoteCaptures.Select(item => item.InvestigationHandleId).Should().BeEquivalentTo("inv-a", "inv-b");
+        result.PodErrors.Should().BeEmpty();
+        result.Skew.Should().NotBeNull();
+    }
+
     [Fact]
     public async Task CompareAsync_IdentifiesOutlierAcrossThreePods()
     {
@@ -357,7 +381,8 @@ public sealed class ReplicaCounterFanoutTests
         return new CallToolResult { StructuredContent = JsonSerializer.Deserialize<JsonElement>(json) };
     }
 
-    private static CallToolResult CountersResult(double cpu, double heap, double queue, int pid, string podName)
+    private static CallToolResult CountersResult(double cpu, double heap, double queue, int pid, string podName,
+        CaptureInfo? persisted = null)
     {
         var snapshot = new CounterSnapshot(
             ProcessId: pid,
@@ -372,7 +397,7 @@ public sealed class ReplicaCounterFanoutTests
             Meters: Array.Empty<MeterInstrumentValue>(),
             Notes: Array.Empty<string>());
         var envelope = new CollectEventsEnvelope("counters", Counters: snapshot);
-        var result = DiagnosticResult.Ok(envelope, $"collected on {podName}");
+        var result = DiagnosticResult.Ok(envelope, $"collected on {podName}") with { Capture = persisted };
         var json = JsonSerializer.Serialize(result, SerializeOptions);
         return new CallToolResult { StructuredContent = JsonSerializer.Deserialize<JsonElement>(json) };
     }

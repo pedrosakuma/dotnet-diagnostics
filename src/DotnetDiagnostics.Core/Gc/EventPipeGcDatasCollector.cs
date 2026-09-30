@@ -1,4 +1,5 @@
 using System.Diagnostics.Tracing;
+using DotnetDiagnostics.Core.CaptureRecording;
 using Microsoft.Diagnostics.NETCore.Client;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Analysis;
@@ -34,6 +35,7 @@ public sealed class EventPipeGcDatasCollector : IGcDatasCollector
         int maxEvents = 1000,
         CancellationToken cancellationToken = default)
     {
+        var observationSink = CaptureRecordingContext.Current;
         if (duration <= TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(nameof(duration), "Duration must be positive.");
@@ -52,7 +54,7 @@ public sealed class EventPipeGcDatasCollector : IGcDatasCollector
         {
             await CollectTraceAsync(processId, tracePath, duration, cancellationToken).ConfigureAwait(false);
             etlxPath = TraceLog.CreateFromEventPipeDataFile(tracePath);
-            return Parse(processId, etlxPath, startedAt, duration, maxEvents);
+            return Parse(processId, etlxPath, startedAt, duration, maxEvents, observationSink);
         }
         finally
         {
@@ -96,7 +98,8 @@ public sealed class EventPipeGcDatasCollector : IGcDatasCollector
         }
     }
 
-    private GcDatasSnapshot Parse(int pid, string etlxPath, DateTimeOffset startedAt, TimeSpan duration, int maxEvents)
+    private GcDatasSnapshot Parse(int pid, string etlxPath, DateTimeOffset startedAt, TimeSpan duration, int maxEvents,
+        ICaptureObservationSink? observationSink)
     {
         var samples = new List<DatasSampleEvent>();
         var tuning = new List<DatasTuningEvent>();
@@ -148,19 +151,19 @@ public sealed class EventPipeGcDatasCollector : IGcDatasCollector
                                 Accumulate(
                                     DatasPayloadParser.TryParseSample(payload, ts, out var s, out var sExtra),
                                     s, samples, maxEvents, sExtra,
-                                    ref malformed, ref unsupportedVersion, ref extraBytes);
+                                    ref malformed, ref unsupportedVersion, ref extraBytes, observationSink);
                                 break;
                             case DatasPayloadParser.TuningEventName:
                                 Accumulate(
                                     DatasPayloadParser.TryParseTuning(payload, ts, out var t, out var tExtra),
                                     t, tuning, maxEvents, tExtra,
-                                    ref malformed, ref unsupportedVersion, ref extraBytes);
+                                    ref malformed, ref unsupportedVersion, ref extraBytes, observationSink);
                                 break;
                             case DatasPayloadParser.FullGcTuningEventName:
                                 Accumulate(
                                     DatasPayloadParser.TryParseFullGcTuning(payload, ts, out var f, out var fExtra),
                                     f, fullGc, maxEvents, fExtra,
-                                    ref malformed, ref unsupportedVersion, ref extraBytes);
+                                    ref malformed, ref unsupportedVersion, ref extraBytes, observationSink);
                                 break;
                         }
                     }
@@ -172,6 +175,10 @@ public sealed class EventPipeGcDatasCollector : IGcDatasCollector
             _logger.LogDebug(ex, "Failed to parse DATAS trace for pid {Pid}.", pid);
         }
 
+        observationSink?.TryAppend(ProviderObservationProjection.Create(
+            "gc.datas.parse.aggregate", null, null, "DATAS",
+            ("provider", RuntimeProvider), ("malformedPayloads", malformed),
+            ("unsupportedVersion", unsupportedVersion), ("extraBytes", extraBytes), ("maxEventsPerKind", maxEvents)));
         return new GcDatasSnapshot(
             pid,
             startedAt,
@@ -182,7 +189,7 @@ public sealed class EventPipeGcDatasCollector : IGcDatasCollector
             new DatasParseStats(malformed, unsupportedVersion, extraBytes));
     }
 
-    private static void Accumulate<T>(
+    internal static void Accumulate<T>(
         DatasParseOutcome outcome,
         T? parsed,
         List<T> sink,
@@ -190,7 +197,8 @@ public sealed class EventPipeGcDatasCollector : IGcDatasCollector
         bool extra,
         ref int malformed,
         ref int unsupportedVersion,
-        ref int extraBytes)
+        ref int extraBytes,
+        ICaptureObservationSink? observationSink = null)
         where T : class
     {
         switch (outcome)
@@ -199,6 +207,7 @@ public sealed class EventPipeGcDatasCollector : IGcDatasCollector
                 if (parsed is not null && sink.Count < maxEvents)
                 {
                     sink.Add(parsed);
+                    if (observationSink is not null) RecordDatas(observationSink, parsed, extra);
                 }
 
                 if (extra)
@@ -214,6 +223,41 @@ public sealed class EventPipeGcDatasCollector : IGcDatasCollector
                 unsupportedVersion++;
                 break;
         }
+    }
+
+    private static void RecordDatas<T>(ICaptureObservationSink sink, T parsed, bool extra) where T : class
+    {
+        var observation = parsed switch
+        {
+            DatasSampleEvent e => ProviderObservationProjection.Create(
+                "gc.datas.sample", e.Timestamp, null, DatasPayloadParser.SampleEventName,
+                ("provider", RuntimeProvider), ("payloadVersion", DatasPayloadParser.SupportedVersion), ("extraBytes", extra),
+                ("gcIndexUInt64", e.GcIndex), ("elapsedBetweenGcsUs", e.ElapsedBetweenGcsUs),
+                ("gcPauseTimeUs", e.GcPauseTimeUs), ("sohMslWaitUs", e.SohMslWaitUs), ("uohMslWaitUs", e.UohMslWaitUs),
+                ("totalSohStableSizeBytesUInt64", e.TotalSohStableSize), ("gen0BudgetPerHeapBytes", e.Gen0BudgetPerHeap),
+                ("throughputCostPercentApproximation", e.ThroughputCostPercent)),
+            DatasTuningEvent e => ProviderObservationProjection.Create(
+                "gc.datas.tuning", e.Timestamp, null, DatasPayloadParser.TuningEventName,
+                ("provider", RuntimeProvider), ("payloadVersion", DatasPayloadParser.SupportedVersion), ("extraBytes", extra),
+                ("gcIndexUInt64", e.GcIndex), ("newHeapCount", e.NewHeapCount), ("minHeapCount", e.MinHeapCount),
+                ("maxHeapCount", e.MaxHeapCount), ("totalSohStableSizeBytesUInt64", e.TotalSohStableSize),
+                ("medianThroughputCostPercent", e.MedianThroughputCostPercent), ("tcpToConsider", e.TcpToConsider),
+                ("currentAroundTargetAccumulation", e.CurrentAroundTargetAccumulation), ("recordedTcpCount", e.RecordedTcpCount),
+                ("recordedTcpSlope", e.RecordedTcpSlope), ("numGcsSinceLastChange", e.NumGcsSinceLastChange),
+                ("aggFactor", e.AggFactor), ("changeDecision", e.ChangeDecision), ("adjustmentReason", e.AdjustmentReason),
+                ("heapCountChangeFreqFactor", e.HeapCountChangeFreqFactor), ("heapCountFreqReason", e.HeapCountFreqReason),
+                ("adjustMetric", e.AdjustMetric)),
+            DatasFullGcTuningEvent e => ProviderObservationProjection.Create(
+                "gc.datas.full-gc-tuning", e.Timestamp, null, DatasPayloadParser.FullGcTuningEventName,
+                ("provider", RuntimeProvider), ("payloadVersion", DatasPayloadParser.SupportedVersion), ("extraBytes", extra),
+                ("gcIndexUInt64", e.GcIndex), ("newHeapCount", e.NewHeapCount), ("medianGen2Tcp", e.MedianGen2Tcp),
+                ("numGen2sSinceLastChange", e.NumGen2sSinceLastChange), ("gen2Sample0Age", e.Gen2Sample0Age),
+                ("gen2Sample0Percent", e.Gen2Sample0Percent), ("gen2Sample1Age", e.Gen2Sample1Age),
+                ("gen2Sample1Percent", e.Gen2Sample1Percent), ("gen2Sample2Age", e.Gen2Sample2Age),
+                ("gen2Sample2Percent", e.Gen2Sample2Percent)),
+            _ => throw new ArgumentException("Expected a decoded DATAS event.", nameof(parsed)),
+        };
+        sink.TryAppend(observation);
     }
 
     private void TryDelete(string path)
