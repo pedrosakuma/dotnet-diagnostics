@@ -159,5 +159,10 @@ and the worker's compile-time header fallback, which the producer assets already
 include. The other product changes are in CLI Docker bootstrap.
 
 The integrated candidate now uses kernel-backed address-space containment and
-records monitor scheduling gaps as telemetry. That contract requires fresh
-native acceptance; the earlier pass does not qualify the changed worker.
+records monitor scheduling gaps as telemetry. A separately authorized
+final-SHA invocation qualified that changed contract: both distinct bundles
+imported, source deletion and independent destination reopen succeeded, and the
+comparison returned the exact expected delta of `5`. Cleanup confirmed that no
+worker, test host or sample process survived. The earlier failures remain
+adverse evidence for the former watchdog policy; the final pass does not prove
+universal losslessness or deterministic scheduling.

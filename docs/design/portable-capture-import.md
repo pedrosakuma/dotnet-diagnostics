@@ -167,7 +167,9 @@ That former-policy failure is retained without retry. The earlier
 original gap. These component results are not an end-to-end acceptance waiver
 for the changed containment contract.
 
-Independent review and remaining whole-feature acceptance are required.
-Host packaging/CLI (#1053), authenticated MCP transfer (#1052), comparison
-integration (#1051), performance evidence (#1041) and integration/release (#1054)
-remain outside this Core change.
+The integrated feature subsequently completed independent review, host
+packaging/CLI (#1053), authenticated MCP transfer (#1052), comparison
+integration (#1051), bounded performance evidence (#1041), and a separately
+authorized final-SHA imported-bundle acceptance under #1054. The retained
+component failures above remain historical evidence for the former observation
+policy; they are not reclassified by the later end-to-end pass.

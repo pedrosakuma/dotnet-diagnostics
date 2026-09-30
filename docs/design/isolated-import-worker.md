@@ -133,18 +133,22 @@ scheduler behavior. They are not a deadline, retry signal or validity rule.
 Resource-limit failures expose bounded scalar samples through acceptance
 diagnostics; successful runs retain `MaximumObservationGap` in their result.
 
-## Remaining integration
+## Integration status
 
-The Core pipeline now supplies archive and semantic admission, quality/origin
-preservation, separate trusted-schema rebuild, per-store validator admission and
-owner-bound publication. Before input it durably records the monitor, worker and
-parent-I/O identities (boot ID, PID namespace, PID and process start time).
-Cleanup requires confirmed
+The integrated Core pipeline supplies archive and semantic admission,
+quality/origin preservation, separate trusted-schema rebuild, per-store
+validator admission and owner-bound publication. The Linux-x64 worker is
+packaged for explicit same-owner activation by the CLI and MCP hosts; other
+platforms and architectures remain unsupported. Before input it durably records
+the monitor, worker and parent-I/O identities (boot ID, PID namespace, PID and
+process start time). Cleanup requires confirmed
 termination/quiescence; an inaccessible or reused live PID conservatively retains
 storage. Persisted PIDs are never signalled. Pending parent I/O cannot be declared
 dead merely because the native parser exited.
 
-Hosts still must package/integrity-check the trusted assets and integrate their
-lifecycle. No CLI/MCP packaging or additional platform support is claimed.
-The capability probe accepts no externally supplied inputs; its success alone
-does not authorize an import or establish complete pipeline acceptance.
+CLI and MCP packaging and lifecycle integration are complete for the opt-in
+Linux-x64 worker. Third-party hosts must package and integrity-check their own
+trusted assets and integrate the lifecycle; no additional platform support is
+claimed. The capability probe accepts no externally supplied inputs; its
+success alone does not authorize an import or establish complete pipeline
+acceptance.

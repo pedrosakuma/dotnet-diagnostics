@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.28.0] — 2026-09-30
+
+Highlights: **durable capture portability, reopened/imported historical
+comparison, and an opt-in kernel-contained Linux-x64 import worker.** The MCP
+server, standalone CLI, Core library, and BenchmarkDotNet diagnoser ship from
+the same release tag; BenchmarkDotNet does not expose the portable import host.
+
 ### Added
 
 - Prepared opt-in Linux-x64 portable import-worker packaging for the CLI and MCP
@@ -38,12 +45,17 @@
 
 ### Evidence limits
 
-- The reviewed digest-pinned producer run created the expected worker and
-  package assets, but no native import is authorized by packaging alone.
+- The reviewed digest-pinned producer and five-RID packaging runs created the
+  expected worker and package assets. Installed CLI and MCP copies were
+  same-owner and executable; packaging alone still does not authorize native
+  import.
 - Workload-only historical comparison acceptance passed. Earlier native runs
   exposed scheduler gaps above 10 ms; those remain adverse evidence for the
-  former sampled-watchdog design, not evidence of data loss. Fresh native
-  acceptance remains required for the kernel-backed containment contract.
+  former sampled-watchdog design, not evidence of data loss. The separately
+  authorized final-SHA acceptance then imported two distinct bundles with the
+  kernel-contained worker, deleted the source store, reopened the independent
+  destination and returned the exact expected delta. This is bounded acceptance
+  evidence, not a universal losslessness or scheduler-latency claim.
 - Operating-envelope adverse attempts remain retained: post-disposal process
   identity access, non-authoritative dirty-checkout provenance, and a cleanup
   deadline race were fixed before the final clean 42-trial run was sealed.
