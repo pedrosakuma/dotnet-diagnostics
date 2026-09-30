@@ -77,6 +77,16 @@ public sealed class WorkerGapDiagnosticsTests
     }
 
     [Fact]
+    public void SuccessfulKernelAccountedExitDoesNotRequirePeriodicSamples()
+    {
+        const string nonce = "0123456789abcdef0123456789abcdef";
+        var report = IsolatedCaptureWorker.ParseMonitorReport(
+            Report(nonce, "Exited", 0, peakRss: 4096, samples: 0), nonce);
+
+        Assert.True(IsolatedCaptureWorker.IsSuccessfulMonitorExit(0, report));
+    }
+
+    [Fact]
     public async Task KillingAnUnacknowledgedMonitorNeverExecutesOrLeavesTheWorker()
     {
         if (!SupportedPlatform) return;

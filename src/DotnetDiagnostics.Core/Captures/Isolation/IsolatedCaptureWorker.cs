@@ -182,8 +182,7 @@ internal static partial class IsolatedCaptureWorker
                 throw Unsupported(unsupported is { Length: 2 } && unsupported[0] == "UNSUPPORTED"
                     ? unsupported[1] : "WorkerUnavailable");
             }
-            if (process.ExitCode != 0 || report.Outcome != "Exited" || report.Exit != 0 ||
-                report.WorkerStderrRetained != 0 || report.Samples <= 0)
+            if (!IsSuccessfulMonitorExit(process.ExitCode, report))
             {
                 ThrowMonitorFailure(report);
                 throw CapturePackage.Error(CaptureErrorCode.StorageFailure, "Worker exited unsuccessfully; no admission result exists.");
@@ -295,6 +294,9 @@ internal static partial class IsolatedCaptureWorker
         long GapLastValidNs, long GapNowNs, long GapNs, long WallNs, long CpuNs,
         int Locked, int WorkerStderrRetained, string WorkerStderrHex,
         long MonitorThreadCpuDeltaNs, long MonitorInvoluntaryContextSwitchDelta);
+
+    internal static bool IsSuccessfulMonitorExit(int processExitCode, MonitorReport report) =>
+        processExitCode == 0 && report.Outcome == "Exited" && report.Exit == 0 && report.WorkerStderrRetained == 0;
 
     private static void PrepareMonitorStart(ProcessStartInfo start, CaptureWorkerLimits limits)
     {
