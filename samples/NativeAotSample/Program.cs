@@ -33,9 +33,26 @@ app.MapGet("/weatherforecast", () =>
 })
 .WithName("GetWeatherForecast");
 
+app.MapGet("/cpu", () => CpuSamplingWorkload.BurnCpu(4_000_000));
+
 app.Run();
 
 sealed record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)
 {
     public int TemperatureF => 32 + (int)(TemperatureC / 0.5556);
+}
+
+static class CpuSamplingWorkload
+{
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    public static int BurnCpu(int iterations)
+    {
+        var value = 17;
+        for (var i = 0; i < iterations; i++)
+        {
+            value = unchecked((value * 31) ^ i);
+        }
+
+        return value;
+    }
 }
