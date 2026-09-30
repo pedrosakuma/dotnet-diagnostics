@@ -242,7 +242,7 @@ public sealed partial class AdvisoryLlmAssessmentTests
     public async Task Runner_SealsPhaseABeforeFreshPhaseBAndKeepsMappingControllerOnly()
     {
         using var files = new AssessmentTestFiles();
-        var protocol = files.CreateProtocol();
+        var protocol = files.CreateProtocol(firstClaimPosture: AgentEvidencePosture.Observed);
         var transport = new RecordingTransport(
             [PhaseAJson().Replace("\"abstained\":false", "\"abstained\":true", StringComparison.Ordinal)]);
         var previous = Environment.GetEnvironmentVariable(AdvisoryLlmAssessment.RunAuthorizationVariable);
@@ -604,7 +604,8 @@ public sealed partial class AdvisoryLlmAssessmentTests
         public AdvisoryLlmProtocol CreateProtocol(
             string suffix = "first",
             AdvisorySourceBaseline? packetSource = null,
-            bool omitPacketProtocolFingerprint = false)
+            bool omitPacketProtocolFingerprint = false,
+            AgentEvidencePosture firstClaimPosture = AgentEvidencePosture.Inferred)
         {
             packetSource ??= FrozenSource;
             var slots = new List<AdvisoryAssessmentSlot>();
@@ -614,7 +615,12 @@ public sealed partial class AdvisoryLlmAssessmentTests
                     ? CalibrationProvenanceKind.LiveModel
                     : CalibrationProvenanceKind.AuthoredEditedReplay;
                 var reportPath = Path($"{suffix}-report-{index}.json");
-                BlindedAgentHarness.WriteReport(reportPath, CreateReport(index == 1, packetSource.ProductCommit));
+                BlindedAgentHarness.WriteReport(
+                    reportPath,
+                    CreateReport(
+                        index == 1,
+                        packetSource.ProductCommit,
+                        index == 0 ? firstClaimPosture : AgentEvidencePosture.Inferred));
                 var packet = CalibrationPackets.CreatePacket(
                     reportPath,
                     new CalibrationCaseDescriptor(
@@ -685,7 +691,10 @@ public sealed partial class AdvisoryLlmAssessmentTests
         private static AdvisoryLlmModel Model(string name)
             => new("github-copilot-cli", name, "unknown", "copilot-cli", "GitHub Copilot CLI synthetic-test");
 
-        private static AgentHarnessReport CreateReport(bool snapshot, string productCommit)
+        private static AgentHarnessReport CreateReport(
+            bool snapshot,
+            string productCommit,
+            AgentEvidencePosture claimPosture)
         {
             var content = snapshot ? SnapshotContent() : CounterContent();
             var result = new AgentToolResult(
@@ -747,7 +756,7 @@ public sealed partial class AdvisoryLlmAssessmentTests
                     [
                         new AgentClaim(
                             "ORIGINAL DIAGNOSIS",
-                            AgentEvidencePosture.Inferred,
+                            claimPosture,
                             snapshot
                                 ? ["tool-result://source-call#/evidence/threads/0/frames/0"]
                                 :

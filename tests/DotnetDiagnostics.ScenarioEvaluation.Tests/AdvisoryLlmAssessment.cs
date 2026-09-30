@@ -700,7 +700,7 @@ public static partial class AdvisoryLlmAssessment
                 .Where(location => location is not null)
                 .Cast<string>()
                 .ToArray(),
-            claim.Posture)).ToArray();
+            AgentEvidencePosture.Inferred)).ToArray();
         var newClaims = phaseA.Hypotheses.Select(hypothesis => new AdvisoryCandidateClaim(
             string.Empty,
             hypothesis.Text,
