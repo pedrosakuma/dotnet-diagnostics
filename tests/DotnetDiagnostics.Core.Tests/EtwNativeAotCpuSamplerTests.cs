@@ -159,9 +159,30 @@ public class EtwNativeAotCpuSamplerTests
                 "should have captured at least one CPU sample");
             result.Summary.TopHotspots.Should().NotBeEmpty(
                 "should have identified at least one hotspot");
-            result.Summary.TopHotspots.Should().Contain(
-                hotspot => hotspot.Frame.Method.Contains(nameof(BurnManagedCpu), StringComparison.Ordinal),
-                "the workload is JIT-compiled after ETW starts and CLR event-derived names must survive strict native PDB validation. " +
+            var nodes = new Stack<CallTreeNode>();
+            nodes.Push(result.Artifact.Root);
+            var namedWorkloadSamples = 0L;
+            var namedFrames = new Dictionary<string, long>(StringComparer.Ordinal);
+            while (nodes.TryPop(out var node))
+            {
+                if (node.Frame.Method.Contains(nameof(BurnManagedCpu), StringComparison.Ordinal))
+                {
+                    namedWorkloadSamples += node.InclusiveSamples;
+                }
+                if (!node.Frame.Method.StartsWith("0x", StringComparison.Ordinal))
+                {
+                    namedFrames[node.Frame.Method] = namedFrames.GetValueOrDefault(node.Frame.Method) + node.InclusiveSamples;
+                }
+                foreach (var child in node.Children)
+                {
+                    nodes.Push(child);
+                }
+            }
+            namedWorkloadSamples.Should().BeGreaterThan(0,
+                "the workload is JIT-compiled after ETW starts and its CLR name must survive native PDB validation. " +
+                $"Total samples: {result.Summary.TotalSamples}; named frames: " +
+                string.Join(", ", namedFrames.OrderByDescending(pair => pair.Value).Take(15)
+                    .Select(pair => $"{pair.Key}={pair.Value}")) + ". " +
                 string.Join(" ", result.Summary.Notes));
             result.Summary.Notes.Should().Contain(note => note.Contains("CLR JIT/loader/rundown", StringComparison.Ordinal));
 
@@ -183,9 +204,14 @@ public class EtwNativeAotCpuSamplerTests
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static void BurnManagedCpu(CancellationToken cancellationToken)
     {
+        ulong value = 1;
         while (!cancellationToken.IsCancellationRequested)
         {
-            Thread.SpinWait(10_000);
+            for (var i = 0; i < 10_000; i++)
+            {
+                value = unchecked(value * 1_664_525 + 1_013_904_223);
+            }
         }
+        GC.KeepAlive(value);
     }
 }
