@@ -1,6 +1,5 @@
 using System.Buffers.Binary;
 using System.IO.Compression;
-using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using DotnetDiagnostics.Core.Artifacts;
@@ -16,13 +15,13 @@ public sealed class SqliteAdmissionTests(ITestOutputHelper output) : IDisposable
     private const string Artifact = "11111111111111111111111111111111";
     private const string V2Hash = "F587BB019255611C138AEF061CDCDE936AE04219DD28A4AB2DB5F6F551E1D887";
     private readonly string _root = Path.Combine(AppContext.BaseDirectory, "admission-tests", Guid.NewGuid().ToString("N"));
-    private static bool Linux => OperatingSystem.IsLinux() && RuntimeInformation.ProcessArchitecture == Architecture.X64;
+    private static bool Linux => PortableWorkerTestSupport.IsSupported;
     private static string Fixtures => Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../Fixtures"));
     private string Database => Path.Combine(_root, "source ?#% \u00e9.sqlite");
     private static CaptureFormatVersions V2 => new(2, 1, 1, 1, 2, 2);
     private SqliteAdmissionRequest Request => new(
-        Path.Combine(AppContext.BaseDirectory, "capture-worker"),
-        Path.Combine(AppContext.BaseDirectory, "runtimes/linux-x64/native/libe_sqlite3.so"),
+        PortableWorkerTestSupport.Worker,
+        PortableWorkerTestSupport.SqliteLibrary,
         _root, Database, V2, [new(Artifact, "synthetic", "Independent v2 scalar fixture")], 1);
 
     private void Staging()

@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a native Linux ARM64 producer, architecture-specific seccomp policy,
+  RID-selected SQLite/worker packaging, and native ARM64 import acceptance.
+  ARM64 support is not considered qualified until that hardware acceptance
+  passes on the final revision.
+
 ## [0.28.0] — 2026-09-30
 
 Highlights: **durable capture portability, reopened/imported historical

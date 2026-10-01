@@ -1,6 +1,6 @@
 # Portable import worker packaging
 
-This is producer and packaging preparation for #1054, not a new product, an
+This is producer and packaging preparation for #1070 and #1054, not a new product, an
 automatic activation path, or a platform acceptance claim. Core's import protocol,
 foreign-SQLite admission, confinement and strict observation limits are unchanged.
 Neither ordinary builds nor installed applications compile or download a worker.
@@ -13,10 +13,17 @@ Missing configuration remains `ImportWorkerUnavailable`; partial configuration i
 an error. Packaging does not set these variables, including in Docker. No runtime
 directory search, compiler, downloader, chmod or package-cache mutation is added.
 
-When explicitly included, the application-adjacent layout is:
+When explicitly included, each Linux host receives only its matching RID
+directory:
 
 ```text
 NativeAssets/portable-capture/linux-x64/
+  capture-worker
+  libe_sqlite3.so
+  provenance.xml
+  sqlite-LICENSE.txt
+  worker-LICENSE.txt
+NativeAssets/portable-capture/linux-arm64/
   capture-worker
   libe_sqlite3.so
   provenance.xml
@@ -44,18 +51,21 @@ not a custom SQLite build.
 `src/DotnetDiagnostics.Core/Build/PortableCaptureWorker.proj` is an explicit
 producer entrypoint. It is **not** imported into ordinary application builds.
 Its Python standard-library helper resolves the existing
-`SQLitePCLRaw.lib.e_sqlite3/3.53.3` asset from Core's `project.assets.json`, then
-compiles the existing `capture_worker.c` once in a Docker container.
+matching `SQLitePCLRaw.lib.e_sqlite3/3.53.3` asset from Core's `project.assets.json`,
+then compiles the existing `capture_worker.c` once in a native Docker container
+for the selected RID (`linux-x64` or `linux-arm64`). The producer rejects a host
+whose architecture does not match the RID.
 The resulting single `capture-worker` binary contains both the trusted native
 monitor (`--monitor`) and the contained worker modes; no separate monitor asset
 is packaged. The monitor emits the `MONITOR`/`ACK` pre-release handshake, then
 the contained worker emits the existing `READY`/`GO` protocol.
 
-The approved preparation pin is the official `gcc:14-bookworm` **linux/amd64
-manifest**, not its mutable tag or multi-platform index:
+The approved preparation pins are the official `gcc:14-bookworm` per-platform
+manifests, not mutable tags or the multi-platform index:
 
 ```text
-gcc@sha256:a689e29bc3adf4663ef9a141d23081252764d1319c63f591a027bd6fd676f4c1
+linux-x64:   gcc@sha256:a689e29bc3adf4663ef9a141d23081252764d1319c63f591a027bd6fd676f4c1
+linux-arm64: gcc@sha256:66035d353338cb93b64f621393dc6fecde85258651ca454f0cf36ff2639b1352
 ```
 
 Public registry metadata identifies GCC **14.3.0**, Debian Bookworm base
@@ -96,10 +106,14 @@ cryptographic producer authentication.
 ## Preparation and release gates
 
 The nonpublishing `portable-native-packaging.yml` workflow is manually callable
-or reusable. It has `contents: read`, no publishing credentials, a 15-minute job
-limit and an internal tar artifact preserving Unix permissions. It does not run
-the worker or any native import. Failed producer output is retained rather than
-retried into success.
+or reusable. It has `contents: read`, no publishing credentials, per-producer
+15-minute limits and internal tar artifacts preserving Unix permissions. The
+producer jobs do not run their output. Each native producer runner also runs the
+non-importing installed-host package smoke for its RID. A dependent native
+ARM64 acceptance job runs the worker through isolation tests and the authorized
+two-bundle import acceptance, then verifies that generic CLI/MCP packages
+contain both Linux RID assets while installing the ARM64 copy. Failed producer
+or acceptance output is retained rather than retried into success.
 
 The equivalent producer command, **only in an approved environment with Docker
 and the configured private NuGet source**:
@@ -108,17 +122,17 @@ and the configured private NuGet source**:
 dotnet restore src/DotnetDiagnostics.Core/DotnetDiagnostics.Core.csproj \
   --configfile "$HOME/.nuget/NuGet/NuGet.Config"
 dotnet msbuild src/DotnetDiagnostics.Core/Build/PortableCaptureWorker.proj \
+  -p:PortableCaptureWorkerRid=linux-x64 \
   -p:PortableCaptureWorkerOutput=/absolute/new/portable-worker/linux-x64
 ```
 
-The output directory must not already exist. Do not reuse a failed directory or
-replace the container with host compilation. No actual container build was
-established by the initial local preparation: Docker was unavailable there.
-That limitation was subsequently closed by the reviewed digest-pinned producer
-run. Public metadata/source verification alone is still not compiler-output or
-distro validation.
+Run the corresponding `linux-arm64` producer on a native ARM64 Linux host to
+create ARM64 assets; cross-compilation and emulation do not establish native
+containment acceptance. The output directory must not already exist. Do not
+reuse a failed directory or replace the container with host compilation.
 
-The retained producer evidence for revision
+The historical Linux x64 producer evidence for revision (not evidence of ARM64
+production or acceptance)
 `a04c0410e27cf27eda7ff3ce1f3e4dd54c6fdfa5` is:
 
 | Property | Observed value |
@@ -137,11 +151,14 @@ prepared artifact to source builds/publish/tool packing:
 
 ```bash
 dotnet pack src/DotnetDiagnostics.Cli -c Release \
-  -p:PortableCaptureWorkerAssetsDir=/absolute/prepared/linux-x64 \
+  -p:PortableCaptureWorkerAssetsDir=/absolute/prepared \
   -p:RequirePortableCaptureWorkerAssets=true
 ```
 
-The equivalent properties work for MCP. Missing files, oversized provenance,
+For a generic tool package, supply both RID asset directories beneath that
+directory; a RID-specific output can select one with
+`-p:PortableCaptureWorkerRid=linux-arm64` (or `linux-x64`). The equivalent
+properties work for MCP. Missing files, oversized provenance,
 wrong producer/package identity, or worker/library/source hash mismatch fail
 before copying. `AllowPortableCaptureWorkerFixtureAssets=true` exists only for
 explicit deterministic layout tests; fixture provenance **cannot** satisfy
@@ -158,12 +175,13 @@ Host content is excluded from single-file embedding and is included beneath
 `tools/net10.0/any/` by ordinary framework-dependent tool packing. Release archives
 must keep the sidecar directory beside the executable; distributing the executable
 alone does not deliver portable import assets. Unsupported RID-specific outputs
-do not include the Linux-x64 sidecar.
+do not include either Linux sidecar; Linux-specific outputs include only the
+matching RID sidecar.
 
 The release workflow includes the portable worker on tag-triggered releases.
-For tag pushes it calls the producer once, reuses its internal artifact for both
-tool packages and Linux-x64 single-file binary archives, and requires the
-sidecars. The `include_portable_worker` dispatch input remains a manual opt-in
+For tag pushes it calls the producer once for each Linux RID, reuses those
+internal artifacts for both tool packages and matching Linux single-file binary
+archives, and requires the sidecars. The `include_portable_worker` dispatch input remains a manual opt-in
 for non-tag release dry runs; `producer_only=true` remains the nonpublishing
 producer validation path. Dispatching the release workflow still builds and
 attests product artifacts only for non-`producer_only` runs; public NuGet/GitHub
@@ -203,16 +221,16 @@ internal-artifact inventory; retain the first failure without rerunning. This
 preparation mode is not release authorization. Ordinary manual and tag paths
 retain their prior behavior when `producer_only` is absent or false.
 
-Docker consumes the same already-prepared artifact; it does not compile one.
-Extract it into `artifacts/portable-worker/linux-x64` in the build context and use
-`--build-arg INCLUDE_PORTABLE_CAPTURE_WORKER=true`. The deny-all `.dockerignore`
-admits only the five named assets. Tag-triggered GHCR publication now runs the
-same producer and passes the worker only to Linux/amd64 builds; manual validation
-or publication runs can still opt in with `include_portable_worker`. ARM64 images
-remain deliberately asset-free. No activation environment variables are baked
-into the image. The operator can explicitly use
-`/app/NativeAssets/portable-capture/linux-x64/...` for both hosts; the CLI also
-has its application-adjacent copy under `/app/cli/NativeAssets/...`.
+Docker consumes the same already-prepared artifacts; it does not compile them.
+Extract both RID directories beneath `artifacts/portable-worker` in the build
+context and use `--build-arg INCLUDE_PORTABLE_CAPTURE_WORKER=true`. The deny-all
+`.dockerignore` admits only the five named assets for each RID. Tag-triggered
+GHCR publication runs both native producers and passes only the matching worker
+to each Linux/amd64 or Linux/arm64 image build; manual validation or publication
+runs can still opt in with `include_portable_worker`. No activation environment
+variables are baked into the image. The operator can explicitly use
+`/app/NativeAssets/portable-capture/<rid>/...` for both hosts; the CLI also has
+its application-adjacent copy under `/app/cli/NativeAssets/...`.
 
 ## Installed-host smoke gate
 
@@ -229,6 +247,7 @@ DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 \
 DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE=1 \
 DOTNET_NOLOGO=1 \
 python3 scripts/portable-installed-host-smoke.py \
+  --rid linux-x64 \
   --assets-dir /absolute/producer/linux-x64 \
   --trusted-root /absolute/trusted/root \
   --private-nuget-config "$HOME/.nuget/NuGet/NuGet.Config" \
@@ -243,7 +262,7 @@ for packing after the explicit private restores. It packs both tool hosts with
 `PortableCaptureWorkerAssetsDir` and `RequirePortableCaptureWorkerAssets=true`,
 installs `dotnet-diagnostics-cli` and `dotnet-diagnostics-mcp` into fresh
 same-owner `--tool-path` directories, locates each installed
-`NativeAssets/portable-capture/linux-x64` copy, and runs
+`NativeAssets/portable-capture/<rid>` copy, and runs
 `scripts/portable-worker-preflight.py` against both installed copies. The manifest
 contains package inventories, installed sidecar modes, preflight output, and the
 exact command records with private config paths redacted.
@@ -257,6 +276,7 @@ DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 \
 DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE=1 \
 DOTNET_NOLOGO=1 \
 python3 scripts/portable-installed-host-smoke.py \
+  --rid linux-x64 \
   --assets-dir /absolute/producer/linux-x64 \
   --trusted-root /absolute/trusted/root \
   --private-nuget-config "$HOME/.nuget/NuGet/NuGet.Config" \
@@ -280,8 +300,11 @@ a read-only-install compatibility guarantee, or worker execution evidence.
 No runtime permission repair is permitted. Validate the real packaged hosts
 and intended installing/running identity before release.
 
-Initial support remains **Linux x64 glibc only**, contingent on actual loader and
-confinement availability. Musl, Windows, macOS and ARM64 are not covered.
+Linux x64 and Linux ARM64 glibc are the supported worker RIDs, contingent on
+matching assets and actual loader and confinement availability. Musl, Windows
+and macOS are not covered. ARM64 is not qualified until the native ARM64
+acceptance job succeeds; cross-compilation or a package-layout check is not
+acceptance evidence.
 The reviewed pinned producer worker requires no GLIBC version newer than 2.34.
 The preflight independently checks the worker and SQLite sidecar ELF identity,
 interpreter/dependencies and GLIBC ceiling; compatible libc alone is
@@ -293,8 +316,7 @@ the identity that installs the tool must also execute its `0744` worker. It does
 not establish arbitrary cross-UID access. The container uses a separate model:
 root-owned, non-writable application assets with traversal/execution permission
 for runtime UID 10001 and writable access limited to explicit state directories.
-Only the Linux/amd64 image can opt into the prepared worker; Linux/arm64 images
-remain deliberately asset-free.
+Linux/amd64 and Linux/arm64 images can opt into their matching prepared worker.
 
 `scripts/portable-worker-preflight.py` validates the produced and optional
 installed copies without starting `capture-worker`. It checks provenance/source
@@ -304,11 +326,11 @@ acceptance-test filter. Its report explicitly records `importExecuted: false`.
 Optional Landlock/seccomp probes inspect host prerequisites without importing a
 bundle.
 
-Release inclusion is now enabled by maintainer decision for tag-triggered
-releases. Keep the evidence bounded: verify the pinned producer artifact and
-preflight report against the final revision, inspect actual tool/publish/archive
+Release inclusion is enabled by maintainer decision for tag-triggered releases.
+Keep the evidence bounded: verify each pinned producer artifact and preflight
+report against the final revision, inspect actual tool/publish/archive
 inventories, install both tools into fresh same-owner locations, verify
-single-file sidecars and the Linux/amd64 Docker path, and preserve first
+single-file sidecars and both Linux Docker architectures, and preserve first
 failures. Native imports through installed hosts remain a separate explicit
 execution gate via `scripts/portable-installed-host-smoke.py --execute-import`;
 a layout test, preflight, or clean workload-only comparison does not resolve the
@@ -332,3 +354,8 @@ Current status for #1054:
   test assets.
 - **Tag-triggered releases include the worker.** Installed-host import remains
   separately gated by the smoke script and explicit `--execute-import` authorization.
+
+The historical #1054 evidence above is Linux x64 only. For #1070, the new
+Linux ARM64 path is not accepted until the native `ubuntu-24.04-arm` producer,
+isolation, two-bundle import, and installed-host jobs all pass on the final
+revision.

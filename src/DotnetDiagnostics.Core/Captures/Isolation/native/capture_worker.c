@@ -24,8 +24,14 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#if !defined(__linux__) || !defined(__x86_64__)
-#error The initial worker supports Linux x86-64 only.
+#if !defined(__linux__) || (!defined(__x86_64__) && !defined(__aarch64__))
+#error The worker supports Linux x86-64 and AArch64 only.
+#endif
+
+#if defined(__x86_64__)
+#define WORKER_AUDIT_ARCH AUDIT_ARCH_X86_64
+#elif defined(__aarch64__)
+#define WORKER_AUDIT_ARCH AUDIT_ARCH_AARCH64
 #endif
 
 /* Linux 6.2 UAPI bit; older build headers may omit it. contain() still requires ABI >=3. */
@@ -74,6 +80,7 @@ static int rebuilding;
 static int writable_profile;
 static int rebuild_ddl;
 static int rebuild_denied_action;
+static int denied_probe_count;
 static void admission_error(const char *reason);
 
 static void unsupported(const char *reason)
@@ -177,49 +184,66 @@ static int contain(const char *staging)
     close(directory);
     close(rules_fd);
 
-    /* No CLR or worker threads exist. All process/thread creation and exec,
-     * networking, signal/process access, namespaces, BPF and io_uring are
-     * absent from this default-deny syscall allowlist. Reject other ABIs too. */
-#define ALLOW(number) BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, number, 0, 1), BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW)
-    struct sock_filter instructions[] = {
-        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch)),
-        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0),
-        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
-        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
-        ALLOW(SYS_read), ALLOW(SYS_write), ALLOW(SYS_close), ALLOW(SYS_fstat),
-        ALLOW(SYS_newfstatat), ALLOW(SYS_stat), ALLOW(SYS_lstat),
-        ALLOW(SYS_openat), ALLOW(SYS_open), ALLOW(SYS_lseek), ALLOW(SYS_pread64),
-        ALLOW(SYS_readlink), ALLOW(SYS_readlinkat), ALLOW(SYS_getcwd),
-        ALLOW(SYS_mmap), ALLOW(SYS_mprotect), ALLOW(SYS_munmap), ALLOW(SYS_mremap),
-        ALLOW(SYS_brk), ALLOW(SYS_madvise), ALLOW(SYS_futex), ALLOW(SYS_getrandom),
-        ALLOW(SYS_clock_gettime), ALLOW(SYS_clock_nanosleep), ALLOW(SYS_nanosleep),
-        ALLOW(SYS_rt_sigaction), ALLOW(SYS_rt_sigprocmask), ALLOW(SYS_rt_sigreturn),
-        ALLOW(SYS_getpid), ALLOW(SYS_gettid), ALLOW(SYS_getuid),
-        ALLOW(SYS_geteuid), ALLOW(SYS_getgid), ALLOW(SYS_getegid), ALLOW(SYS_getrusage),
-        ALLOW(SYS_exit), ALLOW(SYS_exit_group),
-        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_pwrite64, 0, 1),
-        BPF_STMT(BPF_RET | BPF_K, writable_profile ? SECCOMP_RET_ALLOW : SECCOMP_RET_ERRNO | EACCES),
-        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_fsync, 0, 1),
-        BPF_STMT(BPF_RET | BPF_K, writable_profile ? SECCOMP_RET_ALLOW : SECCOMP_RET_ERRNO | EACCES),
-        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_fdatasync, 0, 1),
-        BPF_STMT(BPF_RET | BPF_K, writable_profile ? SECCOMP_RET_ALLOW : SECCOMP_RET_ERRNO | EACCES),
-        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_ftruncate, 0, 1),
-        BPF_STMT(BPF_RET | BPF_K, writable_profile ? SECCOMP_RET_ALLOW : SECCOMP_RET_ERRNO | EACCES),
-        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_unlink, 0, 1),
-        BPF_STMT(BPF_RET | BPF_K, writable_profile ? SECCOMP_RET_ALLOW : SECCOMP_RET_ERRNO | EACCES),
-        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_unlinkat, 0, 1),
-        BPF_STMT(BPF_RET | BPF_K, writable_profile ? SECCOMP_RET_ALLOW : SECCOMP_RET_ERRNO | EACCES),
-        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_fcntl, 1, 0),
-        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EACCES),
-        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[1])),
-        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, F_SETLK, 2, 0),
-        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, F_GETLK, 1, 0),
-        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EACCES),
-        BPF_STMT(BPF_RET | BPF_K, writable_profile ? SECCOMP_RET_ALLOW : SECCOMP_RET_ERRNO | EACCES),
-        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EACCES)
-    };
+    /* Syscall numbers come from this target's kernel headers, and the audit
+     * ABI is checked explicitly. x86-64 and AArch64 emit separate filters. */
+#define APPEND(statement) instructions[instruction_count++] = (struct sock_filter)statement
+#define ALLOW(number) do { \
+    APPEND(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, number, 0, 1)); \
+    APPEND(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW)); \
+} while (0)
+#define ALLOW_OR_DENY(number) do { \
+    APPEND(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, number, 0, 1)); \
+    APPEND(BPF_STMT(BPF_RET | BPF_K, writable_profile ? SECCOMP_RET_ALLOW : SECCOMP_RET_ERRNO | EACCES)); \
+} while (0)
+    struct sock_filter instructions[128];
+    size_t instruction_count = 0;
+    APPEND(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch)));
+    APPEND(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, WORKER_AUDIT_ARCH, 1, 0));
+    APPEND(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS));
+    APPEND(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)));
+    ALLOW(SYS_read); ALLOW(SYS_write); ALLOW(SYS_close); ALLOW(SYS_fstat);
+    ALLOW(SYS_newfstatat);
+#ifdef SYS_stat
+    ALLOW(SYS_stat);
+#endif
+#ifdef SYS_lstat
+    ALLOW(SYS_lstat);
+#endif
+    ALLOW(SYS_openat);
+#ifdef SYS_open
+    ALLOW(SYS_open);
+#endif
+    ALLOW(SYS_lseek); ALLOW(SYS_pread64);
+#ifdef SYS_readlink
+    ALLOW(SYS_readlink);
+#endif
+    ALLOW(SYS_readlinkat); ALLOW(SYS_getcwd);
+    ALLOW(SYS_mmap); ALLOW(SYS_mprotect); ALLOW(SYS_munmap); ALLOW(SYS_mremap);
+    ALLOW(SYS_brk); ALLOW(SYS_madvise); ALLOW(SYS_futex); ALLOW(SYS_getrandom);
+    ALLOW(SYS_clock_gettime); ALLOW(SYS_clock_nanosleep); ALLOW(SYS_nanosleep);
+    ALLOW(SYS_rt_sigaction); ALLOW(SYS_rt_sigprocmask); ALLOW(SYS_rt_sigreturn);
+    ALLOW(SYS_getpid); ALLOW(SYS_gettid); ALLOW(SYS_getuid);
+    ALLOW(SYS_geteuid); ALLOW(SYS_getgid); ALLOW(SYS_getegid); ALLOW(SYS_getrusage);
+    ALLOW(SYS_exit); ALLOW(SYS_exit_group);
+    ALLOW_OR_DENY(SYS_pwrite64); ALLOW_OR_DENY(SYS_fsync); ALLOW_OR_DENY(SYS_fdatasync);
+    ALLOW_OR_DENY(SYS_ftruncate);
+#ifdef SYS_unlink
+    ALLOW_OR_DENY(SYS_unlink);
+#endif
+    ALLOW_OR_DENY(SYS_unlinkat);
+    APPEND(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_fcntl, 1, 0));
+    APPEND(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EACCES));
+    APPEND(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[1])));
+    APPEND(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, F_SETLK, 2, 0));
+    APPEND(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, F_GETLK, 1, 0));
+    APPEND(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EACCES));
+    APPEND(BPF_STMT(BPF_RET | BPF_K, writable_profile ? SECCOMP_RET_ALLOW : SECCOMP_RET_ERRNO | EACCES));
+    APPEND(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EACCES));
+#undef ALLOW_OR_DENY
 #undef ALLOW
-    struct sock_fprog filter = { .len = sizeof(instructions) / sizeof(instructions[0]), .filter = instructions };
+#undef APPEND
+    if (instruction_count > BPF_MAXINSNS) unsupported("SeccompFilterTooLarge");
+    struct sock_fprog filter = { .len = (unsigned short)instruction_count, .filter = instructions };
     require(syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, 0, &filter) == 0, "SeccompUnavailable");
     return abi;
 }
@@ -227,6 +251,7 @@ static int contain(const char *staging)
 static void denied(long result, const char *reason)
 {
     require(result == -1 && errno == EACCES, reason);
+    denied_probe_count++;
 }
 
 static int probe_denials(const char *marker, int helper, uintptr_t address, const char *self)
@@ -251,9 +276,12 @@ static int probe_denials(const char *marker, int helper, uintptr_t address, cons
     denied(ptrace(PTRACE_PEEKDATA, helper, (void *)address, NULL), "PtraceAllowed");
     denied(kill(helper, 0), "SignalAccessAllowed");
     /* If a regression permits a child, it exits immediately, never escapes. */
-    long child = syscall(SYS_fork);
+    long child;
+#ifdef SYS_fork
+    child = syscall(SYS_fork);
     if (child == 0) _exit(90);
     denied(child, "ForkAllowed");
+#endif
     child = syscall(SYS_clone, SIGCHLD, NULL, NULL, NULL, 0);
     if (child == 0) _exit(90);
     denied(child, "CloneAllowed");
@@ -261,9 +289,11 @@ static int probe_denials(const char *marker, int helper, uintptr_t address, cons
     child = syscall(SYS_clone3, &args, sizeof(args));
     if (child == 0) _exit(90);
     denied(child, "Clone3Allowed");
+#ifdef SYS_vfork
     child = syscall(SYS_vfork);
     if (child == 0) _exit(90);
     denied(child, "VforkAllowed");
+#endif
     char *const arguments[] = { (char *)self, NULL };
     char *const environment[] = { NULL };
     denied(execve(self, arguments, environment), "ExecAllowed");
@@ -274,7 +304,7 @@ static int probe_denials(const char *marker, int helper, uintptr_t address, cons
         char byte;
         require(read(fd, &byte, 1) == -1 && errno == EBADF, "InheritedHandleRetained");
     }
-    return 21;
+    return denied_probe_count;
 }
 
 static int configuring;

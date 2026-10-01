@@ -31,6 +31,18 @@ REQUIRED_FILES = (
     "sqlite-LICENSE.txt",
     "worker-LICENSE.txt",
 )
+RID_CONFIG = {
+    "linux-x64": {
+        "machines": {"x86_64", "amd64"},
+        "elf_machine": "Advanced Micro Devices X86-64",
+        "interpreter": "/lib64/ld-linux-x86-64.so.2",
+    },
+    "linux-arm64": {
+        "machines": {"aarch64", "arm64"},
+        "elf_machine": "AArch64",
+        "interpreter": "/lib/ld-linux-aarch64.so.1",
+    },
+}
 PRODUCER_METADATA = (
     "compiler.txt",
     "libc.txt",
@@ -164,13 +176,14 @@ def format_version(version: tuple[int, ...]) -> str:
     return ".".join(str(component) for component in version)
 
 
-def validate_elf(worker: Path, library: Path, executable: str) -> dict[str, object]:
+def validate_elf(worker: Path, library: Path, executable: str, rid: str = "linux-x64") -> dict[str, object]:
     worker_text = readelf(worker, executable)
     library_text = readelf(library, executable)
-    if "ELF64" not in worker_text or "Advanced Micro Devices X86-64" not in worker_text:
-        raise ValueError("Worker must be an ELF64 x86-64 binary")
+    expected = RID_CONFIG[rid]
+    if "ELF64" not in worker_text or expected["elf_machine"] not in worker_text:
+        raise ValueError(f"Worker must be an ELF64 {rid} binary")
     interpreter = re.search(r"Requesting program interpreter:\s*([^\]]+)", worker_text)
-    if interpreter is None or interpreter.group(1) != "/lib64/ld-linux-x86-64.so.2":
+    if interpreter is None or interpreter.group(1) != expected["interpreter"]:
         raise ValueError("Worker requires an unexpected ELF interpreter")
     dependencies = sorted(set(re.findall(r"Shared library: \[([^\]]+)\]", worker_text)))
     unexpected = sorted(set(dependencies) - {"libc.so.6", "libm.so.6"})
@@ -180,8 +193,8 @@ def validate_elf(worker: Path, library: Path, executable: str) -> dict[str, obje
     maximum = max(versions, default=(0, 0))
     if maximum > (2, 34):
         raise ValueError(f"Worker requires unsupported GLIBC_{format_version(maximum)}")
-    if "ELF64" not in library_text or "Advanced Micro Devices X86-64" not in library_text:
-        raise ValueError("SQLite sidecar must be an ELF64 x86-64 library")
+    if "ELF64" not in library_text or expected["elf_machine"] not in library_text:
+        raise ValueError(f"SQLite sidecar must be an ELF64 {rid} library")
     library_type = re.search(r"^\s*Type:\s+(\S+)", library_text, re.MULTILINE)
     if library_type is None or library_type.group(1) != "DYN":
         raise ValueError("SQLite sidecar must have ELF type DYN")
@@ -305,6 +318,7 @@ def probe_kernel() -> dict[str, object]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--rid", required=True, choices=sorted(RID_CONFIG))
     parser.add_argument("--assets-dir", required=True, type=Path)
     parser.add_argument("--trusted-root", required=True, type=Path)
     parser.add_argument("--repo-root", required=True, type=Path)
@@ -320,8 +334,8 @@ def main() -> int:
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
 
-    if sys.platform != "linux" or platform.machine() != "x86_64":
-        raise ValueError("Portable import preflight supports Linux x86-64 only")
+    if sys.platform != "linux" or platform.machine() not in RID_CONFIG[args.rid]["machines"]:
+        raise ValueError(f"Portable import preflight for {args.rid} requires its native Linux architecture")
     for path in (args.assets_dir, args.trusted_root, args.repo_root):
         if not path.is_absolute():
             raise ValueError("All input paths must be absolute")
@@ -343,7 +357,7 @@ def main() -> int:
     if root.tag != "PortableCaptureWorker" or root.attrib != {
         "version": "1",
         "kind": "container",
-        "rid": "linux-x64",
+        "rid": args.rid,
     }:
         raise ValueError("Portable worker provenance identity is invalid")
 
@@ -393,6 +407,7 @@ def main() -> int:
         args.assets_dir / "capture-worker",
         args.assets_dir / "libe_sqlite3.so",
         args.readelf,
+        args.rid,
     )
     environment = {
         "DOTNET_DIAGNOSTICS_IMPORT_WORKER": str(args.assets_dir / "capture-worker"),
@@ -401,6 +416,7 @@ def main() -> int:
     }
     report = {
         "schema": SCHEMA,
+        "rid": args.rid,
         "producerRevision": revision,
         "producer": producer,
         "installedPackageValidation": {

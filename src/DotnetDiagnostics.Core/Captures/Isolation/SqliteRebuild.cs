@@ -40,8 +40,7 @@ internal static partial class IsolatedCaptureWorker
         if (request.MaxDatabaseBytes is < 65536 or > 256L * 1024 * 1024 ||
             request.RemainingVmInstructions is < 1 or > 200_000_000)
             throw CapturePackage.Error(CaptureErrorCode.InvalidInput, "Invalid remaining rebuild resource budget.");
-        if (!OperatingSystem.IsLinux() ||
-            System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture != System.Runtime.InteropServices.Architecture.X64)
+        if (!OperatingSystem.IsLinux() || PortableCaptureImportWorker.CurrentRuntimeIdentifier is null)
             throw Unsupported("WorkerPlatformUnavailable");
         foreach (var path in new[] { request.Executable, request.SqliteLibrary, request.PrivateDirectory })
         {

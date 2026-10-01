@@ -47,8 +47,8 @@ public sealed partial class PortableCaptureImportTests
         var store = new SqliteCaptureStore(new RootProvider(Path.Combine(_root, "small")),
             new() { MaxDatabaseBytes = 128 * 1024, MaxPackageBytes = 128 * 1024, MaxStoreBytes = 1024 * 1024 });
         var service = new PortableCaptureUseCases(store, static (_, _) => ValueTask.CompletedTask,
-            importWorker: new(Path.Combine(AppContext.BaseDirectory, "capture-worker"),
-                Path.Combine(AppContext.BaseDirectory, "runtimes/linux-x64/native/libe_sqlite3.so")));
+            importWorker: new(PortableWorkerTestSupport.Worker,
+                PortableWorkerTestSupport.SqliteLibrary));
         var error = await Assert.ThrowsAsync<CaptureStoreException>(() => service.ImportAsync(
             new(Key(), 2 * 1024 * 1024, new string('0', 64)), new NoRead(), Owner, Allow));
         Assert.Equal(CaptureErrorCode.CapacityExceeded, error.Code);
@@ -148,8 +148,8 @@ public sealed partial class PortableCaptureImportTests
         if (!Linux) return;
         var store = new SqliteCaptureStore(new RootProvider(Path.Combine(_root, "limited")), new() { MaxCaptures = 1 });
         var service = new PortableCaptureUseCases(store, static (_, _) => ValueTask.CompletedTask, importWorker:
-            new(Path.Combine(AppContext.BaseDirectory, "capture-worker"),
-                Path.Combine(AppContext.BaseDirectory, "runtimes/linux-x64/native/libe_sqlite3.so")));
+            new(PortableWorkerTestSupport.Worker,
+                PortableWorkerTestSupport.SqliteLibrary));
         var bytes = Frozen();
         var result = await service.ImportAsync(new(Key(), bytes.Length, Hash(bytes)), new MemoryStream(bytes), Owner, Allow);
         Assert.False(result.Complete);

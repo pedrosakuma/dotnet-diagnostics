@@ -15,7 +15,7 @@ on:
         required: true
         type: string
       include_portable_worker:
-        description: 'Include reviewed Linux-x64 portable-worker packaging for manual runs; tag releases always include it.'
+        description: 'Include reviewed Linux x64 and ARM64 portable-worker packaging for manual runs; tag releases always include it.'
         required: false
         default: false
         type: boolean
@@ -108,11 +108,17 @@ jobs:
         if: always()
         run: rm -f -- "$RUNNER_TEMP/release-NuGet.Config"
 
-      - name: Download prepared portable assets
+      - name: Download prepared Linux-x64 portable assets
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' && inputs.include_portable_worker
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: portable-worker-linux-x64
+          path: artifacts/portable-download
+      - name: Download prepared Linux-ARM64 portable assets
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' && inputs.include_portable_worker
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: portable-worker-linux-arm64
           path: artifacts/portable-download
 
       - name: Require prepared assets for opted-in packages
@@ -120,7 +126,8 @@ jobs:
         run: |
           mkdir -p artifacts/portable-worker
           tar -xzf artifacts/portable-download/portable-worker-linux-x64.tar.gz -C artifacts/portable-worker
-          echo "PortableCaptureWorkerAssetsDir=$GITHUB_WORKSPACE/artifacts/portable-worker/linux-x64" >> "$GITHUB_ENV"
+          tar -xzf artifacts/portable-download/portable-worker-linux-arm64.tar.gz -C artifacts/portable-worker
+          echo "PortableCaptureWorkerAssetsDir=$GITHUB_WORKSPACE/artifacts/portable-worker" >> "$GITHUB_ENV"
           echo "RequirePortableCaptureWorkerAssets=true" >> "$GITHUB_ENV"
 
       - name: Pack
@@ -215,20 +222,21 @@ jobs:
           printf '%s' "$PRIVATE_NUGET_CONFIG" > "$config"
           unset PRIVATE_NUGET_CONFIG
 
-      - name: Download Linux-x64 portable sidecars
-        if: matrix.rid == 'linux-x64' && needs.pack-tool.outputs.portable_worker == 'true'
+      - name: Download Linux portable sidecars
+        if: (matrix.rid == 'linux-x64' || matrix.rid == 'linux-arm64') && needs.pack-tool.outputs.portable_worker == 'true'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: portable-worker-linux-x64
+          name: portable-worker-${{ matrix.rid }}
           path: artifacts/portable-download
 
-      - name: Require Linux-x64 portable sidecars
-        if: matrix.rid == 'linux-x64' && needs.pack-tool.outputs.portable_worker == 'true'
+      - name: Require matching Linux portable sidecars
+        if: (matrix.rid == 'linux-x64' || matrix.rid == 'linux-arm64') && needs.pack-tool.outputs.portable_worker == 'true'
         shell: bash
         run: |
           mkdir -p artifacts/portable-worker
-          tar -xzf artifacts/portable-download/portable-worker-linux-x64.tar.gz -C artifacts/portable-worker
-          echo "PortableCaptureWorkerAssetsDir=$GITHUB_WORKSPACE/artifacts/portable-worker/linux-x64" >> "$GITHUB_ENV"
+          tar -xzf "artifacts/portable-download/portable-worker-${{ matrix.rid }}.tar.gz" -C artifacts/portable-worker
+          echo "PortableCaptureWorkerAssetsDir=$GITHUB_WORKSPACE/artifacts/portable-worker" >> "$GITHUB_ENV"
+          echo "PortableCaptureWorkerRid=${{ matrix.rid }}" >> "$GITHUB_ENV"
           echo "RequirePortableCaptureWorkerAssets=true" >> "$GITHUB_ENV"
 
       - name: Restore server and CLI for ${{ matrix.rid }}
@@ -301,8 +309,8 @@ jobs:
             (cd artifacts/cli/$rid && 7z a ../../dotnet-diagnostics-cli-$ver-$rid.zip dotnet-diagnostics-cli.exe)
           else
             sidecars=()
-            if [[ "$rid" == "linux-x64" && "${{ needs.pack-tool.outputs.portable_worker }}" == "true" ]]; then
-              sidecars=(NativeAssets/portable-capture/linux-x64)
+            if [[ "$rid" == linux-* && "${{ needs.pack-tool.outputs.portable_worker }}" == "true" ]]; then
+              sidecars=("NativeAssets/portable-capture/$rid")
             fi
             (cd artifacts/server/$rid && tar -czf ../../dotnet-diagnostics-mcp-$ver-$rid.tar.gz dotnet-diagnostics-mcp appsettings*.json "${sidecars[@]}")
             (cd artifacts/cli/$rid && tar -czf ../../dotnet-diagnostics-cli-$ver-$rid.tar.gz dotnet-diagnostics-cli "${sidecars[@]}")

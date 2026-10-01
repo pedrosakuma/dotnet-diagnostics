@@ -1,4 +1,3 @@
-using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text.Json;
 using DotnetDiagnostics.Core.Artifacts;
@@ -16,13 +15,13 @@ public sealed partial class PortableCaptureImportTests : IDisposable
     private sealed record RootProvider(string Root) : IArtifactRootProvider;
     private readonly string _root = Path.Combine(AppContext.BaseDirectory, "portable-import-tests", Guid.NewGuid().ToString("N"));
     private static readonly CaptureAccess Owner = new("destination-owner");
-    private static bool Linux => OperatingSystem.IsLinux() && RuntimeInformation.ProcessArchitecture == Architecture.X64;
+    private static bool Linux => PortableWorkerTestSupport.IsSupported;
     private static readonly AuthorizePortableImport Allow = static (_, _, _, _) => ValueTask.CompletedTask;
     private SqliteCaptureStore Store(string name = "one") => new(new RootProvider(Path.Combine(_root, name)));
     private PortableCaptureUseCases Service(string name = "one", PortableCaptureOptions? options = null) =>
         new(Store(name), static (_, _) => ValueTask.CompletedTask, options, importWorker: new(
-            Path.Combine(AppContext.BaseDirectory, "capture-worker"),
-            Path.Combine(AppContext.BaseDirectory, "runtimes/linux-x64/native/libe_sqlite3.so")));
+            PortableWorkerTestSupport.Worker,
+            PortableWorkerTestSupport.SqliteLibrary));
     private static PortableOperationKey Key() => new(Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow);
     private static string Hash(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
     private static byte[] Frozen()

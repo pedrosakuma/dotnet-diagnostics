@@ -44,7 +44,7 @@ internal static partial class IsolatedCaptureWorker
         limits ??= new();
         limits.Validate();
         cancellationToken.ThrowIfCancellationRequested();
-        if (!OperatingSystem.IsLinux() || RuntimeInformation.ProcessArchitecture != Architecture.X64)
+        if (PortableCaptureImportWorker.CurrentRuntimeIdentifier is null)
             throw Unsupported("WorkerPlatformUnavailable");
         ValidatePaths(probe);
         return Task.Run(() => Run(probe, limits, cancellationToken), CancellationToken.None);
@@ -91,8 +91,14 @@ internal static partial class IsolatedCaptureWorker
             beforeInputWithMonitor: probe.BeforeInputWithMonitor);
         var text = outcome.Result;
         var result = text.TrimEnd('\n').Split(' ');
+        var expectedDeniedProbes = PortableCaptureImportWorker.CurrentRuntimeIdentifier switch
+        {
+            "linux-x64" => 21,
+            "linux-arm64" => 19,
+            _ => 0
+        };
         if (result.Length != 7 || result[0] != "RESULT" || result[1] != "1" || result[2] != nonce ||
-            !int.TryParse(result[3], CultureInfo.InvariantCulture, out var denied) || denied != 21 ||
+            !int.TryParse(result[3], CultureInfo.InvariantCulture, out var denied) || denied != expectedDeniedProbes ||
             !int.TryParse(result[4], CultureInfo.InvariantCulture, out var value) ||
             !int.TryParse(result[5], CultureInfo.InvariantCulture, out var version) || version < 3031000 ||
             !long.TryParse(result[6], CultureInfo.InvariantCulture, out var instructions) || instructions is < 1000 or > 200000000)
