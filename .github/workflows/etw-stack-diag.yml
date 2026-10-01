@@ -98,6 +98,13 @@ jobs:
             "### isolated round $i"
             dotnet test tests/DotnetDiagnostics.Core.Tests -c Release --no-build --filter "FullyQualifiedName~SampleAsync_CapturesFromCurrentProcess_WhenElevated" --logger "console;verbosity=normal" 2>&1 | Select-String -Pattern "Passed|Failed|stack|samples|Total tests|BurnManagedCpu" | Select-Object -First 40
           }
+      - name: Isolated x3 WITH CI blame flags
+        shell: pwsh
+        run: |
+          foreach ($i in 1..3) {
+            "### blame round $i"
+            dotnet test tests/DotnetDiagnostics.Core.Tests -c Release --no-build --filter "FullyQualifiedName~SampleAsync_CapturesFromCurrentProcess_WhenElevated" --blame-hang-timeout 5m --blame-hang-dump-type none --blame-crash --blame-crash-dump-type full --logger "console;verbosity=normal" 2>&1 | Select-String -Pattern "Passed|Failed|stack|samples|Total tests|procdump|dump" | Select-Object -First 40
+          }
       - name: Class
         shell: pwsh
         run: dotnet test tests/DotnetDiagnostics.Core.Tests -c Release --no-build --filter "FullyQualifiedName~EtwNativeAotCpuSamplerTests" --logger "console;verbosity=normal" 2>&1 | Select-String -Pattern "Passed |Failed |stack|samples|Total tests" | Select-Object -First 60
