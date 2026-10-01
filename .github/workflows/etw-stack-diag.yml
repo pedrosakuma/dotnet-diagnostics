@@ -2,8 +2,6 @@
 name: ETW stack diagnostic
 
 on:
-  push:
-    branches: [diag/1080-etw-stackwalk]
   workflow_dispatch:
 
 permissions:

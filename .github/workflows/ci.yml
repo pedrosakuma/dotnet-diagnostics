@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, diag/1080-etw-stackwalk]
   pull_request:
     branches: [main]
 
@@ -621,7 +621,33 @@ jobs:
         shell: bash
         env:
           DIAG_REQUIRE_WINDOWS_DIA_ETW: "1"
+          ETW_DIAG_KEEP_DIR: ${{ github.workspace }}\etwkeep
         run: python scripts/ci-test.py core tests/DotnetDiagnostics.Core.Tests/DotnetDiagnostics.Core.Tests.csproj
+
+      - name: DIAG analyze preserved ETLs
+        if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        shell: pwsh
+        run: |
+          $keep = Join-Path $env:GITHUB_WORKSPACE etwkeep
+          if (-not (Test-Path $keep)) { "no etwkeep directory"; exit 0 }
+          Get-ChildItem $keep | Format-Table Name, Length | Out-String
+          "== hot threads"; Get-Content "$keep/hot-threads.txt" -ErrorAction SilentlyContinue
+          Get-ChildItem $keep -Filter *.sessions.txt | ForEach-Object { "== $($_.Name)"; Get-Content $_.FullName }
+          dotnet publish diag/EtwStackDiag -c Release -r win-x64 --self-contained false --configfile "${{ steps.nuget.outputs.path }}" -o diagpub | Select-Object -Last 2
+          $hot = @(Get-Content "$keep/hot-threads.txt" -ErrorAction SilentlyContinue | ForEach-Object { if ($_ -match 'pid=(\d+) hotTid=(\d+)') { [pscustomobject]@{Pid=$Matches[1];Tid=$Matches[2]} } })
+          Get-ChildItem $keep -Filter *.merged.etl | ForEach-Object {
+            $etl = $_.FullName
+            foreach ($h in $hot) { if ($_.Name -like "dotnet-diag-mcp-$($h.Pid)-*") { diagpub/EtwStackDiag.exe analyze $etl $h.Pid $h.Tid } }
+          }
+
+      - name: DIAG upload ETLs
+        if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diag-etw-core
+          path: etwkeep/
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Test (Multi-target runtime smoke)
         if: ${{ always() && needs.changes.outputs.code == 'true' }}
