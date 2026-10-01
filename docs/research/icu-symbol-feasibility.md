@@ -642,3 +642,173 @@ validation.
 [^current-lookup]: [Current native lookup and undecoration](https://github.com/microsoft/perfview/blob/4aab31822f3329632a5b566fd8a286d08881760e/src/TraceEvent/Symbols/NativeSymbolModule.cs#L57-L120), [display mapping](https://github.com/microsoft/perfview/blob/4aab31822f3329632a5b566fd8a286d08881760e/src/TraceEvent/Symbols/NativeSymbolModule.cs#L131-L170), and [lookup interface](https://github.com/microsoft/perfview/blob/4aab31822f3329632a5b566fd8a286d08881760e/src/TraceEvent/Symbols/ISymbolLookup.cs#L3-L8).
 [^current-storage]: [Current lookup/interning](https://github.com/microsoft/perfview/blob/4aab31822f3329632a5b566fd8a286d08881760e/src/TraceEvent/TraceLog.cs#L9162-L9208), [creation/serialization](https://github.com/microsoft/perfview/blob/4aab31822f3329632a5b566fd8a286d08881760e/src/TraceEvent/TraceLog.cs#L10302-L10322), and [stored fields](https://github.com/microsoft/perfview/blob/4aab31822f3329632a5b566fd8a286d08881760e/src/TraceEvent/TraceLog.cs#L10353-L10364).
 [^file-found]: [OnSymbolFileFound is a file-identity callback](https://github.com/microsoft/perfview/blob/4aab31822f3329632a5b566fd8a286d08881760e/src/TraceEvent/Symbols/SymbolReader.cs#L1004-L1008).
+
+## Follow-up implementation status (2026-09-30)
+
+The separately authorized #987 correction now uses the public DIA API directly
+for Windows ETW CPU symbolization. It validates the selected PDB against the
+module's recorded GUID and age, queries the selected function for each sampled
+RVA, and carries typed range status, PDB provenance, and function bounds before
+the name enters CPU aggregation. Only non-empty names with a verified
+half-open range are retained. Missing PDBs, identity failures, failed lookups,
+zero-length ranges, and addresses outside the reported range stay as raw
+module PCs. The implementation does not parse TraceEvent warning text or use
+name-prefix heuristics, so a valid decorated name is not rejected by spelling.
+
+Repository-owned tests cover the half-open start/end boundary, missing ranges,
+out-of-range controls, PDB identity provenance, and valid decorated names. The
+targeting environment for this implementation was Linux: these deterministic
+tests passed, but live Windows DIA/ETW integration was not run here. This does
+not recover the missing historical ICU image identity/load base, prove
+historical function coverage, establish external symbol-server availability,
+or close the broader #987 feasibility and provenance work.
+
+### Local Windows validation handoff (2026-09-30)
+
+**Historical batch result: live DIA/ETW acceptance failed.** The continuation
+below fixes these blockers; the failures in this ledger remain preserved.
+Testing started
+at `eea0e273d030ed7aa9d15f6ee94405191d070f6a` on Windows x64
+`10.0.26300`, with SDK `10.0.401` selected by the repository's
+`latestFeature` roll-forward and test-host runtime `10.0.12`.
+`DIAG_REQUIRE_WINDOWS_DIA_ETW=1` was set, so missing elevation could not
+silently satisfy the test.
+
+The integration test invokes the product's `EtwNativeAotCpuSampler.SampleAsync`
+directly through Core. It publishes the repository-owned NativeAOT sample and
+drives `/cpu` during a five-second kernel ETW capture. This is **not** CLI or MCP
+end-to-end evidence, an ICU workload, or historical capture replay.
+
+Six invocations of the dedicated NativeAOT live test were attempted, preserving
+the following failures. Four reached the capture path; there was also one
+standalone HTTP reproduction without profiling. No invocation established the
+expected named `BurnCpu` hotspot.
+
+| Attempt | Configuration and outcome |
+|---|---|
+| 1 | Sample publish failed before capture: `vswhere.exe` was absent from PATH, corrupting the discovered linker command. |
+| 2 | Adding the already-installed Visual Studio Installer directory to process-local PATH allowed publish. `/cpu` returned HTTP 500 before capture. |
+| 3 | Registering source-generated JSON metadata for `WeatherForecast[]` repaired endpoint initialization. ETW samples were collected, but `SymbolSource` was `Stripped`, not `PdbResolved`. |
+| 4 | With failure diagnostics added, the same resolver reported `MissingPdbIdentity=29`, zero accepted names and 93,168 unresolved sampled frame occurrences. These are frame occurrences, not distinct PCs or total CPU samples. |
+| 5 | A temporary `LookupSymbolsForModule` preflight experiment exceeded the test's 240-second execution timeout. It did not establish a safe identity-hydration path or the reason for the timeout. |
+| 6 | A temporary local PE CodeView fallback reached `new DiaSourceClass()` but failed with `BadImageFormatException`, HRESULT `0x800700C1`, during COM class-factory activation. No DIA function-range result was obtained. |
+
+The two resolver experiments were removed. Reading the current file at a module
+path alone does not establish its identity against the image captured in ETW.
+Do not weaken the missing-identity guard or substitute this fallback merely to
+make the test pass. The observed COM activation failure also requires a
+deployment-safe solution, not machine-wide COM registration changes.
+
+Retained adjustments are limited to the sample's source-generated JSON context
+and more informative live-test failures (HTTP response body plus symbol notes
+and bounded top-hotspot output). The production resolver remains unchanged by
+this validation pass. The source-level half-open-range controls are not a
+substitute for the still-failing live acceptance.
+
+A subsequent HTTP-only smoke check of the corrected NativeAOT publish returned
+200 for both `/cpu` and `/weatherforecast`. The offline-only
+`EtwPdbSymbolResolverTests` selection passed all seven cases. A broader
+`EtwPdbSymbolResolverTests|EtwNativeAotCpuSamplerTests` selection was interrupted
+after exceeding the initial 180-second wait: it also includes live self-profiling
+and cancellation cases on elevated Windows and must not be reported as an
+offline-only run or a pass. Its exact capture progress was not retained.
+Two surviving sample processes from the dedicated fixture were identified by
+their unique publish paths and start times and terminated by PID.
+
+Before readiness, resolve captured-image/PDB identity acquisition and DIA
+activation, then predeclare a bounded new validation batch, including the
+public CLI or MCP path. Keep #987 open: historical ICU image/load-base identity,
+sampled function coverage, per-module provenance, and external-symbol
+availability remain unresolved. Neither this test nor a green general Windows
+suite would close those criteria.
+
+### Successful Windows continuation and public CLI acceptance
+
+The user requested continued implementation rather than stopping at the blocked
+handoff. The correction was implemented at `3a78205`, then revised after
+independent code review at **`16c4065cffabe2662fb58a798e83c0a9be203e54`**.
+Both capture batches were declared before execution:
+[first candidate](https://github.com/pedrosakuma/dotnet-diagnostics/issues/987#issuecomment-5920923259)
+and [post-review candidate](https://github.com/pedrosakuma/dotnet-diagnostics/issues/987#issuecomment-5921088131).
+They used the same Windows x64 / SDK / runtime environment as the historical
+batch above. Each declared capture was executed once, without automatic retries.
+
+The production changes are:
+
+- Run the standard `TraceEventSession.Merge(..., ImageIDsOnly)` after stopping
+  capture and before ETLX conversion. Kernel ImageLoad events alone did not
+  populate the PDB identity. The merge adds ImageID/DbgID metadata while images
+  are still available locally; missing identity remains a rejection, not a
+  reason to read an unchecked replacement image.
+- Search for the PDB using the ETL-recorded name, GUID and age, then validate
+  that identity again through DIA before resolving a function range.
+- Load the architecture-matched `msdia140.dll` shipped with TraceEvent and use
+  its exported COM class factory directly. No machine-wide COM registration,
+  registry repair, or security-policy change is required.
+- Preserve CLR JIT/loader/rundown names independently of native DIA. The
+  independent review caught their accidental removal in the original PR.
+  TraceLog native symbol lookup remains disabled, so its method table stays
+  event-derived; native names only come from the separate range-validating
+  resolver. Notes distinguish the two name sources.
+
+The first candidate passed its five-second NativeAOT test (5,916 samples,
+`BurnCpu` inclusive 5,650 / exclusive 5,545) and five-second public CLI capture
+(2,192 samples, `BurnCpu` inclusive 1,909 / exclusive 1,864).
+These successes preceded the managed-name review correction, not retries of
+the final revision.
+
+The final revision passed **12 explicitly selected tests**: ten offline
+loader/range controls, one five-second NativeAOT integration capture, and one
+three-second CoreCLR self-profile that requires the `BurnManagedCpu` method
+name and CLR provenance note. Before the NativeAOT capture, the real local
+fixture PDB was accepted with GUID `edb8b97a-233f-4e30-bd06-d9276c460f6e`,
+age 5; wrong-GUID and wrong-age controls were both rejected. NativeAOT returned
+5,923 samples and `PdbResolved`, with `BurnCpu` inclusive 5,625 / exclusive 5,510.
+Module outcomes were `Ready=1, MatchingPdbUnavailable=28`.
+
+The final **public CLI** capture invoked the branch-built DLL explicitly:
+
+```powershell
+dotnet .\src\DotnetDiagnostics.Cli\bin\Release\net10.0\dotnet-diagnostics.dll collect --kind cpu --pid <target-pid> --cpu-backend os --duration 5 --top 50 --json
+```
+
+| Final CLI evidence | Observed value |
+|---|---|
+| Backend / evidence kind | `WindowsEtw` / `OsOnCpuSamples` |
+| Total samples | 2,237 |
+| Named workload | `nativeaotsample!NativeAotSample_CpuSamplingWorkload__BurnCpu` |
+| Workload inclusive / exclusive samples | 1,892 / 1,851 |
+| Workload running / waiting / unknown self-samples | 1,851 / 0 / 0 |
+| Aggregate symbol label | `PdbResolved` |
+| Module outcomes | `Ready=1, MatchingPdbUnavailable=27` |
+| Accepted native / unresolved sampled frame occurrences | 28,712 / 12,881 |
+
+**Version provenance:** the installed CLI and MCP tools were still `0.19.0`,
+whereas the latest published release was `0.28.0`. Neither old global shim was
+used. Git verified that `v0.28.0` is an ancestor of the tested branch revision.
+The explicit CLI DLL's informational version was
+`1.0.0+16c4065cffabe2662fb58a798e83c0a9be203e54` (local builds do not acquire a
+release package version automatically). The CLI project was rebuilt with its
+current dependency graph before capture. Final Core builds passed for
+net8.0/net9.0/net10.0 and the CLI build passed, both without warnings/errors;
+the test-project build had existing analyzer warnings.
+
+The full JSON, TRX, commands and SHA-256 provenance remain local session
+evidence; no native binary/PDB, ETL or dump was committed. The final evidence
+and selected binary hashes are:
+
+| Artifact | SHA-256 |
+|---|---|
+| Public CLI JSON | `485ebe0be724a047ac8f6e1a6b022b512ef5d52964fafe67d6cea9b04d090672` |
+| Twelve-test TRX | `e3abc39db9bf5c6a761fbdac16d46a0fc8a41068ba3cca511d56d7cf8d15c4ba` |
+| CLI DLL | `debe3e0270ab1ee8a71e02088bcae1491ce89ee9fa8b393dd02c91c2c2aebd06` |
+| CLI's Core DLL | `5056dc1963a8e4f82b24cc27df9c43c40f60a7c3b7c9f05541beba8f69896e2a` |
+| Packaged x64 DIA DLL | `7341081feac7a2cebcc796c9c2bc5041a295df0673244f2595294e06a0bd7ee8` |
+
+**Acceptance limit:** this establishes the current product's Windows NativeAOT
+DIA/ETW path and public CLI behavior, plus preservation of CLR event naming.
+It is not MCP transport acceptance, historical ICU image recovery, full symbol
+coverage, or an external-symbol-server availability result. Other modules
+remained explicitly unresolved. #987 stays open for the broader historical
+identity, coverage and provenance criteria; #1072 remains draft while its
+updated CI proceeds.

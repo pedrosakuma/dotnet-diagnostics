@@ -547,6 +547,13 @@ keeps the compact headline.
 
 The standalone CLI now exposes the same **Core-only** sampler families the MCP server drives:
 
+On Windows, OS-backed CPU collection merges image identities into the ETL and
+loads the packaged, architecture-matched DIA DLL without COM registration.
+Native names require a matching PDB GUID/age and containing function range;
+unresolved native PCs remain raw. CLR JIT/rundown names use a separate
+event-derived path. The legacy `PdbResolved` aggregate label is not complete
+symbol coverage; inspect `notes` for the native and managed resolution outcomes.
+
 | Kind | What it captures | Key flags | Summary shape |
 |---|---|---|---|
 | `cpu` | CPU stack observations via EventPipe SampleProfiler (CoreCLR default) or explicit OS-backed on-CPU perf/ETW sampling (`--cpu-backend os`; required automatically for NativeAOT). Explicit backend selection never falls back. CoreCLR's SampleProfiler can include blocked/waiting threads and does not establish scheduler state. | `--top`, `--cpu-backend`, `--symbol-path`, `--export-trace`, `--resolve-source-lines`, `--resolve-method-instantiations`, `--native-aot-map` | evidence metadata; top inclusive/exclusive stack frequencies; `selfSamples.runningSamples` (OS-backed only), `waitingSamples` (heuristic), and `unknownSamples`; symbol-degradation notes; timings; and `cpu.self-time.*` signals only for OS-backed evidence |

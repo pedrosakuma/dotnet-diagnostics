@@ -34,7 +34,7 @@ artifact.
 | `etw-native-stack` | Kernel Logger `Thread/Stack` events (TraceEvent) | Native frames; managed names come from PDB export table | NativeAOT/Windows elevated |
 | `perf-replay-approx` | `perf record -e sched:sched_switch --call-graph dwarf` | "Last stack seen per TID" — not point-in-time | AOT fallback when ptrace is blocked |
 | `symbols.map` | NativeAOT symbol sidecar emitted at publish | Demangled managed names for native frames | NativeAOT (both OS) |
-| `pdb-export` | PE export table + Portable PDB | Demangled managed names for native frames | NativeAOT/Windows |
+| `pdb-dia-range` | Matching PDB + DIA function ranges | Windows CPU names are retained only for RVAs inside a known function range; missing, zero-length, mismatched, and out-of-range symbols remain raw | NativeAOT/Windows CPU |
 
 `perf-replay-approx` is a **best-effort** source: it replaces a hard `❌` with a
 `⚠️`. Its weakness is staleness, not accuracy — the frames are real, they just
@@ -57,7 +57,7 @@ Legend: `✅` works · `⚠️` works with caveats (footnote) · `❌` unavailab
 | `collect_events(kind="gc")` | ✅ | ✅ | ✅ | ✅ |
 | `collect_events(kind="exceptions")` | ✅ | ✅ | ✅ | ✅ |
 | `collect_events(kind="event_source")` | ✅ | ✅ | ⚠️ [^aot-eventsource] | ⚠️ [^aot-eventsource] |
-| `collect_sample(kind="cpu")` | ✅ EventPipe | ✅ EventPipe | ✅ `perf` (`symbols.map`) [^aot-mapfile] | ✅ ETW (`pdb-export`) [^win-etw-elev] |
+| `collect_sample(kind="cpu")` | ✅ EventPipe | ✅ EventPipe | ✅ `perf` (`symbols.map`) [^aot-mapfile] | ✅ ETW (`pdb-dia-range`) [^win-etw-elev] |
 | `collect_sample(kind="off_cpu")` | ✅ `perf` | ⚠️ ETW kernel logger, elevated [^win-etw-elev] | ✅ `perf` [^perf-install] | ⚠️ ETW kernel logger, elevated [^win-etw-elev] |
 | `collect_sample(kind="allocation")` | ✅ TypeName populated | ✅ TypeName populated | ⚠️ TypeName empty [^aot-typename] | ⚠️ TypeName empty [^aot-typename] |
 | `collect_thread_snapshot` | ✅ `clrmd-thread-walk` | ✅ `clrmd-thread-walk` | ✅ `linux-native-stack` ([#92](https://github.com/pedrosakuma/dotnet-diagnostics/issues/92)) | ✅ `etw-native-stack` ([#93](https://github.com/pedrosakuma/dotnet-diagnostics/issues/93)) |
@@ -68,6 +68,17 @@ Legend: `✅` works · `⚠️` works with caveats (footnote) · `❌` unavailab
 | `collect_process_dump` | ✅ | ✅ | ✅ native dump | ✅ native dump |
 | `capture_method_bytes` | ✅ JIT code-heap | ✅ JIT code-heap | ❌ [^jit-only] | ❌ [^jit-only] |
 | `start_investigation` / `export_investigation_summary` / `compare_to_baseline` | ✅ | ✅ | ✅ | ✅ |
+
+The Windows ETW CPU sampler validates the selected PDB identity against the
+module identity recorded by the standard ETW image-ID merge and checks each
+sampled RVA against the DIA function's half-open range before aggregating its
+name. Image-ID enrichment runs locally after capture, while the images are
+available; missing identities remain unresolved rather than falling back to an
+unchecked current file. DIA is loaded from the architecture-matched DLL shipped
+with TraceEvent, without requiring machine-wide COM registration. CLR JIT/loader/
+rundown names remain a separate event-derived path for CoreCLR OS sampling.
+This guarantee is scoped to Windows on-CPU sampling; other ETW collectors have
+their own symbol paths.
 
 [^stale]: Resolved in [#108](https://github.com/pedrosakuma/dotnet-diagnostics/issues/108): stale diagnostic sockets and Linux TID collisions are filtered out via thread-group-leader validation. Affected `v0.3.0` and `v0.3.1`; fixed on `main`.
 [^aot-eventsource]: The provider must be embedded in the AOT binary at publish time. Sources added via assembly load after publish are not reachable.

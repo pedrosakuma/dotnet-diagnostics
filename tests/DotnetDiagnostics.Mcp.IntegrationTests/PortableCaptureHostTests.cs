@@ -99,7 +99,15 @@ public sealed class PortableCaptureHostTests : IAsyncLifetime
         _clock.Now = _clock.Now.AddMinutes(4);
         await Call("download-chunk", new { transferId = id, offset = 0, count = PortableCaptureTools.ChunkBytes });
         _clock.Now = _clock.Now.AddMinutes(2);
-        Data(await Call("transfer-status", new { transferId = id })).GetProperty("state").GetString().Should().Be("Expired");
+        DiagnosticResult<object> status;
+        for (var attempt = 0; ; attempt++)
+        {
+            status = await Call("transfer-status", new { transferId = id });
+            if (status.Error?.Detail != "Busy" || attempt == 99) break;
+            await Task.Delay(20);
+        }
+        status.Error.Should().BeNull("the expired transfer must expose its terminal state once cleanup releases its gate");
+        Data(status).GetProperty("state").GetString().Should().Be("Expired");
         (await Call("download-chunk", new { transferId = id, offset = 0, count = PortableCaptureTools.ChunkBytes }))
             .Error.Should().NotBeNull();
     }

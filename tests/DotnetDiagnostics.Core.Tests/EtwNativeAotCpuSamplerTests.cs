@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
 using DotnetDiagnostics.Core.CpuSampling;
 using FluentAssertions;
 using Microsoft.Diagnostics.Tracing.Session;
@@ -10,6 +11,7 @@ namespace DotnetDiagnostics.Core.Tests;
 /// Unit and integration tests for the Windows ETW NativeAOT CPU sampler.
 /// Integration tests require Windows with administrative elevation and are skipped otherwise.
 /// </summary>
+[Collection("LiveProcess")]
 public class EtwNativeAotCpuSamplerTests
 {
     [Fact]
@@ -123,13 +125,12 @@ public class EtwNativeAotCpuSamplerTests
 
     /// <summary>
     /// Live integration test: captures CPU samples from the current process (self-profiling).
-    /// Requires Windows + admin. The current process is CoreCLR — without CLR Rundown,
-    /// JIT frames resolve to raw addresses only, so we validate sampling infrastructure
-    /// (samples captured, call tree built) without asserting symbol resolution.
+    /// Requires Windows + admin. The current process is CoreCLR; CLR method-load and
+    /// rundown events must retain the known managed workload name independently of DIA.
     /// Full PDB symbol resolution is validated against NativeAOT targets where symbols
     /// are statically compiled into the binary.
     /// </summary>
-    [Fact]
+    [Fact(Timeout = 240_000)]
     public async Task SampleAsync_CapturesFromCurrentProcess_WhenElevated()
     {
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows) || TraceEventSession.IsElevated() != true)
@@ -141,20 +142,16 @@ public class EtwNativeAotCpuSamplerTests
         var sampler = new EtwNativeAotCpuSampler();
         var pid = Environment.ProcessId;
 
-        // Generate some CPU load on the current process.
-        var cts = new CancellationTokenSource();
-        var loadTask = Task.Run(() =>
+        using var cts = new CancellationTokenSource();
+        var loadTask = Task.Run(async () =>
         {
-            while (!cts.Token.IsCancellationRequested)
-            {
-                // Busy loop to ensure we appear in CPU samples.
-                _ = Enumerable.Range(0, 10000).Sum();
-            }
+            await Task.Delay(TimeSpan.FromSeconds(2), cts.Token);
+            BurnManagedCpu(cts.Token);
         }, cts.Token);
 
         try
         {
-            var result = await sampler.SampleAsync(pid, TimeSpan.FromSeconds(3), topN: 10);
+            var result = await sampler.SampleAsync(pid, TimeSpan.FromSeconds(7), topN: 50);
 
             result.Should().NotBeNull();
             result.Summary.ProcessId.Should().Be(pid);
@@ -162,17 +159,38 @@ public class EtwNativeAotCpuSamplerTests
                 "should have captured at least one CPU sample");
             result.Summary.TopHotspots.Should().NotBeEmpty(
                 "should have identified at least one hotspot");
+            var nodes = new Stack<CallTreeNode>();
+            nodes.Push(result.Artifact.Root);
+            var namedWorkloadSamples = 0L;
+            var namedFrames = new Dictionary<string, long>(StringComparer.Ordinal);
+            while (nodes.TryPop(out var node))
+            {
+                if (node.Frame.Method.Contains(nameof(BurnManagedCpu), StringComparison.Ordinal))
+                {
+                    namedWorkloadSamples += node.InclusiveSamples;
+                }
+                if (!node.Frame.Method.StartsWith("0x", StringComparison.Ordinal))
+                {
+                    namedFrames[node.Frame.Method] = namedFrames.GetValueOrDefault(node.Frame.Method) + node.InclusiveSamples;
+                }
+                foreach (var child in node.Children)
+                {
+                    nodes.Push(child);
+                }
+            }
+            namedWorkloadSamples.Should().BeGreaterThan(0,
+                "the workload is JIT-compiled after ETW starts and its CLR name must survive native PDB validation. " +
+                $"Total samples: {result.Summary.TotalSamples}; named frames: " +
+                string.Join(", ", namedFrames.OrderByDescending(pair => pair.Value).Take(15)
+                    .Select(pair => $"{pair.Key}={pair.Value}")) + ". " +
+                string.Join(" ", result.Summary.Notes));
+            result.Summary.Notes.Should().Contain(note => note.Contains("CLR JIT/loader/rundown", StringComparison.Ordinal));
 
             result.Artifact.Root.Should().NotBeNull();
             result.Artifact.Root.Children.Should().NotBeEmpty(
                 "call tree should have at least one child node");
 
-            // On a CoreCLR target without CLR Rundown, JIT frames remain unresolved.
-            // SymbolSource should be PdbResolved (if native modules like ntdll resolved)
-            // or Stripped (if all frames are raw addresses). Both are valid outcomes.
-            result.Artifact.SymbolSource.Should().BeOneOf(
-                new[] { NativeAotSymbolDemangler.SymbolSource.PdbResolved, NativeAotSymbolDemangler.SymbolSource.Stripped },
-                "Windows ETW path should report PdbResolved or Stripped (never ElfDemangled)");
+            result.Artifact.SymbolSource.Should().Be(NativeAotSymbolDemangler.SymbolSource.PdbResolved);
             result.Summary.SymbolSource.Should().Be(result.Artifact.SymbolSource,
                 "summary consumers must receive the same symbol provenance as drilldown consumers");
         }
@@ -181,5 +199,19 @@ public class EtwNativeAotCpuSamplerTests
             cts.Cancel();
             try { await loadTask; } catch (OperationCanceledException) { }
         }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void BurnManagedCpu(CancellationToken cancellationToken)
+    {
+        ulong value = 1;
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            for (var i = 0; i < 10_000; i++)
+            {
+                value = unchecked(value * 1_664_525 + 1_013_904_223);
+            }
+        }
+        GC.KeepAlive(value);
     }
 }

@@ -2043,7 +2043,8 @@ sample counts. The backend is runtime-specific:
   resolved. Reused/overlapping code ranges are omitted rather than assigned an
   unsafe identity. Windows records CLR JIT/loader/rundown events in the same ETL
   clock domain as profile interrupts. Unresolved frames remain valid on-CPU
-  observations and are reported in `notes`.
+  observations and are reported in `notes`. CLR event-derived names are preserved
+  independently of native PDB/DIA validation; the notes distinguish both sources.
 - **NativeAOT** — Linux `perf` or Windows ETW sampled-profile backends. These are
   true on-core profilers; their `selfSamples` usually land entirely in
   `runningSamples`.
@@ -2163,6 +2164,9 @@ reports the aggregate symbol-resolution quality of `topHotspots`:
 - `Stripped` — perf returned `[unknown]` or raw addresses; names are not
   actionable. Likely missing build-id / PDB on the host.
 - `Mixed` — quality varies across `topHotspots`. Inspect per-frame.
+- `PdbResolved` — the legacy Windows ETW aggregate label for named frames.
+  `notes` distinguish native PDB/DIA range-validated names from CLR event-derived
+  names. It is not proof of complete module coverage or native ICU attribution.
 - `Unknown` / omitted — commonly a CoreCLR EventPipe sample (that path resolves
   managed names directly; this field does not apply), or an OS-backed capture
   with no classifiable frames.
@@ -2197,7 +2201,11 @@ surface the same split:
   managed names recovered from the AOT `.symbols.map` sidecar when present).
 - **NativeAOT / Windows** — NT Kernel Logger `PerfInfo/SampledProfile` via
   ETW; admin elevation (or `SeSystemProfilePrivilege`) required. Frames are
-  native; managed names recovered from the PE export table + PDB.
+  native; PDB/DIA function names are retained only when the sampled RVA falls
+  inside the matching function's half-open range. Missing, mismatched,
+  zero-length, or out-of-range symbols remain raw module PCs. A local image-ID
+  merge records PDB identities before ETLX processing; the packaged DIA DLL is
+  activated directly without machine-wide COM registration.
 
 Confirm the dispatch path up front with `inspect_process(view="capabilities")` →
 `data.canSampleCpu`. Coverage and AOT caveats are summarized in

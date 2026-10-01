@@ -464,6 +464,8 @@ jobs:
       - name: Test (Core)
         if: needs.changes.outputs.code == 'true'
         shell: bash
+        env:
+          DIAG_REQUIRE_WINDOWS_DIA_ETW: "1"
         run: python scripts/ci-test.py core tests/DotnetDiagnostics.Core.Tests/DotnetDiagnostics.Core.Tests.csproj
 
       - name: Test (Multi-target runtime smoke)
