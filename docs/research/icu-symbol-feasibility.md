@@ -812,3 +812,70 @@ coverage, or an external-symbol-server availability result. Other modules
 remained explicitly unresolved. #987 stays open for the broader historical
 identity, coverage and provenance criteria; #1072 remains draft while its
 updated CI proceeds.
+
+## Local elevated Windows host: single bounded capture (host-specific)
+
+The #987 decision moved the next gate from a hosted runner to one local elevated
+Windows session, keeping the prior gates: bounded instrumentation reviewed
+first (#1079), then this host's ICU image identity and a matching permitted
+local PDB, then **at most one** culture-lookup ETW capture of ≤8 s with zero
+retries. **Everything below is specific to this host. It does not identify,
+rebase or recover the historical hosted-runner capture.**
+
+### Preflight and symbol isolation
+
+| Check | Observed value |
+|---|---|
+| Session | Elevated, Windows 10.0.26300 x64, .NET 10.0.12 runtime |
+| `C:\Windows\System32\icu.dll` | 2,769,976 bytes, v72.1.0.4, SHA-256 `7e28c779e6015cc794677ffb00fef38ed76f0f0734130f8c85deaa2ff22fe703` |
+| Image CodeView identity | `icu.pdb`, GUID `94451369-D782-EA5D-26A5-A3501C131722`, age 1 |
+| PDB acquisition (predeclared, once) | 2 GETs: MSDL `302` → one `*.blob.core.windows.net` redirect `200`; no retries |
+| Accepted PDB | 3,059,712 bytes, SHA-256 `39903687ca8e10aec69ad64f98d100c3f67c5182a64a3b24c865726f60b0adb9` |
+| PDB identity | Info-stream GUID matches; DBI age 1 (Info age 3) |
+| Capture symbol path | Process-only `_NT_SYMBOL_PATH=srv*<session cache>`; `_NT_ALT_SYMBOL_PATH` and `MCP_SYMBOL_PATH` cleared; no HTTP symbol server |
+
+The inherited machine symbol path (`srv*…*http://symweb`) was not used.
+`SymbolPathBuilder` appends `_NT_SYMBOL_PATH` verbatim and the resolver pool
+opens one resolver per target module, so an inherited HTTP symbol server turns
+every module open into a network lookup. An earlier unrelated live
+self-profiling test on this host exceeded its 240 s timeout under that
+inherited path. It was neither repeated nor counted as the authorized capture.
+#1079 only makes the pool's per-module dedup stricter; it adds no opens.
+
+### Single capture result
+
+One run of
+`LiveCapture_CultureLookupSinglePhase_PersistsBoundedNativeCoverage`
+(`DOTNET_DIAGNOSTICS_987_SINGLE_CAPTURE=1`, #1079 at `3067a40`, Release)
+passed: 8 s ETW collection, 481/497 verified responses, 122,311 total samples.
+The test host ran from 10:02:07 to 10:04:33 (-03:00). Most of that wall time
+was the activation/processing window around the fixed 8 s collection.
+
+| ICU native leaf metric | Value |
+|---|---:|
+| ETW image identity | `icu.dll`, base `0x7FF89E980000`, size 2,748,416, GUID/age as above, resolver `Ready` |
+| ICU exclusive leaf samples | 90,345 (73.86% of samples) |
+| Retained distinct leaf PCs | 501 (inventory complete; 0 unretained weight) |
+| Verified-range leaf samples | **0 / 90,345 (0%)** |
+| Retained verified distinct PCs | **0 / 501 (0%)** |
+| Resolution breakdown | `Unavailable`: 501 distinct, 90,345 samples |
+| Module open outcomes (all modules) | `Ready=1, MissingPdbIdentity=1, MatchingPdbUnavailable=248` |
+
+**Interpretation.** The exact matching PDB opened through DIA, but
+`findSymbolByRVA(…, SymTagFunction)` returned no function for any sampled ICU
+leaf PC. This is consistent with the Phase 1 inventory: the public PDB carries
+15,249 public symbols but only 1,360 length-bearing procedures. The strict
+policy keeps public-only addresses unresolved: no end inferred from the next
+public symbol, no name-only attribution. On this host, strict
+verified-range coverage of sampled ICU leaves is therefore **0%**, not
+"unknown". This is a supported negative for this image/PDB pair under the
+current resolver contract, not a symbol-source failure. It does not establish
+coverage for other ICU builds or for the historical capture.
+
+| Local evidence (not committed) | SHA-256 |
+|---|---|
+| Evidence JSON | `8da56e6b1e41883f193d8c55a2e80981c732a5535581accfd789a96142900d61` |
+| TRX | `0c6e41e49d3ba24794fb5d4c22529f0007c923ede982d77f32ca5d122c576d81` |
+| Test-run Core DLL | `4b067492fa664c8ffb8505743ca489894689171ed47ac02227043aabc9d87497` |
+
+The capture budget for this gate is now spent. No PDB, ETL or dump was committed.

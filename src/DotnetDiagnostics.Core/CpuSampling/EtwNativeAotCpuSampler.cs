@@ -281,6 +281,7 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
         long outOfRangeFrames = 0;
         long missingRangeFrames = 0;
         long lookupFailedFrames = 0;
+        var nativeLeafCoverageCollector = new NativeLeafCoverageCollector();
 
         var targetModules = traceLog.Processes
             .Where(process => process.ProcessID == processId)
@@ -289,6 +290,10 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
             .ToArray();
         using var symbolReader = symbolPath is null ? null : new SymbolReader(TextWriter.Null, symbolPath);
         using var nativeSymbols = EtwPdbSymbolResolverPool.Open(symbolReader, targetModules);
+        foreach (var module in targetModules)
+        {
+            nativeLeafCoverageCollector.RegisterModule(CreateModuleIdentity(module, nativeSymbols));
+        }
 
         var observationSink = DotnetDiagnostics.Core.CaptureRecording.CaptureRecordingContext.Current;
         observationSink?.ReportSourceLoss("sample.cpu.etw", traceLog.EventsLost);
@@ -314,6 +319,13 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
                 var resolution = hasManagedName
                     ? NativeSymbolResolution.Unavailable(NativeSymbolRangeStatus.Unavailable)
                     : nativeSymbols.Resolve(current.CodeAddress);
+                if (frames.Count == 0 && !hasManagedName && current.CodeAddress?.ModuleFile is { } leafModule)
+                {
+                    nativeLeafCoverageCollector.Observe(
+                        CreateModuleIdentity(leafModule, nativeSymbols),
+                        current.CodeAddress.Address,
+                        resolution);
+                }
                 var methodName = hasManagedName
                     ? managedName!
                     : resolution.CanInternName && resolution.Name is not null
@@ -398,6 +410,7 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
             .ToList();
 
         var root = builder.Build();
+        var nativeLeafCoverage = nativeLeafCoverageCollector.Build();
 
         // Preserve the legacy aggregate label for named ETW frames. Notes distinguish
         // CLR event names from native PDB/DIA names; neither implies full module coverage.
@@ -429,6 +442,22 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
                     .Select(pair => $"{pair.Key}={pair.Value:N0}"))
                 + ".");
         }
+        if (nativeLeafCoverage.UnretainedSampleWeight > 0)
+        {
+            notes.Add(
+                $"Windows ETW native leaf PC inventory retained the first {nativeLeafCoverage.RetainedDistinctPcs:N0} distinct PC(s) " +
+                $"at NativeLeafCoverageCollector.DefaultRetainedPcLimit={nativeLeafCoverage.RetainedPcLimit:N0}; " +
+                $"{nativeLeafCoverage.UnretainedSampleWeight:N0} later leaf sample(s) were not retained as PC detail. " +
+                "Distinct-PC coverage is incomplete, while aggregate sample weights remain explicit.");
+        }
+        if (nativeLeafCoverage.UnretainedModules > 0)
+        {
+            notes.Add(
+                $"Windows ETW native module identity inventory retained {nativeLeafCoverage.RetainedModules:N0} module(s) " +
+                $"at NativeLeafCoverageCollector.DefaultRetainedModuleLimit={nativeLeafCoverage.RetainedModuleLimit:N0}; " +
+                $"{nativeLeafCoverage.UnretainedModules:N0} later module identity row(s) and " +
+                $"{nativeLeafCoverage.UnretainedModuleSampleWeight:N0} associated leaf sample(s) were not retained.");
+        }
 
         var summary = new CpuSample(processId, startedAt, duration, total, hotspots)
         {
@@ -450,6 +479,7 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
             Evidence = CpuSampleEvidence.WindowsEtwOnCpu,
             SelfSamples = new SelfSampleBreakdown(total, 0),
             Notes = notes,
+            NativeLeafCoverage = nativeLeafCoverage,
         };
         return new CpuSampleResult(summary, artifact);
     }
@@ -458,6 +488,19 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
         CpuSampleResult Result,
         TimeSpan SymbolicationDuration,
         TimeSpan AggregationDuration);
+
+    private static NativeLeafModuleIdentity CreateModuleIdentity(
+        TraceModuleFile module,
+        EtwPdbSymbolResolverPool nativeSymbols)
+        => new(
+            module.Name ?? string.Empty,
+            module.FilePath,
+            module.ImageBase,
+            module.ImageSize > 0 ? (ulong)module.ImageSize : 0,
+            module.PdbName,
+            module.PdbSignature == Guid.Empty ? null : module.PdbSignature,
+            module.PdbAge >= 0 ? module.PdbAge : null,
+            nativeSymbols.GetOpenStatus(module));
 
     private static string ResolveUnresolvedMethodName(TraceCallStack frame)
     {

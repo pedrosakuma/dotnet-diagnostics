@@ -75,6 +75,65 @@ public sealed record SelfSampleBreakdown(
     long WaitingSamples,
     long UnknownSamples = 0);
 
+/// <summary>Why a sampled native leaf PC did or did not receive a verified function name.</summary>
+[JsonConverter(typeof(JsonStringEnumConverter<NativeLeafResolutionStatus>))]
+public enum NativeLeafResolutionStatus
+{
+    VerifiedContainingRange,
+    MissingPdbIdentity,
+    SymbolSourceUnavailable,
+    MatchingPdbUnavailable,
+    DiaUnavailable,
+    PdbRejected,
+    RangeMissing,
+    OutsideRange,
+    LookupFailed,
+    Unavailable,
+}
+
+/// <summary>A retained native leaf PC and its sample weight.</summary>
+public sealed record NativeLeafPcCoverage(
+    ulong Address,
+    uint? Rva,
+    long Samples,
+    NativeLeafResolutionStatus Resolution,
+    string? FunctionName);
+
+/// <summary>Captured image identity and bounded native leaf coverage for one module.</summary>
+public sealed record NativeModuleLeafCoverage(
+    string Module,
+    string? ImagePath,
+    ulong ImageBase,
+    ulong ImageSize,
+    string? PdbName,
+    Guid? PdbSignature,
+    int? PdbAge,
+    string ResolverStatus,
+    long TotalLeafSamples,
+    long VerifiedRangeSamples,
+    long UnretainedSampleWeight,
+    int RetainedDistinctPcs,
+    int RetainedVerifiedDistinctPcs,
+    IReadOnlyList<NativeLeafPcCoverage> RetainedPcs);
+
+/// <summary>
+/// Insertion-bounded native leaf provenance. Coverage over retained PCs is exact; when
+/// <see cref="UnretainedSampleWeight"/> is non-zero, distinct-PC coverage is incomplete.
+/// </summary>
+public sealed record NativeLeafCoverage(
+    int RetainedPcLimit,
+    int RetainedModuleLimit,
+    long TotalLeafSamples,
+    long VerifiedRangeSamples,
+    long UnretainedSampleWeight,
+    long UnretainedVerifiedRangeSampleWeight,
+    long UnretainedModuleSampleWeight,
+    int RetainedDistinctPcs,
+    int RetainedVerifiedDistinctPcs,
+    int RetainedModules,
+    int UnretainedModules,
+    IReadOnlyList<NativeModuleLeafCoverage> Modules);
+
 /// <summary>A hotspot is a frame ranked by how often it appeared in CPU samples.</summary>
 public sealed record Hotspot(
     SampledFrame Frame,

@@ -117,6 +117,12 @@ public sealed record CpuSampleTraceArtifact(
     /// <summary>Bounded capture and symbol-resolution degradation notes.</summary>
     public IReadOnlyList<string> Notes { get; init; } = [];
 
+    /// <summary>
+    /// Insertion-bounded per-module native leaf identity and verified-range coverage.
+    /// Populated by the Windows ETW sampler.
+    /// </summary>
+    public NativeLeafCoverage? NativeLeafCoverage { get; init; }
+
     private static readonly IReadOnlyDictionary<SymbolRef, SourceLocation> EmptyResolved
         = new Dictionary<SymbolRef, SourceLocation>();
 
