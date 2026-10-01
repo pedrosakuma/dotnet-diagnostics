@@ -1,0 +1,74 @@
+# Throwaway diagnostic for PR #1080 — never merged.
+name: ETW stack diagnostic
+
+on:
+  push:
+    branches: [diag/1080-etw-stackwalk]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diag:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, windows-2025, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      DOTNET_NOLOGO: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - name: Environment
+        shell: pwsh
+        run: |
+          $o = "out"; New-Item -ItemType Directory -Force $o | Out-Null
+          & {
+            "== OS"; [Environment]::OSVersion.VersionString
+            Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' | Select-Object ProductName, EditionID, DisplayVersion, CurrentBuild, UBR | Format-List | Out-String
+            "== CPU"; Get-CimInstance Win32_Processor | Select-Object Name, Manufacturer, NumberOfCores, NumberOfLogicalProcessors, VirtualizationFirmwareEnabled | Format-List | Out-String
+            "== ComputerSystem"; Get-CimInstance Win32_ComputerSystem | Select-Object Manufacturer, Model, HypervisorPresent | Format-List | Out-String
+            "== DeviceGuard"; try { Get-CimInstance -Namespace root\Microsoft\Windows\DeviceGuard -ClassName Win32_DeviceGuard | Format-List * | Out-String } catch { $_ }
+            "== System mitigations"; try { Get-ProcessMitigation -System | Out-String } catch { $_ }
+            "== dotnet.exe mitigations"; try { Get-ProcessMitigation -Name dotnet.exe | Out-String } catch { $_ }
+            "== Kernel CET (HKLM DeviceGuard Scenarios)"; try { Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios' -Recurse | Out-String } catch { $_ }
+            "== Active ETW sessions"; logman query -ets | Out-String
+            "== systeminfo"; systeminfo | Out-String
+          } *>&1 | Tee-Object -FilePath "$o/environment.txt"
+      - name: Publish (ReadyToRun)
+        run: dotnet publish diag/EtwStackDiag -c Release -r win-x64 --self-contained false -p:PublishReadyToRun=true -o pub
+      - name: private session, default (R2R)
+        run: pub/EtwStackDiag.exe capture private private-default out 10
+      - name: private session, DOTNET_ReadyToRun=0
+        env: { DOTNET_ReadyToRun: "0" }
+        run: pub/EtwStackDiag.exe capture private private-nor2r out 10
+      - name: private session, DOTNET_TieredCompilation=0
+        env: { DOTNET_TieredCompilation: "0" }
+        run: pub/EtwStackDiag.exe capture private private-notiering out 10
+      - name: NT Kernel Logger session, default
+        run: pub/EtwStackDiag.exe capture kernellogger kernellogger-default out 10
+      - name: WPR CPU profile, default
+        continue-on-error: true
+        run: pub/EtwStackDiag.exe capture wpr wpr-default out 10
+      - name: Summary
+        if: always()
+        shell: pwsh
+        run: Get-ChildItem out -Filter *.txt | Where-Object Name -ne environment.txt | ForEach-Object { Get-Content $_.FullName } | Tee-Object -FilePath out/summary.txt
+      - name: Compress ETLs
+        if: always()
+        shell: pwsh
+        run: Get-ChildItem out -Filter *.merged.etl | ForEach-Object { Compress-Archive $_.FullName "$($_.FullName).zip" }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: etw-stack-diag-${{ matrix.os }}
+          path: |
+            out/*.txt
+            out/*.zip
+          retention-days: 7
