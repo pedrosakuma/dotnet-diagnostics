@@ -269,6 +269,54 @@ class PortableWorkerPreflightTests(unittest.TestCase):
         self.assertIn("SQLite sidecar has unexpected shared libraries: libcrypto.so.3",
                       result.stderr)
 
+    def test_arm64_allows_only_its_exact_glibc_loader_dependency(self):
+        worker = self.root / "arm64-worker"
+        library = self.root / "arm64-sqlite.so"
+        worker.write_bytes(b"worker")
+        library.write_bytes(b"sqlite")
+        fake_readelf = self.root / "arm64-readelf"
+        fake_readelf.write_text(
+            "#!/bin/sh\n"
+            "for last do :; done\n"
+            "case \"$last\" in\n"
+            "*/arm64-sqlite.so)\n"
+            "cat <<'EOF'\n"
+            "Class: ELF64\n"
+            "Machine: AArch64\n"
+            "Type: DYN (Shared object file)\n"
+            "Shared library: [libc.so.6]\n"
+            "Shared library: [ld-linux-aarch64.so.1]\n"
+            "Name: GLIBC_2.34\n"
+            "EOF\n"
+            ";;\n"
+            "*)\n"
+            "cat <<'EOF'\n"
+            "Class: ELF64\n"
+            "Machine: AArch64\n"
+            "[Requesting program interpreter: /lib/ld-linux-aarch64.so.1]\n"
+            "Shared library: [libc.so.6]\n"
+            "Shared library: [libm.so.6]\n"
+            "Shared library: [ld-linux-aarch64.so.1]\n"
+            "Name: GLIBC_2.34\n"
+            "EOF\n"
+            ";;\n"
+            "esac\n",
+            encoding="utf-8",
+        )
+        os.chmod(fake_readelf, 0o755)
+        result = PREFLIGHT.validate_elf(worker, library, str(fake_readelf), "linux-arm64")
+        self.assertEqual("/lib/ld-linux-aarch64.so.1", result["workerInterpreter"])
+
+        fake_readelf.write_text(
+            fake_readelf.read_text(encoding="utf-8").replace(
+                "Shared library: [ld-linux-aarch64.so.1]",
+                "Shared library: [ld-linux-x86-64.so.2]",
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ValueError, "ld-linux-x86-64.so.2"):
+            PREFLIGHT.validate_elf(worker, library, str(fake_readelf), "linux-arm64")
+
     def test_rejects_sqlite_newer_glibc_independently(self):
         text = self.readelf.read_text(encoding="utf-8")
         sqlite_start = text.index("Type: DYN")

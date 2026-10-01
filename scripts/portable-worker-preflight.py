@@ -36,11 +36,13 @@ RID_CONFIG = {
         "machines": {"x86_64", "amd64"},
         "elf_machine": "Advanced Micro Devices X86-64",
         "interpreter": "/lib64/ld-linux-x86-64.so.2",
+        "loader_dependency": "ld-linux-x86-64.so.2",
     },
     "linux-arm64": {
         "machines": {"aarch64", "arm64"},
         "elf_machine": "AArch64",
         "interpreter": "/lib/ld-linux-aarch64.so.1",
+        "loader_dependency": "ld-linux-aarch64.so.1",
     },
 }
 PRODUCER_METADATA = (
@@ -186,7 +188,12 @@ def validate_elf(worker: Path, library: Path, executable: str, rid: str = "linux
     if interpreter is None or interpreter.group(1) != expected["interpreter"]:
         raise ValueError("Worker requires an unexpected ELF interpreter")
     dependencies = sorted(set(re.findall(r"Shared library: \[([^\]]+)\]", worker_text)))
-    unexpected = sorted(set(dependencies) - {"libc.so.6", "libm.so.6"})
+    allowed_worker_dependencies = {
+        "libc.so.6",
+        "libm.so.6",
+        expected["loader_dependency"],
+    }
+    unexpected = sorted(set(dependencies) - allowed_worker_dependencies)
     if unexpected:
         raise ValueError(f"Worker has unexpected shared libraries: {', '.join(unexpected)}")
     versions = glibc_versions(worker_text)
@@ -212,6 +219,7 @@ def validate_elf(worker: Path, library: Path, executable: str, rid: str = "linux
         "libdl.so.2",
         "libm.so.6",
         "libpthread.so.0",
+        expected["loader_dependency"],
     }
     unexpected_library_dependencies = sorted(
         set(library_dependencies) - allowed_library_dependencies
