@@ -14,7 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, windows-2025, windows-2022]
+        os: [windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     env:
@@ -45,6 +45,11 @@ jobs:
         run: dotnet publish diag/EtwStackDiag -c Release -r win-x64 --self-contained false -p:PublishReadyToRun=true -o pub
       - name: private session, default (R2R)
         run: pub/EtwStackDiag.exe capture private private-default out 10
+      - name: SELF private session, default
+        run: pub/EtwStackDiag.exe capture-self private self-default out 10
+      - name: SELF private session, DOTNET_TieredCompilation=0
+        env: { DOTNET_TieredCompilation: "0" }
+        run: pub/EtwStackDiag.exe capture-self private self-notiering out 10
       - name: private session, DOTNET_ReadyToRun=0
         env: { DOTNET_ReadyToRun: "0" }
         run: pub/EtwStackDiag.exe capture private private-nor2r out 10
@@ -72,3 +77,30 @@ jobs:
             out/*.txt
             out/*.zip
           retention-days: 7
+
+  real-test:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      DOTNET_NOLOGO: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - name: Build Core tests
+        run: dotnet build tests/DotnetDiagnostics.Core.Tests -c Release
+      - name: Isolated x3
+        shell: pwsh
+        run: |
+          foreach ($i in 1..3) {
+            "### isolated round $i"
+            dotnet test tests/DotnetDiagnostics.Core.Tests -c Release --no-build --filter "FullyQualifiedName~SampleAsync_CapturesFromCurrentProcess_WhenElevated" --logger "console;verbosity=normal" 2>&1 | Select-String -Pattern "Passed|Failed|stack|samples|Total tests|BurnManagedCpu" | Select-Object -First 40
+          }
+      - name: Class
+        shell: pwsh
+        run: dotnet test tests/DotnetDiagnostics.Core.Tests -c Release --no-build --filter "FullyQualifiedName~EtwNativeAotCpuSamplerTests" --logger "console;verbosity=normal" 2>&1 | Select-String -Pattern "Passed |Failed |stack|samples|Total tests" | Select-Object -First 60
+      - name: Collection LiveProcess-equivalent (all Etw*)
+        shell: pwsh
+        run: dotnet test tests/DotnetDiagnostics.Core.Tests -c Release --no-build --filter "FullyQualifiedName~Etw" --logger "console;verbosity=normal" 2>&1 | Select-String -Pattern "Failed |stack|samples|Total tests|Passed!|Failed!" | Select-Object -First 60

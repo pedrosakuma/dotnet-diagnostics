@@ -15,6 +15,7 @@ return args[0] switch
 {
     "workload" => Workload.Run(int.Parse(args[1])),
     "capture" => await Capture.RunAsync(args[1], args[2], args[3], int.Parse(args[4])),
+    "capture-self" => await Capture.RunAsync(args[1], args[2], args[3], int.Parse(args[4]), self: true),
     _ => throw new ArgumentException(args[0]),
 };
 
@@ -30,6 +31,17 @@ static class Workload
     public static long Sink;
 
     public static int Run(int seconds)
+    {
+        foreach (var l in StartThreads()) Console.WriteLine(l);
+        Console.WriteLine($"PID {Environment.ProcessId}");
+        Console.WriteLine("READY");
+        Console.Out.Flush();
+        Thread.Sleep(TimeSpan.FromSeconds(seconds));
+        Stop = true;
+        return 0;
+    }
+
+    public static List<string> StartThreads()
     {
         var started = new CountdownEvent(4);
         var lines = new List<string>();
@@ -50,13 +62,7 @@ static class Workload
         Start("managed-lcg", () => Sink += lcg());
         Start("native-ntdll", NativeLoop);
         started.Wait();
-        foreach (var l in lines) Console.WriteLine(l);
-        Console.WriteLine($"PID {Environment.ProcessId}");
-        Console.WriteLine("READY");
-        Console.Out.Flush();
-        Thread.Sleep(TimeSpan.FromSeconds(seconds));
-        Stop = true;
-        return 0;
+        return lines;
     }
 
     // R2R-precompiled when published with PublishReadyToRun; tier0+OSR when DOTNET_ReadyToRun=0.
@@ -109,20 +115,29 @@ static class Workload
 
 static class Capture
 {
-    public static async Task<int> RunAsync(string mode, string label, string outDir, int seconds)
+    public static async Task<int> RunAsync(string mode, string label, string outDir, int seconds, bool self = false)
     {
         Directory.CreateDirectory(outDir);
         var exe = Environment.ProcessPath!;
-        var psi = new ProcessStartInfo(exe, $"workload {seconds + 20}") { RedirectStandardOutput = true };
-        using var child = Process.Start(psi)!;
         var roles = new Dictionary<int, string>();
-        int pid = child.Id;
-        string? line;
-        while ((line = await child.StandardOutput.ReadLineAsync()) != "READY")
+        Process? child = null;
+        int pid;
+        if (self)
         {
-            if (line is null) throw new InvalidOperationException("workload exited early");
-            var parts = line.Split(' ');
-            if (parts[0] == "TID") roles[int.Parse(parts[2])] = parts[1];
+            pid = Environment.ProcessId;
+            foreach (var l in Workload.StartThreads()) { var parts = l.Split(' '); roles[int.Parse(parts[2])] = parts[1]; }
+        }
+        else
+        {
+            child = Process.Start(new ProcessStartInfo(exe, $"workload {seconds + 20}") { RedirectStandardOutput = true })!;
+            pid = child.Id;
+            string? line;
+            while ((line = await child.StandardOutput.ReadLineAsync()) != "READY")
+            {
+                if (line is null) throw new InvalidOperationException("workload exited early");
+                var parts = line.Split(' ');
+                if (parts[0] == "TID") roles[int.Parse(parts[2])] = parts[1];
+            }
         }
         Console.WriteLine($"[{label}] child pid {pid}, threads: {string.Join(", ", roles.Select(r => $"{r.Value}={r.Key}"))}");
 
@@ -160,7 +175,8 @@ static class Capture
             default:
                 throw new ArgumentException(mode);
         }
-        try { child.Kill(); } catch { }
+        Workload.Stop = true;
+        try { child?.Kill(); } catch { }
 
         var report = Analyze(merged, pid, roles, label, mode);
         Console.WriteLine(report);
