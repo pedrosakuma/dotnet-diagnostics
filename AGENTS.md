@@ -86,6 +86,13 @@ The Kind workflow additionally caches Docker layers via `type=gha`; GHA cache is
 branch-scoped (PRs read `main`'s cache, write their own). Crash dumps upload only
 on failure (`if: ${{ failure() && … }}`); TRX always.
 
+In `ci.yml`, lightweight CLI, BenchmarkDotNet, and packaging checks run in
+separate fast-test jobs alongside the serialized live-process suites, so their
+results surface early. The existing `Build & Test` contexts aggregate both
+groups; the full suite remains required. Test steps have explicit timeouts, and
+evidence-verification and artifact-upload steps must still run after a test
+failure or timeout.
+
 **Bearer token.** The server reads `MCP_BEARER_TOKEN` from the environment. If unset, it
 generates an ephemeral 32-byte hex token at startup and logs it as a warning — there is no
 hard-coded default. The local docker walkthroughs explicitly pass `MCP_BEARER_TOKEN=dev-token`.
