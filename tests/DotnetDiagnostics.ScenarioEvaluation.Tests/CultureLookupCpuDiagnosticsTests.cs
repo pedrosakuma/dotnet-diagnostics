@@ -102,7 +102,6 @@ public sealed class CultureLookupCpuDiagnosticsTests
         result = result with
         {
             Artifact = result.Artifact with { NativeLeafCoverage = coverage },
-            Summary = result.Summary with { NativeLeafCoverage = coverage },
         };
 
         var evidence = ScenarioLiveRunner.CompleteCultureCpuEvidence(

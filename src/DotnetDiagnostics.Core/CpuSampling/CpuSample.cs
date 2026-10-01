@@ -206,12 +206,6 @@ public sealed record CpuSample(
     public IReadOnlyList<string> Notes { get; init; } = [];
 
     /// <summary>
-    /// Insertion-bounded per-module native leaf identity and verified-range coverage.
-    /// Populated by the Windows ETW sampler.
-    /// </summary>
-    public NativeLeafCoverage? NativeLeafCoverage { get; init; }
-
-    /// <summary>
     /// Aggregate symbol-resolution quality of <see cref="TopHotspots"/>. Always populated for
     /// OS-backed samples by the perf/ETW samplers; <c>null</c> for CoreCLR EventPipe samples
     /// since that path resolves managed methods via TraceEvent and the concept does not apply

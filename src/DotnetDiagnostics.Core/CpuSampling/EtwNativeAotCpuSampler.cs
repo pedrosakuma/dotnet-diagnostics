@@ -467,7 +467,6 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
             TopSelfTime = CpuSampleAnalytics.TopSelfTime(root, total),
             TopRunningSelfTime = CpuSampleAnalytics.TopRunningSelfTime(root, total),
             Notes = notes,
-            NativeLeafCoverage = nativeLeafCoverage,
             Timings = new CpuSampleTimings(
                 CaptureDuration: TimeSpan.Zero,
                 SymbolicationDuration: TimeSpan.Zero,
