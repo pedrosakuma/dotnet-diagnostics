@@ -148,6 +148,11 @@ public class EtwNativeAotCpuSamplerTests
         var loadTask = Task.Run(async () =>
         {
             await captureStarted.Task.WaitAsync(cts.Token);
+            if (Environment.GetEnvironmentVariable("ETW_DIAG_KEEP_DIR") is { Length: > 0 } diagDir)
+            {
+                File.AppendAllText(Path.Combine(diagDir, "hot-threads.txt"),
+                    $"pid={pid} hotTid={DiagGetCurrentThreadId()} managedTid={Environment.CurrentManagedThreadId} at={DateTimeOffset.UtcNow:O}{Environment.NewLine}");
+            }
             BurnManagedCpu(cts.Token);
         }, cts.Token);
 
@@ -247,6 +252,9 @@ public class EtwNativeAotCpuSamplerTests
             }
         }
     }
+
+    [DllImport("kernel32.dll", EntryPoint = "GetCurrentThreadId")]
+    private static extern uint DiagGetCurrentThreadId();
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static void BurnManagedCpu(CancellationToken cancellationToken)

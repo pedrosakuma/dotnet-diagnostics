@@ -11,6 +11,7 @@ permissions:
 
 jobs:
   diag:
+    if: false
     strategy:
       fail-fast: false
       matrix:
@@ -79,6 +80,7 @@ jobs:
           retention-days: 7
 
   real-test:
+    if: false
     runs-on: windows-latest
     timeout-minutes: 45
     env:
@@ -111,3 +113,70 @@ jobs:
       - name: Collection LiveProcess-equivalent (all Etw*)
         shell: pwsh
         run: dotnet test tests/DotnetDiagnostics.Core.Tests -c Release --no-build --filter "FullyQualifiedName~Etw" --logger "console;verbosity=normal" 2>&1 | Select-String -Pattern "Failed |stack|samples|Total tests|Passed!|Failed!" | Select-Object -First 60
+
+  full-suite:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      DOTNET_NOLOGO: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: true
+      ETW_DIAG_KEEP_DIR: ${{ github.workspace }}\etwkeep
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - name: Stage private NuGet configuration
+        id: nuget
+        env:
+          PRIVATE_NUGET_CONFIG: ${{ secrets.NUGET_CONFIG }}
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:PRIVATE_NUGET_CONFIG)) { throw "NUGET_CONFIG secret required" }
+          $config = Join-Path $env:RUNNER_TEMP "ci-NuGet.Config"
+          [System.IO.File]::WriteAllText($config, $env:PRIVATE_NUGET_CONFIG, [System.Text.UTF8Encoding]::new($false))
+          "path=$config" >> $env:GITHUB_OUTPUT
+      - name: Restore
+        run: dotnet restore --configfile "${{ steps.nuget.outputs.path }}"
+      - name: Install .NET 8 / 9 runtimes
+        shell: pwsh
+        run: |
+          . ./scripts/download-dotnet-installer.ps1
+          Save-DotnetInstallScript
+          ./dotnet-install.ps1 -Channel 8.0 -Runtime dotnet -InstallDir "$env:DOTNET_ROOT" -SkipNonVersionedFiles
+          ./dotnet-install.ps1 -Channel 9.0 -Runtime dotnet -InstallDir "$env:DOTNET_ROOT" -SkipNonVersionedFiles
+          Remove-Item dotnet-install.ps1
+      - name: Build
+        run: dotnet build DotnetDiagnostics.slnx -c Release --no-restore
+      - name: Full Core suite (CI flags)
+        continue-on-error: true
+        timeout-minutes: 30
+        env:
+          DIAG_REQUIRE_WINDOWS_DIA_ETW: "1"
+        shell: bash
+        run: python scripts/ci-test.py core tests/DotnetDiagnostics.Core.Tests/DotnetDiagnostics.Core.Tests.csproj
+      - name: Publish analyzer
+        if: always()
+        run: dotnet publish diag/EtwStackDiag -c Release -r win-x64 --self-contained false --configfile "${{ steps.nuget.outputs.path }}" -o pub
+      - name: Analyze preserved ETLs
+        if: always()
+        shell: pwsh
+        run: |
+          $keep = $env:ETW_DIAG_KEEP_DIR
+          Get-ChildItem $keep | Format-Table Name, Length | Out-String
+          "== hot threads"; Get-Content "$keep/hot-threads.txt" -ErrorAction SilentlyContinue
+          Get-ChildItem $keep -Filter *.sessions.txt | ForEach-Object { "== $($_.Name)"; Get-Content $_.FullName }
+          $hot = @(Get-Content "$keep/hot-threads.txt" -ErrorAction SilentlyContinue | ForEach-Object { if ($_ -match 'pid=(\d+) hotTid=(\d+)') { [pscustomobject]@{Pid=$Matches[1];Tid=$Matches[2]} } })
+          Get-ChildItem $keep -Filter *.merged.etl | ForEach-Object {
+            $etl = $_.FullName
+            foreach ($h in $hot) { if ($_.Name -like "dotnet-diag-mcp-$($h.Pid)-*") { pub/EtwStackDiag.exe analyze $etl $h.Pid $h.Tid } }
+          }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: etw-full-suite
+          path: |
+            etwkeep/*.txt
+            etwkeep/*.etl
+            artifacts/**/*.trx
+          retention-days: 7

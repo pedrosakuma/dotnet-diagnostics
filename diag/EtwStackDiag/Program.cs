@@ -15,6 +15,7 @@ return args[0] switch
 {
     "workload" => Workload.Run(int.Parse(args[1])),
     "capture" => await Capture.RunAsync(args[1], args[2], args[3], int.Parse(args[4])),
+    "analyze" => Capture.AnalyzeOnly(args[1], int.Parse(args[2]), args.Skip(3).Select(int.Parse).ToArray()),
     "capture-self" => await Capture.RunAsync(args[1], args[2], args[3], int.Parse(args[4]), self: true),
     _ => throw new ArgumentException(args[0]),
 };
@@ -181,6 +182,12 @@ static class Capture
         var report = Analyze(merged, pid, roles, label, mode);
         Console.WriteLine(report);
         File.WriteAllText(Path.Combine(outDir, $"{label}.txt"), report);
+        return 0;
+    }
+
+    public static int AnalyzeOnly(string etl, int pid, int[] hotTids)
+    {
+        Console.WriteLine(Analyze(etl, pid, hotTids.ToDictionary(t => t, _ => "HOT-BurnManagedCpu"), Path.GetFileName(etl), "analyze"));
         return 0;
     }
 

@@ -137,6 +137,12 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
             // merge adds ImageID/DbgID records while the captured images are still available.
             var mergedEtlPath = Path.Combine(captureDir, "trace-merged.etl");
             TraceEventSession.Merge([etlPath], mergedEtlPath, TraceEventMergeOptions.ImageIDsOnly);
+            // DIAG ONLY (never merge): preserve the merged ETL for offline analysis.
+            if (Environment.GetEnvironmentVariable("ETW_DIAG_KEEP_DIR") is { Length: > 0 } keepDir)
+            {
+                Directory.CreateDirectory(keepDir);
+                File.Copy(mergedEtlPath, Path.Combine(keepDir, $"{sessionName}.merged.etl"), overwrite: true);
+            }
             var processed = ProcessEtl(mergedEtlPath, processId, startedAt, duration, topN, sourceResolution);
             return processed.Result with
             {
@@ -193,6 +199,12 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
                 ClrRundownTraceEventParser.ProviderGuid,
                 TraceEventLevel.Verbose,
                 ClrRundownJitLoaderAndStartKeywords);
+            if (Environment.GetEnvironmentVariable("ETW_DIAG_KEEP_DIR") is { Length: > 0 } diagDir)
+            {
+                Directory.CreateDirectory(diagDir);
+                File.WriteAllLines(Path.Combine(diagDir, $"{sessionName}.sessions.txt"),
+                    TraceEventSession.GetActiveSessionNames().Select(n => n ?? "<null>"));
+            }
             _logger.LogDebug("ETW session '{Session}' started for pid {Pid}, capturing for {Duration}s.",
                 sessionName, 0, duration.TotalSeconds);
 
