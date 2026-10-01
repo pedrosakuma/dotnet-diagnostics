@@ -195,6 +195,18 @@ public sealed class ScenarioLiveRunner
             load.Successes);
     }
 
+    internal static Task<ScenarioEvidence> CaptureCulturePhaseForValidationAsync(
+        ScenarioManifest manifest,
+        int trial,
+        ScenarioPhaseRecorder phaseRecorder,
+        CancellationToken cancellationToken)
+        => CaptureCulturePhaseAsync(
+            manifest,
+            trial,
+            ordinal: false,
+            phaseRecorder,
+            cancellationToken);
+
     internal static ScenarioEvidence CompleteCultureCpuEvidence(
         ScenarioEvidence evidence, CpuSampleResult result, int maximumEvidenceItems,
         string? activeMethod = null, string? inactiveMethod = null, int verifiedResponses = 0)
@@ -208,6 +220,7 @@ public sealed class ScenarioLiveRunner
             ? methods.Methods[0].SelfSamples?.RunningSamples ?? methods.Methods[0].ExclusiveSamples
             : 0;
         var topShare = totalRunning > 0 ? topRunning * 100d / totalRunning : 0;
+        var nativeCoverage = ProjectIcuNativeCoverage(result.Artifact.NativeLeafCoverage);
         var diagnostics = evidence with
         {
             Metrics = evidence.Metrics.Concat(
@@ -216,7 +229,7 @@ public sealed class ScenarioLiveRunner
                 new ObservedMetric("cpu-top1-running-self-share", topShare, "%"),
                 new ObservedMetric("cpu-concentration-min-top1-share", CpuSelfTimeConcentrationProvider.MinTop1Share * 100, "%"),
                 new ObservedMetric("cpu-retained-exclusive-samples", methods.Methods.Sum(method => method.ExclusiveSamples), "samples"),
-            ]).OrderBy(metric => metric.Name, StringComparer.Ordinal).ToArray(),
+            ]).Concat(nativeCoverage.Metrics).OrderBy(metric => metric.Name, StringComparer.Ordinal).ToArray(),
             Frames = methods.Methods.Where(method => method.ExclusiveSamples > 0)
                 .Select(method => new ObservedFrame(
                     $"{method.Module}!{method.Method}", checked((int)method.ExclusiveSamples)))
@@ -227,6 +240,7 @@ public sealed class ScenarioLiveRunner
                     $"CPU frames retain at most {retainedLimit} exclusive candidates even when no concentration signal is emitted; matchCount is exclusive sample count, not inclusive attribution or thread count.",
                     "Unresolved addresses remain separate candidates. Resolved ancestors or module totals do not establish a resolved hashing leaf.",
                 }
+                .Concat(nativeCoverage.Notes)
                 .Concat(modules.Groups.Select(module => FormattableString.Invariant(
                     $"Exclusive module: {module.Group}; samples={module.ExclusiveSamples}; share={module.ExclusivePercent:0.##}%.")))
                 .Concat(result.Summary.Notes)
@@ -264,6 +278,71 @@ public sealed class ScenarioLiveRunner
             };
         }
         return diagnostics;
+    }
+
+    private static (IReadOnlyList<ObservedMetric> Metrics, IReadOnlyList<string> Notes)
+        ProjectIcuNativeCoverage(NativeLeafCoverage? coverage)
+    {
+        if (coverage is null)
+        {
+            return (
+                [],
+                ["ICU native leaf coverage is unavailable because this artifact predates the bounded ETW module/PC provenance report."]);
+        }
+
+        var icu = coverage.Modules
+            .Where(module => string.Equals(
+                Path.GetFileName(module.ImagePath ?? module.Module),
+                "icu.dll",
+                StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(module => module.TotalLeafSamples)
+            .ThenBy(module => module.ImageBase)
+            .FirstOrDefault();
+        if (icu is null)
+        {
+            return (
+                [
+                    new ObservedMetric("icu-native-image-observed", 0),
+                    new ObservedMetric("icu-native-leaf-unretained-sample-weight", coverage.UnretainedModuleSampleWeight, "samples"),
+                ],
+                [
+                    $"No ETW-loaded icu.dll identity was retained; retainedModules={coverage.RetainedModules}/{coverage.RetainedModuleLimit}, " +
+                    $"unretainedModules={coverage.UnretainedModules}, unretainedModuleSampleWeight={coverage.UnretainedModuleSampleWeight}.",
+                ]);
+        }
+
+        var sampleCoverage = icu.TotalLeafSamples > 0
+            ? icu.VerifiedRangeSamples * 100d / icu.TotalLeafSamples
+            : 0;
+        var retainedDistinctCoverage = icu.RetainedDistinctPcs > 0
+            ? icu.RetainedVerifiedDistinctPcs * 100d / icu.RetainedDistinctPcs
+            : 0;
+        var resolutionSummary = string.Join(", ", icu.RetainedPcs
+            .GroupBy(pc => pc.Resolution)
+            .OrderBy(group => group.Key)
+            .Select(group => $"{group.Key}:distinct={group.Count()},samples={group.Sum(pc => pc.Samples)}"));
+
+        return (
+            [
+                new ObservedMetric("icu-native-image-observed", 1),
+                new ObservedMetric("icu-native-leaf-samples", icu.TotalLeafSamples, "samples"),
+                new ObservedMetric("icu-native-leaf-verified-range-samples", icu.VerifiedRangeSamples, "samples"),
+                new ObservedMetric("icu-native-leaf-sample-weighted-coverage", sampleCoverage, "%"),
+                new ObservedMetric("icu-native-leaf-retained-distinct-pcs", icu.RetainedDistinctPcs, "pcs"),
+                new ObservedMetric("icu-native-leaf-retained-verified-distinct-pcs", icu.RetainedVerifiedDistinctPcs, "pcs"),
+                new ObservedMetric("icu-native-leaf-retained-distinct-coverage", retainedDistinctCoverage, "%"),
+                new ObservedMetric("icu-native-leaf-unretained-sample-weight", icu.UnretainedSampleWeight, "samples"),
+                new ObservedMetric("icu-native-leaf-pc-inventory-complete", icu.UnretainedSampleWeight == 0 ? 1 : 0),
+            ],
+            [
+                string.Create(
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    $"ICU ETW identity: path={icu.ImagePath ?? "missing"}; base=0x{icu.ImageBase:X}; size={icu.ImageSize}; pdb={icu.PdbName ?? "missing"}; guid={icu.PdbSignature?.ToString() ?? "missing"}; age={icu.PdbAge?.ToString() ?? "missing"}; resolver={icu.ResolverStatus}."),
+                string.Create(
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    $"ICU native leaf coverage: verifiedSamples={icu.VerifiedRangeSamples}/{icu.TotalLeafSamples} ({sampleCoverage:0.####}%); retainedVerifiedDistinctPcs={icu.RetainedVerifiedDistinctPcs}/{icu.RetainedDistinctPcs} ({retainedDistinctCoverage:0.####}%); unretainedSampleWeight={icu.UnretainedSampleWeight}; retainedResolutionBreakdown=[{resolutionSummary}]."),
+                "ICU coverage is specific to this captured image and PDB identity; it does not identify, rebase or recover the historical hosted capture.",
+            ]);
     }
 
     private static async Task DriveCultureRequestsAsync(

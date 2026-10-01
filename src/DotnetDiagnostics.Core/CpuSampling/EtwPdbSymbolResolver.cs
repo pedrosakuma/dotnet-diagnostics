@@ -18,6 +18,7 @@ internal enum NativeSymbolResolverOpenStatus
 {
     Ready,
     MissingPdbIdentity,
+    SymbolSourceUnavailable,
     MatchingPdbUnavailable,
     DiaUnavailable,
     PdbRejected,
@@ -262,6 +263,7 @@ internal sealed class EtwPdbSymbolResolver : IDisposable
 internal sealed class EtwPdbSymbolResolverPool : IDisposable
 {
     private readonly Dictionary<ModuleFileIndex, EtwPdbSymbolResolver> resolvers = [];
+    private readonly Dictionary<ModuleFileIndex, NativeSymbolResolverOpenStatus> openStatuses = [];
     private readonly Dictionary<NativeSymbolResolverOpenStatus, int> openStatusCounts = [];
     private bool disposed;
 
@@ -275,12 +277,18 @@ internal sealed class EtwPdbSymbolResolverPool : IDisposable
         var pool = new EtwPdbSymbolResolverPool();
         if (symbolReader is null)
         {
+            foreach (var module in modules.DistinctBy(module => module.ModuleFileIndex))
+            {
+                pool.openStatuses.Add(module.ModuleFileIndex, NativeSymbolResolverOpenStatus.SymbolSourceUnavailable);
+                pool.openStatusCounts[NativeSymbolResolverOpenStatus.SymbolSourceUnavailable]
+                    = pool.openStatusCounts.GetValueOrDefault(NativeSymbolResolverOpenStatus.SymbolSourceUnavailable) + 1;
+            }
             return pool;
         }
 
         foreach (var module in modules)
         {
-            if (pool.resolvers.ContainsKey(module.ModuleFileIndex))
+            if (pool.openStatuses.ContainsKey(module.ModuleFileIndex))
             {
                 continue;
             }
@@ -290,6 +298,7 @@ internal sealed class EtwPdbSymbolResolverPool : IDisposable
                 pool.resolvers.Add(module.ModuleFileIndex, resolver!);
             }
 
+            pool.openStatuses.Add(module.ModuleFileIndex, status);
             pool.openStatusCounts[status] = pool.openStatusCounts.GetValueOrDefault(status) + 1;
         }
 
@@ -309,6 +318,11 @@ internal sealed class EtwPdbSymbolResolverPool : IDisposable
 
         return resolver.Resolve((uint)(codeAddress.Address - module.ImageBase));
     }
+
+    public NativeSymbolResolverOpenStatus GetOpenStatus(TraceModuleFile module)
+        => openStatuses.GetValueOrDefault(
+            module.ModuleFileIndex,
+            NativeSymbolResolverOpenStatus.SymbolSourceUnavailable);
 
     public void Dispose()
     {

@@ -12,6 +12,7 @@ internal static class ScenarioEnvironmentVariables
     public const string Trial = "DOTNET_DIAGNOSTICS_SCENARIO_TRIAL";
     public const string Attempt = "DOTNET_DIAGNOSTICS_SCENARIO_ATTEMPT";
     public const string TrialArtifactPath = "DOTNET_DIAGNOSTICS_SCENARIO_TRIAL_ARTIFACT_PATH";
+    public const string Issue987SingleCapture = "DOTNET_DIAGNOSTICS_987_SINGLE_CAPTURE";
 }
 
 [CollectionDefinition(Name, DisableParallelization = true)]
@@ -29,6 +30,38 @@ public sealed class ScenarioLiveTests
     [Trait("Category", "ScenarioEvaluationLive")]
     public Task LiveCapture_CultureLookup_SatisfiesStructuredEvidenceInvariants()
         => RunLiveCaptureAsync("culture-lookup");
+
+    [WindowsOnlyFact(
+        "The #987 controlled capture requires an explicitly armed elevated local Windows session.",
+        Timeout = 300_000)]
+    [Trait("Category", "Issue987ControlledCapture")]
+    public async Task LiveCapture_CultureLookupSinglePhase_PersistsBoundedNativeCoverage()
+    {
+        if (!string.Equals(
+            Environment.GetEnvironmentVariable(ScenarioEnvironmentVariables.Issue987SingleCapture),
+            "1",
+            StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        var manifest = ScenarioManifestLoader.LoadAll().Single(item => item.Id == "culture-lookup");
+        var phaseRecorder = new ScenarioPhaseRecorder();
+        var evidence = await ScenarioLiveRunner.CaptureCulturePhaseForValidationAsync(
+            manifest,
+            trial: 1,
+            phaseRecorder,
+            CancellationToken.None);
+        PersistWhenRequested(evidence);
+
+        evidence.Collection.Status.Should().Be(
+            ScenarioStageStatus.Passed,
+            evidence.Collection.Detail);
+        evidence.Metrics.Should().Contain(metric =>
+            metric.Name == "icu-native-image-observed" && metric.Value == 1);
+        evidence.Notes.Should().Contain(note =>
+            note.StartsWith("ICU ETW identity:", StringComparison.Ordinal));
+    }
 
     [Theory(Timeout = 600_000)]
     [MemberData(nameof(NonCpuLiveScenarios))]
