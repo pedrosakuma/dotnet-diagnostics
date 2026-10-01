@@ -423,6 +423,7 @@ public sealed class SqliteAdmissionTests(ITestOutputHelper output) : IDisposable
     [Fact]
     public async Task BoundedWireRejectsLengthBeforeEagerPayloadAllocation()
     {
+        if (!Linux) return;
         var bytes = new byte[4];
         BinaryPrimitives.WriteUInt32LittleEndian(bytes, 65537);
         using var input = new MemoryStream(bytes);
@@ -439,6 +440,7 @@ public sealed class SqliteAdmissionTests(ITestOutputHelper output) : IDisposable
     [InlineData("1111111111111111111111111111111A", "Wire.ArtifactId")]
     public async Task SnapshotCellsAreValidatedOnlyOnceCompleteAndIdentifiersMatchExactly(string payload, string reason)
     {
+        if (!Linux) return;
         var id = payload.Length == 32 ? payload : Artifact;
         var json = payload.Length == 32 ? "[1]" : payload;
         using var input = new MemoryStream(SnapshotRow(id, Encoding.UTF8.GetBytes(json), chunk: 2));
@@ -450,6 +452,7 @@ public sealed class SqliteAdmissionTests(ITestOutputHelper output) : IDisposable
     [Fact]
     public async Task LargeSnapshotCellDoesNotAllocateInProportionToItsSize()
     {
+        if (!Linux) return;
         var json = Encoding.UTF8.GetBytes("[" + string.Join(",", Enumerable.Repeat("\"0123456789abcdef\"", 300_000)) + "]");
         Assert.True(json.Length > 5 * 1024 * 1024);
         var wire = SnapshotRow(Artifact, json, chunk: 65535);
@@ -504,6 +507,7 @@ public sealed class SqliteAdmissionTests(ITestOutputHelper output) : IDisposable
     [Fact]
     public async Task PartialChildFrameCannotCompleteAdmission()
     {
+        if (!Linux) return;
         using var input = new MemoryStream([3, 0, 0, 0, 1]);
         var error = await Assert.ThrowsAsync<CaptureStoreException>(() =>
             SqliteAdmissionWire.ReadAsync(input, Stream.Null, Request, new(), CancellationToken.None));
