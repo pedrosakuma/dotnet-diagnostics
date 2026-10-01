@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using DotnetDiagnostics.Core.CpuSampling;
 using FluentAssertions;
 using Microsoft.Diagnostics.Tracing.Session;
+using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace DotnetDiagnostics.Core.Tests;
@@ -139,19 +140,32 @@ public class EtwNativeAotCpuSamplerTests
             return;
         }
 
-        var sampler = new EtwNativeAotCpuSampler();
+        var captureStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sampler = new EtwNativeAotCpuSampler(new EtwCaptureStartedLogger(captureStarted));
         var pid = Environment.ProcessId;
 
         using var cts = new CancellationTokenSource();
         var loadTask = Task.Run(async () =>
         {
-            await Task.Delay(TimeSpan.FromSeconds(2), cts.Token);
+            await captureStarted.Task.WaitAsync(cts.Token);
             BurnManagedCpu(cts.Token);
         }, cts.Token);
 
         try
         {
-            var result = await sampler.SampleAsync(pid, TimeSpan.FromSeconds(7), topN: 50);
+            var sampleTask = sampler.SampleAsync(
+                pid,
+                TimeSpan.FromSeconds(7),
+                topN: 50,
+                cancellationToken: cts.Token);
+            if (await Task.WhenAny(captureStarted.Task, sampleTask) == sampleTask)
+            {
+                await sampleTask;
+                throw new InvalidOperationException("ETW capture completed before its session-start signal.");
+            }
+
+            await captureStarted.Task;
+            var result = await sampleTask;
 
             result.Should().NotBeNull();
             result.Summary.ProcessId.Should().Be(pid);
@@ -179,7 +193,7 @@ public class EtwNativeAotCpuSamplerTests
                 }
             }
             namedWorkloadSamples.Should().BeGreaterThan(0,
-                "the workload is JIT-compiled after ETW starts and its CLR name must survive native PDB validation. " +
+                "the workload starts after ETW enables its CLR providers, so its managed name must be resolved independently of native PDB/DIA validation. " +
                 $"Total samples: {result.Summary.TotalSamples}; named frames: " +
                 string.Join(", ", namedFrames.OrderByDescending(pair => pair.Value).Take(15)
                     .Select(pair => $"{pair.Key}={pair.Value}")) + ". " +
@@ -198,6 +212,28 @@ public class EtwNativeAotCpuSamplerTests
         {
             cts.Cancel();
             try { await loadTask; } catch (OperationCanceledException) { }
+        }
+    }
+
+    private sealed class EtwCaptureStartedLogger(
+        TaskCompletionSource<bool> captureStarted) : ILogger<EtwNativeAotCpuSampler>
+    {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Debug;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (logLevel == LogLevel.Debug
+                && formatter(state, exception).Contains("started for pid", StringComparison.Ordinal))
+            {
+                captureStarted.TrySetResult(true);
+            }
         }
     }
 
