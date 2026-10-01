@@ -19,6 +19,14 @@
 
 static volatile int benign_marker = 123;
 
+#if defined(__x86_64__)
+#define TEST_DENIED_PROBES 21
+#elif defined(__aarch64__)
+#define TEST_DENIED_PROBES 19
+#else
+#error The worker fixture supports Linux x86-64 and AArch64 only.
+#endif
+
 static void unsupported(const char *reason)
 {
     fprintf(stdout, "UNSUPPORTED %s\n", reason);
@@ -84,7 +92,7 @@ int main(int argc, char **argv)
         void *allocation = mmap(NULL, 257ULL * 1024ULL * 1024ULL, PROT_READ | PROT_WRITE,
             MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         if (allocation != MAP_FAILED) return 45;
-        printf("RESULT 1 %s 21 123 3031000 1000\n", argv[1]);
+        printf("RESULT 1 %s %d 123 3031000 1000\n", argv[1], TEST_DENIED_PROBES);
         fflush(stdout);
         return 0;
     }
@@ -99,7 +107,7 @@ int main(int argc, char **argv)
             long long elapsed = (now.tv_sec - started.tv_sec) * 1000000000LL + now.tv_nsec - started.tv_nsec;
             if (elapsed >= 20000000LL) break;
         }
-        printf("RESULT 1 %s 21 123 3031000 1000\n", argv[1]);
+        printf("RESULT 1 %s %d 123 3031000 1000\n", argv[1], TEST_DENIED_PROBES);
         fflush(stdout);
         return value == 0;
     }
@@ -118,7 +126,7 @@ int main(int argc, char **argv)
             MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         if (allocation == MAP_FAILED) return 49;
         for (size_t offset = 0; offset < length; offset += 4096) allocation[offset] = 1;
-        printf("RESULT 1 %s 21 123 3031000 1000\n", argv[1]);
+        printf("RESULT 1 %s %d 123 3031000 1000\n", argv[1], TEST_DENIED_PROBES);
         fflush(stdout);
         return allocation[0] == 0;
     }
@@ -142,7 +150,7 @@ int main(int argc, char **argv)
         }
         kill(monitor, SIGSTOP);
         if (strstr(argv[4], "exit") != NULL) {
-            printf("RESULT 1 %s 21 123 3031000 1000\n", argv[1]);
+            printf("RESULT 1 %s %d 123 3031000 1000\n", argv[1], TEST_DENIED_PROBES);
             fflush(stdout);
             return 0;
         }
