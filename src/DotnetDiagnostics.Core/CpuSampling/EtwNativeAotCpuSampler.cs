@@ -281,6 +281,7 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
         long outOfRangeFrames = 0;
         long missingRangeFrames = 0;
         long lookupFailedFrames = 0;
+        long stacklessSamples = 0;
         var nativeLeafCoverageCollector = new NativeLeafCoverageCollector();
 
         var targetModules = traceLog.Processes
@@ -304,7 +305,11 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
         foreach (var ev in events)
         {
             var stack = ev.CallStack();
-            if (stack is null) continue;
+            if (stack is null)
+            {
+                stacklessSamples++;
+                continue;
+            }
 
             // Walk the stack: TraceLog stacks are leaf→root (callee→caller).
             var frames = new List<(string Key, string Module, string Display)>();
@@ -420,6 +425,18 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
                 ? NativeAotSymbolDemangler.SymbolSource.PdbResolved
                 : NativeAotSymbolDemangler.SymbolSource.Stripped;
         var notes = new List<string>();
+        if (stacklessSamples > 0)
+        {
+            notes.Add(
+                $"Windows ETW excluded {stacklessSamples:N0} kernel profile sample(s) for the target that carried no call stack; " +
+                "they are not counted in TotalSamples.");
+        }
+        if (traceLog.EventsLost > 0)
+        {
+            notes.Add(
+                $"Windows ETW reported {traceLog.EventsLost:N0} lost event(s) for the session; samples, stacks, or CLR method " +
+                "events may be missing from this capture.");
+        }
         if (managedFrames > 0)
         {
             notes.Add($"Windows ETW resolved {managedFrames:N0} sampled frame(s) from CLR JIT/loader/rundown events, independently of native PDB/DIA resolution.");

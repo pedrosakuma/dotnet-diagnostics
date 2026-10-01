@@ -176,12 +176,23 @@ public class EtwNativeAotCpuSamplerTests
             var nodes = new Stack<CallTreeNode>();
             nodes.Push(result.Artifact.Root);
             var namedWorkloadSamples = 0L;
+            var testModuleRawSamples = 0L;
+            var modulelessRawSamples = 0L;
             var namedFrames = new Dictionary<string, long>(StringComparer.Ordinal);
             while (nodes.TryPop(out var node))
             {
                 if (node.Frame.Method.Contains(nameof(BurnManagedCpu), StringComparison.Ordinal))
                 {
                     namedWorkloadSamples += node.InclusiveSamples;
+                }
+                if (node.Frame.Method.StartsWith("0x", StringComparison.Ordinal)
+                    && node.Frame.Module.Contains("DotnetDiagnostics.Core.Tests", StringComparison.OrdinalIgnoreCase))
+                {
+                    testModuleRawSamples += node.ExclusiveSamples;
+                }
+                if (node.Frame.Method.StartsWith("[0x", StringComparison.Ordinal))
+                {
+                    modulelessRawSamples += node.ExclusiveSamples;
                 }
                 if (!node.Frame.Method.StartsWith("0x", StringComparison.Ordinal))
                 {
@@ -194,7 +205,7 @@ public class EtwNativeAotCpuSamplerTests
             }
             namedWorkloadSamples.Should().BeGreaterThan(0,
                 "the workload starts after ETW enables its CLR providers, so its managed name must be resolved independently of native PDB/DIA validation. " +
-                $"Total samples: {result.Summary.TotalSamples}; named frames: " +
+                $"Total samples: {result.Summary.TotalSamples}; unnamed test-module leaf samples: {testModuleRawSamples}; moduleless raw leaf samples: {modulelessRawSamples}; named frames: " +
                 string.Join(", ", namedFrames.OrderByDescending(pair => pair.Value).Take(15)
                     .Select(pair => $"{pair.Key}={pair.Value}")) + ". " +
                 string.Join(" ", result.Summary.Notes));
