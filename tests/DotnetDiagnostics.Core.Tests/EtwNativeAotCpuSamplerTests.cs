@@ -286,6 +286,25 @@ public class EtwNativeAotCpuSamplerTests
 
     [DllImport("ntdll.dll")]
     private static extern byte RtlDeleteFunctionTable(IntPtr functionTable);
+    [DllImport("ntdll.dll")]
+    private static extern int NtQueryInformationThread(IntPtr thread, int infoClass, IntPtr info, int length, out int returned);
+    [DllImport("kernel32.dll")]
+    private static extern bool GetProcessMitigationPolicy(IntPtr process, int policy, out ulong buffer, IntPtr length);
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
+    private static unsafe string DiagTeb(uint tid, ulong rsp)
+    {
+        var h = OpenThread(0x0040 | 0x0800, false, tid); // QUERY_INFORMATION | QUERY_LIMITED
+        var tbi = stackalloc byte[48];
+        var st = NtQueryInformationThread(h, 0, (IntPtr)tbi, 48, out _);
+        CloseHandle(h);
+        var teb = *(ulong*)(tbi + 8);
+        if (st != 0 || teb == 0) return $"tid={tid} NtQueryInformationThread=0x{st:x}";
+        ulong stackBase = *(ulong*)(teb + 0x8), stackLimit = *(ulong*)(teb + 0x10), dealloc = *(ulong*)(teb + 0x1478);
+        var inRange = rsp == 0 ? "n/a" : (rsp >= stackLimit && rsp < stackBase).ToString();
+        return $"tid={tid} teb=0x{teb:x} StackBase=0x{stackBase:x} StackLimit=0x{stackLimit:x} DeallocationStack=0x{dealloc:x} committed=0x{stackBase - stackLimit:x} reserved=0x{stackBase - dealloc:x} rsp=0x{rsp:x} rspInRange={inRange} SameTebSelf={(tid == DiagGetCurrentThreadId())}";
+    }
 
     // DIAG ONLY: in the same (possibly broken) process, re-capture the hot thread (C0), then delete
     // the overlapping callback (type=2) dynamic function table that covers the hot RIP and re-capture (C1).
@@ -302,10 +321,28 @@ public class EtwNativeAotCpuSamplerTests
             GetThreadContext(h, ctxMem);
             _ = ResumeThread(h);
             var rip = *(ulong*)(ctxMem + 0xF8);
+            var rsp = *(ulong*)(ctxMem + 0x98);
             NativeMemory.AlignedFree((void*)ctxMem);
             CloseHandle(h);
 
-            lines.Add($"C0 (before intervention): {DiagCapture(tid, dir, "c0")}");
+            GetProcessMitigationPolicy(GetCurrentProcess(), 15, out var cet, (IntPtr)4); // ProcessUserShadowStackPolicy
+            lines.Add($"CET user shadow stack policy flags=0x{cet:x}");
+            lines.Add("hot TEB: " + DiagTeb(tid, rsp));
+            lines.Add($"C0 (hot thread, before intervention): {DiagCapture(tid, dir, "c0")}");
+
+            // Same JIT'd BurnManagedCpu code on a brand-new dedicated thread.
+            using var freshCts = new CancellationTokenSource();
+            uint freshTid = 0;
+            using var freshReady = new ManualResetEventSlim();
+            var fresh = new Thread(() => { freshTid = DiagGetCurrentThreadId(); freshReady.Set(); BurnManagedCpu(freshCts.Token); }) { IsBackground = true };
+            fresh.Start();
+            freshReady.Wait();
+            Thread.Sleep(200);
+            lines.Add("fresh TEB: " + DiagTeb(freshTid, 0));
+            lines.Add($"C2 (fresh thread, same code): {DiagCapture(freshTid, dir, "c2")}");
+            lines.Add($"C3 (hot thread again, concurrently burning): {DiagCapture(tid, dir, "c3")}");
+            freshCts.Cancel();
+            fresh.Join();
             var head = RtlGetFunctionTableListHead();
             var callbacks = new List<IntPtr>();
             for (var e = *(IntPtr*)head; e != head; e = *(IntPtr*)e)
