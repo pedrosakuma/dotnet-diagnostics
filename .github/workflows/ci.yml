@@ -542,13 +542,13 @@ jobs:
         attempt: [1, 2, 3, 4]
         include:
           - attempt: 1
-            tfilter: "FullyQualifiedName~Etw|FullyQualifiedName~OffCpu|FullyQualifiedName~Pmc|FullyQualifiedName~CpuEfficiency|FullyQualifiedName~NativeLock|FullyQualifiedName~LiveWindows|FullyQualifiedName~NativeDia|FullyQualifiedName~Capabilit"
+            tfilter: "FullyQualifiedName~EtwNativeAotCpuSamplerTests.SampleAsync_CapturesFromCurrentProcess_WhenElevated"
           - attempt: 2
-            tfilter: "(FullyQualifiedName!~Etw&FullyQualifiedName!~OffCpu&FullyQualifiedName!~Pmc&FullyQualifiedName!~CpuEfficiency&FullyQualifiedName!~NativeLock&FullyQualifiedName!~LiveWindows&FullyQualifiedName!~NativeDia&FullyQualifiedName!~Capabilit)|FullyQualifiedName~EtwNativeAotCpuSamplerTests.SampleAsync_CapturesFromCurrentProcess_WhenElevated"
+            tfilter: "FullyQualifiedName~EtwNativeAotCpuSamplerTests.SampleAsync_CapturesFromCurrentProcess_WhenElevated"
           - attempt: 3
-            tfilter: "FullyQualifiedName~Etw|FullyQualifiedName~OffCpu|FullyQualifiedName~Pmc|FullyQualifiedName~CpuEfficiency|FullyQualifiedName~NativeLock|FullyQualifiedName~LiveWindows|FullyQualifiedName~NativeDia|FullyQualifiedName~Capabilit"
+            tfilter: "FullyQualifiedName~EtwNativeAotCpuSamplerTests"
           - attempt: 4
-            tfilter: "(FullyQualifiedName!~Etw&FullyQualifiedName!~OffCpu&FullyQualifiedName!~Pmc&FullyQualifiedName!~CpuEfficiency&FullyQualifiedName!~NativeLock&FullyQualifiedName!~LiveWindows&FullyQualifiedName!~NativeDia&FullyQualifiedName!~Capabilit)|FullyQualifiedName~EtwNativeAotCpuSamplerTests.SampleAsync_CapturesFromCurrentProcess_WhenElevated"
+            tfilter: "FullyQualifiedName~EtwNativeAotCpuSamplerTests"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: needs.changes.outputs.code == 'true'
