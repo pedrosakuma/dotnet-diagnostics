@@ -7,6 +7,7 @@ using Microsoft.Diagnostics.Tracing.Parsers;
 using Microsoft.Diagnostics.Tracing.Parsers.Kernel;
 using Microsoft.Diagnostics.Tracing.Session;
 using DotnetDiagnostics.Core.Symbols;
+using DotnetDiagnostics.Core.Etw;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -201,9 +202,8 @@ public sealed class EtwNativeThreadSnapshotInspector : IThreadSnapshotInspector
         }
         finally
         {
-            try { session?.Stop(); }
-            catch (Exception ex) { _logger.LogDebug(ex, "ETW native thread snapshot session stop failed (best effort)."); }
-            session?.Dispose();
+            // Kernel stack walking was enabled: never stop on a pool thread (see EtwStackSessionStopper).
+            EtwStackSessionStopper.StopAndDispose(session, _logger, "ETW native thread snapshot session");
         }
     }
 
