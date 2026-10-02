@@ -20,7 +20,7 @@
     "observationSeconds": 8
   },
   "budget": {
-    "maximumRuntimeSeconds": 60,
+    "maximumRuntimeSeconds": 120,
     "maximumEvidenceItems": 30
   },
   "expectedEvidence": [

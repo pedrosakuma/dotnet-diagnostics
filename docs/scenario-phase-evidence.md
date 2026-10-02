@@ -65,9 +65,11 @@ artifacts remain necessary for those cases.
 The optional additive trial-artifact field retains schema version 1. Existing
 artifacts without it deserialize to null; non-culture trials do not emit it.
 Consumers should continue treating missing timeline evidence as unavailable.
-There is no change to the scenario manifest, 60-second shared budget, eight-second
+There is no change to the scenario manifest, eight-second
 phase windows, verified HTTP responses, OS provenance, reciprocal ownership
 controls or provider gates.
+
+**Budget update (#929).** The shared budget was later raised from 60 to 120 seconds: Windows controls on the same revision took 64–76 s (two eight-second captures plus symbolication and aggregation) and were all cancelled by the 60-second limit, while Linux trials take about 25 s. Evidence thresholds are unchanged.
 
 ## Validation and further diagnosis
 
