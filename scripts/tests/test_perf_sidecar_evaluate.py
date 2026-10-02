@@ -45,8 +45,9 @@ class EvaluateTests(unittest.TestCase):
         self.assertEqual(ev.evaluate("native-lock-contention", payload, 0, False, ACTIVE)["status"], "passed")
 
     def test_off_cpu_needs_observations(self):
-        self.assertEqual(ev.evaluate("off_cpu", {"data": {"totalSamples": 0}}, 0, False, ACTIVE)["status"], "failed")
-        self.assertEqual(ev.evaluate("off_cpu", {"data": {"totalSamples": 7}}, 0, False, ACTIVE)["status"], "passed")
+        self.assertEqual(ev.evaluate("off_cpu", {"data": {"schedSwitches": 0, "totalOffCpuMicros": 0}}, 0, False, ACTIVE)["status"], "failed")
+        passing = {"data": {"schedSwitches": 7, "totalOffCpuMicros": 1000}}
+        self.assertEqual(ev.evaluate("off_cpu", passing, 0, False, ACTIVE)["status"], "passed")
 
     def test_classified_prerequisite_error_is_unsupported(self):
         payload = {"error": {"kind": "PermissionDenied", "message": "no CAP_PERFMON"}}

@@ -94,11 +94,12 @@ def evaluate(kind, payload, exit_code, timed_out, activation, expect_error_kind=
         return finish("failed", "result has no data object")
 
     if kind == "off_cpu":
-        count = next((data[key] for key in ("totalOffCpuSamples", "totalSamples", "totalWaitSamples") if key in data), None)
-        if not _positive(count):
-            return finish("failed", f"off-CPU capture reported no wait observations (fields: {sorted(data)[:12]})")
-        result["observations"] = count
-        return finish("passed", f"{count} off-CPU observations during activated workload")
+        switches = data.get("schedSwitches")
+        micros = data.get("totalOffCpuMicros")
+        if not (_positive(switches) and _positive(micros)):
+            return finish("failed", f"off-CPU capture reported no wait observations (schedSwitches={switches!r}, totalOffCpuMicros={micros!r})")
+        result["observations"] = switches
+        return finish("passed", f"{switches} scheduler switches / {micros} off-CPU µs during activated workload")
 
     field, minimum, symbol = COUNT_RULES[kind]
     count = data.get(field)

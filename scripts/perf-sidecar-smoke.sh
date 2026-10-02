@@ -32,10 +32,10 @@ bound="${CAPTURE_TIMEOUT:-120}"
 run_id="$$"
 prefix="perf-sidecar-$run_id"
 anchor="$prefix-anchor"; aot="$prefix-aot"; bad="$prefix-bad"; side="$prefix-side"
-neg_caps="$prefix-neg-caps"; neg_perf="$prefix-neg-perf"
+neg_caps="$prefix-neg-caps"; neg_perf="$prefix-neg-perf"; neg_uprobe="$prefix-neg-uprobe"
 volume="$prefix-tmp"
 cli=/app/cli/dotnet-diagnostics
-planned=(cpu-nativeaot off_cpu native-alloc native-lock-contention neg-no-perfmon neg-no-perf)
+planned=(cpu-nativeaot off_cpu native-alloc native-lock-contention neg-no-perfmon neg-no-perf neg-uprobe-default-apparmor)
 
 mkdir -p "$out"
 out="$(cd "$out" && pwd)"
@@ -51,11 +51,11 @@ bad_port="$(find_free_port)"
 
 cleanup() {
   set +e
-  for c in "$side" "$neg_caps" "$neg_perf" "$aot" "$bad" "$anchor"; do
+  for c in "$side" "$neg_caps" "$neg_perf" "$neg_uprobe" "$aot" "$bad" "$anchor"; do
     docker logs "$c" > "$out/$c.log" 2>&1
     docker inspect "$c" > "$out/$c.inspect.json" 2>&1
   done
-  docker rm -f "$side" "$neg_caps" "$neg_perf" "$aot" "$bad" "$anchor" > /dev/null 2>&1
+  docker rm -f "$side" "$neg_caps" "$neg_perf" "$neg_uprobe" "$aot" "$bad" "$anchor" > /dev/null 2>&1
   docker volume rm "$volume" > /dev/null 2>&1
   rm -f "$out"/*.stop
 }
@@ -88,7 +88,7 @@ record host.securityOptions "$(docker info --format '{{join .SecurityOptions ","
 record host.runtime "$(docker info --format '{{.DefaultRuntime}}' 2>&1)"
 record host.tracefs "$([ -d /sys/kernel/tracing/events ] && echo mounted || echo missing)"
 record images.sidecar "$(docker image inspect "$SIDECAR_IMAGE" --format '{{.Id}}' 2>&1)"
-record images.sidecarBase "$(docker image inspect "$SIDECAR_IMAGE" --format '{{index .Config.Labels "org.opencontainers.image.base.digest"}}' 2>&1)"
+record images.targets "same image as sidecar (target binaries bind-mounted read-only from the runner publish output)"
 
 docker volume create "$volume" > /dev/null
 
@@ -104,16 +104,21 @@ docker run -d --name "$aot" --pid="container:$anchor" --user 0 -v "$volume:/tmp"
   --entrypoint /app/NativeAotSample "$SIDECAR_IMAGE" > /dev/null || exit 2
 
 # 3) Sidecar: PERFMON for perf_event_open, SYS_PTRACE for /proc/<pid>/root + libc resolution,
-#    host tracefs (uprobe_events + sched tracepoints). Nothing else; not privileged.
+#    host tracefs (uprobe_events + sched tracepoints). The default docker AppArmor profile denies
+#    writes under /sys/kernel, which blocks `perf probe` uprobe creation (see neg-uprobe-default-apparmor),
+#    so ONLY this container runs apparmor=unconfined. Not privileged; no SYS_ADMIN; no host sysctls.
 docker run -d --name "$side" --pid="container:$anchor" --user 0 -v "$volume:/tmp" \
   -v /sys/kernel/tracing:/sys/kernel/tracing --cap-drop ALL --cap-add PERFMON --cap-add SYS_PTRACE \
-  --entrypoint tail "$SIDECAR_IMAGE" -f /dev/null > /dev/null || exit 2
+  --security-opt apparmor=unconfined --entrypoint tail "$SIDECAR_IMAGE" -f /dev/null > /dev/null || exit 2
 
 # Negative controls: a sidecar without CAP_PERFMON, and one whose perf binary is removed.
 docker run -d --name "$neg_caps" --pid="container:$anchor" --user 0 -v "$volume:/tmp" \
   --cap-drop ALL --entrypoint tail "$SIDECAR_IMAGE" -f /dev/null > /dev/null || exit 2
 docker run -d --name "$neg_perf" --pid="container:$anchor" --user 0 -v "$volume:/tmp" \
   --cap-drop ALL --cap-add PERFMON --cap-add SYS_PTRACE \
+  --entrypoint tail "$SIDECAR_IMAGE" -f /dev/null > /dev/null || exit 2
+docker run -d --name "$neg_uprobe" --pid="container:$anchor" --user 0 -v "$volume:/tmp" \
+  -v /sys/kernel/tracing:/sys/kernel/tracing --cap-drop ALL --cap-add PERFMON --cap-add SYS_PTRACE \
   --entrypoint tail "$SIDECAR_IMAGE" -f /dev/null > /dev/null || exit 2
 docker exec "$neg_perf" sh -c 'rm -rf /usr/lib/linux-tools* /usr/bin/perf'
 
@@ -137,6 +142,7 @@ record topology.badPid "$bad_pid"
 probe_container sidecar "$side"
 probe_container negNoPerfmon "$neg_caps"
 probe_container negNoPerf "$neg_perf"
+probe_container negUprobe "$neg_uprobe"
 python3 "$evaluator" topology --raw "$raw" --out "$out/topology.json"
 
 # Workload driver: runs on the host against the published target port until a stop file appears,
@@ -197,9 +203,11 @@ run_capture native-alloc native-alloc "$side" "$bad_pid" "$bad_port" "/native-bl
 run_capture native-lock-contention native-lock-contention "$side" "$bad_pid" "$bad_port" "/lock-storm?seconds=2&blockers=4"
 # Negative controls assert an actionable, classified failure while the target is active.
 run_capture neg-no-perfmon cpu "$neg_caps" "$aot_pid" "$aot_port" "/cpu" \
-  --expect-error-kind PermissionDenied --expect-message permission
+  --expect-error-kind PermissionDenied --expect-message CAP_PERFMON
 run_capture neg-no-perf cpu "$neg_perf" "$aot_pid" "$aot_port" "/cpu" \
   --expect-error-kind UnsupportedPrerequisite --expect-message perf
+run_capture neg-uprobe-default-apparmor native-alloc "$neg_uprobe" "$bad_pid" "$bad_port" "/native-bloat?mb=1" \
+  --expect-error-kind PermissionDenied --expect-message tracefs
 
 python3 "$evaluator" report --dir "$out" --planned "${planned[@]}" \
   --summary-json "$out/summary.json" --summary-md "$out/summary.md"
