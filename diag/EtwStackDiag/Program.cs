@@ -23,6 +23,11 @@ return args[0] switch
 static class Native
 {
     [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+    [DllImport("ntdll.dll")] public static extern int RtlAddGrowableFunctionTable(out IntPtr handle, IntPtr table, uint count, uint max, IntPtr rangeStart, IntPtr rangeEnd);
+    [DllImport("kernel32.dll")] public static extern IntPtr VirtualAlloc(IntPtr addr, UIntPtr size, uint type, uint protect);
+    [DllImport("ntdll.dll")] public static extern IntPtr RtlGetFunctionTableListHead();
+    [DllImport("kernel32.dll")] public static extern bool SetProcessWorkingSetSize(IntPtr process, IntPtr min, IntPtr max);
+    [DllImport("kernel32.dll")] public static extern IntPtr GetCurrentProcess();
     [DllImport("ntdll.dll")] public static extern unsafe uint RtlComputeCrc32(uint initial, byte* buffer, int length);
 }
 
@@ -42,9 +47,70 @@ static class Workload
         return 0;
     }
 
+    public static unsafe int CountDynamicTables()
+    {
+        var head = Native.RtlGetFunctionTableListHead();
+        int n = 0;
+        for (var e = *(IntPtr*)head; e != head && n < 1_000_000; e = *(IntPtr*)e) n++;
+        return n;
+    }
+
+    public static unsafe List<string> DescribeTables()
+    {
+        var r = new List<string>();
+        var head = Native.RtlGetFunctionTableListHead();
+        var t = new List<(ulong Min, ulong Max, int Type, uint Count)>();
+        for (var e = *(IntPtr*)head; e != head && t.Count < 1_000_000; e = *(IntPtr*)e)
+            t.Add((*(ulong*)(e + 32), *(ulong*)(e + 40), *(int*)(e + 80), *(uint*)(e + 84)));
+        r.Add($"INFO tables={t.Count} types={string.Join(",", t.GroupBy(x => x.Type).Select(g => $"{g.Key}={g.Count()}"))}");
+        for (int i = 0; i < t.Count; i++)
+            if (t[i].Max - t[i].Min >= 0x10000)
+                r.Add($"INFO table[{i}] [{t[i].Min:x},{t[i].Max:x}) type={t[i].Type} entries={t[i].Count}");
+        return r;
+    }
+
+    public static unsafe void RegisterDummyTables(int count)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            var region = Native.VirtualAlloc(IntPtr.Zero, (UIntPtr)0x10000, 0x2000, 0x01); // MEM_RESERVE, PAGE_NOACCESS
+            var table = (IntPtr)NativeMemory.AllocZeroed(12);
+            int st = Native.RtlAddGrowableFunctionTable(out _, table, 0, 1, region, region + 0x10000);
+            if (st != 0) throw new InvalidOperationException($"RtlAddGrowableFunctionTable failed 0x{st:x} at {i}");
+        }
+    }
+
+    // Collectible dynamic assembly => new LoaderAllocator code heap => new range section and
+    // new growable function table registered *after* everything already in the list.
+    static Func<long> BuildCollectibleLoop()
+    {
+        var ab = AssemblyBuilder.DefineDynamicAssembly(new System.Reflection.AssemblyName("CollectibleLoop"), AssemblyBuilderAccess.RunAndCollect);
+        var mb = ab.DefineDynamicModule("m");
+        var tb = mb.DefineType("T", System.Reflection.TypeAttributes.Public | System.Reflection.TypeAttributes.Abstract | System.Reflection.TypeAttributes.Sealed);
+        var stopField = tb.DefineField("Stop", typeof(bool), System.Reflection.FieldAttributes.Public | System.Reflection.FieldAttributes.Static);
+        var m = tb.DefineMethod("Loop", System.Reflection.MethodAttributes.Public | System.Reflection.MethodAttributes.Static, typeof(long), Type.EmptyTypes);
+        m.SetImplementationFlags(System.Reflection.MethodImplAttributes.NoInlining | System.Reflection.MethodImplAttributes.AggressiveOptimization);
+        var il = m.GetILGenerator();
+        var acc = il.DeclareLocal(typeof(long));
+        var top = il.DefineLabel();
+        il.Emit(OpCodes.Ldc_I8, 0L); il.Emit(OpCodes.Stloc, acc);
+        il.MarkLabel(top);
+        il.Emit(OpCodes.Ldloc, acc); il.Emit(OpCodes.Ldc_I8, 43L); il.Emit(OpCodes.Mul);
+        il.Emit(OpCodes.Ldc_I8, 3L); il.Emit(OpCodes.Add); il.Emit(OpCodes.Stloc, acc);
+        il.Emit(OpCodes.Volatile); il.Emit(OpCodes.Ldsfld, stopField);
+        il.Emit(OpCodes.Brfalse, top);
+        il.Emit(OpCodes.Ldloc, acc); il.Emit(OpCodes.Ret);
+        var t = tb.CreateType();
+        return t.GetMethod("Loop")!.CreateDelegate<Func<long>>();
+    }
+
     public static List<string> StartThreads()
     {
-        var started = new CountdownEvent(4);
+        var dummies = int.Parse(Environment.GetEnvironmentVariable("DIAG_DUMMY_TABLES") ?? "0");
+        var before = CountDynamicTables();
+        RegisterDummyTables(dummies);
+        var collectible = BuildCollectibleLoop();
+        var started = new CountdownEvent(5);
         var lines = new List<string>();
         void Start(string name, Action body)
         {
@@ -62,7 +128,20 @@ static class Workload
         var lcg = BuildDynamicLoop();
         Start("managed-lcg", () => Sink += lcg());
         Start("native-ntdll", NativeLoop);
+        Start("collectible-new", () => Sink += collectible());
         started.Wait();
+        var trimMs = int.Parse(Environment.GetEnvironmentVariable("DIAG_TRIM_MS") ?? "0");
+        if (trimMs > 0)
+        {
+            new Thread(() =>
+            {
+                while (!Stop) { Native.SetProcessWorkingSetSize(Native.GetCurrentProcess(), -1, -1); Thread.Sleep(trimMs); }
+            }) { IsBackground = true, Name = "trimmer" }.Start();
+        }
+        lines.Add($"INFO trimMs={trimMs}");
+        Thread.Sleep(500);
+        lines.AddRange(DescribeTables());
+        lines.Add($"INFO dynamicTablesBefore={before} dummies={dummies} after={CountDynamicTables()}");
         return lines;
     }
 
@@ -126,7 +205,7 @@ static class Capture
         if (self)
         {
             pid = Environment.ProcessId;
-            foreach (var l in Workload.StartThreads()) { var parts = l.Split(' '); roles[int.Parse(parts[2])] = parts[1]; }
+            foreach (var l in Workload.StartThreads()) { var parts = l.Split(' '); if (parts[0] == "TID") roles[int.Parse(parts[2])] = parts[1]; else Console.WriteLine(l); }
         }
         else
         {
@@ -138,6 +217,7 @@ static class Capture
                 if (line is null) throw new InvalidOperationException("workload exited early");
                 var parts = line.Split(' ');
                 if (parts[0] == "TID") roles[int.Parse(parts[2])] = parts[1];
+                else Console.WriteLine(line);
             }
         }
         Console.WriteLine($"[{label}] child pid {pid}, threads: {string.Join(", ", roles.Select(r => $"{r.Value}={r.Key}"))}");

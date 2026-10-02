@@ -293,10 +293,10 @@ public class EtwNativeAotCpuSamplerTests
         {
             // Walk ntdll's dynamic function table list (DYNAMIC_FUNCTION_TABLE: Min@32, Max@40, Type@80, EntryCount@84).
             var head = RtlGetFunctionTableListHead();
-            var tables = new List<(ulong Min, ulong Max, int Type, uint Count)>();
+            var tables = new List<(ulong Min, ulong Max, int Type, uint Count, IntPtr Fn, ulong Base)>();
             for (var e = *(IntPtr*)head; e != head && tables.Count < 100_000; e = *(IntPtr*)e)
             {
-                tables.Add((*(ulong*)(e + 32), *(ulong*)(e + 40), *(int*)(e + 80), *(uint*)(e + 84)));
+                tables.Add((*(ulong*)(e + 32), *(ulong*)(e + 40), *(int*)(e + 80), *(uint*)(e + 84), *(IntPtr*)(e + 16), *(ulong*)(e + 48)));
             }
             lines.Add($"dynamic function tables: {tables.Count}; types: {string.Join(",", tables.GroupBy(t => t.Type).Select(g => $"{g.Key}={g.Count()}"))}; total entries: {tables.Sum(t => (long)t.Count)}");
             var probeRip = 0UL;
@@ -319,6 +319,36 @@ public class EtwNativeAotCpuSamplerTests
             }
             var idx = tables.FindIndex(t => probeRip >= t.Min && probeRip < t.Max);
             lines.Add(idx < 0 ? "hot RIP not covered by any dynamic table" : $"hot RIP table index {idx} of {tables.Count}: [{tables[idx].Min:x},{tables[idx].Max:x}) type={tables[idx].Type} entries={tables[idx].Count}");
+            for (var gi = 0; gi < tables.Count; gi++)
+            {
+                var g = tables[gi];
+                if (g.Type != 3 || probeRip < g.Min || probeRip >= g.Max) continue;
+                var rva = (uint)(probeRip - g.Base);
+                int unsorted = 0, badRange = 0, linearHit = -1;
+                uint prevBegin = 0;
+                for (var k = 0; k < g.Count; k++)
+                {
+                    var rf = (uint*)(g.Fn + (k * 12));
+                    if (k > 0 && rf[0] < prevBegin) unsorted++;
+                    if (rf[1] <= rf[0]) badRange++;
+                    if (rva >= rf[0] && rva < rf[1]) linearHit = k;
+                    prevBegin = rf[0];
+                }
+                int lo = 0, hi = (int)g.Count - 1, binHit = -1;
+                while (lo <= hi)
+                {
+                    var mid = (lo + hi) / 2;
+                    var rf = (uint*)(g.Fn + (mid * 12));
+                    if (rva < rf[0]) hi = mid - 1; else if (rva >= rf[1]) lo = mid + 1; else { binHit = mid; break; }
+                }
+                lines.Add($"growable[{gi}] base=0x{g.Base:x} fn=0x{(long)g.Fn:x} count={g.Count} rva=0x{rva:x} unsortedPairs={unsorted} badRanges={badRange} linearHit={linearHit} binarySearchHit={binHit}");
+                var center = linearHit >= 0 ? linearHit : lo;
+                for (var k = Math.Max(0, center - 3); k < Math.Min((int)g.Count, center + 4); k++)
+                {
+                    var rf = (uint*)(g.Fn + (k * 12));
+                    lines.Add($"    rf[{k}] begin=0x{rf[0]:x} end=0x{rf[1]:x} unwind=0x{rf[2]:x}");
+                }
+            }
             foreach (var (t, i) in tables.Select((t, i) => (t, i)).Where(x => x.i < 3 || x.i >= tables.Count - 3 || x.i == idx))
             {
                 lines.Add($"  table[{i}] [{t.Min:x},{t.Max:x}) size=0x{t.Max - t.Min:x} type={t.Type} entries={t.Count}");
