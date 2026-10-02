@@ -25,7 +25,7 @@ covered where, and what remains a manual/documented-only environment.
 | Environment | Perf binary resolution | Command-line construction | Live capture (CPU/off-CPU/native-alloc/native-lock) | How it's exercised |
 |---|---|---|---|---|
 | **Native Linux (ubuntu-latest GitHub-hosted runner)** | Tested live | Tested live + unit | Tested live (opt-in) | `.github/workflows/linux-perf-compat-smoke.yml` (manual `workflow_dispatch` + weekly schedule) |
-| **Container (sidecar topology, same-UID + capabilities)** | Documented; not exercised by an automated job in this repo | Unit-tested only | Not automated here — validate manually per [`docs/local-docker-sidecar.md`](./local-docker-sidecar.md) | Manual, following the local Docker sidecar walkthrough |
+| **Container (production sidecar image, PID-namespace anchor, same-UID)** | Tested live | Tested live + unit | Tested live, advisory (cpu on NativeAOT, off-CPU, native-alloc, native-lock) plus negative controls | `.github/workflows/linux-perf-sidecar-smoke.yml` (manual + weekly; see "Container sidecar automation" below) |
 | **WSL2** | Unit-tested (the wrapper-with-no-binary shape is reproduced in `PerfCompatSmokeTests`) | Unit-tested only | **Documented/manual only** — no stable hosted GitHub Actions runner exists for WSL2 | Manual; see "WSL2" section below |
 | **Any host, pure logic** | Unit-tested (`PerfBinaryResolverTests`, `PerfCompatSmokeTests`) | Unit-tested (`PerfCompatSmokeTests`, `OffCpuSamplerTests`) | N/A | `dotnet test tests/DotnetDiagnostics.Core.Tests/ --filter FullyQualifiedName~Perf` |
 
@@ -91,12 +91,8 @@ process. If a future runner image tightens that default, the job's own capabilit
 will show it, and the affected `collect` invocation will show up as a documented gap in the job
 summary rather than a mysterious CI failure.
 
-Container/Kubernetes-sidecar topologies (the production-representative topology) are **not**
-covered by this workflow — they need `--cap-add PERFMON` / `SYS_PTRACE` wiring that already has
-a documented, human-verified walkthrough in
-[`docs/local-docker-sidecar.md`](./local-docker-sidecar.md); re-validate perf compatibility there
-manually when changing the perf-backed collectors, rather than duplicating that capability
-plumbing into a second automated job.
+Container/Kubernetes-sidecar topologies are covered by the separate advisory workflow
+described in "Container sidecar automation" below, not by this native-host job.
 
 CoreCLR users can select the same per-process perf backend explicitly with
 `collect_sample(kind="cpu", cpuBackend="Os")` or CLI `--cpu-backend os`. The default
@@ -104,7 +100,43 @@ remains EventPipe. The perf path keeps bounded JIT/loader tracking active during
 capture and performs final rundown before `perf script`; the emitted map omits
 overlapping/reused address ranges and reports unresolved, ambiguous, or capped symbol
 coverage in `notes`. This extends symbol support, not the environments claimed by this
-matrix: automated sidecar coverage remains owned by #934.
+matrix: automated sidecar coverage is described in "Container sidecar automation".
+
+## Container sidecar automation
+
+`.github/workflows/linux-perf-sidecar-smoke.yml` (driven by `scripts/perf-sidecar-smoke.sh`,
+classified by `scripts/perf_sidecar_evaluate.py`) runs the production `deploy/Dockerfile` image
+as a sidecar joined to a PID-namespace anchor with the targets, as in
+[`docs/local-docker-sidecar.md`](./local-docker-sidecar.md). It is advisory (not a required
+check), has no retries, and always uploads `topology.json`, per-capture JSON/stderr/exit/activation
+logs and `summary.md`. Each planned capture ends as `passed`, `unsupported`, `failed` or `timeout`.
+
+| Capture | Target / workload | Passes when |
+|---|---|---|
+| `cpu` (perf backend) | NativeAotSample `/cpu` | at least 10 samples, LinuxPerf evidence |
+| `off_cpu` | BadCodeSample `/lock-storm` | scheduler switches and off-CPU time > 0 |
+| `native-alloc` | BadCodeSample `/native-bloat` | sampled allocations >= 1 and `malloc` probed |
+| `native-lock-contention` | BadCodeSample `/lock-storm` | sampled lock calls >= 1 and `pthread_mutex_lock` probed |
+
+Negative controls assert actionable errors: no `CAP_PERFMON` (PermissionDenied), no perf binary
+(UnsupportedPrerequisite), and uprobe creation under the default Docker AppArmor profile
+(PermissionDenied naming tracefs).
+
+Grants the sidecar needed (no privileged container, no `SYS_ADMIN`, no host sysctl changes):
+
+- `--cap-drop ALL --cap-add PERFMON --cap-add SYS_PTRACE`, same UID as the targets.
+- cpu works with just those; off-CPU additionally needs host tracefs mounted
+  (`-v /sys/kernel/tracing:/sys/kernel/tracing`) for `sched:sched_switch`.
+- native-alloc/native-lock create uprobes with `perf probe`, which also needs a writable tracefs
+  mount and `--security-opt apparmor=unconfined` **on that container only** (the default
+  `docker-default` profile denies writes under `/sys/kernel`). A narrower custom AppArmor
+  profile is a possible follow-up.
+- Uprobes attach to a file inode: the sidecar and the target must map the same libc file. In this
+  automation one libc is extracted from the image and bind-mounted into both. Targets running a
+  different image/libc than the sidecar get zero uprobe hits, which is a limitation to keep in
+  mind for real multi-image pods.
+
+Native-host evidence comes from `linux-perf-compat-smoke.yml`; WSL2 remains manual-only.
 
 ## WSL2: documented/manual environment
 

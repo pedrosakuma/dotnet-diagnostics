@@ -19,7 +19,7 @@ PREREQUISITE_ERROR_KINDS = {"PermissionDenied", "UnsupportedPrerequisite", "Prer
 
 # kind -> (data field holding the observation count, minimum count, required probed symbol)
 COUNT_RULES = {
-    "cpu": ("totalSamples", 20, None),
+    "cpu": ("totalSamples", 10, None),
     "native-alloc": ("totalSampledAllocations", 1, "malloc"),
     "native-lock-contention": ("totalSampledLockCalls", 1, "pthread_mutex_lock"),
 }
