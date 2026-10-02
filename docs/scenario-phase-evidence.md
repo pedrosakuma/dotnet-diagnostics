@@ -71,6 +71,8 @@ controls or provider gates.
 
 **Budget update (#929).** The shared budget was later raised from 60 to 120 seconds: Windows controls on the same revision took 64–76 s (two eight-second captures plus symbolication and aggregation) and were all cancelled by the 60-second limit, while Linux trials take about 25 s. Evidence thresholds are unchanged.
 
+**Linux restored (#929).** Under the predeclared protocol (10 Linux trials plus 3 Windows controls on one revision, zero retries) the result was Linux 10/10 and Windows 3/3 (workflow run 37074523470), so `linux` was added to the manifest's `supportedLivePlatforms` and to the standard matrix. Hosted Linux runners need `linux-tools-$(uname -r)` and `kernel.perf_event_paranoid=-1`; the workflow provisions both.
+
 ## Validation and further diagnosis
 
 Deterministic tests use a manual monotonic/UTC clock and a completion barrier:

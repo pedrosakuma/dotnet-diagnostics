@@ -2,11 +2,11 @@
   "schemaVersion": 1,
   "id": "culture-lookup",
   "version": "2.0.0",
-  "supportedLivePlatforms": [ "windows" ],
+  "supportedLivePlatforms": [ "windows", "linux" ],
   "reportedSymptom": "Attribute measured CPU observations to the application's culture-sensitive dictionary lookup work without assuming which framework or native function is expensive.",
   "groundTruth": "The repository owns two distinct lookup entrypoints. Each route must return correct results and own measured on-CPU stacks only in its active phase. Inclusive workload ownership is not exclusive managed or native leaf cost; neither comparer is required to remain slower.",
   "workload": {
-    "setup": "Launch a fresh Release BadCodeSample per phase over loopback. Windows ETW kernel profiling requires elevation and resolution of the project-owned managed entrypoints. Explicit OS mode; no EventPipe fallback.",
+    "setup": "Launch a fresh Release BadCodeSample per phase over loopback. Windows ETW kernel profiling requires elevation; Linux uses perf (frame-pointer unwinding with the JIT map) and needs a working perf binary with perf_event_paranoid <= 2 or CAP_PERFMON. Both resolve the project-owned managed entrypoints. Explicit OS mode; no EventPipe fallback.",
     "activation": "Capture two separate 8-second windows: sustained culture-sensitive requests, then sustained ordinal requests in a fresh process. Verify every completed response and require reciprocal positive/negative method ownership.",
     "cleanup": "Cancel each phase's load and terminate its sample process before starting the other phase.",
     "parameters": {

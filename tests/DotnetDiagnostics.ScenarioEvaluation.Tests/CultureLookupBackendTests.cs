@@ -20,31 +20,15 @@ public sealed class CultureLookupBackendTests
     }
 
     [Fact]
-    public void Capture_RequiresExplicitOsBackendAndKeepsWindowsGuard()
+    public void Capture_RequiresExplicitOsBackendAndAndSupportsWindowsAndLinux()
     {
         ScenarioLiveRunner.CultureLookupSamplingMode.Should().Be(CpuSamplingMode.Os);
         var manifest = ScenarioManifestLoader.LoadAll().Single(item => item.Id == "culture-lookup");
-        manifest.SupportedLivePlatforms.Should().Equal(ScenarioPlatform.Windows);
+        manifest.SupportedLivePlatforms.Should().Equal(ScenarioPlatform.Windows, ScenarioPlatform.Linux);
         manifest.Version.Should().Be("2.0.0");
         manifest.ExpectedEvidence.Should().Contain(item => item.Id == "culture-owned-cpu")
             .And.Contain(item => item.Id == "ordinal-owned-cpu")
             .And.NotContain(item => item.Id == "globalization-hash-leaf");
-    }
-
-    [Fact]
-    public void LinuxReassessmentOptIn_IsLimitedToCultureLookupAndDoesNotChangeManifestSupport()
-    {
-        var cultureLookup = ScenarioManifestLoader.LoadAll().Single(item => item.Id == "culture-lookup");
-
-        cultureLookup.SupportedLivePlatforms.Should().Equal(ScenarioPlatform.Windows);
-        ScenarioLiveRunner.SupportsPlatform(cultureLookup, ScenarioPlatform.Linux).Should().BeFalse();
-        ScenarioLiveRunner.SupportsPlatform(cultureLookup, ScenarioPlatform.Linux, allowLinuxCultureLookupReassessment: true)
-            .Should().BeTrue();
-        ScenarioLiveRunner.SupportsPlatform(
-                cultureLookup with { Id = "another-scenario" },
-                ScenarioPlatform.Linux,
-                allowLinuxCultureLookupReassessment: true)
-            .Should().BeFalse();
     }
 
     [Fact]

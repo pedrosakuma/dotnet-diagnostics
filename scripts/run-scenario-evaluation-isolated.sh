@@ -453,12 +453,7 @@ for scenario in "${scenarios[@]}"; do
 
       echo "---- trial ${trial}, attempt ${attempt}/${attempt_limit}"
       set +e
-      reassessment_env=()
-      if [[ "$reassess_linux_culture_lookup" == true ]]; then
-        reassessment_env+=(DOTNET_DIAGNOSTICS_SCENARIO_LINUX_CULTURE_LOOKUP_REASSESSMENT=culture-lookup)
-      fi
       env \
-        "${reassessment_env[@]}" \
         DOTNET_DIAGNOSTICS_SCENARIO_ID="$scenario" \
         DOTNET_DIAGNOSTICS_SCENARIO_TRIAL="$trial" \
         DOTNET_DIAGNOSTICS_SCENARIO_ATTEMPT="$attempt" \
