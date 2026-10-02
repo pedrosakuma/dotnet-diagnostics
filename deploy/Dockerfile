@@ -42,11 +42,14 @@ RUN --mount=type=secret,id=nugetconfig,target=/run/secrets/NuGet.Config,required
 # No native compiler is installed or run here; opting in requires the prepared artifact.
 COPY . ./
 ARG INCLUDE_PORTABLE_CAPTURE_WORKER=false
+ARG TARGETARCH
 
 RUN if [ "$INCLUDE_PORTABLE_CAPTURE_WORKER" = "true" ]; then \
-      test "$(dotnet --info | sed -n 's/^ *RID: *//p' | head -n 1)" = "linux-x64" || exit 1; \
-      export PortableCaptureWorkerAssetsDir=/src/artifacts/portable-worker/linux-x64 \
-                RequirePortableCaptureWorkerAssets=true; \
+      case "$TARGETARCH" in amd64) worker_rid=linux-x64;; arm64) worker_rid=linux-arm64;; *) exit 1;; esac; \
+      test "$(dotnet --info | sed -n 's/^ *RID: *//p' | head -n 1)" = "$worker_rid" || exit 1; \
+      export PortableCaptureWorkerAssetsDir=/src/artifacts/portable-worker \
+             PortableCaptureWorkerRid="$worker_rid" \
+             RequirePortableCaptureWorkerAssets=true; \
     elif [ "$INCLUDE_PORTABLE_CAPTURE_WORKER" != "false" ]; then exit 1; fi \
  && dotnet publish src/DotnetDiagnostics.Mcp/DotnetDiagnostics.Mcp.csproj \
     -c Release \
@@ -60,7 +63,9 @@ RUN if [ "$INCLUDE_PORTABLE_CAPTURE_WORKER" = "true" ]; then \
 # process without standing up the HTTP server. UseAppHost=true so the symlink in
 # the runtime stage has a native launcher to point at.
 RUN if [ "$INCLUDE_PORTABLE_CAPTURE_WORKER" = "true" ]; then \
-      export PortableCaptureWorkerAssetsDir=/src/artifacts/portable-worker/linux-x64 \
+      case "$TARGETARCH" in amd64) worker_rid=linux-x64;; arm64) worker_rid=linux-arm64;; *) exit 1;; esac; \
+      export PortableCaptureWorkerAssetsDir=/src/artifacts/portable-worker \
+             PortableCaptureWorkerRid="$worker_rid" \
              RequirePortableCaptureWorkerAssets=true; \
     fi \
  && dotnet publish src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj \

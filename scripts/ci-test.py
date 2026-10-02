@@ -40,7 +40,8 @@ def run(root, suite, project, test_filter):
     require(discovery.returncode == 0, f"{suite}: discovery exited {discovery.returncode}")
     with (directory / "console.log").open("wb") as output:
         with subprocess.Popen(
-            command + ["--blame-hang-timeout", "5m", "--blame-hang-dump-type", "none",
+            command + ["--blame-hang-timeout", "5m", "--blame-hang-dump-type",
+                       "full" if sys.platform == "win32" else "none",
                        "--blame-crash", "--blame-crash-dump-type", "full",
                        "--logger", f"trx;LogFileName={suite}.trx",
                        "--results-directory", str(directory.resolve())],

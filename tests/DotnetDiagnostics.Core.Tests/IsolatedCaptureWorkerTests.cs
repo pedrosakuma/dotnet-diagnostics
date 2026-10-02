@@ -10,9 +10,9 @@ namespace DotnetDiagnostics.Core.Tests;
 public sealed class IsolatedCaptureWorkerTests(ITestOutputHelper output) : IDisposable
 {
     private readonly string _root = Path.Combine(AppContext.BaseDirectory, "worker-tests", Guid.NewGuid().ToString("N"));
-    private static string Worker => Path.Combine(AppContext.BaseDirectory, "capture-worker");
+    private static string Worker => PortableWorkerTestSupport.Worker;
     private static string Helper => Path.Combine(AppContext.BaseDirectory, "capture-worker-fixture");
-    private static bool SupportedPlatform => OperatingSystem.IsLinux() && RuntimeInformation.ProcessArchitecture == Architecture.X64;
+    private static bool SupportedPlatform => PortableWorkerTestSupport.IsSupported;
 
     [Theory]
     [InlineData(false)]
@@ -30,7 +30,8 @@ public sealed class IsolatedCaptureWorkerTests(ITestOutputHelper output) : IDisp
             var result = await IsolatedCaptureWorker.ProbeTrustedFixtureAsync(
                 Request(fixture, helper.Id, address!) with { WritableProfile = writable });
             Assert.Equal(123, result.FixtureValue);
-            Assert.Equal(21, result.DeniedProbes);
+            Assert.Equal(RuntimeInformation.ProcessArchitecture == Architecture.X64 ? 21 : 19,
+                result.DeniedProbes);
             Assert.Equal(parentHeapLimit, SQLitePCL.raw.sqlite3_hard_heap_limit64(-1));
             Assert.True(result.LandlockAbi >= 3);
             Assert.InRange(result.PeakObservedRss, 1, 256L * 1024 * 1024);
@@ -336,7 +337,7 @@ public sealed class IsolatedCaptureWorkerTests(ITestOutputHelper output) : IDisp
     }
 
     private CaptureWorkerProbe Request(string fixture, int pid, string address) => new(Worker,
-        Path.Combine(AppContext.BaseDirectory, "runtimes", "linux-x64", "native", "libe_sqlite3.so"),
+        PortableWorkerTestSupport.SqliteLibrary,
         Path.GetDirectoryName(fixture)!, fixture, Path.Combine(_root, "unrelated.txt"), pid, address, Helper);
 
     private static Process StartHelper()

@@ -5,6 +5,39 @@ namespace DotnetDiagnostics.Core.Tests;
 public sealed partial class DurableCaptureStoreTests
 {
     [Fact]
+    public async Task ReplayCapacityRelease_IsSerializedWithWaiterRegistration()
+    {
+        await using var writer = await Store(new CaptureStoreOptions
+        {
+            QueueRecords = 1, QueueBytes = 256, BatchRecords = 1
+        }).CreateAsync(new("serialized replay admission"), Owner);
+        var artifact = writer.AddArtifact("test", "test");
+        var gate = typeof(CaptureWriter).GetField(
+            "_gate", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .GetValue(writer)!;
+        Task<bool> pending;
+        lock (gate)
+        {
+            Assert.True(writer.TryAppend(artifact, new(NumericValue: 0)));
+            // SQLite commits outside the admission lock; capacity must remain reserved
+            // until the worker takes that lock and can see newly registered waiters.
+            Assert.True(SpinWait.SpinUntil(
+                () => writer.GetMetrics().Quality.Persisted == 1, TimeSpan.FromSeconds(10)));
+            Assert.False(SpinWait.SpinUntil(
+                () => writer.GetMetrics().QueueBytes == 0, TimeSpan.FromMilliseconds(100)));
+            Assert.Equal(128, writer.GetMetrics().QueueBytes);
+            pending = writer.AppendAsync(artifact, new(NumericValue: 1)).AsTask();
+            Assert.False(pending.IsCompleted);
+            Assert.Equal(1, writer.GetMetrics().WaitingAppends);
+        }
+        Assert.True(await pending.WaitAsync(TimeSpan.FromSeconds(10)));
+        var info = await writer.CompleteAsync();
+        Assert.Equal(2, info.Quality.Persisted);
+        Assert.Equal(0, info.Quality.QueueRejected);
+        AssertConservation(info.Quality);
+    }
+
+    [Fact]
     public async Task SequentialReplay_WaitsForSmallQueue_WithoutRetryOrQueueLoss()
     {
         await using var writer = await Store(new CaptureStoreOptions
@@ -29,6 +62,38 @@ public sealed partial class DurableCaptureStoreTests
         using var reader = await Store().OpenAsync(info.CaptureId, Owner);
         Assert.Equal(Enumerable.Range(0, 100).Select(static i => (double?)i),
             reader.Query(new(artifact, PageSize: 1000)).Records.Select(static r => r.Record.NumericValue));
+    }
+
+    [Fact]
+    public async Task ConcurrentReplay_AlwaysWakesWaitersWhenSingleRecordCapacityIsReleased()
+    {
+        await using var writer = await Store(new CaptureStoreOptions
+        {
+            QueueRecords = 1, QueueBytes = 256, BatchRecords = 1
+        }).CreateAsync(new("concurrent single-slot replay"), Owner);
+        var artifact = writer.AddArtifact("test", "test");
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var producers = Enumerable.Range(0, 4).Select(producer => Task.Run(async () =>
+        {
+            for (var i = 0; i < 100; i++)
+            {
+                Assert.True(await writer.AppendAsync(
+                    artifact, new(NumericValue: producer * 100 + i), deadline.Token));
+                await Task.Yield();
+            }
+        })).ToArray();
+        await Task.WhenAll(producers);
+        writer.SetSourceRejected(0);
+        var info = await writer.CompleteAsync(deadline.Token);
+        Assert.True(info.Quality.IsComplete);
+        Assert.Equal(400, info.Quality.Persisted);
+        Assert.Equal(0, info.Quality.QueueRejected);
+        Assert.Equal(0, writer.GetMetrics().WaitingAppends);
+        AssertConservation(info.Quality);
+        using var reader = await Store().OpenAsync(info.CaptureId, Owner);
+        Assert.Equal(Enumerable.Range(0, 400).Select(static i => (double?)i),
+            reader.Query(new(artifact, PageSize: 1000)).Records
+                .Select(static record => record.Record.NumericValue).Order());
     }
 
     [Theory]

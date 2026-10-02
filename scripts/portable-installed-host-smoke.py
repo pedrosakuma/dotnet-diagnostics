@@ -169,16 +169,31 @@ def provenance_revision(assets: Path) -> str:
     return revision.strip()
 
 
-def zip_inventory(path: Path) -> dict[str, object]:
+def zip_inventory(path: Path, rids: tuple[str, ...]) -> dict[str, object]:
     entries = []
+    all_portable = []
     with zipfile.ZipFile(path) as archive:
         for info in archive.infolist():
-            if "NativeAssets/portable-capture/linux-x64" in info.filename:
+            marker = "NativeAssets/portable-capture/"
+            if marker in info.filename and not info.is_dir():
+                portable_path = info.filename.split(marker, 1)[1]
+                all_portable.append(portable_path)
+            else:
+                portable_path = ""
+            if any(portable_path.startswith(f"{rid}/") for rid in rids):
                 entries.append({
                     "name": info.filename,
                     "mode": format((info.external_attr >> 16) & 0o7777, "04o"),
                     "size": info.file_size,
                 })
+    expected = {
+        f"{rid}/{name}"
+        for rid in rids
+        for name in ("capture-worker", "libe_sqlite3.so", "provenance.xml",
+                     "sqlite-LICENSE.txt", "worker-LICENSE.txt")
+    }
+    if len(all_portable) != len(expected) or set(all_portable) != expected:
+        raise ValueError(f"{path} has unexpected portable assets: {all_portable}")
     return {"path": str(path), "sha256": sha256(path), "portableEntries": entries}
 
 
@@ -195,8 +210,8 @@ def tree_inventory(path: Path) -> list[dict[str, object]]:
     return results
 
 
-def find_native_assets(tool_path: Path) -> Path:
-    matches = sorted(tool_path.rglob("NativeAssets/portable-capture/linux-x64/capture-worker"))
+def find_native_assets(tool_path: Path, rid: str) -> Path:
+    matches = sorted(tool_path.rglob(f"NativeAssets/portable-capture/{rid}/capture-worker"))
     if len(matches) != 1:
         raise ValueError(f"Expected exactly one installed capture-worker under {tool_path}, found {len(matches)}")
     directory = matches[0].parent
@@ -219,14 +234,26 @@ def pack_and_install(args: argparse.Namespace, manifest: dict[str, object]) -> d
     commands = []
     commands.append(run(["dotnet", "restore", str(TOOLS["cli"]["project"]), "--configfile", str(args.private_nuget_config.resolve())], timeout=180))
     commands.append(run(["dotnet", "restore", str(TOOLS["mcp"]["project"]), "--configfile", str(args.private_nuget_config.resolve())], timeout=180))
+    package_rids = ("linux-x64", "linux-arm64") if args.include_all_rids else (args.rid,)
+    if args.include_all_rids:
+        for rid in package_rids:
+            directory = args.assets_dir.resolve().parent / rid
+            if any(not (directory / name).is_file() for name in
+                   ("capture-worker", "libe_sqlite3.so", "provenance.xml",
+                    "sqlite-LICENSE.txt", "worker-LICENSE.txt")):
+                raise ValueError(f"Package validation is missing required RID assets in {directory}")
+            if ET.parse(directory / "provenance.xml").getroot().get("rid") != rid:
+                raise ValueError(f"Asset provenance in {directory} does not match its RID")
     for name, tool in TOOLS.items():
-        commands.append(run([
+        command = [
             "dotnet", "pack", str(tool["project"]), "-c", "Release", "-o", str(local_packages),
             f"-p:Version={args.version}",
-            f"-p:PortableCaptureWorkerAssetsDir={args.assets_dir.resolve()}",
-            "-p:RequirePortableCaptureWorkerAssets=true",
-            "--no-restore",
-        ], timeout=180, stdout=logs / f"pack-{name}.log"))
+            f"-p:PortableCaptureWorkerAssetsDir={args.assets_dir.resolve().parent}",
+        ]
+        if not args.include_all_rids:
+            command.append(f"-p:PortableCaptureWorkerRid={args.rid}")
+        command.extend(["-p:RequirePortableCaptureWorkerAssets=true", "--no-restore"])
+        commands.append(run(command, timeout=180, stdout=logs / f"pack-{name}.log"))
 
     installs: dict[str, dict[str, object]] = {}
     for name, tool in TOOLS.items():
@@ -240,7 +267,7 @@ def pack_and_install(args: argparse.Namespace, manifest: dict[str, object]) -> d
             "--configfile", str(install_config),
             "--no-cache",
         ], timeout=180, stdout=logs / f"install-{name}.log"))
-        native = find_native_assets(tool_path)
+        native = find_native_assets(tool_path, args.rid)
         installs[name] = {
             "toolPath": str(tool_path),
             "command": str(tool_path / str(tool["command"])),
@@ -252,9 +279,10 @@ def pack_and_install(args: argparse.Namespace, manifest: dict[str, object]) -> d
     packages = sorted(local_packages.glob("*.nupkg"))
     manifest.update({
         "version": args.version,
+        "packageRids": list(package_rids),
         "privateSourceKeys": private_keys,
         "commands": commands,
-        "packages": [zip_inventory(path) for path in packages],
+        "packages": [zip_inventory(path, package_rids) for path in packages],
         "installs": installs,
     })
     return installs
@@ -264,6 +292,7 @@ def run_preflight(args: argparse.Namespace, installs: dict[str, dict[str, object
     output = args.work_dir / "portable-worker-preflight-installed.json"
     command = [
         "python3", str(ROOT / "scripts/portable-worker-preflight.py"),
+        "--rid", args.rid,
         "--assets-dir", str(args.assets_dir.resolve()),
         "--trusted-root", str(args.trusted_root.resolve()),
         "--repo-root", str(ROOT),
@@ -525,10 +554,13 @@ def run_mcp_import(args: argparse.Namespace, installs: dict[str, dict[str, objec
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--rid", choices=("linux-x64", "linux-arm64"), required=True)
     parser.add_argument("--assets-dir", required=True, type=Path)
     parser.add_argument("--trusted-root", type=Path, default=ROOT)
     parser.add_argument("--private-nuget-config", type=Path, default=DEFAULT_PRIVATE_CONFIG)
     parser.add_argument("--work-dir", type=Path, default=ROOT / "artifacts/installed-host-smoke")
+    parser.add_argument("--include-all-rids", action="store_true",
+                        help="Pack generic CLI/MCP packages with both Linux RID asset sets.")
     parser.add_argument("--version", default="0.0.0-smoke." + dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d%H%M%S"))
     parser.add_argument("--execute-import", action="store_true", help="Run real native imports through the installed CLI and MCP hosts.")
     args = parser.parse_args()
@@ -537,6 +569,8 @@ def main() -> int:
         "schema": "dotnet-diagnostics/portable-installed-host-smoke/v1",
         "startedUtc": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
         "repoRoot": str(ROOT),
+        "rid": args.rid,
+        "includeAllRids": bool(args.include_all_rids),
         "assetsDir": str(args.assets_dir.resolve()),
         "trustedRoot": str(args.trusted_root.resolve()),
         "importRequested": bool(args.execute_import),

@@ -942,8 +942,8 @@ reported separately. An abrupt kill can leave that sibling behind. Inspect its
 exact path and operation state before manually removing it; do not delete the
 capture store or glob-delete other operations' staging.
 
-**Trusted import assets and current platform limit.** Set both absolute paths in
-the CLI host's environment:
+**Trusted import assets and platform support.** Set both absolute paths in the
+CLI host's environment to the matching Linux glibc RID assets:
 
 ```bash
 export DOTNET_DIAGNOSTICS_IMPORT_WORKER=/opt/dotnet-diagnostics/trusted/portable-capture-worker
@@ -951,17 +951,19 @@ export DOTNET_DIAGNOSTICS_SQLITE_LIBRARY=/opt/dotnet-diagnostics/trusted/libe_sq
 ```
 
 These are operator-trusted executable/library inputs, never paths supplied by a
-bundle. Use the matching reviewed worker and SQLite runtime assets, installed in
-directories unmodifiable by untrusted users. Explicitly opted-in producer builds
-can include the [prepared native sidecars](./portable-native-packaging.md).
-Installed hosts do **not** automatically discover or activate them, download them,
-search test output, or accept foreign SQLite in the CLI process. Both environment
-variables remain required, including in Docker. Producer execution and installed
-cross-host validation remain integration/release gates. The current confined worker requires
-supported Linux isolation features; other platforms, missing assets, or unavailable
-isolation fail explicitly (`ImportWorkerUnavailable` or the underlying Core
-failure). There is no less-isolated fallback. Export and receipt lookup do not
-require worker configuration.
+bundle. Use the matching reviewed `linux-x64` or `linux-arm64` worker and SQLite
+runtime assets, installed in directories unmodifiable by untrusted users. The
+confined worker supports Linux glibc x64 and ARM64; ARM64 is qualified only after
+the native hardware acceptance documented in
+[`portable-native-packaging.md`](./portable-native-packaging.md) passes.
+Explicitly opted-in producer builds can include the prepared native sidecars.
+Installed hosts do **not** automatically discover or activate them, download
+them, search test output, or accept foreign SQLite in the CLI process. Both
+environment variables remain required, including in Docker. Missing or
+cross-RID assets, unsupported platforms, or unavailable isolation fail
+explicitly (`ImportWorkerUnavailable` or the underlying Core failure). There is
+no less-isolated fallback. Export and receipt lookup do not require worker
+configuration.
 
 **Local risk and ownership.** Export/import require `--acknowledge-risk high` in
 non-interactive use, or the interactive session's high-risk confirmation.

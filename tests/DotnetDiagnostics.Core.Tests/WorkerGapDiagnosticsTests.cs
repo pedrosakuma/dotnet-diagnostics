@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Runtime.InteropServices;
 using DotnetDiagnostics.Core.Captures;
 
 namespace DotnetDiagnostics.Core.Tests;
@@ -8,8 +7,7 @@ namespace DotnetDiagnostics.Core.Tests;
 public sealed class WorkerGapDiagnosticsTests
 {
     private static string Helper => Path.Combine(AppContext.BaseDirectory, "capture-worker-fixture");
-    private static bool SupportedPlatform => OperatingSystem.IsLinux() &&
-        RuntimeInformation.ProcessArchitecture == Architecture.X64;
+    private static bool SupportedPlatform => PortableWorkerTestSupport.IsSupported;
 
     [Fact]
     public void StrictReportParserAcceptsTheFixedSchema()

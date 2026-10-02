@@ -76,10 +76,36 @@ class ContainerDistributionTests(unittest.TestCase):
             "Untrusted code PR: secret-dependent Windows jobs skipped without public NuGet fallback.",
             CI_WORKFLOW,
         )
-        self.assertEqual(5, CI_WORKFLOW.count("Stage caller-provided private NuGet configuration"))
-        self.assertEqual(4, len(re.findall(r"\bdotnet restore --configfile ", CI_WORKFLOW)))
+        jobs = dict(re.findall(
+            r"^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)",
+            CI_WORKFLOW.split("\njobs:\n", 1)[1],
+            re.M | re.S,
+        ))
+        restore_jobs = {
+            "build-test", "ubuntu-fast-tests", "windows-build", "windows-core-test",
+            "windows-fast-test", "windows-mcp-test",
+        }
+        configured_jobs = restore_jobs | {"docker-smoke"}
+        self.assertEqual(configured_jobs, {
+            name for name, job in jobs.items()
+            if "Stage caller-provided private NuGet configuration" in job
+        })
+        self.assertEqual(configured_jobs, {
+            name for name, job in jobs.items()
+            if "Remove staged private NuGet configuration" in job
+        })
+        self.assertEqual(restore_jobs, {
+            name for name, job in jobs.items() if "dotnet restore --configfile " in job
+        })
+        for name in configured_jobs:
+            with self.subTest(job=name):
+                self.assertEqual(1, jobs[name].count("Stage caller-provided private NuGet configuration"))
+                self.assertEqual(1, jobs[name].count("Remove staged private NuGet configuration"))
+                self.assertEqual(
+                    int(name in restore_jobs),
+                    len(re.findall(r"\bdotnet restore --configfile ", jobs[name])),
+                )
         self.assertNotRegex(CI_WORKFLOW, r"(?m)^\s*run: dotnet restore\s*$")
-        self.assertEqual(5, CI_WORKFLOW.count("Remove staged private NuGet configuration"))
 
     def test_every_dotnet_workflow_disables_background_checks_and_configures_restore(self):
         for name, workflow in ALL_WORKFLOWS.items():
@@ -118,21 +144,20 @@ class ContainerDistributionTests(unittest.TestCase):
             DOCKERFILE,
         )
 
-    def test_portable_assets_are_opt_in_and_rejected_outside_linux_x64(self):
+    def test_portable_assets_are_opt_in_and_rid_selected_for_both_linux_architectures(self):
         self.assertIn("ARG INCLUDE_PORTABLE_CAPTURE_WORKER=false", DOCKERFILE)
-        self.assertIn(')" = "linux-x64" || exit 1', DOCKERFILE)
-        self.assertIn("/src/artifacts/portable-worker/linux-x64", DOCKERFILE)
+        self.assertIn('case "$TARGETARCH" in amd64) worker_rid=linux-x64;; arm64) worker_rid=linux-arm64;; *) exit 1;; esac', DOCKERFILE)
+        self.assertIn('PortableCaptureWorkerRid="$worker_rid"', DOCKERFILE)
+        self.assertIn("/src/artifacts/portable-worker", DOCKERFILE)
         self.assertRegex(
             WORKFLOW_TEXT,
             r"(?s)include_portable_worker:\n.*?default: false\n\s+type: boolean",
         )
         self.assertIn("matrix.platform == 'linux/amd64'", WORKFLOW_JOBS["build"])
-        self.assertIn(
-            "INCLUDE_PORTABLE_CAPTURE_WORKER=${{ matrix.platform == 'linux/amd64' && "
-            "(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') || "
-            "github.event_name == 'workflow_dispatch' && inputs.include_portable_worker) }}",
-            WORKFLOW_JOBS["build"],
-        )
+        self.assertIn("matrix.platform == 'linux/arm64'", WORKFLOW_JOBS["build"])
+        self.assertIn("portable-worker-linux-arm64", WORKFLOW_JOBS["build"])
+        self.assertIn("portable-worker-linux-x64", WORKFLOW_JOBS["build"])
+        self.assertIn("INCLUDE_PORTABLE_CAPTURE_WORKER=${{ (matrix.platform == 'linux/amd64' || matrix.platform == 'linux/arm64')", WORKFLOW_JOBS["build"])
         self.assertIn(
             "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')",
             WORKFLOW_JOBS["portable-native"],
@@ -158,7 +183,7 @@ class ContainerDistributionTests(unittest.TestCase):
 
     def test_existing_push_and_tag_triggers_and_publish_mode_remain(self):
         self.assertIn("branches: [main]\n    tags: ['v*']", WORKFLOW_TEXT)
-        self.assertIn("tag images always include it", WORKFLOW_TEXT)
+        self.assertIn("tag images always include them", WORKFLOW_TEXT)
         self.assertIn("inputs.mode == 'publish'", WORKFLOW_JOBS["build"])
         self.assertIn("inputs.mode == 'publish'", WORKFLOW_JOBS["merge"])
         self.assertIn("needs: [portable-native, validate-inputs]", WORKFLOW_JOBS["build"])
@@ -298,9 +323,11 @@ class ContainerDistributionTests(unittest.TestCase):
         self.assertNotIn("NuGet.Config", (ROOT / ".dockerignore").read_text())
         restore_index = PORTABLE_WORKFLOW.index("dotnet restore ")
         cleanup_index = PORTABLE_WORKFLOW.index('rm -f -- "$RUNNER_TEMP/portable-worker-NuGet.Config"')
-        produce_index = PORTABLE_WORKFLOW.index("Produce once in the immutable Linux-x64 compiler container")
+        produce_index = PORTABLE_WORKFLOW.index("Produce once in the native immutable compiler container")
+        smoke_index = PORTABLE_WORKFLOW.index("Verify same-owner CLI and MCP package layouts")
         self.assertLess(restore_index, cleanup_index)
-        self.assertLess(cleanup_index, produce_index)
+        self.assertLess(produce_index, smoke_index)
+        self.assertLess(smoke_index, cleanup_index)
         artifact_steps = re.findall(
             r"(?ms)^\s+- uses: actions/upload-artifact@[^\n]+\n(.*?)(?=^\s+-|\Z)",
             PORTABLE_WORKFLOW,

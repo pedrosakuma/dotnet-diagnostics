@@ -30,16 +30,19 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-@unittest.skipUnless(platform.system() == "Linux" and platform.machine() == "x86_64",
-                     "Portable import preflight supports Linux x86-64 only")
+@unittest.skipUnless(platform.system() == "Linux" and platform.machine() in ("x86_64", "aarch64", "arm64"),
+                     "Portable import preflight requires Linux x64 or ARM64")
 class PortableWorkerPreflightTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="portable preflight ")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.assets = self.root / "producer" / "linux-x64"
+        self.rid = "linux-arm64" if platform.machine() in ("aarch64", "arm64") else "linux-x64"
+        elf_machine = "AArch64" if self.rid == "linux-arm64" else "Advanced Micro Devices X86-64"
+        interpreter = "/lib/ld-linux-aarch64.so.1" if self.rid == "linux-arm64" else "/lib64/ld-linux-x86-64.so.2"
+        self.assets = self.root / "producer" / self.rid
         self.assets.mkdir(parents=True)
-        self.installed = self.root / "installed" / "linux-x64"
+        self.installed = self.root / "installed" / self.rid
         self.installed.mkdir(parents=True)
         self.revision = "a" * 40
         for directory in (self.assets, self.installed):
@@ -48,7 +51,7 @@ class PortableWorkerPreflightTests(unittest.TestCase):
             (directory / "sqlite-LICENSE.txt").write_text("sqlite", encoding="utf-8")
             (directory / "worker-LICENSE.txt").write_text("worker", encoding="utf-8")
             os.chmod(directory / "capture-worker", 0o755)
-        provenance = ET.Element("PortableCaptureWorker", version="1", kind="container", rid="linux-x64")
+        provenance = ET.Element("PortableCaptureWorker", version="1", kind="container", rid=self.rid)
         values = {
             "Revision": self.revision,
             "WorkerSha256": digest(self.assets / "capture-worker"),
@@ -67,11 +70,12 @@ class PortableWorkerPreflightTests(unittest.TestCase):
             "for last do :; done\n"
             "cat <<'EOF'\n"
             "Class: ELF64\n"
-            "Machine: Advanced Micro Devices X86-64\n"
+            f"Machine: {elf_machine}\n"
             "EOF\n"
             "case \"$last\" in\n"
             "*/libe_sqlite3.so)\n"
             "cat <<'EOF'\n"
+            f"Machine: {elf_machine}\n"
             "Type: DYN (Shared object file)\n"
             "Shared library: [libm.so.6]\n"
             "Shared library: [libc.so.6]\n"
@@ -80,7 +84,7 @@ class PortableWorkerPreflightTests(unittest.TestCase):
             ";;\n"
             "*)\n"
             "cat <<'EOF'\n"
-            "[Requesting program interpreter: /lib64/ld-linux-x86-64.so.2]\n"
+            f"[Requesting program interpreter: {interpreter}]\n"
             "Shared library: [libm.so.6]\n"
             "Shared library: [libc.so.6]\n"
             "Name: GLIBC_2.34\n"
@@ -104,6 +108,7 @@ class PortableWorkerPreflightTests(unittest.TestCase):
         return subprocess.run(
             [
                 "python3", str(SCRIPT),
+                "--rid", self.rid,
                 "--assets-dir", str(self.assets),
                 "--trusted-root", str(self.root),
                 "--repo-root", str(ROOT),
@@ -123,6 +128,7 @@ class PortableWorkerPreflightTests(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
         report = json.loads(self.output.read_text(encoding="utf-8"))
         self.assertEqual("dotnet-diagnostics/portable-worker-preflight/v2", report["schema"])
+        self.assertEqual(self.rid, report["rid"])
         self.assertFalse(report["acceptance"]["importExecuted"])
         self.assertEqual(720, report["acceptance"]["outerDeadlineSeconds"])
         self.assertEqual(30, report["acceptance"]["terminationGraceSeconds"])
@@ -262,6 +268,54 @@ class PortableWorkerPreflightTests(unittest.TestCase):
         self.assertNotEqual(0, result.returncode)
         self.assertIn("SQLite sidecar has unexpected shared libraries: libcrypto.so.3",
                       result.stderr)
+
+    def test_arm64_allows_only_its_exact_glibc_loader_dependency(self):
+        worker = self.root / "arm64-worker"
+        library = self.root / "arm64-sqlite.so"
+        worker.write_bytes(b"worker")
+        library.write_bytes(b"sqlite")
+        fake_readelf = self.root / "arm64-readelf"
+        fake_readelf.write_text(
+            "#!/bin/sh\n"
+            "for last do :; done\n"
+            "case \"$last\" in\n"
+            "*/arm64-sqlite.so)\n"
+            "cat <<'EOF'\n"
+            "Class: ELF64\n"
+            "Machine: AArch64\n"
+            "Type: DYN (Shared object file)\n"
+            "Shared library: [libc.so.6]\n"
+            "Shared library: [ld-linux-aarch64.so.1]\n"
+            "Name: GLIBC_2.34\n"
+            "EOF\n"
+            ";;\n"
+            "*)\n"
+            "cat <<'EOF'\n"
+            "Class: ELF64\n"
+            "Machine: AArch64\n"
+            "[Requesting program interpreter: /lib/ld-linux-aarch64.so.1]\n"
+            "Shared library: [libc.so.6]\n"
+            "Shared library: [libm.so.6]\n"
+            "Shared library: [ld-linux-aarch64.so.1]\n"
+            "Name: GLIBC_2.34\n"
+            "EOF\n"
+            ";;\n"
+            "esac\n",
+            encoding="utf-8",
+        )
+        os.chmod(fake_readelf, 0o755)
+        result = PREFLIGHT.validate_elf(worker, library, str(fake_readelf), "linux-arm64")
+        self.assertEqual("/lib/ld-linux-aarch64.so.1", result["workerInterpreter"])
+
+        fake_readelf.write_text(
+            fake_readelf.read_text(encoding="utf-8").replace(
+                "Shared library: [ld-linux-aarch64.so.1]",
+                "Shared library: [ld-linux-x86-64.so.2]",
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ValueError, "ld-linux-x86-64.so.2"):
+            PREFLIGHT.validate_elf(worker, library, str(fake_readelf), "linux-arm64")
 
     def test_rejects_sqlite_newer_glibc_independently(self):
         text = self.readelf.read_text(encoding="utf-8")

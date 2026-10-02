@@ -1,93 +1,177 @@
 <Project>
   <Import Project="PortableCaptureWorker.props" />
-  <UsingTask TaskName="CheckPortableCaptureProvenanceSize" TaskFactory="RoslynCodeTaskFactory"
+  <UsingTask TaskName="ValidatePortableCaptureWorker"
+             TaskFactory="RoslynCodeTaskFactory"
              AssemblyFile="$(MSBuildToolsPath)/Microsoft.Build.Tasks.Core.dll">
     <ParameterGroup>
-      <Path ParameterType="System.String" Required="true" />
+      <AssetsDirectory ParameterType="System.String" Required="true" />
+      <Rid ParameterType="System.String" Required="true" />
+      <ExpectedImage ParameterType="System.String" Required="true" />
+      <ExpectedCompiler ParameterType="System.String" Required="true" />
+      <SourcePath ParameterType="System.String" Required="true" />
+      <AdmissionPath ParameterType="System.String" Required="true" />
+      <RebuildPath ParameterType="System.String" Required="true" />
+      <AllowFixture ParameterType="System.Boolean" Required="true" />
+      <RequireProduction ParameterType="System.Boolean" Required="true" />
     </ParameterGroup>
     <Task>
       <Code Type="Fragment" Language="cs"><![CDATA[
-        if (new System.IO.FileInfo(Path).Length > 32768)
+        string[] files = {
+            "capture-worker", "libe_sqlite3.so", "provenance.xml",
+            "sqlite-LICENSE.txt", "worker-LICENSE.txt"
+        };
+        foreach (string file in files)
+        {
+            string path = System.IO.Path.Combine(AssetsDirectory, file);
+            if (!System.IO.File.Exists(path))
+            {
+                Log.LogError("Missing required portable capture asset: {0}", path);
+                return false;
+            }
+            if ((System.IO.File.GetAttributes(path) & System.IO.FileAttributes.ReparsePoint) != 0)
+            {
+                Log.LogError("Portable capture asset must not be a link: {0}", path);
+                return false;
+            }
+        }
+
+        string provenancePath = System.IO.Path.Combine(AssetsDirectory, "provenance.xml");
+        if (new System.IO.FileInfo(provenancePath).Length > 32768)
         {
             Log.LogError("Portable capture provenance exceeds 32 KiB.");
             return false;
         }
+        System.Xml.Linq.XElement root = System.Xml.Linq.XElement.Load(provenancePath);
+        if (root.Name.LocalName != "PortableCaptureWorker" ||
+            (string)root.Attribute("version") != "1" ||
+            (string)root.Attribute("rid") != Rid)
+        {
+            Log.LogError("Portable capture provenance must identify version 1 and RID {0}.", Rid);
+            return false;
+        }
+
+        string kind = (string)root.Attribute("kind");
+        bool fixture = kind == "fixture" && AllowFixture && !RequireProduction;
+        if (kind != "container" && !fixture)
+        {
+            Log.LogError("Portable capture assets require reviewed container provenance; Fixture assets are test-only.");
+            return false;
+        }
+        string Field(string name)
+        {
+            string value = (string)root.Element(name);
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                Log.LogError("Portable capture provenance lacks {0}.", name);
+                return null;
+            }
+            return value.Trim();
+        }
+        bool HashMatches(string name, string path)
+        {
+            string expected = Field(name);
+            if (expected == null) return false;
+            string actual;
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+            using (var input = System.IO.File.OpenRead(path))
+                actual = System.BitConverter.ToString(sha.ComputeHash(input)).Replace("-", "");
+            if (!System.String.Equals(expected, actual, System.StringComparison.OrdinalIgnoreCase))
+            {
+                Log.LogError("Portable capture {0} hash mismatch.", name);
+                return false;
+            }
+            return true;
+        }
+
+        if (Field("SqlitePackage") != "SQLitePCLRaw.lib.e_sqlite3/3.53.3")
+        {
+            Log.LogError("Portable capture assets require the existing pinned SQLite 3.53.3 package.");
+            return false;
+        }
+        if (!fixture)
+        {
+            if (Field("Image") != ExpectedImage || Field("Compiler") != ExpectedCompiler ||
+                Field("Libc") != "glibc 2.36")
+            {
+                Log.LogError("Portable capture producer identity differs from the approved image/compiler/libc for {0}.", Rid);
+                return false;
+            }
+            string revision = Field("Revision");
+            if (revision == null || revision.Length != 40 ||
+                !System.Text.RegularExpressions.Regex.IsMatch(revision, "^[0-9a-fA-F]{40}$"))
+            {
+                Log.LogError("Portable capture provenance requires a full source revision.");
+                return false;
+            }
+            foreach (string name in new[] { "SqlitePackageSha512", "Flags", "CompilerPackages", "WorkerElf" })
+                if (Field(name) == null) return false;
+        }
+        return HashMatches("WorkerSha256", System.IO.Path.Combine(AssetsDirectory, "capture-worker")) &&
+            HashMatches("SqliteSha256", System.IO.Path.Combine(AssetsDirectory, "libe_sqlite3.so")) &&
+            HashMatches("SourceSha256", SourcePath) &&
+            HashMatches("AdmissionSha256", AdmissionPath) &&
+            HashMatches("RebuildSha256", RebuildPath);
       ]]></Code>
     </Task>
   </UsingTask>
   <PropertyGroup>
-    <_PortableWorkerApplies Condition="'$(RuntimeIdentifier)' == '' or '$(RuntimeIdentifier)' == 'linux-x64'">true</_PortableWorkerApplies>
+    <_PortableWorkerApplies Condition="'$(RuntimeIdentifier)' == '' or '$(RuntimeIdentifier)' == 'linux-x64' or '$(RuntimeIdentifier)' == 'linux-arm64'">true</_PortableWorkerApplies>
     <_PortableWorkerSource>$(MSBuildThisFileDirectory)../Captures/Isolation/native/capture_worker.c</_PortableWorkerSource>
+    <_PortableWorkerAdmissionSource>$(MSBuildThisFileDirectory)../Captures/Isolation/native/sqlite_admission.h</_PortableWorkerAdmissionSource>
+    <_PortableWorkerRebuildSource>$(MSBuildThisFileDirectory)../Captures/Isolation/native/sqlite_rebuild.h</_PortableWorkerRebuildSource>
+    <_PortableWorkerIncludeLinuxX64 Condition="'$(_PortableWorkerApplies)' == 'true' and (('$(RuntimeIdentifier)' == '' or '$(RuntimeIdentifier)' == 'linux-x64') and ('$(PortableCaptureWorkerRid)' == '' or '$(PortableCaptureWorkerRid)' == 'linux-x64'))">true</_PortableWorkerIncludeLinuxX64>
+    <_PortableWorkerIncludeLinuxArm64 Condition="'$(_PortableWorkerApplies)' == 'true' and (('$(RuntimeIdentifier)' == '' or '$(RuntimeIdentifier)' == 'linux-arm64') and ('$(PortableCaptureWorkerRid)' == '' or '$(PortableCaptureWorkerRid)' == 'linux-arm64'))">true</_PortableWorkerIncludeLinuxArm64>
   </PropertyGroup>
-  <ItemGroup Condition="'$(_PortableWorkerApplies)' == 'true' and '$(PortableCaptureWorkerAssetsDir)' != ''">
-    <Content Include="$(PortableCaptureWorkerAssetsDir)/capture-worker;$(PortableCaptureWorkerAssetsDir)/libe_sqlite3.so;$(PortableCaptureWorkerAssetsDir)/provenance.xml;$(PortableCaptureWorkerAssetsDir)/sqlite-LICENSE.txt;$(PortableCaptureWorkerAssetsDir)/worker-LICENSE.txt"
+  <ItemGroup>
+    <_PortableWorkerRid Include="linux-x64;linux-arm64"
+                        Condition="'$(RuntimeIdentifier)' == '' and '$(PortableCaptureWorkerRid)' == ''" />
+    <_PortableWorkerRid Include="$(PortableCaptureWorkerRid)"
+                        Condition="'$(RuntimeIdentifier)' == '' and ('$(PortableCaptureWorkerRid)' == 'linux-x64' or '$(PortableCaptureWorkerRid)' == 'linux-arm64')" />
+    <_PortableWorkerRid Include="$(RuntimeIdentifier)"
+                        Condition="('$(PortableCaptureWorkerRid)' == '' or '$(PortableCaptureWorkerRid)' == '$(RuntimeIdentifier)') and ('$(RuntimeIdentifier)' == 'linux-x64' or '$(RuntimeIdentifier)' == 'linux-arm64')" />
+    <Content Include="$(PortableCaptureWorkerAssetsDir)/linux-x64/capture-worker;$(PortableCaptureWorkerAssetsDir)/linux-x64/libe_sqlite3.so;$(PortableCaptureWorkerAssetsDir)/linux-x64/provenance.xml;$(PortableCaptureWorkerAssetsDir)/linux-x64/sqlite-LICENSE.txt;$(PortableCaptureWorkerAssetsDir)/linux-x64/worker-LICENSE.txt"
+             Condition="'$(_PortableWorkerIncludeLinuxX64)' == 'true' and '$(PortableCaptureWorkerAssetsDir)' != ''"
              Link="NativeAssets/portable-capture/linux-x64/%(Filename)%(Extension)"
+             CopyToOutputDirectory="Always" CopyToPublishDirectory="Always"
+             ExcludeFromSingleFile="true" Pack="false" />
+    <Content Include="$(PortableCaptureWorkerAssetsDir)/linux-arm64/capture-worker;$(PortableCaptureWorkerAssetsDir)/linux-arm64/libe_sqlite3.so;$(PortableCaptureWorkerAssetsDir)/linux-arm64/provenance.xml;$(PortableCaptureWorkerAssetsDir)/linux-arm64/sqlite-LICENSE.txt;$(PortableCaptureWorkerAssetsDir)/linux-arm64/worker-LICENSE.txt"
+             Condition="'$(_PortableWorkerIncludeLinuxArm64)' == 'true' and '$(PortableCaptureWorkerAssetsDir)' != ''"
+             Link="NativeAssets/portable-capture/linux-arm64/%(Filename)%(Extension)"
              CopyToOutputDirectory="Always" CopyToPublishDirectory="Always"
              ExcludeFromSingleFile="true" Pack="false" />
   </ItemGroup>
   <Target Name="RejectStalePortableCapturePublishAssets" BeforeTargets="ComputeFilesToPublish;PackTool"
           Condition="'$(PublishDir)' != '' and ('$(PortableCaptureWorkerAssetsDir)' == '' or '$(_PortableWorkerApplies)' != 'true')">
-    <Error Condition="Exists('$(PublishDir)/NativeAssets/portable-capture/linux-x64')"
+    <Error Condition="Exists('$(PublishDir)/NativeAssets/portable-capture/linux-x64') or Exists('$(PublishDir)/NativeAssets/portable-capture/linux-arm64')"
            Text="Stale portable capture publish assets exist without matching configuration. Use a fresh publish directory; assets are not silently deleted or included." />
   </Target>
   <Target Name="ValidatePortableCaptureWorkerAssets"
           BeforeTargets="PrepareForBuild;ComputeFilesToPublish;GenerateNuspec"
           Condition="'$(_PortableWorkerApplies)' == 'true' and ('$(RequirePortableCaptureWorkerAssets)' == 'true' or '$(PortableCaptureWorkerAssetsDir)' != '')">
-    <Error Condition="'$(PortableCaptureWorkerAssetsDir)' == ''" Text="Portable capture assets are required. Run the approved pinned producer and supply PortableCaptureWorkerAssetsDir; no compiler/download fallback exists." />
+    <Error Condition="'$(PortableCaptureWorkerAssetsDir)' == ''"
+           Text="Portable capture assets are required. Supply the approved per-RID producer artifacts; no compiler/download fallback exists." />
+    <Error Condition="'$(RuntimeIdentifier)' != '' and '$(PortableCaptureWorkerRid)' != '' and '$(RuntimeIdentifier)' != '$(PortableCaptureWorkerRid)'"
+           Text="PortableCaptureWorkerRid must match RuntimeIdentifier when both are specified." />
+    <Error Condition="'$(PortableCaptureWorkerRid)' != '' and '$(PortableCaptureWorkerRid)' != 'linux-x64' and '$(PortableCaptureWorkerRid)' != 'linux-arm64'"
+           Text="PortableCaptureWorkerRid must be linux-x64 or linux-arm64." />
     <ItemGroup>
-      <_PortableWorkerRequired Include="$(PortableCaptureWorkerAssetsDir)/capture-worker;$(PortableCaptureWorkerAssetsDir)/libe_sqlite3.so;$(PortableCaptureWorkerAssetsDir)/provenance.xml;$(PortableCaptureWorkerAssetsDir)/sqlite-LICENSE.txt;$(PortableCaptureWorkerAssetsDir)/worker-LICENSE.txt" />
+      <_PortableWorkerValidation Include="@(_PortableWorkerRid)">
+        <AssetDirectory>$(PortableCaptureWorkerAssetsDir)/%(_PortableWorkerRid.Identity)</AssetDirectory>
+        <ExpectedImage Condition="'%(_PortableWorkerRid.Identity)' == 'linux-x64'">$(PortableCaptureWorkerProducerImageLinuxX64)</ExpectedImage>
+        <ExpectedImage Condition="'%(_PortableWorkerRid.Identity)' == 'linux-arm64'">$(PortableCaptureWorkerProducerImageLinuxArm64)</ExpectedImage>
+      </_PortableWorkerValidation>
     </ItemGroup>
-    <Error Condition="!Exists('%(_PortableWorkerRequired.Identity)')" Text="Missing required portable capture asset: %(_PortableWorkerRequired.Identity)" />
-    <CheckPortableCaptureProvenanceSize Path="$(PortableCaptureWorkerAssetsDir)/provenance.xml" />
-    <XmlPeek XmlInputPath="$(PortableCaptureWorkerAssetsDir)/provenance.xml" Query="/PortableCaptureWorker[@version='1' and @rid='linux-x64']/@kind">
-      <Output TaskParameter="Result" PropertyName="_PortableWorkerKind" />
-    </XmlPeek>
-    <Error Condition="'$(_PortableWorkerKind)' != 'container' and !('$(_PortableWorkerKind)' == 'fixture' and '$(AllowPortableCaptureWorkerFixtureAssets)' == 'true' and '$(RequirePortableCaptureWorkerAssets)' != 'true')" Text="Portable capture assets require container provenance. Fixture assets are test-only and cannot satisfy release requirements." />
-    <XmlPeek XmlInputPath="$(PortableCaptureWorkerAssetsDir)/provenance.xml" Query="/PortableCaptureWorker/Image/text()">
-      <Output TaskParameter="Result" PropertyName="_PortableWorkerImage" />
-    </XmlPeek>
-    <Error Condition="'$(_PortableWorkerKind)' == 'container' and '$(_PortableWorkerImage)' != '$(PortableCaptureWorkerProducerImage)'" Text="Portable capture producer digest differs from the approved image." />
-    <XmlPeek XmlInputPath="$(PortableCaptureWorkerAssetsDir)/provenance.xml" Query="/PortableCaptureWorker/Compiler/text()">
-      <Output TaskParameter="Result" PropertyName="_PortableWorkerCompiler" />
-    </XmlPeek>
-    <XmlPeek XmlInputPath="$(PortableCaptureWorkerAssetsDir)/provenance.xml" Query="/PortableCaptureWorker/Libc/text()">
-      <Output TaskParameter="Result" PropertyName="_PortableWorkerLibc" />
-    </XmlPeek>
-    <Error Condition="'$(_PortableWorkerKind)' == 'container' and ('$(_PortableWorkerCompiler)' != '$(PortableCaptureWorkerCompilerVersion)' or '$(_PortableWorkerLibc)' != 'glibc 2.36')" Text="Portable capture compiler/libc identity differs from the approved producer." />
-    <XmlPeek XmlInputPath="$(PortableCaptureWorkerAssetsDir)/provenance.xml" Query="/PortableCaptureWorker/SqlitePackage/text()">
-      <Output TaskParameter="Result" PropertyName="_PortableSqlitePackage" />
-    </XmlPeek>
-    <Error Condition="'$(_PortableSqlitePackage)' != 'SQLitePCLRaw.lib.e_sqlite3/3.53.3'" Text="Portable capture assets require the existing pinned SQLite 3.53.3 package." />
-    <XmlPeek XmlInputPath="$(PortableCaptureWorkerAssetsDir)/provenance.xml" Query="/PortableCaptureWorker/WorkerSha256/text()">
-      <Output TaskParameter="Result" PropertyName="_PortableExpectedWorkerHash" />
-    </XmlPeek>
-    <XmlPeek XmlInputPath="$(PortableCaptureWorkerAssetsDir)/provenance.xml" Query="/PortableCaptureWorker/SqliteSha256/text()">
-      <Output TaskParameter="Result" PropertyName="_PortableExpectedSqliteHash" />
-    </XmlPeek>
-    <XmlPeek XmlInputPath="$(PortableCaptureWorkerAssetsDir)/provenance.xml" Query="/PortableCaptureWorker/SourceSha256/text()">
-      <Output TaskParameter="Result" PropertyName="_PortableExpectedSourceHash" />
-    </XmlPeek>
-    <XmlPeek XmlInputPath="$(PortableCaptureWorkerAssetsDir)/provenance.xml" Query="/PortableCaptureWorker/AdmissionSha256/text()">
-      <Output TaskParameter="Result" PropertyName="_PortableExpectedAdmissionHash" />
-    </XmlPeek>
-    <XmlPeek XmlInputPath="$(PortableCaptureWorkerAssetsDir)/provenance.xml" Query="/PortableCaptureWorker/RebuildSha256/text()">
-      <Output TaskParameter="Result" PropertyName="_PortableExpectedRebuildHash" />
-    </XmlPeek>
-    <GetFileHash Files="$(PortableCaptureWorkerAssetsDir)/capture-worker" Algorithm="SHA256">
-      <Output TaskParameter="Hash" PropertyName="_PortableActualWorkerHash" />
-    </GetFileHash>
-    <GetFileHash Files="$(PortableCaptureWorkerAssetsDir)/libe_sqlite3.so" Algorithm="SHA256">
-      <Output TaskParameter="Hash" PropertyName="_PortableActualSqliteHash" />
-    </GetFileHash>
-    <GetFileHash Files="$(_PortableWorkerSource)" Algorithm="SHA256">
-      <Output TaskParameter="Hash" PropertyName="_PortableActualSourceHash" />
-    </GetFileHash>
-    <GetFileHash Files="$(MSBuildThisFileDirectory)../Captures/Isolation/native/sqlite_admission.h" Algorithm="SHA256">
-      <Output TaskParameter="Hash" PropertyName="_PortableActualAdmissionHash" />
-    </GetFileHash>
-    <GetFileHash Files="$(MSBuildThisFileDirectory)../Captures/Isolation/native/sqlite_rebuild.h" Algorithm="SHA256">
-      <Output TaskParameter="Hash" PropertyName="_PortableActualRebuildHash" />
-    </GetFileHash>
-    <Error Condition="'$(_PortableExpectedWorkerHash)' != '$(_PortableActualWorkerHash)' or '$(_PortableExpectedSqliteHash)' != '$(_PortableActualSqliteHash)' or '$(_PortableExpectedSourceHash)' != '$(_PortableActualSourceHash)' or '$(_PortableExpectedAdmissionHash)' != '$(_PortableActualAdmissionHash)' or '$(_PortableExpectedRebuildHash)' != '$(_PortableActualRebuildHash)'" Text="Portable capture worker, SQLite or source hash mismatch. Do not repurpose test/host binaries as release assets." />
+    <Error Condition="'@(_PortableWorkerValidation)' == ''"
+           Text="No portable capture worker assets are supported for RuntimeIdentifier '$(RuntimeIdentifier)'." />
+    <ValidatePortableCaptureWorker
+        AssetsDirectory="%(_PortableWorkerValidation.AssetDirectory)"
+        Rid="%(_PortableWorkerValidation.Identity)"
+        ExpectedImage="%(_PortableWorkerValidation.ExpectedImage)"
+        ExpectedCompiler="$(PortableCaptureWorkerCompilerVersion)"
+        SourcePath="$(_PortableWorkerSource)"
+        AdmissionPath="$(_PortableWorkerAdmissionSource)"
+        RebuildPath="$(_PortableWorkerRebuildSource)"
+        AllowFixture="$(AllowPortableCaptureWorkerFixtureAssets)"
+        RequireProduction="$(RequirePortableCaptureWorkerAssets)" />
   </Target>
 </Project>

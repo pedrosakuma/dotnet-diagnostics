@@ -123,11 +123,11 @@ class ProducerOnlyWorkflowTests(unittest.TestCase):
         )
         self.assertNotRegex(reusable, r"dotnet restore(?![^\n]*--configfile)")
         cleanup = reusable.index("Remove staged private NuGet configuration")
-        production = reusable.index("Produce once in the immutable Linux-x64 compiler container")
+        production = reusable.index("Produce once in the native immutable compiler container")
         upload = reusable.index("actions/upload-artifact@")
-        self.assertLess(cleanup, production)
+        self.assertLess(production, cleanup)
         self.assertLess(cleanup, upload)
-        self.assertIn("if: always()", reusable[cleanup:production])
+        self.assertIn("if: always()", reusable[cleanup:upload])
 
     def test_input_defaults_and_required_version_remain_explicit(self):
         inputs = TEXT.split("\npermissions:\n", 1)[0]

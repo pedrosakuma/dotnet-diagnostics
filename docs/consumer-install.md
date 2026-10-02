@@ -85,13 +85,13 @@ docker run -d \
   ghcr.io/pedrosakuma/dotnet-diagnostics:latest
 ```
 
-Version-tagged container releases include the portable capture worker only in
-the Linux-amd64 image. Ordinary `main`/`edge` images and default manual builds
-exclude it; a maintainer can explicitly opt in for a manual build through
-`publish-container.yml`'s `include_portable_worker` input. Linux-arm64 images
-remain asset-free, so they support collection, durable storage, export, transfer,
-query and comparison, but not untrusted bundle import. ARM64 worker support is
-tracked in [#1070](https://github.com/pedrosakuma/dotnet-diagnostics/issues/1070).
+Version-tagged container releases include the portable capture worker in both
+Linux/amd64 and Linux/arm64 images, with only the matching native asset in each
+image. Ordinary `main`/`edge` images and default manual builds exclude it; a
+maintainer can explicitly opt in for a manual build through
+`publish-container.yml`'s `include_portable_worker` input. ARM64 worker support
+is qualified by native hardware acceptance; see
+[`portable-native-packaging.md`](./portable-native-packaging.md).
 
 Do **not** omit `-e MCP_BEARER_TOKEN=...` here: this container binds `0.0.0.0:8080` internally, so the server refuses to start without credentials. For non-loopback production deployments, `Auth__BearerTokens__*` or OIDC are also valid up-front choices.
 

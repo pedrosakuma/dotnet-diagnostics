@@ -25,8 +25,9 @@ class PortableWorkerPackagingTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="portable packaging ")
         self.addCleanup(self.temp.cleanup)
         self.directory = Path(self.temp.name)
-        self.assets = self.directory / "fixture assets"
-        self.assets.mkdir()
+        self.assets_root = self.directory / "producer"
+        self.assets = self.assets_root / "linux-x64"
+        self.assets.mkdir(parents=True)
         (self.assets / "capture-worker").write_bytes(b"TEST FIXTURE ONLY - NOT EXECUTABLE")
         (self.assets / "libe_sqlite3.so").write_bytes(b"TEST FIXTURE ONLY - NOT A LIBRARY")
         (self.assets / "sqlite-LICENSE.txt").write_text("Fixture")
@@ -51,14 +52,29 @@ class PortableWorkerPackagingTests(unittest.TestCase):
     def save_manifest(self):
         ET.ElementTree(self.manifest).write(self.assets / "provenance.xml")
 
-    def check(self, *properties, assets=True, target="ValidatePortableCaptureWorkerAssets"):
+    def add_arm64_fixture(self, *, preserve_x64_identity=False):
+        arm64 = self.assets_root / "linux-arm64"
+        arm64.mkdir()
+        for name in ("capture-worker", "libe_sqlite3.so", "sqlite-LICENSE.txt", "worker-LICENSE.txt"):
+            (arm64 / name).write_bytes((self.assets / name).read_bytes())
+        manifest = ET.fromstring(ET.tostring(self.manifest))
+        if not preserve_x64_identity:
+            manifest.set("rid", "linux-arm64")
+        ET.ElementTree(manifest).write(arm64 / "provenance.xml")
+        return arm64
+
+    def check(self, *properties, assets=True, target="ValidatePortableCaptureWorkerAssets", get_items=None):
         command = [os.environ.get("DOTNET_HOST_PATH", "dotnet")]
         if sdk := os.environ.get("PORTABLE_PACKAGING_TEST_SDK"):
             command.append(sdk)
         command += ["msbuild", str(self.project), "-nologo", "-t:" + target]
         if assets:
-            command.append(f"-p:PortableCaptureWorkerAssetsDir={self.assets}")
+            command.append(f"-p:PortableCaptureWorkerAssetsDir={self.assets_root}")
+        if not any(value.startswith("PortableCaptureWorkerRid=") for value in properties):
+            properties = (*properties, "PortableCaptureWorkerRid=linux-x64")
         command += ["-p:" + p for p in properties]
+        if get_items:
+            command.append("-getItem:" + get_items)
         return subprocess.run(command, text=True, capture_output=True, timeout=30)
 
     def assert_error(self, result, message):
@@ -82,6 +98,48 @@ class PortableWorkerPackagingTests(unittest.TestCase):
     def test_opted_in_fixture_validates_without_execution(self):
         result = self.check("AllowPortableCaptureWorkerFixtureAssets=true")
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+
+    def test_generic_tool_pack_requires_both_linux_rids(self):
+        result = self.check("PortableCaptureWorkerRid=",
+                            "AllowPortableCaptureWorkerFixtureAssets=true")
+        self.assert_error(result, "Missing required portable capture asset")
+
+    def test_arm64_fixture_selects_only_matching_rid_provenance(self):
+        self.add_arm64_fixture()
+        result = self.check("PortableCaptureWorkerRid=linux-arm64",
+                            "AllowPortableCaptureWorkerFixtureAssets=true")
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+
+    def test_release_rid_pair_validates_and_includes_only_matching_sidecars(self):
+        self.add_arm64_fixture()
+        for rid in ("linux-x64", "linux-arm64"):
+            with self.subTest(rid=rid):
+                result = self.check(f"RuntimeIdentifier={rid}", f"PortableCaptureWorkerRid={rid}",
+                                    "AllowPortableCaptureWorkerFixtureAssets=true", get_items="Content")
+                self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                content = json.loads(result.stdout)["Items"]["Content"]
+                self.assertEqual(
+                    {f"NativeAssets/portable-capture/{rid}/{name}" for name in (
+                        "capture-worker", "libe_sqlite3.so", "provenance.xml",
+                        "sqlite-LICENSE.txt", "worker-LICENSE.txt",
+                    )},
+                    {item["Link"] for item in content},
+                )
+
+    def test_release_rid_pair_rejects_mismatches(self):
+        for runtime, worker in (("linux-x64", "linux-arm64"), ("linux-arm64", "linux-x64")):
+            with self.subTest(runtime=runtime):
+                self.assert_error(
+                    self.check(f"RuntimeIdentifier={runtime}", f"PortableCaptureWorkerRid={worker}",
+                               "AllowPortableCaptureWorkerFixtureAssets=true"),
+                    "must match RuntimeIdentifier",
+                )
+
+    def test_cross_rid_asset_substitution_is_rejected(self):
+        self.add_arm64_fixture(preserve_x64_identity=True)
+        result = self.check("PortableCaptureWorkerRid=linux-arm64",
+                            "AllowPortableCaptureWorkerFixtureAssets=true")
+        self.assert_error(result, "must identify version 1 and RID linux-arm64")
 
     def test_hash_mismatch_fails(self):
         (self.assets / "capture-worker").write_bytes(b"changed")
@@ -108,9 +166,19 @@ class PortableWorkerPackagingTests(unittest.TestCase):
 
     def test_unapproved_image_fails(self):
         self.manifest.set("kind", "container")
-        ET.SubElement(self.manifest, "Image").text = "gcc:latest"
+        for key, value in {
+            "Image": "gcc:latest",
+            "Compiler": "14.3.0",
+            "Libc": "glibc 2.36",
+            "Revision": "a" * 40,
+            "SqlitePackageSha512": "fixture",
+            "Flags": "fixture",
+            "CompilerPackages": "fixture",
+            "WorkerElf": "fixture",
+        }.items():
+            ET.SubElement(self.manifest, key).text = value
         self.save_manifest()
-        self.assert_error(self.check(), "digest differs")
+        self.assert_error(self.check(), "producer identity differs")
 
     def test_oversized_provenance_fails_before_xml_read(self):
         (self.assets / "provenance.xml").write_bytes(b"x" * 32769)
@@ -118,22 +186,40 @@ class PortableWorkerPackagingTests(unittest.TestCase):
 
     def test_wrong_compiler_identity_fails(self):
         self.manifest.set("kind", "container")
-        image = ET.parse(BUILD / "PortableCaptureWorker.props").findtext("./PropertyGroup/PortableCaptureWorkerProducerImage")
-        ET.SubElement(self.manifest, "Image").text = image
-        ET.SubElement(self.manifest, "Compiler").text = "unknown"
-        ET.SubElement(self.manifest, "Libc").text = "glibc 2.36"
+        for key, value in {
+            "Image": PRODUCER.PRODUCER_IMAGES["linux-x64"],
+            "Compiler": "unknown",
+            "Libc": "glibc 2.36",
+            "Revision": "a" * 40,
+            "SqlitePackageSha512": "fixture",
+            "Flags": "fixture",
+            "CompilerPackages": "fixture",
+            "WorkerElf": "fixture",
+        }.items():
+            ET.SubElement(self.manifest, key).text = value
         self.save_manifest()
-        self.assert_error(self.check(), "compiler/libc identity differs")
+        self.assert_error(self.check(), "producer identity differs")
 
     def test_matching_container_metadata_passes_identity_checks_only(self):
         self.manifest.set("kind", "container")
-        props = ET.parse(BUILD / "PortableCaptureWorker.props")
-        ET.SubElement(self.manifest, "Image").text = props.findtext("./PropertyGroup/PortableCaptureWorkerProducerImage")
-        ET.SubElement(self.manifest, "Compiler").text = props.findtext("./PropertyGroup/PortableCaptureWorkerCompilerVersion")
-        ET.SubElement(self.manifest, "Libc").text = "glibc 2.36"
+        for key, value in {
+            "Image": PRODUCER.PRODUCER_IMAGES["linux-x64"],
+            "Compiler": "14.3.0",
+            "Libc": "glibc 2.36",
+            "Revision": "a" * 40,
+            "SqlitePackageSha512": "fixture",
+            "Flags": "fixture",
+            "CompilerPackages": "fixture",
+            "WorkerElf": "fixture",
+        }.items():
+            ET.SubElement(self.manifest, key).text = value
         self.save_manifest()
-        result = self.check("RequirePortableCaptureWorkerAssets=true")
-        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        for runtime in ("", "linux-x64"):
+            with self.subTest(runtime=runtime):
+                result = self.check(f"RuntimeIdentifier={runtime}",
+                                    "PortableCaptureWorkerRid=linux-x64",
+                                    "RequirePortableCaptureWorkerAssets=true")
+                self.assertEqual(0, result.returncode, result.stdout + result.stderr)
 
     def test_unsupported_rid_does_not_require_linux_assets(self):
         result = self.check("RuntimeIdentifier=win-x64", "RequirePortableCaptureWorkerAssets=true", assets=False)
@@ -164,6 +250,24 @@ class PortableWorkerPackagingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "3.53.3"):
             PRODUCER.sqlite_assets(graph)
 
+    def test_sqlite_resolution_selects_arm64_asset_without_x64_substitution(self):
+        package = self.directory / "cache/sqlite/3.53.3"
+        member = PRODUCER.RID_CONFIG["linux-arm64"]["sqlite"]
+        shared = package / member
+        shared.parent.mkdir(parents=True)
+        shared.write_bytes(b"arm64 fixture")
+        (package / "LICENSE.txt").write_text("fixture")
+        graph = self.directory / "arm64-project.assets.json"
+        graph.write_text(json.dumps({
+            "libraries": {PRODUCER.SQLITE_PACKAGE: {"path": "sqlite/3.53.3",
+                          "files": [member], "sha512": "fixture"}},
+            "packageFolders": {str(self.directory / "cache"): {}},
+        }))
+        self.assertEqual((shared, package / "LICENSE.txt", "fixture"),
+                         PRODUCER.sqlite_assets(graph, "linux-arm64"))
+        with self.assertRaisesRegex(ValueError, "linux-x64"):
+            PRODUCER.sqlite_assets(graph, "linux-x64")
+
     def test_flags_match_existing_hardened_recipe(self):
         recipe = (ROOT / "tests/DotnetDiagnostics.Core.Tests/DotnetDiagnostics.Core.Tests.csproj").read_text()
         for flag in PRODUCER.FLAGS:
@@ -172,16 +276,26 @@ class PortableWorkerPackagingTests(unittest.TestCase):
 
     def test_pinned_image_and_host_wiring(self):
         props = ET.parse(BUILD / "PortableCaptureWorker.props")
-        image = props.findtext("./PropertyGroup/PortableCaptureWorkerProducerImage")
-        self.assertRegex(image, r"^gcc@sha256:[0-9a-f]{64}$")
+        group = props.find("./PropertyGroup")
+        self.assertIsNotNone(group)
+        self.assertEqual(PRODUCER.PRODUCER_IMAGES["linux-x64"],
+                         group.findtext("PortableCaptureWorkerProducerImageLinuxX64"))
+        self.assertEqual(PRODUCER.PRODUCER_IMAGES["linux-arm64"],
+                         group.findtext("PortableCaptureWorkerProducerImageLinuxArm64"))
+        for image in PRODUCER.PRODUCER_IMAGES.values():
+            self.assertRegex(image, r"^gcc@sha256:[0-9a-f]{64}$")
         for host in ["Cli", "Mcp"]:
             project = ET.parse(ROOT / f"src/DotnetDiagnostics.{host}/DotnetDiagnostics.{host}.csproj")
             self.assertTrue(any(i.attrib["Project"].endswith("PortableCaptureWorker.targets")
                                 for i in project.findall("Import")))
         targets = ET.parse(BUILD / "PortableCaptureWorker.targets")
-        content = targets.find("./ItemGroup/Content")
-        self.assertEqual("true", content.attrib["ExcludeFromSingleFile"])
-        self.assertEqual("false", content.attrib["Pack"])
+        content = targets.findall("./ItemGroup/Content")
+        self.assertEqual({"linux-x64", "linux-arm64"},
+                         {item.attrib["Link"].split("/")[2] for item in content})
+        for item in content:
+            self.assertEqual("true", item.attrib["ExcludeFromSingleFile"])
+            self.assertEqual("false", item.attrib["Pack"])
+            self.assertNotIn("%(_PortableWorkerRid.Identity)", item.attrib["Include"])
 
 
 @unittest.skipUnless(platform.system() == "Linux" and platform.machine() == "x86_64",

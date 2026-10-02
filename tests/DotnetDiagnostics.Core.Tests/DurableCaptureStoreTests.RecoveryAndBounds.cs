@@ -326,12 +326,10 @@ public sealed partial class DurableCaptureStoreTests
         };
         if (OperatingSystem.IsWindows())
         {
-            start.FileName = "powershell.exe";
-            start.ArgumentList.Add("-NoProfile");
-            start.ArgumentList.Add("-NonInteractive");
-            start.ArgumentList.Add("-Command");
-            start.ArgumentList.Add("$f=[System.IO.File]::Open($env:CAPTURE_LEASE,[System.IO.FileMode]::Open,[System.IO.FileAccess]::Read,[System.IO.FileShare]::Read); [Console]::WriteLine('ready'); [Console]::ReadLine() | Out-Null; $f.Dispose()");
-            start.Environment["CAPTURE_LEASE"] = leasePath;
+            start.FileName = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet";
+            start.ArgumentList.Add(typeof(CaptureLeaseFixture).Assembly.Location);
+            start.ArgumentList.Add("--capture-lease-fixture");
+            start.ArgumentList.Add(leasePath);
         }
         else
         {
@@ -339,24 +337,40 @@ public sealed partial class DurableCaptureStoreTests
             foreach (var argument in new[] { "--shared", leasePath, "/bin/sh", "-c", "printf 'ready\\n'; read answer" })
                 start.ArgumentList.Add(argument);
         }
-        using var child = Process.Start(start)!;
+        using var child = Process.Start(start) ?? throw new InvalidOperationException("Capture lease fixture did not start.");
+        var stderr = child.StandardError.ReadToEndAsync();
+        var clock = Stopwatch.StartNew();
         try
         {
             Assert.Equal("ready", await child.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(10)));
-            using var reader = await Store().OpenAsync(id, Owner);
+            // Close the parent's reader so only the other process can cause Busy.
+            using (await Store().OpenAsync(id, Owner)) { }
             await Error(CaptureErrorCode.Busy, () => Store().DeleteAsync(id, Owner));
             await Error(CaptureErrorCode.Busy, () => Store().RecoverAsync(id, Owner));
             await child.StandardInput.WriteLineAsync("release");
             await child.StandardInput.FlushAsync();
             await child.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
-            Assert.Equal(0, child.ExitCode);
+            Assert.True(child.ExitCode == 0, $"Lease fixture exited {child.ExitCode}: {await stderr}");
+        }
+        catch (Exception error)
+        {
+            var state = child.HasExited ? $"exited {child.ExitCode}" : "still running";
+            if (!child.HasExited)
+            {
+                child.Kill(entireProcessTree: true);
+                await child.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+            }
+            throw new InvalidOperationException(
+                $"Capture lease handshake failed after {clock.Elapsed}; executable={start.FileName}; " +
+                $"pid={child.Id}; state={state}; stderr={await stderr.WaitAsync(TimeSpan.FromSeconds(10))}",
+                error);
         }
         finally
         {
             if (!child.HasExited)
             {
                 child.Kill(entireProcessTree: true);
-                await child.WaitForExitAsync();
+                await child.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
             }
         }
         await store.DeleteAsync(id, Owner);

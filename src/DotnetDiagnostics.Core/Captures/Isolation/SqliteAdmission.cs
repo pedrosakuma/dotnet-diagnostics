@@ -53,7 +53,7 @@ internal static partial class IsolatedCaptureWorker
         limits ??= new();
         limits.Validate();
         cancellationToken.ThrowIfCancellationRequested();
-        if (!OperatingSystem.IsLinux() || RuntimeInformation.ProcessArchitecture != Architecture.X64)
+        if (!OperatingSystem.IsLinux() || PortableCaptureImportWorker.CurrentRuntimeIdentifier is null)
             throw Unsupported("WorkerPlatformUnavailable");
         if (!evidence.CanWrite) throw CapturePackage.Error(CaptureErrorCode.InvalidInput, "Provisional evidence requires writable output.");
         ArgumentNullException.ThrowIfNull(request.Artifacts);

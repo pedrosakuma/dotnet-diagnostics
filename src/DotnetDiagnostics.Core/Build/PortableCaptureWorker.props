@@ -1,7 +1,10 @@
 <Project>
   <PropertyGroup>
-    <!-- Official gcc:14-bookworm linux/amd64 manifest, verified against Docker Hub metadata. -->
-    <PortableCaptureWorkerProducerImage>gcc@sha256:a689e29bc3adf4663ef9a141d23081252764d1319c63f591a027bd6fd676f4c1</PortableCaptureWorkerProducerImage>
+    <!-- Official gcc:14-bookworm architecture-specific manifests, verified against Docker Hub metadata. -->
+    <PortableCaptureWorkerProducerImageLinuxX64>gcc@sha256:a689e29bc3adf4663ef9a141d23081252764d1319c63f591a027bd6fd676f4c1</PortableCaptureWorkerProducerImageLinuxX64>
+    <PortableCaptureWorkerProducerImageLinuxArm64>gcc@sha256:66035d353338cb93b64f621393dc6fecde85258651ca454f0cf36ff2639b1352</PortableCaptureWorkerProducerImageLinuxArm64>
     <PortableCaptureWorkerCompilerVersion>14.3.0</PortableCaptureWorkerCompilerVersion>
+    <AllowPortableCaptureWorkerFixtureAssets Condition="'$(AllowPortableCaptureWorkerFixtureAssets)' == ''">false</AllowPortableCaptureWorkerFixtureAssets>
+    <RequirePortableCaptureWorkerAssets Condition="'$(RequirePortableCaptureWorkerAssets)' == ''">false</RequirePortableCaptureWorkerAssets>
   </PropertyGroup>
 </Project>

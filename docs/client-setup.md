@@ -98,9 +98,11 @@ These are explicit absolute asset paths, not discovery defaults or a promise
 that those example files are installed. Both absent means
 `ImportWorkerUnavailable`; partial or invalid configuration fails startup.
 No automatic packaged-asset discovery, in-process SQLite admission, Windows
-fallback, or archive-supplied executable is used. The current safe worker
-supports Linux x64 only; configured assets must also match the host's native ABI
-and support the required isolation facilities.
+fallback, or archive-supplied executable is used. The safe worker supports Linux
+x64 and ARM64 glibc when matching assets are supplied; configured assets must
+match the host's native ABI and support the required isolation facilities.
+ARM64 is qualified only by the native hardware acceptance documented in
+[`portable-native-packaging.md`](./portable-native-packaging.md).
 
 See [portable capture transfer](./tool-reference.md#portable-capture-transfer)
 for the exact action fields and client sequence. Clients must write returned

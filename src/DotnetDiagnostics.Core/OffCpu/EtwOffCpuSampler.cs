@@ -246,9 +246,8 @@ public sealed class EtwOffCpuSampler : IOffCpuSampler
         }
         finally
         {
-            try { session?.Stop(); }
-            catch (Exception ex) { _logger.LogDebug(ex, "ETW off-CPU session stop failed (best effort)."); }
-            session?.Dispose();
+            // Kernel stack walking was enabled: never stop on a pool thread (see EtwStackSessionStopper).
+            EtwStackSessionStopper.StopAndDispose(session, _logger, "ETW off-CPU session");
         }
     }
 

@@ -1,6 +1,5 @@
 using System.Buffers.Binary;
 using System.Diagnostics;
-using System.Runtime.InteropServices;
 using DotnetDiagnostics.Core.Captures;
 
 namespace DotnetDiagnostics.Core.Tests;
@@ -11,7 +10,7 @@ public sealed class SqliteRebuildTests
     [Fact]
     public async Task CancellationDrainsEvidenceWritesBeforeExitCallbackAndReturn()
     {
-        if (!OperatingSystem.IsLinux() || RuntimeInformation.ProcessArchitecture != Architecture.X64) return;
+        if (!PortableWorkerTestSupport.IsSupported) return;
         var directory = Path.Combine(AppContext.BaseDirectory, "rebuild-tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         File.SetUnixFileMode(directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
@@ -22,8 +21,8 @@ public sealed class SqliteRebuildTests
             using var cancellation = new CancellationTokenSource();
             using var evidence = new CancellationWrite(cancellation);
             var exited = false;
-            var request = new SqliteAdmissionRequest(Path.Combine(AppContext.BaseDirectory, "capture-worker"),
-                Path.Combine(AppContext.BaseDirectory, "runtimes/linux-x64/native/libe_sqlite3.so"), directory, database,
+            var request = new SqliteAdmissionRequest(PortableWorkerTestSupport.Worker,
+                PortableWorkerTestSupport.SqliteLibrary, directory, database,
                 new(2, 1, 1, 1, 2, 2), [new("11111111111111111111111111111111", "synthetic", "Independent v2 scalar fixture")], 1)
             {
                 AfterExit = () =>
@@ -58,7 +57,7 @@ public sealed class SqliteRebuildTests
     [Fact]
     public async Task ConfirmedNativeExitEndsRssWindowBeforeBoundedParentEvidenceFlush()
     {
-        if (!OperatingSystem.IsLinux() || RuntimeInformation.ProcessArchitecture != Architecture.X64) return;
+        if (!PortableWorkerTestSupport.IsSupported) return;
         var directory = Path.Combine(AppContext.BaseDirectory, "rebuild-tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         File.SetUnixFileMode(directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
@@ -68,8 +67,8 @@ public sealed class SqliteRebuildTests
         try
         {
             using var evidence = new DelayedFlush(() => child!);
-            var request = new SqliteAdmissionRequest(Path.Combine(AppContext.BaseDirectory, "capture-worker"),
-                Path.Combine(AppContext.BaseDirectory, "runtimes/linux-x64/native/libe_sqlite3.so"), directory, database,
+            var request = new SqliteAdmissionRequest(PortableWorkerTestSupport.Worker,
+                PortableWorkerTestSupport.SqliteLibrary, directory, database,
                 new(2, 1, 1, 1, 2, 2), [new("11111111111111111111111111111111", "synthetic", "Independent v2 scalar fixture")], 1)
                 { BeforeInput = pid => child = Process.GetProcessById(pid) };
             var result = await IsolatedCaptureWorker.AdmitSqliteAsync(request, evidence);
@@ -99,7 +98,7 @@ public sealed class SqliteRebuildTests
     [Fact]
     public async Task TrustedGeneratedFramesBuildFreshSchemaInSeparateConfinedChild()
     {
-        if (!OperatingSystem.IsLinux() || RuntimeInformation.ProcessArchitecture != Architecture.X64) return;
+        if (!PortableWorkerTestSupport.IsSupported) return;
         var directory = Path.Combine(AppContext.BaseDirectory, "rebuild-tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         File.SetUnixFileMode(directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
@@ -115,8 +114,8 @@ public sealed class SqliteRebuildTests
             BinaryPrimitives.WriteInt64LittleEndian(completion.AsSpan(17), 1);
             Frame(frames, completion);
             frames.Position = 0;
-            var executable = Path.Combine(AppContext.BaseDirectory, "capture-worker");
-            var library = Path.Combine(AppContext.BaseDirectory, "runtimes/linux-x64/native/libe_sqlite3.so");
+            var executable = PortableWorkerTestSupport.Worker;
+            var library = PortableWorkerTestSupport.SqliteLibrary;
             var work = await IsolatedCaptureWorker.RebuildValidatedAsync(
                 new(executable, library, directory, 256L * 1024 * 1024, 200_000_000, new()), frames, CancellationToken.None);
             Assert.InRange(work, 1, 200_000_000);

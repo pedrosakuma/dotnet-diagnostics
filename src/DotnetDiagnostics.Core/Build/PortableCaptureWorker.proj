@@ -1,11 +1,18 @@
 <Project DefaultTargets="ProducePortableCaptureWorker">
+  <PropertyGroup>
+    <PortableCaptureWorkerRid Condition="'$(PortableCaptureWorkerRid)' == ''">linux-x64</PortableCaptureWorkerRid>
+  </PropertyGroup>
   <Import Project="PortableCaptureWorker.props" />
   <PropertyGroup>
+    <PortableCaptureWorkerProducerImage Condition="'$(PortableCaptureWorkerRid)' == 'linux-x64'">$(PortableCaptureWorkerProducerImageLinuxX64)</PortableCaptureWorkerProducerImage>
+    <PortableCaptureWorkerProducerImage Condition="'$(PortableCaptureWorkerRid)' == 'linux-arm64'">$(PortableCaptureWorkerProducerImageLinuxArm64)</PortableCaptureWorkerProducerImage>
     <PortableCaptureWorkerPython Condition="'$(PortableCaptureWorkerPython)' == ''">python3</PortableCaptureWorkerPython>
     <PortableCaptureWorkerResolvedAssets Condition="'$(PortableCaptureWorkerResolvedAssets)' == ''">$(MSBuildThisFileDirectory)../obj/project.assets.json</PortableCaptureWorkerResolvedAssets>
   </PropertyGroup>
   <Target Name="ProducePortableCaptureWorker">
+    <Error Condition="'$(PortableCaptureWorkerRid)' != 'linux-x64' and '$(PortableCaptureWorkerRid)' != 'linux-arm64'" Text="PortableCaptureWorkerRid must be linux-x64 or linux-arm64." />
     <Error Condition="'$(PortableCaptureWorkerOutput)' == ''" Text="Supply a new, nonexistent PortableCaptureWorkerOutput directory outside source and package caches." />
-    <Exec Command="&quot;$(PortableCaptureWorkerPython)&quot; &quot;$(MSBuildThisFileDirectory)produce_portable_worker.py&quot; --image &quot;$(PortableCaptureWorkerProducerImage)&quot; --compiler-version &quot;$(PortableCaptureWorkerCompilerVersion)&quot; --assets &quot;$(PortableCaptureWorkerResolvedAssets)&quot; --output &quot;$(PortableCaptureWorkerOutput)&quot;" />
+    <Error Condition="'$(PortableCaptureWorkerProducerImage)' == ''" Text="No approved native compiler image is configured for $(PortableCaptureWorkerRid)." />
+    <Exec Command="&quot;$(PortableCaptureWorkerPython)&quot; &quot;$(MSBuildThisFileDirectory)produce_portable_worker.py&quot; --rid &quot;$(PortableCaptureWorkerRid)&quot; --image &quot;$(PortableCaptureWorkerProducerImage)&quot; --compiler-version &quot;$(PortableCaptureWorkerCompilerVersion)&quot; --assets &quot;$(PortableCaptureWorkerResolvedAssets)&quot; --output &quot;$(PortableCaptureWorkerOutput)&quot;" />
   </Target>
 </Project>

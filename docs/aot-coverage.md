@@ -80,6 +80,17 @@ rundown names remain a separate event-derived path for CoreCLR OS sampling.
 This guarantee is scoped to Windows on-CPU sampling; other ETW collectors have
 their own symbol paths.
 
+Windows kernel-stack ETW sessions have an observed teardown caveat: a thread
+that stops a session can lose user-mode stacks in subsequent captures for the
+remainder of its lifetime. This was reproduced on Windows Server 2025 during
+the #1080 investigation; the underlying Windows mechanism is not confirmed.
+The CPU, off-CPU, native-allocation, and native-thread-snapshot collectors stop
+and dispose their sessions on a dedicated short-lived thread, keeping that
+state out of the thread pool. This matters especially for self-profiling; a
+separate MCP/CLI collector stops sessions in its own process, not the target.
+Missing user stacks are a collection limitation, not a symbol-server failure:
+downloading PDBs cannot recover frames absent from the ETL.
+
 [^stale]: Resolved in [#108](https://github.com/pedrosakuma/dotnet-diagnostics/issues/108): stale diagnostic sockets and Linux TID collisions are filtered out via thread-group-leader validation. Affected `v0.3.0` and `v0.3.1`; fixed on `main`.
 [^aot-eventsource]: The provider must be embedded in the AOT binary at publish time. Sources added via assembly load after publish are not reachable.
 [^perf-install]: The default sidecar image now ships `perf`. Pass `--build-arg INSTALL_PERF=false` (or pull the `-lean` GHCR tag) to opt out. Runtime still needs `CAP_PERFMON` for `perf` to actually collect. See [`local-docker-sidecar.md`](./local-docker-sidecar.md) and [#104](https://github.com/pedrosakuma/dotnet-diagnostics/issues/104).

@@ -19,8 +19,15 @@ env:
 
 jobs:
   prepare:
-    runs-on: ubuntu-24.04
+    name: Prepare ${{ matrix.rid }} assets
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { rid: linux-x64, runner: ubuntu-24.04 }
+          - { rid: linux-arm64, runner: ubuntu-24.04-arm }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -44,44 +51,148 @@ jobs:
           unset PRIVATE_NUGET_CONFIG
       - name: Resolve existing SQLite dependency
         run: dotnet restore src/DotnetDiagnostics.Core/DotnetDiagnostics.Core.csproj --configfile "$RUNNER_TEMP/portable-worker-NuGet.Config"
-      - name: Remove staged private NuGet configuration
-        if: always()
-        run: rm -f -- "$RUNNER_TEMP/portable-worker-NuGet.Config"
-      - name: Produce once in the immutable Linux-x64 compiler container
+      - name: Produce once in the native immutable compiler container
         run: |
           dotnet msbuild src/DotnetDiagnostics.Core/Build/PortableCaptureWorker.proj \
-            -p:PortableCaptureWorkerOutput="$GITHUB_WORKSPACE/artifacts/portable-worker/linux-x64"
+            -p:PortableCaptureWorkerRid="${{ matrix.rid }}" \
+            -p:PortableCaptureWorkerOutput="$GITHUB_WORKSPACE/artifacts/portable-worker/${{ matrix.rid }}"
       - name: Check producer packaging contracts
         run: python3 -m unittest discover -s tests/packaging -p 'test_*.py' -v
       - name: Validate produced assets through the shared host target
         run: |
           dotnet msbuild src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj \
             -t:ValidatePortableCaptureWorkerAssets \
-            -p:PortableCaptureWorkerAssetsDir="$GITHUB_WORKSPACE/artifacts/portable-worker/linux-x64" \
+            -p:PortableCaptureWorkerRid="${{ matrix.rid }}" \
+            -p:PortableCaptureWorkerAssetsDir="$GITHUB_WORKSPACE/artifacts/portable-worker" \
             -p:RequirePortableCaptureWorkerAssets=true
       - name: Record non-executing produced-worker preflight
         run: |
           python3 scripts/portable-worker-preflight.py \
-            --assets-dir "$GITHUB_WORKSPACE/artifacts/portable-worker/linux-x64" \
+            --rid "${{ matrix.rid }}" \
+            --assets-dir "$GITHUB_WORKSPACE/artifacts/portable-worker/${{ matrix.rid }}" \
             --trusted-root "$GITHUB_WORKSPACE/artifacts" \
             --repo-root "$GITHUB_WORKSPACE" \
             --expected-revision "$GITHUB_SHA" \
-            --output "$GITHUB_WORKSPACE/artifacts/portable-worker-preflight.json"
+            --output "$GITHUB_WORKSPACE/artifacts/portable-worker-preflight-${{ matrix.rid }}.json"
+      - name: Verify same-owner CLI and MCP package layouts
+        run: |
+          python3 scripts/portable-installed-host-smoke.py \
+            --rid "${{ matrix.rid }}" \
+            --assets-dir "$GITHUB_WORKSPACE/artifacts/portable-worker/${{ matrix.rid }}" \
+            --trusted-root "$GITHUB_WORKSPACE/artifacts" \
+            --private-nuget-config "$RUNNER_TEMP/portable-worker-NuGet.Config" \
+            --work-dir "$RUNNER_TEMP/portable-installed-host-${{ matrix.rid }}"
+      - name: Remove staged private NuGet configuration
+        if: always()
+        run: rm -f -- "$RUNNER_TEMP/portable-worker-NuGet.Config"
       - name: Archive internal assets with permissions
-        run: tar -czf artifacts/portable-worker-linux-x64.tar.gz -C artifacts/portable-worker linux-x64
+        run: tar -czf "artifacts/portable-worker-${{ matrix.rid }}.tar.gz" -C artifacts/portable-worker "${{ matrix.rid }}"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: portable-worker-linux-x64
+          name: portable-worker-${{ matrix.rid }}
           path: |
-            artifacts/portable-worker-linux-x64.tar.gz
-            artifacts/portable-worker-preflight.json
+            artifacts/portable-worker-${{ matrix.rid }}.tar.gz
+            artifacts/portable-worker-preflight-${{ matrix.rid }}.json
           if-no-files-found: error
           retention-days: 7
       - name: Preserve first producer failure
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: portable-worker-producer-failure
-          path: artifacts/portable-worker/
+          name: portable-worker-producer-failure-${{ matrix.rid }}
+          path: artifacts/portable-worker/${{ matrix.rid }}/
+          if-no-files-found: warn
+          retention-days: 7
+
+  arm64-acceptance:
+    name: Native Linux ARM64 isolation and import acceptance
+    needs: prepare
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    env:
+      DOTNET_DIAGNOSTICS_HISTORICAL_ACCEPTANCE: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - name: Require a native ARM64 runner
+        run: test "$(uname -m)" = "aarch64"
+      - name: Stage caller-provided private NuGet configuration
+        env:
+          PRIVATE_NUGET_CONFIG: ${{ secrets.NUGET_CONFIG }}
+        shell: bash
+        run: |
+          if [[ -z "${PRIVATE_NUGET_CONFIG:-}" ]]; then
+            echo "The NUGET_CONFIG Actions secret is required for ARM64 acceptance; no public NuGet fallback is permitted." >&2
+            exit 1
+          fi
+          umask 077
+          config="$RUNNER_TEMP/portable-worker-acceptance-NuGet.Config"
+          printf '%s' "$PRIVATE_NUGET_CONFIG" > "$config"
+          unset PRIVATE_NUGET_CONFIG
+          echo "NUGET_CONFIG_PATH=$config" >> "$GITHUB_ENV"
+      - name: Restore Core acceptance tests
+        run: dotnet restore tests/DotnetDiagnostics.Core.Tests/DotnetDiagnostics.Core.Tests.csproj --configfile "$NUGET_CONFIG_PATH"
+      - name: Download native ARM64 producer output
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: portable-worker-linux-arm64
+          path: artifacts/portable-download
+      - name: Download native x64 producer output for generic package inventory
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: portable-worker-linux-x64
+          path: artifacts/portable-download
+      - name: Install producer assets for the acceptance process
+        shell: bash
+        run: |
+          mkdir -p artifacts/portable-worker
+          tar -xzf artifacts/portable-download/portable-worker-linux-arm64.tar.gz -C artifacts/portable-worker
+          tar -xzf artifacts/portable-download/portable-worker-linux-x64.tar.gz -C artifacts/portable-worker
+          worker="$GITHUB_WORKSPACE/artifacts/portable-worker/linux-arm64/capture-worker"
+          sqlite="$GITHUB_WORKSPACE/artifacts/portable-worker/linux-arm64/libe_sqlite3.so"
+          test -x "$worker"
+          test -f "$sqlite"
+          echo "DOTNET_DIAGNOSTICS_IMPORT_WORKER=$worker" >> "$GITHUB_ENV"
+          echo "DOTNET_DIAGNOSTICS_SQLITE_LIBRARY=$sqlite" >> "$GITHUB_ENV"
+      - name: Verify producer provenance and native ELF identity
+        run: |
+          python3 scripts/portable-worker-preflight.py \
+            --rid linux-arm64 \
+            --assets-dir "$GITHUB_WORKSPACE/artifacts/portable-worker/linux-arm64" \
+            --trusted-root "$GITHUB_WORKSPACE/artifacts" \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --expected-revision "$GITHUB_SHA" \
+            --output "$GITHUB_WORKSPACE/artifacts/portable-worker-preflight-linux-arm64.json"
+      - name: Run isolation, resource and end-to-end import acceptance
+        run: |
+          dotnet test tests/DotnetDiagnostics.Core.Tests/DotnetDiagnostics.Core.Tests.csproj \
+            -c Release --no-restore \
+            --filter 'FullyQualifiedName~IsolatedCaptureWorkerTests|FullyQualifiedName~WorkerGapDiagnosticsTests|FullyQualifiedName~SqliteAdmissionTests|FullyQualifiedName~SqliteRebuildTests|FullyQualifiedName~DifferentBundlesCompareAfterSourceDeletionAndDestinationReopen' \
+            --logger 'trx;LogFileName=portable-arm64.trx' \
+            --blame-hang-timeout 5m
+      - name: Verify generic CLI and MCP packages contain both native RIDs
+        run: |
+          python3 scripts/portable-installed-host-smoke.py \
+            --rid linux-arm64 \
+            --include-all-rids \
+            --assets-dir "$GITHUB_WORKSPACE/artifacts/portable-worker/linux-arm64" \
+            --trusted-root "$GITHUB_WORKSPACE/artifacts" \
+            --private-nuget-config "$NUGET_CONFIG_PATH" \
+            --work-dir "$RUNNER_TEMP/portable-installed-host-linux-arm64"
+      - name: Remove staged private NuGet configuration
+        if: always()
+        run: rm -f -- "$RUNNER_TEMP/portable-worker-acceptance-NuGet.Config"
+      - name: Preserve first ARM64 acceptance failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: portable-worker-arm64-acceptance-failure
+          path: |
+            artifacts/portable-worker/
+            tests/DotnetDiagnostics.Core.Tests/TestResults/
           if-no-files-found: warn
           retention-days: 7

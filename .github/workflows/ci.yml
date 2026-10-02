@@ -57,12 +57,13 @@ jobs:
               - '**'
               - '!**/*.md'
 
-  # Ubuntu retains sequential per-assembly live tests. Windows uses separate
+  # Ubuntu runs live-process suites sequentially; fast CLI/BenchmarkDotNet
+  # checks use a parallel job for earlier feedback. Windows uses separate
   # Core/MCP runners to shorten the critical path (#861). ClrMD's Linux crash
   # regression was revalidated in #685; concurrent aggregate-solution testing
   # remains a separate investigation (#879), not evidence supplied by these jobs.
   build-test:
-    name: Build & Test (${{ matrix.os }})
+    name: Ubuntu live test suites
     needs: changes
     runs-on: ${{ matrix.os }}
     strategy:
@@ -178,8 +179,11 @@ jobs:
         if: needs.changes.outputs.code == 'true'
         run: python -m unittest discover -s scripts/tests -p "test_*.py"
 
+      # Full live-process coverage remains required. Bound each potentially
+      # blocking suite independently so evidence upload can run after timeout.
       - name: Test (Core)
-        if: needs.changes.outputs.code == 'true'
+        if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        timeout-minutes: 35
         shell: bash
         run: python scripts/ci-test.py core tests/DotnetDiagnostics.Core.Tests/DotnetDiagnostics.Core.Tests.csproj
 
@@ -188,32 +192,13 @@ jobs:
       # execute real Core + BenchmarkDotNet diagnostic paths, not just compile.
       - name: Test (Multi-target runtime smoke)
         if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        timeout-minutes: 10
         shell: bash
         run: python scripts/ci-test.py smoke tests/DotnetDiagnostics.MultiTargetSmoke.Tests/DotnetDiagnostics.MultiTargetSmoke.Tests.csproj
 
-      # CLI tests are lightweight (parser/exit-code units + a `processes --json` smoke and the
-      # Core-only seam guard); no live child processes or EventPipe sessions, so they run as a
-      # plain step. Kept separate from the live-process suites to preserve the no-cross-assembly-
-      # parallelism invariant documented above.
-      - name: Test (CLI)
-        if: ${{ always() && needs.changes.outputs.code == 'true' }}
-        run: python scripts/ci-test.py cli tests/DotnetDiagnostics.Cli.Tests/DotnetDiagnostics.Cli.Tests.csproj
-
-      # BenchmarkDotNet tests cover the in-process diagnoser and report formatting.
-      # Later suites run even after failure so all suites can emit evidence.
-      - name: Test (BenchmarkDotNet)
-        if: ${{ always() && needs.changes.outputs.code == 'true' }}
-        run: python scripts/ci-test.py benchmark tests/DotnetDiagnostics.BenchmarkDotNet.Tests/DotnetDiagnostics.BenchmarkDotNet.Tests.csproj
-
-      # Pack smoke (issue #288): `dotnet build` + the CLI unit tests do NOT exercise the
-      # PackAsTool metadata, README packing, or tool-manifest layout — those only fail at
-      # release/tag time otherwise. Packing here catches a broken tool package on every PR.
-      - name: Pack smoke (CLI tool)
-        if: needs.changes.outputs.code == 'true'
-        run: dotnet pack src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj --no-build --no-restore --configuration Release -o artifacts/nupkg-smoke
-
       - name: Test (Server integration)
         if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        timeout-minutes: 25
         shell: bash
         run: python scripts/ci-test.py mcp tests/DotnetDiagnostics.Mcp.IntegrationTests/DotnetDiagnostics.Mcp.IntegrationTests.csproj --filter "Category!=KindIntegration&Category!=DockerIntegration"
 
@@ -221,7 +206,7 @@ jobs:
         if: ${{ always() && needs.changes.outputs.code == 'true' }}
         shell: bash
         run: |
-          for suite in core smoke cli benchmark mcp; do
+          for suite in core smoke mcp; do
             python scripts/ci-test.py "$suite" --verify-only
           done
 
@@ -261,6 +246,173 @@ jobs:
             Remove-Item -Force -ErrorAction SilentlyContinue $path
           }
 
+  ubuntu-fast-tests:
+    name: Ubuntu fast tests
+    needs: changes
+    runs-on: ubuntu-latest
+    steps:
+      - name: Block untrusted code validation without private NuGet
+        if: needs.changes.outputs.code == 'true' && needs.changes.outputs.trusted_source != 'true'
+        run: |
+          echo "::error::Code-changing fork and Dependabot PRs cannot access the private NUGET_CONFIG secret. Failing instead of restoring from public sources or reporting an unvalidated success."
+          exit 1
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.changes.outputs.code == 'true' && needs.changes.outputs.trusted_source == 'true'
+        with:
+          persist-credentials: false
+
+      - name: Setup .NET 10
+        if: needs.changes.outputs.code == 'true' && needs.changes.outputs.trusted_source == 'true'
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: |
+            **/Directory.Packages.props
+            **/*.csproj
+
+      - name: Stage caller-provided private NuGet configuration
+        if: needs.changes.outputs.code == 'true'
+        id: nuget
+        env:
+          PRIVATE_NUGET_CONFIG: ${{ secrets.NUGET_CONFIG }}
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:PRIVATE_NUGET_CONFIG)) {
+            throw "The NUGET_CONFIG Actions secret is required; no public NuGet fallback is permitted."
+          }
+          $config = Join-Path $env:RUNNER_TEMP "ci-NuGet.Config"
+          [System.IO.File]::WriteAllText($config, $env:PRIVATE_NUGET_CONFIG, [System.Text.UTF8Encoding]::new($false))
+          "path=$config" >> $env:GITHUB_OUTPUT
+          Remove-Item Env:PRIVATE_NUGET_CONFIG
+
+      - name: Restore
+        if: needs.changes.outputs.code == 'true'
+        timeout-minutes: 10
+        run: dotnet restore --configfile "${{ steps.nuget.outputs.path }}"
+
+      - name: Build CLI tests
+        if: needs.changes.outputs.code == 'true'
+        timeout-minutes: 10
+        run: dotnet build tests/DotnetDiagnostics.Cli.Tests/DotnetDiagnostics.Cli.Tests.csproj --no-restore --configuration Release
+
+      - name: Build BenchmarkDotNet tests
+        if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        timeout-minutes: 10
+        run: dotnet build tests/DotnetDiagnostics.BenchmarkDotNet.Tests/DotnetDiagnostics.BenchmarkDotNet.Tests.csproj --no-restore --configuration Release
+
+      - name: Check CI evidence verifier
+        if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        run: python -m unittest discover -s scripts/tests -p "test_*.py"
+
+      - name: Test (CLI)
+        if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        timeout-minutes: 10
+        run: python scripts/ci-test.py cli tests/DotnetDiagnostics.Cli.Tests/DotnetDiagnostics.Cli.Tests.csproj
+
+      - name: Test (BenchmarkDotNet)
+        if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        timeout-minutes: 10
+        run: python scripts/ci-test.py benchmark tests/DotnetDiagnostics.BenchmarkDotNet.Tests/DotnetDiagnostics.BenchmarkDotNet.Tests.csproj
+
+      - name: Pack smoke (CLI tool)
+        if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        timeout-minutes: 5
+        run: dotnet pack src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj --no-build --no-restore --configuration Release -o artifacts/nupkg-smoke
+
+      - name: Verify expected test results
+        if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        shell: bash
+        run: |
+          for suite in cli benchmark; do
+            python scripts/ci-test.py "$suite" --verify-only
+          done
+
+      - name: Upload fast test results
+        if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-results-ubuntu-fast
+          path: |
+            TestResults/**/*.trx
+            TestResults/**/*.txt
+            TestResults/**/*.log
+          if-no-files-found: ignore
+
+      - name: Upload fast test crash dumps
+        if: ${{ failure() && needs.changes.outputs.code == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: crash-dumps-ubuntu-fast
+          path: |
+            TestResults/**/*.dmp
+            TestResults/**/*crashreport*
+          if-no-files-found: ignore
+
+      - name: Remove staged private NuGet configuration
+        if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        shell: pwsh
+        run: |
+          $path = "${{ steps.nuget.outputs.path }}"
+          if (-not [string]::IsNullOrWhiteSpace($path)) {
+            Remove-Item -Force -ErrorAction SilentlyContinue $path
+          }
+
+  # Keep the branch-protection context stable while exposing fast-test results
+  # independently. The gate fails closed if either the fast or live suite fails.
+  ubuntu-gate:
+    name: Build & Test (ubuntu-latest)
+    needs: [changes, build-test, ubuntu-fast-tests]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Ubuntu test job results
+        shell: bash
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          CODE: ${{ needs.changes.outputs.code }}
+          REQUESTED_CODE: ${{ needs.changes.outputs.requested_code }}
+          TRUSTED_SOURCE: ${{ needs.changes.outputs.trusted_source }}
+          LIVE_RESULT: ${{ needs.build-test.result }}
+          FAST_RESULT: ${{ needs.ubuntu-fast-tests.result }}
+        run: |
+          echo "changes:          $CHANGES_RESULT"
+          echo "changes.code:     $CODE"
+          echo "changes.requested:$REQUESTED_CODE"
+          echo "changes.trusted:  $TRUSTED_SOURCE"
+          echo "live suites:      $LIVE_RESULT"
+          echo "fast tests:       $FAST_RESULT"
+
+          if [[ "$CHANGES_RESULT" != "success" ]]; then
+            echo "::error::The changes job did not succeed; refusing to infer a docs-only pass."
+            exit 1
+          fi
+
+          if [[ "$CODE" == "false" ]]; then
+            if [[ "$REQUESTED_CODE" == "false" && "$LIVE_RESULT" == "success" && "$FAST_RESULT" == "success" ]]; then
+              echo "Docs-only change: test steps skipped as expected."
+              exit 0
+            fi
+            echo "::error::Docs-only CI did not produce the expected test job results (requested=$REQUESTED_CODE, live=$LIVE_RESULT, fast=$FAST_RESULT)."
+            exit 1
+          fi
+
+          if [[ "$CODE" != "true" ]]; then
+            echo "::error::Unexpected 'changes.outputs.code' value: '$CODE' (expected 'true' or 'false')."
+            exit 1
+          fi
+
+          if [[ "$TRUSTED_SOURCE" != "true" ]]; then
+            echo "::error::Code-changing fork and Dependabot PRs cannot access the private NUGET_CONFIG secret. Failing instead of accepting unvalidated Ubuntu checks."
+            exit 1
+          fi
+
+          if [[ "$LIVE_RESULT" != "success" || "$FAST_RESULT" != "success" ]]; then
+            echo "::error::Ubuntu test jobs did not all succeed (code=$CODE, live=$LIVE_RESULT, fast=$FAST_RESULT)."
+            exit 1
+          fi
+
   # --- Windows isolation model (issue #861) ---------------------------------
   #
   # Windows was the critical path (build-test's `windows-latest` leg used to
@@ -271,17 +423,19 @@ jobs:
   # NOT run concurrently in the *same* runner process — issue #147 showed
   # that crashes the test host under load. But two separate Windows VMs give
   # real process isolation, so the suites can run in parallel across jobs
-  # even though they must stay serialized within any one job.
+  # even though they must stay serialized within any one job. A separate fast
+  # test VM reports CLI/BenchmarkDotNet failures without waiting for either.
   #
   # `windows-build` builds once and uploads the `bin/` output every
   # downstream job needs (SampleLocator walks up from each test host's own
   # bin/ directory looking for sibling `src|tests|samples/*/bin/**` folders,
   # so as long as the artifact is unpacked back onto a fresh checkout at the
   # same relative paths, `--no-build` test runs behave exactly as if they'd
-  # built in-process). `windows-core-test` and `windows-mcp-test` each
-  # download that artifact and run their own suite on their own VM — no
-  # shared runner, no shared process. `windows-gate` aggregates both plus the
-  # build job and republishes the result under the *same* required-check name
+  # built in-process). `windows-core-test`, `windows-fast-test`, and
+  # `windows-mcp-test` each download that artifact and run their own suite on
+  # their own VM — no shared runner, no shared process. `windows-gate`
+  # aggregates those jobs plus the build job and republishes the result under
+  # the *same* required-check name
   # the old single `windows-latest` matrix leg used
   # (`Build & Test (windows-latest)`), so branch protection needs no
   # migration.
@@ -290,7 +444,7 @@ jobs:
     needs: changes
     # Job-level gate (safe here: this job is NOT itself a required check —
     # only `windows-gate` below is). Without it, docs-only PRs would spin up
-    # three Windows VMs with every step skipped instead of the pre-split
+    # four Windows VMs with every step skipped instead of the pre-split
     # single empty leg. `windows-gate` treats a `skipped` result as OK
     # whenever `changes.outputs.code` is false, so the required check still
     # reports promptly either way.
@@ -463,6 +617,7 @@ jobs:
 
       - name: Test (Core)
         if: needs.changes.outputs.code == 'true'
+        timeout-minutes: 25
         shell: bash
         env:
           DIAG_REQUIRE_WINDOWS_DIA_ETW: "1"
@@ -470,6 +625,7 @@ jobs:
 
       - name: Test (Multi-target runtime smoke)
         if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        timeout-minutes: 10
         shell: bash
         run: python scripts/ci-test.py smoke tests/DotnetDiagnostics.MultiTargetSmoke.Tests/DotnetDiagnostics.MultiTargetSmoke.Tests.csproj
 
@@ -512,8 +668,107 @@ jobs:
             Remove-Item -Force -ErrorAction SilentlyContinue $path
           }
 
+  windows-fast-test:
+    name: Windows fast tests
+    needs: [changes, windows-build]
+    # See `windows-build`'s job-level `if` comment above for the rationale.
+    if: needs.changes.outputs.code == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: |
+            **/Directory.Packages.props
+            **/*.csproj
+
+      - name: Stage caller-provided private NuGet configuration
+        id: nuget
+        env:
+          PRIVATE_NUGET_CONFIG: ${{ secrets.NUGET_CONFIG }}
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:PRIVATE_NUGET_CONFIG)) {
+            throw "The NUGET_CONFIG Actions secret is required; no public NuGet fallback is permitted."
+          }
+          $config = Join-Path $env:RUNNER_TEMP "ci-NuGet.Config"
+          [System.IO.File]::WriteAllText($config, $env:PRIVATE_NUGET_CONFIG, [System.Text.UTF8Encoding]::new($false))
+          "path=$config" >> $env:GITHUB_OUTPUT
+          Remove-Item Env:PRIVATE_NUGET_CONFIG
+
+      - name: Restore
+        timeout-minutes: 10
+        run: dotnet restore --configfile "${{ steps.nuget.outputs.path }}"
+
+      - name: Download build output (Windows)
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: windows-build-output
+          path: .
+
+      - name: Check CI evidence verifier
+        run: python -m unittest discover -s scripts/tests -p "test_*.py"
+
+      - name: Test (CLI)
+        timeout-minutes: 10
+        run: python scripts/ci-test.py cli tests/DotnetDiagnostics.Cli.Tests/DotnetDiagnostics.Cli.Tests.csproj
+
+      - name: Test (BenchmarkDotNet)
+        if: ${{ always() }}
+        timeout-minutes: 10
+        run: python scripts/ci-test.py benchmark tests/DotnetDiagnostics.BenchmarkDotNet.Tests/DotnetDiagnostics.BenchmarkDotNet.Tests.csproj
+
+      - name: Pack smoke (CLI tool)
+        if: ${{ always() }}
+        timeout-minutes: 5
+        run: dotnet pack src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj --no-build --no-restore --configuration Release -o artifacts/nupkg-smoke
+
+      - name: Verify expected test results
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          for suite in cli benchmark; do
+            python scripts/ci-test.py "$suite" --verify-only
+          done
+
+      - name: Upload fast test results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-results-windows-fast
+          path: |
+            TestResults/**/*.trx
+            TestResults/**/*.txt
+            TestResults/**/*.log
+          if-no-files-found: ignore
+
+      - name: Upload crash dumps
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: crash-dumps-windows-fast
+          path: |
+            TestResults/**/*.dmp
+            TestResults/**/*crashreport*
+          if-no-files-found: ignore
+
+      - name: Remove staged private NuGet configuration
+        if: always()
+        shell: pwsh
+        run: |
+          $path = "${{ steps.nuget.outputs.path }}"
+          if (-not [string]::IsNullOrWhiteSpace($path)) {
+            Remove-Item -Force -ErrorAction SilentlyContinue $path
+          }
+
   windows-mcp-test:
-    name: Windows CLI, BenchmarkDotNet & MCP integration tests
+    name: Windows MCP integration tests
     needs: [changes, windows-build]
     # See `windows-build`'s job-level `if` comment above for the rationale.
     if: needs.changes.outputs.code == 'true'
@@ -564,30 +819,10 @@ jobs:
           name: windows-build-output
           path: .
 
-      # CLI tests are lightweight (no live child processes); bundled onto
-      # this VM alongside the MCP server integration suite (below) rather
-      # than the Core-test VM purely to balance wall time across the two
-      # split jobs (Core tests alone are the longer pole at ~8m18s median).
-      - name: Test (CLI)
-        if: needs.changes.outputs.code == 'true'
-        run: python scripts/ci-test.py cli tests/DotnetDiagnostics.Cli.Tests/DotnetDiagnostics.Cli.Tests.csproj
-
-      # BenchmarkDotNet tests cover the in-process diagnoser and report formatting.
-      # Later suites run even after failure so all suites can emit evidence.
-      - name: Test (BenchmarkDotNet)
-        if: ${{ always() && needs.changes.outputs.code == 'true' }}
-        run: python scripts/ci-test.py benchmark tests/DotnetDiagnostics.BenchmarkDotNet.Tests/DotnetDiagnostics.BenchmarkDotNet.Tests.csproj
-
-      # Pack smoke (issue #288): `dotnet build` + the CLI unit tests do NOT exercise the
-      # PackAsTool metadata, README packing, or tool-manifest layout — those only fail at
-      # release/tag time otherwise. Packing here catches a broken tool package on every PR.
-      - name: Pack smoke (CLI tool)
-        if: ${{ always() && needs.changes.outputs.code == 'true' }}
-        run: dotnet pack src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj --no-build --no-restore --configuration Release -o artifacts/nupkg-smoke
-
       # Same fail-closed semantics as Linux, with the isolation from #861.
       - name: Test (Server integration)
         if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        timeout-minutes: 25
         shell: bash
         run: python scripts/ci-test.py mcp tests/DotnetDiagnostics.Mcp.IntegrationTests/DotnetDiagnostics.Mcp.IntegrationTests.csproj --filter "Category!=KindIntegration&Category!=DockerIntegration"
 
@@ -595,7 +830,7 @@ jobs:
         if: ${{ always() && needs.changes.outputs.code == 'true' }}
         shell: bash
         run: |
-          for suite in cli benchmark mcp; do
+          for suite in mcp; do
             python scripts/ci-test.py "$suite" --verify-only
           done
 
@@ -634,26 +869,26 @@ jobs:
   # the exact required-check name branch protection already expects
   # (`Build & Test (windows-latest)`), so this split needs no branch-
   # protection migration. `if: always()` is required so the gate itself still
-  # runs (and fails loudly) even when `windows-build`/`windows-core-test`/
-  # `windows-mcp-test` failed or were skipped by a failed dependency — a
+  # runs (and fails loudly) even when any split Windows job failed or was
+  # skipped by a failed dependency — a
   # normal `needs:`-only job would otherwise be skipped in that case, which
   # reports as a *neutral* check rather than a failing one and would let a
-  # broken Windows leg merge. On docs-only PRs the three jobs above are
+  # broken Windows leg merge. On docs-only PRs the four jobs above are
   # *deliberately* skipped at the job level (see their `if:` comments), so
   # this gate treats `skipped` as acceptable only when `changes` itself
   # *succeeded* and its `code` output is the explicit string `false` — a
   # `skipped` result while `code` is true still fails the gate, since that
   # can only mean one of them was skipped due to an upstream failure (e.g.
-  # `windows-build` failing skips both test jobs by default). Requiring
+  # `windows-build` failing skips its downstream test jobs by default). Requiring
   # `needs.changes.result == 'success'` before trusting `code` matters
   # because if `changes` itself fails or is cancelled, its `code` output is
-  # empty/unreliable — the three split jobs still skip themselves (their
+  # empty/unreliable — the split jobs still skip themselves (their
   # `if:` only becomes true when `code == 'true'`, which an empty value is
   # not), but that must not be misread as "docs-only, skip is fine"; a
   # failed `changes` job means we have no real signal, so the gate fails.
   windows-gate:
     name: Build & Test (windows-latest)
-    needs: [changes, windows-build, windows-core-test, windows-mcp-test]
+    needs: [changes, windows-build, windows-core-test, windows-fast-test, windows-mcp-test]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -666,6 +901,7 @@ jobs:
           TRUSTED_SOURCE: ${{ needs.changes.outputs.trusted_source }}
           BUILD_RESULT: ${{ needs.windows-build.result }}
           CORE_RESULT: ${{ needs.windows-core-test.result }}
+          FAST_RESULT: ${{ needs.windows-fast-test.result }}
           MCP_RESULT: ${{ needs.windows-mcp-test.result }}
         run: |
           echo "changes:             $CHANGES_RESULT"
@@ -674,11 +910,12 @@ jobs:
           echo "changes.trusted:     $TRUSTED_SOURCE"
           echo "windows-build:       $BUILD_RESULT"
           echo "windows-core-test:   $CORE_RESULT"
+          echo "windows-fast-test:   $FAST_RESULT"
           echo "windows-mcp-test:    $MCP_RESULT"
 
           # `changes` itself must have succeeded before we trust its `code`
           # output at all. If `changes` failed or was cancelled, `CODE` is
-          # empty/unreliable (not a legitimate "false") — the three split
+          # empty/unreliable (not a legitimate "false") — the split
           # jobs would still correctly skip themselves (their `if:` requires
           # `code == 'true'`, which is false when `changes` never ran to
           # completion), but that must NOT be read as "docs-only, skip is
@@ -689,17 +926,17 @@ jobs:
             exit 1
           fi
 
-          # Docs-only changes skip the three secret-dependent jobs at job
+          # Docs-only changes skip the four secret-dependent jobs at job
           # level. Untrusted code PRs also skip those jobs, but the required
           # gate must fail rather than report unvalidated success.
           if [[ "$CODE" == "false" ]]; then
-            if [[ "$BUILD_RESULT" == "skipped" && "$CORE_RESULT" == "skipped" && "$MCP_RESULT" == "skipped" ]]; then
+            if [[ "$BUILD_RESULT" == "skipped" && "$CORE_RESULT" == "skipped" && "$FAST_RESULT" == "skipped" && "$MCP_RESULT" == "skipped" ]]; then
               if [[ "$REQUESTED_CODE" == "false" ]]; then
                 echo "Docs-only change: split Windows jobs skipped as expected."
                 exit 0
               fi
             fi
-            echo "::error::Docs-only CI did not produce the expected skipped Windows jobs (requested=$REQUESTED_CODE, trusted=$TRUSTED_SOURCE, build=$BUILD_RESULT, core=$CORE_RESULT, mcp=$MCP_RESULT)."
+            echo "::error::Docs-only CI did not produce the expected skipped Windows jobs (requested=$REQUESTED_CODE, trusted=$TRUSTED_SOURCE, build=$BUILD_RESULT, core=$CORE_RESULT, fast=$FAST_RESULT, mcp=$MCP_RESULT)."
             exit 1
           fi
 
@@ -713,8 +950,8 @@ jobs:
             exit 1
           fi
 
-          if [[ "$BUILD_RESULT" != "success" || "$CORE_RESULT" != "success" || "$MCP_RESULT" != "success" ]]; then
-            echo "::error::One or more split Windows jobs did not succeed (build=$BUILD_RESULT, core=$CORE_RESULT, mcp=$MCP_RESULT)."
+          if [[ "$BUILD_RESULT" != "success" || "$CORE_RESULT" != "success" || "$FAST_RESULT" != "success" || "$MCP_RESULT" != "success" ]]; then
+            echo "::error::One or more split Windows jobs did not succeed (build=$BUILD_RESULT, core=$CORE_RESULT, fast=$FAST_RESULT, mcp=$MCP_RESULT)."
             exit 1
           fi
 

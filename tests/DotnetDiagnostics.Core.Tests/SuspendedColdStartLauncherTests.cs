@@ -3,7 +3,9 @@ using System.Text;
 using DotnetDiagnostics.Core.Launch;
 using DotnetDiagnostics.Core.Startup;
 using FluentAssertions;
+using Microsoft.Extensions.Logging;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace DotnetDiagnostics.Core.Tests;
 
@@ -14,7 +16,7 @@ namespace DotnetDiagnostics.Core.Tests;
 /// observe it. ServiceProviderBuilt is replayed and is therefore not a cold-start discriminator.
 /// </summary>
 [Collection("LiveProcess")]
-public sealed class SuspendedColdStartLauncherTests
+public sealed class SuspendedColdStartLauncherTests(ITestOutputHelper output)
 {
     [Fact]
     public void CreatePortPath_ShortUnixTempPath_UsesPreferredDirectory()
@@ -276,34 +278,71 @@ public sealed class SuspendedColdStartLauncherTests
             throw SkipException.ForReason("CoreClrSample.dll not found. Build the sample before running this test.");
         }
 
+        using var diagnostics = new StringWriter();
+        var sink = TextWriter.Synchronized(diagnostics);
+        var clock = Stopwatch.StartNew();
         string portPath;
-        await using (var target = await SuspendedColdStartLauncher.LaunchSuspendedAsync(
-            "dotnet",
-            new[] { sampleDll, "--urls", "http://127.0.0.1:0" },
-            consoleSink: null,
-            connectTimeout: TimeSpan.FromSeconds(30)))
+        try
         {
-            portPath = target.DiagnosticPortPath;
-            if (!OperatingSystem.IsWindows())
+            await using (var target = await SuspendedColdStartLauncher.LaunchSuspendedAsync(
+                "dotnet",
+                new[] { sampleDll, "--urls", "http://127.0.0.1:0" },
+                consoleSink: sink,
+                connectTimeout: TimeSpan.FromSeconds(30)))
             {
-                File.Exists(portPath).Should().BeTrue("the launcher owns a live Unix reverse-connect socket");
+                sink.WriteLine($"Reverse-connect ready at {clock.Elapsed}; pid={target.ProcessId}; sample={sampleDll}");
+                portPath = target.DiagnosticPortPath;
+                if (!OperatingSystem.IsWindows())
+                {
+                    File.Exists(portPath).Should().BeTrue("the launcher owns a live Unix reverse-connect socket");
+                }
+
+                target.HasExited.Should().BeFalse("the launched runtime is suspended waiting on the diagnostic port");
+
+                var collector = new EventPipeStartupCollector(new ColdStartLogger(sink, clock));
+                var snapshot = await collector.CollectColdStartAsync(target, TimeSpan.FromSeconds(8));
+                sink.WriteLine(
+                    $"Capture completed at {clock.Elapsed}; targetExited={target.HasExited}; " +
+                    $"assemblies={snapshot.TotalAssemblyLoads}; modules={snapshot.TotalModuleLoads}; " +
+                    $"di={snapshot.TotalDiEvents}; providerBuilt={snapshot.DiServiceProviderBuiltCount}");
+                foreach (var note in snapshot.Notes)
+                {
+                    sink.WriteLine($"Capture note: {note}");
+                }
+                foreach (var assembly in snapshot.AssemblyLoads.TakeLast(10))
+                {
+                    sink.WriteLine($"Assembly: {assembly.Timestamp:O} {assembly.AssemblyName}");
+                }
+
+                // The single ServiceProvider build happens once at startup; a post-attach collector cannot see
+                // it. Cold start arms the session before resume, so it is captured.
+                snapshot.TotalDiEvents.Should().BeGreaterThan(0, "cold-start arms EventPipe before DI is built");
+                snapshot.DiServiceProviderBuiltCount.Should().BeGreaterThanOrEqualTo(1);
+                snapshot.Notes.Should().Contain(n => n.Contains("Cold-start capture", StringComparison.Ordinal));
             }
 
-            target.HasExited.Should().BeFalse("the launched runtime is suspended waiting on the diagnostic port");
-
-            var collector = new EventPipeStartupCollector();
-            var snapshot = await collector.CollectColdStartAsync(target, TimeSpan.FromSeconds(8));
-
-            // The single ServiceProvider build happens once at startup; a post-attach collector cannot see
-            // it. Cold start arms the session before resume, so it is captured.
-            snapshot.TotalDiEvents.Should().BeGreaterThan(0, "cold-start arms EventPipe before DI is built");
-            snapshot.DiServiceProviderBuiltCount.Should().BeGreaterThanOrEqualTo(1);
-            snapshot.Notes.Should().Contain(n => n.Contains("Cold-start capture", StringComparison.Ordinal));
+            if (!OperatingSystem.IsWindows())
+            {
+                File.Exists(portPath).Should().BeFalse("disposing the target removes the launcher-owned Unix socket");
+            }
         }
-
-        if (!OperatingSystem.IsWindows())
+        finally
         {
-            File.Exists(portPath).Should().BeFalse("disposing the target removes the launcher-owned Unix socket");
+            output.WriteLine(diagnostics.ToString());
+        }
+    }
+
+    private sealed class ColdStartLogger(TextWriter sink, Stopwatch clock) : ILogger<EventPipeStartupCollector>
+    {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            sink.WriteLine($"Collector {clock.Elapsed} {logLevel}: {formatter(state, exception)} {exception}");
         }
     }
 
