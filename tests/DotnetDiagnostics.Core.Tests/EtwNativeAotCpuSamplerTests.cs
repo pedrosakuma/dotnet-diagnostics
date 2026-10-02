@@ -227,7 +227,9 @@ public class EtwNativeAotCpuSamplerTests
             {
                 // Post-capture only: the ETL is already closed, so this cannot perturb it.
                 using var probeCts = new CancellationTokenSource();
-                DiagWatchHotThread(diagHotTid, Path.Combine(probeDir, $"hot-rip-{pid}.txt"), probeCts.Token, iterations: 6);
+                var ripPath = Path.Combine(probeDir, $"hot-rip-{pid}.txt");
+                DiagWatchHotThread(diagHotTid, ripPath, probeCts.Token, iterations: 6);
+                DiagIntervene(diagHotTid, ripPath, probeDir);
             }
             cts.Cancel();
             try { await loadTask; } catch (OperationCanceledException) { }
@@ -281,6 +283,83 @@ public class EtwNativeAotCpuSamplerTests
     private static extern IntPtr RtlGetFunctionTableListHead();
     [DllImport("ntdll.dll")]
     private static extern ushort RtlCaptureStackBackTrace(uint skip, uint count, IntPtr[] frames, IntPtr hash);
+
+    [DllImport("ntdll.dll")]
+    private static extern byte RtlDeleteFunctionTable(IntPtr functionTable);
+
+    // DIAG ONLY: in the same (possibly broken) process, re-capture the hot thread (C0), then delete
+    // the overlapping callback (type=2) dynamic function table that covers the hot RIP and re-capture (C1).
+    private static unsafe void DiagIntervene(uint tid, string path, string dir)
+    {
+        var lines = new List<string>();
+        try
+        {
+            var h = OpenThread(0x0008 | 0x0002 | 0x0040, false, tid);
+            var ctxMem = (IntPtr)NativeMemory.AlignedAlloc(1232, 16);
+            new Span<byte>((void*)ctxMem, 1232).Clear();
+            *(uint*)(ctxMem + 0x30) = 0x00100001;
+            SuspendThread(h);
+            GetThreadContext(h, ctxMem);
+            _ = ResumeThread(h);
+            var rip = *(ulong*)(ctxMem + 0xF8);
+            NativeMemory.AlignedFree((void*)ctxMem);
+            CloseHandle(h);
+
+            lines.Add($"C0 (before intervention): {DiagCapture(tid, dir, "c0")}");
+            var head = RtlGetFunctionTableListHead();
+            var callbacks = new List<IntPtr>();
+            for (var e = *(IntPtr*)head; e != head; e = *(IntPtr*)e)
+            {
+                if (*(int*)(e + 80) == 2 && rip >= *(ulong*)(e + 32) && rip < *(ulong*)(e + 40))
+                {
+                    callbacks.Add(*(IntPtr*)(e + 16));
+                }
+            }
+            foreach (var id in callbacks)
+            {
+                lines.Add($"RtlDeleteFunctionTable(callback id=0x{(long)id:x}) => {RtlDeleteFunctionTable(id)}");
+            }
+            lines.Add($"C1 (after deleting {callbacks.Count} callback table(s)): {DiagCapture(tid, dir, "c1")}");
+        }
+        catch (Exception ex) { lines.Add("intervene exception: " + ex); }
+        File.AppendAllLines(path, lines);
+    }
+
+    private static string DiagCapture(uint tid, string dir, string label)
+    {
+        var etl = Path.Combine(dir, $"intervene-{label}-{Environment.ProcessId}.etl");
+        using (var s = new TraceEventSession($"diag-intervene-{label}-{Environment.ProcessId}", etl) { StopOnDispose = true })
+        {
+            s.EnableKernelProvider(
+                Microsoft.Diagnostics.Tracing.Parsers.KernelTraceEventParser.Keywords.Profile,
+                Microsoft.Diagnostics.Tracing.Parsers.KernelTraceEventParser.Keywords.Profile);
+            Thread.Sleep(3000);
+        }
+        int samples = 0, kernelIp = 0, walks = 0, walksWithUser = 0, maxUserFrames = 0;
+        using (var src = new Microsoft.Diagnostics.Tracing.ETWTraceEventSource(etl))
+        {
+            src.Kernel.PerfInfoSample += e =>
+            {
+                if (e.ThreadID != (int)tid) return;
+                samples++;
+                if (e.InstructionPointer >= 0xFFFF800000000000UL) kernelIp++;
+            };
+            src.Kernel.StackWalkStack += e =>
+            {
+                if (e.ThreadID != (int)tid) return;
+                walks++;
+                var user = 0;
+                for (var i = 0; i < e.FrameCount; i++)
+                {
+                    if (e.InstructionPointer(i) < 0x0000800000000000UL) user++;
+                }
+                if (user > 0) walksWithUser++;
+                maxUserFrames = Math.Max(maxUserFrames, user);
+            };
+            src.Process();
+        }
+        return $"samples={samples} kernelIp={kernelIp} stackWalks={walks} walksWithUserFrames={walksWithUser} maxUserFrames={maxUserFrames}";
+    }
 
     // DIAG ONLY: periodically suspend the hot thread, read RIP, and ask the OS whether
     // that RIP has published unwind data (what the kernel ETW stack walker needs).
