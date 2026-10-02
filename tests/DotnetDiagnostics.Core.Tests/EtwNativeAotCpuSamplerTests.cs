@@ -420,7 +420,7 @@ public class EtwNativeAotCpuSamplerTests
         var n = Math.Max(4, Environment.ProcessorCount * 2);
         for (var i = 0; i < n; i++)
         {
-            ThreadPool.UnsafeQueueUserWorkItem(_ => { tids[(int)DiagGetCurrentThreadId()] = 1; BurnManagedCpu(stop.Token); }, null);
+            System.Threading.ThreadPool.UnsafeQueueUserWorkItem(_ => { tids[(int)DiagGetCurrentThreadId()] = 1; BurnManagedCpu(stop.Token); }, null);
         }
         Thread.Sleep(1500);
         var etl = Path.Combine(dir, $"intervene-pool-{Environment.ProcessId}.etl");
