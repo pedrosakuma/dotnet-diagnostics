@@ -32,6 +32,22 @@ public sealed class CultureLookupBackendTests
     }
 
     [Fact]
+    public void LinuxReassessmentOptIn_IsLimitedToCultureLookupAndDoesNotChangeManifestSupport()
+    {
+        var cultureLookup = ScenarioManifestLoader.LoadAll().Single(item => item.Id == "culture-lookup");
+
+        cultureLookup.SupportedLivePlatforms.Should().Equal(ScenarioPlatform.Windows);
+        ScenarioLiveRunner.SupportsPlatform(cultureLookup, ScenarioPlatform.Linux).Should().BeFalse();
+        ScenarioLiveRunner.SupportsPlatform(cultureLookup, ScenarioPlatform.Linux, allowLinuxCultureLookupReassessment: true)
+            .Should().BeTrue();
+        ScenarioLiveRunner.SupportsPlatform(
+                cultureLookup with { Id = "another-scenario" },
+                ScenarioPlatform.Linux,
+                allowLinuxCultureLookupReassessment: true)
+            .Should().BeFalse();
+    }
+
+    [Fact]
     public void EventPipeCannotSatisfyMeasuredCpuContract()
     {
         var result = Result(CpuSampleEvidence.EventPipeSampleProfiler, 100);

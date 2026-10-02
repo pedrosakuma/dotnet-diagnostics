@@ -84,8 +84,22 @@ public sealed class ScenarioLiveRunner
             : OperatingSystem.IsLinux()
                 ? ScenarioPlatform.Linux
                 : (ScenarioPlatform?)null;
-        return platform is not null && manifest.SupportedLivePlatforms.Contains(platform.Value);
+        var allowLinuxCultureLookupReassessment = string.Equals(
+            Environment.GetEnvironmentVariable(ScenarioEnvironmentVariables.LinuxCultureLookupReassessment),
+            "culture-lookup",
+            StringComparison.Ordinal);
+        return platform is not null
+            && SupportsPlatform(manifest, platform.Value, allowLinuxCultureLookupReassessment);
     }
+
+    internal static bool SupportsPlatform(
+        ScenarioManifest manifest,
+        ScenarioPlatform platform,
+        bool allowLinuxCultureLookupReassessment = false)
+        => manifest.SupportedLivePlatforms.Contains(platform)
+            || (platform == ScenarioPlatform.Linux
+                && string.Equals(manifest.Id, "culture-lookup", StringComparison.Ordinal)
+                && allowLinuxCultureLookupReassessment);
 
     private static async Task<ScenarioEvidence> CaptureCultureLookupAsync(
         ScenarioManifest manifest,

@@ -13,6 +13,7 @@ internal static class ScenarioEnvironmentVariables
     public const string Attempt = "DOTNET_DIAGNOSTICS_SCENARIO_ATTEMPT";
     public const string TrialArtifactPath = "DOTNET_DIAGNOSTICS_SCENARIO_TRIAL_ARTIFACT_PATH";
     public const string Issue987SingleCapture = "DOTNET_DIAGNOSTICS_987_SINGLE_CAPTURE";
+    public const string LinuxCultureLookupReassessment = "DOTNET_DIAGNOSTICS_SCENARIO_LINUX_CULTURE_LOOKUP_REASSESSMENT";
 }
 
 [CollectionDefinition(Name, DisableParallelization = true)]
@@ -25,7 +26,8 @@ public sealed class ScenarioEvaluationLiveGroup
 public sealed class ScenarioLiveTests
 {
     [WindowsOnlyFact(
-        "Culture-lookup requires validated Windows ETW measured-CPU evidence; Linux support remains gated by reassessment #929.",
+        "Culture-lookup requires validated Windows ETW measured-CPU evidence; Linux is enabled only by the isolated #929 reassessment path.",
+        allowLinuxCultureLookupReassessment: true,
         Timeout = 600_000)]
     [Trait("Category", "ScenarioEvaluationLive")]
     public Task LiveCapture_CultureLookup_SatisfiesStructuredEvidenceInvariants()
@@ -299,10 +301,16 @@ public sealed class ScenarioIsolatedTrialTests
 [AttributeUsage(AttributeTargets.Method, AllowMultiple = false)]
 public sealed class WindowsOnlyFactAttribute : FactAttribute
 {
-    public WindowsOnlyFactAttribute(string reason)
+    public WindowsOnlyFactAttribute(string reason, bool allowLinuxCultureLookupReassessment = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(reason);
-        if (!OperatingSystem.IsWindows())
+        if (!OperatingSystem.IsWindows()
+            && !(allowLinuxCultureLookupReassessment
+                && OperatingSystem.IsLinux()
+                && string.Equals(
+                    Environment.GetEnvironmentVariable(ScenarioEnvironmentVariables.LinuxCultureLookupReassessment),
+                    "culture-lookup",
+                    StringComparison.Ordinal)))
         {
             Skip = reason;
         }
