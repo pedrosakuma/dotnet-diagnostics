@@ -278,6 +278,8 @@ public class EtwNativeAotCpuSamplerTests
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool GetModuleHandleExW(uint flags, IntPtr address, out IntPtr module);
     [DllImport("ntdll.dll")]
+    private static extern IntPtr RtlGetFunctionTableListHead();
+    [DllImport("ntdll.dll")]
     private static extern ushort RtlCaptureStackBackTrace(uint skip, uint count, IntPtr[] frames, IntPtr hash);
 
     // DIAG ONLY: periodically suspend the hot thread, read RIP, and ask the OS whether
@@ -289,6 +291,15 @@ public class EtwNativeAotCpuSamplerTests
         var ctxMem = (IntPtr)System.Runtime.InteropServices.NativeMemory.AlignedAlloc(1232, 16);
         try
         {
+            // Walk ntdll's dynamic function table list (DYNAMIC_FUNCTION_TABLE: Min@32, Max@40, Type@80, EntryCount@84).
+            var head = RtlGetFunctionTableListHead();
+            var tables = new List<(ulong Min, ulong Max, int Type, uint Count)>();
+            for (var e = *(IntPtr*)head; e != head && tables.Count < 100_000; e = *(IntPtr*)e)
+            {
+                tables.Add((*(ulong*)(e + 32), *(ulong*)(e + 40), *(int*)(e + 80), *(uint*)(e + 84)));
+            }
+            lines.Add($"dynamic function tables: {tables.Count}; types: {string.Join(",", tables.GroupBy(t => t.Type).Select(g => $"{g.Key}={g.Count()}"))}; total entries: {tables.Sum(t => (long)t.Count)}");
+            var probeRip = 0UL;
             for (var n = 0; n < iterations && !token.IsCancellationRequested; n++)
             {
                 Thread.Sleep(250);
@@ -303,7 +314,14 @@ public class EtwNativeAotCpuSamplerTests
                 var fe = RtlLookupFunctionEntry(rip, out var imageBase, IntPtr.Zero);
                 bool inModule = GetModuleHandleExW(0x4 | 0x2, (IntPtr)(long)rip, out var mod);
                 string feText = fe == IntPtr.Zero ? "NULL" : $"begin=0x{imageBase + *(uint*)fe:x} end=0x{imageBase + *(uint*)(fe + 4):x} unwind=0x{*(uint*)(fe + 8):x}";
+                probeRip = rip;
                 lines.Add($"{DateTimeOffset.UtcNow:HH:mm:ss.fff} rip=0x{rip:x} rsp=0x{rsp:x} inImage={inModule} mod=0x{(long)mod:x} funcEntry={feText} imageBase=0x{imageBase:x}");
+            }
+            var idx = tables.FindIndex(t => probeRip >= t.Min && probeRip < t.Max);
+            lines.Add(idx < 0 ? "hot RIP not covered by any dynamic table" : $"hot RIP table index {idx} of {tables.Count}: [{tables[idx].Min:x},{tables[idx].Max:x}) type={tables[idx].Type} entries={tables[idx].Count}");
+            foreach (var (t, i) in tables.Select((t, i) => (t, i)).Where(x => x.i < 3 || x.i >= tables.Count - 3 || x.i == idx))
+            {
+                lines.Add($"  table[{i}] [{t.Min:x},{t.Max:x}) size=0x{t.Max - t.Min:x} type={t.Type} entries={t.Count}");
             }
         }
         catch (Exception ex) { lines.Add("watcher exception: " + ex); }
