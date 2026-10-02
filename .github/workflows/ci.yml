@@ -540,6 +540,15 @@ jobs:
       fail-fast: false
       matrix:
         attempt: [1, 2, 3, 4]
+        include:
+          - attempt: 1
+            tfilter: "FullyQualifiedName~Etw|FullyQualifiedName~OffCpu|FullyQualifiedName~Pmc|FullyQualifiedName~CpuEfficiency|FullyQualifiedName~NativeLock|FullyQualifiedName~LiveWindows|FullyQualifiedName~NativeDia|FullyQualifiedName~Capabilit"
+          - attempt: 2
+            tfilter: "(FullyQualifiedName!~Etw&FullyQualifiedName!~OffCpu&FullyQualifiedName!~Pmc&FullyQualifiedName!~CpuEfficiency&FullyQualifiedName!~NativeLock&FullyQualifiedName!~LiveWindows&FullyQualifiedName!~NativeDia&FullyQualifiedName!~Capabilit)|FullyQualifiedName~EtwNativeAotCpuSamplerTests.SampleAsync_CapturesFromCurrentProcess_WhenElevated"
+          - attempt: 3
+            tfilter: "FullyQualifiedName~Etw|FullyQualifiedName~OffCpu|FullyQualifiedName~Pmc|FullyQualifiedName~CpuEfficiency|FullyQualifiedName~NativeLock|FullyQualifiedName~LiveWindows|FullyQualifiedName~NativeDia|FullyQualifiedName~Capabilit"
+          - attempt: 4
+            tfilter: "(FullyQualifiedName!~Etw&FullyQualifiedName!~OffCpu&FullyQualifiedName!~Pmc&FullyQualifiedName!~CpuEfficiency&FullyQualifiedName!~NativeLock&FullyQualifiedName!~LiveWindows&FullyQualifiedName!~NativeDia&FullyQualifiedName!~Capabilit)|FullyQualifiedName~EtwNativeAotCpuSamplerTests.SampleAsync_CapturesFromCurrentProcess_WhenElevated"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: needs.changes.outputs.code == 'true'
@@ -626,7 +635,10 @@ jobs:
         env:
           DIAG_REQUIRE_WINDOWS_DIA_ETW: "1"
           ETW_DIAG_KEEP_DIR: ${{ github.workspace }}\etwkeep
-        run: python scripts/ci-test.py core tests/DotnetDiagnostics.Core.Tests/DotnetDiagnostics.Core.Tests.csproj
+          TFILTER: ${{ matrix.tfilter }}
+        run: |
+          mkdir -p etwkeep
+          dotnet test tests/DotnetDiagnostics.Core.Tests/DotnetDiagnostics.Core.Tests.csproj --no-build -c Release --filter "$TFILTER" --results-directory TestResults/core --logger "trx;LogFileName=core.trx" 2>&1 | grep -E "^ *(Failed|Passed!|Failed!)|Total tests|Expected value" | tail -60
 
       - name: DIAG analyze preserved ETLs
         if: ${{ always() && needs.changes.outputs.code == 'true' }}
