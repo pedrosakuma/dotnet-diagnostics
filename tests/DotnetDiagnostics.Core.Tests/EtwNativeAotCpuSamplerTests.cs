@@ -223,6 +223,12 @@ public class EtwNativeAotCpuSamplerTests
         }
         finally
         {
+            if (Environment.GetEnvironmentVariable("ETW_DIAG_KEEP_DIR") is { Length: > 0 } probeDir && diagHotTid != 0)
+            {
+                // Post-capture only: the ETL is already closed, so this cannot perturb it.
+                using var probeCts = new CancellationTokenSource();
+                DiagWatchHotThread(diagHotTid, Path.Combine(probeDir, $"hot-rip-{pid}.txt"), probeCts.Token, iterations: 6);
+            }
             cts.Cancel();
             try { await loadTask; } catch (OperationCanceledException) { }
             if (Environment.GetEnvironmentVariable("ETW_DIAG_KEEP_DIR") is { Length: > 0 } diagDir)
@@ -276,14 +282,14 @@ public class EtwNativeAotCpuSamplerTests
 
     // DIAG ONLY: periodically suspend the hot thread, read RIP, and ask the OS whether
     // that RIP has published unwind data (what the kernel ETW stack walker needs).
-    private static unsafe void DiagWatchHotThread(uint tid, string path, CancellationToken token)
+    private static unsafe void DiagWatchHotThread(uint tid, string path, CancellationToken token, int iterations = 40)
     {
         var lines = new List<string>();
         var h = OpenThread(0x0008 | 0x0002 | 0x0040, false, tid);
         var ctxMem = (IntPtr)System.Runtime.InteropServices.NativeMemory.AlignedAlloc(1232, 16);
         try
         {
-            for (var n = 0; n < 40 && !token.IsCancellationRequested; n++)
+            for (var n = 0; n < iterations && !token.IsCancellationRequested; n++)
             {
                 Thread.Sleep(250);
                 new Span<byte>((void*)ctxMem, 1232).Clear();
