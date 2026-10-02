@@ -119,8 +119,8 @@
     <_PortableWorkerSource>$(MSBuildThisFileDirectory)../Captures/Isolation/native/capture_worker.c</_PortableWorkerSource>
     <_PortableWorkerAdmissionSource>$(MSBuildThisFileDirectory)../Captures/Isolation/native/sqlite_admission.h</_PortableWorkerAdmissionSource>
     <_PortableWorkerRebuildSource>$(MSBuildThisFileDirectory)../Captures/Isolation/native/sqlite_rebuild.h</_PortableWorkerRebuildSource>
-    <_PortableWorkerIncludeLinuxX64 Condition="'$(_PortableWorkerApplies)' == 'true' and (('$(RuntimeIdentifier)' == '' and ('$(PortableCaptureWorkerRid)' == '' or '$(PortableCaptureWorkerRid)' == 'linux-x64')) or ('$(RuntimeIdentifier)' == 'linux-x64' and '$(PortableCaptureWorkerRid)' == ''))">true</_PortableWorkerIncludeLinuxX64>
-    <_PortableWorkerIncludeLinuxArm64 Condition="'$(_PortableWorkerApplies)' == 'true' and (('$(RuntimeIdentifier)' == '' and ('$(PortableCaptureWorkerRid)' == '' or '$(PortableCaptureWorkerRid)' == 'linux-arm64')) or ('$(RuntimeIdentifier)' == 'linux-arm64' and '$(PortableCaptureWorkerRid)' == ''))">true</_PortableWorkerIncludeLinuxArm64>
+    <_PortableWorkerIncludeLinuxX64 Condition="'$(_PortableWorkerApplies)' == 'true' and (('$(RuntimeIdentifier)' == '' or '$(RuntimeIdentifier)' == 'linux-x64') and ('$(PortableCaptureWorkerRid)' == '' or '$(PortableCaptureWorkerRid)' == 'linux-x64'))">true</_PortableWorkerIncludeLinuxX64>
+    <_PortableWorkerIncludeLinuxArm64 Condition="'$(_PortableWorkerApplies)' == 'true' and (('$(RuntimeIdentifier)' == '' or '$(RuntimeIdentifier)' == 'linux-arm64') and ('$(PortableCaptureWorkerRid)' == '' or '$(PortableCaptureWorkerRid)' == 'linux-arm64'))">true</_PortableWorkerIncludeLinuxArm64>
   </PropertyGroup>
   <ItemGroup>
     <_PortableWorkerRid Include="linux-x64;linux-arm64"
@@ -128,7 +128,7 @@
     <_PortableWorkerRid Include="$(PortableCaptureWorkerRid)"
                         Condition="'$(RuntimeIdentifier)' == '' and ('$(PortableCaptureWorkerRid)' == 'linux-x64' or '$(PortableCaptureWorkerRid)' == 'linux-arm64')" />
     <_PortableWorkerRid Include="$(RuntimeIdentifier)"
-                        Condition="'$(PortableCaptureWorkerRid)' == '' and ('$(RuntimeIdentifier)' == 'linux-x64' or '$(RuntimeIdentifier)' == 'linux-arm64')" />
+                        Condition="('$(PortableCaptureWorkerRid)' == '' or '$(PortableCaptureWorkerRid)' == '$(RuntimeIdentifier)') and ('$(RuntimeIdentifier)' == 'linux-x64' or '$(RuntimeIdentifier)' == 'linux-arm64')" />
     <Content Include="$(PortableCaptureWorkerAssetsDir)/linux-x64/capture-worker;$(PortableCaptureWorkerAssetsDir)/linux-x64/libe_sqlite3.so;$(PortableCaptureWorkerAssetsDir)/linux-x64/provenance.xml;$(PortableCaptureWorkerAssetsDir)/linux-x64/sqlite-LICENSE.txt;$(PortableCaptureWorkerAssetsDir)/linux-x64/worker-LICENSE.txt"
              Condition="'$(_PortableWorkerIncludeLinuxX64)' == 'true' and '$(PortableCaptureWorkerAssetsDir)' != ''"
              Link="NativeAssets/portable-capture/linux-x64/%(Filename)%(Extension)"

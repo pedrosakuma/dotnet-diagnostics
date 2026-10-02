@@ -63,7 +63,7 @@ class PortableWorkerPackagingTests(unittest.TestCase):
         ET.ElementTree(manifest).write(arm64 / "provenance.xml")
         return arm64
 
-    def check(self, *properties, assets=True, target="ValidatePortableCaptureWorkerAssets"):
+    def check(self, *properties, assets=True, target="ValidatePortableCaptureWorkerAssets", get_items=None):
         command = [os.environ.get("DOTNET_HOST_PATH", "dotnet")]
         if sdk := os.environ.get("PORTABLE_PACKAGING_TEST_SDK"):
             command.append(sdk)
@@ -73,6 +73,8 @@ class PortableWorkerPackagingTests(unittest.TestCase):
         if not any(value.startswith("PortableCaptureWorkerRid=") for value in properties):
             properties = (*properties, "PortableCaptureWorkerRid=linux-x64")
         command += ["-p:" + p for p in properties]
+        if get_items:
+            command.append("-getItem:" + get_items)
         return subprocess.run(command, text=True, capture_output=True, timeout=30)
 
     def assert_error(self, result, message):
@@ -107,6 +109,31 @@ class PortableWorkerPackagingTests(unittest.TestCase):
         result = self.check("PortableCaptureWorkerRid=linux-arm64",
                             "AllowPortableCaptureWorkerFixtureAssets=true")
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+
+    def test_release_rid_pair_validates_and_includes_only_matching_sidecars(self):
+        self.add_arm64_fixture()
+        for rid in ("linux-x64", "linux-arm64"):
+            with self.subTest(rid=rid):
+                result = self.check(f"RuntimeIdentifier={rid}", f"PortableCaptureWorkerRid={rid}",
+                                    "AllowPortableCaptureWorkerFixtureAssets=true", get_items="Content")
+                self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                content = json.loads(result.stdout)["Items"]["Content"]
+                self.assertEqual(
+                    {f"NativeAssets/portable-capture/{rid}/{name}" for name in (
+                        "capture-worker", "libe_sqlite3.so", "provenance.xml",
+                        "sqlite-LICENSE.txt", "worker-LICENSE.txt",
+                    )},
+                    {item["Link"] for item in content},
+                )
+
+    def test_release_rid_pair_rejects_mismatches(self):
+        for runtime, worker in (("linux-x64", "linux-arm64"), ("linux-arm64", "linux-x64")):
+            with self.subTest(runtime=runtime):
+                self.assert_error(
+                    self.check(f"RuntimeIdentifier={runtime}", f"PortableCaptureWorkerRid={worker}",
+                               "AllowPortableCaptureWorkerFixtureAssets=true"),
+                    "must match RuntimeIdentifier",
+                )
 
     def test_cross_rid_asset_substitution_is_rejected(self):
         self.add_arm64_fixture(preserve_x64_identity=True)
@@ -187,8 +214,12 @@ class PortableWorkerPackagingTests(unittest.TestCase):
         }.items():
             ET.SubElement(self.manifest, key).text = value
         self.save_manifest()
-        result = self.check("RequirePortableCaptureWorkerAssets=true")
-        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        for runtime in ("", "linux-x64"):
+            with self.subTest(runtime=runtime):
+                result = self.check(f"RuntimeIdentifier={runtime}",
+                                    "PortableCaptureWorkerRid=linux-x64",
+                                    "RequirePortableCaptureWorkerAssets=true")
+                self.assertEqual(0, result.returncode, result.stdout + result.stderr)
 
     def test_unsupported_rid_does_not_require_linux_assets(self):
         result = self.check("RuntimeIdentifier=win-x64", "RequirePortableCaptureWorkerAssets=true", assets=False)
