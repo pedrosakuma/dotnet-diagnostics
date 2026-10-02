@@ -150,8 +150,11 @@ public class EtwNativeAotCpuSamplerTests
             await captureStarted.Task.WaitAsync(cts.Token);
             if (Environment.GetEnvironmentVariable("ETW_DIAG_KEEP_DIR") is { Length: > 0 } diagDir)
             {
+                var hotTid = DiagGetCurrentThreadId();
                 File.AppendAllText(Path.Combine(diagDir, "hot-threads.txt"),
-                    $"pid={pid} hotTid={DiagGetCurrentThreadId()} managedTid={Environment.CurrentManagedThreadId} at={DateTimeOffset.UtcNow:O}{Environment.NewLine}");
+                    $"pid={pid} hotTid={hotTid} managedTid={Environment.CurrentManagedThreadId} at={DateTimeOffset.UtcNow:O}{Environment.NewLine}");
+                var watcher = new Thread(() => DiagWatchHotThread(hotTid, Path.Combine(diagDir, $"hot-rip-{pid}.txt"), cts.Token)) { IsBackground = true };
+                watcher.Start();
             }
             BurnManagedCpu(cts.Token);
         }, cts.Token);
@@ -255,6 +258,58 @@ public class EtwNativeAotCpuSamplerTests
 
     [DllImport("kernel32.dll", EntryPoint = "GetCurrentThreadId")]
     private static extern uint DiagGetCurrentThreadId();
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr OpenThread(uint access, bool inherit, uint tid);
+    [DllImport("kernel32.dll")]
+    private static extern uint SuspendThread(IntPtr h);
+    [DllImport("kernel32.dll")]
+    private static extern uint ResumeThread(IntPtr h);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetThreadContext(IntPtr h, IntPtr ctx);
+    [DllImport("kernel32.dll")]
+    private static extern bool CloseHandle(IntPtr h);
+    [DllImport("ntdll.dll")]
+    private static extern IntPtr RtlLookupFunctionEntry(ulong pc, out ulong imageBase, IntPtr history);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetModuleHandleExW(uint flags, IntPtr address, out IntPtr module);
+    [DllImport("ntdll.dll")]
+    private static extern ushort RtlCaptureStackBackTrace(uint skip, uint count, IntPtr[] frames, IntPtr hash);
+
+    // DIAG ONLY: periodically suspend the hot thread, read RIP, and ask the OS whether
+    // that RIP has published unwind data (what the kernel ETW stack walker needs).
+    private static unsafe void DiagWatchHotThread(uint tid, string path, CancellationToken token)
+    {
+        var lines = new List<string>();
+        var h = OpenThread(0x0008 | 0x0002 | 0x0040, false, tid);
+        var ctxMem = (IntPtr)System.Runtime.InteropServices.NativeMemory.AlignedAlloc(1232, 16);
+        try
+        {
+            for (var n = 0; n < 40 && !token.IsCancellationRequested; n++)
+            {
+                Thread.Sleep(250);
+                new Span<byte>((void*)ctxMem, 1232).Clear();
+                *(uint*)(ctxMem + 0x30) = 0x00100001; // CONTEXT_CONTROL (AMD64)
+                if (SuspendThread(h) == uint.MaxValue) { lines.Add($"suspend failed {Marshal.GetLastWin32Error()}"); break; }
+                bool ok = GetThreadContext(h, ctxMem);
+                ResumeThread(h);
+                if (!ok) { lines.Add($"getcontext failed {Marshal.GetLastWin32Error()}"); continue; }
+                ulong rip = *(ulong*)(ctxMem + 0xF8);
+                ulong rsp = *(ulong*)(ctxMem + 0x98);
+                var fe = RtlLookupFunctionEntry(rip, out var imageBase, IntPtr.Zero);
+                bool inModule = GetModuleHandleExW(0x4 | 0x2, (IntPtr)(long)rip, out var mod);
+                string feText = fe == IntPtr.Zero ? "NULL" : $"begin=0x{imageBase + *(uint*)fe:x} end=0x{imageBase + *(uint*)(fe + 4):x} unwind=0x{*(uint*)(fe + 8):x}";
+                lines.Add($"{DateTimeOffset.UtcNow:HH:mm:ss.fff} rip=0x{rip:x} rsp=0x{rsp:x} inImage={inModule} mod=0x{(long)mod:x} funcEntry={feText} imageBase=0x{imageBase:x}");
+            }
+        }
+        catch (Exception ex) { lines.Add("watcher exception: " + ex); }
+        finally
+        {
+            System.Runtime.InteropServices.NativeMemory.AlignedFree((void*)ctxMem);
+            CloseHandle(h);
+            File.AppendAllLines(path, lines);
+        }
+    }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static void BurnManagedCpu(CancellationToken cancellationToken)

@@ -536,6 +536,10 @@ jobs:
     # See `windows-build`'s job-level `if` comment above for the rationale.
     if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        attempt: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: needs.changes.outputs.code == 'true'
@@ -635,6 +639,7 @@ jobs:
           Get-ChildItem $keep -Filter *.sessions.txt | ForEach-Object { "== $($_.Name)"; Get-Content $_.FullName }
           dotnet publish diag/EtwStackDiag -c Release -r win-x64 --self-contained false --configfile "${{ steps.nuget.outputs.path }}" -o diagpub | Select-Object -Last 2
           $hot = @(Get-Content "$keep/hot-threads.txt" -ErrorAction SilentlyContinue | ForEach-Object { if ($_ -match 'pid=(\d+) hotTid=(\d+)') { [pscustomobject]@{Pid=$Matches[1];Tid=$Matches[2]} } })
+          Get-ChildItem $keep -Filter hot-rip-*.txt | ForEach-Object { "== $($_.Name)"; Get-Content $_.FullName }
           Get-ChildItem $keep -Filter *.merged.etl | ForEach-Object {
             $etl = $_.FullName
             foreach ($h in $hot) { if ($_.Name -like "dotnet-diag-mcp-$($h.Pid)-*") { diagpub/EtwStackDiag.exe analyze $etl $h.Pid $h.Tid } }
@@ -644,7 +649,7 @@ jobs:
         if: ${{ always() && needs.changes.outputs.code == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: diag-etw-core
+          name: diag-etw-core-${{ matrix.attempt }}
           path: etwkeep/
           if-no-files-found: ignore
           retention-days: 7
@@ -667,7 +672,7 @@ jobs:
         if: ${{ always() && needs.changes.outputs.code == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: test-results-windows-latest-core
+          name: test-results-windows-latest-core-${{ matrix.attempt }}
           path: |
             TestResults/**/*.trx
             TestResults/**/*.txt
@@ -679,7 +684,7 @@ jobs:
         if: ${{ failure() && needs.changes.outputs.code == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: crash-dumps-windows-latest-core
+          name: crash-dumps-windows-latest-core-${{ matrix.attempt }}
           path: |
             TestResults/**/*.dmp
             TestResults/**/*crashreport*
