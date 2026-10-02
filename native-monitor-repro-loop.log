@@ -1,0 +1,40 @@
+=== run 1 load 6.04 3.48 1.48 10/1613 8472 ===
+Test run for /home/pedrotravi/dotnet-diagnostics/tests/DotnetDiagnostics.Core.Tests/bin/Release/net10.0/DotnetDiagnostics.Core.Tests.dll (.NETCoreApp,Version=v10.0)
+A total of 1 test files matched the specified pattern.
+[xUnit.net 00:00:00.00] xUnit.net VSTest Adapter v3.1.4+50e68bbb8b (64-bit .NET 10.0.12)
+[xUnit.net 00:00:00.15]   Discovering: DotnetDiagnostics.Core.Tests
+[xUnit.net 00:00:00.59]   Discovered:  DotnetDiagnostics.Core.Tests
+No test matches the given testcase filter `FullyQualifiedName~SixteenIndependentEntriesFitTheSharedPrivateBudget` in /home/pedrotravi/dotnet-diagnostics/tests/DotnetDiagnostics.Core.Tests/bin/Release/net10.0/DotnetDiagnostics.Core.Tests.dll
+
+=== run 2 load 6.04 3.48 1.48 4/1603 8632 ===
+Test run for /home/pedrotravi/dotnet-diagnostics/tests/DotnetDiagnostics.Core.Tests/bin/Release/net10.0/DotnetDiagnostics.Core.Tests.dll (.NETCoreApp,Version=v10.0)
+A total of 1 test files matched the specified pattern.
+[xUnit.net 00:00:00.00] xUnit.net VSTest Adapter v3.1.4+50e68bbb8b (64-bit .NET 10.0.12)
+[xUnit.net 00:00:00.16]   Discovering: DotnetDiagnostics.Core.Tests
+[xUnit.net 00:00:00.58]   Discovered:  DotnetDiagnostics.Core.Tests
+No test matches the given testcase filter `FullyQualifiedName~SixteenIndependentEntriesFitTheSharedPrivateBudget` in /home/pedrotravi/dotnet-diagnostics/tests/DotnetDiagnostics.Core.Tests/bin/Release/net10.0/DotnetDiagnostics.Core.Tests.dll
+
+=== run 3 load 5.71 3.45 1.48 6/1609 8828 ===
+Test run for /home/pedrotravi/dotnet-diagnostics/tests/DotnetDiagnostics.Core.Tests/bin/Release/net10.0/DotnetDiagnostics.Core.Tests.dll (.NETCoreApp,Version=v10.0)
+A total of 1 test files matched the specified pattern.
+[xUnit.net 00:00:00.00] xUnit.net VSTest Adapter v3.1.4+50e68bbb8b (64-bit .NET 10.0.12)
+[xUnit.net 00:00:00.17]   Discovering: DotnetDiagnostics.Core.Tests
+[xUnit.net 00:00:00.59]   Discovered:  DotnetDiagnostics.Core.Tests
+No test matches the given testcase filter `FullyQualifiedName~SixteenIndependentEntriesFitTheSharedPrivateBudget` in /home/pedrotravi/dotnet-diagnostics/tests/DotnetDiagnostics.Core.Tests/bin/Release/net10.0/DotnetDiagnostics.Core.Tests.dll
+
+=== run 4 load 5.71 3.45 1.48 7/1594 9024 ===
+Test run for /home/pedrotravi/dotnet-diagnostics/tests/DotnetDiagnostics.Core.Tests/bin/Release/net10.0/DotnetDiagnostics.Core.Tests.dll (.NETCoreApp,Version=v10.0)
+A total of 1 test files matched the specified pattern.
+[xUnit.net 00:00:00.00] xUnit.net VSTest Adapter v3.1.4+50e68bbb8b (64-bit .NET 10.0.12)
+[xUnit.net 00:00:00.14]   Discovering: DotnetDiagnostics.Core.Tests
+[xUnit.net 00:00:00.58]   Discovered:  DotnetDiagnostics.Core.Tests
+No test matches the given testcase filter `FullyQualifiedName~SixteenIndependentEntriesFitTheSharedPrivateBudget` in /home/pedrotravi/dotnet-diagnostics/tests/DotnetDiagnostics.Core.Tests/bin/Release/net10.0/DotnetDiagnostics.Core.Tests.dll
+
+=== run 5 load 6.14 3.58 1.53 5/1594 9177 ===
+Test run for /home/pedrotravi/dotnet-diagnostics/tests/DotnetDiagnostics.Core.Tests/bin/Release/net10.0/DotnetDiagnostics.Core.Tests.dll (.NETCoreApp,Version=v10.0)
+A total of 1 test files matched the specified pattern.
+[xUnit.net 00:00:00.00] xUnit.net VSTest Adapter v3.1.4+50e68bbb8b (64-bit .NET 10.0.12)
+[xUnit.net 00:00:00.14]   Discovering: DotnetDiagnostics.Core.Tests
+[xUnit.net 00:00:00.93]   Discovered:  DotnetDiagnostics.Core.Tests
+No test matches the given testcase filter `FullyQualifiedName~SixteenIndependentEntriesFitTheSharedPrivateBudget` in /home/pedrotravi/dotnet-diagnostics/tests/DotnetDiagnostics.Core.Tests/bin/Release/net10.0/DotnetDiagnostics.Core.Tests.dll
+

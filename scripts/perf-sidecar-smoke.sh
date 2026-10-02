@@ -95,11 +95,20 @@ docker volume create "$volume" > /dev/null
 # 1) Stable PID-namespace anchor (docs/local-docker-sidecar.md): survives target exit.
 docker run -d --name "$anchor" --entrypoint tail "$SIDECAR_IMAGE" -f /dev/null > /dev/null || exit 2
 
+# Uprobes attach to a file's inode, so a probe created from the sidecar's overlay only fires for targets
+# mapping the very same file. Extract libc once from the image and bind-mount it into the sidecars and
+# targets so all containers share one host inode.
+libc_path=/usr/lib/x86_64-linux-gnu/libc.so.6
+libc_host="$(mktemp -d)/libc.so.6"
+docker cp "$anchor:$libc_path" "$libc_host" || exit 2
+libc_mount=(-v "$libc_host:$libc_path:ro")
+record sharedLibc "bind-mounted from one host file into targets and sidecars (uprobe inode identity)"
+
 # 2) Targets join the anchor namespace and share /tmp (diagnostic IPC sockets). Same UID as the sidecar.
-docker run -d --name "$bad" --pid="container:$anchor" --user 0 -v "$volume:/tmp" -v "$BAD_DIR:/app:ro" \
+docker run -d --name "$bad" --pid="container:$anchor" --user 0 -v "$volume:/tmp" "${libc_mount[@]}" -v "$BAD_DIR:/app:ro" \
   -p "127.0.0.1:$bad_port:8080" -e ASPNETCORE_URLS=http://0.0.0.0:8080 -w /app \
   --entrypoint dotnet "$SIDECAR_IMAGE" BadCodeSample.dll > /dev/null || exit 2
-docker run -d --name "$aot" --pid="container:$anchor" --user 0 -v "$volume:/tmp" -v "$AOT_DIR:/app:ro" \
+docker run -d --name "$aot" --pid="container:$anchor" --user 0 -v "$volume:/tmp" "${libc_mount[@]}" -v "$AOT_DIR:/app:ro" \
   -p "127.0.0.1:$aot_port:8080" -e ASPNETCORE_URLS=http://0.0.0.0:8080 -w /app \
   --entrypoint /app/NativeAotSample "$SIDECAR_IMAGE" > /dev/null || exit 2
 
@@ -107,7 +116,7 @@ docker run -d --name "$aot" --pid="container:$anchor" --user 0 -v "$volume:/tmp"
 #    host tracefs (uprobe_events + sched tracepoints). The default docker AppArmor profile denies
 #    writes under /sys/kernel, which blocks `perf probe` uprobe creation (see neg-uprobe-default-apparmor),
 #    so ONLY this container runs apparmor=unconfined. Not privileged; no SYS_ADMIN; no host sysctls.
-docker run -d --name "$side" --pid="container:$anchor" --user 0 -v "$volume:/tmp" \
+docker run -d --name "$side" --pid="container:$anchor" --user 0 -v "$volume:/tmp" "${libc_mount[@]}" \
   -v /sys/kernel/tracing:/sys/kernel/tracing --cap-drop ALL --cap-add PERFMON --cap-add SYS_PTRACE \
   --security-opt apparmor=unconfined --entrypoint tail "$SIDECAR_IMAGE" -f /dev/null > /dev/null || exit 2
 

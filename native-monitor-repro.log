@@ -1,0 +1,8 @@
+Test run for /home/pedrotravi/dotnet-diagnostics/tests/DotnetDiagnostics.Core.Tests/bin/Release/net10.0/DotnetDiagnostics.Core.Tests.dll (.NETCoreApp,Version=v10.0)
+A total of 1 test files matched the specified pattern.
+/home/pedrotravi/dotnet-diagnostics/tests/DotnetDiagnostics.Core.Tests/bin/Release/net10.0/DotnetDiagnostics.Core.Tests.dll
+[xUnit.net 00:00:00.00] xUnit.net VSTest Adapter v3.1.4+50e68bbb8b (64-bit .NET 10.0.12)
+[xUnit.net 00:00:00.25]   Discovering: DotnetDiagnostics.Core.Tests
+[xUnit.net 00:00:00.69]   Discovered:  DotnetDiagnostics.Core.Tests
+No test matches the given testcase filter `FullyQualifiedName~SixteenIndependentEntriesFitTheSharedPrivateBudget` in /home/pedrotravi/dotnet-diagnostics/tests/DotnetDiagnostics.Core.Tests/bin/Release/net10.0/DotnetDiagnostics.Core.Tests.dll
+
