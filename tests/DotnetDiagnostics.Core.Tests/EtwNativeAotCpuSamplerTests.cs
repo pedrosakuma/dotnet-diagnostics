@@ -343,6 +343,22 @@ public class EtwNativeAotCpuSamplerTests
             lines.Add($"C3 (hot thread again, concurrently burning): {DiagCapture(tid, dir, "c3")}");
             freshCts.Cancel();
             fresh.Join();
+
+            // C4: capture while periodically suspending/resuming the hot thread (delivers kernel APCs).
+            using (var pokeCts = new CancellationTokenSource())
+            {
+                var poker = new Thread(() =>
+                {
+                    var ph = OpenThread(0x0002, false, tid);
+                    while (!pokeCts.IsCancellationRequested) { _ = SuspendThread(ph); _ = ResumeThread(ph); Thread.Sleep(250); }
+                    CloseHandle(ph);
+                }) { IsBackground = true };
+                poker.Start();
+                lines.Add($"C4 (hot thread, suspend/resume every 250ms during capture): {DiagCapture(tid, dir, "c4")}");
+                pokeCts.Cancel();
+                poker.Join();
+            }
+            lines.Add($"C5 (hot thread, after C4 pokes): {DiagCapture(tid, dir, "c5")}");
             var head = RtlGetFunctionTableListHead();
             var callbacks = new List<IntPtr>();
             for (var e = *(IntPtr*)head; e != head; e = *(IntPtr*)e)
