@@ -145,17 +145,11 @@ public class EtwNativeAotCpuSamplerTests
         var pid = Environment.ProcessId;
 
         using var cts = new CancellationTokenSource();
+        uint diagHotTid = 0;
         var loadTask = Task.Run(async () =>
         {
             await captureStarted.Task.WaitAsync(cts.Token);
-            if (Environment.GetEnvironmentVariable("ETW_DIAG_KEEP_DIR") is { Length: > 0 } diagDir)
-            {
-                var hotTid = DiagGetCurrentThreadId();
-                File.AppendAllText(Path.Combine(diagDir, "hot-threads.txt"),
-                    $"pid={pid} hotTid={hotTid} managedTid={Environment.CurrentManagedThreadId} at={DateTimeOffset.UtcNow:O}{Environment.NewLine}");
-                var watcher = new Thread(() => DiagWatchHotThread(hotTid, Path.Combine(diagDir, $"hot-rip-{pid}.txt"), cts.Token)) { IsBackground = true };
-                watcher.Start();
-            }
+            diagHotTid = DiagGetCurrentThreadId();
             BurnManagedCpu(cts.Token);
         }, cts.Token);
 
@@ -231,6 +225,10 @@ public class EtwNativeAotCpuSamplerTests
         {
             cts.Cancel();
             try { await loadTask; } catch (OperationCanceledException) { }
+            if (Environment.GetEnvironmentVariable("ETW_DIAG_KEEP_DIR") is { Length: > 0 } diagDir)
+            {
+                File.AppendAllText(Path.Combine(diagDir, "hot-threads.txt"), $"pid={pid} hotTid={diagHotTid}{Environment.NewLine}");
+            }
         }
     }
 

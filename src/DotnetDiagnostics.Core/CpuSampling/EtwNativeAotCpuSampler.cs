@@ -199,12 +199,6 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
                 ClrRundownTraceEventParser.ProviderGuid,
                 TraceEventLevel.Verbose,
                 ClrRundownJitLoaderAndStartKeywords);
-            if (Environment.GetEnvironmentVariable("ETW_DIAG_KEEP_DIR") is { Length: > 0 } diagDir)
-            {
-                Directory.CreateDirectory(diagDir);
-                File.WriteAllLines(Path.Combine(diagDir, $"{sessionName}.sessions.txt"),
-                    TraceEventSession.GetActiveSessionNames().Select(n => n ?? "<null>"));
-            }
             _logger.LogDebug("ETW session '{Session}' started for pid {Pid}, capturing for {Duration}s.",
                 sessionName, 0, duration.TotalSeconds);
 
