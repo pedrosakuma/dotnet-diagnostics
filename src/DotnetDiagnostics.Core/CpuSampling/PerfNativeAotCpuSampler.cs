@@ -247,7 +247,7 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
 
     private async Task RecordAsync(int pid, string outputPath, TimeSpan duration, CancellationToken ct)
     {
-        var argsList = BuildRecordArguments(pid, outputPath, duration, _samplingFrequencyHz);
+        var argsList = BuildRecordArguments(pid, outputPath, duration, _samplingFrequencyHz, IsCoreClrProcess(pid));
         var args = string.Join(' ', argsList);
         _logger.LogDebug("Spawning perf: {Bin} {Args}", ResolvePerfPath()!, args);
 
@@ -298,19 +298,41 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
     /// for reliable callstacks. The trade-off is larger perf.data files, so we pair
     /// the sampling window with an explicit perf.data size cap.
     /// </remarks>
-    internal static IReadOnlyList<string> BuildRecordArguments(int pid, string outputPath, TimeSpan duration, int samplingFrequencyHz)
+    internal static IReadOnlyList<string> BuildRecordArguments(
+        int pid, string outputPath, TimeSpan duration, int samplingFrequencyHz, bool framePointerUnwind = false)
     {
         var seconds = Math.Max(1, (int)Math.Ceiling(duration.TotalSeconds));
         return new[]
         {
             "record",
             "-F", samplingFrequencyHz.ToString(CultureInfo.InvariantCulture),
-            "--call-graph", "dwarf",
+            "--call-graph", framePointerUnwind ? "fp" : "dwarf",
             "--max-size", FormatPerfFileSize(PerfDataMaxBytes),
             "-p", pid.ToString(CultureInfo.InvariantCulture),
             "-o", $"\"{outputPath}\"",
             "--", "sleep", seconds.ToString(CultureInfo.InvariantCulture),
         };
+    }
+
+    // DWARF unwinding cannot cross CoreCLR JIT frames (no .eh_frame), so native leaves such as ICU
+    // lose their managed callers. The JIT keeps frame pointers, so CoreCLR targets use fp unwinding.
+    private static bool IsCoreClrProcess(int pid)
+    {
+        try
+        {
+            foreach (var line in File.ReadLines($"/proc/{pid}/maps"))
+            {
+                if (line.Contains("/libcoreclr.so", StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
+
+        return false;
     }
 
     internal static string FormatPerfFileSize(long bytes)

@@ -136,6 +136,17 @@ public sealed class PerfCompatSmokeTests
     }
 
     [Fact]
+    public void CpuSampler_BuildRecordArguments_UsesFramePointerUnwindForCoreClrTargets()
+    {
+        var args = PerfNativeAotCpuSampler.BuildRecordArguments(
+            pid: 4242, outputPath: "/tmp/cpu.data", duration: TimeSpan.FromSeconds(3), samplingFrequencyHz: 99,
+            framePointerUnwind: true);
+
+        args.Should().ContainInOrder("--call-graph", "fp");
+        args.Should().NotContain("dwarf");
+    }
+
+    [Fact]
     public void CpuSampler_BuildRecordArguments_RoundsSubSecondDurationUpToWholeSeconds()
     {
         var args = PerfNativeAotCpuSampler.BuildRecordArguments(
