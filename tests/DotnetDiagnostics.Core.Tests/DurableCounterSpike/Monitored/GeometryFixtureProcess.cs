@@ -9,6 +9,11 @@ internal static class GeometryFixtureProcess
 
     private static async Task<int> Main(string[] args)
     {
+        if (args is ["--capture-lease-fixture", var leasePath])
+        {
+            return CaptureLeaseFixture.Run(leasePath);
+        }
+
         if (args is not ["--geometry-fixture", "ordered" or "failure" or "cancel"])
         {
             Console.Error.WriteLine("Expected --geometry-fixture ordered|failure|cancel.");
