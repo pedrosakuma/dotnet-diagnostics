@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, diag/1080-fix-validate]
   pull_request:
     branches: [main]
 
