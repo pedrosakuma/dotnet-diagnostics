@@ -16,9 +16,66 @@ return args[0] switch
     "workload" => Workload.Run(int.Parse(args[1])),
     "capture" => await Capture.RunAsync(args[1], args[2], args[3], int.Parse(args[4])),
     "analyze" => Capture.AnalyzeOnly(args[1], int.Parse(args[2]), args.Skip(3).Select(int.Parse).ToArray()),
+    "churn" => Churn.Run(args[1], int.Parse(args[2]), int.Parse(args[3]), args[4]),
     "capture-self" => await Capture.RunAsync(args[1], args[2], args[3], int.Parse(args[4]), self: true),
     _ => throw new ArgumentException(args[0]),
 };
+
+static class Churn
+{
+    static volatile bool s_stop;
+    static void Burn() { ulong v = 1; while (!s_stop) for (int i = 0; i < 10_000; i++) v = unchecked(v * 1_664_525 + 1_013_904_223); GC.KeepAlive(v); }
+
+    static Thread StartBurner(out int tid)
+    {
+        int t = 0; using var ready = new ManualResetEventSlim();
+        var th = new Thread(() => { t = (int)Native.GetCurrentThreadId(); ready.Set(); Burn(); }) { IsBackground = true };
+        th.Start(); ready.Wait(); tid = t; return th;
+    }
+
+    // variant: "stop" = dispose session while burning; "stack" = kernel Profile with stacks; "clr" adds CLR stack providers.
+    public static int Run(string variant, int sessions, int sessionMs, string outDir)
+    {
+        Directory.CreateDirectory(outDir);
+        var hot = StartBurner(out var hotTid);
+        Console.WriteLine($"INFO variant={variant} sessions={sessions} sessionMs={sessionMs} hotTid={hotTid}");
+        for (int i = 0; i < sessions; i++)
+        {
+            var etl = Path.Combine(outDir, $"churn-{i}.etl");
+            using (var s = new TraceEventSession($"etwstackdiag-churn-{i}", etl) { StopOnDispose = true })
+            {
+                s.EnableKernelProvider(KernelTraceEventParser.Keywords.Profile | KernelTraceEventParser.Keywords.Thread,
+                    KernelTraceEventParser.Keywords.Profile);
+                if (variant.Contains("clr"))
+                    s.EnableProvider(ClrTraceEventParser.ProviderGuid, TraceEventLevel.Verbose, 0x10 | 0x8);
+                Thread.Sleep(sessionMs);
+            }
+            File.Delete(etl);
+        }
+        var fresh = StartBurner(out var freshTid);
+        var final = Path.Combine(outDir, "final.etl");
+        using (var s = new TraceEventSession("etwstackdiag-churn-final", final) { StopOnDispose = true })
+        {
+            s.EnableKernelProvider(KernelTraceEventParser.Keywords.Profile | KernelTraceEventParser.Keywords.ImageLoad |
+                KernelTraceEventParser.Keywords.Process | KernelTraceEventParser.Keywords.Thread, KernelTraceEventParser.Keywords.Profile);
+            Thread.Sleep(3000);
+        }
+        s_stop = true; hot.Join(); fresh.Join();
+        int hotS = 0, hotW = 0, hotU = 0, frS = 0, frW = 0, frU = 0;
+        using (var src = new ETWTraceEventSource(final))
+        {
+            src.Kernel.PerfInfoSample += e => { if (e.ThreadID == hotTid) hotS++; else if (e.ThreadID == freshTid) frS++; };
+            src.Kernel.StackWalkStack += e =>
+            {
+                bool user = false; for (int i = 0; i < e.FrameCount; i++) if (e.InstructionPointer(i) < 0x0000800000000000UL) { user = true; break; }
+                if (e.ThreadID == hotTid) { hotW++; if (user) hotU++; } else if (e.ThreadID == freshTid) { frW++; if (user) frU++; }
+            };
+            src.Process();
+        }
+        Console.WriteLine($"RESULT variant={variant} sessions={sessions} hot: samples={hotS} walks={hotW} withUser={hotU} | fresh: samples={frS} walks={frW} withUser={frU}");
+        return 0;
+    }
+}
 
 static class Native
 {

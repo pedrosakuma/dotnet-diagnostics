@@ -293,6 +293,32 @@ public class EtwNativeAotCpuSamplerTests
     [DllImport("kernel32.dll")]
     private static extern IntPtr GetCurrentProcess();
 
+    private static unsafe Dictionary<int, string> DiagThreadInfo(uint tid)
+    {
+        var r = new Dictionary<int, string>();
+        var h = OpenThread(0x0040 | 0x0800 | 0x0008, false, tid);
+        var buf = stackalloc byte[256];
+        for (var c = 0; c < 64; c++)
+        {
+            if (c is 0 or 4 or 5 or 6 or 7) continue; // TEB-address/time/priority-dynamic classes are noise
+            new Span<byte>(buf, 256).Clear();
+            var st = NtQueryInformationThread(h, c, (IntPtr)buf, 256, out var ret);
+            r[c] = st == 0 ? $"len={ret} {Convert.ToHexString(new ReadOnlySpan<byte>(buf, Math.Min(ret, 64)))}" : $"st=0x{st:x}";
+        }
+        CloseHandle(h);
+        var tbi = stackalloc byte[48];
+        h = OpenThread(0x0040, false, tid);
+        NtQueryInformationThread(h, 0, (IntPtr)tbi, 48, out _);
+        CloseHandle(h);
+        var teb = *(ulong*)(tbi + 8);
+        if (teb != 0)
+        {
+            r[1000] = $"SameTebFlags=0x{*(ushort*)(teb + 0x17EE):x} CrossTebFlags=0x{*(ushort*)(teb + 0x17EC):x} HardErrorMode=0x{*(uint*)(teb + 0x16B0):x} InstrumentationCallbackDisabled={*(byte*)(teb + 0x2D0)} CurrentIdealProcessor=0x{*(uint*)(teb + 0x1744):x}";
+            r[1001] = "TEB[0x1700..0x1838] " + Convert.ToHexString(new ReadOnlySpan<byte>((void*)(teb + 0x1700), 0x138));
+        }
+        return r;
+    }
+
     private static unsafe string DiagTeb(uint tid, ulong rsp)
     {
         var h = OpenThread(0x0040 | 0x0800, false, tid); // QUERY_INFORMATION | QUERY_LIMITED
@@ -339,6 +365,13 @@ public class EtwNativeAotCpuSamplerTests
             freshReady.Wait();
             Thread.Sleep(200);
             lines.Add("fresh TEB: " + DiagTeb(freshTid, 0));
+            var hi = DiagThreadInfo(tid);
+            var fi = DiagThreadInfo(freshTid);
+            foreach (var k in hi.Keys.Union(fi.Keys).OrderBy(k => k))
+            {
+                hi.TryGetValue(k, out var a); fi.TryGetValue(k, out var b);
+                lines.Add($"{(a == b ? "same" : "DIFF")} class={k} hot=[{a}] fresh=[{b}]");
+            }
             lines.Add($"C2 (fresh thread, same code): {DiagCapture(freshTid, dir, "c2")}");
             lines.Add($"C3 (hot thread again, concurrently burning): {DiagCapture(tid, dir, "c3")}");
             freshCts.Cancel();
@@ -373,9 +406,48 @@ public class EtwNativeAotCpuSamplerTests
                 lines.Add($"RtlDeleteFunctionTable(callback id=0x{(long)id:x}) => {RtlDeleteFunctionTable(id)}");
             }
             lines.Add($"C1 (after deleting {callbacks.Count} callback table(s)): {DiagCapture(tid, dir, "c1")}");
+            lines.Add(DiagPoolSurvey(dir));
         }
         catch (Exception ex) { lines.Add("intervene exception: " + ex); }
         File.AppendAllLines(path, lines);
+    }
+
+    // Burn on many existing thread-pool threads at once and report, per thread, whether user stacks are walked.
+    private static string DiagPoolSurvey(string dir)
+    {
+        using var stop = new CancellationTokenSource();
+        var tids = new System.Collections.Concurrent.ConcurrentDictionary<int, int>();
+        var n = Math.Max(4, Environment.ProcessorCount * 2);
+        for (var i = 0; i < n; i++)
+        {
+            ThreadPool.UnsafeQueueUserWorkItem(_ => { tids[(int)DiagGetCurrentThreadId()] = 1; BurnManagedCpu(stop.Token); }, null);
+        }
+        Thread.Sleep(1500);
+        var etl = Path.Combine(dir, $"intervene-pool-{Environment.ProcessId}.etl");
+        using (var s = new TraceEventSession($"diag-intervene-pool-{Environment.ProcessId}", etl) { StopOnDispose = true })
+        {
+            s.EnableKernelProvider(Microsoft.Diagnostics.Tracing.Parsers.KernelTraceEventParser.Keywords.Profile,
+                Microsoft.Diagnostics.Tracing.Parsers.KernelTraceEventParser.Keywords.Profile);
+            Thread.Sleep(3000);
+        }
+        stop.Cancel();
+        var samples = new Dictionary<int, int>(); var withUser = new Dictionary<int, int>();
+        using (var src = new Microsoft.Diagnostics.Tracing.ETWTraceEventSource(etl))
+        {
+            src.Kernel.PerfInfoSample += e => { if (tids.ContainsKey(e.ThreadID)) samples[e.ThreadID] = samples.GetValueOrDefault(e.ThreadID) + 1; };
+            src.Kernel.StackWalkStack += e =>
+            {
+                if (!tids.ContainsKey(e.ThreadID)) return;
+                for (var i = 0; i < e.FrameCount; i++)
+                {
+                    if (e.InstructionPointer(i) < 0x0000800000000000UL) { withUser[e.ThreadID] = withUser.GetValueOrDefault(e.ThreadID) + 1; break; }
+                }
+            };
+            src.Process();
+        }
+        var rows = tids.Keys.OrderBy(t => t).Select(t => $"{t}:{samples.GetValueOrDefault(t)}/{withUser.GetValueOrDefault(t)}");
+        var broken = tids.Keys.Count(t => samples.GetValueOrDefault(t) > 100 && withUser.GetValueOrDefault(t) == 0);
+        return $"POOL survey threads={tids.Count} broken={broken} (tid:samples/withUserStack) {string.Join(" ", rows)}";
     }
 
     private static string DiagCapture(uint tid, string dir, string label)
