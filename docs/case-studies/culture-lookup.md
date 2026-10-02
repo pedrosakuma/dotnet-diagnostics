@@ -55,8 +55,8 @@ For isolated live acceptance failures, see
 [culture scenario phase evidence](../scenario-phase-evidence.md) for bounded
 startup/capture/disposal timestamps retained even when final evidence is null.
 
-The automated `culture-lookup@2.0.0` scenario is Windows-only pending #929.
-It uses Windows ETW measured on-CPU evidence and **inclusive workload ownership**,
+The automated `culture-lookup@2.0.0` scenario runs on Windows (ETW) and Linux
+(`perf` with frame-pointer unwinding plus the JIT map; see #929). It uses OS-measured on-CPU evidence and **inclusive workload ownership**,
 not the old private managed-name/20%-exclusive-cost expectation. The historical
 v1 manifest and replay evidence remain under `Scenarios/Compatibility` and
 `Fixtures/Compatibility`; old attempts cannot be evaluated as v2 passes.

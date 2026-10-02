@@ -132,13 +132,14 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
         var startedAt = DateTimeOffset.UtcNow;
         var totalStopwatch = Stopwatch.StartNew();
         JitMapResult? jitMap = null;
+        var unwind = DetectUnwindMode(processId);
 
         try
         {
             var captureStopwatch = Stopwatch.StartNew();
             jitMap = await _jitMapEmitter.CaptureAsync(
                 processId,
-                ct => RecordAsync(processId, perfDataPath, duration, ct),
+                ct => RecordAsync(processId, perfDataPath, duration, unwind == UnwindMode.FramePointer, ct),
                 cancellationToken: cancellationToken).ConfigureAwait(false);
             var captureDuration = captureStopwatch.Elapsed;
             var postProcessingStopwatch = Stopwatch.StartNew();
@@ -158,6 +159,18 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
             var topSelfTime = CpuSampleAnalytics.TopSelfTime(stampedRoot, aggregate.Total);
             var topRunningSelfTime = CpuSampleAnalytics.TopRunningSelfTime(stampedRoot, aggregate.Total);
             var notes = new List<string>();
+            if (unwind == UnwindMode.FramePointer)
+            {
+                notes.Add(
+                    "CoreCLR target sampled with perf --call-graph fp because DWARF unwinding cannot cross JIT frames; " +
+                    "native libraries built without frame pointers can have truncated stacks.");
+            }
+            else if (unwind == UnwindMode.DwarfMapsUnreadable)
+            {
+                notes.Add(
+                    "/proc/<pid>/maps was unreadable, so the runtime flavor was unknown and perf --call-graph dwarf was used; " +
+                    "managed callers of native frames may be missing for CoreCLR targets.");
+            }
             PerfJitSymbolizationNotes.Add(
                 notes,
                 aggregate.JitCandidateFrames,
@@ -245,9 +258,9 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
         }
     }
 
-    private async Task RecordAsync(int pid, string outputPath, TimeSpan duration, CancellationToken ct)
+    private async Task RecordAsync(int pid, string outputPath, TimeSpan duration, bool framePointerUnwind, CancellationToken ct)
     {
-        var argsList = BuildRecordArguments(pid, outputPath, duration, _samplingFrequencyHz);
+        var argsList = BuildRecordArguments(pid, outputPath, duration, _samplingFrequencyHz, framePointerUnwind);
         var args = string.Join(' ', argsList);
         _logger.LogDebug("Spawning perf: {Bin} {Args}", ResolvePerfPath()!, args);
 
@@ -298,19 +311,50 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
     /// for reliable callstacks. The trade-off is larger perf.data files, so we pair
     /// the sampling window with an explicit perf.data size cap.
     /// </remarks>
-    internal static IReadOnlyList<string> BuildRecordArguments(int pid, string outputPath, TimeSpan duration, int samplingFrequencyHz)
+    internal static IReadOnlyList<string> BuildRecordArguments(
+        int pid, string outputPath, TimeSpan duration, int samplingFrequencyHz, bool framePointerUnwind = false)
     {
         var seconds = Math.Max(1, (int)Math.Ceiling(duration.TotalSeconds));
         return new[]
         {
             "record",
             "-F", samplingFrequencyHz.ToString(CultureInfo.InvariantCulture),
-            "--call-graph", "dwarf",
+            "--call-graph", framePointerUnwind ? "fp" : "dwarf",
             "--max-size", FormatPerfFileSize(PerfDataMaxBytes),
             "-p", pid.ToString(CultureInfo.InvariantCulture),
             "-o", $"\"{outputPath}\"",
             "--", "sleep", seconds.ToString(CultureInfo.InvariantCulture),
         };
+    }
+
+    // DWARF unwinding cannot cross CoreCLR JIT frames (no .eh_frame), so native leaves such as ICU
+    // lose their managed callers. The JIT keeps frame pointers, so CoreCLR targets use fp unwinding.
+    private enum UnwindMode
+    {
+        Dwarf,
+        FramePointer,
+        DwarfMapsUnreadable,
+    }
+
+    private UnwindMode DetectUnwindMode(int pid)
+    {
+        try
+        {
+            foreach (var line in File.ReadLines($"/proc/{pid}/maps"))
+            {
+                if (line.Contains("/libcoreclr.so", StringComparison.Ordinal))
+                {
+                    return UnwindMode.FramePointer;
+                }
+            }
+
+            return UnwindMode.Dwarf;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _logger.LogWarning(ex, "Cannot read /proc/{Pid}/maps; falling back to perf --call-graph dwarf.", pid);
+            return UnwindMode.DwarfMapsUnreadable;
+        }
     }
 
     internal static string FormatPerfFileSize(long bytes)

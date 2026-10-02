@@ -24,8 +24,8 @@ public sealed class ScenarioEvaluationLiveGroup
 [Collection(ScenarioEvaluationLiveGroup.Name)]
 public sealed class ScenarioLiveTests
 {
-    [WindowsOnlyFact(
-        "Culture-lookup requires validated Windows ETW measured-CPU evidence; Linux support remains gated by reassessment #929.",
+    [WindowsOrLinuxFact(
+        "Culture-lookup requires validated Windows ETW or Linux perf measured-CPU evidence.",
         Timeout = 600_000)]
     [Trait("Category", "ScenarioEvaluationLive")]
     public Task LiveCapture_CultureLookup_SatisfiesStructuredEvidenceInvariants()
@@ -303,6 +303,19 @@ public sealed class WindowsOnlyFactAttribute : FactAttribute
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(reason);
         if (!OperatingSystem.IsWindows())
+        {
+            Skip = reason;
+        }
+    }
+}
+
+[AttributeUsage(AttributeTargets.Method, AllowMultiple = false)]
+public sealed class WindowsOrLinuxFactAttribute : FactAttribute
+{
+    public WindowsOrLinuxFactAttribute(string reason)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
         {
             Skip = reason;
         }

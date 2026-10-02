@@ -270,6 +270,27 @@ public class PerfScriptParserTests
     }
 
     [Fact]
+    public void Aggregate_WithJitMap_CountsResolvedJitFramesAsResolvedSymbolSource()
+    {
+        const string output = """
+            sample-target  7 [000] 1.0: cpu-clock:
+                            7ab2e757f784 [unknown] (/memfd:doublemapper (deleted))
+                            7f1234560000 [unknown] (/usr/lib/libcoreclr.so)
+
+            """;
+        var identity = CreateIdentity("MemfdProof.Program", "HotLoop", token: 0x06000042);
+        var jitMap = new JitMapResult(
+            "/tmp/perf-7.map",
+            [new JitMapRange(0x7ab2e757f760, 0x32, identity, "MemfdProof.Program.HotLoop")],
+            MethodCount: 1);
+
+        var (_, _, _, symbolSource, _) = PerfNativeAotCpuSampler.Aggregate(
+            output, processId: 0, topN: 10, jitMap: jitMap);
+
+        symbolSource.Should().Be(NativeAotSymbolDemangler.SymbolSource.Mixed);
+    }
+
+    [Fact]
     public void Aggregate_WithJitMap_KeepsSameDisplayOverloadsIdentityDistinct()
     {
         const string output = """

@@ -45,7 +45,7 @@ elevated privileges, so they run on every CI leg (Linux and Windows) without any
 - **Full command-line construction** for every perf-backed collector
   (`PerfCompatSmokeTests.CpuSampler_BuildRecordArguments_*`, `..._NativeAlloc_...`,
   `..._NativeLockContention_...`, and `PerfSchedOffCpuCommandBuilderTests` for off-CPU): argument
-  order, `--call-graph dwarf`, sample-period/tracepoint wiring, and the portable `--max-size`
+  order, `--call-graph dwarf` (`fp` for CoreCLR CPU targets, whose JIT frames DWARF cannot unwind; the summary then carries a note), sample-period/tracepoint wiring, and the portable `--max-size`
   value are asserted against a fixed argument list — a perf-version-specific flag rename or
   reordering regression is caught here before it reaches a real host.
 - **Structured failure classification** (`PerfFailureClassifier`, covered in

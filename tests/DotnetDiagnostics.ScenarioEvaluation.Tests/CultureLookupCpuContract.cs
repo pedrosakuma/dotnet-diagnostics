@@ -26,6 +26,11 @@ internal static class CultureLookupCpuContract
     internal static long InclusiveSamples(CpuSampleTraceArtifact artifact, string method)
     {
         var query = CpuSampleQueryDispatcher.RenderCallerCallee(artifact, "replay", method, topN: 5);
+        // Linux perf JIT symbols carry no signature, so "Type.Method(" cannot match there.
+        if (query.Error?.Kind == "NotFound" && method.EndsWith('('))
+        {
+            query = CpuSampleQueryDispatcher.RenderCallerCallee(artifact, "replay", method[..^1], topN: 5);
+        }
         if (query.Error?.Kind == "NotFound")
         {
             return 0;

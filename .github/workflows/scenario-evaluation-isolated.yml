@@ -11,6 +11,11 @@ on:
         description: Retry count for crash-only isolated trials
         required: false
         default: "1"
+      reassess_linux_culture_lookup:
+        description: Run the predeclared #929 protocol (10 Linux trials and 3 Windows controls, zero retries)
+        type: boolean
+        required: false
+        default: false
   schedule:
     # Nightly at 04:11 UTC, offset from the other manual/nightly diagnostics jobs.
     - cron: "11 4 * * *"
@@ -27,12 +32,15 @@ env:
 jobs:
   scenario-evaluation:
     name: ${{ matrix.os }} / ${{ matrix.scenario }}
+    if: ${{ !inputs.reassess_linux_culture_lookup }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         include:
+          - os: ubuntu-latest
+            scenario: culture-lookup
           - os: ubuntu-latest
             scenario: sync-over-async
           - os: ubuntu-latest
@@ -52,6 +60,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Provision Linux perf
+        if: ${{ runner.os == 'Linux' && matrix.scenario == 'culture-lookup' }}
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq linux-tools-common "linux-tools-$(uname -r)"
+          sudo sysctl -w kernel.perf_event_paranoid=-1
+          perf --version
 
       - name: Setup .NET 10
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
@@ -115,6 +132,7 @@ jobs:
             --scenario "${{ matrix.scenario }}" \
             --repetitions "${{ inputs.repetitions || '10' }}" \
             --max-crash-retries "${{ inputs.max_crash_retries || '1' }}" \
+            --attempt-timeout-seconds 180 \
             --results-root "artifacts/scenario-evaluation/${{ runner.os }}/${{ matrix.scenario }}"
           runner_exit_code=$?
           echo "runner_exit_code=$runner_exit_code" >> "$GITHUB_OUTPUT"
@@ -169,4 +187,158 @@ jobs:
         shell: bash
         run: |
           echo "One or more isolated trials failed or crashed for ${{ matrix.scenario }} on ${{ runner.os }}." >&2
+          exit 1
+
+  culture-lookup-reassessment:
+    name: "${{ matrix.os }} / culture-lookup (#929)"
+    if: ${{ inputs.reassess_linux_culture_lookup }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            repetitions: 10
+            allow_linux_reassessment: true
+          - os: windows-latest
+            repetitions: 3
+            allow_linux_reassessment: false
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Provision Linux perf
+        if: ${{ runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq linux-tools-common "linux-tools-$(uname -r)"
+          sudo sysctl -w kernel.perf_event_paranoid=-1
+          perf --version
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+
+      - name: Cache NuGet packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.nuget/packages
+          key: scenario-eval-${{ runner.os }}-${{ hashFiles('**/Directory.Packages.props', '**/*.csproj') }}
+          restore-keys: |
+            scenario-eval-${{ runner.os }}-
+
+      - name: Stage caller-provided private NuGet configuration
+        id: nuget
+        env:
+          PRIVATE_NUGET_CONFIG: ${{ secrets.NUGET_CONFIG }}
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:PRIVATE_NUGET_CONFIG)) {
+            throw "The NUGET_CONFIG Actions secret is required; no public NuGet fallback is permitted."
+          }
+          $config = Join-Path $env:RUNNER_TEMP "scenario-NuGet.Config"
+          [System.IO.File]::WriteAllText($config, $env:PRIVATE_NUGET_CONFIG, [System.Text.UTF8Encoding]::new($false))
+          "path=$config" >> $env:GITHUB_OUTPUT
+          Remove-Item Env:PRIVATE_NUGET_CONFIG
+
+      - name: Restore
+        shell: bash
+        run: dotnet restore --configfile "${{ steps.nuget.outputs.path }}"
+
+      - name: Build scenario evaluation suite
+        shell: bash
+        run: >-
+          dotnet build tests/DotnetDiagnostics.ScenarioEvaluation.Tests/DotnetDiagnostics.ScenarioEvaluation.Tests.csproj
+          --configuration Release --no-restore
+
+      - name: Remove staged private NuGet configuration
+        if: always()
+        shell: pwsh
+        run: |
+          $path = "${{ steps.nuget.outputs.path }}"
+          if (-not [string]::IsNullOrWhiteSpace($path)) {
+            Remove-Item -Force -ErrorAction SilentlyContinue $path
+          }
+
+      - name: Validate isolated subprocess supervision
+        shell: bash
+        run: |
+          python_bin="$(command -v python3 || command -v python)"
+          "$python_bin" scripts/test_scenario_attempt.py -v
+          "$python_bin" scripts/test_scenario_forensics.py -v
+
+      - name: Run predeclared culture lookup trials
+        id: isolated_run
+        shell: bash
+        run: |
+          extra_args=()
+          if [[ "${{ matrix.allow_linux_reassessment }}" == "true" ]]; then
+            extra_args+=(--reassess-linux-culture-lookup)
+          else
+            extra_args+=(--windows-culture-lookup-controls)
+          fi
+          set +e
+          bash scripts/run-scenario-evaluation-isolated.sh \
+            --scenario culture-lookup \
+            --repetitions "${{ matrix.repetitions }}" \
+            --max-crash-retries 0 \
+            --attempt-timeout-seconds 180 \
+            --results-root "artifacts/culture-lookup-reassessment/${{ runner.os }}/culture-lookup" \
+            "${extra_args[@]}"
+          runner_exit_code=$?
+          echo "runner_exit_code=$runner_exit_code" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Append reassessment summary
+        if: always()
+        shell: bash
+        run: |
+          summary_path="artifacts/culture-lookup-reassessment/${{ runner.os }}/culture-lookup/summary.json"
+          python_bin="$(command -v python3 || command -v python)"
+          "$python_bin" - "$summary_path" <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          import pathlib
+          import sys
+
+          summary_path = pathlib.Path(sys.argv[1])
+          print("### culture-lookup reassessment")
+          print("")
+          if not summary_path.is_file():
+              print("No summary.json was produced.")
+              raise SystemExit(0)
+
+          summary = json.loads(summary_path.read_text(encoding="utf-8"))
+          print(f"- passed: {summary['totals']['passed']}")
+          print(f"- failed: {summary['totals']['failed']}")
+          print(f"- crashed: {summary['totals']['crashed']}")
+          print("")
+          print("| Trial | Outcome | Failure kind | Artifact |")
+          print("|---:|---|---|---|")
+          for trial in summary["trials"]:
+              artifact = trial["path"].replace("\\", "/")
+              print(
+                  f"| {trial['trial']} | {trial['finalOutcome']} | "
+                  f"{trial['finalFailureKind']} | `{artifact}` |"
+              )
+          PY
+
+      - name: Upload culture lookup reassessment artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: culture-lookup-reassessment-${{ runner.os }}-${{ github.run_attempt }}
+          path: artifacts/culture-lookup-reassessment/${{ runner.os }}/culture-lookup
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Fail when any predeclared trial failed or crashed
+        if: ${{ steps.isolated_run.outputs.runner_exit_code != '0' }}
+        shell: bash
+        run: |
+          echo "One or more predeclared culture-lookup trials failed or crashed on ${{ runner.os }}." >&2
           exit 1
