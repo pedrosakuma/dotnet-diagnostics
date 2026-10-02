@@ -22,6 +22,9 @@ Options:
   --reassess-linux-culture-lookup
                               Opt in to the fixed #929 protocol: 10 Linux trials, no retries,
                               one explicit culture-lookup platform override, and a fresh output path.
+  --windows-culture-lookup-controls
+                              Opt in to the fixed #929 Windows control protocol: 3 trials, no retries,
+                              and a fresh output path.
   --help                     Show this help.
 EOF
 }
@@ -34,6 +37,7 @@ max_crash_retries=1
 attempt_timeout_seconds=180
 use_no_build=true
 reassess_linux_culture_lookup=false
+windows_culture_lookup_controls=false
 declare -a scenarios=()
 
 while [[ $# -gt 0 ]]; do
@@ -79,6 +83,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --reassess-linux-culture-lookup)
       reassess_linux_culture_lookup=true
+      shift
+      ;;
+    --windows-culture-lookup-controls)
+      windows_culture_lookup_controls=true
       shift
       ;;
     --help|-h)
@@ -177,7 +185,10 @@ if [[ ${#invalid_scenarios[@]} -gt 0 ]]; then
 fi
 
 capture_culture_lookup_run_metadata=false
-if [[ "$reassess_linux_culture_lookup" == true ]]; then
+if [[ "$reassess_linux_culture_lookup" == true && "$windows_culture_lookup_controls" == true ]]; then
+  echo "Linux reassessment and Windows control modes cannot be combined." >&2
+  exit 2
+elif [[ "$reassess_linux_culture_lookup" == true ]]; then
   capture_culture_lookup_run_metadata=true
   current_platform=$("$python_bin" - <<'PY'
 import platform
@@ -194,6 +205,29 @@ PY
   }
   [[ "$repetitions" -eq 10 && "$max_crash_retries" -eq 0 && "$attempt_timeout_seconds" -eq 180 ]] || {
     echo "The #929 protocol requires --repetitions 10, --max-crash-retries 0, and --attempt-timeout-seconds 180." >&2
+    exit 2
+  }
+  [[ ! -e "$results_root" && ! -L "$results_root" ]] || {
+    echo "The #929 output path must not already exist: $results_root" >&2
+    exit 2
+  }
+elif [[ "$windows_culture_lookup_controls" == true ]]; then
+  capture_culture_lookup_run_metadata=true
+  current_platform=$("$python_bin" - <<'PY'
+import platform
+print(platform.system().lower())
+PY
+)
+  [[ "$current_platform" == "windows" ]] || {
+    echo "--windows-culture-lookup-controls is valid only on Windows." >&2
+    exit 2
+  }
+  [[ ${#scenarios[@]} -eq 1 && "${scenarios[0]}" == "culture-lookup" ]] || {
+    echo "--windows-culture-lookup-controls requires exactly --scenario culture-lookup." >&2
+    exit 2
+  }
+  [[ "$repetitions" -eq 3 && "$max_crash_retries" -eq 0 && "$attempt_timeout_seconds" -eq 180 ]] || {
+    echo "The #929 Windows control protocol requires --repetitions 3, --max-crash-retries 0, and --attempt-timeout-seconds 180." >&2
     exit 2
   }
   [[ ! -e "$results_root" && ! -L "$results_root" ]] || {
@@ -219,6 +253,8 @@ if [[ "$capture_culture_lookup_run_metadata" == true ]]; then
   protocol="scenario-culture-lookup"
   if [[ "$reassess_linux_culture_lookup" == true ]]; then
     protocol="issue-929-linux-culture-lookup"
+  elif [[ "$windows_culture_lookup_controls" == true ]]; then
+    protocol="issue-929-windows-culture-lookup-controls"
   fi
   "$python_bin" - "$metadata_root/execution.json" "$project" "$git_commit" "$dotnet_sdk_version" "$protocol" <<'PY'
 import hashlib
@@ -536,7 +572,13 @@ PY
   done
 done
 
-"$python_bin" - "$results_root" "$repetitions" "$max_crash_retries" "$reassess_linux_culture_lookup" "${scenarios[@]}" <<'PY'
+summary_mode="standard"
+if [[ "$reassess_linux_culture_lookup" == true ]]; then
+  summary_mode="linux-reassessment"
+elif [[ "$windows_culture_lookup_controls" == true ]]; then
+  summary_mode="windows-controls"
+fi
+"$python_bin" - "$results_root" "$repetitions" "$max_crash_retries" "$summary_mode" "${scenarios[@]}" <<'PY'
 import json
 import pathlib
 import sys
@@ -545,7 +587,7 @@ from collections import Counter
 results_root = pathlib.Path(sys.argv[1])
 repetitions = int(sys.argv[2])
 max_crash_retries = int(sys.argv[3])
-reassessment_mode = sys.argv[4] == "true"
+summary_mode = sys.argv[4]
 selected_scenarios = sys.argv[5:]
 trial_dir = results_root / "trials"
 trial_files = sorted(trial_dir.glob("*.result.json"))
@@ -570,7 +612,10 @@ summary = {
     "repetitions": repetitions,
     "maxCrashRetries": max_crash_retries,
     "selectedScenarios": selected_scenarios,
-    "reassessmentMode": "issue-929-linux-culture-lookup" if reassessment_mode else None,
+    "reassessmentMode": {
+        "linux-reassessment": "issue-929-linux-culture-lookup",
+        "windows-controls": "issue-929-windows-culture-lookup-controls",
+    }.get(summary_mode),
     "totals": {
         "passed": totals.get("passed", 0),
         "failed": totals.get("failed", 0),
