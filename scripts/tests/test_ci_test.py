@@ -118,10 +118,13 @@ class CiEvidenceTests(EvidenceFixture):
 
                 process = Process()
                 process.trx = self.trx
-                with patch.object(RUNNER.subprocess, "run", side_effect=discover), \
+                with patch.object(RUNNER.sys, "platform", "win32"), \
+                     patch.object(RUNNER.subprocess, "run", side_effect=discover), \
                      patch.object(RUNNER.subprocess, "Popen", return_value=process) as launch:
                     self.assertEqual(RUNNER.run(root, "core", "core.csproj", None), code)
                     launch.assert_called_once()
+                    command = launch.call_args.args[0]
+                    self.assertEqual("full", command[command.index("--blame-hang-dump-type") + 1])
                 self.assertEqual((root / "core" / "exit-code.txt").read_text(), str(code))
                 if code:
                     with self.assertRaisesRegex(ValueError, "no retry or masking"):

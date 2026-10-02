@@ -700,11 +700,13 @@ public sealed class CaptureWriter : IAsyncDisposable
 
     private void ReleaseBatch(List<Offer> batch)
     {
-        Interlocked.Add(ref _queueRecords, -batch.Count);
-        foreach (var offer in batch) Interlocked.Add(ref _queueBytes, -offer.Bytes);
-        if (Volatile.Read(ref _waitingAppends) != 0)
+        // Capacity release and waiter registration must share the admission lock:
+        // otherwise a producer can register after the worker's last waiter check.
+        lock (_gate)
         {
-            lock (_gate) DrainPendingAppends();
+            Interlocked.Add(ref _queueRecords, -batch.Count);
+            foreach (var offer in batch) Interlocked.Add(ref _queueBytes, -offer.Bytes);
+            DrainPendingAppends();
         }
     }
 

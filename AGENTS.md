@@ -92,6 +92,8 @@ results surface early. The existing `Build & Test` contexts aggregate both
 groups; the full suite remains required. Test steps have explicit timeouts, and
 evidence-verification and artifact-upload steps must still run after a test
 failure or timeout.
+On Windows, the five-minute inactivity watchdog requests full hang dumps as
+well as crash dumps; failure uploads retain them for deadlock investigation.
 
 **Bearer token.** The server reads `MCP_BEARER_TOKEN` from the environment. If unset, it
 generates an ephemeral 32-byte hex token at startup and logs it as a warning — there is no
