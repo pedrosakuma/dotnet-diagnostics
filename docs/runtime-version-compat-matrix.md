@@ -52,9 +52,15 @@ providers/keywords.
   concrete value-type generic resolver path passed locally. Other async shapes,
   shared reference-type instantiations and all `query_snapshot` views are not
   established by that bounded evidence.
-- **`collect_sample(kind="method-params")`** — already hard-gated to .NET 8+; not exercised against
-  9/10 targets specifically in `CrossVersionTargetTests` (covered separately by
-  `MethodParameterCaptureCollectorTests` against the pinned net10.0 `CoreClrSample`).
+- **`collect_sample(kind="method-params")`** — hard-gated to .NET 8+. Cross-version live evidence
+  (Linux x64 only) comes from `CrossVersionMethodParameterTests`, which runs the real allowlisted
+  profiler capture against `samples/MultiVersionSample --method-params` on .NET 8, 9 and 10: actual
+  runtime major, known synthetic values, event/value caps, a `query_snapshot` drilldown,
+  cancellation and target-exit cleanup (profiler stop acknowledged, shared directory removed; resident
+  profiler payload unload is not claimed). On GitHub Actions a missing runtime or build fails
+  rather than skips. Windows x64 keeps its existing net10 evidence in `LiveCoreClrProcessTests`;
+  no Windows .NET 8/9 coverage is claimed. Opt-in, approval and allowlist behavior is unchanged
+  and covered by the MCP security tests.
 - **NativeAOT targets** on older SDKs — out of scope; NativeAOT support is tracked independently in
   [`aot-coverage.md`](./aot-coverage.md) and is inherently tied to the SDK version used to publish
   the AOT binary, not a CoreCLR major version.
