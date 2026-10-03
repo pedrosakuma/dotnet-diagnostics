@@ -76,7 +76,8 @@ public sealed class MultiVersionSampleProcess : IAsyncDisposable
         string targetFramework,
         TimeSpan? timeout = null,
         bool generateGcEvents = false,
-        bool gcPauseWorkload = false)
+        bool gcPauseWorkload = false,
+        bool methodParams = false)
     {
         var major = ParseMajorVersion(targetFramework);
         if (!InstalledRuntimes.HasMajorVersion(major))
@@ -102,6 +103,10 @@ public sealed class MultiVersionSampleProcess : IAsyncDisposable
         if (generateGcEvents)
         {
             psi.ArgumentList.Add("--gc-events");
+        }
+        if (methodParams)
+        {
+            psi.ArgumentList.Add("--method-params");
         }
         psi.Environment["DOTNET_NOLOGO"] = "1";
         if (gcPauseWorkload)

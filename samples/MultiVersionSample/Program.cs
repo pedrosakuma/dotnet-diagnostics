@@ -22,6 +22,12 @@ if (args.Contains("--gc-pause-workload", StringComparer.Ordinal))
     return;
 }
 
+if (args.Contains("--method-params", StringComparer.Ordinal))
+{
+    MethodParameterFixture.Run();
+    return;
+}
+
 var cache = new List<byte[]>();
 var rng = new Random(42);
 var generateGcEvents = args.Contains("--gc-events", StringComparer.Ordinal);
