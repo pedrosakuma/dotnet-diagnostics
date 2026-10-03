@@ -11,6 +11,13 @@ public sealed partial class MonitoredRunnerTests
     public async Task GeometryFixtureLinkedCreationAfterTraversalIsGenuineThirtyThirdIdentity()
     {
         if (!OperatingSystem.IsLinux()) return;
+        if (!GeometryFixtureProcess.IsChild)
+        {
+            // The exact 33-identity count must not include descriptors opened by other tests
+            // running in parallel inside the shared xUnit host.
+            await GeometryFixtureProcess.RunAsync("linked-late", _output);
+            return;
+        }
         var root = Path.Combine(_workspace, "geometry");
         Directory.CreateDirectory(root);
         var anchor = Path.Combine(root, "anchor");

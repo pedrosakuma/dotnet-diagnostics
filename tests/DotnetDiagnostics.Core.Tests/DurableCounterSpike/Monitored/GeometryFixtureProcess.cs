@@ -14,9 +14,9 @@ internal static class GeometryFixtureProcess
             return CaptureLeaseFixture.Run(leasePath);
         }
 
-        if (args is not ["--geometry-fixture", "ordered" or "failure" or "cancel"])
+        if (args is not ["--geometry-fixture", "ordered" or "failure" or "cancel" or "linked-late"])
         {
-            Console.Error.WriteLine("Expected --geometry-fixture ordered|failure|cancel.");
+            Console.Error.WriteLine("Expected --geometry-fixture ordered|failure|cancel|linked-late.");
             return 2;
         }
 
@@ -27,6 +27,8 @@ internal static class GeometryFixtureProcess
             using var fixture = new MonitoredRunnerTests(new ConsoleOutput());
             if (args[1] == "ordered")
                 await fixture.GeometryFixtureOrderedConstructionMeasures539Plus32AndStrictCleanup();
+            else if (args[1] == "linked-late")
+                await fixture.GeometryFixtureLinkedCreationAfterTraversalIsGenuineThirtyThirdIdentity();
             else
                 await fixture.GeometryFixtureConstructionFailureClosesOwnedHandlesWithoutBlockingObserver(
                     args[1] == "cancel");
