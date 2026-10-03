@@ -3233,7 +3233,10 @@ public sealed partial class MonitoredRunnerTests : IDisposable
         private string Script(MonitoredWorkerDescriptor descriptor)
         {
             const string identity = """
-                read -r -a stat_fields < "/proc/$$/stat"
+                # Read stat in a command-substitution subshell: a redirect on the builtin would
+                # temporarily rebind this shell's fd 0, which the descriptor monitor can observe
+                # mid-flight as an identity change.
+                stat_fields=($(< "/proc/$$/stat"))
                 pid=$$
                 start="${stat_fields[21]}"
                 printf '{"type":"process","processId":%s,"processStartTimeTicks":%s,"processRole":"diagnostic"}\n' "$pid" "$start"
