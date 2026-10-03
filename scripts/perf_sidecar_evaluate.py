@@ -63,6 +63,10 @@ def evaluate(kind, payload, exit_code, timed_out, activation, expect_error_kind=
     error = payload.get("error") if isinstance(payload, dict) else None
 
     if expect_error_kind:
+        if exit_code == 0:
+            return finish("failed", "negative control exited successfully; expected a failing capture")
+        if int(activation.get("requestsOk", 0)) < 1:
+            return finish("failed", "negative control ran without a successful workload request")
         if not isinstance(error, dict):
             return finish("failed", f"expected a classified '{expect_error_kind}' error but the capture reported none")
         message = str(error.get("message", ""))

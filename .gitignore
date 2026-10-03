@@ -44,3 +44,4 @@ nupkgs/
 /pr-body.md
 /pr-body*.md
 /issue-body*.md
+__pycache__/

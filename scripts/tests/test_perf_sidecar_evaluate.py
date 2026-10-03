@@ -62,13 +62,15 @@ class EvaluateTests(unittest.TestCase):
 
     def test_negative_control_requires_expected_kind_and_actionable_message(self):
         payload = {"error": {"kind": "PermissionDenied", "message": "No permission to enable cycles; grant CAP_PERFMON"}}
-        passed = ev.evaluate("cpu", payload, 1, False, IDLE, "PermissionDenied", "permission")
+        passed = ev.evaluate("cpu", payload, 1, False, ACTIVE, "PermissionDenied", "permission")
         self.assertEqual(passed["status"], "passed")
-        wrong_kind = ev.evaluate("cpu", payload, 1, False, IDLE, "UnsupportedPrerequisite")
+        self.assertEqual(ev.evaluate("cpu", payload, 1, False, IDLE, "PermissionDenied")["status"], "failed")
+        self.assertEqual(ev.evaluate("cpu", payload, 0, False, ACTIVE, "PermissionDenied")["status"], "failed")
+        wrong_kind = ev.evaluate("cpu", payload, 1, False, ACTIVE, "UnsupportedPrerequisite")
         self.assertEqual(wrong_kind["status"], "failed")
         vague = {"error": {"kind": "PermissionDenied", "message": "failed"}}
-        self.assertEqual(ev.evaluate("cpu", vague, 1, False, IDLE, "PermissionDenied", "permission")["status"], "failed")
-        self.assertEqual(ev.evaluate("cpu", {"data": {}}, 0, False, IDLE, "PermissionDenied")["status"], "failed")
+        self.assertEqual(ev.evaluate("cpu", vague, 1, False, ACTIVE, "PermissionDenied", "permission")["status"], "failed")
+        self.assertEqual(ev.evaluate("cpu", {"data": {}}, 1, False, ACTIVE, "PermissionDenied")["status"], "failed")
 
     def test_activation_summary_counts_status_codes(self):
         path = Path(self.id() + ".log")

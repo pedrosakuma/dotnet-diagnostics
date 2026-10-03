@@ -108,8 +108,8 @@ matrix: automated sidecar coverage is described in "Container sidecar automation
 classified by `scripts/perf_sidecar_evaluate.py`) runs the production `deploy/Dockerfile` image
 as a sidecar joined to a PID-namespace anchor with the targets, as in
 [`docs/local-docker-sidecar.md`](./local-docker-sidecar.md). It is advisory (not a required
-check), has no retries, and always uploads `topology.json`, per-capture JSON/stderr/exit/activation
-logs and `summary.md`. Each planned capture ends as `passed`, `unsupported`, `failed` or `timeout`.
+check), has no retries, and always attempts to upload `topology.json`, per-capture JSON/stderr/exit/activation
+logs and `summary.md` (a setup failure before the captures start leaves only the container logs and an incomplete-run summary). Each planned capture ends as `passed`, `unsupported`, `failed` or `timeout`.
 
 | Capture | Target / workload | Passes when |
 |---|---|---|
