@@ -24,13 +24,13 @@ namespace DotnetDiagnostics.Core.Tests;
 /// multi-targeted <c>samples/MultiVersionSample</c> on .NET 8, 9 and 10 (Linux x64 only; Windows
 /// x64 keeps its existing net10 evidence in <c>LiveCoreClrProcessTests</c>). Each case asserts the
 /// actual runtime major, known synthetic values, event/value caps, a drilldown query, and
-/// cancellation / target-exit cleanup. Outside GitHub Actions a missing runtime or build skips;
-/// on GitHub Actions Linux x64 it fails so a provisioned case can never silently skip.
+/// cancellation / target-exit cleanup. A missing runtime or build fails on GitHub
+/// Actions so a provisioned case can never silently skip.
 /// </summary>
 [Collection("LiveProcess")]
 public class CrossVersionMethodParameterTests
 {
-    [Theory(Timeout = 180_000)]
+    [LinuxX64OnlyTheory(Timeout = 180_000)]
     [InlineData("net8.0")]
     [InlineData("net9.0")]
     [InlineData("net10.0")]
@@ -70,6 +70,8 @@ public class CrossVersionMethodParameterTests
         method.MethodName.Should().Be("Capture");
         method.Signature.Should().Equal("System.Int32", "System.String", "System.String");
         var parameters = result.Data.Events.SelectMany(e => e.Parameters).ToList();
+        result.Data.Events.Should().OnlyContain(e => e.Parameters.Count == 3, context);
+        parameters.Select(p => p.Name).Distinct().Should().BeEquivalentTo(["sequence", "label", "payload"], context);
         parameters.Where(p => p.Name == "sequence").Should()
             .OnlyContain(p => p.TypeName == "System.Int32" && (p.Value == "123" || p.Value == "124" || p.Value == "125"), context);
         parameters.Where(p => p.Name == "label").Should()
@@ -99,13 +101,15 @@ public class CrossVersionMethodParameterTests
 
         drilled.Error.Should().BeNull(context);
         var query = drilled.Data.Should().BeOfType<MethodParameterCaptureQueryResult>().Subject;
-        query.Events!.Events.SelectMany(e => e.Parameters).Where(p => p.Name == "payload").Should().OnlyContain(p =>
+        var drilledPayloads = query.Events!.Events.SelectMany(e => e.Parameters).Where(p => p.Name == "payload").ToList();
+        drilledPayloads.Should().NotBeEmpty(context);
+        drilledPayloads.Should().OnlyContain(p =>
             p.Value.StartsWith("known-prefix-", StringComparison.Ordinal)
             && System.Text.Encoding.UTF8.GetByteCount(p.Value) == 4_096
             && p.Truncated, context);
     }
 
-    [Theory(Timeout = 180_000)]
+    [LinuxX64OnlyTheory(Timeout = 180_000)]
     [InlineData("net8.0")]
     [InlineData("net9.0")]
     [InlineData("net10.0")]
@@ -131,7 +135,7 @@ public class CrossVersionMethodParameterTests
         Directory.Exists(sharedPath).Should().BeFalse("cancellation must clean the control socket and profiler shared directory");
     }
 
-    [Theory(Timeout = 180_000)]
+    [LinuxX64OnlyTheory(Timeout = 180_000)]
     [InlineData("net8.0")]
     [InlineData("net9.0")]
     [InlineData("net10.0")]
@@ -165,13 +169,6 @@ public class CrossVersionMethodParameterTests
 
     private static async Task<MultiVersionSampleProcess> StartAsync(string targetFramework)
     {
-        var supported = OperatingSystem.IsLinux()
-            && System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture == System.Runtime.InteropServices.Architecture.X64;
-        if (!supported)
-        {
-            throw SkipException.ForReason("cross-version method-parameter coverage is scoped to Linux x64.");
-        }
-
         var provisioned = Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true";
         var major = Major(targetFramework);
         if (provisioned && !InstalledRuntimes.HasMajorVersion(major))

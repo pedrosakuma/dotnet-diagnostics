@@ -37,3 +37,16 @@ public sealed class LinuxOrWindowsOnlyFactAttribute : FactAttribute
         }
     }
 }
+
+[AttributeUsage(AttributeTargets.Method, AllowMultiple = false, Inherited = true)]
+public sealed class LinuxX64OnlyTheoryAttribute : TheoryAttribute
+{
+    public LinuxX64OnlyTheoryAttribute(string skipReason = "Linux x64-only test.")
+    {
+        if (!OperatingSystem.IsLinux()
+            || System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture != System.Runtime.InteropServices.Architecture.X64)
+        {
+            Skip = skipReason;
+        }
+    }
+}

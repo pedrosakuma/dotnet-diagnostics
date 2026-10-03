@@ -57,8 +57,8 @@ providers/keywords.
   profiler capture against `samples/MultiVersionSample --method-params` on .NET 8, 9 and 10: actual
   runtime major, known synthetic values, event/value caps, a `query_snapshot` drilldown,
   cancellation and target-exit cleanup (profiler stop acknowledged, shared directory removed; resident
-  profiler payload unload is not claimed). On GitHub Actions a missing runtime or build fails
-  rather than skips. Windows x64 keeps its existing net10 evidence in `LiveCoreClrProcessTests`;
+  profiler payload unload is not claimed). A missing runtime or build is a test failure on Linux x64 (the cases are skipped only on
+  other platforms). Windows x64 keeps its existing net10 evidence in `LiveCoreClrProcessTests`;
   no Windows .NET 8/9 coverage is claimed. Opt-in, approval and allowlist behavior is unchanged
   and covered by the MCP security tests.
 - **NativeAOT targets** on older SDKs — out of scope; NativeAOT support is tracked independently in
