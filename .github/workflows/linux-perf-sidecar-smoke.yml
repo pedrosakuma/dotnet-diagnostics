@@ -11,8 +11,6 @@ name: Linux perf sidecar smoke (advisory)
 # Do NOT add this workflow to branch protection (AGENTS.md: docs-only fast path section).
 
 on:
-  push:
-    branches: [work/934-perf-sidecar-automation] # TEMP: remove before merge
   workflow_dispatch:
   schedule:
     - cron: "40 4 * * 1"
