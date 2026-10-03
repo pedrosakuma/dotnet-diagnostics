@@ -1,0 +1,117 @@
+name: Linux perf sidecar smoke (advisory)
+
+# Advisory, non-required live perf coverage in ONE production-like Linux x64 sidecar
+# topology (issue #934, parent #919 C2c): PID-namespace anchor + NativeAOT and CoreCLR
+# targets + a sidecar running the production image's CLI with PERFMON/SYS_PTRACE only.
+# See scripts/perf-sidecar-smoke.sh and docs/perf-compat-matrix.md. Native hosted-runner
+# coverage lives in linux-perf-compat-smoke.yml; WSL2 stays manual.
+#
+# Every planned capture reports exactly one outcome (passed / unsupported / failed /
+# timeout); there are no retries, and missing evidence is reported as incomplete coverage.
+# Do NOT add this workflow to branch protection (AGENTS.md: docs-only fast path section).
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "40 4 * * 1"
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE: true
+
+jobs:
+  perf-sidecar-smoke:
+    name: Perf sidecar smoke (ubuntu-latest, Docker)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+
+      - name: Cache NuGet packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/Directory.Packages.props', '**/*.csproj') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
+
+      - name: Stage caller-provided private NuGet configuration
+        shell: bash
+        env:
+          PRIVATE_NUGET_CONFIG: ${{ secrets.NUGET_CONFIG }}
+        run: |
+          if [[ -z "${PRIVATE_NUGET_CONFIG:-}" ]]; then
+            echo "The NUGET_CONFIG Actions secret is required; no public NuGet fallback is permitted." >&2
+            exit 1
+          fi
+          umask 077
+          printf '%s' "$PRIVATE_NUGET_CONFIG" > "$RUNNER_TEMP/NuGet.Config"
+          unset PRIVATE_NUGET_CONFIG
+
+      - name: Publish sample targets
+        run: |
+          dotnet restore samples/BadCodeSample --configfile "$RUNNER_TEMP/NuGet.Config"
+          dotnet restore samples/NativeAotSample -r linux-x64 --configfile "$RUNNER_TEMP/NuGet.Config"
+          dotnet publish samples/BadCodeSample -c Release --no-restore -o "$RUNNER_TEMP/bad"
+          dotnet publish samples/NativeAotSample -c Release -r linux-x64 --no-restore -o "$RUNNER_TEMP/aot"
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+
+      # Production sidecar image: perf (linux-tools) and the CLI at /app/cli, exactly what K8s uses.
+      - name: Build production sidecar image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: deploy/Dockerfile
+          build-args: |
+            INSTALL_PERF=true
+          secret-files: |
+            nugetconfig=${{ runner.temp }}/NuGet.Config
+          tags: dotnet-diagnostics-sidecar:perf-smoke
+          load: true
+          cache-from: type=gha,scope=perf-sidecar
+          cache-to: type=gha,mode=max,scope=perf-sidecar
+
+      - name: Remove staged private NuGet configuration
+        if: always()
+        run: rm -f -- "$RUNNER_TEMP/NuGet.Config"
+
+      - name: Run sidecar perf smoke
+        id: smoke
+        env:
+          SIDECAR_IMAGE: dotnet-diagnostics-sidecar:perf-smoke
+        run: |
+          AOT_DIR="$RUNNER_TEMP/aot" BAD_DIR="$RUNNER_TEMP/bad" \
+            OUT_DIR="$GITHUB_WORKSPACE/TestResults/perf-sidecar" \
+            timeout 1500 scripts/perf-sidecar-smoke.sh
+
+      - name: Report incomplete run
+        if: always() && steps.smoke.outcome != 'success'
+        run: |
+          {
+            echo "### Perf sidecar smoke did not finish cleanly"
+            echo "Missing or failed captures mean incomplete coverage, not a compatibility claim."
+            echo "Outcome: ${{ steps.smoke.outcome }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload perf sidecar artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-perf-sidecar-smoke
+          path: TestResults/perf-sidecar/**
+          if-no-files-found: warn
+          retention-days: 14
