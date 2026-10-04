@@ -185,6 +185,12 @@ dotnet … collect_events(kind="exceptions")  # synchronous
 
 `tests/DotnetDiagnostics.Core.Tests/LiveCoreClrProcessTests.cs` spawns the `CoreClrSample` webapi by invoking its published DLL directly (`dotnet …/CoreClrSample.dll`) and attaches to the resulting PID. The fixture deliberately avoids `dotnet run`, which creates a wrapper host process whose PID is not the application. Required: .NET 10 SDK on `PATH`, ability to bind to `127.0.0.1:0`, and ~10s of runtime. CI runs both Linux and Windows runners.
 
+Activity-based live tests must observe events from their own collection session
+before starting the target workload, rather than assume a fixed startup delay.
+GC progress witnesses span the EventPipe arm/stop acknowledgments as well as the
+collection itself; their deadline and sample cap must cover that whole lifecycle.
+Keep deadline, cap, and event-loss failures explicit.
+
 The Core test assembly also has a private geometry-fixture entry point. The
 strict inventory cases run in fresh child processes so the xUnit host's retained
 heap does not consume their absolute harness RSS budget. Keep the executable

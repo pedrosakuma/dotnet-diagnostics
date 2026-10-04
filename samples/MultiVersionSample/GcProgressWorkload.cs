@@ -37,7 +37,7 @@ internal static class GcProgressWorkload
 
     private sealed class ProgressWitness : IDisposable
     {
-        private const int MaxSamples = 32_768;
+        private const int MaxSamples = 262_144;
         private readonly Thread _thread;
         private int _stop;
         internal int Count { get; private set; }
@@ -51,7 +51,9 @@ internal static class GcProgressWorkload
 
         private void Observe(int request)
         {
-            var deadline = Stopwatch.GetTimestamp() + 2 * Stopwatch.Frequency;
+            // The witness spans EventPipe arm/stop acknowledgments, not just the GC itself.
+            // Match the harness deadline; retain a hard cap above 20s of 100us sampling.
+            var deadline = Stopwatch.GetTimestamp() + 20 * Stopwatch.Frequency;
             GcReadiness.Log.Armed(request);
             while (Volatile.Read(ref _stop) == 0)
             {
