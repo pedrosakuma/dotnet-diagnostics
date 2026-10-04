@@ -31,6 +31,7 @@ public sealed class RequestsNowCollector : IRequestsNowCollector
 
     private readonly IThreadSnapshotInspector _threadSnapshotInspector;
     private readonly ILogger<RequestsNowCollector> _logger;
+    internal Action? RequestObserved { get; init; }
 
     public RequestsNowCollector(
         IThreadSnapshotInspector threadSnapshotInspector,
@@ -132,6 +133,7 @@ public sealed class RequestsNowCollector : IRequestsNowCollector
 
                     if (requestEvent.IsStart)
                     {
+                        RequestObserved?.Invoke();
                         requests[requestEvent.Key] = requestEvent.PendingRequest!;
                         if (!snapshotRequests.TryWrite(new SnapshotCaptureRequest(requestEvent.Key, requestEvent.PendingRequest!.ThreadId)))
                         {

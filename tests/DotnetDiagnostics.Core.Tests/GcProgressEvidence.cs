@@ -8,7 +8,7 @@ namespace DotnetDiagnostics.Core.Tests;
 internal sealed class GcProgressEvidence
 {
     internal const int MaxRequests = 8;
-    internal const int MaxSamples = 32_768;
+    internal const int MaxSamples = 262_144;
     private readonly object _gate = new();
     private readonly RequestState?[] _requests = new RequestState[MaxRequests];
     private readonly Dictionary<(int Clr, uint Count), CollectionState> _collections = [];

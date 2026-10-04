@@ -551,39 +551,67 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         runtimeConfig.Notes.Should().Contain(note => note.Contains("security boundary", StringComparison.OrdinalIgnoreCase));
     }
 
-    [Fact(Timeout = 60_000)]
-    public async Task RequestsNow_CapturesInFlightBadCodeSampleRequest()
+    [Theory(Timeout = 60_000)]
+    [InlineData(0)]
+    [InlineData(2200)]
+    public async Task RequestsNow_CapturesInFlightBadCodeSampleRequest(int requestDelayMilliseconds)
     {
         await using var sample = await LiveHttpSample.StartAsync("BadCodeSample", "/");
         using var http = new HttpClient
         {
             BaseAddress = new Uri(sample.BaseUrl),
-            Timeout = TimeSpan.FromSeconds(15),
+            Timeout = TimeSpan.FromSeconds(30),
         };
-        var collector = new RequestsNowCollector(new ClrMdThreadSnapshotInspector());
-
-        var driver = Task.Run(async () =>
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(35));
+        var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var collector = new RequestsNowCollector(new ClrMdThreadSnapshotInspector())
         {
-            await Task.Delay(TimeSpan.FromMilliseconds(1200));
-            using var response = await http.GetAsync("/slow-hang?seconds=5", CancellationToken.None);
+            RequestObserved = () => ready.TrySetResult(),
+        };
+        const string traceId = "0123456789abcdef0123456789abcdef";
+        var collection = collector.CollectAsync(
+            sample.ProcessId, TimeSpan.FromSeconds(10), topFrames: 8, cancellation.Token);
+        Task<HttpResponseMessage>? driver = null;
+        try
+        {
+            // Probe one session's subscription; do not retry the capture or the target workload.
+            for (var attempt = 0; attempt < 50 && !ready.Task.IsCompleted; attempt++)
+            {
+                using var probe = await http.GetAsync("/", cancellation.Token);
+                probe.EnsureSuccessStatusCode();
+                await Task.Delay(100, cancellation.Token);
+            }
+            ready.Task.IsCompletedSuccessfully.Should().BeTrue(
+                "the request subscription must be observed before starting the target request");
+            await Task.Delay(requestDelayMilliseconds, cancellation.Token);
+            collection.IsCompleted.Should().BeFalse("the target must start within the capture window");
+            using var requestMessage = new HttpRequestMessage(HttpMethod.Get, "/slow-hang?seconds=20");
+            requestMessage.Headers.TryAddWithoutValidation("traceparent", $"00-{traceId}-9999999999999999-01");
+            driver = http.SendAsync(requestMessage, cancellation.Token);
+            var snapshot = await collection;
+
+            var request = snapshot.Requests.Should().Contain(request =>
+                request.TraceId == traceId &&
+                request.ThreadId > 0 &&
+                request.TopFrames.Count > 0 &&
+                (request.Endpoint.Contains("slow-hang", StringComparison.OrdinalIgnoreCase) || request.Endpoint == "(unknown)"))
+                .Subject;
+            request.Method.Should().NotBeNullOrWhiteSpace();
+
+            using var response = await driver;
             response.EnsureSuccessStatusCode();
-        });
-
-        var snapshot = await collector.CollectAsync(
-            sample.ProcessId,
-            TimeSpan.FromSeconds(2),
-            topFrames: 8,
-            CancellationToken.None);
-
-        var request = snapshot.Requests.Should().Contain(request =>
-            request.ThreadId > 0 &&
-            request.TopFrames.Count > 0 &&
-            (request.Endpoint.Contains("slow-hang", StringComparison.OrdinalIgnoreCase) || request.Endpoint == "(unknown)"))
-            .Subject;
-        request.Method.Should().NotBeNullOrWhiteSpace();
-        request.TraceId.Should().NotBeNullOrWhiteSpace();
-
-        await driver;
+        }
+        finally
+        {
+            await cancellation.CancelAsync();
+            try { await collection; }
+            catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
+            if (driver is not null)
+            {
+                try { using var response = await driver; }
+                catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
+            }
+        }
     }
 
     [Fact(Timeout = 60_000)]

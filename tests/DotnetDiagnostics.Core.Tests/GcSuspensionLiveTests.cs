@@ -59,7 +59,9 @@ public sealed class GcSuspensionLiveTests(ITestOutputHelper output)
     [InlineData("net8.0")]
     [InlineData("net9.0")]
     [InlineData("net10.0")]
-    public async Task BlockingAndObservedBackground_HaveIndependentSuspensionEvidence(string framework)
+    [InlineData("net10.0", 2200)]
+    public async Task BlockingAndObservedBackground_HaveIndependentSuspensionEvidence(
+        string framework, int armDelayMilliseconds = 0)
     {
         await using var sample = await MultiVersionSampleProcess.StartAsync(framework, gcPauseWorkload: true);
         var progress = new GcProgressEvidence();
@@ -69,8 +71,9 @@ public sealed class GcSuspensionLiveTests(ITestOutputHelper output)
                 "DotnetDiagnostics.GcReadiness", System.Diagnostics.Tracing.EventLevel.Informational),
             ConfigureReadiness = progress.Attach,
         };
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
-        var capture = collector.CollectAsync(sample.ProcessId, TimeSpan.FromSeconds(8), cancellationToken: deadline.Token);
+        var duration = TimeSpan.FromSeconds(armDelayMilliseconds == 0 ? 8 : 12);
+        using var deadline = new CancellationTokenSource(duration + TimeSpan.FromSeconds(12));
+        var capture = collector.CollectAsync(sample.ProcessId, duration, cancellationToken: deadline.Token);
         GcSummary summary;
         try
         {
@@ -93,7 +96,8 @@ public sealed class GcSuspensionLiveTests(ITestOutputHelper output)
             try { await capture; }
             catch (OperationCanceledException) when (deadline.IsCancellationRequested) { }
         }
-        summary.Duration.Should().BeGreaterThan(TimeSpan.FromSeconds(7)).And.BeLessThan(TimeSpan.FromSeconds(15));
+        summary.Duration.Should().BeGreaterThan(duration - TimeSpan.FromSeconds(1))
+            .And.BeLessThan(duration + TimeSpan.FromSeconds(7));
         output.WriteLine($"{sample.RuntimeDescription}; {summary.MeasurementSummary}");
         output.WriteLine(System.Text.Json.JsonSerializer.Serialize(summary.Suspension));
         output.WriteLine(System.Text.Json.JsonSerializer.Serialize(summary.Events));
@@ -131,6 +135,8 @@ public sealed class GcSuspensionLiveTests(ITestOutputHelper output)
         {
             await sample.RequestGcAsync("arm");
             await progress.AcknowledgeArmAsync(request, deadline.Token);
+            if (request == 1 && armDelayMilliseconds > 0)
+                await Task.Delay(armDelayMilliseconds, deadline.Token);
             await sample.RequestGcAsync(kind);
             await progress.WaitForCollectionAsync(request, deadline.Token);
             await sample.RequestGcAsync("stop");
