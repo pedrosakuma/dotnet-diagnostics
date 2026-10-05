@@ -83,7 +83,9 @@ public static class DiagnosticCoreServiceRegistration
         services.AddSingleton<DotnetDiagnostics.Core.Preflight.IPreflightInspector, DotnetDiagnostics.Core.Preflight.PreflightInspector>();
         services.AddSingleton<ISessionTargetBindingStore, MemorySessionTargetBindingStore>();
         services.AddSingleton<IProcessContextResolver, ProcessContextResolver>();
-        services.AddSingleton<ICounterCollector, EventPipeCounterCollector>();
+        services.AddSingleton<EventPipeCounterCollector>();
+        services.AddSingleton<ICounterCollector>(provider => provider.GetRequiredService<EventPipeCounterCollector>());
+        services.AddSingleton<ICounterSessionFactory>(provider => provider.GetRequiredService<EventPipeCounterCollector>());
         services.AddSingleton(_ => new MvidReader(capacity: 128));
         services.AddSingleton<FileChunkReader>();
         services.AddSingleton<ClrMdMethodInstantiationEnricher>();

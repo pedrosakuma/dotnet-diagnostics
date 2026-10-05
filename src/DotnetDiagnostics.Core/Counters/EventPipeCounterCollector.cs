@@ -15,7 +15,7 @@ namespace DotnetDiagnostics.Core.Counters;
 /// Default <see cref="ICounterCollector"/> backed by an EventPipe session subscribed to
 /// EventCounter providers (defaults to <c>System.Runtime</c> and <c>Microsoft.AspNetCore.Hosting</c>).
 /// </summary>
-public sealed class EventPipeCounterCollector : ICounterCollector
+public sealed class EventPipeCounterCollector : ICounterCollector, ICounterSessionFactory
 {
     private const string MetricsProviderName = "System.Diagnostics.Metrics";
     private const long MetricsKeywords = 0x2;
@@ -68,8 +68,7 @@ public sealed class EventPipeCounterCollector : ICounterCollector
                 ["EventCounterIntervalSec"] = intervalSeconds.ToString(CultureInfo.InvariantCulture),
             };
 
-            eventPipeProviders.AddRange(providerNames
-                .Select(name => new EventPipeProvider(name, EventLevel.Verbose, (long)EventKeywords.All, counterArguments)));
+            eventPipeProviders.AddRange(CreateEventCounterProviders(providerNames, counterArguments));
         }
 
         string? metricsSessionId = null;
@@ -99,8 +98,7 @@ public sealed class EventPipeCounterCollector : ICounterCollector
                 ["EventCounterIntervalSec"] = intervalSeconds.ToString(CultureInfo.InvariantCulture),
             };
 
-            eventPipeProviders.AddRange(DefaultProviders
-                .Select(name => new EventPipeProvider(name, EventLevel.Verbose, (long)EventKeywords.All, counterArguments)));
+            eventPipeProviders.AddRange(CreateEventCounterProviders(DefaultProviders, counterArguments));
         }
 
         var client = new DiagnosticsClient(processId);
@@ -232,6 +230,79 @@ public sealed class EventPipeCounterCollector : ICounterCollector
             MaxCounters = maxCounterValues,
         };
     }
+
+    /// <inheritdoc />
+    public async Task<CounterSession> StartAsync(
+        int processId,
+        CounterSessionOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (processId <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(processId), "Process ID must be positive.");
+        }
+
+        options ??= new CounterSessionOptions();
+        if (options.IntervalSeconds < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "Interval must be >= 1 second.");
+        }
+
+        if (options.ObservationCapacity is < 1 or > CounterSessionOptions.MaxAllowedObservationCapacity)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                $"Observation capacity must be between 1 and {CounterSessionOptions.MaxAllowedObservationCapacity}.");
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var providerNames = options.Providers is { Count: > 0 } configuredProviders
+            ? configuredProviders.ToArray()
+            : DefaultProviders;
+        if (providerNames.Count > CounterSessionOptions.MaxAllowedProviderCount)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                $"Provider count must not exceed {CounterSessionOptions.MaxAllowedProviderCount}.");
+        }
+
+        if (providerNames.Any(static provider =>
+                string.IsNullOrWhiteSpace(provider)
+                || provider.Length > CounterSessionOptions.MaxProviderNameLength))
+        {
+            throw new ArgumentException(
+                $"Provider names must be non-empty and no longer than {CounterSessionOptions.MaxProviderNameLength} characters.",
+                nameof(options));
+        }
+
+        var counterArguments = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["EventCounterIntervalSec"] = options.IntervalSeconds.ToString(CultureInfo.InvariantCulture),
+        };
+        var providers = CreateEventCounterProviders(providerNames, counterArguments);
+        var session = await new DiagnosticsClient(processId)
+            .StartEventPipeSessionWithTimeoutAsync(
+                providers,
+                requestRundown: false,
+                circularBufferMB: 128,
+                TimeSpan.FromSeconds(30),
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        return new CounterSession(
+            processId,
+            session,
+            options.ObservationCapacity,
+            ex => _logger.LogDebug(ex, "Stopping EventPipe counter session for pid {Pid} failed.", processId),
+            cancellationToken);
+    }
+
+    private static IEnumerable<EventPipeProvider> CreateEventCounterProviders(
+        IEnumerable<string> providerNames,
+        IDictionary<string, string> counterArguments) =>
+        providerNames.Select(name =>
+            new EventPipeProvider(name, EventLevel.Verbose, (long)EventKeywords.All, counterArguments));
 
     internal static void ObserveCounter(CounterValue value,
         ConcurrentDictionary<string, CounterValue> latest,
@@ -514,7 +585,7 @@ public sealed class EventPipeCounterCollector : ICounterCollector
             value,
             (_, existing) => value.Value > existing.Value ? value : existing);
 
-    private static CounterValue? ExtractCounterPayload(TraceEvent traceEvent, out bool valueAvailable)
+    internal static CounterValue? ExtractCounterPayload(TraceEvent traceEvent, out bool valueAvailable)
     {
         valueAvailable = false;
         if (traceEvent.PayloadValue(0) is not IDictionary<string, object> outer)

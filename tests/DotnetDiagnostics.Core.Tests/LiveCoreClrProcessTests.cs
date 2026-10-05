@@ -332,6 +332,49 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         snapshot.ProcessorCount.Should().BeGreaterThan(0);
     }
 
+    [Fact(Timeout = 60_000)]
+    public async Task LiveCounterSession_StreamsSequencedUpdates_AndStopsCleanly()
+    {
+        EnsureSampleRunning();
+
+        using var ownerCancellation = new CancellationTokenSource();
+        await using var session = await new EventPipeCounterCollector().StartAsync(
+            Pid,
+            new CounterSessionOptions
+            {
+                Providers = ["System.Runtime"],
+                IntervalSeconds = 1,
+                ObservationCapacity = 32,
+            },
+            ownerCancellation.Token);
+        var observations = new List<CounterObservation>();
+
+        using var observationTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        await foreach (var observation in session.ReadAllAsync()
+                           .WithCancellation(observationTimeout.Token))
+        {
+            if (observation.Counter.Provider == "System.Runtime")
+            {
+                observations.Add(observation);
+                if (observations.Count == 2)
+                {
+                    break;
+                }
+            }
+        }
+
+        ownerCancellation.Cancel();
+        var completion = await session.Completion.WaitAsync(TimeSpan.FromSeconds(10));
+        (await session.StopAsync()).Should().Be(completion, "stop is idempotent after owner cancellation");
+
+        observations.Should().HaveCount(2);
+        observations.Select(observation => observation.Sequence)
+            .Should().BeInAscendingOrder();
+        completion.Status.Should().Be(CounterSessionStatus.Stopped);
+        completion.EndedAt.Should().BeOnOrAfter(completion.StartedAt);
+        completion.Error.Should().BeNull();
+    }
+
     [Fact(Timeout = 90_000)]
     public async Task Sweep_RunsAllCollectorsConcurrently_AndClassifies()
     {

@@ -27,6 +27,7 @@ public sealed class CliInvocationSafetyTests
             ["investigate"] = new() { Command = "investigate" },
             ["export-summary"] = new() { Command = "export-summary" },
             ["session"] = new() { Command = "session" },
+            ["stream"] = new() { Command = "stream", Kind = "counters" },
             ["completion"] = new() { Command = "completion" },
         };
 

@@ -1,0 +1,94 @@
+{
+  "name": "dotnet-diagnostics",
+  "displayName": ".NET Diagnostics",
+  "description": "Live runtime counters for .NET processes using dotnet-diagnostics-cli.",
+  "version": "0.1.0",
+  "publisher": "pedrosakuma",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "extensionKind": [
+    "workspace"
+  ],
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:dotnetDiagnostics.startCounters",
+    "onCommand:dotnetDiagnostics.stopCounters",
+    "onView:dotnetDiagnostics.actions"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "dotnetDiagnostics",
+          "title": ".NET Diagnostics",
+          "icon": "./resources/diagnostics.svg"
+        }
+      ]
+    },
+    "views": {
+      "dotnetDiagnostics": [
+        {
+          "id": "dotnetDiagnostics.actions",
+          "name": "Live Diagnostics"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "dotnetDiagnostics.actions",
+        "contents": "Start a live .NET runtime counters capture.\n[Start Live Counters](command:dotnetDiagnostics.startCounters)"
+      }
+    ],
+    "commands": [
+      {
+        "command": "dotnetDiagnostics.startCounters",
+        "title": ".NET Diagnostics: Start Live Counters"
+      },
+      {
+        "command": "dotnetDiagnostics.stopCounters",
+        "title": ".NET Diagnostics: Stop Live Counters"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "dotnetDiagnostics.startCounters",
+          "when": "view == dotnetDiagnostics.actions",
+          "group": "navigation"
+        },
+        {
+          "command": "dotnetDiagnostics.stopCounters",
+          "when": "view == dotnetDiagnostics.actions",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": ".NET Diagnostics",
+      "properties": {
+        "dotnetDiagnostics.cliPath": {
+          "type": "string",
+          "scope": "machine",
+          "default": "dotnet-diagnostics-cli",
+          "description": "Path to the installed dotnet-diagnostics-cli executable. The extension never installs or updates the tool."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "check": "tsc --noEmit -p .",
+    "test": "npm run compile && node --test tests/*.test.cjs",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.0",
+    "@types/vscode": "^1.96.0",
+    "typescript": "^5.7.2"
+  }
+}

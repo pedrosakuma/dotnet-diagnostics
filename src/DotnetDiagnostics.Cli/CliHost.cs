@@ -17,8 +17,8 @@ using Microsoft.Extensions.Logging.Console;
 namespace DotnetDiagnostics.Cli;
 
 /// <summary>
-/// The standalone <c>dotnet-diagnostics</c> CLI shell (issue #288). Runs one-shot diagnostic
-/// commands against the shared Core engine and exits — <b>no HTTP listener, no bearer token, no
+/// The standalone <c>dotnet-diagnostics</c> CLI shell (issue #288). Runs one-shot commands,
+/// a stateful REPL, or a versioned stdio stream against the shared Core engine — <b>no HTTP listener, no bearer token, no
 /// daemon, and (critically for the #283 seam) no reference to the MCP server assembly</b>. It
 /// composes the host-neutral Core service graph (<see cref="DiagnosticCoreServiceRegistration"/>,
 /// made public in #284) directly, binding <see cref="SecurityOptions"/> from configuration exactly
@@ -41,6 +41,35 @@ internal static class CliHost
     public static async Task<int> RunAsync(string[] args)
     {
         ArgumentNullException.ThrowIfNull(args);
+
+        if (args.Length > 0 && string.Equals(args[0], "stream", StringComparison.Ordinal))
+        {
+            using var streamCts = new CancellationTokenSource();
+            var streamCancelRequested = 0;
+            ConsoleCancelEventHandler streamHandler = (_, e) =>
+            {
+                if (Interlocked.Exchange(ref streamCancelRequested, 1) == 0)
+                {
+                    e.Cancel = true;
+                    streamCts.Cancel();
+                }
+            };
+
+            Console.CancelKeyPress += streamHandler;
+            try
+            {
+                return await RunAsync(
+                    args,
+                    Console.In,
+                    Console.Out,
+                    Console.Error,
+                    streamCts.Token).ConfigureAwait(false);
+            }
+            finally
+            {
+                Console.CancelKeyPress -= streamHandler;
+            }
+        }
 
         // The stateful `session` REPL owns its own Ctrl-C semantics (first Ctrl-C cancels only the
         // running command and keeps the session alive; an idle Ctrl-C exits the session), so we must
@@ -114,6 +143,17 @@ internal static class CliHost
         ArgumentNullException.ThrowIfNull(stdout);
         ArgumentNullException.ThrowIfNull(stderr);
         runtimeOptions ??= new CliRuntimeOptions();
+
+        if (args.Length > 0 && string.Equals(args[0], "stream", StringComparison.Ordinal))
+        {
+            return await CliStreamingProtocol.RunAsync(
+                args,
+                stdin,
+                stdout,
+                stderr,
+                () => BuildHost((IArtifactRootProvider?)null),
+                cancellationToken).ConfigureAwait(false);
+        }
 
         // Human summaries/hints are built in Core with `{x:F1}`/`{x:N0}` interpolation, which honours
         // the ambient culture (e.g. pt-BR renders `cpu-usage=0,0%`). Pin the invariant culture so the

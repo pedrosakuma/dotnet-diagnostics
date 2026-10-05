@@ -40,12 +40,23 @@ The supported entry points are the static **use-case** classes; each method retu
 | `ProcessDumpUseCases` | Write a process dump (Mini / Triage / WithHeap / Full). |
 | `ByteMaterializationUseCases` | Stream module (PE/PDB) or dump bytes. |
 | `MethodParameterCaptureUseCases` | Explicit dynamic-profiler capture of allowlisted method parameters on supported CoreCLR targets. |
+| `ICounterSessionFactory` / `CounterSession` | Start, consume, cancel, and stop a bounded live EventCounter stream; terminal status reports EventPipe loss and dropped observations. |
 
 Supporting types that are part of the facade because the use-cases return or accept them:
 
 - `DiagnosticResult` / `DiagnosticResult<T>`, `DiagnosticError`, `NextActionHint` — the result envelope.
 - The per-collector snapshot/result records returned by the use-cases (e.g. `CounterSnapshot`,
   `GcSummary`, `ContentionSnapshot`, …).
+
+Live counter sessions are separate from finite `EventCollectionUseCases` snapshots. A single reader
+receives increasing sequence numbers assigned before queue insertion, so it can detect gaps; the
+bounded queue (maximum capacity 16,384) drops new observations when full and reports the total in
+`CounterSessionCompletion`. Session options validate positive process IDs and intervals, cap provider
+lists at 64 names of at most 256 characters each, and reject queue capacities outside the documented
+bound before opening EventPipe.
+The live `CounterSession.DroppedObservations` property exposes the running count; observation
+sequence gaps also reveal losses before termination. Call `StopAsync` or cancel the token passed
+to `ICounterSessionFactory.StartAsync` to stop and drain the EventPipe session.
 
 ### Example
 

@@ -41,8 +41,9 @@
 
 ---
 
-The repo ships **three deliverables** on one shared Core capture engine. Start with the track
-you're using, then reach for the cross-cutting references.
+The repo ships **three NuGet deliverables** on one shared Core capture engine, plus a VS Code
+extension for interactive live counters. Start with the track you're using, then reach for the
+cross-cutting references.
 
 > **Instrumentation boundary.** Standard EventPipe and ClrMD diagnostics require no target
 > code changes or prior instrumentation. MCP-only
@@ -94,6 +95,12 @@ you're using, then reach for the cross-cutting references.
 | File | What it covers |
 |---|---|
 | [`cli-reference.md`](./cli-reference.md) | **Standalone `dotnet-diagnostics-cli`** — install, every command + flags, and the stateful `session` REPL (the human/script counterpart to the MCP server) |
+
+### VS Code extension
+
+| File | What it covers |
+|---|---|
+| [`../vscode-extension/README.md`](../vscode-extension/README.md) | Install prerequisites, configure the CLI executable, and use the live runtime-counters panel |
 
 ### BenchmarkDotNet diagnoser
 

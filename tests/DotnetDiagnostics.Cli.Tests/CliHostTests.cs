@@ -24,6 +24,7 @@ public sealed class CliHostTests
         stdout.Should().Contain("get-bytes");
         stdout.Should().Contain("compare");
         stdout.Should().Contain("completion");
+        stdout.Should().Contain("stream");
         stdout.Should().Contain("doctor");
         stdout.Should().Contain("Run 'dotnet-diagnostics-cli <command> --help'");
         stdout.Should().NotContain("collect options:");
@@ -241,6 +242,64 @@ public sealed class CliHostTests
         exit.Should().Be(2);
         stdout.ToString().Should().BeEmpty();
         stderr.ToString().Should().Contain("--watch is not supported by 'session'");
+    }
+
+    [Fact]
+    public async Task RunAsync_Stream_MalformedAndInvalidRequestsEmitOnlyJsonlFrames()
+    {
+        var stdin = new StringReader(
+            "{\"type\":\"hello\",\"protocolVersion\":1}\n" +
+            "{not-json}\n" +
+            "{\"type\":\"start\",\"requestId\":\"bad-pid\",\"processId\":0}\n" +
+            "{\"type\":\"start\",\"requestId\":\"oversized-buffer\",\"processId\":1,\"observationCapacity\":16385}\n");
+        var stdout = new StringWriter(new StringBuilder());
+        var stderr = new StringWriter(new StringBuilder());
+
+        var exit = await CliHost.RunAsync(
+            ["stream", "--protocol", "jsonl"],
+            stdin,
+            stdout,
+            stderr,
+            CancellationToken.None);
+
+        exit.Should().Be(0);
+        stderr.ToString().Should().BeEmpty();
+        var frames = stdout.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries)
+            .Select(line => JsonDocument.Parse(line))
+            .Select(document =>
+            {
+                var frame = document.RootElement.Clone();
+                document.Dispose();
+                return frame;
+            })
+            .ToArray();
+        frames.Should().HaveCount(4);
+        frames[0].GetProperty("type").GetString().Should().Be("hello");
+        frames[0].GetProperty("protocolVersion").GetInt32().Should().Be(1);
+        frames[1].GetProperty("code").GetString().Should().Be("malformed_json");
+        frames[2].GetProperty("code").GetString().Should().Be("invalid_start");
+        frames[3].GetProperty("code").GetString().Should().Be("invalid_start");
+    }
+
+    [Fact]
+    public async Task RunAsync_Stream_RejectsUnsupportedProtocolVersion()
+    {
+        var stdin = new StringReader("{\"type\":\"hello\",\"protocolVersion\":99}\n");
+        var stdout = new StringWriter(new StringBuilder());
+        var stderr = new StringWriter(new StringBuilder());
+
+        var exit = await CliHost.RunAsync(
+            ["stream", "--protocol", "jsonl"],
+            stdin,
+            stdout,
+            stderr,
+            CancellationToken.None);
+
+        exit.Should().Be(2);
+        stderr.ToString().Should().BeEmpty();
+        using var frame = JsonDocument.Parse(stdout.ToString());
+        frame.RootElement.GetProperty("code").GetString().Should().Be("protocol_version_unsupported");
+        frame.RootElement.GetProperty("supportedVersions")[0].GetInt32().Should().Be(1);
     }
 
     [Fact]
