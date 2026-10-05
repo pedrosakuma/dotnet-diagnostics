@@ -40,7 +40,8 @@ The supported entry points are the static **use-case** classes; each method retu
 | `ProcessDumpUseCases` | Write a process dump (Mini / Triage / WithHeap / Full). |
 | `ByteMaterializationUseCases` | Stream module (PE/PDB) or dump bytes. |
 | `MethodParameterCaptureUseCases` | Explicit dynamic-profiler capture of allowlisted method parameters on supported CoreCLR targets. |
-| `ICounterSessionFactory` / `CounterSession` | Start, consume, cancel, and stop a bounded live EventCounter stream; terminal status reports EventPipe loss and dropped observations. |
+| `IDiagnosticSession` / `ICounterSessionFactory` | Attach typed callbacks, start, cancel, and stop a bounded live EventCounter session; terminal status reports EventPipe loss and dropped observations. |
+| `ComposedDiagnosticSession` | Combine live sessions with finite captures behind one bounded, typed callback dispatcher. |
 
 Supporting types that are part of the facade because the use-cases return or accept them:
 
@@ -48,15 +49,52 @@ Supporting types that are part of the facade because the use-cases return or acc
 - The per-collector snapshot/result records returned by the use-cases (e.g. `CounterSnapshot`,
   `GcSummary`, `ContentionSnapshot`, …).
 
-Live counter sessions are separate from finite `EventCollectionUseCases` snapshots. A single reader
-receives increasing sequence numbers assigned before queue insertion, so it can detect gaps; the
-bounded queue (maximum capacity 16,384) drops new observations when full and reports the total in
-`CounterSessionCompletion`. Session options validate positive process IDs and intervals, cap provider
-lists at 64 names of at most 256 characters each, and reject queue capacities outside the documented
-bound before opening EventPipe.
-The live `CounterSession.DroppedObservations` property exposes the running count; observation
-sequence gaps also reveal losses before termination. Call `StopAsync` or cancel the token passed
-to `ICounterSessionFactory.StartAsync` to stop and drain the EventPipe session.
+Live counter sessions are separate from finite `EventCollectionUseCases` snapshots. Attach one or
+more typed handlers before starting; the Core dispatcher invokes matching callbacks serially in
+registration order. Event sequence numbers are assigned before bounded queue insertion, so gaps
+reveal drops; the queue (maximum capacity 16,384) drops new observations when full and reports the
+total in `DiagnosticSessionCompletion`. Session options validate positive process IDs and intervals,
+cap provider lists at 64 names of at most 256 characters each, and reject queue capacities outside
+the documented bound before opening EventPipe. The live
+`CounterSession.DroppedObservations` property exposes the running count. Use `StopAsync`,
+`DisposeAsync`, or the cancellation token passed to `StartAsync` to stop and drain the session.
+
+```csharp
+await using var session = counterSessions.CreateSession(processId);
+using var subscription = session.Attach<CounterObservation>((observation, cancellationToken) =>
+{
+    Console.WriteLine($"{observation.Sequence}: {observation.Counter.Name}={observation.Counter.Value}");
+    return ValueTask.CompletedTask;
+});
+
+await session.StartAsync(cancellationToken);
+var completion = await session.Completion;
+```
+
+`IDiagnosticSession` is the common lifecycle and typed event attachment contract. Event-specific
+session factories can publish additional `DiagnosticSessionEvent` record types without changing
+existing finite collector APIs. Live counters and the `IStreaming*Collector` interfaces for
+exceptions, activities, monitor contention, GC, logs, and JIT publish typed observations incrementally;
+other capture families are not yet streamed. Stopping cancels capture
+producers; callbacks continue draining the bounded queue. The callback cancellation token is
+canceled if handler delivery exceeds the shutdown wait budget.
+
+Use `ComposedDiagnosticSession` when one consumer needs multiple capture families in one lifecycle.
+Add live sessions with `AddSession`; add existing finite collector/use-case calls with
+`AddCapture`. Each finite operation publishes exactly one
+`DiagnosticSessionCaptureResult<TCapture>` event containing its statically typed result. For
+windowed collectors that expose observations, use `AddStreamingCapture`: it publishes each typed
+observation as a `DiagnosticSessionObservation<TObservation>` and then the same typed terminal
+result. Point-in-time operations remain a single result event. Capture operations run concurrently,
+and all events share the composed session's bounded queue and monotonic sequence. Collectors with
+multiple observation types can use `AddEventCapture` and publish each type as its own
+`DiagnosticSessionEvent`.
+
+For example, attach a `CounterObservation` handler and a
+`DiagnosticSessionObservation<ManagedExceptionEvent>` handler, add the live counter session with
+`AddSession`, and add `IStreamingExceptionCollector.CollectStreamingAsync` with `AddStreamingCapture`. Both
+capture families then share one start/stop lifecycle and callback queue; the exception snapshot is
+also delivered as a `DiagnosticSessionCaptureResult<ExceptionSnapshot>`.
 
 ### Example
 

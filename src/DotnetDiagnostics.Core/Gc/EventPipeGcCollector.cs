@@ -13,7 +13,7 @@ namespace DotnetDiagnostics.Core.Gc;
 /// runtime GC keyword (0x1) on <c>Microsoft-Windows-DotNETRuntime</c>. Pairs
 /// GCStart/GCStop for collection elapsed; separate suspend/restart events measure runtime suspension.
 /// </summary>
-public sealed class EventPipeGcCollector : IGcCollector
+public sealed class EventPipeGcCollector : IGcCollector, IStreamingGcCollector
 {
     private const string RuntimeProvider = "Microsoft-Windows-DotNETRuntime";
     private const long GcKeyword = 0x1;
@@ -28,11 +28,33 @@ public sealed class EventPipeGcCollector : IGcCollector
         _logger = logger ?? NullLogger<EventPipeGcCollector>.Instance;
     }
 
-    public async Task<GcSummary> CollectAsync(
+    public Task<GcSummary> CollectAsync(
         int processId,
         TimeSpan duration,
         int maxEvents = 200,
         CancellationToken cancellationToken = default)
+        => CollectCoreAsync(processId, duration, maxEvents, null, null, cancellationToken);
+
+    public Task<GcSummary> CollectStreamingAsync(
+        int processId,
+        TimeSpan duration,
+        Action<GcEvent> onCollection,
+        Action<GcHeapStatsSample> onHeapSample,
+        int maxEvents = 200,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(onCollection);
+        ArgumentNullException.ThrowIfNull(onHeapSample);
+        return CollectCoreAsync(processId, duration, maxEvents, onCollection, onHeapSample, cancellationToken);
+    }
+
+    private async Task<GcSummary> CollectCoreAsync(
+        int processId,
+        TimeSpan duration,
+        int maxEvents,
+        Action<GcEvent>? onCollection,
+        Action<GcHeapStatsSample>? onHeapSample,
+        CancellationToken cancellationToken)
     {
         if (duration <= TimeSpan.Zero)
         {
@@ -61,7 +83,7 @@ public sealed class EventPipeGcCollector : IGcCollector
         // EventPipeEventSource invokes these callbacks on the single source.Process() thread, so
         // plain collections are sufficient and avoid unnecessary synchronization on the hot path.
         var recording = CaptureRecordingContext.Current;
-        var state = new GcCaptureState(maxEvents, recording);
+        var state = new GcCaptureState(maxEvents, recording, onCollection);
         var aggregation = state.Collections;
         var heapStats = new List<GcHeapStatsSample>(Math.Min(maxEvents, 128));
         var droppedHeapStats = 0;
@@ -99,12 +121,6 @@ public sealed class EventPipeGcCollector : IGcCollector
 
                 source.Clr.GCHeapStats += traceEvent =>
                 {
-                    if (heapStats.Count >= maxEvents && recording is null)
-                    {
-                        if (droppedHeapStats < int.MaxValue) droppedHeapStats++;
-                        return;
-                    }
-
                     var sample = new GcHeapStatsSample(
                         Timestamp: new DateTimeOffset(traceEvent.TimeStamp.ToUniversalTime(), TimeSpan.Zero),
                         Gen0SizeBytes: traceEvent.GenerationSize0,
@@ -121,7 +137,7 @@ public sealed class EventPipeGcCollector : IGcCollector
                         PinnedObjectCount: traceEvent.PinnedObjectCount,
                         GcHandleCount: traceEvent.GCHandleCount);
                     RecordHeapSample(sample, traceEvent.Version, traceEvent.ClrInstanceID, heapStats, maxEvents,
-                        ref droppedHeapStats, recording);
+                        ref droppedHeapStats, recording, onHeapSample);
                 };
             },
             ex =>
@@ -160,9 +176,11 @@ public sealed class EventPipeGcCollector : IGcCollector
     }
 
     internal static void RecordHeapSample(GcHeapStatsSample sample, int version, int clrInstanceId,
-        List<GcHeapStatsSample> retained, int maxEvents, ref int dropped, ICaptureObservationSink? sink)
+        List<GcHeapStatsSample> retained, int maxEvents, ref int dropped, ICaptureObservationSink? sink,
+        Action<GcHeapStatsSample>? onObservation = null)
     {
         if (sink is not null) RuntimeObservationProjection.Heap(sink, sample, version, clrInstanceId);
+        onObservation?.Invoke(sample);
         if (retained.Count < maxEvents) retained.Add(sample);
         else if (dropped < int.MaxValue) dropped++;
     }
@@ -180,13 +198,16 @@ internal sealed class GcEventAggregation
     private long _totalPauseTicks;
     private long _maxPauseTicks;
     private readonly ICaptureObservationSink? _sink;
+    private readonly Action<GcEvent>? _onObservation;
 
-    public GcEventAggregation(int maxEvents, ICaptureObservationSink? sink = null)
+    public GcEventAggregation(int maxEvents, ICaptureObservationSink? sink = null,
+        Action<GcEvent>? onObservation = null)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(maxEvents, 1);
         _maxEvents = maxEvents;
         _events = new List<GcEvent>(Math.Min(maxEvents, 128));
         _sink = sink;
+        _onObservation = onObservation;
     }
 
     public long ObservedCollections { get; private set; }
@@ -209,6 +230,7 @@ internal sealed class GcEventAggregation
     public void Add(GcEvent gcEvent)
     {
         if (_sink is not null) RuntimeObservationProjection.Collection(_sink, gcEvent);
+        _onObservation?.Invoke(gcEvent);
         if (ObservedCollections < long.MaxValue) ObservedCollections++;
         _totalPauseTicks = gcEvent.PauseDuration.Ticks > long.MaxValue - _totalPauseTicks
             ? long.MaxValue : _totalPauseTicks + gcEvent.PauseDuration.Ticks;

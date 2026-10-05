@@ -12,3 +12,15 @@ public interface IGcCollector
         int maxEvents = 200,
         CancellationToken cancellationToken = default);
 }
+
+/// <summary>Collects GC events and heap samples while publishing each observation incrementally.</summary>
+public interface IStreamingGcCollector
+{
+    Task<GcSummary> CollectStreamingAsync(
+        int processId,
+        TimeSpan duration,
+        Action<GcEvent> onCollection,
+        Action<GcHeapStatsSample> onHeapSample,
+        int maxEvents = 200,
+        CancellationToken cancellationToken = default);
+}

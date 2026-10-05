@@ -106,17 +106,41 @@ public static class DiagnosticCoreServiceRegistration
         services.AddSingleton<DotnetDiagnostics.Core.NativeLockContention.PerfNativeLockContentionSampler>();
         services.AddSingleton<DotnetDiagnostics.Core.NativeLockContention.WindowsNativeLockContentionSampler>();
         services.AddSingleton<DotnetDiagnostics.Core.NativeLockContention.INativeLockContentionSampler, DotnetDiagnostics.Core.NativeLockContention.RoutingNativeLockContentionSampler>();
-        services.AddSingleton<IExceptionCollector, EventPipeExceptionCollector>();
-        services.AddSingleton<IGcCollector, EventPipeGcCollector>();
+        services.AddSingleton<EventPipeExceptionCollector>();
+        services.AddSingleton<IExceptionCollector>(serviceProvider =>
+            serviceProvider.GetRequiredService<EventPipeExceptionCollector>());
+        services.AddSingleton<IStreamingExceptionCollector>(serviceProvider =>
+            serviceProvider.GetRequiredService<EventPipeExceptionCollector>());
+        services.AddSingleton<EventPipeGcCollector>();
+        services.AddSingleton<IGcCollector>(serviceProvider =>
+            serviceProvider.GetRequiredService<EventPipeGcCollector>());
+        services.AddSingleton<IStreamingGcCollector>(serviceProvider =>
+            serviceProvider.GetRequiredService<EventPipeGcCollector>());
         services.AddSingleton<IGcDatasCollector, EventPipeGcDatasCollector>();
         services.AddSingleton<IEventSourceCollector, EventPipeEventSourceCollector>();
         services.AddSingleton<IEventCatalogCollector, EventPipeEventCatalogCollector>();
-        services.AddSingleton<IActivityCollector, EventPipeActivityCollector>();
-        services.AddSingleton<ILogCollector, EventPipeLogCollector>();
+        services.AddSingleton<EventPipeActivityCollector>();
+        services.AddSingleton<IActivityCollector>(serviceProvider =>
+            serviceProvider.GetRequiredService<EventPipeActivityCollector>());
+        services.AddSingleton<IStreamingActivityCollector>(serviceProvider =>
+            serviceProvider.GetRequiredService<EventPipeActivityCollector>());
+        services.AddSingleton<EventPipeLogCollector>();
+        services.AddSingleton<ILogCollector>(serviceProvider =>
+            serviceProvider.GetRequiredService<EventPipeLogCollector>());
+        services.AddSingleton<IStreamingLogCollector>(serviceProvider =>
+            serviceProvider.GetRequiredService<EventPipeLogCollector>());
         services.AddSingleton<ICrashGuardCollector, EventPipeCrashGuardCollector>();
-        services.AddSingleton<IJitCollector, EventPipeJitCollector>();
+        services.AddSingleton<EventPipeJitCollector>();
+        services.AddSingleton<IJitCollector>(serviceProvider =>
+            serviceProvider.GetRequiredService<EventPipeJitCollector>());
+        services.AddSingleton<IStreamingJitCollector>(serviceProvider =>
+            serviceProvider.GetRequiredService<EventPipeJitCollector>());
         services.AddSingleton<IThreadPoolCollector, EventPipeThreadPoolCollector>();
-        services.AddSingleton<IContentionCollector, EventPipeContentionCollector>();
+        services.AddSingleton<EventPipeContentionCollector>();
+        services.AddSingleton<IContentionCollector>(serviceProvider =>
+            serviceProvider.GetRequiredService<EventPipeContentionCollector>());
+        services.AddSingleton<IStreamingContentionCollector>(serviceProvider =>
+            serviceProvider.GetRequiredService<EventPipeContentionCollector>());
         services.AddSingleton<IDbCollector, EventPipeDbCollector>();
         services.AddSingleton<IKestrelCollector, EventPipeKestrelCollector>();
         services.AddSingleton<IInFlightRequestCollector, EventPipeInFlightRequestCollector>();

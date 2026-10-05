@@ -121,9 +121,9 @@ internal static class CliStreamingProtocol
                             break;
 
                         case "start":
-                            if (activeSession is { PumpTask.IsCompleted: true })
+                            if (activeSession is not null && activeSession.Session.Completion.IsCompleted)
                             {
-                                await activeSession.PumpTask.ConfigureAwait(false);
+                                await activeSession.TerminalTask.ConfigureAwait(false);
                                 activeSession = null;
                             }
 
@@ -165,19 +165,30 @@ internal static class CliStreamingProtocol
 
                             try
                             {
-                                var session = await factory.StartAsync(
+                                var session = factory.CreateSession(
                                     request.ProcessId,
-                                    request.Options,
-                                    cancellationToken).ConfigureAwait(false);
-                                activeSession = new ActiveSession(session, Guid.NewGuid().ToString("N"), writer);
-                                await writer.WriteAsync(new
+                                    request.Options);
+                                var candidate = new ActiveSession(session, Guid.NewGuid().ToString("N"), writer);
+                                try
                                 {
-                                    type = "started",
-                                    requestId = request.RequestId,
-                                    sessionId = activeSession.SessionId,
-                                    processId = session.ProcessId,
-                                }, cancellationToken).ConfigureAwait(false);
-                                activeSession.StartPump();
+                                    await candidate.StartAsync(cancellationToken).ConfigureAwait(false);
+                                    activeSession = candidate;
+                                    await writer.WriteAsync(new
+                                    {
+                                        type = "started",
+                                        requestId = request.RequestId,
+                                        sessionId = activeSession.SessionId,
+                                        processId = session.ProcessId,
+                                    }, cancellationToken).ConfigureAwait(false);
+                                    candidate.AllowEvents();
+                                    candidate.StartTerminalPump();
+                                }
+                                catch
+                                {
+                                    candidate.AllowEvents();
+                                    await session.DisposeAsync().ConfigureAwait(false);
+                                    throw;
+                                }
                             }
                             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                             {
@@ -241,7 +252,7 @@ internal static class CliStreamingProtocol
     private static async Task StopAndDrainAsync(ActiveSession activeSession)
     {
         await activeSession.Session.StopAsync().ConfigureAwait(false);
-        await activeSession.PumpTask.ConfigureAwait(false);
+        await activeSession.TerminalTask.ConfigureAwait(false);
     }
 
     private static async Task WriteErrorAsync(ProtocolWriter writer, string code, string message) =>
@@ -351,16 +362,19 @@ and observationCapacity. Send stop or cancel with the returned sessionId.
 
     private sealed class ActiveSession(CounterSession session, string sessionId, ProtocolWriter writer)
     {
+        private readonly TaskCompletionSource _eventsAllowed =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private IDisposable? _counterSubscription;
+
         public CounterSession Session { get; } = session;
         public string SessionId { get; } = sessionId;
-        public Task PumpTask { get; private set; } = Task.CompletedTask;
+        public Task TerminalTask { get; private set; } = Task.CompletedTask;
 
-        public void StartPump() => PumpTask = PumpAsync();
-
-        private async Task PumpAsync()
+        public async Task StartAsync(CancellationToken cancellationToken)
         {
-            await foreach (var observation in Session.ReadAllAsync().ConfigureAwait(false))
+            _counterSubscription = Session.Attach<CounterObservation>(async (observation, _) =>
             {
+                await _eventsAllowed.Task.ConfigureAwait(false);
                 await writer.WriteAsync(new
                 {
                     type = "observation",
@@ -369,9 +383,18 @@ and observationCapacity. Send stop or cancel with the returned sessionId.
                     observation.Timestamp,
                     counter = observation.Counter,
                 }, CancellationToken.None).ConfigureAwait(false);
-            }
+            });
+            await Session.StartAsync(cancellationToken).ConfigureAwait(false);
+        }
 
+        public void AllowEvents() => _eventsAllowed.TrySetResult();
+
+        public void StartTerminalPump() => TerminalTask = PublishTerminalWhenCompleteAsync();
+
+        private async Task PublishTerminalWhenCompleteAsync()
+        {
             var completion = await Session.Completion.ConfigureAwait(false);
+            await _eventsAllowed.Task.ConfigureAwait(false);
             await writer.WriteAsync(new
             {
                 type = "terminal",
@@ -383,6 +406,7 @@ and observationCapacity. Send stop or cancel with the returned sessionId.
                 completion.DroppedObservations,
                 error = completion.Error?.Message,
             }, CancellationToken.None).ConfigureAwait(false);
+            _counterSubscription?.Dispose();
         }
     }
 

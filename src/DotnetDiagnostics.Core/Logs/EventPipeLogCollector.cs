@@ -13,7 +13,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace DotnetDiagnostics.Core.Logs;
 
-public sealed partial class EventPipeLogCollector : ILogCollector
+public sealed partial class EventPipeLogCollector : ILogCollector, IStreamingLogCollector
 {
     private const string ProviderName = "Microsoft-Extensions-Logging";
     private const long FormattedMessageKeyword = 0x4;
@@ -32,7 +32,7 @@ public sealed partial class EventPipeLogCollector : ILogCollector
         _logger = logger ?? NullLogger<EventPipeLogCollector>.Instance;
     }
 
-    public async Task<LogSnapshot> CollectAsync(
+    public Task<LogSnapshot> CollectAsync(
         int processId,
         TimeSpan duration,
         IReadOnlyList<string>? categories = null,
@@ -41,6 +41,35 @@ public sealed partial class EventPipeLogCollector : ILogCollector
         int maxMessageBytes = 4096,
         bool includeJsonPayload = false,
         CancellationToken cancellationToken = default)
+        => CollectCoreAsync(processId, duration, null, categories, minLevel, maxEvents,
+            maxMessageBytes, includeJsonPayload, cancellationToken);
+
+    public Task<LogSnapshot> CollectStreamingAsync(
+        int processId,
+        TimeSpan duration,
+        Action<LogEntry> onObservation,
+        IReadOnlyList<string>? categories = null,
+        LogLevel minLevel = LogLevel.Information,
+        int maxEvents = 500,
+        int maxMessageBytes = 4096,
+        bool includeJsonPayload = false,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(onObservation);
+        return CollectCoreAsync(processId, duration, onObservation, categories, minLevel, maxEvents,
+            maxMessageBytes, includeJsonPayload, cancellationToken);
+    }
+
+    private async Task<LogSnapshot> CollectCoreAsync(
+        int processId,
+        TimeSpan duration,
+        Action<LogEntry>? onObservation,
+        IReadOnlyList<string>? categories,
+        LogLevel minLevel,
+        int maxEvents,
+        int maxMessageBytes,
+        bool includeJsonPayload,
+        CancellationToken cancellationToken)
     {
         if (duration <= TimeSpan.Zero)
         {
@@ -116,7 +145,7 @@ public sealed partial class EventPipeLogCollector : ILogCollector
                                 return;
                             }
 
-                            RecordLogEntry(entry, false, ref lastEntry, recent, maxEvents, ref truncated, recording);
+                            RecordLogEntry(entry, false, ref lastEntry, recent, maxEvents, ref truncated, recording, onObservation);
                             totalEvents++;
                             levelCounts[(int)entry.Level]++;
                             AddCategory(categoryCounts, entry.Category, entry.Level);
@@ -129,7 +158,7 @@ public sealed partial class EventPipeLogCollector : ILogCollector
                                 return;
                             }
 
-                            if (!RecordLogEntry(entry, true, ref lastEntry, recent, maxEvents, ref truncated, recording))
+                            if (!RecordLogEntry(entry, true, ref lastEntry, recent, maxEvents, ref truncated, recording, onObservation))
                                 return;
                             totalEvents++;
                             levelCounts[(int)entry.Level]++;
@@ -150,7 +179,7 @@ public sealed partial class EventPipeLogCollector : ILogCollector
             {
                 // MessageJson may enrich the preceding formatted entry. Flush only after that
                 // pairing opportunity, including the final entry when processing fails.
-                FlushLogEntry(recording, lastEntry);
+                FlushLogEntry(recording, lastEntry, onObservation);
                 EventPipeCollectionRunner.ReportSourceLoss(recording, sourceLoss);
             }
         }, cancellationToken);
@@ -325,7 +354,8 @@ public sealed partial class EventPipeLogCollector : ILogCollector
     }
 
     internal bool RecordLogEntry(MutableLogEntry entry, bool isJson, ref MutableLogEntry? lastEntry,
-        Queue<MutableLogEntry> recent, int maxEvents, ref bool truncated, ICaptureObservationSink? recording)
+        Queue<MutableLogEntry> recent, int maxEvents, ref bool truncated, ICaptureObservationSink? recording,
+        Action<LogEntry>? onObservation = null)
     {
         if (isJson && lastEntry is not null && lastEntry.Matches(entry))
         {
@@ -334,16 +364,19 @@ public sealed partial class EventPipeLogCollector : ILogCollector
             if (entry.Scopes.Count > 0) lastEntry.Scopes = entry.Scopes;
             return false;
         }
-        FlushLogEntry(recording, lastEntry);
+        FlushLogEntry(recording, lastEntry, onObservation);
         AppendRecent(recent, entry, maxEvents, ref truncated);
         lastEntry = entry;
         return true;
     }
 
-    internal void FlushLogEntry(ICaptureObservationSink? recording, MutableLogEntry? entry)
+    internal void FlushLogEntry(ICaptureObservationSink? recording, MutableLogEntry? entry,
+        Action<LogEntry>? onObservation = null)
     {
         if (recording is not null && entry is not null)
             RuntimeObservationProjection.Log(recording, entry, _redactor);
+        if (entry is not null)
+            onObservation?.Invoke(entry.ToRecord());
     }
 
     private static void AddCategory(Dictionary<string, CategoryAccumulator> categoryCounts, string category, LogLevel level)

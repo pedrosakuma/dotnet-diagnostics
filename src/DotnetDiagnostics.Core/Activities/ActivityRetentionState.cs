@@ -14,9 +14,11 @@ internal sealed class ActivityRetentionState
     private int _dropped;
     private readonly ICaptureObservationSink? _sink;
     private readonly SensitiveDataRedactor? _redactor;
+    private readonly Action<CapturedActivity>? _onObservation;
 
     internal ActivityRetentionState(int maxActivities, string? traceId, int maxMatchedActivities,
-        ICaptureObservationSink? sink = null, SensitiveDataRedactor? redactor = null)
+        ICaptureObservationSink? sink = null, SensitiveDataRedactor? redactor = null,
+        Action<CapturedActivity>? onObservation = null)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(maxActivities, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(maxMatchedActivities, 1);
@@ -34,6 +36,7 @@ internal sealed class ActivityRetentionState
         _activities = new List<CapturedActivity>(Math.Min(_cap, 256));
         _sink = sink;
         _redactor = sink is null ? null : redactor ?? new SensitiveDataRedactor();
+        _onObservation = onObservation;
     }
 
     internal IReadOnlyList<CapturedActivity> Activities => _activities;
@@ -51,6 +54,7 @@ internal sealed class ActivityRetentionState
 
         _matching++;
         if (_sink is not null) RuntimeObservationProjection.Activity(_sink, activity, _redactor!, observedStopAt, hasStartTime);
+        _onObservation?.Invoke(activity);
         if (_activities.Count < _cap)
         {
             _activities.Add(activity);

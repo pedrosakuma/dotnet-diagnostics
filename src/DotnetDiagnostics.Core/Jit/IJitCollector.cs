@@ -10,3 +10,13 @@ public interface IJitCollector
         TimeSpan duration,
         CancellationToken cancellationToken = default);
 }
+
+/// <summary>Collects JIT activity while publishing each completed compilation incrementally.</summary>
+public interface IStreamingJitCollector
+{
+    Task<JitSnapshot> CollectStreamingAsync(
+        int processId,
+        TimeSpan duration,
+        Action<JitCompilationObservation> onObservation,
+        CancellationToken cancellationToken = default);
+}

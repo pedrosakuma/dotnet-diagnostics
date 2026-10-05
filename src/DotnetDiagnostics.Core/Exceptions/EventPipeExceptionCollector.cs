@@ -14,7 +14,7 @@ namespace DotnetDiagnostics.Core.Exceptions;
 /// Default <see cref="IExceptionCollector"/> backed by an EventPipe session subscribed to the
 /// runtime Exception keyword (0x8000) on <c>Microsoft-Windows-DotNETRuntime</c>.
 /// </summary>
-public sealed class EventPipeExceptionCollector : IExceptionCollector
+public sealed class EventPipeExceptionCollector : IExceptionCollector, IStreamingExceptionCollector
 {
     private const string RuntimeProvider = "Microsoft-Windows-DotNETRuntime";
     private const long ExceptionKeyword = 0x8000;
@@ -26,11 +26,30 @@ public sealed class EventPipeExceptionCollector : IExceptionCollector
         _logger = logger ?? NullLogger<EventPipeExceptionCollector>.Instance;
     }
 
-    public async Task<ExceptionSnapshot> CollectAsync(
+    public Task<ExceptionSnapshot> CollectAsync(
         int processId,
         TimeSpan duration,
         int maxRecent = 100,
         CancellationToken cancellationToken = default)
+        => CollectCoreAsync(processId, duration, maxRecent, null, cancellationToken);
+
+    public Task<ExceptionSnapshot> CollectStreamingAsync(
+        int processId,
+        TimeSpan duration,
+        Action<ManagedExceptionEvent> onObservation,
+        int maxRecent = 100,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(onObservation);
+        return CollectCoreAsync(processId, duration, maxRecent, onObservation, cancellationToken);
+    }
+
+    private async Task<ExceptionSnapshot> CollectCoreAsync(
+        int processId,
+        TimeSpan duration,
+        int maxRecent,
+        Action<ManagedExceptionEvent>? onObservation,
+        CancellationToken cancellationToken)
     {
         if (duration <= TimeSpan.Zero)
         {
@@ -72,7 +91,7 @@ public sealed class EventPipeExceptionCollector : IExceptionCollector
                     total++;
                     RecordException(traceEvent.TimeStamp, traceEvent.ThreadID,
                         traceEvent.ExceptionType, traceEvent.ExceptionMessage, traceEvent.ExceptionHRESULT,
-                        recent, counts, maxRecent, recording, redactor);
+                        recent, counts, maxRecent, recording, redactor, onObservation);
                 };
 
                 source.Process();
@@ -118,15 +137,18 @@ public sealed class EventPipeExceptionCollector : IExceptionCollector
 
     internal static void RecordException(DateTime timestamp, int threadId, string? type, string? message, int hresult,
         List<ManagedExceptionEvent> recent, Dictionary<string, int> counts, int maxRecent,
-        ICaptureObservationSink? recording, SensitiveDataRedactor? redactor)
+        ICaptureObservationSink? recording, SensitiveDataRedactor? redactor,
+        Action<ManagedExceptionEvent>? onObservation = null)
     {
         var key = type ?? "(unknown)";
         counts[key] = counts.TryGetValue(key, out var current) ? current + 1 : 1;
         if (recording is not null)
             RuntimeObservationProjection.Exception(recording, new DateTimeOffset(timestamp.ToUniversalTime()),
                 threadId, type, message, hresult, redactor!);
+        var observation = new ManagedExceptionEvent(new DateTimeOffset(timestamp.ToUniversalTime()), key,
+            message ?? string.Empty, "0x" + hresult.ToString("X", CultureInfo.InvariantCulture), threadId);
+        onObservation?.Invoke(observation);
         if (recent.Count < maxRecent)
-            recent.Add(new ManagedExceptionEvent(new DateTimeOffset(timestamp.ToUniversalTime()), key,
-                message ?? string.Empty, "0x" + hresult.ToString("X", CultureInfo.InvariantCulture), threadId));
+            recent.Add(observation);
     }
 }

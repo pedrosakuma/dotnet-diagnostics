@@ -338,39 +338,66 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         EnsureSampleRunning();
 
         using var ownerCancellation = new CancellationTokenSource();
-        await using var session = await new EventPipeCounterCollector().StartAsync(
+        await using var session = new EventPipeCounterCollector().CreateSession(
             Pid,
             new CounterSessionOptions
             {
                 Providers = ["System.Runtime"],
                 IntervalSeconds = 1,
                 ObservationCapacity = 32,
-            },
-            ownerCancellation.Token);
+            });
         var observations = new List<CounterObservation>();
+        var receivedTwo = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var baseEventSequences = new List<long>();
+        var callbackOrder = new List<string>();
+        var callbackCancellationObserved = false;
+        using var counterSubscription = session.Attach<CounterObservation>((observation, cancellationToken) =>
+        {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                callbackCancellationObserved = true;
+            }
+
+            observations.Add(observation);
+            callbackOrder.Add($"counter:{observation.Sequence}");
+            return ValueTask.CompletedTask;
+        });
+        using var baseEventSubscription = session.Attach<DiagnosticSessionEvent>((sessionEvent, cancellationToken) =>
+        {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                callbackCancellationObserved = true;
+            }
+
+            baseEventSequences.Add(sessionEvent.Sequence);
+            callbackOrder.Add($"base:{sessionEvent.Sequence}");
+            if (baseEventSequences.Count == 2)
+            {
+                receivedTwo.TrySetResult();
+                ownerCancellation.Cancel();
+            }
+
+            return ValueTask.CompletedTask;
+        });
+        await session.StartAsync(ownerCancellation.Token);
 
         using var observationTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-        await foreach (var observation in session.ReadAllAsync()
-                           .WithCancellation(observationTimeout.Token))
-        {
-            if (observation.Counter.Provider == "System.Runtime")
-            {
-                observations.Add(observation);
-                if (observations.Count == 2)
-                {
-                    break;
-                }
-            }
-        }
+        await receivedTwo.Task.WaitAsync(observationTimeout.Token);
 
-        ownerCancellation.Cancel();
         var completion = await session.Completion.WaitAsync(TimeSpan.FromSeconds(10));
         (await session.StopAsync()).Should().Be(completion, "stop is idempotent after owner cancellation");
 
-        observations.Should().HaveCount(2);
-        observations.Select(observation => observation.Sequence)
-            .Should().BeInAscendingOrder();
-        completion.Status.Should().Be(CounterSessionStatus.Stopped);
+        observations.Should().NotBeEmpty();
+        baseEventSequences.Should().Equal(observations.Select(observation => observation.Sequence));
+        callbackOrder.Should().HaveCount(observations.Count * 2);
+        callbackCancellationObserved.Should().BeFalse("stopping cancels producers but allows queued callbacks to drain");
+        for (var index = 0; index < observations.Count; index++)
+        {
+            var sequence = observations[index].Sequence;
+            callbackOrder[index * 2].Should().Be($"counter:{sequence}");
+            callbackOrder[(index * 2) + 1].Should().Be($"base:{sequence}");
+        }
+        completion.Status.Should().Be(DiagnosticSessionStatus.Stopped);
         completion.EndedAt.Should().BeOnOrAfter(completion.StartedAt);
         completion.Error.Should().BeNull();
     }

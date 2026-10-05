@@ -193,16 +193,18 @@ public sealed class RuntimeCaptureObservationTests
         var counts = new Dictionary<string, int>();
         var baselineRecent = new List<ManagedExceptionEvent>();
         var baselineCounts = new Dictionary<string, int>();
+        var streamed = new List<ManagedExceptionEvent>();
         var redactor = new SensitiveDataRedactor();
         string?[] messages = ["订单 🧪 Password=secret", null, "unique-λ"];
         foreach (var message in messages)
         {
             EventPipeExceptionCollector.RecordException(Start.UtcDateTime, 42, "例外", message, -123,
-                recent, counts, 1, sink, redactor);
+                recent, counts, 1, sink, redactor, streamed.Add);
             EventPipeExceptionCollector.RecordException(Start.UtcDateTime, 42, "例外", message, -123,
                 baselineRecent, baselineCounts, 1, null, null);
         }
         recent.Should().Equal(baselineRecent);
+        streamed.Should().HaveCount(3, "stream delivery is independent of bounded recent-result retention");
         counts.Should().BeEquivalentTo(baselineCounts);
         recent.Should().ContainSingle();
         counts["例外"].Should().Be(3);
@@ -217,7 +219,8 @@ public sealed class RuntimeCaptureObservationTests
     public void GcPairsAndSuspension_ArchiveBeyondSnapshotCaps_WithoutInventingOrphanIntervals()
     {
         var sink = new BoundedSink(30);
-        var recorded = new GcCaptureState(1, sink);
+        var streamedCollections = new List<GcEvent>();
+        var recorded = new GcCaptureState(1, sink, streamedCollections.Add);
         var baseline = new GcCaptureState(1);
         foreach (var state in new[] { recorded, baseline })
         {
@@ -236,6 +239,7 @@ public sealed class RuntimeCaptureObservationTests
         recorded.Finish(Start, Start.AddSeconds(4), null).Should()
             .BeEquivalentTo(baseline.Finish(Start, Start.AddSeconds(4), null));
         recorded.Collections.Events.Should().ContainSingle();
+        streamedCollections.Should().HaveCount(3, "all completed collections are streamed beyond the retained-detail cap");
         sink.Observations.Count(o => o.Category == "gc.collection").Should().Be(3);
         sink.Observations.Count(o => o.Category == "gc.suspension").Should().Be(3);
         sink.Observations.Count(o => o.Category == "gc.restart").Should().Be(3);
@@ -252,11 +256,13 @@ public sealed class RuntimeCaptureObservationTests
     {
         var sink = new BoundedSink(4);
         var retained = new List<GcHeapStatsSample>();
+        var streamed = new List<GcHeapStatsSample>();
         var dropped = 0;
         var sample = new GcHeapStatsSample(Start, 10, 20, 30, 40, 0, 100, 4, 3, 0, 2, 1, 5, 6);
-        EventPipeGcCollector.RecordHeapSample(sample, 1, 7, retained, 1, ref dropped, sink);
-        EventPipeGcCollector.RecordHeapSample(sample with { PohSizeBytes = 123 }, 2, 7, retained, 1, ref dropped, sink);
+        EventPipeGcCollector.RecordHeapSample(sample, 1, 7, retained, 1, ref dropped, sink, streamed.Add);
+        EventPipeGcCollector.RecordHeapSample(sample with { PohSizeBytes = 123 }, 2, 7, retained, 1, ref dropped, sink, streamed.Add);
         retained.Should().ContainSingle();
+        streamed.Should().HaveCount(2, "all heap samples are streamed beyond the retained-detail cap");
         dropped.Should().Be(1);
         sink.Observations.Should().HaveCount(2);
         Field(sink.Observations[0], "pohSizeBytes").Kind.Should().Be(CaptureObservationValueKind.Null);
@@ -268,7 +274,8 @@ public sealed class RuntimeCaptureObservationTests
     public void ContentionTopN_EmitsBeforeEviction_AndRejectionDoesNotChangeLongestWaits()
     {
         var sink = new BoundedSink(2);
-        var observed = new EventPipeContentionCollector.TopContentionEvents(1, sink);
+        var streamed = new List<ContentionEventSample>();
+        var observed = new EventPipeContentionCollector.TopContentionEvents(1, sink, streamed.Add);
         var baseline = new EventPipeContentionCollector.TopContentionEvents(1);
         foreach (var ms in new[] { 100, 2, 50 })
         {
@@ -278,6 +285,7 @@ public sealed class RuntimeCaptureObservationTests
             baseline.Add(sample);
         }
         observed.GetOrdered().Should().Equal(baseline.GetOrdered());
+        streamed.Should().HaveCount(3, "every completed contention is streamed before top-N retention");
         observed.DroppedCount.Should().Be(2);
         sink.Rejected.Should().Be(1);
         sink.Observations.Should().HaveCount(2);
@@ -321,6 +329,7 @@ public sealed class RuntimeCaptureObservationTests
         var sink = new BoundedSink(10);
         var recent = new Queue<EventPipeLogCollector.MutableLogEntry>();
         EventPipeLogCollector.MutableLogEntry? last = null;
+        var streamed = new List<LogEntry>();
         var truncated = false;
         var scopes = new Dictionary<string, string> { ["tenant"] = "租户-λ", ["authorization"] = "secret" };
         collector.TryCreateLogEntry(Start, "Other", LogLevel.Error, 9, null, "secret", null,
@@ -332,15 +341,17 @@ public sealed class RuntimeCaptureObservationTests
         {
             collector.TryCreateLogEntry(Start, "Orders.注文", LogLevel.Warning, 9, null, message, null,
                 scopes, ["Orders.*"], LogLevel.Information, 100, out var formatted).Should().BeTrue();
-            collector.RecordLogEntry(formatted, false, ref last, recent, 1, ref truncated, sink).Should().BeTrue();
+            collector.RecordLogEntry(formatted, false, ref last, recent, 1, ref truncated, sink, streamed.Add).Should().BeTrue();
             collector.TryCreateLogEntry(Start, "Orders.注文", LogLevel.Warning, 9, null, message,
                 """{"Type":"例外","Message":"Password=credential"}""", scopes, ["Orders.*"],
                 LogLevel.Information, 100, out var json).Should().BeTrue();
-            collector.RecordLogEntry(json, true, ref last, recent, 1, ref truncated, sink).Should().BeFalse();
+            collector.RecordLogEntry(json, true, ref last, recent, 1, ref truncated, sink, streamed.Add).Should().BeFalse();
         }
-        collector.FlushLogEntry(sink, last);
+        collector.FlushLogEntry(sink, last, streamed.Add);
         truncated.Should().BeTrue();
         recent.Should().ContainSingle();
+        streamed.Should().HaveCount(3, "incremental delivery is independent of the bounded recent ring");
+        streamed[0].ExceptionType.Should().Be("例外", "JSON enrichment is paired before publishing the log entry");
         sink.Observations.Select(o => Field(o, "message").Text)
             .Should().Equal("重复 🧪 <redacted:sensitive>", "重复 🧪 <redacted:sensitive>", "unique-λ");
         Field(sink.Observations[0], "exceptionType").Text.Should().Be("例外");

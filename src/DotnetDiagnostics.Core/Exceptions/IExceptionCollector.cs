@@ -13,6 +13,17 @@ public interface IExceptionCollector
         CancellationToken cancellationToken = default);
 }
 
+/// <summary>Collects managed exceptions while publishing each observed event incrementally.</summary>
+public interface IStreamingExceptionCollector
+{
+    Task<ExceptionSnapshot> CollectStreamingAsync(
+        int processId,
+        TimeSpan duration,
+        Action<ManagedExceptionEvent> onObservation,
+        int maxRecent = 100,
+        CancellationToken cancellationToken = default);
+}
+
 /// <summary>
 /// Captures the runtime exception stream and crash-adjacent signals for a process that may terminate
 /// during the collection window.

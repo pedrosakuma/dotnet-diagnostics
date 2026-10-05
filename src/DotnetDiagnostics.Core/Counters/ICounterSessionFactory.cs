@@ -1,13 +1,12 @@
 namespace DotnetDiagnostics.Core.Counters;
 
-/// <summary>Starts Core-owned live EventCounter sessions.</summary>
+/// <summary>Creates Core-owned live EventCounter sessions.</summary>
 public interface ICounterSessionFactory
 {
-    /// <summary>Starts a live counter session and returns after the EventPipe session is attached.</summary>
-    Task<CounterSession> StartAsync(
+    /// <summary>Creates a session. Attach event handlers before calling <see cref="CounterSession.StartAsync"/>.</summary>
+    CounterSession CreateSession(
         int processId,
-        CounterSessionOptions? options = null,
-        CancellationToken cancellationToken = default);
+        CounterSessionOptions? options = null);
 }
 
 /// <summary>Options for a live EventCounter session.</summary>

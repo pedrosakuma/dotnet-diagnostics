@@ -232,10 +232,9 @@ public sealed class EventPipeCounterCollector : ICounterCollector, ICounterSessi
     }
 
     /// <inheritdoc />
-    public async Task<CounterSession> StartAsync(
+    public CounterSession CreateSession(
         int processId,
-        CounterSessionOptions? options = null,
-        CancellationToken cancellationToken = default)
+        CounterSessionOptions? options = null)
     {
         if (processId <= 0)
         {
@@ -254,8 +253,6 @@ public sealed class EventPipeCounterCollector : ICounterCollector, ICounterSessi
                 nameof(options),
                 $"Observation capacity must be between 1 and {CounterSessionOptions.MaxAllowedObservationCapacity}.");
         }
-
-        cancellationToken.ThrowIfCancellationRequested();
 
         var providerNames = options.Providers is { Count: > 0 } configuredProviders
             ? configuredProviders.ToArray()
@@ -281,21 +278,17 @@ public sealed class EventPipeCounterCollector : ICounterCollector, ICounterSessi
             ["EventCounterIntervalSec"] = options.IntervalSeconds.ToString(CultureInfo.InvariantCulture),
         };
         var providers = CreateEventCounterProviders(providerNames, counterArguments);
-        var session = await new DiagnosticsClient(processId)
-            .StartEventPipeSessionWithTimeoutAsync(
-                providers,
-                requestRundown: false,
-                circularBufferMB: 128,
-                TimeSpan.FromSeconds(30),
-                cancellationToken)
-            .ConfigureAwait(false);
-
         return new CounterSession(
             processId,
-            session,
-            options.ObservationCapacity,
-            ex => _logger.LogDebug(ex, "Stopping EventPipe counter session for pid {Pid} failed.", processId),
-            cancellationToken);
+            options,
+            cancellationToken => new DiagnosticsClient(processId)
+                .StartEventPipeSessionWithTimeoutAsync(
+                    providers,
+                    requestRundown: false,
+                    circularBufferMB: 128,
+                    TimeSpan.FromSeconds(30),
+                    cancellationToken),
+            ex => _logger.LogDebug(ex, "Stopping EventPipe counter session for pid {Pid} failed.", processId));
     }
 
     private static IEnumerable<EventPipeProvider> CreateEventCounterProviders(

@@ -48,3 +48,15 @@ public sealed record JitMethodSummary(
     int ReJitCount,
     int OsrCount,
     bool HasIlMap);
+
+/// <summary>A completed JIT compilation observed in the EventPipe stream.</summary>
+public sealed record JitCompilationObservation(
+    DateTimeOffset CompletedAt,
+    DateTimeOffset? StartedAt,
+    string MethodNamespace,
+    string MethodName,
+    string MethodSignature,
+    string OptimizationTier,
+    long ReJitId,
+    double InclusiveJitTimeMs,
+    string Correlation);
