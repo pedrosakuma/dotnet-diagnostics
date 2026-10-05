@@ -15,7 +15,7 @@ namespace DotnetDiagnostics.Core.ProcessDiscovery;
 /// <item><term>Windows</term><description>Calls <c>GetProcessHandleCount</c>; per-handle/socket breakdown is not yet implemented.</description></item>
 /// </list>
 /// </summary>
-public sealed partial class ProcessResourcesCollector : IProcessResourcesCollector
+public sealed partial class ProcessResourcesCollector : IProcessResourcesCollector, IStreamingProcessResourcesCollector
 {
     private const int MaxClassifiedFdEntries = 10_000;
     private const uint ProcessQueryLimitedInformation = 0x1000;
@@ -42,11 +42,30 @@ public sealed partial class ProcessResourcesCollector : IProcessResourcesCollect
     }
 
     /// <inheritdoc />
-    public async Task<ProcessResources> CollectAsync(
+    public Task<ProcessResources> CollectAsync(
         int processId,
         int durationSeconds,
         int sampleEverySeconds,
         CancellationToken cancellationToken = default)
+        => CollectCoreAsync(processId, durationSeconds, sampleEverySeconds, null, cancellationToken);
+
+    public Task<ProcessResources> CollectStreamingAsync(
+        int processId,
+        int durationSeconds,
+        int sampleEverySeconds,
+        Action<ProcessResourcesSample> onObservation,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(onObservation);
+        return CollectCoreAsync(processId, durationSeconds, sampleEverySeconds, onObservation, cancellationToken);
+    }
+
+    private async Task<ProcessResources> CollectCoreAsync(
+        int processId,
+        int durationSeconds,
+        int sampleEverySeconds,
+        Action<ProcessResourcesSample>? onObservation,
+        CancellationToken cancellationToken)
     {
         var notes = new List<string>();
         var samples = new List<CollectedSnapshot>();
@@ -54,6 +73,7 @@ public sealed partial class ProcessResourcesCollector : IProcessResourcesCollect
         if (durationSeconds == 0)
         {
             var snapshot = TakeSample(processId, notes);
+            onObservation?.Invoke(snapshot.ToSample());
             var managedHeap = await ProbeManagedGcHeapBytesAsync(processId, cancellationToken).ConfigureAwait(false);
             AddProbeNotes(notes, managedHeap.Notes);
             snapshot = snapshot with { ManagedVsNative = BuildManagedVsNative(snapshot.RssBytes, managedHeap.GcHeapBytes, notes) };
@@ -67,7 +87,9 @@ public sealed partial class ProcessResourcesCollector : IProcessResourcesCollect
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            samples.Add(TakeSample(processId, notes));
+            var sample = TakeSample(processId, notes);
+            samples.Add(sample);
+            onObservation?.Invoke(sample.ToSample());
 
             var now = _clock.GetUtcNow();
             if (now >= deadline)

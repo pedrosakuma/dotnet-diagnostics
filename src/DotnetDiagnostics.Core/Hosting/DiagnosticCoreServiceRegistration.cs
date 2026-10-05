@@ -117,8 +117,16 @@ public static class DiagnosticCoreServiceRegistration
         services.AddSingleton<IStreamingGcCollector>(serviceProvider =>
             serviceProvider.GetRequiredService<EventPipeGcCollector>());
         services.AddSingleton<IGcDatasCollector, EventPipeGcDatasCollector>();
-        services.AddSingleton<IEventSourceCollector, EventPipeEventSourceCollector>();
-        services.AddSingleton<IEventCatalogCollector, EventPipeEventCatalogCollector>();
+        services.AddSingleton<EventPipeEventSourceCollector>();
+        services.AddSingleton<IEventSourceCollector>(serviceProvider =>
+            serviceProvider.GetRequiredService<EventPipeEventSourceCollector>());
+        services.AddSingleton<IStreamingEventSourceCollector>(serviceProvider =>
+            serviceProvider.GetRequiredService<EventPipeEventSourceCollector>());
+        services.AddSingleton<EventPipeEventCatalogCollector>();
+        services.AddSingleton<IEventCatalogCollector>(serviceProvider =>
+            serviceProvider.GetRequiredService<EventPipeEventCatalogCollector>());
+        services.AddSingleton<IStreamingEventCatalogCollector>(serviceProvider =>
+            serviceProvider.GetRequiredService<EventPipeEventCatalogCollector>());
         services.AddSingleton<EventPipeActivityCollector>();
         services.AddSingleton<IActivityCollector>(serviceProvider =>
             serviceProvider.GetRequiredService<EventPipeActivityCollector>());
@@ -129,7 +137,11 @@ public static class DiagnosticCoreServiceRegistration
             serviceProvider.GetRequiredService<EventPipeLogCollector>());
         services.AddSingleton<IStreamingLogCollector>(serviceProvider =>
             serviceProvider.GetRequiredService<EventPipeLogCollector>());
-        services.AddSingleton<ICrashGuardCollector, EventPipeCrashGuardCollector>();
+        services.AddSingleton<EventPipeCrashGuardCollector>();
+        services.AddSingleton<ICrashGuardCollector>(serviceProvider =>
+            serviceProvider.GetRequiredService<EventPipeCrashGuardCollector>());
+        services.AddSingleton<IStreamingCrashGuardCollector>(serviceProvider =>
+            serviceProvider.GetRequiredService<EventPipeCrashGuardCollector>());
         services.AddSingleton<EventPipeJitCollector>();
         services.AddSingleton<IJitCollector>(serviceProvider =>
             serviceProvider.GetRequiredService<EventPipeJitCollector>());
@@ -155,7 +167,11 @@ public static class DiagnosticCoreServiceRegistration
             serviceProvider.GetRequiredService<EventPipeKestrelCollector>());
         services.AddSingleton<IStreamingKestrelCollector>(serviceProvider =>
             serviceProvider.GetRequiredService<EventPipeKestrelCollector>());
-        services.AddSingleton<IInFlightRequestCollector, EventPipeInFlightRequestCollector>();
+        services.AddSingleton<EventPipeInFlightRequestCollector>();
+        services.AddSingleton<IInFlightRequestCollector>(serviceProvider =>
+            serviceProvider.GetRequiredService<EventPipeInFlightRequestCollector>());
+        services.AddSingleton<IStreamingInFlightRequestCollector>(serviceProvider =>
+            serviceProvider.GetRequiredService<EventPipeInFlightRequestCollector>());
         services.AddSingleton<EventPipeNetworkingCollector>();
         services.AddSingleton<INetworkingCollector>(serviceProvider =>
             serviceProvider.GetRequiredService<EventPipeNetworkingCollector>());
@@ -190,9 +206,17 @@ public static class DiagnosticCoreServiceRegistration
         services.AddSingleton<DotnetDiagnostics.Core.Memory.IProvenanceCollector, DotnetDiagnostics.Core.Memory.EnvironmentProvenanceCollector>();
         services.AddSingleton<DotnetDiagnostics.Core.Memory.IInvestigationSummaryExporter, DotnetDiagnostics.Core.Memory.InvestigationSummaryExporter>();
         services.AddSingleton<DotnetDiagnostics.Core.Memory.ISummaryComparer, DotnetDiagnostics.Core.Memory.SummaryComparer>();
-        services.AddSingleton<DotnetDiagnostics.Core.Memory.IMemoryTrendCollector, DotnetDiagnostics.Core.Memory.MemoryTrendCollector>();
+        services.AddSingleton<DotnetDiagnostics.Core.Memory.MemoryTrendCollector>();
+        services.AddSingleton<DotnetDiagnostics.Core.Memory.IMemoryTrendCollector>(serviceProvider =>
+            serviceProvider.GetRequiredService<DotnetDiagnostics.Core.Memory.MemoryTrendCollector>());
+        services.AddSingleton<DotnetDiagnostics.Core.Memory.IStreamingMemoryTrendCollector>(serviceProvider =>
+            serviceProvider.GetRequiredService<DotnetDiagnostics.Core.Memory.MemoryTrendCollector>());
         services.AddSingleton<DotnetDiagnostics.Core.ProcessDiscovery.IRuntimeConfigInspector, DotnetDiagnostics.Core.ProcessDiscovery.RuntimeConfigInspector>();
-        services.AddSingleton<DotnetDiagnostics.Core.ProcessDiscovery.IProcessResourcesCollector, DotnetDiagnostics.Core.ProcessDiscovery.ProcessResourcesCollector>();
+        services.AddSingleton<DotnetDiagnostics.Core.ProcessDiscovery.ProcessResourcesCollector>();
+        services.AddSingleton<DotnetDiagnostics.Core.ProcessDiscovery.IProcessResourcesCollector>(serviceProvider =>
+            serviceProvider.GetRequiredService<DotnetDiagnostics.Core.ProcessDiscovery.ProcessResourcesCollector>());
+        services.AddSingleton<DotnetDiagnostics.Core.ProcessDiscovery.IStreamingProcessResourcesCollector>(serviceProvider =>
+            serviceProvider.GetRequiredService<DotnetDiagnostics.Core.ProcessDiscovery.ProcessResourcesCollector>());
         services.AddSingleton<DotnetDiagnostics.Core.ProcessDiscovery.IRequestsNowCollector, DotnetDiagnostics.Core.ProcessDiscovery.RequestsNowCollector>();
         services.AddSingleton(handleStoreOptions);
         services.AddSingleton<IDiagnosticHandleStore>(serviceProvider =>

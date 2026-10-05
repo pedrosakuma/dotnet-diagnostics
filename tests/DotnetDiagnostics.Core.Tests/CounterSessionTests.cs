@@ -104,7 +104,7 @@ public sealed class CounterSessionTests
             publish(10);
             publish(20);
             return resultSource.Task;
-        });
+        }, observation => DateTimeOffset.UnixEpoch.AddSeconds(observation));
 
         await session.StartAsync();
         await observed.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -115,7 +115,7 @@ public sealed class CounterSessionTests
         events.Select(item => item.Sequence).Should().Equal(1, 2, 3);
         events[0].Should().BeOfType<DiagnosticSessionObservation<int>>()
             .Which.Observation.Should().Be(10);
-        events[0].Timestamp.Should().BeAfter(DateTimeOffset.UnixEpoch);
+        events[0].Timestamp.Should().Be(DateTimeOffset.UnixEpoch.AddSeconds(10));
         events[2].Should().BeOfType<DiagnosticSessionCaptureResult<string>>()
             .Which.Result.Should().Be("complete");
         completion.Status.Should().Be(DiagnosticSessionStatus.Completed);

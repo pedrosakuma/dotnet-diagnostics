@@ -16,7 +16,7 @@ namespace DotnetDiagnostics.Core.Memory;
 /// </list>
 /// The default constructor uses the real <c>/proc</c> root; tests can pass an alternative root.
 /// </summary>
-public sealed partial class MemoryTrendCollector : IMemoryTrendCollector
+public sealed partial class MemoryTrendCollector : IMemoryTrendCollector, IStreamingMemoryTrendCollector
 {
     /// <summary>Growth threshold: RSS must change faster than this (bytes/sec) to be non-stable.</summary>
     private const double GrowthThresholdBytesPerSec = 1_048_576; // 1 MiB/s
@@ -36,11 +36,30 @@ public sealed partial class MemoryTrendCollector : IMemoryTrendCollector
     }
 
     /// <inheritdoc/>
-    public async Task<MemoryTrend> CollectAsync(
+    public Task<MemoryTrend> CollectAsync(
         int processId,
         int durationSeconds,
         int sampleEverySeconds,
         CancellationToken cancellationToken = default)
+        => CollectCoreAsync(processId, durationSeconds, sampleEverySeconds, null, cancellationToken);
+
+    public Task<MemoryTrend> CollectStreamingAsync(
+        int processId,
+        int durationSeconds,
+        int sampleEverySeconds,
+        Action<MemoryTrendSample> onObservation,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(onObservation);
+        return CollectCoreAsync(processId, durationSeconds, sampleEverySeconds, onObservation, cancellationToken);
+    }
+
+    private async Task<MemoryTrend> CollectCoreAsync(
+        int processId,
+        int durationSeconds,
+        int sampleEverySeconds,
+        Action<MemoryTrendSample>? onObservation,
+        CancellationToken cancellationToken)
     {
         var notes = new List<string>();
         var samples = new List<MemoryTrendSample>();
@@ -61,6 +80,7 @@ public sealed partial class MemoryTrendCollector : IMemoryTrendCollector
             if (sample is not null)
             {
                 samples.Add(sample);
+                onObservation?.Invoke(sample);
             }
 
             var now = _clock.GetUtcNow();

@@ -18,7 +18,7 @@ namespace DotnetDiagnostics.Core.Exceptions;
 /// EventPipe crash guard that records ExceptionThrown_V1 plus unhandled/fail-fast runtime events
 /// and returns early when the target process exits during the guard window.
 /// </summary>
-public sealed class EventPipeCrashGuardCollector : ICrashGuardCollector
+public sealed class EventPipeCrashGuardCollector : ICrashGuardCollector, IStreamingCrashGuardCollector
 {
     private const string RuntimeProvider = "Microsoft-Windows-DotNETRuntime";
     private const long ExceptionKeyword = 0x8000;
@@ -37,11 +37,30 @@ public sealed class EventPipeCrashGuardCollector : ICrashGuardCollector
         _logger = logger ?? NullLogger<EventPipeCrashGuardCollector>.Instance;
     }
 
-    public async Task<CrashGuardSnapshot> CollectAsync(
+    public Task<CrashGuardSnapshot> CollectAsync(
         int processId,
         TimeSpan duration,
         int maxRecent = 100,
         CancellationToken cancellationToken = default)
+        => CollectCoreAsync(processId, duration, null, maxRecent, cancellationToken);
+
+    public Task<CrashGuardSnapshot> CollectStreamingAsync(
+        int processId,
+        TimeSpan duration,
+        Action<CrashGuardExceptionEvent> onObservation,
+        int maxRecent = 100,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(onObservation);
+        return CollectCoreAsync(processId, duration, onObservation, maxRecent, cancellationToken);
+    }
+
+    private async Task<CrashGuardSnapshot> CollectCoreAsync(
+        int processId,
+        TimeSpan duration,
+        Action<CrashGuardExceptionEvent>? onObservation,
+        int maxRecent,
+        CancellationToken cancellationToken)
     {
         var observationSink = CaptureRecordingContext.Current;
         var observationRedactor = observationSink is null ? null : new SensitiveDataRedactor();
@@ -96,6 +115,7 @@ public sealed class EventPipeCrashGuardCollector : ICrashGuardCollector
                             false, traceEvent.ExceptionType, traceEvent.ExceptionMessage, captured.ExceptionHResult,
                             captured.ManagedStack, observationRedactor!);
                     RecordException(captured, exceptions, counts, gate, maxRecent, ref total, ref lastObservedException, ref explicitUnhandledException);
+                    onObservation?.Invoke(captured);
                     ExceptionObserved?.Invoke(captured);
                 };
 
@@ -122,6 +142,7 @@ public sealed class EventPipeCrashGuardCollector : ICrashGuardCollector
                     if (captured is not null)
                     {
                         RecordException(captured, exceptions, counts, gate, maxRecent, ref total, ref lastObservedException, ref explicitUnhandledException);
+                        onObservation?.Invoke(captured);
                     }
                     else
                     {

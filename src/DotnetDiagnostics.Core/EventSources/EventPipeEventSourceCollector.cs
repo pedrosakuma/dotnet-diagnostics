@@ -13,7 +13,7 @@ namespace DotnetDiagnostics.Core.EventSources;
 /// Default <see cref="IEventSourceCollector"/>: opens an EventPipe session against a single
 /// EventSource and snapshots every event (name + payload) it emits in the window.
 /// </summary>
-public sealed class EventPipeEventSourceCollector : IEventSourceCollector
+public sealed class EventPipeEventSourceCollector : IEventSourceCollector, IStreamingEventSourceCollector
 {
     private readonly ILogger<EventPipeEventSourceCollector> _logger;
 
@@ -22,7 +22,7 @@ public sealed class EventPipeEventSourceCollector : IEventSourceCollector
         _logger = logger ?? NullLogger<EventPipeEventSourceCollector>.Instance;
     }
 
-    public async Task<EventSourceCapture> CaptureAsync(
+    public Task<EventSourceCapture> CaptureAsync(
         int processId,
         string providerName,
         TimeSpan duration,
@@ -30,6 +30,31 @@ public sealed class EventPipeEventSourceCollector : IEventSourceCollector
         int eventLevel = 5,
         int maxEvents = 200,
         CancellationToken cancellationToken = default)
+        => CaptureCoreAsync(processId, providerName, duration, null, keywords, eventLevel, maxEvents, cancellationToken);
+
+    public Task<EventSourceCapture> CaptureStreamingAsync(
+        int processId,
+        string providerName,
+        TimeSpan duration,
+        Action<CapturedEvent> onObservation,
+        long keywords = -1,
+        int eventLevel = 5,
+        int maxEvents = 200,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(onObservation);
+        return CaptureCoreAsync(processId, providerName, duration, onObservation, keywords, eventLevel, maxEvents, cancellationToken);
+    }
+
+    private async Task<EventSourceCapture> CaptureCoreAsync(
+        int processId,
+        string providerName,
+        TimeSpan duration,
+        Action<CapturedEvent>? onObservation,
+        long keywords,
+        int eventLevel,
+        int maxEvents,
+        CancellationToken cancellationToken)
     {
         var observationSink = CaptureRecordingContext.Current;
         ArgumentException.ThrowIfNullOrWhiteSpace(providerName);
@@ -78,10 +103,6 @@ public sealed class EventPipeEventSourceCollector : IEventSourceCollector
                     }
 
                     total++;
-                    if (captured.Count >= maxEvents)
-                    {
-                        return;
-                    }
 
                     var payload = new Dictionary<string, string>(StringComparer.Ordinal);
                     foreach (var name in traceEvent.PayloadNames ?? Array.Empty<string>())
@@ -107,7 +128,7 @@ public sealed class EventPipeEventSourceCollector : IEventSourceCollector
                         Provider: traceEvent.ProviderName,
                         EventName: traceEvent.EventName,
                         Level: traceEvent.Level.ToString(),
-                        Payload: payload), observationSink);
+                        Payload: payload), observationSink, onObservation);
                 };
 
                 source.Process();
@@ -147,9 +168,12 @@ public sealed class EventPipeEventSourceCollector : IEventSourceCollector
     }
 
     internal static void RetainEvent(
-        List<CapturedEvent> captured, int maxEvents, string providerName, CapturedEvent observation, ICaptureObservationSink? sink)
+        List<CapturedEvent> captured, int maxEvents, string providerName, CapturedEvent observation,
+        ICaptureObservationSink? sink, Action<CapturedEvent>? onObservation = null)
     {
-        if (captured.Count >= maxEvents || !string.Equals(providerName, observation.Provider, StringComparison.Ordinal)) return;
+        if (!string.Equals(providerName, observation.Provider, StringComparison.Ordinal)) return;
+        onObservation?.Invoke(observation);
+        if (captured.Count >= maxEvents) return;
         captured.Add(observation);
         if (sink is null) return;
         const int maxPayloadFields = 256;

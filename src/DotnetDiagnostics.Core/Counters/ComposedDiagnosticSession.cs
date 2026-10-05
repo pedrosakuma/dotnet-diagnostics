@@ -120,13 +120,14 @@ public sealed class ComposedDiagnosticSession : IDiagnosticSession
     /// terminal result when it completes.
     /// </summary>
     public void AddStreamingCapture<TObservation, TCapture>(
-        Func<Action<TObservation>, CancellationToken, Task<TCapture>> capture)
+        Func<Action<TObservation>, CancellationToken, Task<TCapture>> capture,
+        Func<TObservation, DateTimeOffset>? timestampSelector = null)
     {
         ArgumentNullException.ThrowIfNull(capture);
         AddEventCapture((publish, cancellationToken) => capture(
             observation => publish(new DiagnosticSessionObservation<TObservation>(
                 0,
-                DateTimeOffset.UtcNow,
+                timestampSelector?.Invoke(observation) ?? DateTimeOffset.UtcNow,
                 observation)),
             cancellationToken));
     }

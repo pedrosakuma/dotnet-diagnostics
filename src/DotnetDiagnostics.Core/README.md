@@ -75,8 +75,10 @@ var completion = await session.Completion;
 session factories can publish additional `DiagnosticSessionEvent` record types without changing
 existing finite collector APIs. Live counters and the `IStreaming*Collector` interfaces for
 exceptions, activities, monitor contention, GC, logs, JIT, ThreadPool, startup, database activity,
-networking, and Kestrel publish typed observations incrementally;
-other capture families are not yet streamed. Stopping cancels capture
+networking, Kestrel, crash-guard exceptions, generic EventSource events, EventSource catalog metadata,
+in-flight request lifecycle events, memory trend samples, and process-resource samples publish typed
+observations incrementally. DATAS post-processing, CPU/allocation samplers, point-in-time readers,
+and other offline aggregations can still be added as typed terminal results. Stopping cancels capture
 producers; callbacks continue draining the bounded queue. The callback cancellation token is
 canceled if handler delivery exceeds the shutdown wait budget.
 

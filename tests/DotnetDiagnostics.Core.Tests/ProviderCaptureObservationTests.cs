@@ -316,12 +316,14 @@ public sealed class ProviderCaptureObservationTests
     {
         var sink = new BoundedSink(4);
         var retained = new List<CapturedEvent>();
+        var streamed = new List<CapturedEvent>();
         var observation = new CapturedEvent(Start, "Approved.Provider", "操作", "Informational",
             new Dictionary<string, string> { ["命令"] = "重复🚀", ["empty"] = "" });
         EventPipeEventSourceCollector.RetainEvent(retained, 2, "Approved.Provider", observation with { Provider = "Other.Provider" }, sink);
         for (var i = 0; i < 4; i++)
-            EventPipeEventSourceCollector.RetainEvent(retained, 2, "Approved.Provider", observation, sink);
+            EventPipeEventSourceCollector.RetainEvent(retained, 2, "Approved.Provider", observation, sink, streamed.Add);
         Assert.Equal(2, retained.Count);
+        Assert.Equal(4, streamed.Count);
         Assert.Equal(2, sink.Attempts);
         Assert.Equal("重复🚀", Field(sink.Records[0], "payload.命令").Text);
         Assert.Equal("", Field(sink.Records[0], "payload.empty").Text);
@@ -387,7 +389,8 @@ public sealed class ProviderCaptureObservationTests
     public void Catalog_RecordsMetadataOnly()
     {
         var sink = new BoundedSink(1);
-        EventPipeEventCatalogCollector.RecordMetadata(sink, new CatalogEventOccurrence(Start, "任意.Provider", "Event", "Warning"));
+        var occurrence = new CatalogEventOccurrence(Start, "任意.Provider", "Event", "Warning");
+        EventPipeEventCatalogCollector.RecordMetadata(sink, occurrence);
         var record = Assert.Single(sink.Records);
         Assert.Equal("event-catalog.metadata", record.Category);
         Assert.Equal(2, record.Fields.Count);

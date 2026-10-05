@@ -23,7 +23,7 @@ namespace DotnetDiagnostics.Core.Requests;
 /// in-flight requests).
 /// </para>
 /// </summary>
-public sealed class EventPipeInFlightRequestCollector : IInFlightRequestCollector
+public sealed class EventPipeInFlightRequestCollector : IInFlightRequestCollector, IStreamingInFlightRequestCollector
 {
     private const string ProviderName = "Microsoft-Diagnostics-DiagnosticSource";
     private const long MessagesKeyword = 0x1;
@@ -55,12 +55,33 @@ public sealed class EventPipeInFlightRequestCollector : IInFlightRequestCollecto
         _logger = logger ?? NullLogger<EventPipeInFlightRequestCollector>.Instance;
     }
 
-    public async Task<InFlightRequestSnapshot> CollectAsync(
+    public Task<InFlightRequestSnapshot> CollectAsync(
         int processId,
         TimeSpan duration,
         double longRunningThresholdMs = 1000,
         int maxRequests = 100,
         CancellationToken cancellationToken = default)
+        => CollectCoreAsync(processId, duration, null, longRunningThresholdMs, maxRequests, cancellationToken);
+
+    public Task<InFlightRequestSnapshot> CollectStreamingAsync(
+        int processId,
+        TimeSpan duration,
+        Action<InFlightRequestObservation> onObservation,
+        double longRunningThresholdMs = 1000,
+        int maxRequests = 100,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(onObservation);
+        return CollectCoreAsync(processId, duration, onObservation, longRunningThresholdMs, maxRequests, cancellationToken);
+    }
+
+    private async Task<InFlightRequestSnapshot> CollectCoreAsync(
+        int processId,
+        TimeSpan duration,
+        Action<InFlightRequestObservation>? onObservation,
+        double longRunningThresholdMs,
+        int maxRequests,
+        CancellationToken cancellationToken)
     {
         var observationSink = CaptureRecordingContext.Current;
         if (processId <= 0)
@@ -122,11 +143,18 @@ public sealed class EventPipeInFlightRequestCollector : IInFlightRequestCollecto
                         if (requestEvent.IsStart)
                         {
                             requestsStarted++;
-                            pending.Track(requestEvent.Key, requestEvent.PendingRequest!);
+                            var request = requestEvent.PendingRequest!;
+                            onObservation?.Invoke(new InFlightRequestObservation(
+                                request.StartedAt, true, request.TraceId, request.SpanId, request.Method,
+                                request.Path, request.StartedAt));
+                            pending.Track(requestEvent.Key, request);
                         }
-                        else if (pending.Remove(requestEvent.Key, new DateTimeOffset(traceEvent.TimeStamp.ToUniversalTime(), TimeSpan.Zero)))
+                        else if (pending.Remove(requestEvent.Key, new DateTimeOffset(traceEvent.TimeStamp.ToUniversalTime(), TimeSpan.Zero), out var removed))
                         {
                             requestsCompleted++;
+                            onObservation?.Invoke(new InFlightRequestObservation(
+                                new DateTimeOffset(traceEvent.TimeStamp.ToUniversalTime(), TimeSpan.Zero),
+                                false, removed.TraceId, removed.SpanId, removed.Method, removed.Path, removed.StartedAt));
                         }
                     }
                     catch (Exception ex)
@@ -376,8 +404,11 @@ public sealed class EventPipeInFlightRequestCollector : IInFlightRequestCollecto
         public bool Remove(string key) => _pending.Remove(key);
 
         internal bool Remove(string key, DateTimeOffset timestamp)
+            => Remove(key, timestamp, out _);
+
+        internal bool Remove(string key, DateTimeOffset timestamp, out PendingRequest request)
         {
-            if (!_pending.Remove(key, out var request)) return false;
+            if (!_pending.Remove(key, out request!)) return false;
             _observationSink?.TryAppend(ProviderObservationProjection.Create(
                 "requests.transition", timestamp, null, request.Method,
                 ("provider", ProviderName), ("key", key), ("traceId", request.TraceId),

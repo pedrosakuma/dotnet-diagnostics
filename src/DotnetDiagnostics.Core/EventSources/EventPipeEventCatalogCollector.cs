@@ -14,7 +14,7 @@ namespace DotnetDiagnostics.Core.EventSources;
 /// timestamp), never payload values, so it can safely sweep multiple providers without the targeted
 /// event_source collector's allowlist/redaction gates.
 /// </summary>
-public sealed class EventPipeEventCatalogCollector : IEventCatalogCollector
+public sealed class EventPipeEventCatalogCollector : IEventCatalogCollector, IStreamingEventCatalogCollector
 {
     public static readonly IReadOnlyList<string> DefaultProviders = new[]
     {
@@ -32,12 +32,33 @@ public sealed class EventPipeEventCatalogCollector : IEventCatalogCollector
         _logger = logger ?? NullLogger<EventPipeEventCatalogCollector>.Instance;
     }
 
-    public async Task<EventCatalogSnapshot> CaptureAsync(
+    public Task<EventCatalogSnapshot> CaptureAsync(
         int processId,
         TimeSpan duration,
         IReadOnlyList<string>? providers = null,
         int maxEvents = 200,
         CancellationToken cancellationToken = default)
+        => CaptureCoreAsync(processId, duration, null, providers, maxEvents, cancellationToken);
+
+    public Task<EventCatalogSnapshot> CaptureStreamingAsync(
+        int processId,
+        TimeSpan duration,
+        Action<CatalogEventOccurrence> onObservation,
+        IReadOnlyList<string>? providers = null,
+        int maxEvents = 200,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(onObservation);
+        return CaptureCoreAsync(processId, duration, onObservation, providers, maxEvents, cancellationToken);
+    }
+
+    private async Task<EventCatalogSnapshot> CaptureCoreAsync(
+        int processId,
+        TimeSpan duration,
+        Action<CatalogEventOccurrence>? onObservation,
+        IReadOnlyList<string>? providers,
+        int maxEvents,
+        CancellationToken cancellationToken)
     {
         var observationSink = CaptureRecordingContext.Current;
         if (duration <= TimeSpan.Zero)
@@ -78,22 +99,19 @@ public sealed class EventPipeEventCatalogCollector : IEventCatalogCollector
                         ? ((int)traceEvent.ID).ToString(System.Globalization.CultureInfo.InvariantCulture)
                         : traceEvent.EventName;
                     var level = traceEvent.Level.ToString();
+                    var occurrence = new CatalogEventOccurrence(
+                        new DateTimeOffset(traceEvent.TimeStamp.ToUniversalTime(), TimeSpan.Zero), provider, eventName, level);
 
                     Interlocked.Increment(ref total);
                     counts.AddOrUpdate((provider, eventName, level), 1, static (_, current) => current + 1);
-                    if (observationSink is not null)
-                        RecordMetadata(observationSink, new CatalogEventOccurrence(
-                            new DateTimeOffset(traceEvent.TimeStamp.ToUniversalTime(), TimeSpan.Zero), provider, eventName, level));
+                    onObservation?.Invoke(occurrence);
+                    if (observationSink is not null) RecordMetadata(observationSink, occurrence);
 
                     // Metadata-only bounded sample. Do not read PayloadNames or PayloadByName here:
                     // arbitrary EventSource payload values may contain PII/auth context.
                     if (Interlocked.Increment(ref sampled) <= maxEvents)
                     {
-                        sample.Enqueue(new CatalogEventOccurrence(
-                            new DateTimeOffset(traceEvent.TimeStamp.ToUniversalTime(), TimeSpan.Zero),
-                            provider,
-                            eventName,
-                            level));
+                        sample.Enqueue(occurrence);
                     }
                 };
 

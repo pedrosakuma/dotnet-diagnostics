@@ -36,3 +36,14 @@ public interface ICrashGuardCollector
         int maxRecent = 100,
         CancellationToken cancellationToken = default);
 }
+
+/// <summary>Guards a process while publishing exception observations incrementally.</summary>
+public interface IStreamingCrashGuardCollector
+{
+    Task<CrashGuardSnapshot> CollectStreamingAsync(
+        int processId,
+        TimeSpan duration,
+        Action<CrashGuardExceptionEvent> onObservation,
+        int maxRecent = 100,
+        CancellationToken cancellationToken = default);
+}
