@@ -15,7 +15,7 @@ namespace DotnetDiagnostics.Core.Networking;
 /// pairs Start/Stop events by EventSource activity id to compute request / DNS / TLS latency, reads
 /// time-in-queue directly from <c>RequestLeftQueue</c>, and snapshots each provider's EventCounters.
 /// </summary>
-public sealed class EventPipeNetworkingCollector : INetworkingCollector
+public sealed class EventPipeNetworkingCollector : INetworkingCollector, IStreamingNetworkingCollector
 {
     private const string HttpProvider = "System.Net.Http";
     private const string DnsProvider = "System.Net.NameResolution";
@@ -37,11 +37,30 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
         _logger = logger ?? NullLogger<EventPipeNetworkingCollector>.Instance;
     }
 
-    public async Task<NetworkingSnapshot> CollectAsync(
+    public Task<NetworkingSnapshot> CollectAsync(
         int processId,
         TimeSpan duration,
         int intervalSeconds = 1,
         CancellationToken cancellationToken = default)
+        => CollectCoreAsync(processId, duration, null, intervalSeconds, cancellationToken);
+
+    public Task<NetworkingSnapshot> CollectStreamingAsync(
+        int processId,
+        TimeSpan duration,
+        Action<NetworkingObservation> onObservation,
+        int intervalSeconds = 1,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(onObservation);
+        return CollectCoreAsync(processId, duration, onObservation, intervalSeconds, cancellationToken);
+    }
+
+    private async Task<NetworkingSnapshot> CollectCoreAsync(
+        int processId,
+        TimeSpan duration,
+        Action<NetworkingObservation>? onObservation,
+        int intervalSeconds,
+        CancellationToken cancellationToken)
     {
         var observationSink = CaptureRecordingContext.Current;
         if (duration <= TimeSpan.Zero)
@@ -117,7 +136,7 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
 
                         if (string.Equals(name, "EventCounters", StringComparison.Ordinal))
                         {
-                            HandleCounter(traceEvent, provider, counters, observationSink);
+                            HandleCounter(traceEvent, provider, counters, observationSink, onObservation);
                             return;
                         }
 
@@ -127,21 +146,24 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
                                 HandleHttp(
                                     traceEvent, name, timestamp, pendingHttp, byOperation, overflowOperation, httpDurations, queueTimes,
                                     ref httpStarted, ref httpStopped, ref httpFailed, ref connEstablished, ref connClosed, ref leftQueue,
-                                    ref overflowedOperations, ref httpResponseStops, ref httpStatusErrorStops, ref httpStopsWithoutStatus, observationSink);
+                                    ref overflowedOperations, ref httpResponseStops, ref httpStatusErrorStops, ref httpStopsWithoutStatus,
+                                    observationSink, onObservation);
                                 break;
 
                             case DnsProvider:
                                 HandlePaired(
                                     name, "ResolutionStart", "Resolution/Start", "ResolutionStop", "Resolution/Stop",
                                     "ResolutionFailed", "Resolution/Failed", traceEvent.ActivityID, timestamp,
-                                    pendingDns, dnsDurations, ref dnsStarted, ref dnsStopped, ref dnsFailed, observationSink, provider, traceEvent.ThreadID);
+                                    pendingDns, dnsDurations, ref dnsStarted, ref dnsStopped, ref dnsFailed,
+                                    observationSink, provider, traceEvent.ThreadID, onObservation);
                                 break;
 
                             case TlsProvider:
                                 if (HandlePaired(
                                     name, "HandshakeStart", "Handshake/Start", "HandshakeStop", "Handshake/Stop",
                                     "HandshakeFailed", "Handshake/Failed", traceEvent.ActivityID, timestamp,
-                                    pendingTls, tlsDurations, ref tlsStarted, ref tlsStopped, ref tlsFailed, observationSink, provider, traceEvent.ThreadID))
+                                    pendingTls, tlsDurations, ref tlsStarted, ref tlsStopped, ref tlsFailed,
+                                    observationSink, provider, traceEvent.ThreadID, onObservation))
                                 {
                                     var protocol = PayloadString(traceEvent, "protocol");
                                     if (!string.IsNullOrWhiteSpace(protocol))
@@ -157,6 +179,8 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
 
                             case SocketsProvider:
                                 HandleSocket(name, ref socketStarted, ref socketStopped, ref socketFailed);
+                                if (name is "ConnectStart" or "Connect/Start" or "ConnectStop" or "Connect/Stop" or "ConnectFailed" or "Connect/Failed")
+                                    onObservation?.Invoke(new NetworkingPhaseObservation(timestamp, provider, name, null));
                                 if (name is "ConnectStart" or "Connect/Start" or "ConnectStop" or "Connect/Stop" or "ConnectFailed" or "Connect/Failed")
                                     observationSink?.TryAppend(ProviderObservationProjection.Create(
                                         "networking.socket.phase", timestamp, traceEvent.ThreadID, name,
@@ -321,7 +345,8 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
         ref long responseStops,
         ref long statusErrorStops,
         ref long stopsWithoutStatus,
-        ICaptureObservationSink? observationSink)
+        ICaptureObservationSink? observationSink,
+        Action<NetworkingObservation>? onObservation)
     {
         switch (name)
         {
@@ -332,6 +357,9 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
                     timestamp,
                     BuildHost(traceEvent),
                     NormalizePath(PayloadString(traceEvent, "pathAndQuery"))));
+                onObservation?.Invoke(new NetworkingPhaseObservation(
+                    timestamp, HttpProvider, "RequestStart", null,
+                    BuildHost(traceEvent), NormalizePath(PayloadString(traceEvent, "pathAndQuery"))));
                 break;
 
             case "RequestStop":
@@ -352,6 +380,8 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
                         ("host", p.Host), ("path", p.Path), ("statusCode", status),
                         ("startedAtUtc", p.StartedAt), ("durationMs", elapsed.TotalMilliseconds),
                         ("observedFailure", observedFailure), ("latencyPopulationVersion", 2)));
+                    onObservation?.Invoke(new NetworkingPhaseObservation(
+                        timestamp, HttpProvider, "RequestStop", elapsed, p.Host, p.Path, status));
                     httpDurations.Add(elapsed);
                     var key = $"{p.Host} {p.Path}";
                     if (!byOperation.TryGetValue(key, out var group))
@@ -376,20 +406,25 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
             case "Request/Failed":
                 failed++;
                 pending.Fail(traceEvent.ActivityID, timestamp);
+                onObservation?.Invoke(new NetworkingPhaseObservation(timestamp, HttpProvider, "RequestFailed", null));
                 break;
 
             case "ConnectionEstablished":
                 connEstablished++;
+                onObservation?.Invoke(new NetworkingPhaseObservation(timestamp, HttpProvider, name, null));
                 break;
 
             case "ConnectionClosed":
                 connClosed++;
+                onObservation?.Invoke(new NetworkingPhaseObservation(timestamp, HttpProvider, name, null));
                 break;
 
             case "RequestLeftQueue":
                 leftQueue++;
-                AddQueueSample(traceEvent.PayloadByName("timeOnQueueMilliseconds"), queueTimes,
+                var queueSample = AddQueueSample(traceEvent.PayloadByName("timeOnQueueMilliseconds"), queueTimes,
                     observationSink, timestamp, traceEvent.ThreadID);
+                if (queueSample is { } queueDuration)
+                    onObservation?.Invoke(new NetworkingPhaseObservation(timestamp, HttpProvider, name, queueDuration));
                 break;
         }
     }
@@ -411,12 +446,14 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
         ref long failed,
         ICaptureObservationSink? observationSink = null,
         string? provider = null,
-        long? threadId = null)
+        long? threadId = null,
+        Action<NetworkingObservation>? onObservation = null)
     {
         if (name == startName || name == startSlash)
         {
             started++;
             pending.Start(activityId, timestamp, timestamp);
+            onObservation?.Invoke(new NetworkingPhaseObservation(timestamp, provider ?? string.Empty, name, null));
             return true;
         }
 
@@ -430,6 +467,8 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
                     ("provider", provider), ("activityId", activityId), ("startedAtUtc", startedAt),
                     ("durationMs", elapsed.TotalMilliseconds), ("observedFailure", observedFailure),
                     ("latencyPopulationVersion", 2)));
+                onObservation?.Invoke(new NetworkingPhaseObservation(
+                    timestamp, provider ?? string.Empty, stopName, elapsed));
                 durations.Add(elapsed);
             }
 
@@ -440,6 +479,7 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
         {
             failed++;
             pending.Fail(activityId, timestamp);
+            onObservation?.Invoke(new NetworkingPhaseObservation(timestamp, provider ?? string.Empty, name, null));
             return true;
         }
 
@@ -469,7 +509,8 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
         TraceEvent traceEvent,
         string provider,
         Dictionary<string, NetworkingCounterSample> counters,
-        ICaptureObservationSink? observationSink)
+        ICaptureObservationSink? observationSink,
+        Action<NetworkingObservation>? onObservation = null)
     {
         if (traceEvent.PayloadValue(0) is not IDictionary<string, object> outer
             || !outer.TryGetValue("Payload", out var inner)
@@ -507,12 +548,14 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
             ("provider", provider), ("displayName", string.IsNullOrEmpty(display) ? name : display),
             ("value", value), ("unit", string.IsNullOrEmpty(unit) ? null : unit),
             ("counterType", data.ContainsKey("Mean") ? "Mean" : "Increment")));
-        counters[key] = new NetworkingCounterSample(
+        var sample = new NetworkingCounterSample(
             provider,
             name,
             string.IsNullOrEmpty(display) ? name : display,
             value,
             string.IsNullOrEmpty(unit) ? null : unit);
+        counters[key] = sample;
+        onObservation?.Invoke(new NetworkingCounterObservation(ToUtcOffset(traceEvent.TimeStamp), sample));
     }
 
     private static void RecordCorrelation(ICaptureObservationSink? sink, string provider, NetworkingCorrelationCounts counts)
@@ -574,7 +617,7 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
         }
     }
 
-    internal static void AddQueueSample(object? payload, BoundedDurationSampler queueTimes,
+    internal static TimeSpan AddQueueSample(object? payload, BoundedDurationSampler queueTimes,
         ICaptureObservationSink? observationSink = null, DateTimeOffset? timestamp = null, long? threadId = null)
     {
         if (payload is null)
@@ -582,10 +625,12 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
         var milliseconds = ToDouble(payload);
         if (!double.IsFinite(milliseconds) || milliseconds < 0)
             throw new FormatException("RequestLeftQueue duration must be finite and nonnegative.");
-        queueTimes.Add(TimeSpan.FromMilliseconds(milliseconds));
+        var duration = TimeSpan.FromMilliseconds(milliseconds);
+        queueTimes.Add(duration);
         observationSink?.TryAppend(ProviderObservationProjection.Create(
             "networking.http.queue", timestamp, threadId, "RequestLeftQueue",
             ("provider", HttpProvider), ("durationMs", milliseconds)));
+        return duration;
     }
 
     private static string AsString(IDictionary<string, object> data, string key)

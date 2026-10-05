@@ -135,17 +135,37 @@ public static class DiagnosticCoreServiceRegistration
             serviceProvider.GetRequiredService<EventPipeJitCollector>());
         services.AddSingleton<IStreamingJitCollector>(serviceProvider =>
             serviceProvider.GetRequiredService<EventPipeJitCollector>());
-        services.AddSingleton<IThreadPoolCollector, EventPipeThreadPoolCollector>();
+        services.AddSingleton<EventPipeThreadPoolCollector>();
+        services.AddSingleton<IThreadPoolCollector>(serviceProvider =>
+            serviceProvider.GetRequiredService<EventPipeThreadPoolCollector>());
+        services.AddSingleton<IStreamingThreadPoolCollector>(serviceProvider =>
+            serviceProvider.GetRequiredService<EventPipeThreadPoolCollector>());
         services.AddSingleton<EventPipeContentionCollector>();
         services.AddSingleton<IContentionCollector>(serviceProvider =>
             serviceProvider.GetRequiredService<EventPipeContentionCollector>());
         services.AddSingleton<IStreamingContentionCollector>(serviceProvider =>
             serviceProvider.GetRequiredService<EventPipeContentionCollector>());
-        services.AddSingleton<IDbCollector, EventPipeDbCollector>();
-        services.AddSingleton<IKestrelCollector, EventPipeKestrelCollector>();
+        services.AddSingleton<EventPipeDbCollector>();
+        services.AddSingleton<IDbCollector>(serviceProvider =>
+            serviceProvider.GetRequiredService<EventPipeDbCollector>());
+        services.AddSingleton<IStreamingDbCollector>(serviceProvider =>
+            serviceProvider.GetRequiredService<EventPipeDbCollector>());
+        services.AddSingleton<EventPipeKestrelCollector>();
+        services.AddSingleton<IKestrelCollector>(serviceProvider =>
+            serviceProvider.GetRequiredService<EventPipeKestrelCollector>());
+        services.AddSingleton<IStreamingKestrelCollector>(serviceProvider =>
+            serviceProvider.GetRequiredService<EventPipeKestrelCollector>());
         services.AddSingleton<IInFlightRequestCollector, EventPipeInFlightRequestCollector>();
-        services.AddSingleton<INetworkingCollector, EventPipeNetworkingCollector>();
-        services.AddSingleton<IStartupCollector, EventPipeStartupCollector>();
+        services.AddSingleton<EventPipeNetworkingCollector>();
+        services.AddSingleton<INetworkingCollector>(serviceProvider =>
+            serviceProvider.GetRequiredService<EventPipeNetworkingCollector>());
+        services.AddSingleton<IStreamingNetworkingCollector>(serviceProvider =>
+            serviceProvider.GetRequiredService<EventPipeNetworkingCollector>());
+        services.AddSingleton<EventPipeStartupCollector>();
+        services.AddSingleton<IStartupCollector>(serviceProvider =>
+            serviceProvider.GetRequiredService<EventPipeStartupCollector>());
+        services.AddSingleton<IStreamingStartupCollector>(serviceProvider =>
+            serviceProvider.GetRequiredService<EventPipeStartupCollector>());
         services.AddSingleton<IMethodParameterCaptureCollector, MethodParameterCaptureCollector>();
         services.AddSingleton<DotnetDiagnostics.Core.GatedCapture.IThresholdGatedCaptureCollector, DotnetDiagnostics.Core.GatedCapture.ThresholdGatedCaptureCollector>();
         services.AddSingleton<IProcessDumper, DiagnosticsClientDumper>();

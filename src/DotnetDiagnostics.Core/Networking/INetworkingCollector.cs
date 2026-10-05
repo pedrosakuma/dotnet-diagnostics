@@ -14,3 +14,30 @@ public interface INetworkingCollector
         int intervalSeconds = 1,
         CancellationToken cancellationToken = default);
 }
+
+/// <summary>Collects networking events while publishing typed activity observations incrementally.</summary>
+public interface IStreamingNetworkingCollector
+{
+    Task<NetworkingSnapshot> CollectStreamingAsync(
+        int processId,
+        TimeSpan duration,
+        Action<NetworkingObservation> onObservation,
+        int intervalSeconds = 1,
+        CancellationToken cancellationToken = default);
+}
+
+/// <summary>Base type for incremental networking observations.</summary>
+public abstract record NetworkingObservation(DateTimeOffset Timestamp);
+
+public sealed record NetworkingPhaseObservation(
+    DateTimeOffset Timestamp,
+    string Provider,
+    string Phase,
+    TimeSpan? Duration,
+    string? Host = null,
+    string? Path = null,
+    int? StatusCode = null) : NetworkingObservation(Timestamp);
+
+public sealed record NetworkingCounterObservation(
+    DateTimeOffset Timestamp,
+    NetworkingCounterSample Sample) : NetworkingObservation(Timestamp);

@@ -12,7 +12,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace DotnetDiagnostics.Core.ThreadPool;
 
-public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
+public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector, IStreamingThreadPoolCollector
 {
     private const string RuntimeProvider = "Microsoft-Windows-DotNETRuntime";
     private const long ThreadingKeyword = 0x10000;
@@ -57,10 +57,27 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
         _logger = logger ?? NullLogger<EventPipeThreadPoolCollector>.Instance;
     }
 
-    public async Task<ThreadPoolEventSnapshot> CollectAsync(
+    public Task<ThreadPoolEventSnapshot> CollectAsync(
         int processId,
         TimeSpan duration,
         CancellationToken cancellationToken = default)
+        => CollectCoreAsync(processId, duration, null, cancellationToken);
+
+    public Task<ThreadPoolEventSnapshot> CollectStreamingAsync(
+        int processId,
+        TimeSpan duration,
+        Action<ThreadPoolObservation> onObservation,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(onObservation);
+        return CollectCoreAsync(processId, duration, onObservation, cancellationToken);
+    }
+
+    private async Task<ThreadPoolEventSnapshot> CollectCoreAsync(
+        int processId,
+        TimeSpan duration,
+        Action<ThreadPoolObservation>? onObservation,
+        CancellationToken cancellationToken)
     {
         if (duration <= TimeSpan.Zero)
         {
@@ -81,9 +98,9 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
         var notes = new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
         var observedEventNames = new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
         var recording = CaptureRecordingContext.Current;
-        var workerSamples = CreateCountQueue(MaxTimelineSamples, "worker", recording);
-        var iocpSamples = CreateCountQueue(MaxTimelineSamples, "iocp", recording);
-        var hillClimbing = CreateAdjustmentQueue(MaxTimelineSamples, recording);
+        var workerSamples = CreateCountQueue(MaxTimelineSamples, "worker", recording, onObservation);
+        var iocpSamples = CreateCountQueue(MaxTimelineSamples, "iocp", recording, onObservation);
+        var hillClimbing = CreateAdjustmentQueue(MaxTimelineSamples, recording, onObservation);
         var workItemOrigins = new ConcurrentDictionary<string, int>(StringComparer.Ordinal);
         ThreadPoolEffectiveSettings? effectiveSettings = null;
         double? latestThroughput = null;
@@ -248,6 +265,8 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
                             {
                                 workItemOrigins.AddOrUpdate(origin, 1, static (_, count) => count + 1);
                             }
+                            onObservation?.Invoke(new ThreadPoolWorkItemObservation(
+                                timestamp, "enqueue", string.IsNullOrWhiteSpace(origin) ? null : origin));
 
                             break;
                         }
@@ -256,6 +275,7 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
                             if (TryReadEffectiveSettings(traceEvent, out var updatedSettings))
                             {
                                 effectiveSettings = updatedSettings;
+                                onObservation?.Invoke(new ThreadPoolSettingsObservation(timestamp, updatedSettings));
                                 recording?.TryAppend(new("threadpool.settings", timestamp, traceEvent.ThreadID, eventName,
                                 [
                                     F.Int64("workerMinThreads", updatedSettings.WorkerMinThreads),
@@ -271,6 +291,7 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
                         case "ThreadPoolDequeue":
                         {
                             Interlocked.Increment(ref totalDequeueEvents);
+                            onObservation?.Invoke(new ThreadPoolWorkItemObservation(timestamp, "dequeue", null));
                             recording?.TryAppend(new("threadpool.work", timestamp, traceEvent.ThreadID, "dequeue", []));
                             break;
                         }
@@ -961,11 +982,21 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
         }
     }
 
-    internal static FixedCapacityQueue<CountSample> CreateCountQueue(int capacity, string kind, ICaptureObservationSink? sink)
-        => new(capacity, sink is null ? null : sample => RuntimeObservationProjection.ThreadCount(sink, kind, sample));
+    internal static FixedCapacityQueue<CountSample> CreateCountQueue(int capacity, string kind,
+        ICaptureObservationSink? sink, Action<ThreadPoolObservation>? onObservation = null)
+        => new(capacity, sample =>
+        {
+            if (sink is not null) RuntimeObservationProjection.ThreadCount(sink, kind, sample);
+            onObservation?.Invoke(new ThreadPoolCountObservation(sample.Timestamp, kind, sample.Count, sample.Provenance));
+        });
 
-    internal static FixedCapacityQueue<ThreadPoolHillClimbingSample> CreateAdjustmentQueue(int capacity, ICaptureObservationSink? sink)
-        => new(capacity, sink is null ? null : sample => RuntimeObservationProjection.HillClimbing(sink, sample));
+    internal static FixedCapacityQueue<ThreadPoolHillClimbingSample> CreateAdjustmentQueue(int capacity,
+        ICaptureObservationSink? sink, Action<ThreadPoolObservation>? onObservation = null)
+        => new(capacity, sample =>
+        {
+            if (sink is not null) RuntimeObservationProjection.HillClimbing(sink, sample);
+            onObservation?.Invoke(new ThreadPoolHillClimbingObservation(sample.Timestamp, sample));
+        });
 
     internal sealed class FixedCapacityQueue<T>
     {

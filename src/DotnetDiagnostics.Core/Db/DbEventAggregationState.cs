@@ -5,7 +5,9 @@ using DotnetDiagnostics.Core.CaptureRecording;
 
 namespace DotnetDiagnostics.Core.Db;
 
-internal sealed class DbEventAggregationState(ICaptureObservationSink? observationSink = null)
+internal sealed class DbEventAggregationState(
+    ICaptureObservationSink? observationSink = null,
+    Action<DbObservation>? onObservation = null)
 {
     private const int NPlusOneThreshold = 10;
     internal const int MaxTrackedPendingCommands = 2048;
@@ -77,6 +79,16 @@ internal sealed class DbEventAggregationState(ICaptureObservationSink? observati
     public void CompleteCommand(PendingCommand pending, DateTimeOffset stoppedAt, double durationMs, long? threadId = null)
     {
         TotalCommands++;
+        onObservation?.Invoke(new DbCommandObservation(
+            stoppedAt,
+            pending.Provider,
+            pending.CommandTextHash,
+            pending.CommandTextSanitized,
+            pending.ConnectionStringSanitized,
+            pending.ScopeId,
+            pending.CapturePairingUncertain || pending.CaptureTimingUnavailable ? null : pending.StartedAt,
+            pending.CapturePairingUncertain || pending.CaptureTimingUnavailable ? null : durationMs,
+            !pending.CapturePairingUncertain));
         observationSink?.TryAppend(ProviderObservationProjection.Create(
             pending.CapturePairingUncertain ? "db.command.ambiguous-aggregate-input" : "db.command.completion",
             stoppedAt, threadId, pending.CommandTextSanitized,
@@ -110,6 +122,7 @@ internal sealed class DbEventAggregationState(ICaptureObservationSink? observati
     internal void RecordPoolCounter(string provider, string name, double value, DateTimeOffset timestamp, long threadId)
     {
         GetOrAddPoolStats(provider).ObserveCounter(name, value);
+        onObservation?.Invoke(new DbConnectionPoolObservation(timestamp, provider, name, value));
         observationSink?.TryAppend(ProviderObservationProjection.Create(
             "db.pool.counter.aggregate", timestamp, threadId, name,
             ("provider", provider), ("value", value), ("unit", null)));

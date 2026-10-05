@@ -15,7 +15,7 @@ namespace DotnetDiagnostics.Core.Kestrel;
 /// <see cref="KestrelSnapshot"/>. The Configuration event (id 11, <see cref="EventLevel.LogAlways"/>)
 /// is emitted at session enable and carries the live <c>KestrelServerOptions</c> JSON for free.
 /// </summary>
-public sealed class EventPipeKestrelCollector : IKestrelCollector
+public sealed class EventPipeKestrelCollector : IKestrelCollector, IStreamingKestrelCollector
 {
     private const string KestrelProviderName = "Microsoft-AspNetCore-Server-Kestrel";
     private const string ConnectionQueueLengthCounter = "connection-queue-length";
@@ -35,11 +35,30 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
         _logger = logger ?? NullLogger<EventPipeKestrelCollector>.Instance;
     }
 
-    public async Task<KestrelSnapshot> CollectAsync(
+    public Task<KestrelSnapshot> CollectAsync(
         int processId,
         TimeSpan duration,
         int intervalSeconds = 1,
         CancellationToken cancellationToken = default)
+        => CollectCoreAsync(processId, duration, null, intervalSeconds, cancellationToken);
+
+    public Task<KestrelSnapshot> CollectStreamingAsync(
+        int processId,
+        TimeSpan duration,
+        Action<KestrelObservation> onObservation,
+        int intervalSeconds = 1,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(onObservation);
+        return CollectCoreAsync(processId, duration, onObservation, intervalSeconds, cancellationToken);
+    }
+
+    private async Task<KestrelSnapshot> CollectCoreAsync(
+        int processId,
+        TimeSpan duration,
+        Action<KestrelObservation>? onObservation,
+        int intervalSeconds,
+        CancellationToken cancellationToken)
     {
         var observationSink = CaptureRecordingContext.Current;
         if (duration <= TimeSpan.Zero)
@@ -117,11 +136,13 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
                         switch (traceEvent.EventName)
                         {
                             case "EventCounters":
-                                HandleCounter(traceEvent, timestamp, counters, queuePoints, ref peakConnectionQueue, ref peakRequestQueue, ref droppedQueuePoints, observationSink);
+                                HandleCounter(traceEvent, timestamp, counters, queuePoints, ref peakConnectionQueue,
+                                    ref peakRequestQueue, ref droppedQueuePoints, observationSink, onObservation);
                                 break;
 
                             case "ConnectionStart":
                             case "Connection/Start":
+                                onObservation?.Invoke(new KestrelObservation(timestamp, traceEvent.EventName));
                                 connectionsStarted++;
                                 AddPending(
                                     pendingConnections,
@@ -137,24 +158,29 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
                             case "Connection/Stop":
                                 connectionsStopped++;
                                 ExpirePending(pendingConnections, timestamp, static entry => entry, ref expiredConnections);
-                                RecordPairedDuration(pendingConnections, PayloadString(traceEvent, "connectionId"), timestamp, connectionDurations);
+                                var connectionDuration = RecordPairedDuration(pendingConnections, PayloadString(traceEvent, "connectionId"), timestamp, connectionDurations);
+                                onObservation?.Invoke(new KestrelObservation(timestamp, traceEvent.EventName, Duration: connectionDuration));
                                 break;
 
                             case "ConnectionRejected":
                             case "Connection/Rejected":
                                 connectionsRejected++;
+                                onObservation?.Invoke(new KestrelObservation(timestamp, traceEvent.EventName));
                                 break;
 
                             case "RequestStart":
                             case "Request/Start":
                                 requestsStarted++;
+                                var requestMethod = PayloadString(traceEvent, "method");
+                                var requestPath = NormalizePath(PayloadString(traceEvent, "path"));
+                                onObservation?.Invoke(new KestrelObservation(timestamp, traceEvent.EventName, requestMethod, requestPath));
                                 AddPending(
                                     pendingRequests,
                                     RequestKey(traceEvent),
                                     new PendingRequest(
                                     timestamp,
-                                    PayloadString(traceEvent, "method"),
-                                    NormalizePath(PayloadString(traceEvent, "path")),
+                                    requestMethod,
+                                    requestPath,
                                     PayloadString(traceEvent, "httpVersion")),
                                     timestamp,
                                     static entry => entry.StartedAt,
@@ -166,12 +192,16 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
                             case "Request/Stop":
                                 requestsStopped++;
                                 ExpirePending(pendingRequests, timestamp, static entry => entry.StartedAt, ref expiredRequests);
-                                HandleRequestStop(traceEvent, timestamp, pendingRequests, byOperation, overflowOperation, requestDurations, ref overflowedOperations);
+                                HandleRequestStop(traceEvent, timestamp, pendingRequests, byOperation, overflowOperation,
+                                    requestDurations, ref overflowedOperations, out var requestObservation);
+                                if (requestObservation is { } request) onObservation?.Invoke(request);
                                 break;
 
                             case "TlsHandshakeStart":
                             case "TlsHandshake/Start":
                                 tlsStarted++;
+                                var startProtocols = PayloadString(traceEvent, "sslProtocols");
+                                onObservation?.Invoke(new KestrelObservation(timestamp, traceEvent.EventName, Protocols: startProtocols));
                                 AddPending(
                                     pendingTls,
                                     PayloadString(traceEvent, "connectionId"),
@@ -180,7 +210,6 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
                                     static entry => entry,
                                     ref expiredTls,
                                     ref evictedTls);
-                                var startProtocols = PayloadString(traceEvent, "sslProtocols");
                                 if (!string.IsNullOrWhiteSpace(startProtocols))
                                 {
                                     tlsProtocols.Add(startProtocols);
@@ -192,8 +221,10 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
                             case "TlsHandshake/Stop":
                                 tlsStopped++;
                                 ExpirePending(pendingTls, timestamp, static entry => entry, ref expiredTls);
-                                RecordPairedDuration(pendingTls, PayloadString(traceEvent, "connectionId"), timestamp, tlsDurations);
+                                var tlsDuration = RecordPairedDuration(pendingTls, PayloadString(traceEvent, "connectionId"), timestamp, tlsDurations);
                                 var stopProtocols = PayloadString(traceEvent, "sslProtocols");
+                                onObservation?.Invoke(new KestrelObservation(timestamp, traceEvent.EventName,
+                                    Duration: tlsDuration, Protocols: stopProtocols));
                                 if (!string.IsNullOrWhiteSpace(stopProtocols))
                                 {
                                     tlsProtocols.Add(stopProtocols);
@@ -204,6 +235,8 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
                             case "TlsHandshakeFailed":
                             case "TlsHandshake/Failed":
                                 tlsFailed++;
+                                onObservation?.Invoke(new KestrelObservation(timestamp, traceEvent.EventName,
+                                    Protocols: PayloadString(traceEvent, "sslProtocols")));
                                 ExpirePending(pendingTls, timestamp, static entry => entry, ref expiredTls);
                                 pendingTls.Remove(PayloadString(traceEvent, "connectionId"));
                                 break;
@@ -340,8 +373,10 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
         Dictionary<string, MutableRequestGroup> byOperation,
         MutableRequestGroup overflowOperation,
         BoundedDurationSampler requestDurations,
-        ref int overflowedOperations)
+        ref int overflowedOperations,
+        out KestrelObservation? observation)
     {
+        observation = null;
         var key = RequestKey(traceEvent);
         if (!pendingRequests.Remove(key, out var pending))
         {
@@ -354,6 +389,8 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
             elapsed = TimeSpan.Zero;
         }
 
+        observation = new KestrelObservation(timestamp, traceEvent.EventName,
+            pending.Method, pending.Path, elapsed);
         requestDurations.Add(elapsed);
 
         var groupKey = $"{pending.Method} {pending.Path} {pending.HttpVersion}";
@@ -381,7 +418,8 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
         ref long peakConnectionQueue,
         ref long peakRequestQueue,
         ref int droppedQueuePoints,
-        ICaptureObservationSink? observationSink)
+        ICaptureObservationSink? observationSink,
+        Action<KestrelObservation>? onObservation = null)
     {
         if (traceEvent.PayloadValue(0) is not IDictionary<string, object> outer
             || !outer.TryGetValue("Payload", out var inner)
@@ -413,11 +451,14 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
             return;
         }
 
-        counters[name] = new KestrelCounterSample(
+        var sample = new KestrelCounterSample(
             name,
             string.IsNullOrEmpty(display) ? name : display,
             value,
             string.IsNullOrEmpty(unit) ? null : unit);
+        counters[name] = sample;
+        onObservation?.Invoke(new KestrelObservation(timestamp, "EventCounters",
+            CounterName: sample.Name, CounterValue: sample.Value));
         observationSink?.TryAppend(ProviderObservationProjection.Create(
             "kestrel.counter.aggregate", timestamp, traceEvent.ThreadID, name,
             ("provider", KestrelProviderName), ("value", value), ("displayName", string.IsNullOrEmpty(display) ? name : display),
@@ -457,7 +498,7 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
             ("correlated", false)));
     }
 
-    private static void RecordPairedDuration(
+    private static TimeSpan? RecordPairedDuration(
         Dictionary<string, DateTimeOffset> pending,
         string key,
         DateTimeOffset stoppedAt,
@@ -465,10 +506,13 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
     {
         if (string.IsNullOrEmpty(key) || !pending.Remove(key, out var startedAt))
         {
-            return;
+            return null;
         }
 
-        durations.Add(stoppedAt - startedAt);
+        var elapsed = stoppedAt - startedAt;
+        if (elapsed < TimeSpan.Zero) elapsed = TimeSpan.Zero;
+        durations.Add(elapsed);
+        return elapsed;
     }
 
     private static string RequestKey(TraceEvent traceEvent)

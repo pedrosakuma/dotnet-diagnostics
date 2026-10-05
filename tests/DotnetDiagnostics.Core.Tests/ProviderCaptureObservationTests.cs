@@ -43,12 +43,16 @@ public sealed class ProviderCaptureObservationTests
         if (explicitStart is not null) arguments["StartTimeTicks"] = explicitStart;
         if (durationValue is not null) arguments["DurationTicks"] = durationValue;
         var sink = new BoundedSink(2);
-        var state = new DbEventAggregationState(sink);
+        var streamed = new List<DbObservation>();
+        var state = new DbEventAggregationState(sink, streamed.Add);
         new EfCoreBridgeEventParser(new SensitiveDataRedactor()).HandleCompletion(
             "Microsoft.EntityFrameworkCore", arguments, stoppedAt, Guid.Empty, Guid.Empty, 19, state);
         var record = Assert.Single(sink.Records);
         Assert.Equal(unavailable, Field(record, "timingUnavailable").Boolean);
         Assert.Equal(1, state.TotalCommands);
+        var command = Assert.IsType<DbCommandObservation>(Assert.Single(streamed));
+        Assert.Equal(stoppedAt, command.Timestamp);
+        Assert.Equal(unavailable, command.DurationMs is null);
         if (unavailable)
         {
             Assert.Equal(CaptureObservationValueKind.Null, Field(record, "startedAtUtc").Kind);
@@ -234,6 +238,7 @@ public sealed class ProviderCaptureObservationTests
         var sink = new BoundedSink(8);
         var pending = new NetworkingActivityCorrelator<DateTimeOffset>();
         var durations = new BoundedDurationSampler();
+        var streamed = new List<NetworkingObservation>();
         long started = 0, stopped = 0, failed = 0;
         var id = Guid.NewGuid();
         Handle("Stop", 0);
@@ -260,13 +265,16 @@ public sealed class ProviderCaptureObservationTests
         Assert.True(Field(observation, "observedFailure").Boolean);
         Assert.Equal(42, observation.ThreadId);
         Assert.Equal(1, durations.Count);
+        var completed = Assert.Single(streamed.OfType<NetworkingPhaseObservation>()
+            .Where(static item => item.Duration is not null));
+        Assert.Equal(TimeSpan.FromMilliseconds(5), completed.Duration);
         Assert.True(pending.Snapshot().HasLimitations);
 
         void Handle(string suffix, int ms) =>
             EventPipeNetworkingCollector.HandlePaired(prefix + suffix, prefix + "Start", prefix + "/Start",
                 prefix + "Stop", prefix + "/Stop", prefix + "Failed", prefix + "/Failed",
                 id, Start.AddMilliseconds(ms), pending, durations, ref started, ref stopped, ref failed,
-                sink, provider, 42);
+                sink, provider, 42, streamed.Add);
     }
 
     [Fact]

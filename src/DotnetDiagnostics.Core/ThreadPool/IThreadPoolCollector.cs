@@ -10,6 +10,31 @@ public interface IThreadPoolCollector
         CancellationToken cancellationToken = default);
 }
 
+/// <summary>Collects ThreadPool events while publishing typed observations incrementally.</summary>
+public interface IStreamingThreadPoolCollector
+{
+    Task<ThreadPoolEventSnapshot> CollectStreamingAsync(
+        int processId,
+        TimeSpan duration,
+        Action<ThreadPoolObservation> onObservation,
+        CancellationToken cancellationToken = default);
+}
+
+/// <summary>Base type for incremental ThreadPool observations.</summary>
+public abstract record ThreadPoolObservation(DateTimeOffset Timestamp);
+
+public sealed record ThreadPoolCountObservation(
+    DateTimeOffset Timestamp, string Kind, int Count, string Provenance) : ThreadPoolObservation(Timestamp);
+
+public sealed record ThreadPoolHillClimbingObservation(
+    DateTimeOffset Timestamp, ThreadPoolHillClimbingSample Sample) : ThreadPoolObservation(Timestamp);
+
+public sealed record ThreadPoolWorkItemObservation(
+    DateTimeOffset Timestamp, string Operation, string? Origin) : ThreadPoolObservation(Timestamp);
+
+public sealed record ThreadPoolSettingsObservation(
+    DateTimeOffset Timestamp, ThreadPoolEffectiveSettings Settings) : ThreadPoolObservation(Timestamp);
+
 public sealed record ThreadPoolEventSnapshot(
     int ProcessId,
     DateTimeOffset StartedAt,

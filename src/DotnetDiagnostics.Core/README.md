@@ -74,7 +74,8 @@ var completion = await session.Completion;
 `IDiagnosticSession` is the common lifecycle and typed event attachment contract. Event-specific
 session factories can publish additional `DiagnosticSessionEvent` record types without changing
 existing finite collector APIs. Live counters and the `IStreaming*Collector` interfaces for
-exceptions, activities, monitor contention, GC, logs, and JIT publish typed observations incrementally;
+exceptions, activities, monitor contention, GC, logs, JIT, ThreadPool, startup, database activity,
+networking, and Kestrel publish typed observations incrementally;
 other capture families are not yet streamed. Stopping cancels capture
 producers; callbacks continue draining the bounded queue. The callback cancellation token is
 canceled if handler delivery exceeds the shutdown wait budget.

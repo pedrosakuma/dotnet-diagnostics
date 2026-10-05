@@ -25,3 +25,13 @@ public interface IStartupCollector
         TimeSpan duration,
         CancellationToken cancellationToken = default);
 }
+
+/// <summary>Captures startup events while publishing typed observations incrementally.</summary>
+public interface IStreamingStartupCollector
+{
+    Task<StartupSnapshot> CollectStreamingAsync(
+        int processId,
+        TimeSpan duration,
+        Action<StartupObservation> onObservation,
+        CancellationToken cancellationToken = default);
+}

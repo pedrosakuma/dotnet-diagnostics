@@ -299,7 +299,8 @@ public sealed class RuntimeCaptureObservationTests
     public void ThreadPoolTimeline_EmitsBeforeRingEviction_AndPreservesInferenceAndNulls()
     {
         var sink = new BoundedSink(10);
-        var workers = EventPipeThreadPoolCollector.CreateCountQueue(1, "worker", sink);
+        var streamed = new List<ThreadPoolObservation>();
+        var workers = EventPipeThreadPoolCollector.CreateCountQueue(1, "worker", sink, streamed.Add);
         var baseline = EventPipeThreadPoolCollector.CreateCountQueue(1, "worker", null);
         foreach (var sample in new[]
         {
@@ -312,10 +313,14 @@ public sealed class RuntimeCaptureObservationTests
         }
         workers.Items.Should().Equal(baseline.Items);
         workers.DroppedCount.Should().Be(1);
-        var adjustments = EventPipeThreadPoolCollector.CreateAdjustmentQueue(1, sink);
+        var adjustments = EventPipeThreadPoolCollector.CreateAdjustmentQueue(1, sink, streamed.Add);
         adjustments.Enqueue(new(Start, "99", null, 3, null, ThreadPoolEvidence.RuntimeUnrecognized,
             ThreadPoolEvidence.Missing, ThreadPoolEvidence.RuntimeObserved));
         sink.Observations.Should().HaveCount(3);
+        streamed.Should().HaveCount(3, "stream callbacks are independent of bounded timeline retention");
+        streamed[0].Should().BeOfType<ThreadPoolCountObservation>()
+            .Which.Count.Should().Be(2);
+        streamed[2].Should().BeOfType<ThreadPoolHillClimbingObservation>();
         Field(sink.Observations[1], "provenance").Text.Should().Be(ThreadPoolEvidence.InferredFromDelta);
         Field(sink.Observations[2], "oldCount").Kind.Should().Be(CaptureObservationValueKind.Null);
         Field(sink.Observations[2], "latestThroughput").Kind.Should().Be(CaptureObservationValueKind.Null);
