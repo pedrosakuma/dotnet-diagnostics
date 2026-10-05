@@ -53,6 +53,11 @@ Malformed or unsupported requests receive an `error` frame. EOF stops an active 
 emits its terminal frame, and exits. Closing a panel should send `cancel` (or close stdin) before
 disposing the child process.
 
+This protocol remains counter-only. Core also supports composed sessions with typed finite results
+and incremental callbacks for other collectors, but those APIs do not add JSONL commands or enable
+durable recording in this mode. Use the existing finite CLI commands and their explicit capture
+options for persisted evidence.
+
 ## Install
 
 ```bash

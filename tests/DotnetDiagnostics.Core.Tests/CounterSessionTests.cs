@@ -1,4 +1,7 @@
 using DotnetDiagnostics.Core.Counters;
+using DotnetDiagnostics.Core.CpuEfficiency;
+using DotnetDiagnostics.Core.Gc;
+using DotnetDiagnostics.Core.ProcessDiscovery;
 using FluentAssertions;
 
 namespace DotnetDiagnostics.Core.Tests;
@@ -79,6 +82,77 @@ public sealed class CounterSessionTests
         baseSequences.Should().Contain(sequences[0]);
         completion.Status.Should().Be(DiagnosticSessionStatus.Completed);
         completion.DroppedObservations.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task ComposedSession_NamedDiagnosticCapturePreservesEnvelopeWithoutPersistence()
+    {
+        await using var session = new ComposedDiagnosticSession(1);
+        var original = DiagnosticResult.Fail<int>("unavailable", new("PermissionDenied", "attach denied"));
+        DiagnosticResult<int>? delivered = null;
+        using var subscription = session.Attach<DiagnosticSessionCaptureResult<DiagnosticResult<int>>>((item, _) =>
+        {
+            delivered = item.Result;
+            return ValueTask.CompletedTask;
+        });
+        session.AddDiagnosticCapture("cpu", "sample", _ => Task.FromResult(original));
+
+        await session.StartAsync();
+        var completion = await session.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+
+        delivered.Should().BeSameAs(original);
+        completion.Status.Should().Be(DiagnosticSessionStatus.Completed,
+            "delivery completion does not reinterpret the diagnostic envelope");
+    }
+
+    [Fact]
+    public async Task ComposedSession_FiniteFamiliesKeepTheirOriginalResultTypes()
+    {
+        var at = DateTimeOffset.UnixEpoch;
+        var datas = new GcDatasSnapshot(1, at, TimeSpan.FromSeconds(1), [], [], [], new(0, 0, 0));
+        var sampler = new CpuEfficiencySample(1, at, TimeSpan.FromSeconds(1), "perf-stat");
+        var requests = new RequestsNowSnapshot(1, at, TimeSpan.FromSeconds(1), []);
+        await using var session = new ComposedDiagnosticSession(1);
+        var delivered = 0;
+        using var datasSubscription = session.Attach<DiagnosticSessionCaptureResult<GcDatasSnapshot>>((item, _) =>
+        {
+            item.Result.Should().BeSameAs(datas);
+            delivered++;
+            return ValueTask.CompletedTask;
+        });
+        using var samplerSubscription = session.Attach<DiagnosticSessionCaptureResult<CpuEfficiencySample>>((item, _) =>
+        {
+            item.Result.Should().BeSameAs(sampler);
+            delivered++;
+            return ValueTask.CompletedTask;
+        });
+        using var requestSubscription = session.Attach<DiagnosticSessionCaptureResult<RequestsNowSnapshot>>((item, _) =>
+        {
+            item.Result.Should().BeSameAs(requests);
+            delivered++;
+            return ValueTask.CompletedTask;
+        });
+        session.AddCapture("datas", "post-processing", _ => Task.FromResult(datas));
+        session.AddCapture("cpu-efficiency", "sampler", _ => Task.FromResult(sampler));
+        session.AddCapture("requests-now", "snapshot", _ => Task.FromResult(requests));
+
+        await session.StartAsync();
+        var completion = await session.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+
+        delivered.Should().Be(3);
+        completion.Status.Should().Be(DiagnosticSessionStatus.Completed);
+    }
+
+    [Theory]
+    [InlineData("", "capture")]
+    [InlineData("cpu", "")]
+    public void ComposedSession_NamedCaptureRejectsMissingRouteMetadata(string kind, string name)
+    {
+        var session = new ComposedDiagnosticSession(1);
+
+        Action act = () => session.AddCapture(kind, name, _ => Task.FromResult(1));
+
+        act.Should().Throw<ArgumentException>();
     }
 
     [Fact]

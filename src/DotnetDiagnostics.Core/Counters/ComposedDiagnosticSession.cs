@@ -1,3 +1,5 @@
+using DotnetDiagnostics.Core.CaptureRecording;
+
 namespace DotnetDiagnostics.Core.Counters;
 
 /// <summary>
@@ -116,6 +118,42 @@ public sealed class ComposedDiagnosticSession : IDiagnosticSession
     }
 
     /// <summary>
+    /// Adds a named finite capture. An active evidence-recording scope gets a separate child route
+    /// containing the original typed result; without recording this behaves like <see cref="AddCapture{TCapture}(Func{CancellationToken, Task{TCapture}})"/>.
+    /// </summary>
+    public void AddCapture<TCapture>(
+        string kind,
+        string name,
+        Func<CancellationToken, Task<TCapture>> capture)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(kind);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(capture);
+        AddCapture(token => CaptureRecordingContext.RunChildAsync(
+            kind, name, capture,
+            static (sink, result) => sink.ReportCompletion(null, cancelled: false, result), token));
+    }
+
+    /// <summary>
+    /// Adds a named use-case capture, preserving its diagnostic envelope in callbacks and reporting
+    /// its structured error, cancellation, and payload to an active evidence-recording scope.
+    /// </summary>
+    public void AddDiagnosticCapture<T>(
+        string kind,
+        string name,
+        Func<CancellationToken, Task<DiagnosticResult<T>>> capture)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(kind);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(capture);
+        AddCapture(token => CaptureRecordingContext.RunChildAsync(
+            kind, name, async cancellationToken =>
+                await capture(cancellationToken).ConfigureAwait(false)
+                    ?? throw new InvalidOperationException("Capture returned no diagnostic result."),
+            static (sink, result) => sink.ReportCompletion(result.Error, result.Cancelled, result.Data), token));
+    }
+
+    /// <summary>
     /// Adds a finite capture that publishes typed observations while it runs and its typed
     /// terminal result when it completes.
     /// </summary>
@@ -130,6 +168,26 @@ public sealed class ComposedDiagnosticSession : IDiagnosticSession
                 timestampSelector?.Invoke(observation) ?? DateTimeOffset.UtcNow,
                 observation)),
             cancellationToken));
+    }
+
+    /// <summary>
+    /// Adds a named streaming capture whose producer records into its own child evidence route.
+    /// Delivery drops do not prevent the producer from recording observations.
+    /// </summary>
+    public void AddStreamingCapture<TObservation, TCapture>(
+        string kind,
+        string name,
+        Func<Action<TObservation>, CancellationToken, Task<TCapture>> capture,
+        Func<TObservation, DateTimeOffset>? timestampSelector = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(kind);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(capture);
+        AddStreamingCapture<TObservation, TCapture>((publish, token) =>
+            CaptureRecordingContext.RunChildAsync(
+                kind, name, cancellationToken => capture(publish, cancellationToken),
+                static (sink, result) => sink.ReportCompletion(null, cancelled: false, result), token),
+            timestampSelector);
     }
 
     /// <summary>
@@ -162,6 +220,20 @@ public sealed class ComposedDiagnosticSession : IDiagnosticSession
                 return null;
             });
         }
+    }
+
+    /// <summary>Adds a named heterogeneous capture with its own child evidence-recording route.</summary>
+    public void AddEventCapture<TCapture>(
+        string kind,
+        string name,
+        Func<Action<DiagnosticSessionEvent>, CancellationToken, Task<TCapture>> capture)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(kind);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(capture);
+        AddEventCapture<TCapture>((publish, token) => CaptureRecordingContext.RunChildAsync(
+            kind, name, cancellationToken => capture(publish, cancellationToken),
+            static (sink, result) => sink.ReportCompletion(null, cancelled: false, result), token));
     }
 
     /// <inheritdoc />

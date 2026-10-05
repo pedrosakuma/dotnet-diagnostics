@@ -100,6 +100,51 @@ For example, attach a `CounterObservation` handler and a
 capture families then share one start/stop lifecycle and callback queue; the exception snapshot is
 also delivered as a `DiagnosticSessionCaptureResult<ExceptionSnapshot>`.
 
+### Finite operations and evidence recording
+
+`AddCapture<T>` accepts any existing asynchronous collector result without a family-specific adapter.
+Use it for GC DATAS post-processing, CPU/allocation/off-CPU/native samplers, CPU-efficiency sampling,
+method-parameter capture, dump/heap/thread inspection, requests-now, and other point-in-time operations.
+The callback gets the original result, including handles and partial/error/cancellation information
+when the capture returns a `DiagnosticResult<T>`. A completed session means its producers and callback
+delivery finished; it does not turn a failed diagnostic envelope into a successful diagnostic result.
+
+```csharp
+await using var session = new ComposedDiagnosticSession(pid);
+using var subscription =
+    session.Attach<DiagnosticSessionCaptureResult<DiagnosticResult<GcDatasSnapshot>>>((item, token) =>
+    {
+        Console.WriteLine(item.Result.Summary);
+        return ValueTask.CompletedTask;
+    });
+session.AddDiagnosticCapture("datas", "GC tuning", token =>
+    EventCollectionUseCases.CollectGcDatas(datasCollector, processResolver, handleStore,
+        processId: pid, durationSeconds: 10, cancellationToken: token));
+await session.StartAsync(cancellationToken);
+var completion = await session.Completion;
+```
+
+Named `AddCapture(kind, name, ...)`, `AddStreamingCapture(kind, name, ...)`, and
+`AddEventCapture(kind, name, ...)` sources enter separate child routes when started inside an existing
+evidence-recording scope. Use `AddDiagnosticCapture` for use-case envelopes: it records the structured
+error, cancellation flag, and typed payload without persisting the envelope as an arbitrary object.
+The raw named overloads expect snapshot/artifact results, not `DiagnosticResult<T>` envelopes.
+Without an active recording scope, named sources remain ephemeral and never open SQLite themselves.
+
+For durable composition, execute `StartAsync` and await `Completion` **inside** a
+`DurableCaptureUseCases.CaptureAsync` operation using the existing `batch` parent kind. Capture kinds
+and retained artifact types must be supported by the durable codec; a session does not make unsupported
+operations persistable. Collectors continue using their existing bounded, redacted observation
+projections. Final typed child results are retained independently of callback delivery, so a full
+session queue can drop even a terminal callback without losing that producer's recorded snapshot.
+`DiagnosticSessionCompletion.DroppedObservations` measures callback-queue loss, not SQLite record loss;
+the durable capture's quality metadata reports recording/source loss separately.
+
+Plain unnamed sources and `AddSession` do not establish child recording routes. A child live counter
+session does not currently record its callbacks through this bridge; use a named finite counter
+capture for durable counter evidence. No generic callback-to-JSON or callback-to-SQLite serializer is
+introduced.
+
 ### Example
 
 ```csharp
