@@ -77,10 +77,11 @@ existing finite collector APIs. Live counters and the `IStreaming*Collector` int
 exceptions, activities, monitor contention, GC, logs, JIT, ThreadPool, startup, database activity,
 networking, Kestrel, crash-guard exceptions, generic EventSource events, EventSource catalog metadata,
 in-flight request lifecycle events, memory trend samples, and process-resource samples publish typed
-observations incrementally. DATAS post-processing, CPU/allocation samplers, point-in-time readers,
-and other offline aggregations can still be added as typed terminal results. Stopping cancels capture
-producers; callbacks continue draining the bounded queue. The callback cancellation token is
-canceled if handler delivery exceeds the shutdown wait budget.
+observations incrementally. GC DATAS post-processing, CPU/allocation samplers, point-in-time readers,
+and other offline aggregations remain finite operations; add them with `AddCapture` to publish their
+typed terminal result rather than implying live observations their collectors do not expose. Stopping
+cancels capture producers; callbacks continue draining the bounded queue. The callback cancellation
+token is canceled if handler delivery exceeds the shutdown wait budget.
 
 Use `ComposedDiagnosticSession` when one consumer needs multiple capture families in one lifecycle.
 Add live sessions with `AddSession`; add existing finite collector/use-case calls with
