@@ -323,7 +323,6 @@ public sealed class CounterSession : IDiagnosticSession
             {
                 processing = await processingTask.WaitAsync(ShutdownWaitBudget).ConfigureAwait(false);
                 eventsLost = processing.EventPipeEventsLost;
-                shutdownError ??= processing.Error;
             }
             catch (TimeoutException ex)
             {
@@ -374,10 +373,14 @@ public sealed class CounterSession : IDiagnosticSession
                 processing?.Error,
                 shutdownError,
                 _dispatchError);
-            if (status == DiagnosticSessionStatus.Failed && error is null)
+            if (status == DiagnosticSessionStatus.Failed)
             {
-                error = new InvalidOperationException(
+                error ??= new InvalidOperationException(
                     $"The EventPipe counter stream for process {ProcessId} ended while the target process was still running.");
+            }
+            else
+            {
+                error = null;
             }
 
             _completion.TrySetResult(new DiagnosticSessionCompletion(

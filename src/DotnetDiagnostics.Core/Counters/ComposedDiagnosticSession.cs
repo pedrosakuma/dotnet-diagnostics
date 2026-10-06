@@ -395,6 +395,8 @@ public sealed class ComposedDiagnosticSession : IDiagnosticSession
         var knownEventLosses = sourceCompletions
             .Where(completion => completion.EventPipeEventsLost.HasValue)
             .Sum(completion => completion.EventPipeEventsLost!.Value);
+        var droppedObservations = _events.DroppedObservations
+            + sourceCompletions.Sum(completion => completion.DroppedObservations);
 
         _completion.TrySetResult(new DiagnosticSessionCompletion(
             status,
@@ -403,7 +405,7 @@ public sealed class ComposedDiagnosticSession : IDiagnosticSession
             sourceCompletions.Any(completion => completion.EventPipeEventsLost.HasValue)
                 ? knownEventLosses
                 : null,
-            _events.DroppedObservations,
+            droppedObservations,
             error));
 
         _stopSource.Dispose();

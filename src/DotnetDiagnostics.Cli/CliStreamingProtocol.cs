@@ -362,6 +362,10 @@ and observationCapacity. Send stop or cancel with the returned sessionId.
 
     private sealed class ActiveSession(CounterSession session, string sessionId, ProtocolWriter writer)
     {
+        // Matches the Core session's own shutdown budget (see CounterSession.ShutdownWaitBudget) so a
+        // stuck stdout pipe cannot make stop/cancel/EOF handling hang indefinitely.
+        private static readonly TimeSpan TerminalWriteBudget = TimeSpan.FromSeconds(5);
+
         private readonly TaskCompletionSource _eventsAllowed =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         private IDisposable? _counterSubscription;
@@ -372,9 +376,9 @@ and observationCapacity. Send stop or cancel with the returned sessionId.
 
         public async Task StartAsync(CancellationToken cancellationToken)
         {
-            _counterSubscription = Session.Attach<CounterObservation>(async (observation, _) =>
+            _counterSubscription = Session.Attach<CounterObservation>(async (observation, handlerCancellationToken) =>
             {
-                await _eventsAllowed.Task.ConfigureAwait(false);
+                await _eventsAllowed.Task.WaitAsync(handlerCancellationToken).ConfigureAwait(false);
                 await writer.WriteAsync(new
                 {
                     type = "observation",
@@ -382,7 +386,7 @@ and observationCapacity. Send stop or cancel with the returned sessionId.
                     observation.Sequence,
                     observation.Timestamp,
                     counter = observation.Counter,
-                }, CancellationToken.None).ConfigureAwait(false);
+                }, handlerCancellationToken).ConfigureAwait(false);
             });
             await Session.StartAsync(cancellationToken).ConfigureAwait(false);
         }
@@ -394,19 +398,32 @@ and observationCapacity. Send stop or cancel with the returned sessionId.
         private async Task PublishTerminalWhenCompleteAsync()
         {
             var completion = await Session.Completion.ConfigureAwait(false);
-            await _eventsAllowed.Task.ConfigureAwait(false);
-            await writer.WriteAsync(new
+            // The session has already finished dispatching; this flush is best-effort and bounded so a
+            // wedged stdout consumer cannot block the CLI's stop/cancel/EOF handling forever.
+            try
             {
-                type = "terminal",
-                sessionId = SessionId,
-                completion.Status,
-                completion.StartedAt,
-                completion.EndedAt,
-                completion.EventPipeEventsLost,
-                completion.DroppedObservations,
-                error = completion.Error?.Message,
-            }, CancellationToken.None).ConfigureAwait(false);
-            _counterSubscription?.Dispose();
+                await _eventsAllowed.Task.WaitAsync(TerminalWriteBudget).ConfigureAwait(false);
+                await writer.WriteAsync(new
+                {
+                    type = "terminal",
+                    sessionId = SessionId,
+                    completion.Status,
+                    completion.StartedAt,
+                    completion.EndedAt,
+                    completion.EventPipeEventsLost,
+                    completion.DroppedObservations,
+                    error = completion.Error?.Message,
+                }, CancellationToken.None).WaitAsync(TerminalWriteBudget).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                // Best-effort: the terminal frame could not be delivered within budget. The caller's
+                // overall stop/cancel/EOF handling must still complete.
+            }
+            finally
+            {
+                _counterSubscription?.Dispose();
+            }
         }
     }
 

@@ -321,12 +321,62 @@ public sealed class CounterSessionTests
     }
 
     [Fact]
+    public async Task ComposedSession_AggregatesChildDroppedObservationsIntoCompletion()
+    {
+        await using var session = new ComposedDiagnosticSession(processId: 1);
+        using var subscription = session.Attach<CounterObservation>((_, _) => ValueTask.CompletedTask);
+        session.AddSession(new CompletedCounterSession(processId: 1, droppedObservations: 7));
+
+        await session.StartAsync();
+        var completion = await session.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+
+        completion.DroppedObservations.Should().Be(
+            7,
+            "a composed session must surface drops reported by its child sessions, not only its own buffer");
+    }
+
+    [Fact]
     public void DetermineStatus_WhenSourceFailsWhileTargetLives_ReportsFailure()
     {
         CounterSession.DetermineStatus(
             stopRequested: false,
             targetAlive: true,
             processingError: new InvalidOperationException("source failed"),
+            shutdownError: null)
+            .Should().Be(DiagnosticSessionStatus.Failed);
+    }
+
+    [Fact]
+    public void DetermineStatus_WhenStoppedWithExpectedStreamCloseError_ReportsStopped()
+    {
+        // StopAndDrainAsync can surface an IOException from the EventPipe stream closing as part of
+        // an owner-requested stop; that is expected and must not be classified as a failure.
+        CounterSession.DetermineStatus(
+            stopRequested: true,
+            targetAlive: true,
+            processingError: new IOException("stream closed"),
+            shutdownError: null)
+            .Should().Be(DiagnosticSessionStatus.Stopped);
+    }
+
+    [Fact]
+    public void DetermineStatus_WhenStoppedWithGenuineShutdownError_ReportsFailure()
+    {
+        CounterSession.DetermineStatus(
+            stopRequested: true,
+            targetAlive: true,
+            processingError: null,
+            shutdownError: new TimeoutException("shutdown timed out"))
+            .Should().Be(DiagnosticSessionStatus.Failed);
+    }
+
+    [Fact]
+    public void DetermineStatus_WhenStoppedWithNonIOProcessingError_ReportsFailure()
+    {
+        CounterSession.DetermineStatus(
+            stopRequested: true,
+            targetAlive: true,
+            processingError: new InvalidOperationException("unexpected processing failure"),
             shutdownError: null)
             .Should().Be(DiagnosticSessionStatus.Failed);
     }
@@ -391,7 +441,7 @@ public sealed class CounterSessionTests
     private static CounterObservation CreateObservation(long sequence, double value) =>
         new(sequence, DateTimeOffset.UtcNow, CreateCounter(value));
 
-    private sealed class CompletedCounterSession(int processId) : IDiagnosticSession
+    private sealed class CompletedCounterSession(int processId, long droppedObservations = 0) : IDiagnosticSession
     {
         private readonly List<Func<DiagnosticSessionEvent, CancellationToken, ValueTask>> _handlers = [];
         private readonly TaskCompletionSource<DiagnosticSessionCompletion> _completion =
@@ -426,7 +476,7 @@ public sealed class CounterSessionTests
                 now,
                 now,
                 null,
-                0,
+                droppedObservations,
                 null));
         }
 
