@@ -86,6 +86,14 @@
           "scope": "machine",
           "default": "dotnet-diagnostics-cli",
           "description": "Path to the installed dotnet-diagnostics-cli executable. The extension never installs or updates the tool."
+        },
+        "dotnetDiagnostics.liveView.historyDurationSeconds": {
+          "type": "number",
+          "scope": "window",
+          "default": 120,
+          "minimum": 10,
+          "maximum": 3600,
+          "description": "How much trailing history (in seconds) the live counters chart and GC pauses table keep visible. Older points/rows are dropped as new ones arrive, matching how other real-time diagnostics panels (e.g. vscode-js-profile-flame's realtime view) bound their visible window instead of rendering an entire unbounded session."
         }
       }
     }

@@ -283,6 +283,13 @@ class CounterPanelController implements vscode.Disposable {
         return configured || "dotnet-diagnostics-cli";
     }
 
+    private getHistoryDurationSeconds(): number {
+        const configured = vscode.workspace
+            .getConfiguration("dotnetDiagnostics")
+            .get<number>("liveView.historyDurationSeconds", 120);
+        return Number.isFinite(configured) && configured > 0 ? configured : 120;
+    }
+
     private openPanel(target: TargetProcess): void {
         if (this.panel) {
             this.panel.reveal(vscode.ViewColumn.Active);
@@ -301,7 +308,12 @@ class CounterPanelController implements vscode.Disposable {
         );
         this.panel = panel;
         this.panelReady = deferred<void>();
-        panel.webview.html = renderHtml(target, randomBytes(18).toString("base64url"));
+        panel.webview.html = renderHtml(target, randomBytes(18).toString("base64url"), this.getHistoryDurationSeconds());
+        const configListener = vscode.workspace.onDidChangeConfiguration(event => {
+            if (event.affectsConfiguration("dotnetDiagnostics.liveView.historyDurationSeconds")) {
+                this.postMessage({ type: "historyDuration", seconds: this.getHistoryDurationSeconds() });
+            }
+        });
         panel.webview.onDidReceiveMessage(message => {
             if (!isRecord(message) || typeof message.type !== "string") {
                 return;
@@ -318,6 +330,7 @@ class CounterPanelController implements vscode.Disposable {
             }
         }, undefined, []);
         panel.onDidDispose(() => {
+            configListener.dispose();
             this.panel = undefined;
             this.selectedTarget = undefined;
             this.panelReady?.resolve();
@@ -815,7 +828,7 @@ export async function deactivate(): Promise<void> {
     activeController = undefined;
 }
 
-function renderHtml(target: TargetProcess, nonce: string): string {
+function renderHtml(target: TargetProcess, nonce: string, historyDurationSeconds: number): string {
     const label = `${target.managedEntrypointAssemblyName ?? "Unknown .NET application"} · PID ${target.processId}`;
     return `<!DOCTYPE html>
 <html lang="en">
@@ -900,8 +913,32 @@ function renderHtml(target: TargetProcess, nonce: string): string {
     const captureBody = document.getElementById('captureBody');
     const counters = new Map();
     const maxSeries = ${MAX_WEBVIEW_SERIES};
-    const maxPoints = 120;
-    const maxGcRows = 50;
+    // Defensive backstops in case a timestamp is missing/unparseable and time-based eviction
+    // (the primary bound, driven by historyDurationMs below) can't kick in for a given point/row.
+    const maxPointsBackstop = 5000;
+    const maxGcRowsBackstop = 2000;
+    let historyDurationMs = ${Math.max(1, Math.round(historyDurationSeconds))} * 1000;
+    const gcRows = []; // { element, receivedAtMs }, newest first
+    // A logical clock derived from Date.now() that only ever accumulates non-negative deltas: a
+    // backward system clock adjustment can't make receipt timestamps non-monotonic (which would
+    // break the eviction scans below), and — unlike clamping Date.now() to its own previous
+    // maximum — it resumes advancing on the very next tick instead of freezing until wall time
+    // catches back up to the pre-adjustment value. It still advances correctly across an OS
+    // suspend/resume cycle (unlike performance.now(), whose monotonic clock can pause during
+    // suspend on some platforms), because a forward jump is a normal positive delta.
+    const monotonicNow = (() => {
+      let prevRaw = Date.now();
+      let logical = prevRaw;
+      return () => {
+        const now = Date.now();
+        const delta = now - prevRaw;
+        if (delta > 0) {
+          logical += delta;
+        }
+        prevRaw = now;
+        return logical;
+      };
+    })();
     let selectedKey = '';
     let lastSequence = 0;
     let sequenceGaps = 0;
@@ -950,6 +987,35 @@ function renderHtml(target: TargetProcess, nonce: string): string {
       context.fillText(min.toPrecision(4), 2, bottom);
     }
 
+    // Drops points older than the rolling history window so it keeps sliding even if observations
+    // stop arriving for a while (matching how vscode-js-profile-flame's realtimeViewDuration
+    // bounds its visible window). Uses the webview's own receipt time via monotonicNow() (not
+    // the CLI-provided observation timestamp, and not Date.now()) as the cutoff basis: this avoids
+    // clock skew between a remote extension host and the client, an unparseable timestamp blocking
+    // eviction, AND a system wall-clock adjustment making receipt times non-monotonic (which would
+    // break the single forward/backward scan below, since it assumes arrival order == time order).
+    // A single splice replaces the stale prefix/suffix in one pass instead of repeated shift()/pop().
+    function evictOldPoints(series) {
+      const points = series.points;
+      if (Number.isFinite(historyDurationMs)) {
+        const cutoff = monotonicNow() - historyDurationMs;
+        let index = 0;
+        while (index < points.length && points[index].receivedAtMs < cutoff) index++;
+        if (index > 0) points.splice(0, index);
+      }
+      if (points.length > maxPointsBackstop) points.splice(0, points.length - maxPointsBackstop);
+    }
+
+    function evictOldGcRows() {
+      if (Number.isFinite(historyDurationMs)) {
+        const cutoff = monotonicNow() - historyDurationMs;
+        let keep = gcRows.length;
+        while (keep > 0 && gcRows[keep - 1].receivedAtMs < cutoff) keep--;
+        if (keep < gcRows.length) gcRows.splice(keep).forEach(stale => stale.element.remove());
+      }
+      if (gcRows.length > maxGcRowsBackstop) gcRows.splice(maxGcRowsBackstop).forEach(stale => stale.element.remove());
+    }
+
     function addCounter(message) {
       const counter = message.counter;
       if (!counter || typeof counter.provider !== 'string' || typeof counter.name !== 'string' ||
@@ -973,8 +1039,8 @@ function renderHtml(target: TargetProcess, nonce: string): string {
           metricSelect.value = key;
         }
       }
-      series.points.push({ value: counter.value, timestamp: message.timestamp });
-      if (series.points.length > maxPoints) series.points.shift();
+      series.points.push({ value: counter.value, timestamp: message.timestamp, receivedAtMs: monotonicNow() });
+      evictOldPoints(series);
       if (key === selectedKey) {
         valueElement.textContent = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(counter.value) +
           (series.unit ? ' ' + series.unit : '');
@@ -1029,7 +1095,8 @@ function renderHtml(target: TargetProcess, nonce: string): string {
         row.appendChild(cell);
       });
       gcBody.insertBefore(row, gcBody.firstChild);
-      while (gcBody.childElementCount > maxGcRows) gcBody.removeChild(gcBody.lastChild);
+      gcRows.unshift({ element: row, receivedAtMs: monotonicNow() });
+      evictOldGcRows();
       gcHeadline.textContent = gcPauseCount + ' pause(s) observed · last ' +
         (Number.isFinite(pauseMs) ? pauseMs.toFixed(1) + ' ms' : 'unknown') +
         ' · total ' + gcTotalPauseMs.toFixed(1) + ' ms';
@@ -1078,6 +1145,13 @@ function renderHtml(target: TargetProcess, nonce: string): string {
         captureCpuButton.disabled = message.state === 'running';
       } else if (message.type === 'capture') {
         renderCapture(message.summary);
+      } else if (message.type === 'historyDuration') {
+        if (typeof message.seconds === 'number' && Number.isFinite(message.seconds) && message.seconds > 0) {
+          historyDurationMs = message.seconds * 1000;
+          counters.forEach(evictOldPoints);
+          evictOldGcRows();
+          draw();
+        }
       } else if (message.type === 'terminal') {
         updateButtons(false);
         const loss = typeof message.eventPipeEventsLost === 'number'
@@ -1114,6 +1188,20 @@ function renderHtml(target: TargetProcess, nonce: string): string {
     window.addEventListener('resize', resizeCanvas);
     resizeCanvas();
     updateButtons(false);
+    // Keeps the rolling history window sliding forward in wall-clock time even if the stream goes
+    // quiet for a while, instead of only evicting stale points/rows when fresh data arrives.
+    setInterval(() => {
+      let changed = false;
+      counters.forEach(series => {
+        const before = series.points.length;
+        evictOldPoints(series);
+        if (series.points.length !== before) changed = true;
+      });
+      const beforeGcCount = gcRows.length;
+      evictOldGcRows();
+      if (gcRows.length !== beforeGcCount) changed = true;
+      if (changed) draw();
+    }, 1000);
     vscode.postMessage({ type: 'ready' });
   </script>
 
