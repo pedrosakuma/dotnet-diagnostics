@@ -19,24 +19,51 @@ If you want an LLM to drive diagnostics, use the **server** — see [`client-set
 ## Machine streaming protocol
 
 `dotnet-diagnostics-cli stream --protocol jsonl` starts a versioned, bidirectional JSON Lines protocol
-for live runtime counters. This mode is intended for local clients such as the VS Code extension;
-it bypasses the human-oriented command renderer, reserves stdout for protocol frames, and sends
-diagnostics to stderr. The current protocol version is `1`. Send a handshake before any other request:
+for live runtime signals plus one-shot point-in-time captures. This mode is intended for local clients
+such as the VS Code extension; it bypasses the human-oriented command renderer, reserves stdout for
+protocol frames, and sends diagnostics to stderr. The current protocol version is `1` — adding live
+kinds and the `capture` request did not require a version bump, since both are additive and the legacy
+single-kind counters shape remains fully supported. Send a handshake before any other request:
 
 ```json
 {"type":"hello","protocolVersion":1}
 ```
 
-The CLI replies with the negotiated version. Start a bounded counter session by sending a positive
-`processId` and a non-empty `requestId`. `providers`, `intervalSeconds`, and `observationCapacity` are
-optional:
+The CLI replies with the negotiated version.
+
+### Live sessions (`start`/`stop`)
+
+Start a bounded live session by sending a positive `processId` and a non-empty `requestId`. Two
+request shapes are accepted:
+
+- **Legacy single-kind shape** (unchanged since the original counters-only protocol): omit `kinds`
+  entirely. `providers`, `intervalSeconds`, and `observationCapacity` are optional and apply to an
+  implicit `counters` session:
+
+  ```json
+  {"type":"start","requestId":"capture-1","processId":1234,"providers":["System.Runtime"],"intervalSeconds":1,"observationCapacity":256}
+  ```
+
+- **Multi-kind shape**: send a non-empty `kinds` array to run several live kinds concurrently in one
+  composed session. Supported kinds are `counters` (same options as above, nested) and `gc` (only
+  `observationCapacity`):
+
+  ```json
+  {"type":"start","requestId":"capture-2","processId":1234,"kinds":[{"kind":"counters","providers":["System.Runtime"]},{"kind":"gc"}]}
+  ```
+
+Each kind in `kinds` must be unique and recognized; every requested kind clears the Core safety
+registry before any child session is created, so a rejected kind never leaves sibling kinds
+half-started. The `started` response contains an opaque `sessionId` and an additive `kinds` array
+echoing the active live kinds:
 
 ```json
-{"type":"start","requestId":"capture-1","processId":1234,"providers":["System.Runtime"],"intervalSeconds":1,"observationCapacity":256}
+{"type":"started","requestId":"capture-2","sessionId":"<session-id>","processId":1234,"kinds":["counters","gc"]}
 ```
 
-The `started` response contains an opaque `sessionId`. As samples arrive, the CLI emits `observation`
-frames with a monotonically increasing sequence, timestamp, and typed counter. Sequence gaps and the
+As samples arrive, the CLI emits `observation` frames tagged with the originating `kind`
+(`"counters"` or `"gc"`), a monotonically increasing sequence, and a timestamp. Counters observations
+carry a `counter` payload; GC observations carry a `collection` payload. Sequence gaps and the
 terminal `droppedObservations` count make bounded-queue loss visible. Stop or cancel the session with
 its ID:
 
@@ -44,19 +71,41 @@ its ID:
 {"type":"stop","sessionId":"<session-id>"}
 ```
 
-The CLI emits a terminal frame after EventPipe has stopped and drained, including status, EventPipe
-loss, dropped observations, and any terminal error. Only one live session may run per CLI process.
-The queue capacity is capped at 16,384 observations; provider lists are limited to 64 names of up to
-256 characters each. The Core session API applies these provider and queue bounds itself as well;
-they are not only protocol-side validation.
-Malformed or unsupported requests receive an `error` frame. EOF stops an active session, drains it,
-emits its terminal frame, and exits. Closing a panel should send `cancel` (or close stdin) before
-disposing the child process.
+The CLI emits a terminal frame after every live kind has stopped and drained, including the active
+`kinds` array, status, EventPipe loss, dropped observations, and any terminal error. Only one live
+session may run per CLI process (across all its kinds combined). The queue capacity is capped at
+16,384 observations per kind; provider lists are limited to 64 names of up to 256 characters each.
+The Core session APIs apply these provider and queue bounds themselves as well; they are not only
+protocol-side validation. Malformed or unsupported requests receive an `error` frame. EOF stops an
+active session, drains it, emits its terminal frame, and exits. Closing a panel should send `cancel`
+(or close stdin) before disposing the child process.
 
-This protocol remains counter-only. Core also supports composed sessions with typed finite results
-and incremental callbacks for other collectors, but those APIs do not add JSONL commands or enable
-durable recording in this mode. Use the existing finite CLI commands and their explicit capture
-options for persisted evidence.
+### Point-in-time captures (`capture`)
+
+For collectors that produce one finite, bounded result rather than a live stream — currently `cpu` —
+send a `capture` request instead of `start`. It does not open a live session, does not produce
+`observation`/`terminal` frames, and may be sent even while a live session is active:
+
+```json
+{"type":"capture","requestId":"snap-1","kind":"cpu","processId":1234,"durationSeconds":10,"topN":25}
+```
+
+`durationSeconds` (1–300, default 10) and `topN` (1–500, default 25) are optional. The capture goes
+through the same Core safety registry entry as `collect --kind cpu`. The reply carries only the
+bounded summary (not the full sample):
+
+```json
+{"type":"capture","requestId":"snap-1","kind":"cpu","processId":1234,"result":{...}}
+```
+
+Unsupported `kind` values, an inactive/invalid `processId`, or an out-of-range `durationSeconds`/`topN`
+produce an `error` frame (`unsupported_capture_kind`, `invalid_capture`, or `capture_safety_rejected`)
+instead.
+
+Core also supports composed sessions with typed finite results and incremental callbacks for other
+collectors, but those APIs do not add JSONL commands beyond the `kinds`/`capture` shapes above, and
+this protocol does not enable durable recording. Use the existing finite CLI commands and their
+explicit capture options for persisted evidence.
 
 ## Install
 

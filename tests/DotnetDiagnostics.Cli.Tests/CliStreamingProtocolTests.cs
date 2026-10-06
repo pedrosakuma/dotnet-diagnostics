@@ -124,7 +124,7 @@ public sealed class CliStreamingProtocolTests
         }
     }
 
-    private static Process StartCliProcess()
+    internal static Process StartCliProcess()
     {
         var assemblyPath = typeof(CliHost).Assembly.Location;
         var startInfo = new ProcessStartInfo("dotnet")
@@ -143,20 +143,20 @@ public sealed class CliStreamingProtocolTests
             ?? throw new InvalidOperationException("Failed to start the CLI child process.");
     }
 
-    private static async Task WriteRequestAsync(Process process, object request)
+    internal static async Task WriteRequestAsync(Process process, object request)
     {
         await process.StandardInput.WriteLineAsync(JsonSerializer.Serialize(request));
         await process.StandardInput.FlushAsync();
     }
 
-    private static async Task<JsonDocument> ReadFrameAsync(Process process)
+    internal static async Task<JsonDocument> ReadFrameAsync(Process process, TimeSpan? timeout = null)
     {
-        var line = await process.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(20));
+        var line = await process.StandardOutput.ReadLineAsync().WaitAsync(timeout ?? TimeSpan.FromSeconds(20));
         line.Should().NotBeNull("the streaming CLI should emit a protocol frame");
         return JsonDocument.Parse(line!);
     }
 
-    private static async Task<JsonDocument> ReadUntilTypeAsync(Process process, string expectedType)
+    internal static async Task<JsonDocument> ReadUntilTypeAsync(Process process, string expectedType)
     {
         while (true)
         {

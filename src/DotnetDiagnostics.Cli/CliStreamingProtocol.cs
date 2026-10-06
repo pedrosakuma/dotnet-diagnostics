@@ -1,11 +1,23 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using DotnetDiagnostics.Core.Counters;
+using DotnetDiagnostics.Core.CpuSampling;
+using DotnetDiagnostics.Core.Gc;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
 namespace DotnetDiagnostics.Cli;
 
+/// <summary>
+/// Versioned bidirectional JSON Lines protocol for <c>dotnet-diagnostics-cli stream --protocol jsonl</c>.
+/// Supports one or more concurrently-running live signal kinds (<c>counters</c>, <c>gc</c>) composed
+/// behind a single <see cref="ComposedDiagnosticSession"/> per <c>start</c> request (#1099), plus a
+/// one-shot <c>capture</c> request/response pair for point-in-time kinds (currently <c>cpu</c>) that
+/// does not open a live session. The single-kind counters wire shape from #1091/#1092/#1093 remains
+/// valid: a <c>start</c> message without a <c>kinds</c> array is treated as a single implicit
+/// <c>counters</c> kind using its top-level fields, so existing clients (the VS Code extension) do
+/// not need changes.
+/// </summary>
 internal static class CliStreamingProtocol
 {
     private const int ProtocolVersion = 1;
@@ -13,6 +25,27 @@ internal static class CliStreamingProtocol
     {
         Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
     };
+
+    /// <summary>Live signal kinds known to the <c>start</c>/<c>observation</c> flow.</summary>
+    private static readonly IReadOnlyDictionary<string, KindDescriptor> LiveKinds =
+        new Dictionary<string, KindDescriptor>(StringComparer.Ordinal)
+        {
+            ["counters"] = new KindDescriptor(
+                "counters",
+                TryParseCounterOptions,
+                static (services, processId, options) => services.GetRequiredService<ICounterSessionFactory>()
+                    .CreateSession(processId, (CounterSessionOptions)options),
+                AttachCounterForwarding),
+            ["gc"] = new KindDescriptor(
+                "gc",
+                TryParseGcOptions,
+                static (services, processId, options) => services.GetRequiredService<IGcSessionFactory>()
+                    .CreateSession(processId, (GcSessionOptions)options),
+                AttachGcForwarding),
+        };
+
+    /// <summary>Point-in-time kinds known to the <c>capture</c> request/response flow.</summary>
+    private static readonly HashSet<string> CaptureKinds = new(StringComparer.Ordinal) { "cpu" };
 
     public static async Task<int> RunAsync(
         IReadOnlyList<string> args,
@@ -35,7 +68,7 @@ internal static class CliStreamingProtocol
         }
 
         using var host = buildHost();
-        var factory = host.Services.GetRequiredService<ICounterSessionFactory>();
+        var services = host.Services;
         using var writer = new ProtocolWriter(stdout);
         ActiveSession? activeSession = null;
         var negotiated = false;
@@ -121,89 +154,9 @@ internal static class CliStreamingProtocol
                             break;
 
                         case "start":
-                            if (activeSession is not null && activeSession.Session.Completion.IsCompleted)
-                            {
-                                await activeSession.TerminalTask.ConfigureAwait(false);
-                                activeSession = null;
-                            }
-
-                            if (!TryReadStartRequest(document.RootElement, out var request, out var validationError))
-                            {
-                                await WriteErrorAsync(writer, "invalid_start", validationError!).ConfigureAwait(false);
-                                break;
-                            }
-
-                            if (activeSession is not null)
-                            {
-                                await WriteErrorAsync(writer, "session_active", "Stop the active session before starting another.")
-                                    .ConfigureAwait(false);
-                                break;
-                            }
-
-                            var safetyOptions = new CliOptions
-                            {
-                                Command = "stream",
-                                Kind = "counters",
-                                Pid = request!.ProcessId,
-                            };
-                            var safety = await CliSafetyPreflight.RunAsync(
-                                safetyOptions,
-                                handles: null,
-                                CliExecutionContext.OneShot,
-                                interactive: false,
-                                stdin,
-                                stdout,
-                                stderr,
-                                artifactRoot: null,
-                                cancellationToken).ConfigureAwait(false);
-                            if (safety != CliSafetyPreflightDisposition.Proceed)
-                            {
-                                await WriteErrorAsync(writer, "safety_rejected", "The live counter session was not started.")
-                                    .ConfigureAwait(false);
-                                break;
-                            }
-
-                            try
-                            {
-                                var session = factory.CreateSession(
-                                    request.ProcessId,
-                                    request.Options);
-                                var candidate = new ActiveSession(session, Guid.NewGuid().ToString("N"), writer);
-                                try
-                                {
-                                    await candidate.StartAsync(cancellationToken).ConfigureAwait(false);
-                                    activeSession = candidate;
-                                    await writer.WriteAsync(new
-                                    {
-                                        type = "started",
-                                        requestId = request.RequestId,
-                                        sessionId = activeSession.SessionId,
-                                        processId = session.ProcessId,
-                                    }, cancellationToken).ConfigureAwait(false);
-                                    candidate.AllowEvents();
-                                    candidate.StartTerminalPump();
-                                }
-                                catch
-                                {
-                                    candidate.AllowEvents();
-                                    await session.DisposeAsync().ConfigureAwait(false);
-                                    throw;
-                                }
-                            }
-                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                            {
-                                throw;
-                            }
-                            catch (Exception ex)
-                            {
-                                await writer.WriteAsync(new
-                                {
-                                    type = "error",
-                                    requestId = request!.RequestId,
-                                    code = "start_failed",
-                                    message = ex.Message,
-                                }, cancellationToken).ConfigureAwait(false);
-                            }
+                            activeSession = await HandleStartAsync(
+                                document.RootElement, services, writer, activeSession, stdin, stdout, stderr, cancellationToken)
+                                .ConfigureAwait(false);
                             break;
 
                         case "stop":
@@ -219,6 +172,11 @@ internal static class CliStreamingProtocol
 
                             await StopAndDrainAsync(activeSession).ConfigureAwait(false);
                             activeSession = null;
+                            break;
+
+                        case "capture":
+                            await HandleCaptureAsync(document.RootElement, services, writer, stdin, stdout, stderr, cancellationToken)
+                                .ConfigureAwait(false);
                             break;
 
                         default:
@@ -249,6 +207,250 @@ internal static class CliStreamingProtocol
         }
     }
 
+    private static async Task<ActiveSession?> HandleStartAsync(
+        JsonElement root,
+        IServiceProvider services,
+        ProtocolWriter writer,
+        ActiveSession? activeSession,
+        TextReader stdin,
+        TextWriter stdout,
+        TextWriter stderr,
+        CancellationToken cancellationToken)
+    {
+        if (activeSession is not null && activeSession.Session.Completion.IsCompleted)
+        {
+            await activeSession.TerminalTask.ConfigureAwait(false);
+            activeSession = null;
+        }
+
+        if (!TryReadStartRequest(root, out var request, out var validationError))
+        {
+            await WriteErrorAsync(writer, "invalid_start", validationError!).ConfigureAwait(false);
+            return activeSession;
+        }
+
+        if (activeSession is not null)
+        {
+            await WriteErrorAsync(writer, "session_active", "Stop the active session before starting another.")
+                .ConfigureAwait(false);
+            return activeSession;
+        }
+
+        // Every requested kind must clear the shared safety registry before any session is created:
+        // a rejected kind must not leave sibling kinds half-started.
+        foreach (var kindRequest in request!.Kinds)
+        {
+            var safetyOptions = new CliOptions
+            {
+                Command = "stream",
+                Kind = kindRequest.Kind,
+                Pid = request.ProcessId,
+            };
+            var safety = await CliSafetyPreflight.RunAsync(
+                safetyOptions,
+                handles: null,
+                CliExecutionContext.OneShot,
+                interactive: false,
+                stdin,
+                stdout,
+                stderr,
+                artifactRoot: null,
+                cancellationToken).ConfigureAwait(false);
+            if (safety != CliSafetyPreflightDisposition.Proceed)
+            {
+                await WriteErrorAsync(writer, "safety_rejected", $"The live '{kindRequest.Kind}' session was not started.")
+                    .ConfigureAwait(false);
+                return activeSession;
+            }
+        }
+
+        // The composed dispatch queue is shared by every requested kind, so it must be sized to the
+        // largest per-kind observationCapacity requested, not Core's 256-event default: otherwise a
+        // legacy single-kind client requesting a larger capacity would silently regress to 256.
+        var eventCapacity = request.Kinds.Max(k => GetObservationCapacity(k.Options!));
+        var composed = new ComposedDiagnosticSession(request.ProcessId, eventCapacity);
+        var candidate = new ActiveSession(composed, Guid.NewGuid().ToString("N"), request.Kinds.Select(k => k.Kind).ToArray(), writer);
+        try
+        {
+            foreach (var kindRequest in request.Kinds)
+            {
+                var descriptor = LiveKinds[kindRequest.Kind];
+                candidate.Subscriptions.Add(descriptor.AttachForwarding(composed, writer, candidate.SessionId, candidate.EventsGate));
+                composed.AddSession(descriptor.CreateChildSession(services, request.ProcessId, kindRequest.Options!));
+            }
+
+            try
+            {
+                await composed.StartAsync(cancellationToken).ConfigureAwait(false);
+                await writer.WriteAsync(new
+                {
+                    type = "started",
+                    requestId = request.RequestId,
+                    sessionId = candidate.SessionId,
+                    processId = composed.ProcessId,
+                    kinds = candidate.Kinds,
+                }, cancellationToken).ConfigureAwait(false);
+                candidate.AllowEvents();
+                candidate.StartTerminalPump();
+                return candidate;
+            }
+            catch
+            {
+                // Suppress (rather than allow) queued observations: a session that never sent
+                // "started" must not leak observation frames for a sessionId the client doesn't
+                // know about. Suppressing still releases any handler blocked on the gate so the
+                // composed session's drain below cannot hang.
+                candidate.SuppressEvents();
+                foreach (var subscription in candidate.Subscriptions)
+                {
+                    subscription.Dispose();
+                }
+
+                await composed.DisposeAsync().ConfigureAwait(false);
+                throw;
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId = request.RequestId,
+                code = "start_failed",
+                message = ex.Message,
+            }, cancellationToken).ConfigureAwait(false);
+            return activeSession;
+        }
+    }
+
+    private static async Task HandleCaptureAsync(
+        JsonElement root,
+        IServiceProvider services,
+        ProtocolWriter writer,
+        TextReader stdin,
+        TextWriter stdout,
+        TextWriter stderr,
+        CancellationToken cancellationToken)
+    {
+        if (!TryGetString(root, "requestId", out var requestId) || string.IsNullOrWhiteSpace(requestId))
+        {
+            await WriteErrorAsync(writer, "invalid_capture", "A non-empty string 'requestId' is required.").ConfigureAwait(false);
+            return;
+        }
+
+        if (!TryGetString(root, "kind", out var kind) || !CaptureKinds.Contains(kind))
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId,
+                code = "unsupported_capture_kind",
+                message = $"Capture kind '{kind}' is not supported.",
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+
+        if (!TryGetInt32(root, "processId", out var processId) || processId <= 0)
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId,
+                code = "invalid_capture",
+                message = "A positive integer 'processId' is required.",
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+
+        var durationSeconds = 10;
+        if (root.TryGetProperty("durationSeconds", out var durationElement)
+            && (!durationElement.TryGetInt32(out durationSeconds) || durationSeconds < 1 || durationSeconds > 300))
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId,
+                code = "invalid_capture",
+                message = "'durationSeconds' must be between 1 and 300.",
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+
+        var topN = 25;
+        if (root.TryGetProperty("topN", out var topNElement)
+            && (!topNElement.TryGetInt32(out topN) || topN is < 1 or > 500))
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId,
+                code = "invalid_capture",
+                message = "'topN' must be between 1 and 500.",
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+
+        // CPU capture reuses the same shared Core safety registry entry as `collect --kind cpu`.
+        var safetyOptions = new CliOptions { Command = "collect", Kind = kind, Pid = processId };
+        var safety = await CliSafetyPreflight.RunAsync(
+            safetyOptions,
+            handles: null,
+            CliExecutionContext.OneShot,
+            interactive: false,
+            stdin,
+            stdout,
+            stderr,
+            artifactRoot: null,
+            cancellationToken).ConfigureAwait(false);
+        if (safety != CliSafetyPreflightDisposition.Proceed)
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId,
+                code = "capture_safety_rejected",
+                message = $"The '{kind}' capture was not started.",
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+
+        try
+        {
+            var sampler = services.GetRequiredService<ICpuSampler>();
+            var result = await sampler.SampleAsync(
+                processId,
+                TimeSpan.FromSeconds(durationSeconds),
+                topN,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+            await writer.WriteAsync(new
+            {
+                type = "capture",
+                requestId,
+                kind,
+                processId,
+                result = result.Summary,
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId,
+                code = "capture_failed",
+                message = ex.Message,
+            }, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
     private static async Task StopAndDrainAsync(ActiveSession activeSession)
     {
         await activeSession.Session.StopAsync().ConfigureAwait(false);
@@ -274,6 +476,67 @@ internal static class CliStreamingProtocol
             return false;
         }
 
+        if (!root.TryGetProperty("kinds", out var kindsElement))
+        {
+            // Backward-compatible (#1091/#1092/#1093) shape: no 'kinds' array means one implicit
+            // 'counters' kind using this message's own top-level fields.
+            if (!TryParseCounterOptions(root, out var legacyOptions, out var legacyError))
+            {
+                error = legacyError;
+                return false;
+            }
+
+            request = new StartRequest(requestId, processId, [new KindRequest("counters", legacyOptions)]);
+            return true;
+        }
+
+        if (kindsElement.ValueKind != JsonValueKind.Array || kindsElement.GetArrayLength() == 0)
+        {
+            error = "'kinds' must be a non-empty array of kind requests.";
+            return false;
+        }
+
+        if (kindsElement.GetArrayLength() > LiveKinds.Count)
+        {
+            error = $"'kinds' must contain at most {LiveKinds.Count} entries.";
+            return false;
+        }
+
+        var kinds = new List<KindRequest>();
+        var seenKinds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var kindElement in kindsElement.EnumerateArray())
+        {
+            if (kindElement.ValueKind != JsonValueKind.Object
+                || !TryGetString(kindElement, "kind", out var kindName)
+                || !LiveKinds.TryGetValue(kindName, out var descriptor))
+            {
+                error = $"Each entry in 'kinds' must have a recognized 'kind' (one of: {string.Join(", ", LiveKinds.Keys)}).";
+                return false;
+            }
+
+            if (!seenKinds.Add(kindName))
+            {
+                error = $"'kinds' must not repeat kind '{kindName}'.";
+                return false;
+            }
+
+            if (!descriptor.ParseOptions(kindElement, out var options, out var kindError))
+            {
+                error = $"kind '{kindName}': {kindError}";
+                return false;
+            }
+
+            kinds.Add(new KindRequest(kindName, options));
+        }
+
+        request = new StartRequest(requestId, processId, kinds);
+        return true;
+    }
+
+    private static bool TryParseCounterOptions(JsonElement root, out object? options, out string? error)
+    {
+        options = null;
+        error = null;
         var intervalSeconds = 1;
         if (root.TryGetProperty("intervalSeconds", out var interval)
             && (!interval.TryGetInt32(out intervalSeconds) || intervalSeconds < 1))
@@ -308,17 +571,73 @@ internal static class CliStreamingProtocol
             providers = providerArray.EnumerateArray().Select(provider => provider.GetString()!).ToArray();
         }
 
-        request = new StartRequest(
-            requestId,
-            processId,
-            new CounterSessionOptions
-            {
-                Providers = providers,
-                IntervalSeconds = intervalSeconds,
-                ObservationCapacity = observationCapacity,
-            });
+        options = new CounterSessionOptions
+        {
+            Providers = providers,
+            IntervalSeconds = intervalSeconds,
+            ObservationCapacity = observationCapacity,
+        };
         return true;
     }
+
+    private static bool TryParseGcOptions(JsonElement root, out object? options, out string? error)
+    {
+        options = null;
+        error = null;
+        var observationCapacity = 256;
+        if (root.TryGetProperty("observationCapacity", out var capacity)
+            && (!capacity.TryGetInt32(out observationCapacity)
+                || observationCapacity is < 1 or > GcSessionOptions.MaxAllowedObservationCapacity))
+        {
+            error = $"'observationCapacity' must be between 1 and {GcSessionOptions.MaxAllowedObservationCapacity}.";
+            return false;
+        }
+
+        options = new GcSessionOptions { ObservationCapacity = observationCapacity };
+        return true;
+    }
+
+    private static IDisposable AttachCounterForwarding(
+        ComposedDiagnosticSession composed, ProtocolWriter writer, string sessionId, EventGate eventsGate)
+        => composed.Attach<CounterObservation>(async (observation, handlerCancellationToken) =>
+        {
+            await eventsGate.Task.WaitAsync(handlerCancellationToken).ConfigureAwait(false);
+            if (eventsGate.Suppressed)
+            {
+                return;
+            }
+
+            await writer.WriteAsync(new
+            {
+                type = "observation",
+                kind = "counters",
+                sessionId,
+                observation.Sequence,
+                observation.Timestamp,
+                counter = observation.Counter,
+            }, handlerCancellationToken).ConfigureAwait(false);
+        });
+
+    private static IDisposable AttachGcForwarding(
+        ComposedDiagnosticSession composed, ProtocolWriter writer, string sessionId, EventGate eventsGate)
+        => composed.Attach<GcPauseObservation>(async (observation, handlerCancellationToken) =>
+        {
+            await eventsGate.Task.WaitAsync(handlerCancellationToken).ConfigureAwait(false);
+            if (eventsGate.Suppressed)
+            {
+                return;
+            }
+
+            await writer.WriteAsync(new
+            {
+                type = "observation",
+                kind = "gc",
+                sessionId,
+                observation.Sequence,
+                observation.Timestamp,
+                collection = observation.Collection,
+            }, handlerCancellationToken).ConfigureAwait(false);
+        });
 
     private static bool TryGetString(JsonElement root, string name, out string value)
     {
@@ -353,45 +672,76 @@ Usage: dotnet-diagnostics-cli stream --protocol jsonl
 
 Runs the versioned bidirectional JSON Lines protocol over stdin/stdout.
 Stdout contains protocol frames only; diagnostics and startup messages use stderr.
-Send {"type":"hello","protocolVersion":1} before start/stop commands.
-Start requires requestId and processId; optional fields are providers, intervalSeconds,
-and observationCapacity. Send stop or cancel with the returned sessionId.
+Send {"type":"hello","protocolVersion":1} before start/stop/capture commands.
+Start requires requestId and processId. Send either the legacy single-kind shape
+(optional providers/intervalSeconds/observationCapacity, implying kind "counters") or
+{"kinds":[{"kind":"counters",...},{"kind":"gc",...}]} to run several live kinds in one
+composed session. Send stop or cancel with the returned sessionId. Send
+{"type":"capture","requestId":...,"kind":"cpu","processId":...,"durationSeconds":10,"topN":25}
+for a one-shot point-in-time capture that does not open a live session.
 """;
 
-    private sealed record StartRequest(string RequestId, int ProcessId, CounterSessionOptions Options);
+    private sealed record StartRequest(string RequestId, int ProcessId, IReadOnlyList<KindRequest> Kinds);
 
-    private sealed class ActiveSession(CounterSession session, string sessionId, ProtocolWriter writer)
+    private sealed record KindRequest(string Kind, object? Options);
+
+    private delegate bool TryParseKindOptions(JsonElement element, out object? options, out string? error);
+
+    private sealed record KindDescriptor(
+        string Kind,
+        TryParseKindOptions ParseOptions,
+        Func<IServiceProvider, int, object, IDiagnosticSession> CreateChildSession,
+        Func<ComposedDiagnosticSession, ProtocolWriter, string, EventGate, IDisposable> AttachForwarding);
+
+    private static int GetObservationCapacity(object options) => options switch
     {
-        // Matches the Core session's own shutdown budget (see CounterSession.ShutdownWaitBudget) so a
-        // stuck stdout pipe cannot make stop/cancel/EOF handling hang indefinitely.
+        CounterSessionOptions counters => counters.ObservationCapacity,
+        GcSessionOptions gc => gc.ObservationCapacity,
+        _ => 256,
+    };
+
+    /// <summary>
+    /// Gates observation forwarding until the composed session has either announced <c>started</c>
+    /// (<see cref="Allow"/>) or failed before announcing it (<see cref="Suppress"/>). A suppressed
+    /// gate still releases any handler blocked on <see cref="Task"/>, but <see cref="Suppressed"/>
+    /// tells the handler to drop the observation instead of writing a frame for a sessionId the
+    /// client was never told about.
+    /// </summary>
+    private sealed class EventGate
+    {
+        private readonly TaskCompletionSource _tcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public bool Suppressed { get; private set; }
+
+        public Task Task => _tcs.Task;
+
+        public void Allow() => _tcs.TrySetResult();
+
+        public void Suppress()
+        {
+            Suppressed = true;
+            _tcs.TrySetResult();
+        }
+    }
+
+    private sealed class ActiveSession(
+        ComposedDiagnosticSession session, string sessionId, IReadOnlyList<string> kinds, ProtocolWriter writer)
+    {
+        // Matches the Core session's own shutdown budget (see EventPipeDiagnosticSessionBase.ShutdownWaitBudget)
+        // so a stuck stdout pipe cannot make stop/cancel/EOF handling hang indefinitely.
         private static readonly TimeSpan TerminalWriteBudget = TimeSpan.FromSeconds(5);
 
-        private readonly TaskCompletionSource _eventsAllowed =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private IDisposable? _counterSubscription;
+        public EventGate EventsGate { get; } = new();
+        public List<IDisposable> Subscriptions { get; } = [];
 
-        public CounterSession Session { get; } = session;
+        public ComposedDiagnosticSession Session { get; } = session;
         public string SessionId { get; } = sessionId;
+        public IReadOnlyList<string> Kinds { get; } = kinds;
         public Task TerminalTask { get; private set; } = Task.CompletedTask;
 
-        public async Task StartAsync(CancellationToken cancellationToken)
-        {
-            _counterSubscription = Session.Attach<CounterObservation>(async (observation, handlerCancellationToken) =>
-            {
-                await _eventsAllowed.Task.WaitAsync(handlerCancellationToken).ConfigureAwait(false);
-                await writer.WriteAsync(new
-                {
-                    type = "observation",
-                    sessionId = SessionId,
-                    observation.Sequence,
-                    observation.Timestamp,
-                    counter = observation.Counter,
-                }, handlerCancellationToken).ConfigureAwait(false);
-            });
-            await Session.StartAsync(cancellationToken).ConfigureAwait(false);
-        }
+        public void AllowEvents() => EventsGate.Allow();
 
-        public void AllowEvents() => _eventsAllowed.TrySetResult();
+        public void SuppressEvents() => EventsGate.Suppress();
 
         public void StartTerminalPump() => TerminalTask = PublishTerminalWhenCompleteAsync();
 
@@ -402,11 +752,12 @@ and observationCapacity. Send stop or cancel with the returned sessionId.
             // wedged stdout consumer cannot block the CLI's stop/cancel/EOF handling forever.
             try
             {
-                await _eventsAllowed.Task.WaitAsync(TerminalWriteBudget).ConfigureAwait(false);
+                await EventsGate.Task.WaitAsync(TerminalWriteBudget).ConfigureAwait(false);
                 await writer.WriteAsync(new
                 {
                     type = "terminal",
                     sessionId = SessionId,
+                    kinds = Kinds,
                     completion.Status,
                     completion.StartedAt,
                     completion.EndedAt,
@@ -422,7 +773,10 @@ and observationCapacity. Send stop or cancel with the returned sessionId.
             }
             finally
             {
-                _counterSubscription?.Dispose();
+                foreach (var subscription in Subscriptions)
+                {
+                    subscription.Dispose();
+                }
             }
         }
     }
