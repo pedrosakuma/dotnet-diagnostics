@@ -42,6 +42,38 @@ export interface CpuSampleSummary {
     topHotspots: CpuHotspot[];
 }
 
+/** One type's aggregate footprint from a heap snapshot's bounded top-N summary. */
+export interface HeapTypeStat {
+    typeFullName: string;
+    moduleName?: string | null;
+    instanceCount: number;
+    totalBytes: number;
+    totalBytesPercent: number;
+}
+
+/** Observed completion state for an EventPipe gcdump capture (`source: "gcdump"` only). */
+export interface GcDumpCaptureStatus {
+    gcStopObserved: boolean;
+    eventStreamCompleted: boolean;
+    timedOut: boolean;
+    readerFailed: boolean;
+    traceExportRequested: boolean;
+    traceExportCompleted: boolean;
+}
+
+/** The trimmed `DiagnosticResult<LiveHeapInspection>` projection returned by the CLI's one-shot `capture` request for `kind: "heap"`. */
+export interface HeapCaptureResult {
+    summary: string;
+    data?: {
+        processId: number;
+        suspendDuration: string;
+        topTypesByBytes: HeapTypeStat[];
+        topTypesByInstances: HeapTypeStat[];
+        warnings?: string[] | null;
+        gcDumpStatus?: GcDumpCaptureStatus | null;
+    } | null;
+}
+
 export interface ProtocolFrame {
     type: string;
     [key: string]: unknown;
@@ -115,6 +147,31 @@ function isCpuHotspot(value: unknown): value is CpuHotspot {
         && typeof value.frame.method === "string"
         && typeof value.inclusiveSamples === "number"
         && typeof value.exclusiveSamples === "number";
+}
+
+export function isHeapCaptureResult(value: unknown): value is HeapCaptureResult {
+    if (!isRecord(value) || typeof value.summary !== "string") {
+        return false;
+    }
+    if (value.data === undefined || value.data === null) {
+        return true;
+    }
+    const data = value.data;
+    return isRecord(data)
+        && typeof data.processId === "number"
+        && typeof data.suspendDuration === "string"
+        && Array.isArray(data.topTypesByBytes)
+        && data.topTypesByBytes.every(isHeapTypeStat)
+        && Array.isArray(data.topTypesByInstances)
+        && data.topTypesByInstances.every(isHeapTypeStat);
+}
+
+function isHeapTypeStat(value: unknown): value is HeapTypeStat {
+    return isRecord(value)
+        && typeof value.typeFullName === "string"
+        && typeof value.instanceCount === "number"
+        && typeof value.totalBytes === "number"
+        && typeof value.totalBytesPercent === "number";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -1,8 +1,15 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Counters;
 using DotnetDiagnostics.Core.CpuSampling;
+using DotnetDiagnostics.Core.Drilldown;
+using DotnetDiagnostics.Core.Dump;
 using DotnetDiagnostics.Core.Gc;
+using DotnetDiagnostics.Core.ProcessDiscovery;
+using DotnetDiagnostics.Core.Safety;
+using DotnetDiagnostics.Core.Security;
+using DotnetDiagnostics.Core.UseCases;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
@@ -45,7 +52,14 @@ internal static class CliStreamingProtocol
         };
 
     /// <summary>Point-in-time kinds known to the <c>capture</c> request/response flow.</summary>
-    private static readonly HashSet<string> CaptureKinds = new(StringComparer.Ordinal) { "cpu" };
+    private static readonly HashSet<string> CaptureKinds = new(StringComparer.Ordinal) { "cpu", "heap" };
+
+    /// <summary>Heap sources accepted by a <c>capture</c> request with <c>kind="heap"</c>.</summary>
+    private static readonly HashSet<string> HeapCaptureSources = new(StringComparer.Ordinal)
+    {
+        DiagnosticOperationCatalog.HeapSources.Live,
+        DiagnosticOperationCatalog.HeapSources.GcDump,
+    };
 
     public static async Task<int> RunAsync(
         IReadOnlyList<string> args,
@@ -394,8 +408,47 @@ internal static class CliStreamingProtocol
             return;
         }
 
+        string? heapSource = null;
+        var topTypes = 20;
+        if (kind == "heap")
+        {
+            if (!TryGetString(root, "source", out heapSource) || !HeapCaptureSources.Contains(heapSource))
+            {
+                await writer.WriteAsync(new
+                {
+                    type = "error",
+                    requestId,
+                    code = "invalid_capture",
+                    message = "'source' must be 'live' or 'gcdump' for a 'heap' capture.",
+                }, CancellationToken.None).ConfigureAwait(false);
+                return;
+            }
+
+            if (root.TryGetProperty("topTypes", out var topTypesElement)
+                && (!topTypesElement.TryGetInt32(out topTypes) || topTypes is < 1 or > 500))
+            {
+                await writer.WriteAsync(new
+                {
+                    type = "error",
+                    requestId,
+                    code = "invalid_capture",
+                    message = "'topTypes' must be between 1 and 500.",
+                }, CancellationToken.None).ConfigureAwait(false);
+                return;
+            }
+        }
+
+        var acknowledgeRisk = TryGetString(root, "acknowledgeRisk", out var acknowledgeRiskValue)
+            ? acknowledgeRiskValue
+            : null;
+
         // CPU capture reuses the same shared Core safety registry entry as `collect --kind cpu`.
-        var safetyOptions = new CliOptions { Command = "collect", Kind = kind, Pid = processId };
+        // A `heap` capture instead reuses the `inspect-heap` entry, which is High risk/Acknowledge
+        // for both `live` and `gcdump` sources (see InvocationSafetyRegistry.InspectHeapProfile),
+        // unlike CPU sampling's Moderate risk — so it requires a matching `acknowledgeRisk`.
+        var safetyOptions = kind == "heap"
+            ? new CliOptions { Command = "inspect-heap", Sources = [heapSource!], Pid = processId, AcknowledgeRisk = acknowledgeRisk }
+            : new CliOptions { Command = "collect", Kind = kind, Pid = processId, AcknowledgeRisk = acknowledgeRisk };
         var safety = await CliSafetyPreflight.RunAsync(
             safetyOptions,
             handles: null,
@@ -408,18 +461,28 @@ internal static class CliStreamingProtocol
             cancellationToken).ConfigureAwait(false);
         if (safety != CliSafetyPreflightDisposition.Proceed)
         {
+            var resolvedRisk = CliInvocationSafety.Resolve(safetyOptions).RiskLevel;
             await writer.WriteAsync(new
             {
                 type = "error",
                 requestId,
                 code = "capture_safety_rejected",
-                message = $"The '{kind}' capture was not started.",
+                message = resolvedRisk >= InvocationRiskLevel.High
+                    ? $"The '{kind}' capture was not started. Re-send with acknowledgeRisk=\"{EnumName(resolvedRisk)}\" after showing the risk explanation to the user."
+                    : $"The '{kind}' capture was not started.",
             }, CancellationToken.None).ConfigureAwait(false);
             return;
         }
 
         try
         {
+            if (kind == "heap")
+            {
+                await HandleHeapCaptureAsync(requestId, services, writer, processId, heapSource!, topTypes, cancellationToken)
+                    .ConfigureAwait(false);
+                return;
+            }
+
             var sampler = services.GetRequiredService<ICpuSampler>();
             var result = await sampler.SampleAsync(
                 processId,
@@ -450,6 +513,89 @@ internal static class CliStreamingProtocol
             }, cancellationToken).ConfigureAwait(false);
         }
     }
+
+    /// <summary>
+    /// Dispatches a <c>heap</c> capture to the same Core use cases as the CLI's one-shot
+    /// <c>inspect-heap</c> command (<see cref="CliCommands"/>), mirroring its exact DI resolution
+    /// and call pattern, then writes a trimmed <see cref="DiagnosticResult{T}"/> projection that
+    /// keeps what a VS Code panel needs (top types by bytes, suspend duration/GC-dump status,
+    /// warnings, quality notes) and drops MCP-only noise fields.
+    /// </summary>
+    private static async Task HandleHeapCaptureAsync(
+        string requestId,
+        IServiceProvider services,
+        ProtocolWriter writer,
+        int processId,
+        string source,
+        int topTypes,
+        CancellationToken cancellationToken)
+    {
+        var handles = services.GetRequiredService<IDiagnosticHandleStore>();
+        var resolver = services.GetRequiredService<IProcessContextResolver>();
+
+        DiagnosticResult<LiveHeapInspection> result;
+        if (source == DiagnosticOperationCatalog.HeapSources.GcDump)
+        {
+            var collector = services.GetRequiredService<IGcDumpHeapSnapshotCollector>();
+            result = await HeapInspectionUseCases.InspectGcDump(
+                collector, handles, resolver, processId, topTypes, timeout: null, exportTrace: false, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        else
+        {
+            var inspector = services.GetRequiredService<IDumpInspector>();
+            var allowlist = services.GetRequiredService<SymbolServerAllowlist>();
+            result = await HeapInspectionUseCases.InspectLiveHeap(
+                inspector, handles, resolver, allowlist,
+                principalAllowsSymbolsRemote: true,
+                processId, topTypes, includeRetentionPaths: false, retentionPathLimit: 8,
+                includeStaticFields: false, includeDelegateTargets: false, includeDuplicateStrings: false,
+                symbolPath: null, deprecation: null, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        if (result.IsError)
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId,
+                code = "capture_failed",
+                message = result.Error!.Message,
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+
+        var data = result.Data;
+        await writer.WriteAsync(new
+        {
+            type = "capture",
+            requestId,
+            kind = "heap",
+            processId,
+            source,
+            result = new
+            {
+                summary = result.Summary,
+                data = data is null
+                    ? null
+                    : new
+                    {
+                        processId = data.ProcessId,
+                        suspendDuration = data.SuspendDuration,
+                        runtime = data.Runtime,
+                        heap = data.Heap,
+                        topTypesByBytes = data.TopTypesByBytes,
+                        topTypesByInstances = data.TopTypesByInstances,
+                        warnings = data.Warnings,
+                        quality = data.Quality,
+                        gcDumpStatus = data.GcDumpStatus,
+                    },
+            },
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static string EnumName(InvocationRiskLevel value) => value.ToString().ToLowerInvariant();
 
     private static async Task StopAndDrainAsync(ActiveSession activeSession)
     {
@@ -678,7 +824,13 @@ Start requires requestId and processId. Send either the legacy single-kind shape
 {"kinds":[{"kind":"counters",...},{"kind":"gc",...}]} to run several live kinds in one
 composed session. Send stop or cancel with the returned sessionId. Send
 {"type":"capture","requestId":...,"kind":"cpu","processId":...,"durationSeconds":10,"topN":25}
-for a one-shot point-in-time capture that does not open a live session.
+for a one-shot point-in-time capture that does not open a live session. A heap snapshot capture
+uses {"type":"capture","requestId":...,"kind":"heap","processId":...,"source":"live"|"gcdump",
+"topTypes":20,"acknowledgeRisk":"high"}: "source" is required ("live" attaches via ptrace and
+suspends the target; "gcdump" uses EventPipe and induces a blocking Gen2 GC); "topTypes" is
+optional (default 20, range 1-500). Both heap sources are High risk/Acknowledge (unlike cpu's
+Moderate risk), so the request is rejected with code "capture_safety_rejected" unless
+"acknowledgeRisk" equals the resolved risk name (currently "high").
 """;
 
     private sealed record StartRequest(string RequestId, int ProcessId, IReadOnlyList<KindRequest> Kinds);
