@@ -828,7 +828,7 @@ export async function deactivate(): Promise<void> {
     activeController = undefined;
 }
 
-function renderHtml(target: TargetProcess, nonce: string, historyDurationSeconds: number): string {
+export function renderHtml(target: TargetProcess, nonce: string, historyDurationSeconds: number): string {
     const label = `${target.managedEntrypointAssemblyName ?? "Unknown .NET application"} · PID ${target.processId}`;
     return `<!DOCTYPE html>
 <html lang="en">
@@ -1063,9 +1063,12 @@ function renderHtml(target: TargetProcess, nonce: string, historyDurationSeconds
     }
 
     // System.TimeSpan serializes via the .NET 8+ constant "c" format, e.g. "00:00:00.0123456".
+    // The backslashes below must be doubled (\\\\d etc.) because this whole script is embedded
+    // inside an outer TypeScript template literal: a single backslash is consumed as a (no-op)
+    // string escape by the outer literal before this text ever reaches the browser's regex engine.
     function parseTimeSpanToMs(value) {
       if (typeof value !== 'string') return NaN;
-      const match = /^(?:(\d+)\.)?(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?$/.exec(value);
+      const match = /^(?:(\\d+)\\.)?(\\d{2}):(\\d{2}):(\\d{2})(?:\\.(\\d+))?$/.exec(value);
       if (!match) return NaN;
       const days = Number(match[1] || 0);
       const hours = Number(match[2]);
