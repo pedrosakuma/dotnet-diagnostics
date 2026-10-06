@@ -5,9 +5,12 @@ import { promisify } from "node:util";
 import * as vscode from "vscode";
 import {
     describeStreamCompatibilityError,
+    isGcCollection,
+    isCpuSampleSummary,
     parseProcessList,
     parseProtocolFrame,
     type CounterValue,
+    type CpuSampleSummary,
     type ProtocolFrame,
     type TargetProcess,
 } from "./protocol";
@@ -34,6 +37,28 @@ interface StreamChild {
     stderrTail: string;
     terminalReceived: boolean;
     startupErrorReported: boolean;
+    pendingCaptures: Map<string, Deferred<CpuSampleSummary>>;
+    /**
+     * Set before intentionally closing a connection that never started a live session (e.g. a
+     * capture-only connection after its result arrives), so the `close` handler can skip reporting
+     * an unexpected-exit error for what is actually a normal, requested shutdown.
+     */
+    expectedShutdown: boolean;
+    /**
+     * True from the moment a `start` request is written on this connection until it settles
+     * (`started` or a start failure). Lets a concurrent capture-only owner of a shared connection
+     * know not to close it out from under an in-flight start attempt (the CLI processes requests
+     * strictly in order, so a queued `start` can still be pending when a `capture` response on the
+     * same connection arrives first).
+     */
+    startInFlight: boolean;
+    /**
+     * True from the moment `closeChild()` begins tearing this connection down (stdin ended,
+     * awaiting process exit) until it fully exits. `acquireChild()` must not reuse a connection in
+     * this state — its stdin is already ended, so a subsequent write (e.g. a `start` frame) would
+     * fail even though the process has not exited yet and still looks "non-terminal, alive".
+     */
+    closing: boolean;
 }
 
 class CounterPanelController implements vscode.Disposable {
@@ -47,6 +72,8 @@ class CounterPanelController implements vscode.Disposable {
     private childDisposalTask?: Promise<void>;
     private startCommandTask?: Promise<void>;
     private startStreamTask?: Promise<void>;
+    private captureCpuTask?: Promise<void>;
+    private connectChildTask?: Promise<StreamChild>;
 
     public constructor(
         private readonly output: vscode.OutputChannel,
@@ -73,12 +100,101 @@ class CounterPanelController implements vscode.Disposable {
         }
 
         if (this.activeChild
+            && this.activeChild.sessionId !== undefined
             && !this.activeChild.terminalReceived
             && this.activeChild.process.exitCode === null
             && this.activeChild.process.signalCode === null)
         {
+            // Only an active *live session* (not a capture-only connection) should short-circuit
+            // this command — otherwise a running CPU capture would silently block Start.
             this.panel?.reveal(vscode.ViewColumn.Active);
             return;
+        }
+
+        const target = await this.ensureTargetAndPanel();
+        if (!target) {
+            return;
+        }
+
+        await this.startStream(target);
+    }
+
+    public captureCpu(): Promise<void> {
+        if (!this.captureCpuTask) {
+            this.captureCpuTask = this.captureCpuCore().finally(() => {
+                this.captureCpuTask = undefined;
+            });
+        }
+        return this.captureCpuTask;
+    }
+
+    private async captureCpuCore(): Promise<void> {
+        if (this.disposed) {
+            return;
+        }
+
+        const target = this.selectedTarget ?? await this.ensureTargetAndPanel();
+        if (!target || this.disposed) {
+            return;
+        }
+
+        this.postMessage({ type: "captureStatus", state: "running", message: "Capturing CPU…" });
+
+        let session: StreamChild;
+        let ownsSession: boolean;
+        try {
+            ({ session, owns: ownsSession } = await this.acquireChild());
+        } catch (error) {
+            this.postMessage({
+                type: "captureStatus",
+                state: "error",
+                message: withRuntimeGuidance(errorMessage(error)),
+            });
+            return;
+        }
+
+        const requestId = randomBytes(12).toString("hex");
+        const pending = deferred<CpuSampleSummary>();
+        session.pendingCaptures.set(requestId, pending);
+        try {
+            this.writeFrame(session, {
+                type: "capture",
+                requestId,
+                kind: "cpu",
+                processId: target.processId,
+                durationSeconds: 10,
+                topN: 10,
+            });
+            const summary = await withTimeout(pending.promise, 60_000);
+            this.postMessage({ type: "capture", summary });
+            this.postMessage({ type: "captureStatus", state: "done", message: "CPU capture complete." });
+        } catch (error) {
+            this.postMessage({
+                type: "captureStatus",
+                state: "error",
+                message: withRuntimeGuidance(errorMessage(error)),
+            });
+            this.output.appendLine(`CPU capture failed: ${errorMessage(error)}`);
+        } finally {
+            session.pendingCaptures.delete(requestId);
+            if (ownsSession && !session.sessionId && !session.startInFlight) {
+                // This connection exists only to serve the capture request — no live session was
+                // started on it (and no `start` request is queued/in-flight behind this capture
+                // response, which the single-threaded CLI read loop processes strictly in order),
+                // so close it now instead of leaving an idle CLI child running. Mark the shutdown
+                // as expected so the `close` handler doesn't report it as an unexpected CLI exit
+                // over whatever status the capture itself just posted.
+                session.expectedShutdown = true;
+                await this.closeChild(session);
+            }
+        }
+    }
+
+    /** Discovers a target process (if needed), opens the panel, and waits for it to initialize. */
+    private async ensureTargetAndPanel(): Promise<TargetProcess | undefined> {
+        if (this.selectedTarget && this.panel) {
+            this.panel.reveal(vscode.ViewColumn.Active);
+            return this.selectedTarget;
         }
 
         const cliPath = this.getCliPath();
@@ -92,15 +208,15 @@ class CounterPanelController implements vscode.Disposable {
             targets = parseProcessList(result.stdout);
         } catch (error) {
             await this.showCliError(error);
-            return;
+            return undefined;
         }
         if (this.disposed) {
-            return;
+            return undefined;
         }
 
         if (targets.length === 0) {
             void vscode.window.showInformationMessage("No .NET processes with a diagnostic IPC endpoint were found.");
-            return;
+            return undefined;
         }
 
         const selected = await vscode.window.showQuickPick(
@@ -109,19 +225,16 @@ class CounterPanelController implements vscode.Disposable {
                 description: `${target.runtimeVersion} · ${target.operatingSystem}/${target.processArchitecture}`,
                 target,
             })),
-            { placeHolder: "Select a .NET process for live runtime counters" },
+            { placeHolder: "Select a .NET process for live diagnostics" },
         );
-        if (!selected) {
-            return;
-        }
-        if (this.disposed) {
-            return;
+        if (!selected || this.disposed) {
+            return undefined;
         }
 
         this.selectedTarget = selected.target;
         this.openPanel(selected.target);
         await this.waitForPanelReady();
-        await this.startStream(selected.target);
+        return selected.target;
     }
 
     public async stopCounters(): Promise<void> {
@@ -134,7 +247,13 @@ class CounterPanelController implements vscode.Disposable {
         this.postMessage({ type: "status", state: "stopping", message: "Stopping and draining EventPipe…" });
         try {
             this.writeFrame(child, { type: "cancel", sessionId: child.sessionId });
-            await withTimeout(child.terminal.promise, 10_000);
+            // The CLI reads requests strictly in order on a shared connection. If a CPU capture is
+            // in flight (e.g. triggered while this live session was streaming), this `cancel` frame
+            // sits queued behind it and won't be read until the capture's ~10s sampling window and
+            // response processing finish. Give that case extra headroom instead of racing a fixed
+            // 10s timeout and force-killing the process while a capture is still legitimately busy.
+            const timeoutMs = child.pendingCaptures.size > 0 ? 25_000 : 10_000;
+            await withTimeout(child.terminal.promise, timeoutMs);
         } catch (error) {
             this.output.appendLine(`Could not confirm CLI stream shutdown: ${errorMessage(error)}`);
             child.process.kill();
@@ -194,6 +313,8 @@ class CounterPanelController implements vscode.Disposable {
                 void this.startStream(this.selectedTarget);
             } else if (message.type === "stop") {
                 void this.stopCounters();
+            } else if (message.type === "captureCpu") {
+                void this.captureCpu();
             }
         }, undefined, []);
         panel.onDidDispose(() => {
@@ -227,23 +348,98 @@ class CounterPanelController implements vscode.Disposable {
     }
 
     private async startStreamCore(target: TargetProcess): Promise<void> {
-        if (this.disposed || (this.activeChild && !this.activeChild.terminalReceived)) {
+        if (this.disposed) {
+            return;
+        }
+        if (this.activeChild && this.activeChild.sessionId !== undefined && !this.activeChild.terminalReceived) {
+            // A live session is already running on the shared connection; nothing to do here. The
+            // webview's Start button is disabled while running, but guard against a stray message.
             return;
         }
 
-        const existing = this.activeChild;
-        if (existing && existing.process.exitCode === null && existing.process.signalCode === null) {
-            await this.closeChild(existing);
+        this.postMessage({ type: "status", state: "starting", message: "Negotiating CLI protocol…" });
+
+        let session: StreamChild;
+        try {
+            ({ session } = await this.acquireChild());
+        } catch (error) {
+            this.postMessage({ type: "status", state: "error", message: withRuntimeGuidance(errorMessage(error)) });
+            this.output.appendLine(`Could not launch the CLI: ${errorMessage(error)}`);
+            return;
         }
 
+        try {
+            session.startInFlight = true;
+            this.writeFrame(session, {
+                type: "start",
+                requestId: randomBytes(12).toString("hex"),
+                processId: target.processId,
+                kinds: [
+                    { kind: "counters", providers: ["System.Runtime"], intervalSeconds: 1, observationCapacity: 256 },
+                    { kind: "gc", observationCapacity: 256 },
+                ],
+            });
+            await withTimeout(session.started.promise, 30_000);
+            this.postMessage({ type: "status", state: "running", message: "Live counters and GC pauses are streaming." });
+        } catch (error) {
+            if (!session.startupErrorReported) {
+                this.postMessage({ type: "status", state: "error", message: withRuntimeGuidance(errorMessage(error)) });
+            }
+            this.output.appendLine(`Live counter startup failed: ${errorMessage(error)}`);
+            await this.closeChild(session);
+        } finally {
+            session.startInFlight = false;
+        }
+    }
+
+    /**
+     * Reuses `activeChild` if it is still a live, non-terminal connection; otherwise closes any
+     * stale leftover connection (an ended live session or an exited process) and opens a fresh
+     * one. Shared by `startStreamCore` and `captureCpuCore` so a capture-only connection can be
+     * promoted to a live session (and vice versa) without leaking the previous CLI child.
+     */
+    private async acquireChild(): Promise<{ session: StreamChild; owns: boolean }> {
+        const existing = this.activeChild;
+        if (
+            existing &&
+            !existing.terminalReceived &&
+            !existing.closing &&
+            existing.process.exitCode === null &&
+            existing.process.signalCode === null
+        ) {
+            return { session: existing, owns: false };
+        }
+        if (existing) {
+            await this.closeChild(existing);
+        }
+        const session = await this.connectChild();
+        return { session, owns: true };
+    }
+
+    /**
+     * Spawns the CLI child process, wires up frame dispatch/lifecycle handling, and completes the
+     * protocol handshake. Does not send a `start` request — callers that need a live session send
+     * one afterwards; callers that only need a one-shot `capture` can use the connection as-is.
+     *
+     * `startStreamCore` and `captureCpuCore` can both reach this method after an unbounded UI
+     * await (process quick-pick), so concurrent callers are serialized onto a single in-flight
+     * connection attempt instead of racing to spawn two CLI children and clobber `activeChild`.
+     */
+    private connectChild(): Promise<StreamChild> {
+        if (!this.connectChildTask) {
+            this.connectChildTask = this.connectChildCore().finally(() => {
+                this.connectChildTask = undefined;
+            });
+        }
+        return this.connectChildTask;
+    }
+
+    private async connectChildCore(): Promise<StreamChild> {
         let child: ChildProcessWithoutNullStreams;
         try {
             child = this.spawnStream();
         } catch (error) {
-            const message = withRuntimeGuidance(errorMessage(error));
-            this.postMessage({ type: "status", state: "error", message });
-            this.output.appendLine(`Could not launch the CLI: ${errorMessage(error)}`);
-            return;
+            throw new Error(withRuntimeGuidance(errorMessage(error)));
         }
         const session: StreamChild = {
             process: child,
@@ -255,10 +451,13 @@ class CounterPanelController implements vscode.Disposable {
             stderrTail: "",
             terminalReceived: false,
             startupErrorReported: false,
+            pendingCaptures: new Map(),
+            expectedShutdown: false,
+            startInFlight: false,
+            closing: false,
         };
         this.activeChild = session;
         this.statusBar.text = "$(sync~spin) .NET Counters";
-        this.postMessage({ type: "status", state: "starting", message: "Negotiating CLI protocol…" });
 
         session.lines.on("line", line => this.handleFrame(session, line));
         child.stdin.on("error", error => this.failPending(session, error));
@@ -270,7 +469,7 @@ class CounterPanelController implements vscode.Disposable {
         });
         child.once("close", (code, signal) => {
             session.lines.close();
-            if (!session.terminalReceived) {
+            if (!session.terminalReceived && !session.expectedShutdown) {
                 const details = session.stderrTail.trim();
                 const reason = details
                     ? describeStreamCompatibilityError(details)
@@ -289,32 +488,27 @@ class CounterPanelController implements vscode.Disposable {
             }
             session.terminal.resolve();
             session.closed.resolve();
+            for (const pending of session.pendingCaptures.values()) {
+                pending.reject(new Error("The CLI connection closed before the capture completed."));
+            }
+            session.pendingCaptures.clear();
             if (this.activeChild === session) {
                 this.activeChild = undefined;
                 this.statusBar.text = "$(pulse) .NET Counters";
             }
         });
 
+        this.writeFrame(session, { type: "hello", protocolVersion: PROTOCOL_VERSION });
         try {
-            this.writeFrame(session, { type: "hello", protocolVersion: PROTOCOL_VERSION });
             await withTimeout(session.handshake.promise, 10_000);
-            this.writeFrame(session, {
-                type: "start",
-                requestId: randomBytes(12).toString("hex"),
-                processId: target.processId,
-                providers: ["System.Runtime"],
-                intervalSeconds: 1,
-                observationCapacity: 256,
-            });
-            await withTimeout(session.started.promise, 30_000);
-            this.postMessage({ type: "status", state: "running", message: "Live counters are streaming." });
         } catch (error) {
             if (!session.startupErrorReported) {
                 this.postMessage({ type: "status", state: "error", message: withRuntimeGuidance(errorMessage(error)) });
             }
-            this.output.appendLine(`Live counter startup failed: ${errorMessage(error)}`);
             await this.closeChild(session);
+            throw error;
         }
+        return session;
     }
 
     private spawnStream(): ChildProcessWithoutNullStreams {
@@ -367,22 +561,42 @@ class CounterPanelController implements vscode.Disposable {
                 }
                 session.sessionId = frame.sessionId;
                 session.started.resolve();
-                this.postMessage({ type: "session", sessionId: frame.sessionId });
+                this.postMessage({
+                    type: "session",
+                    sessionId: frame.sessionId,
+                    kinds: Array.isArray(frame.kinds) ? frame.kinds : ["counters"],
+                });
                 break;
 
-            case "observation":
-                if (frame.sessionId === session.sessionId
-                    && isCounterValue(frame.counter)
-                    && Number.isSafeInteger(frame.sequence)
-                    && typeof frame.timestamp === "string") {
+            case "observation": {
+                if (frame.sessionId !== session.sessionId
+                    || !Number.isSafeInteger(frame.sequence)
+                    || typeof frame.timestamp !== "string") {
+                    break;
+                }
+
+                // Older (#1091–#1093) CLI builds never tagged observations with a kind; treat an
+                // absent kind as the legacy implicit counters session for forward compatibility.
+                const kind = typeof frame.kind === "string" ? frame.kind : "counters";
+                if (kind === "counters" && isCounterValue(frame.counter)) {
                     this.postMessage({
                         type: "observation",
+                        kind: "counters",
                         sequence: frame.sequence,
                         timestamp: frame.timestamp,
                         counter: frame.counter,
                     });
+                } else if (kind === "gc" && isGcCollection(frame.collection)) {
+                    this.postMessage({
+                        type: "observation",
+                        kind: "gc",
+                        sequence: frame.sequence,
+                        timestamp: frame.timestamp,
+                        collection: frame.collection,
+                    });
                 }
                 break;
+            }
 
             case "terminal":
                 if (frame.sessionId !== session.sessionId
@@ -397,12 +611,27 @@ class CounterPanelController implements vscode.Disposable {
                 this.postMessage({
                     type: "terminal",
                     status: frame.status,
+                    kinds: Array.isArray(frame.kinds) ? frame.kinds : ["counters"],
                     eventPipeEventsLost: frame.eventPipeEventsLost,
                     droppedObservations: frame.droppedObservations,
                     error: frame.error,
                 });
                 this.statusBar.text = "$(pulse) .NET Counters";
                 break;
+
+            case "capture": {
+                const requestId = typeof frame.requestId === "string" ? frame.requestId : undefined;
+                const pending = requestId ? session.pendingCaptures.get(requestId) : undefined;
+                if (!pending) {
+                    break;
+                }
+                if (isCpuSampleSummary(frame.result)) {
+                    pending.resolve(frame.result);
+                } else {
+                    pending.reject(new Error("The CLI returned a capture result in an unexpected shape."));
+                }
+                break;
+            }
 
             case "error": {
                 const message = typeof frame.message === "string" ? frame.message : "The CLI returned a protocol error.";
@@ -411,7 +640,11 @@ class CounterPanelController implements vscode.Disposable {
                         ? `CLI protocol mismatch: ${message}`
                         : message,
                 );
-                if (!session.handshake.settled) {
+                const requestId = typeof frame.requestId === "string" ? frame.requestId : undefined;
+                const pendingCapture = requestId ? session.pendingCaptures.get(requestId) : undefined;
+                if (pendingCapture) {
+                    pendingCapture.reject(error);
+                } else if (!session.handshake.settled) {
                     session.handshake.reject(error);
                 } else if (!session.started.settled) {
                     session.started.reject(error);
@@ -499,6 +732,7 @@ class CounterPanelController implements vscode.Disposable {
 
     private async closeChild(session: StreamChild): Promise<void> {
         if (session.process.exitCode === null && session.process.signalCode === null) {
+            session.closing = true;
             try {
                 session.process.stdin.end();
             } catch (error) {
@@ -538,6 +772,7 @@ export function activate(context: vscode.ExtensionContext): void {
         actionsView,
         vscode.commands.registerCommand("dotnetDiagnostics.startCounters", () => controller.startCounters()),
         vscode.commands.registerCommand("dotnetDiagnostics.stopCounters", () => controller.stopCounters()),
+        vscode.commands.registerCommand("dotnetDiagnostics.captureCpu", () => controller.captureCpu()),
     );
 }
 
@@ -563,7 +798,15 @@ class DiagnosticsActionsProvider implements vscode.TreeDataProvider<vscode.TreeI
             title: "Stop Live Counters",
         };
 
-        return [start, stop];
+        const captureCpu = new vscode.TreeItem("Capture CPU Now", vscode.TreeItemCollapsibleState.None);
+        captureCpu.description = "Take a point-in-time CPU sample";
+        captureCpu.iconPath = new vscode.ThemeIcon("flame");
+        captureCpu.command = {
+            command: "dotnetDiagnostics.captureCpu",
+            title: "Capture CPU Now",
+        };
+
+        return [start, stop, captureCpu];
     }
 }
 
@@ -592,6 +835,13 @@ function renderHtml(target: TargetProcess, nonce: string): string {
     #value { font-size:1.5rem; font-weight:600; margin:.6rem 0; }
     canvas { width:100%; height:280px; border-bottom:1px solid var(--vscode-panel-border); }
     #error { color:var(--vscode-errorForeground); white-space:pre-wrap; }
+    section.panel { margin-top:1.4rem; }
+    section.panel h3 { margin-bottom:.3rem; }
+    table { border-collapse:collapse; width:100%; font-size:.9rem; }
+    th, td { text-align:left; padding:.25rem .6rem; border-bottom:1px solid var(--vscode-panel-border); }
+    #gcHeadline { margin:.3rem 0 .6rem; color:var(--vscode-descriptionForeground); }
+    #captureStatus { color:var(--vscode-descriptionForeground); margin:.3rem 0; }
+    #captureResult.empty { display:none; }
   </style>
 </head>
 <body>
@@ -600,6 +850,7 @@ function renderHtml(target: TargetProcess, nonce: string): string {
     <div class="controls">
       <label for="metric">Counter</label><select id="metric" aria-label="Select counter"></select>
       <button id="start">Start</button><button id="stop" disabled>Stop</button>
+      <button id="captureCpu">Capture CPU now</button>
     </div>
   </header>
   <div id="status" role="status">Connecting to CLI…</div>
@@ -607,24 +858,57 @@ function renderHtml(target: TargetProcess, nonce: string): string {
   <canvas id="chart" aria-label="Selected counter time series"></canvas>
   <div id="quality"></div>
   <div id="error" role="alert"></div>
+
+  <section class="panel">
+    <h3>GC pauses</h3>
+    <div id="gcHeadline">No GC pauses observed yet.</div>
+    <table id="gcTable">
+      <thead><tr><th>Time</th><th>Gen</th><th>Reason</th><th>Type</th><th>Pause</th></tr></thead>
+      <tbody id="gcBody"></tbody>
+    </table>
+  </section>
+
+  <section class="panel">
+    <h3>CPU capture</h3>
+    <div id="captureStatus"></div>
+    <div id="captureResult" class="empty">
+      <div id="captureHeadline"></div>
+      <table id="captureTable">
+        <thead><tr><th>Module</th><th>Method</th><th>Inclusive</th><th>Exclusive</th></tr></thead>
+        <tbody id="captureBody"></tbody>
+      </table>
+    </div>
+  </section>
+
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     const metricSelect = document.getElementById('metric');
     const startButton = document.getElementById('start');
     const stopButton = document.getElementById('stop');
+    const captureCpuButton = document.getElementById('captureCpu');
     const statusElement = document.getElementById('status');
     const valueElement = document.getElementById('value');
     const qualityElement = document.getElementById('quality');
     const errorElement = document.getElementById('error');
     const canvas = document.getElementById('chart');
     const context = canvas.getContext('2d');
+    const gcHeadline = document.getElementById('gcHeadline');
+    const gcBody = document.getElementById('gcBody');
+    const captureStatusElement = document.getElementById('captureStatus');
+    const captureResultElement = document.getElementById('captureResult');
+    const captureHeadline = document.getElementById('captureHeadline');
+    const captureBody = document.getElementById('captureBody');
     const counters = new Map();
     const maxSeries = ${MAX_WEBVIEW_SERIES};
     const maxPoints = 120;
+    const maxGcRows = 50;
     let selectedKey = '';
     let lastSequence = 0;
     let sequenceGaps = 0;
     let seriesLimitReached = false;
+    let gcPauseCount = 0;
+    let gcTotalPauseMs = 0;
+
 
     function updateButtons(running) {
       startButton.disabled = running;
@@ -670,10 +954,6 @@ function renderHtml(target: TargetProcess, nonce: string): string {
       const counter = message.counter;
       if (!counter || typeof counter.provider !== 'string' || typeof counter.name !== 'string' ||
           typeof counter.value !== 'number' || !Number.isFinite(counter.value)) return;
-      if (message.sequence > lastSequence + 1 && lastSequence > 0) {
-        sequenceGaps += message.sequence - lastSequence - 1;
-      }
-      lastSequence = Math.max(lastSequence, message.sequence);
       const key = counter.provider + '/' + counter.name;
       let series = counters.get(key);
       if (!series) {
@@ -699,10 +979,84 @@ function renderHtml(target: TargetProcess, nonce: string): string {
         valueElement.textContent = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(counter.value) +
           (series.unit ? ' ' + series.unit : '');
       }
+      draw();
+    }
+
+    // The CLI assigns one shared sequence number across every observation kind in a session (not
+    // one per kind), so gap tracking must consume every observation regardless of its kind —
+    // otherwise GC pauses between two counter samples look like dropped counter observations.
+    function trackSequence(sequence) {
+      if (!Number.isFinite(sequence)) return;
+      if (sequence > lastSequence + 1 && lastSequence > 0) {
+        sequenceGaps += sequence - lastSequence - 1;
+      }
+      lastSequence = Math.max(lastSequence, sequence);
       if (sequenceGaps > 0) {
         qualityElement.textContent = sequenceGaps + ' observations missing (sequence gaps); gaps are not zero values.';
       }
-      draw();
+    }
+
+    // System.TimeSpan serializes via the .NET 8+ constant "c" format, e.g. "00:00:00.0123456".
+    function parseTimeSpanToMs(value) {
+      if (typeof value !== 'string') return NaN;
+      const match = /^(?:(\d+)\.)?(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?$/.exec(value);
+      if (!match) return NaN;
+      const days = Number(match[1] || 0);
+      const hours = Number(match[2]);
+      const minutes = Number(match[3]);
+      const seconds = Number(match[4]);
+      const fraction = match[5] ? Number('0.' + match[5]) : 0;
+      return (((days * 24 + hours) * 60 + minutes) * 60 + seconds + fraction) * 1000;
+    }
+
+    function addGcPause(message) {
+      const collection = message.collection;
+      if (!collection || typeof collection.timestamp !== 'string') return;
+      const pauseMs = parseTimeSpanToMs(collection.pauseDuration);
+      gcPauseCount += 1;
+      if (Number.isFinite(pauseMs)) gcTotalPauseMs += pauseMs;
+      const row = document.createElement('tr');
+      const cells = [
+        new Date(collection.timestamp).toLocaleTimeString(),
+        String(collection.generation),
+        String(collection.reason ?? ''),
+        String(collection.type ?? ''),
+        Number.isFinite(pauseMs) ? pauseMs.toFixed(1) + ' ms' : 'unknown',
+      ];
+      cells.forEach(text => {
+        const cell = document.createElement('td');
+        cell.textContent = text;
+        row.appendChild(cell);
+      });
+      gcBody.insertBefore(row, gcBody.firstChild);
+      while (gcBody.childElementCount > maxGcRows) gcBody.removeChild(gcBody.lastChild);
+      gcHeadline.textContent = gcPauseCount + ' pause(s) observed · last ' +
+        (Number.isFinite(pauseMs) ? pauseMs.toFixed(1) + ' ms' : 'unknown') +
+        ' · total ' + gcTotalPauseMs.toFixed(1) + ' ms';
+    }
+
+    // A capture is a single point-in-time snapshot, not a timeline — it replaces the prior result
+    // instead of appending to a list.
+    function renderCapture(summary) {
+      captureResultElement.classList.remove('empty');
+      captureHeadline.textContent = 'PID ' + summary.processId + ' · started ' +
+        new Date(summary.startedAt).toLocaleTimeString() + ' · ' + summary.totalSamples + ' sample(s)';
+      captureBody.innerHTML = '';
+      (summary.topHotspots || []).forEach(hotspot => {
+        const row = document.createElement('tr');
+        const cells = [
+          hotspot.frame && hotspot.frame.module || '',
+          hotspot.frame && hotspot.frame.method || '',
+          String(hotspot.inclusiveSamples),
+          String(hotspot.exclusiveSamples),
+        ];
+        cells.forEach(text => {
+          const cell = document.createElement('td');
+          cell.textContent = text;
+          row.appendChild(cell);
+        });
+        captureBody.appendChild(row);
+      });
     }
 
     window.addEventListener('message', event => {
@@ -713,7 +1067,17 @@ function renderHtml(target: TargetProcess, nonce: string): string {
         errorElement.textContent = message.state === 'error' ? (message.message || '') : '';
         updateButtons(message.state === 'running' || message.state === 'starting' || message.state === 'stopping');
       } else if (message.type === 'observation') {
-        addCounter(message);
+        trackSequence(message.sequence);
+        if (message.kind === 'gc') {
+          addGcPause(message);
+        } else {
+          addCounter(message);
+        }
+      } else if (message.type === 'captureStatus') {
+        captureStatusElement.textContent = message.message || message.state || '';
+        captureCpuButton.disabled = message.state === 'running';
+      } else if (message.type === 'capture') {
+        renderCapture(message.summary);
       } else if (message.type === 'terminal') {
         updateButtons(false);
         const loss = typeof message.eventPipeEventsLost === 'number'
@@ -746,11 +1110,13 @@ function renderHtml(target: TargetProcess, nonce: string): string {
     });
     startButton.addEventListener('click', () => vscode.postMessage({ type: 'start' }));
     stopButton.addEventListener('click', () => vscode.postMessage({ type: 'stop' }));
+    captureCpuButton.addEventListener('click', () => vscode.postMessage({ type: 'captureCpu' }));
     window.addEventListener('resize', resizeCanvas);
     resizeCanvas();
     updateButtons(false);
     vscode.postMessage({ type: 'ready' });
   </script>
+
 </body>
 </html>`;
 }

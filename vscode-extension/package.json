@@ -1,7 +1,7 @@
 {
   "name": "dotnet-diagnostics",
   "displayName": ".NET Diagnostics",
-  "description": "Live runtime counters for .NET processes using dotnet-diagnostics-cli.",
+  "description": "Live runtime counters, GC pauses, and point-in-time CPU captures for .NET processes using dotnet-diagnostics-cli.",
   "version": "0.1.0",
   "publisher": "pedrosakuma",
   "license": "MIT",
@@ -17,6 +17,7 @@
   "activationEvents": [
     "onCommand:dotnetDiagnostics.startCounters",
     "onCommand:dotnetDiagnostics.stopCounters",
+    "onCommand:dotnetDiagnostics.captureCpu",
     "onView:dotnetDiagnostics.actions"
   ],
   "main": "./out/extension.js",
@@ -52,6 +53,10 @@
       {
         "command": "dotnetDiagnostics.stopCounters",
         "title": ".NET Diagnostics: Stop Live Counters"
+      },
+      {
+        "command": "dotnetDiagnostics.captureCpu",
+        "title": ".NET Diagnostics: Capture CPU Now"
       }
     ],
     "menus": {
@@ -63,6 +68,11 @@
         },
         {
           "command": "dotnetDiagnostics.stopCounters",
+          "when": "view == dotnetDiagnostics.actions",
+          "group": "navigation"
+        },
+        {
+          "command": "dotnetDiagnostics.captureCpu",
           "when": "view == dotnetDiagnostics.actions",
           "group": "navigation"
         }
