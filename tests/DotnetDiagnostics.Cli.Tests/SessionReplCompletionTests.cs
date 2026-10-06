@@ -18,6 +18,7 @@ public sealed class SessionReplCompletionTests
 
         candidates.Should().Contain("collect");
         candidates.Should().Contain("compare");
+        candidates.Should().NotContain("stream");
         candidates.Should().NotContain("dump"); // filtered by "co" prefix
     }
 

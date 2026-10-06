@@ -9,7 +9,7 @@ using DotnetDiagnostics.Core.Security;
 
 namespace DotnetDiagnostics.Core.Db;
 
-public sealed class EventPipeDbCollector : IDbCollector
+public sealed class EventPipeDbCollector : IDbCollector, IStreamingDbCollector
 {
     private const string FilterArgumentName = "FilterAndPayloadSpecs";
     private const long DiagnosticSourceKeywords = 0x1 | 0x2;
@@ -28,11 +28,30 @@ public sealed class EventPipeDbCollector : IDbCollector
             new SqlClientEventParser(redactor));
     }
 
-    public async Task<DbSnapshot> CollectAsync(
+    public Task<DbSnapshot> CollectAsync(
         int processId,
         TimeSpan duration,
         int intervalSeconds = 1,
         CancellationToken cancellationToken = default)
+        => CollectCoreAsync(processId, duration, null, intervalSeconds, cancellationToken);
+
+    public Task<DbSnapshot> CollectStreamingAsync(
+        int processId,
+        TimeSpan duration,
+        Action<DbObservation> onObservation,
+        int intervalSeconds = 1,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(onObservation);
+        return CollectCoreAsync(processId, duration, onObservation, intervalSeconds, cancellationToken);
+    }
+
+    private async Task<DbSnapshot> CollectCoreAsync(
+        int processId,
+        TimeSpan duration,
+        Action<DbObservation>? onObservation,
+        int intervalSeconds,
+        CancellationToken cancellationToken)
     {
         var observationSink = CaptureRecordingContext.Current;
         if (duration <= TimeSpan.Zero)
@@ -56,7 +75,7 @@ public sealed class EventPipeDbCollector : IDbCollector
             .ConfigureAwait(false);
 
         var startedAt = DateTimeOffset.UtcNow;
-        var state = new DbEventAggregationState(observationSink);
+        var state = new DbEventAggregationState(observationSink, onObservation);
         var processingTask = Task.Run(() => ProcessEvents(processId, session, state), cancellationToken);
 
         try

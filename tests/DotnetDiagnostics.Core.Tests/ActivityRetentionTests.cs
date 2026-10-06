@@ -47,6 +47,19 @@ public sealed class ActivityRetentionTests
         AssertAccounting(state.Retention);
     }
 
+    [Fact]
+    public void StreamingRetention_PublishesMatchingEventsBeyondTheSnapshotCap()
+    {
+        var streamed = new List<CapturedActivity>();
+        var state = new ActivityRetentionState(1, Trace, 1, onObservation: streamed.Add);
+        state.Observe(Span(Noise, "noise"));
+        state.Observe(Span(Trace, "retained"));
+        state.Observe(Span(Trace, "dropped"));
+
+        streamed.Select(activity => activity.OperationName).Should().Equal("retained", "dropped");
+        state.Activities.Select(activity => activity.OperationName).Should().Equal("retained");
+    }
+
     [Theory]
     [InlineData("")]
     [InlineData(" ")]

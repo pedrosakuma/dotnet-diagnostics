@@ -52,6 +52,7 @@ public class DiagnosticServiceRegistrationTests
         var services = BuildServices();
 
         services.Should().Contain(d => d.ServiceType == typeof(ICounterCollector));
+        services.Should().Contain(d => d.ServiceType == typeof(ICounterSessionFactory));
         services.Should().Contain(d => d.ServiceType == typeof(IDiagnosticHandleStore));
         services.Should().Contain(d => d.ServiceType == typeof(IThreadSnapshotInspector));
 
@@ -59,6 +60,8 @@ public class DiagnosticServiceRegistrationTests
         using var provider = services.BuildServiceProvider();
         provider.GetService<IDiagnosticHandleStore>().Should().NotBeNull();
         provider.GetService<ICounterCollector>().Should().NotBeNull();
+        provider.GetRequiredService<ICounterSessionFactory>()
+            .Should().BeSameAs(provider.GetRequiredService<ICounterCollector>());
     }
 
     [Fact]

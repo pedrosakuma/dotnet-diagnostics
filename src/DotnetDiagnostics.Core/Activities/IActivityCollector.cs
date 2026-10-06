@@ -35,3 +35,18 @@ public interface IActivityCollector
             ? CollectAsync(processId, duration, sources, maxActivities, traceId, maxMatchedActivities, cancellationToken)
             : throw new NotSupportedException("This collector does not support HTTP destination capture.");
 }
+
+/// <summary>Collects activities while publishing each completed activity incrementally.</summary>
+public interface IStreamingActivityCollector
+{
+    Task<ActivityCapture> CollectStreamingAsync(
+        int processId,
+        TimeSpan duration,
+        Action<CapturedActivity> onObservation,
+        IReadOnlyList<string>? sources = null,
+        int maxActivities = 200,
+        string? traceId = null,
+        int maxMatchedActivities = 200,
+        bool includeHttpDestination = false,
+        CancellationToken cancellationToken = default);
+}

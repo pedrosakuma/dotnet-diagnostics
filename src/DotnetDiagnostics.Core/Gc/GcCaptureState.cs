@@ -26,13 +26,14 @@ internal sealed class GcCaptureState
     private bool _sawBoundary;
     private readonly ICaptureObservationSink? _sink;
 
-    internal GcCaptureState(int cap, ICaptureObservationSink? sink = null)
+    internal GcCaptureState(int cap, ICaptureObservationSink? sink = null,
+        Action<GcEvent>? onCollection = null)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(cap, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(cap, MaxRetainedIntervals);
         _cap = cap;
         _sink = sink;
-        Collections = new GcEventAggregation(cap, sink);
+        Collections = new GcEventAggregation(cap, sink, onCollection);
     }
 
     internal GcEventAggregation Collections { get; }

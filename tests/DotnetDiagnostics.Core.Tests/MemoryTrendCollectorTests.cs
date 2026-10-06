@@ -130,6 +130,32 @@ public sealed class MemoryTrendCollectorTests : IDisposable
     }
 
     [Fact]
+    public async Task CollectStreaming_PublishesEachSampleBeforeCollectionCompletes()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+
+        SetupPid(1235, rssKb: 51200, pssKb: 25600, anonKb: 40960, minflt: 500, majflt: 3);
+        using var cancellation = new CancellationTokenSource();
+        var observations = new List<MemoryTrendSample>();
+        var collector = NewCollector();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            collector.CollectStreamingAsync(
+                1235,
+                durationSeconds: 10,
+                sampleEverySeconds: 1,
+                sample =>
+                {
+                    observations.Add(sample);
+                    cancellation.Cancel();
+                },
+                cancellation.Token));
+
+        observations.Should().ContainSingle();
+        observations[0].RssBytes.Should().Be(51200L * 1024);
+    }
+
+    [Fact]
     public async Task CorrectlyComputesStableVerdict()
     {
         if (!OperatingSystem.IsLinux()) return;

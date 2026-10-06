@@ -42,7 +42,7 @@ internal static class CliCommandCatalog
         "--acknowledge-risk",
         "--capture-root", "--capture-id", "--artifact-id", "--from", "--to", "--name",
         "--after-record-id", "--page-size", "--after-capture-id",
-        "--entry", "--file", "--operation-id", "--requested-utc",
+        "--entry", "--file", "--operation-id", "--requested-utc", "--protocol",
     ];
 
     public static readonly IReadOnlyList<string> DepthValues = ["summary", "detail", "raw"];
@@ -590,6 +590,18 @@ session notes:
   dotnet-diagnostics-cli session --launch --acknowledge-risk high -- dotnet App.dll   # binds the launched child for the session
 """,
             ["--persist"]),
+        new(
+            "stream",
+            "Run the versioned JSONL protocol for live EventCounter sessions.",
+"""
+stream options:
+      --protocol jsonl          Required. Uses protocol version 1 over stdin/stdout.
+
+  Send a hello frame with protocolVersion 1 before start/stop/cancel requests.
+  stdout contains protocol frames only; diagnostics are written to stderr.
+""",
+            "",
+            ["--protocol"]),
         new(
             "completion",
             "Emit a shell-completion script for bash, zsh or PowerShell.",

@@ -9,7 +9,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace DotnetDiagnostics.Core.Contention;
 
-public sealed class EventPipeContentionCollector : IContentionCollector
+public sealed class EventPipeContentionCollector : IContentionCollector, IStreamingContentionCollector
 {
     private const string RuntimeProvider = "Microsoft-Windows-DotNETRuntime";
     private const long ContentionKeyword = 0x4000;
@@ -25,10 +25,27 @@ public sealed class EventPipeContentionCollector : IContentionCollector
         _logger = logger ?? NullLogger<EventPipeContentionCollector>.Instance;
     }
 
-    public async Task<ContentionSnapshot> CollectAsync(
+    public Task<ContentionSnapshot> CollectAsync(
         int processId,
         TimeSpan duration,
         CancellationToken cancellationToken = default)
+        => CollectCoreAsync(processId, duration, null, cancellationToken);
+
+    public Task<ContentionSnapshot> CollectStreamingAsync(
+        int processId,
+        TimeSpan duration,
+        Action<ContentionEventSample> onObservation,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(onObservation);
+        return CollectCoreAsync(processId, duration, onObservation, cancellationToken);
+    }
+
+    private async Task<ContentionSnapshot> CollectCoreAsync(
+        int processId,
+        TimeSpan duration,
+        Action<ContentionEventSample>? onObservation,
+        CancellationToken cancellationToken)
     {
         if (duration <= TimeSpan.Zero)
         {
@@ -48,7 +65,7 @@ public sealed class EventPipeContentionCollector : IContentionCollector
         var startedAt = DateTimeOffset.UtcNow;
         var notes = new HashSet<string>(StringComparer.Ordinal);
         var recording = CaptureRecordingContext.Current;
-        var topEvents = new TopContentionEvents(MaxTrackedEvents, recording);
+        var topEvents = new TopContentionEvents(MaxTrackedEvents, recording, onObservation);
         var pendingByThread = new Dictionary<int, Stack<PendingContention>>();
         var durations = new BoundedDurationSampler();
         var distinctMonitorIds = new HashSet<ulong>();
@@ -305,18 +322,22 @@ public sealed class EventPipeContentionCollector : IContentionCollector
         private readonly int _capacity;
         private readonly List<ContentionEventSample> _events;
         private readonly ICaptureObservationSink? _sink;
+        private readonly Action<ContentionEventSample>? _onObservation;
 
-        public TopContentionEvents(int capacity, ICaptureObservationSink? sink = null)
+        public TopContentionEvents(int capacity, ICaptureObservationSink? sink = null,
+            Action<ContentionEventSample>? onObservation = null)
         {
             _capacity = capacity;
             _events = new List<ContentionEventSample>(capacity);
             _sink = sink;
+            _onObservation = onObservation;
         }
 
         public int DroppedCount { get; private set; }
 
         public void Add(ContentionEventSample sample, bool validDuration = true, string durationSource = "matched-wall-clock-boundaries")
         {
+            _onObservation?.Invoke(sample);
             if (_sink is not null) RuntimeObservationProjection.Contention(_sink, sample, validDuration, durationSource);
             if (_events.Count < _capacity)
             {

@@ -27,6 +27,19 @@ public sealed class EventStreamBoundednessTests
     }
 
     [Fact]
+    public void InFlightRequestTracker_ReturnsCorrelatedRequestOnStopForStreamingDelivery()
+    {
+        var tracker = new EventPipeInFlightRequestCollector.OldestPendingRequestTracker(capacity: 1);
+        var request = new EventPipeInFlightRequestCollector.PendingRequest(
+            "trace-id", "span-id", "/orders", "GET", DateTimeOffset.UnixEpoch);
+        tracker.Track("activity", request);
+
+        tracker.Remove("activity", DateTimeOffset.UnixEpoch.AddSeconds(1), out var removed).Should().BeTrue();
+        removed.Should().Be(request);
+        tracker.Remove("activity", DateTimeOffset.UnixEpoch.AddSeconds(2), out _).Should().BeFalse();
+    }
+
+    [Fact]
     public void RequestsNowSnapshotQueue_ReportsOverflowAsIncompleteLowerBound()
     {
         var queue = new RequestsNowCollector.SnapshotCaptureQueue(capacity: 2);

@@ -47,4 +47,35 @@ public sealed class ProcessResourcesCollectorTests
             File.Delete(path);
         }
     }
+
+    [Fact]
+    public async Task CollectStreaming_PublishesSampleBeforeCollectionCompletes()
+    {
+        var procRoot = Path.Combine(Path.GetTempPath(), $"process-resources-test-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(procRoot);
+        try
+        {
+            using var cancellation = new CancellationTokenSource();
+            var observations = new List<ProcessResourcesSample>();
+            var collector = new ProcessResourcesCollector(procRoot: procRoot);
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                collector.CollectStreamingAsync(
+                    Environment.ProcessId,
+                    durationSeconds: 10,
+                    sampleEverySeconds: 1,
+                    sample =>
+                    {
+                        observations.Add(sample);
+                        cancellation.Cancel();
+                    },
+                    cancellation.Token));
+
+            observations.Should().ContainSingle();
+        }
+        finally
+        {
+            Directory.Delete(procRoot, recursive: true);
+        }
+    }
 }

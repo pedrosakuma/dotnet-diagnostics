@@ -16,7 +16,7 @@ namespace DotnetDiagnostics.Core.Activities;
 /// Captures <see cref="System.Diagnostics.ActivitySource"/> stop events through the
 /// <c>Microsoft-Diagnostics-DiagnosticSource</c> EventPipe provider.
 /// </summary>
-public sealed partial class EventPipeActivityCollector : IActivityCollector
+public sealed partial class EventPipeActivityCollector : IActivityCollector, IStreamingActivityCollector
 {
     private const string ProviderName = "Microsoft-Diagnostics-DiagnosticSource";
     private const long MessagesKeyword = 0x1;
@@ -67,6 +67,29 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector
         int processId, TimeSpan duration, IReadOnlyList<string>? sources, int maxActivities,
         string? traceId, int maxMatchedActivities, bool includeHttpDestination,
         CancellationToken cancellationToken = default)
+        => await CollectCoreAsync(processId, duration, sources, maxActivities, traceId,
+            maxMatchedActivities, includeHttpDestination, null, cancellationToken).ConfigureAwait(false);
+
+    public Task<ActivityCapture> CollectStreamingAsync(
+        int processId,
+        TimeSpan duration,
+        Action<CapturedActivity> onObservation,
+        IReadOnlyList<string>? sources = null,
+        int maxActivities = 200,
+        string? traceId = null,
+        int maxMatchedActivities = 200,
+        bool includeHttpDestination = false,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(onObservation);
+        return CollectCoreAsync(processId, duration, sources, maxActivities, traceId,
+            maxMatchedActivities, includeHttpDestination, onObservation, cancellationToken);
+    }
+
+    private async Task<ActivityCapture> CollectCoreAsync(
+        int processId, TimeSpan duration, IReadOnlyList<string>? sources, int maxActivities,
+        string? traceId, int maxMatchedActivities, bool includeHttpDestination,
+        Action<CapturedActivity>? onObservation, CancellationToken cancellationToken)
     {
         if (duration <= TimeSpan.Zero)
         {
@@ -81,7 +104,8 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector
         var normalizedSourceFilters = NormalizeSourceFilters(sources);
         var providerArguments = BuildProviderArguments(normalizedSourceFilters, includeHttpDestination);
         var recording = CaptureRecordingContext.Current;
-        var retention = new ActivityRetentionState(maxActivities, traceId, maxMatchedActivities, recording, _redactor);
+        var retention = new ActivityRetentionState(maxActivities, traceId, maxMatchedActivities,
+            recording, _redactor, onObservation);
         var destinations = includeHttpDestination && MatchesAnyFilter("System.Net.Http", normalizedSourceFilters)
             ? new HttpDestinationCorrelationState(retention.Retention.AppliedTraceId) : null;
 

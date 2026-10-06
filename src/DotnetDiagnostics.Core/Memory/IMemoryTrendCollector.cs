@@ -22,3 +22,14 @@ public interface IMemoryTrendCollector
         int sampleEverySeconds,
         CancellationToken cancellationToken = default);
 }
+
+/// <summary>Collects a memory trend while publishing each successful OS snapshot incrementally.</summary>
+public interface IStreamingMemoryTrendCollector
+{
+    Task<MemoryTrend> CollectStreamingAsync(
+        int processId,
+        int durationSeconds,
+        int sampleEverySeconds,
+        Action<MemoryTrendSample> onObservation,
+        CancellationToken cancellationToken = default);
+}

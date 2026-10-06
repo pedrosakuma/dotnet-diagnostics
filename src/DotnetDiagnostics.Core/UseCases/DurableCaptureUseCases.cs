@@ -51,31 +51,19 @@ public sealed partial class DurableCaptureUseCases
     }
 
     /// <summary>Routes a child operation before callbacks start; the outer capture owns persistence.</summary>
-    public async Task<DiagnosticResult<T>> RunChildAsync<T>(string kind, string name,
+    public Task<DiagnosticResult<T>> RunChildAsync<T>(string kind, string name,
         Func<CancellationToken, Task<DiagnosticResult<T>>> collect, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(collect);
-        var child = CaptureRecordingContext.CreateChild(kind, name);
-        using var scope = child is null ? null : CaptureRecordingContext.Enter(child);
-        try
-        {
-            var result = await collect(cancellationToken).ConfigureAwait(false)
-                ?? throw new InvalidOperationException("Child collector returned no diagnostic result.");
-            if (result.Handle is { } handle && _handles.TryGetWithKind(handle) is { } lookup)
-                child?.ArtifactRegistered(lookup.Handle, lookup.Artifact);
-            child?.ReportCompletion(result.Error, result.Cancelled, result.Data);
-            return result;
-        }
-        catch (OperationCanceledException)
-        {
-            child?.ReportCompletion(null, cancelled: true);
-            throw;
-        }
-        catch (Exception ex)
-        {
-            child?.ReportCompletion(new("ChildCollectionFailed", ex.Message), cancelled: false);
-            throw;
-        }
+        return CaptureRecordingContext.RunChildAsync(kind, name, async token =>
+            await collect(token).ConfigureAwait(false)
+                ?? throw new InvalidOperationException("Child collector returned no diagnostic result."),
+            (child, result) =>
+            {
+                if (result.Handle is { } handle && _handles.TryGetWithKind(handle) is { } lookup)
+                    child.ArtifactRegistered(lookup.Handle, lookup.Artifact);
+                child.ReportCompletion(result.Error, result.Cancelled, result.Data);
+            }, cancellationToken);
     }
 
     /// <summary>

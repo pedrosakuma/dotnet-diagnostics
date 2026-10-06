@@ -68,6 +68,9 @@ internal static class CliInvocationSafety
             "capabilities" => InspectProcess(DiagnosticOperationCatalog.InspectProcessViews.Capabilities),
             "doctor" => InspectProcess(DiagnosticOperationCatalog.InspectProcessViews.Preflight),
             "collect" => Collect(options),
+            "stream" => InvocationSafetyRequest.Create(
+                DiagnosticOperationCatalog.CollectEvents,
+                ("kind", "counters")),
             "inspect" => InspectProcess(options.View),
             "inspect-heap" => InspectHeap(options),
             "dump" => InvocationSafetyRequest.Create(

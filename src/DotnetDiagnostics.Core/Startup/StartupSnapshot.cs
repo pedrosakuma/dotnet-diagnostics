@@ -76,3 +76,14 @@ public sealed record StartupDiAggregate(
     int DynamicMethodBuiltCount,
     int ServiceRealizationFailedCount,
     TimeSpan ObservedActivityDuration);
+
+/// <summary>Base type for incremental startup observations.</summary>
+public abstract record StartupObservation(DateTimeOffset Timestamp);
+
+public sealed record StartupAssemblyObservation(StartupAssemblyLoad Load) : StartupObservation(Load.Timestamp);
+
+public sealed record StartupModuleObservation(StartupModuleLoad Load) : StartupObservation(Load.Timestamp);
+
+public sealed record StartupDiObservation(StartupDiEvent Event) : StartupObservation(Event.Timestamp);
+
+public sealed record StartupTimelineObservation(StartupTimelineEvent Event) : StartupObservation(Event.Timestamp);

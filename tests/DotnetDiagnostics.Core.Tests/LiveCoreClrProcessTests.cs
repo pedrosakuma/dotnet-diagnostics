@@ -332,6 +332,91 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         snapshot.ProcessorCount.Should().BeGreaterThan(0);
     }
 
+    [Fact(Timeout = 60_000)]
+    public async Task LiveCounterSession_StreamsSequencedUpdates_AndStopsCleanly()
+    {
+        EnsureSampleRunning();
+
+        using var ownerCancellation = new CancellationTokenSource();
+        await using var session = new EventPipeCounterCollector().CreateSession(
+            Pid,
+            new CounterSessionOptions
+            {
+                Providers = ["System.Runtime"],
+                IntervalSeconds = 1,
+                ObservationCapacity = 32,
+            });
+        var observations = new List<CounterObservation>();
+        // Require two *distinct* timestamps for the same named counter so the session has genuinely
+        // observed more than one EventCounter interval, not just multiple counters from a single batch.
+        var cpuUsageTimestamps = new HashSet<DateTimeOffset>();
+        var receivedTwoIntervals = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var baseEventSequences = new List<long>();
+        var callbackOrder = new List<string>();
+        var callbackCancellationObserved = false;
+        var cancellationRequestedAt = (DateTimeOffset?)null;
+        using var counterSubscription = session.Attach<CounterObservation>((observation, cancellationToken) =>
+        {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                callbackCancellationObserved = true;
+            }
+
+            observations.Add(observation);
+            callbackOrder.Add($"counter:{observation.Sequence}");
+            if (observation.Counter.Name == "cpu-usage")
+            {
+                cpuUsageTimestamps.Add(observation.Timestamp);
+                if (cpuUsageTimestamps.Count >= 2 && cancellationRequestedAt is null)
+                {
+                    cancellationRequestedAt = DateTimeOffset.UtcNow;
+                    receivedTwoIntervals.TrySetResult();
+                    ownerCancellation.Cancel();
+                }
+            }
+
+            return ValueTask.CompletedTask;
+        });
+        using var baseEventSubscription = session.Attach<DiagnosticSessionEvent>((sessionEvent, cancellationToken) =>
+        {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                callbackCancellationObserved = true;
+            }
+
+            baseEventSequences.Add(sessionEvent.Sequence);
+            callbackOrder.Add($"base:{sessionEvent.Sequence}");
+            return ValueTask.CompletedTask;
+        });
+        await session.StartAsync(ownerCancellation.Token);
+
+        using var observationTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        await receivedTwoIntervals.Task.WaitAsync(observationTimeout.Token);
+
+        var completion = await session.Completion.WaitAsync(TimeSpan.FromSeconds(10));
+        (await session.StopAsync()).Should().Be(completion, "stop is idempotent after owner cancellation");
+
+        cancellationRequestedAt.Should().NotBeNull();
+        (completion.EndedAt - cancellationRequestedAt!.Value).Should().BeLessThan(
+            TimeSpan.FromSeconds(10),
+            "cancellation must stop and drain the session promptly, not accumulate unbounded delay");
+        cpuUsageTimestamps.Should().HaveCountGreaterThanOrEqualTo(
+            2, "the session must observe more than one EventCounter reporting interval before cancellation");
+        observations.Should().NotBeEmpty();
+        baseEventSequences.Should().Equal(observations.Select(observation => observation.Sequence));
+        callbackOrder.Should().HaveCount(observations.Count * 2);
+        callbackCancellationObserved.Should().BeFalse("stopping cancels producers but allows queued callbacks to drain");
+        for (var index = 0; index < observations.Count; index++)
+        {
+            var sequence = observations[index].Sequence;
+            callbackOrder[index * 2].Should().Be($"counter:{sequence}");
+            callbackOrder[(index * 2) + 1].Should().Be($"base:{sequence}");
+        }
+        completion.Status.Should().Be(DiagnosticSessionStatus.Stopped);
+        completion.EndedAt.Should().BeOnOrAfter(completion.StartedAt);
+        completion.Error.Should().BeNull();
+    }
+
     [Fact(Timeout = 90_000)]
     public async Task Sweep_RunsAllCollectorsConcurrently_AndClassifies()
     {

@@ -7,7 +7,7 @@ ship from this repository and run the **same Core diagnostics engine**, but they
 |---|---|---|
 | Consumer | A human, a shell script, a CI job | An LLM, via an MCP client |
 | Surface | Sub-commands you type | MCP tools the model calls |
-| Transport | None — in-process, one-shot or REPL | Streamable HTTP (bearer auth) or stdio |
+| Transport | In-process one-shot/REPL; bidirectional stdio for machine streaming | Streamable HTTP (bearer auth) or stdio |
 | State | One-shot inline results, a `session` REPL holding queryable handles, or opt-in local durable captures | MCP session holding handles |
 | Install | `dotnet tool install -g dotnet-diagnostics-cli` | `dotnet tool install -g dotnet-diagnostics-mcp` |
 
@@ -15,6 +15,48 @@ If you want an LLM to drive diagnostics, use the **server** — see [`client-set
 [`tool-reference.md`](./tool-reference.md). If you want to run diagnostics yourself, read on.
 
 > The CLI references **Core only** — it never starts an HTTP server, reads a bearer token, or runs a daemon.
+
+## Machine streaming protocol
+
+`dotnet-diagnostics-cli stream --protocol jsonl` starts a versioned, bidirectional JSON Lines protocol
+for live runtime counters. This mode is intended for local clients such as the VS Code extension;
+it bypasses the human-oriented command renderer, reserves stdout for protocol frames, and sends
+diagnostics to stderr. The current protocol version is `1`. Send a handshake before any other request:
+
+```json
+{"type":"hello","protocolVersion":1}
+```
+
+The CLI replies with the negotiated version. Start a bounded counter session by sending a positive
+`processId` and a non-empty `requestId`. `providers`, `intervalSeconds`, and `observationCapacity` are
+optional:
+
+```json
+{"type":"start","requestId":"capture-1","processId":1234,"providers":["System.Runtime"],"intervalSeconds":1,"observationCapacity":256}
+```
+
+The `started` response contains an opaque `sessionId`. As samples arrive, the CLI emits `observation`
+frames with a monotonically increasing sequence, timestamp, and typed counter. Sequence gaps and the
+terminal `droppedObservations` count make bounded-queue loss visible. Stop or cancel the session with
+its ID:
+
+```json
+{"type":"stop","sessionId":"<session-id>"}
+```
+
+The CLI emits a terminal frame after EventPipe has stopped and drained, including status, EventPipe
+loss, dropped observations, and any terminal error. Only one live session may run per CLI process.
+The queue capacity is capped at 16,384 observations; provider lists are limited to 64 names of up to
+256 characters each. The Core session API applies these provider and queue bounds itself as well;
+they are not only protocol-side validation.
+Malformed or unsupported requests receive an `error` frame. EOF stops an active session, drains it,
+emits its terminal frame, and exits. Closing a panel should send `cancel` (or close stdin) before
+disposing the child process.
+
+This protocol remains counter-only. Core also supports composed sessions with typed finite results
+and incremental callbacks for other collectors, but those APIs do not add JSONL commands or enable
+durable recording in this mode. Use the existing finite CLI commands and their explicit capture
+options for persisted evidence.
 
 ## Install
 

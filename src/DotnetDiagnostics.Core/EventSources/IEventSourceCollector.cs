@@ -16,3 +16,17 @@ public interface IEventSourceCollector
         int maxEvents = 200,
         CancellationToken cancellationToken = default);
 }
+
+/// <summary>Captures EventSource events while publishing each observation incrementally.</summary>
+public interface IStreamingEventSourceCollector
+{
+    Task<EventSourceCapture> CaptureStreamingAsync(
+        int processId,
+        string providerName,
+        TimeSpan duration,
+        Action<CapturedEvent> onObservation,
+        long keywords = -1,
+        int eventLevel = 5,
+        int maxEvents = 200,
+        CancellationToken cancellationToken = default);
+}

@@ -28,7 +28,8 @@ This repo ships **three NuGet packages** built on the same Core diagnostics engi
 Most of this README is about the **MCP server**. If you want to run diagnostics yourself, jump to the
 [Standalone CLI](#standalone-cli) section or the [CLI reference](./docs/cli-reference.md). If you
 want to attribute *why* a benchmark is slow or allocates, jump to the
-[BenchmarkDotNet diagnoser README](./src/DotnetDiagnostics.BenchmarkDotNet/README.md).
+[BenchmarkDotNet diagnoser README](./src/DotnetDiagnostics.BenchmarkDotNet/README.md). For a live
+counter dashboard inside VS Code, see the [VS Code extension](./vscode-extension/README.md).
 
 ## MCP Server Start Here
 
@@ -50,6 +51,7 @@ If an HTTP tool call later fails with `PermissionDenied` or `ServerNotAvailableE
 - [Quick Start](#quick-start)
 - [Install](#install)
 - [Standalone CLI](#standalone-cli)
+- [VS Code Extension](#vs-code-extension)
 - [BenchmarkDotNet Diagnoser](#benchmarkdotnet-diagnoser)
 - [Tools Overview](#tools-overview)
 - [Documentation](#documentation)
@@ -218,6 +220,14 @@ Self-contained per-OS binaries are attached to each [Release](https://github.com
 as `dotnet-diagnostics-cli-<version>-<rid>`. The downloaded archive is named
 `dotnet-diagnostics-cli-<version>-<rid>`; the extracted executable inside it is
 `dotnet-diagnostics-cli` (`dotnet-diagnostics-cli.exe` on Windows). **Full reference:** [`docs/cli-reference.md`](./docs/cli-reference.md).
+
+---
+
+## VS Code Extension
+
+The workspace extension opens a live runtime-counters panel for a selected .NET process. It uses
+the standalone CLI's JSONL stream protocol; the extension does not install the CLI automatically.
+See the [extension guide](./vscode-extension/README.md) for prerequisites and setup.
 
 ---
 

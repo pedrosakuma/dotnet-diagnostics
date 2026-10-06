@@ -29,6 +29,33 @@ internal static class CaptureRecordingContext
     internal static IDisposable EnterChild(string kind, string name)
         => CreateChild(kind, name) is { } child ? Enter(child) : EmptyScope.Instance;
 
+    internal static async Task<T> RunChildAsync<T>(
+        string kind,
+        string name,
+        Func<CancellationToken, Task<T>> collect,
+        Action<ICaptureObservationSink, T> reportResult,
+        CancellationToken cancellationToken)
+    {
+        var child = CreateChild(kind, name);
+        using var scope = child is null ? null : Enter(child);
+        try
+        {
+            var result = await collect(cancellationToken).ConfigureAwait(false);
+            if (child is not null) reportResult(child, result);
+            return result;
+        }
+        catch (OperationCanceledException)
+        {
+            child?.ReportCompletion(null, cancelled: true);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            child?.ReportCompletion(new("ChildCollectionFailed", ex.Message), cancelled: false);
+            throw;
+        }
+    }
+
     private sealed class EmptyScope : IDisposable
     {
         internal static EmptyScope Instance { get; } = new();

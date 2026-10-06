@@ -16,3 +16,14 @@ public interface IProcessResourcesCollector
         int sampleEverySeconds,
         CancellationToken cancellationToken = default);
 }
+
+/// <summary>Collects process resources while publishing each OS snapshot incrementally.</summary>
+public interface IStreamingProcessResourcesCollector
+{
+    Task<ProcessResources> CollectStreamingAsync(
+        int processId,
+        int durationSeconds,
+        int sampleEverySeconds,
+        Action<ProcessResourcesSample> onObservation,
+        CancellationToken cancellationToken = default);
+}

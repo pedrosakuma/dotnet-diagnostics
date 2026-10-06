@@ -44,7 +44,8 @@ public sealed class CalibrationProtocolTests
         var rubricPath = Path.GetFullPath(
             "../../../../../docs/advisory-agent-calibration.md",
             AppContext.BaseDirectory);
-        Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(rubricPath)))
+        var rubricContent = File.ReadAllText(rubricPath).Replace("\r\n", "\n", StringComparison.Ordinal);
+        Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(rubricContent)))
             .Should().Be(protocol.RubricFingerprint);
         var manifest = CalibrationProtocols.ResolveWorkload(
             protocol,

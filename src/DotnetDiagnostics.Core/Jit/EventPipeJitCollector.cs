@@ -12,7 +12,7 @@ namespace DotnetDiagnostics.Core.Jit;
 /// <summary>
 /// Captures CLR JIT / tiered-compilation activity from the runtime EventPipe provider.
 /// </summary>
-public sealed class EventPipeJitCollector : IJitCollector
+public sealed class EventPipeJitCollector : IJitCollector, IStreamingJitCollector
 {
     private const string RuntimeProvider = "Microsoft-Windows-DotNETRuntime";
     private const long JitKeyword = 0x10;
@@ -38,10 +38,27 @@ public sealed class EventPipeJitCollector : IJitCollector
         _logger = logger ?? NullLogger<EventPipeJitCollector>.Instance;
     }
 
-    public async Task<JitSnapshot> CollectAsync(
+    public Task<JitSnapshot> CollectAsync(
         int processId,
         TimeSpan duration,
         CancellationToken cancellationToken = default)
+        => CollectCoreAsync(processId, duration, null, cancellationToken);
+
+    public Task<JitSnapshot> CollectStreamingAsync(
+        int processId,
+        TimeSpan duration,
+        Action<JitCompilationObservation> onObservation,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(onObservation);
+        return CollectCoreAsync(processId, duration, onObservation, cancellationToken);
+    }
+
+    private async Task<JitSnapshot> CollectCoreAsync(
+        int processId,
+        TimeSpan duration,
+        Action<JitCompilationObservation>? onObservation,
+        CancellationToken cancellationToken)
     {
         var observationSink = CaptureRecordingContext.Current;
         if (duration <= TimeSpan.Zero)
@@ -139,6 +156,16 @@ public sealed class EventPipeJitCollector : IJitCollector
                     }
 
                     var inclusiveMs = Math.Max(0, (completedAt - started).TotalMilliseconds);
+                    onObservation?.Invoke(new JitCompilationObservation(
+                        completedAt,
+                        correlation == "fifo-start" ? started : null,
+                        data.MethodNamespace ?? string.Empty,
+                        data.MethodName ?? "(unknown)",
+                        data.MethodSignature ?? string.Empty,
+                        data.OptimizationTier.ToString(),
+                        data.ReJITID,
+                        correlation == "fifo-start" ? inclusiveMs : 0,
+                        correlation));
                     var key = BuildMethodKey(data.MethodNamespace, data.MethodName, data.MethodSignature);
                     observationSink?.TryAppend(ProviderObservationProjection.Create(
                         "jit.method-load", completedAt, data.ThreadID, key,

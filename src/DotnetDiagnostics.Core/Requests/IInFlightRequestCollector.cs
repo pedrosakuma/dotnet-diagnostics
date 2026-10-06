@@ -14,3 +14,25 @@ public interface IInFlightRequestCollector
         int maxRequests = 100,
         CancellationToken cancellationToken = default);
 }
+
+/// <summary>Tracks requests while publishing correlated start/stop events incrementally.</summary>
+public interface IStreamingInFlightRequestCollector
+{
+    Task<InFlightRequestSnapshot> CollectStreamingAsync(
+        int processId,
+        TimeSpan duration,
+        Action<InFlightRequestObservation> onObservation,
+        double longRunningThresholdMs = 1000,
+        int maxRequests = 100,
+        CancellationToken cancellationToken = default);
+}
+
+/// <summary>A path-only ASP.NET request lifecycle event observed through EventPipe.</summary>
+public sealed record InFlightRequestObservation(
+    DateTimeOffset Timestamp,
+    bool IsStart,
+    string TraceId,
+    string? SpanId,
+    string? Method,
+    string? Path,
+    DateTimeOffset? StartedAt);

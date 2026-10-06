@@ -10,7 +10,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace DotnetDiagnostics.Core.Startup;
 
-public sealed class EventPipeStartupCollector : IStartupCollector
+public sealed class EventPipeStartupCollector : IStartupCollector, IStreamingStartupCollector
 {
     private const string RuntimeProvider = "Microsoft-Windows-DotNETRuntime";
     private const string DependencyInjectionProvider = "Microsoft-Extensions-DependencyInjection";
@@ -57,10 +57,27 @@ public sealed class EventPipeStartupCollector : IStartupCollector
         _logger = logger ?? NullLogger<EventPipeStartupCollector>.Instance;
     }
 
-    public async Task<StartupSnapshot> CollectAsync(
+    public Task<StartupSnapshot> CollectAsync(
         int processId,
         TimeSpan duration,
         CancellationToken cancellationToken = default)
+        => CollectCoreAsync(processId, duration, null, cancellationToken);
+
+    public Task<StartupSnapshot> CollectStreamingAsync(
+        int processId,
+        TimeSpan duration,
+        Action<StartupObservation> onObservation,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(onObservation);
+        return CollectCoreAsync(processId, duration, onObservation, cancellationToken);
+    }
+
+    private async Task<StartupSnapshot> CollectCoreAsync(
+        int processId,
+        TimeSpan duration,
+        Action<StartupObservation>? onObservation,
+        CancellationToken cancellationToken)
     {
         if (duration <= TimeSpan.Zero)
         {
@@ -68,7 +85,8 @@ public sealed class EventPipeStartupCollector : IStartupCollector
         }
 
         var client = new DiagnosticsClient(processId);
-        return await CollectCoreAsync(client, processId, duration, coldStart: false, resumeAsync: null, cancellationToken)
+        return await CollectCoreAsync(client, processId, duration, coldStart: false, resumeAsync: null,
+                onObservation, cancellationToken)
             .ConfigureAwait(false);
     }
 
@@ -83,7 +101,8 @@ public sealed class EventPipeStartupCollector : IStartupCollector
             throw new ArgumentOutOfRangeException(nameof(duration), "Duration must be positive.");
         }
 
-        return await CollectCoreAsync(target.Client, target.ProcessId, duration, coldStart: true, target.ResumeAsync, cancellationToken)
+        return await CollectCoreAsync(target.Client, target.ProcessId, duration, coldStart: true,
+                target.ResumeAsync, onObservation: null, cancellationToken)
             .ConfigureAwait(false);
     }
 
@@ -93,6 +112,7 @@ public sealed class EventPipeStartupCollector : IStartupCollector
         TimeSpan duration,
         bool coldStart,
         Func<ValueTask>? resumeAsync,
+        Action<StartupObservation>? onObservation,
         CancellationToken cancellationToken)
     {
         var observationSink = CaptureRecordingContext.Current;
@@ -140,7 +160,7 @@ public sealed class EventPipeStartupCollector : IStartupCollector
         notes.Add("Static constructor timing is not exposed as a clean EventPipe event by this collector; no static-constructor duration is inferred.");
         notes.Add("JIT-at-startup is covered by collect_events(kind=\"jit\"); startup does not duplicate JIT events.");
         notes.Add("DependencyInjection ServiceProviderBuilt can be replayed when the provider is enabled for already-built providers; observed DI activity duration is the span between captured DI events, not an exact container-build stopwatch.");
-        var capture = new StartupCaptureBuffer(observationSink);
+        var capture = new StartupCaptureBuffer(observationSink, onObservation);
         var sync = new object();
 
         var processingTask = Task.Run(() =>
@@ -492,7 +512,9 @@ public sealed class EventPipeStartupCollector : IStartupCollector
         return null;
     }
 
-    internal sealed class StartupCaptureBuffer(ICaptureObservationSink? observationSink = null)
+    internal sealed class StartupCaptureBuffer(
+        ICaptureObservationSink? observationSink = null,
+        Action<StartupObservation>? onObservation = null)
     {
         private readonly Dictionary<string, RawLoadAggregate> _assembliesByName = new(StringComparer.Ordinal);
         private readonly Dictionary<string, RawLoadAggregate> _modulesByName = new(StringComparer.Ordinal);
@@ -524,6 +546,7 @@ public sealed class EventPipeStartupCollector : IStartupCollector
 
         public void AddAssembly(StartupAssemblyLoad load)
         {
+            onObservation?.Invoke(new StartupAssemblyObservation(load));
             observationSink?.TryAppend(ProviderObservationProjection.Create(
                 "startup.assembly", load.Timestamp, null, load.EventName,
                 ("provider", RuntimeProvider), ("assemblyName", load.AssemblyName), ("assemblyId", load.AssemblyId)));
@@ -535,6 +558,7 @@ public sealed class EventPipeStartupCollector : IStartupCollector
 
         public void AddModule(StartupModuleLoad load)
         {
+            onObservation?.Invoke(new StartupModuleObservation(load));
             observationSink?.TryAppend(ProviderObservationProjection.Create(
                 "startup.module", load.Timestamp, null, load.EventName,
                 ("provider", RuntimeProvider), ("moduleName", load.ModuleName), ("modulePath", load.ModulePath),
@@ -547,6 +571,7 @@ public sealed class EventPipeStartupCollector : IStartupCollector
 
         public void AddDiEvent(StartupDiEvent diEvent)
         {
+            onObservation?.Invoke(new StartupDiObservation(diEvent));
             observationSink?.TryAppend(ProviderObservationProjection.Create(
                 "startup.di", diEvent.Timestamp, null, diEvent.EventName,
                 ("provider", DependencyInjectionProvider), ("serviceType", diEvent.ServiceType),
@@ -595,6 +620,7 @@ public sealed class EventPipeStartupCollector : IStartupCollector
 
         private void AddTimeline(StartupTimelineEvent timelineEvent)
         {
+            onObservation?.Invoke(new StartupTimelineObservation(timelineEvent));
             observationSink?.TryAppend(ProviderObservationProjection.Create(
                 "startup.timeline", timelineEvent.Timestamp, null, timelineEvent.EventName,
                 ("timelineCategory", timelineEvent.Category), ("name", timelineEvent.Name)));

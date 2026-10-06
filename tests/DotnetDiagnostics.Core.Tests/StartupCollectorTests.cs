@@ -70,6 +70,25 @@ public sealed class StartupCollectorTests
     }
 
     [Fact]
+    public void StartupCaptureBuffer_StreamsTypedEventsBeyondRetentionCaps()
+    {
+        var startedAt = DateTimeOffset.UtcNow;
+        var observations = new List<StartupObservation>();
+        var buffer = new EventPipeStartupCollector.StartupCaptureBuffer(onObservation: observations.Add);
+
+        for (var i = 0; i < EventPipeStartupCollector.MaxRetainedAssemblyLoads + 1; i++)
+        {
+            buffer.AddAssembly(new StartupAssemblyLoad(startedAt.AddMilliseconds(i), "AssemblyLoad", $"A{i}", i));
+        }
+
+        observations.OfType<StartupAssemblyObservation>().Should().HaveCount(
+            EventPipeStartupCollector.MaxRetainedAssemblyLoads + 1);
+        observations.OfType<StartupTimelineObservation>().Should().HaveCount(
+            EventPipeStartupCollector.MaxRetainedAssemblyLoads + 1);
+        buffer.AssemblyLoads.Should().HaveCount(EventPipeStartupCollector.MaxRetainedAssemblyLoads);
+    }
+
+    [Fact]
     public void StartupViews_SurfaceTruncationAndUseIncrementalAggregates()
     {
         var snapshot = new StartupSnapshot(

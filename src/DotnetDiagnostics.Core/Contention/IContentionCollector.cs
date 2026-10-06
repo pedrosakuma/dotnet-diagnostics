@@ -10,3 +10,13 @@ public interface IContentionCollector
         TimeSpan duration,
         CancellationToken cancellationToken = default);
 }
+
+/// <summary>Collects monitor contention while publishing completed contention events incrementally.</summary>
+public interface IStreamingContentionCollector
+{
+    Task<ContentionSnapshot> CollectStreamingAsync(
+        int processId,
+        TimeSpan duration,
+        Action<ContentionEventSample> onObservation,
+        CancellationToken cancellationToken = default);
+}

@@ -55,7 +55,11 @@ internal static class SessionReplCompletion
         if (tokensBeforeWord.Count == 0)
         {
             // Completing the very first word: a one-shot command name, or a REPL-only built-in.
-            return [.. CliCommandCatalog.CommandNames, .. ReplBuiltins];
+            return
+            [
+                .. CliCommandCatalog.CommandNames.Where(static name => name != "stream"),
+                .. ReplBuiltins,
+            ];
         }
 
         var command = tokensBeforeWord[0];
