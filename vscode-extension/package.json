@@ -39,12 +39,6 @@
         }
       ]
     },
-    "viewsWelcome": [
-      {
-        "view": "dotnetDiagnostics.actions",
-        "contents": "Start a live .NET runtime counters capture.\n[Start Live Counters](command:dotnetDiagnostics.startCounters)"
-      }
-    ],
     "commands": [
       {
         "command": "dotnetDiagnostics.startCounters",
@@ -59,25 +53,6 @@
         "title": ".NET Diagnostics: Capture CPU Now"
       }
     ],
-    "menus": {
-      "view/title": [
-        {
-          "command": "dotnetDiagnostics.startCounters",
-          "when": "view == dotnetDiagnostics.actions",
-          "group": "navigation"
-        },
-        {
-          "command": "dotnetDiagnostics.stopCounters",
-          "when": "view == dotnetDiagnostics.actions",
-          "group": "navigation"
-        },
-        {
-          "command": "dotnetDiagnostics.captureCpu",
-          "when": "view == dotnetDiagnostics.actions",
-          "group": "navigation"
-        }
-      ]
-    },
     "configuration": {
       "title": ".NET Diagnostics",
       "properties": {
