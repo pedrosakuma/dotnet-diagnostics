@@ -45,6 +45,14 @@ from an older package may still support process discovery but not live streaming
 point `dotnetDiagnostics.cliPath` at a compatible executable. The extension fails with a concise
 compatibility message instead of displaying CLI help output in the counters panel.
 
+The counters chart and GC pauses table only keep a rolling trailing window of history, not the
+full session — matching how other real-time diagnostics panels (e.g. VS Code's own
+`vscode-js-profile-flame` real-time view) bound their visible window instead of rendering an
+unbounded timeline. The window length is controlled by the window-scoped
+`dotnetDiagnostics.liveView.historyDurationSeconds` setting (default 120 seconds); changing it takes
+effect immediately in any already-open panel. The running GC pause count and total paused time in
+the headline remain session-wide totals — only the chart points and table rows are windowed.
+
 
 ## Host support
 
