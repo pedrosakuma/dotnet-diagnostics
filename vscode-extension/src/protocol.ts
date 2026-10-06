@@ -15,6 +15,33 @@ export interface CounterValue {
     unit?: string | null;
 }
 
+/** A single GC pause observation forwarded from the CLI's `gc` live kind (#1099/#1100). */
+export interface GcCollection {
+    timestamp: string;
+    generation: number;
+    reason: string;
+    type: string;
+    pauseDuration: string;
+    clrInstanceId?: number | null;
+    collectionCount?: number | null;
+}
+
+/** One hotspot frame from a point-in-time CPU capture's bounded summary. */
+export interface CpuHotspot {
+    frame: { module: string; method: string };
+    inclusiveSamples: number;
+    exclusiveSamples: number;
+}
+
+/** The bounded `CpuSample` summary returned by the CLI's one-shot `capture` request. */
+export interface CpuSampleSummary {
+    processId: number;
+    startedAt: string;
+    duration: string;
+    totalSamples: number;
+    topHotspots: CpuHotspot[];
+}
+
 export interface ProtocolFrame {
     type: string;
     [key: string]: unknown;
@@ -60,6 +87,34 @@ export function describeStreamCompatibilityError(output: string): string {
     }
 
     return "The configured dotnet-diagnostics-cli returned output that is not a valid JSONL protocol frame. Check the CLI executable and its version.";
+}
+
+export function isGcCollection(value: unknown): value is GcCollection {
+    return isRecord(value)
+        && typeof value.timestamp === "string"
+        && typeof value.generation === "number"
+        && typeof value.reason === "string"
+        && typeof value.type === "string"
+        && typeof value.pauseDuration === "string";
+}
+
+export function isCpuSampleSummary(value: unknown): value is CpuSampleSummary {
+    return isRecord(value)
+        && typeof value.processId === "number"
+        && typeof value.startedAt === "string"
+        && typeof value.duration === "string"
+        && typeof value.totalSamples === "number"
+        && Array.isArray(value.topHotspots)
+        && value.topHotspots.every(isCpuHotspot);
+}
+
+function isCpuHotspot(value: unknown): value is CpuHotspot {
+    return isRecord(value)
+        && isRecord(value.frame)
+        && typeof value.frame.module === "string"
+        && typeof value.frame.method === "string"
+        && typeof value.inclusiveSamples === "number"
+        && typeof value.exclusiveSamples === "number";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
