@@ -13,7 +13,7 @@ namespace DotnetDiagnostics.Core.Gc;
 /// runtime GC keyword (0x1) on <c>Microsoft-Windows-DotNETRuntime</c>. Pairs
 /// GCStart/GCStop for collection elapsed; separate suspend/restart events measure runtime suspension.
 /// </summary>
-public sealed class EventPipeGcCollector : IGcCollector, IStreamingGcCollector
+public sealed class EventPipeGcCollector : IGcCollector, IStreamingGcCollector, IGcSessionFactory
 {
     private const string RuntimeProvider = "Microsoft-Windows-DotNETRuntime";
     private const long GcKeyword = 0x1;
@@ -173,6 +173,36 @@ public sealed class EventPipeGcCollector : IGcCollector, IStreamingGcCollector
         {
             RequestedDuration = duration,
         };
+    }
+
+    /// <inheritdoc />
+    public GcSession CreateSession(int processId, GcSessionOptions? options = null)
+    {
+        if (processId <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(processId), "Process ID must be positive.");
+        }
+
+        options ??= new GcSessionOptions();
+        if (options.ObservationCapacity is < 1 or > GcSessionOptions.MaxAllowedObservationCapacity)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                $"Observation capacity must be between 1 and {GcSessionOptions.MaxAllowedObservationCapacity}.");
+        }
+
+        var providers = new[] { new EventPipeProvider(RuntimeProvider, EventLevel.Informational, GcKeyword) };
+        return new GcSession(
+            processId,
+            options,
+            cancellationToken => new DiagnosticsClient(processId)
+                .StartEventPipeSessionWithTimeoutAsync(
+                    providers,
+                    requestRundown: false,
+                    circularBufferMB: 64,
+                    TimeSpan.FromSeconds(30),
+                    cancellationToken),
+            ex => _logger.LogDebug(ex, "Stopping EventPipe GC session for pid {Pid} failed.", processId));
     }
 
     internal static void RecordHeapSample(GcHeapStatsSample sample, int version, int clrInstanceId,

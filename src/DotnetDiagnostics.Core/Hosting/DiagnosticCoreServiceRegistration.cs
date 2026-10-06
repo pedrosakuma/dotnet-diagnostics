@@ -116,6 +116,8 @@ public static class DiagnosticCoreServiceRegistration
             serviceProvider.GetRequiredService<EventPipeGcCollector>());
         services.AddSingleton<IStreamingGcCollector>(serviceProvider =>
             serviceProvider.GetRequiredService<EventPipeGcCollector>());
+        services.AddSingleton<DotnetDiagnostics.Core.Gc.IGcSessionFactory>(serviceProvider =>
+            serviceProvider.GetRequiredService<EventPipeGcCollector>());
         services.AddSingleton<IGcDatasCollector, EventPipeGcDatasCollector>();
         services.AddSingleton<EventPipeEventSourceCollector>();
         services.AddSingleton<IEventSourceCollector>(serviceProvider =>

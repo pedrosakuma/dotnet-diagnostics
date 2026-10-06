@@ -417,6 +417,84 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         completion.Error.Should().BeNull();
     }
 
+    [Fact(Timeout = 60_000)]
+    public async Task LiveGcSession_StreamsSequencedPauseObservations_AndStopsCleanly()
+    {
+        EnsureSampleRunning();
+        var baseUrl = await EnsureListeningUrlAsync(TimeSpan.FromSeconds(30));
+
+        using var driverCancellation = new CancellationTokenSource();
+        using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
+        // Drive /render in a tight loop: its O(n^2) string-concat workload allocates heavily
+        // enough to trigger real gen0/gen1 collections during the observation window.
+        var driver = Task.Run(async () =>
+        {
+            while (!driverCancellation.IsCancellationRequested)
+            {
+                try { _ = await http.GetAsync("/render?count=2000", driverCancellation.Token); }
+                catch (OperationCanceledException) { break; }
+                catch { /* tolerate transient races */ }
+            }
+        }, driverCancellation.Token);
+
+        try
+        {
+            using var ownerCancellation = new CancellationTokenSource();
+            await using var session = new EventPipeGcCollector().CreateSession(
+                Pid,
+                new GcSessionOptions { ObservationCapacity = 64 });
+            var observations = new List<GcPauseObservation>();
+            var baseEventSequences = new List<long>();
+            var receivedTwoCollections = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var cancellationRequestedAt = (DateTimeOffset?)null;
+            using var pauseSubscription = session.Attach<GcPauseObservation>((observation, _) =>
+            {
+                observations.Add(observation);
+                if (observations.Count >= 2 && cancellationRequestedAt is null)
+                {
+                    cancellationRequestedAt = DateTimeOffset.UtcNow;
+                    receivedTwoCollections.TrySetResult();
+                    ownerCancellation.Cancel();
+                }
+
+                return ValueTask.CompletedTask;
+            });
+            using var baseEventSubscription = session.Attach<DiagnosticSessionEvent>((sessionEvent, _) =>
+            {
+                baseEventSequences.Add(sessionEvent.Sequence);
+                return ValueTask.CompletedTask;
+            });
+            await session.StartAsync(ownerCancellation.Token);
+
+            using var observationTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            await receivedTwoCollections.Task.WaitAsync(observationTimeout.Token);
+
+            var completion = await session.Completion.WaitAsync(TimeSpan.FromSeconds(10));
+            (await session.StopAsync()).Should().Be(completion, "stop is idempotent after owner cancellation");
+
+            cancellationRequestedAt.Should().NotBeNull();
+            (completion.EndedAt - cancellationRequestedAt!.Value).Should().BeLessThan(
+                TimeSpan.FromSeconds(10),
+                "cancellation must stop and drain the session promptly, not accumulate unbounded delay");
+            observations.Should().HaveCountGreaterThanOrEqualTo(
+                2, "the /render workload must trigger at least two observable GC collections");
+            baseEventSequences.Should().Equal(observations.Select(observation => observation.Sequence));
+            foreach (var observation in observations)
+            {
+                observation.Collection.PauseDuration.Should().BeGreaterThanOrEqualTo(TimeSpan.Zero);
+            }
+
+            completion.Status.Should().Be(DiagnosticSessionStatus.Stopped);
+            completion.EndedAt.Should().BeOnOrAfter(completion.StartedAt);
+            completion.Error.Should().BeNull();
+        }
+        finally
+        {
+            driverCancellation.Cancel();
+            try { await driver; } catch { /* expected on cancel */ }
+        }
+    }
+
     [Fact(Timeout = 90_000)]
     public async Task Sweep_RunsAllCollectorsConcurrently_AndClassifies()
     {
