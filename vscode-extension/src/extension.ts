@@ -195,13 +195,16 @@ class CounterPanelController implements vscode.Disposable {
             this.output.appendLine(`CPU capture failed: ${errorMessage(error)}`);
         } finally {
             session.pendingCaptures.delete(requestId);
-            if (ownsSession && !session.sessionId && !session.startInFlight) {
-                // This connection exists only to serve the capture request — no live session was
+            if (ownsSession && !session.sessionId && !session.startInFlight && session.pendingCaptures.size === 0) {
+                // This connection exists only to serve capture requests — no live session was
                 // started on it (and no `start` request is queued/in-flight behind this capture
-                // response, which the single-threaded CLI read loop processes strictly in order),
-                // so close it now instead of leaving an idle CLI child running. Mark the shutdown
-                // as expected so the `close` handler doesn't report it as an unexpected CLI exit
-                // over whatever status the capture itself just posted.
+                // response, which the single-threaded CLI read loop processes strictly in order).
+                // Only close it once every other capture sharing this connection (e.g. a heap
+                // capture that overlapped with this CPU capture) has also finished, so completing
+                // one capture never tears down the connection out from under a sibling capture
+                // still in flight. Mark the shutdown as expected so the `close` handler doesn't
+                // report it as an unexpected CLI exit over whatever status the capture itself just
+                // posted.
                 session.expectedShutdown = true;
                 await this.closeChild(session);
             }
@@ -318,7 +321,15 @@ class CounterPanelController implements vscode.Disposable {
             this.output.appendLine(`Heap snapshot capture failed: ${errorMessage(error)}`);
         } finally {
             session.pendingCaptures.delete(requestId);
-            if (ownsSession && !session.sessionId && !session.startInFlight) {
+            if (ownsSession && !session.sessionId && !session.startInFlight && session.pendingCaptures.size === 0) {
+                // This connection exists only to serve capture requests — no live session was
+                // started on it (and no `start` request is queued/in-flight behind this capture
+                // response, which the single-threaded CLI read loop processes strictly in order).
+                // Only close it once every other capture sharing this connection (e.g. a CPU and a
+                // heap capture that overlapped) has also finished, so completing one capture never
+                // tears down the connection out from under a sibling capture still in flight.
+                // Mark the shutdown as expected so the `close` handler doesn't report it as an
+                // unexpected CLI exit over whatever status the capture itself just posted.
                 session.expectedShutdown = true;
                 await this.closeChild(session);
             }
@@ -382,12 +393,17 @@ class CounterPanelController implements vscode.Disposable {
         this.postMessage({ type: "status", state: "stopping", message: "Stopping and draining EventPipe…" });
         try {
             this.writeFrame(child, { type: "cancel", sessionId: child.sessionId });
-            // The CLI reads requests strictly in order on a shared connection. If a CPU capture is
-            // in flight (e.g. triggered while this live session was streaming), this `cancel` frame
-            // sits queued behind it and won't be read until the capture's ~10s sampling window and
-            // response processing finish. Give that case extra headroom instead of racing a fixed
-            // 10s timeout and force-killing the process while a capture is still legitimately busy.
-            const timeoutMs = child.pendingCaptures.size > 0 ? 25_000 : 10_000;
+            // The CLI reads requests strictly in order on a shared connection. If a capture is in
+            // flight (e.g. triggered while this live session was streaming), this `cancel` frame
+            // sits queued behind it and won't be read until that capture's response is fully
+            // processed. Give that case extra headroom instead of racing a fixed 10s timeout and
+            // force-killing the process while a capture is still legitimately busy. A pending heap
+            // capture can legitimately run far longer than a CPU capture (a `gcdump` induces and
+            // waits out a blocking Gen2 GC; a `live` walk suspends and walks the whole heap), so
+            // size the timeout to the longest capture ceiling actually in flight rather than a
+            // single CPU-sized constant.
+            const hasPendingHeapCapture = [...child.pendingCaptures.values()].some(pending => pending.kind === "heap");
+            const timeoutMs = hasPendingHeapCapture ? 125_000 : child.pendingCaptures.size > 0 ? 25_000 : 10_000;
             await withTimeout(child.terminal.promise, timeoutMs);
         } catch (error) {
             this.output.appendLine(`Could not confirm CLI stream shutdown: ${errorMessage(error)}`);
