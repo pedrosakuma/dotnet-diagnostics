@@ -406,6 +406,27 @@ public sealed class CliStreamingProtocolKindsTests
             });
 
             using var capture = await CliStreamingProtocolTests.ReadFrameAsync(cli, timeout: TimeSpan.FromSeconds(60));
+            // A `live` heap source attaches via ptrace from the separately-spawned CLI child
+            // process, which is a sibling (not a parent) of the sample process — unlike the
+            // in-process ClrMD attach cases in LiveCoreClrProcessTests, where the test process
+            // itself is the sample's parent. Under the default Linux Yama `ptrace_scope=1` (e.g.
+            // GitHub-hosted `ubuntu-latest` runners), only a direct parent may ptrace-attach to
+            // its child without `CAP_SYS_PTRACE`, so this sibling attach can legitimately fail
+            // with a permission error in CI even though the same capture succeeds locally. Skip
+            // (not fail) in that case, mirroring the `SkipException.ForReason(...)` convention
+            // used throughout LiveCoreClrProcessTests for the same underlying constraint (see
+            // AGENTS.md's "CAP_SYS_PTRACE for live memory readers" section).
+            if (capture.RootElement.GetProperty("type").GetString() == "error")
+            {
+                var message = capture.RootElement.TryGetProperty("message", out var messageElement)
+                    ? messageElement.GetString() ?? string.Empty
+                    : string.Empty;
+                if (message.Contains("PTRACE_ATTACH", StringComparison.OrdinalIgnoreCase)
+                    || message.Contains("permission", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw SkipException.ForReason($"ptrace attach unavailable in this environment: {message}");
+                }
+            }
             capture.RootElement.GetProperty("type").GetString().Should().Be("capture", capture.RootElement.GetRawText());
             capture.RootElement.GetProperty("requestId").GetString().Should().Be("cap1");
             capture.RootElement.GetProperty("kind").GetString().Should().Be("heap");
