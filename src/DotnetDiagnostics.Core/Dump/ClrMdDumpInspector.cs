@@ -214,6 +214,13 @@ public sealed class ClrMdDumpInspector : IDumpInspector
         }
 
         var summary = SummarizeRuntime(runtime, opts, warnings, ct);
+
+        // Dump-only, opt-in corruption triage (issue #1119) — ClrMD's own ClrHeap.VerifyHeap() walk
+        // is a distinct, more expensive internal pass than the type/instance walk above, so it is
+        // never folded into SummarizeRuntime/ClrMdHeapWalker and never runs on the live path.
+        HeapIntegrityView? heapIntegrity = opts.VerifyHeap
+            ? WalkHeapIntegrity(runtime, warnings, ct)
+            : null;
         sw.Stop();
 
         return new HeapSnapshotArtifact(
@@ -240,8 +247,52 @@ public sealed class ClrMdDumpInspector : IDumpInspector
             Timers = summary.Timers,
             AssemblyLoadContexts = summary.AssemblyLoadContexts,
             ComWrappers = summary.ComWrappers,
+            HeapIntegrity = heapIntegrity,
             Warnings = warnings.Count > 0 ? warnings : null,
         };
+    }
+
+    /// <summary>
+    /// Runs ClrMD's <c>ClrHeap.VerifyHeap()</c> corruption-triage pass. Per
+    /// docs/resource-boundedness.md convention #1, the cap is enforced at insertion — the
+    /// accumulator stops appending once <see cref="HeapIntegrityAggregation.MaxCapturedCorruptions"/>
+    /// is reached — while the enumeration continues so <see cref="HeapIntegrityView.TotalCorruptions"/>
+    /// stays an exact count rather than a lower bound.
+    /// </summary>
+    private static HeapIntegrityView WalkHeapIntegrity(ClrRuntime runtime, List<string> warnings, CancellationToken ct)
+    {
+        var captured = new List<HeapCorruptionStat>();
+        var total = 0;
+        try
+        {
+            foreach (var corruption in runtime.Heap.VerifyHeap())
+            {
+                ct.ThrowIfCancellationRequested();
+                total++;
+                if (captured.Count < HeapIntegrityAggregation.MaxCapturedCorruptions)
+                {
+                    captured.Add(new HeapCorruptionStat(
+                        corruption.Object.Address,
+                        corruption.Object.Type?.Name,
+                        corruption.Offset,
+                        corruption.Kind.ToString(),
+                        corruption.SyncBlockIndex,
+                        corruption.ClrSyncBlockIndex));
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            warnings.Add(
+                $"Heap-integrity verification (ClrHeap.VerifyHeap) failed partway through: {ex.Message}. " +
+                $"Returning the {captured.Count:N0} corruption(s) observed before the failure.");
+        }
+
+        return HeapIntegrityAggregation.Build(captured, total);
     }
 
     private RuntimeSummary SummarizeRuntime(
