@@ -28,6 +28,7 @@ public class HeapSnapshotQueryDispatcherTests
     [InlineData("timers")]
     [InlineData("alc")]
     [InlineData("com-wrappers")]
+    [InlineData("heap-integrity")]
     public void ProjectionViews_RenderResult(string view)
     {
         var outcome = HeapSnapshotQueryDispatcher.Dispatch(Snapshot(), Handle, view, topN: 10, rankBy: "bytes", typeFullName: null);
@@ -165,10 +166,11 @@ public class HeapSnapshotQueryDispatcherTests
     }
 
     [Fact]
-    public void ProjectionViews_ExposesTwelveViews_WithoutServerOnly()
+    public void ProjectionViews_ExposesThirteenViews_WithoutServerOnly()
     {
-        HeapSnapshotQueryDispatcher.ProjectionViews.Should().HaveCount(12);
+        HeapSnapshotQueryDispatcher.ProjectionViews.Should().HaveCount(13);
         HeapSnapshotQueryDispatcher.ProjectionViews.Should().Contain("com-wrappers");
+        HeapSnapshotQueryDispatcher.ProjectionViews.Should().Contain("heap-integrity");
         HeapSnapshotQueryDispatcher.ProjectionViews.Should().NotContain("object");
         HeapSnapshotQueryDispatcher.ProjectionViews.Should().NotContain("duplicate-strings");
     }
@@ -195,6 +197,90 @@ public class HeapSnapshotQueryDispatcherTests
         outcome.Result.Data!.Quality.Should().NotBeNull();
         outcome.Result.Data.Quality!.Limitations.Should().Contain(
             limitation => limitation.Category == EvidenceLimitationCategory.LegacyUnknown);
+    }
+
+    [Fact]
+    public void HeapIntegrity_NotCaptured_ReturnsViewNotCaptured()
+    {
+        var snapshot = Snapshot() with { HeapIntegrity = null };
+
+        var outcome = HeapSnapshotQueryDispatcher.Dispatch(snapshot, Handle, "heap-integrity", topN: 10, rankBy: null, typeFullName: null);
+
+        outcome.ServerOnlyView.Should().BeFalse();
+        outcome.UnknownView.Should().BeFalse();
+        outcome.Result!.Error!.Kind.Should().Be("ViewNotCaptured");
+        outcome.Result.Hints.Should().ContainSingle(h => h.NextTool == "inspect_heap");
+    }
+
+    [Fact]
+    public void HeapIntegrity_NotCaptured_ForLiveOrigin_DoesNotSuggestLiveRecapture()
+    {
+        var snapshot = Snapshot() with { HeapIntegrity = null, Origin = HeapSnapshotOrigin.Live };
+
+        var outcome = HeapSnapshotQueryDispatcher.Dispatch(snapshot, Handle, "heap-integrity", topN: 10, rankBy: null, typeFullName: null);
+
+        outcome.Result!.Error!.Kind.Should().Be("ViewNotCaptured");
+        outcome.Result.Error.Message.Should().Contain("dump-only");
+        outcome.Result.Hints.Single().SuggestedArguments.Should().BeNull();
+    }
+
+    [Fact]
+    public void HeapIntegrity_ZeroCorruptions_RendersHealthySummary()
+    {
+        var snapshot = Snapshot() with { HeapIntegrity = new HeapIntegrityView(0, Array.Empty<HeapCorruptionStat>(), Array.Empty<string>()) };
+
+        var outcome = HeapSnapshotQueryDispatcher.Dispatch(snapshot, Handle, "heap-integrity", topN: 10, rankBy: null, typeFullName: null);
+
+        outcome.Result!.Error.Should().BeNull();
+        outcome.Result.Data!.HeapIntegrity!.TotalCorruptions.Should().Be(0);
+        outcome.Result.Summary.Should().Contain("zero corrupted objects");
+    }
+
+    [Fact]
+    public void HeapIntegrity_WithCorruption_RendersSummary()
+    {
+        var corruption = new HeapCorruptionStat(0x1000, "MyApp.Leaked", 8, "InvalidMethodTable", 0, 0);
+        var view = HeapIntegrityAggregation.Build(new[] { corruption }, totalObserved: 1);
+        var snapshot = Snapshot() with { HeapIntegrity = view };
+
+        var outcome = HeapSnapshotQueryDispatcher.Dispatch(snapshot, Handle, "heap-integrity", topN: 10, rankBy: null, typeFullName: null);
+
+        outcome.Result!.Error.Should().BeNull();
+        outcome.Result.Data!.HeapIntegrity!.TotalCorruptions.Should().Be(1);
+        outcome.Result.Summary.Should().Contain("InvalidMethodTable").And.Contain("MyApp.Leaked");
+    }
+
+    [Fact]
+    public void HeapIntegrityAggregation_Build_UnderCap_ReportsNoNotes()
+    {
+        var captured = Enumerable.Range(0, 10)
+            .Select(i => new HeapCorruptionStat((ulong)i, "T", 0, "ObjectTooLarge", 0, 0))
+            .ToArray();
+
+        var view = HeapIntegrityAggregation.Build(captured, totalObserved: 10);
+
+        view.TotalCorruptions.Should().Be(10);
+        view.Corruptions.Should().HaveCount(10);
+        view.Truncated.Should().BeFalse();
+        view.Notes.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void HeapIntegrityAggregation_Build_OverCap_ReportsTruncationAndNotes()
+    {
+        const int cap = HeapIntegrityAggregation.MaxCapturedCorruptions;
+        var captured = Enumerable.Range(0, cap)
+            .Select(i => new HeapCorruptionStat((ulong)i, "T", 0, "ObjectTooLarge", 0, 0))
+            .ToArray();
+        const int totalObserved = cap + 137;
+
+        var view = HeapIntegrityAggregation.Build(captured, totalObserved);
+
+        view.TotalCorruptions.Should().Be(totalObserved);
+        view.Corruptions.Should().HaveCount(cap);
+        view.Truncated.Should().BeTrue();
+        view.Notes.Should().ContainSingle();
+        view.Notes[0].Should().Contain($"MaxCapturedCorruptions={cap}").And.Contain("137");
     }
 
     private static HeapSnapshotArtifact Snapshot() => new(
@@ -239,5 +325,6 @@ public class HeapSnapshotQueryDispatcherTests
                 },
             ],
             Notes: ["Retention hints are capped."]),
+        HeapIntegrity = new HeapIntegrityView(0, Array.Empty<HeapCorruptionStat>(), Array.Empty<string>()),
     };
 }
