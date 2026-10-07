@@ -55,11 +55,27 @@ AGENTS.md's "🪪 `CAP_SYS_PTRACE` for live memory readers" section) and fails w
 permission-denied message when that access is unavailable. A GC dump instead goes through the
 diagnostic IPC channel but induces a blocking Gen2 GC pause on the target while it runs.
 
+Use **Capture Thread Snapshot** (tree-view action or Command Palette command
+`dotnetDiagnostics.captureThreadSnapshot`) to take a single point-in-time snapshot of the selected
+process's managed threads. Unlike heap capture, there is only one source: a live ClrMD attach (the
+CLI's offline `--dump-file` option does not apply to a live VS Code panel), so no source QuickPick is
+shown. It is classified High risk / Acknowledge in Core's invocation-safety registry, the same tier
+as heap's `live` source, so the extension shows a native modal before sending the request —
+explaining that a live thread snapshot attaches with `ptrace`, briefly suspends the target, and
+exposes stack, type, and method names, some of which may be confidential — and only sends the
+capture request once you select **Acknowledge and Capture**. The result panel shows each thread's
+managed thread id, state (flagged when likely blocked), inferred wait reason, and its top stack
+frame, bounded to a summary-first table; each capture replaces the previous rendering. A live thread
+snapshot needs the same `ptrace`/`CAP_SYS_PTRACE` access as the heap capture's `live` source (see
+AGENTS.md's "🪪 `CAP_SYS_PTRACE` for live memory readers" section) and fails with an actionable
+permission-denied message when that access is unavailable.
+
 Live streaming requires a CLI build that supports `stream --protocol jsonl` and the multi-kind
 `kinds`/`capture` protocol (CLI builds from this repository starting with #1099); the `heap` capture
-kind requires a CLI build from #1110 or later. A CLI installed from an older package may still
-support process discovery (or CPU capture) but reject an unrecognized capture kind; update it or
-point `dotnetDiagnostics.cliPath` at a compatible executable. The extension fails with a concise
+kind requires a CLI build from #1110 or later, and the `thread-snapshot` capture kind requires a CLI
+build from #1112 or later. A CLI installed from an older package may still support process discovery
+(or CPU/heap capture) but reject an unrecognized capture kind; update it or point
+`dotnetDiagnostics.cliPath` at a compatible executable. The extension fails with a concise
 compatibility message instead of displaying CLI help output in the counters panel.
 
 The counters chart and GC pauses table only keep a rolling trailing window of history, not the

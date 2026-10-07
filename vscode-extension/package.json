@@ -19,6 +19,7 @@
     "onCommand:dotnetDiagnostics.stopCounters",
     "onCommand:dotnetDiagnostics.captureCpu",
     "onCommand:dotnetDiagnostics.captureHeap",
+    "onCommand:dotnetDiagnostics.captureThreadSnapshot",
     "onView:dotnetDiagnostics.actions"
   ],
   "main": "./out/extension.js",
@@ -56,6 +57,10 @@
       {
         "command": "dotnetDiagnostics.captureHeap",
         "title": ".NET Diagnostics: Capture Heap Snapshot"
+      },
+      {
+        "command": "dotnetDiagnostics.captureThreadSnapshot",
+        "title": ".NET Diagnostics: Capture Thread Snapshot"
       }
     ],
     "configuration": {
