@@ -87,6 +87,75 @@ app.MapGet("/cpu-evidence/workers", (int? ms) =>
 })
 .WithName("CpuEvidenceWorkers");
 
+// Fixture for the thread-snapshot 'thread-statics' view (issue #1120): spawns three background
+// threads sharing one [ThreadStatic] field. Two threads set distinct values then block; the third
+// never touches the field, so it must read back uninitialized. The response carries the exact
+// ManagedThreadIds (not OS thread names) so the test can target them cross-platform without the
+// Linux-only /proc/<pid>/task/<tid>/comm lookup used by other fixtures in this sample.
+app.MapGet("/thread-statics/workers", (int? ms) =>
+{
+    var runMs = Math.Clamp(ms ?? 6_000, 1_000, 15_000);
+    // Not disposed: a worker that signals after a readiness timeout must never fault on a disposed
+    // handle. The handle is reclaimed when the process exits or by finalization, same as the
+    // deliberately un-joined busy/blocked threads in the sibling /cpu-evidence/workers fixture above.
+    var ready = new CountdownEvent(3);
+    var ids = new int[3];
+
+    var threadA = new Thread(() =>
+    {
+        ThreadStaticFixture.Value = "thread-a-value";
+        ids[0] = Environment.CurrentManagedThreadId;
+        ready.Signal();
+        using var signal = new ManualResetEventSlim(false);
+        signal.Wait(runMs);
+    })
+    {
+        IsBackground = true,
+        Name = "tstatic-a",
+    };
+    var threadB = new Thread(() =>
+    {
+        ThreadStaticFixture.Value = "thread-b-value";
+        ids[1] = Environment.CurrentManagedThreadId;
+        ready.Signal();
+        using var signal = new ManualResetEventSlim(false);
+        signal.Wait(runMs);
+    })
+    {
+        IsBackground = true,
+        Name = "tstatic-b",
+    };
+    var threadUninitialized = new Thread(() =>
+    {
+        // Deliberately never assigns ThreadStaticFixture.Value on this thread.
+        ids[2] = Environment.CurrentManagedThreadId;
+        ready.Signal();
+        using var signal = new ManualResetEventSlim(false);
+        signal.Wait(runMs);
+    })
+    {
+        IsBackground = true,
+        Name = "tstatic-none",
+    };
+
+    threadA.Start();
+    threadB.Start();
+    threadUninitialized.Start();
+    if (!ready.Wait(TimeSpan.FromSeconds(5)))
+    {
+        return Results.Json(new { error = "workers did not become ready within 5s" }, statusCode: 503);
+    }
+
+    return Results.Json(new
+    {
+        runMs,
+        threadAId = ids[0],
+        threadBId = ids[1],
+        threadUninitializedId = ids[2],
+    });
+})
+.WithName("ThreadStaticsWorkers");
+
 // Slow regex on user input — classic backtracking blowup.
 app.MapGet("/validate", (string? email) =>
 {
@@ -298,6 +367,13 @@ sealed class Box<T>
         for (var i = 0; i < s.Length; i++) h = unchecked(h * 31 + s[i]);
         return h;
     }
+}
+
+// Fixture for the thread-snapshot 'thread-statics' view (issue #1120).
+static class ThreadStaticFixture
+{
+    [ThreadStatic]
+    public static string? Value;
 }
 
 static class GenericFixture

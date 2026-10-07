@@ -66,10 +66,12 @@ internal static partial class CliCommands
     /// <summary>
     /// All thread-snapshot views available in the session REPL: the nine purely artifact-based
     /// <see cref="ThreadSnapshotQueryDispatcher.SessionViews"/> plus <c>frame-vars</c>, which
-    /// re-opens the snapshot origin via ClrMD to walk one thread's local variables and parameters.
+    /// re-opens the snapshot origin via ClrMD to walk one thread's local variables and parameters,
+    /// and <c>thread-statics</c> (issue #1120), which re-opens the origin to read one caller-named
+    /// type's <c>[ThreadStatic]</c> field values on every thread.
     /// </summary>
     private static readonly IReadOnlyList<string> ThreadSnapshotAllSessionViews =
-        [.. ThreadSnapshotQueryDispatcher.SessionViews, "frame-vars"];
+        [.. ThreadSnapshotQueryDispatcher.SessionViews, "frame-vars", "thread-statics"];
 
     /// <summary>
     /// Views available for a session handle, shared by help and unknown-view errors.
@@ -678,6 +680,11 @@ internal static partial class CliCommands
             return await QueryFrameVarsAsync(services, options, snapshot, cancellationToken).ConfigureAwait(false);
         }
 
+        if (string.Equals(view, "thread-statics", StringComparison.OrdinalIgnoreCase))
+        {
+            return await QueryThreadStaticsAsync(services, options, snapshot, cancellationToken).ConfigureAwait(false);
+        }
+
         var topN = ResolveQueryTopN(options, 50);
         var framesToHash = options.FramesToHash ?? 20;
         var minCount = options.MinCount ?? 1;
@@ -747,6 +754,53 @@ internal static partial class CliCommands
             $"frame-vars: {frameVars.Frames.Count} frame(s) for managed thread {frameVars.ManagedThreadId} (OS tid {frameVars.OSThreadId}).");
         var ok = DiagnosticResult.Ok(frameVars, summary);
         return BuildResult<FrameVariablesResult>(ok, static (sb, r) =>
+        {
+            sb.AppendLine();
+            sb.AppendLine(JsonSerializer.Serialize(r, QueryJsonOptions));
+        });
+    }
+
+    /// <summary>
+    /// Re-opens the snapshot origin via <see cref="IThreadStaticFieldResolver"/> (ClrMD) and renders
+    /// every <c>[ThreadStatic]</c> field of one caller-named type on every thread in the snapshot
+    /// (issue #1120). Requires <c>--type-filter</c> as the EXACT full type name — unlike its
+    /// substring-match use for the heap <c>retention-paths</c> view, <c>thread-statics</c> resolves
+    /// the type via <c>ClrHeap.GetTypeByName</c>, which is an exact match.
+    /// </summary>
+    private static async Task<CliCommandResult> QueryThreadStaticsAsync(
+        IServiceProvider services, CliOptions options, ThreadSnapshotArtifact snapshot, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(options.TypeFilter))
+        {
+            return Fail(
+                "--type-filter (exact full type name) is required for view 'thread-statics'.",
+                "InvalidArgument",
+                "Re-run: query --handle <id> --view thread-statics --type-filter <Namespace.TypeName>.");
+        }
+
+        var resolver = services.GetRequiredService<IThreadStaticFieldResolver>();
+        ThreadStaticFieldsResult threadStatics;
+        try
+        {
+            threadStatics = await resolver.ResolveAsync(
+                snapshot, options.TypeFilter, includeSensitiveValues: false, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            return Fail($"thread-statics: {ex.Message}", "ThreadStaticsFailed",
+                "Thread-static field resolution failed. Ensure the target process is still running (live origin) or the dump file is accessible (dump origin), and that --type-filter is an exact loaded type name.");
+        }
+
+        var fieldCount = threadStatics.Threads.Sum(t => t.Fields.Count);
+        var summary = string.Create(
+            CultureInfo.InvariantCulture,
+            $"thread-statics: {fieldCount} [ThreadStatic] field value(s) of '{threadStatics.TypeFullName}' across {threadStatics.Threads.Count} thread(s).");
+        var ok = DiagnosticResult.Ok(threadStatics, summary);
+        return BuildResult<ThreadStaticFieldsResult>(ok, static (sb, r) =>
         {
             sb.AppendLine();
             sb.AppendLine(JsonSerializer.Serialize(r, QueryJsonOptions));

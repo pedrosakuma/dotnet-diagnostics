@@ -1293,12 +1293,13 @@ public sealed class SessionReplTests
     }
 
     [Fact]
-    public void SessionViewsFor_ThreadSnapshotKind_IncludesAllNineDispatcherViewsPlusFrameVars()
+    public void SessionViewsFor_ThreadSnapshotKind_IncludesAllNineDispatcherViewsPlusFrameVarsAndThreadStatics()
     {
         var views = CliCommands.SessionViewsFor("thread-snapshot");
         views.Should().Contain(ThreadSnapshotQueryDispatcher.SessionViews);
         views.Should().Contain("frame-vars");
-        views.Should().HaveCount(ThreadSnapshotQueryDispatcher.SessionViews.Count + 1);
+        views.Should().Contain("thread-statics");
+        views.Should().HaveCount(ThreadSnapshotQueryDispatcher.SessionViews.Count + 2);
     }
 
     [Fact]

@@ -37,6 +37,8 @@ public sealed record ThreadSnapshotQueryResult(
     public IReadOnlyList<ResolvedAddressEntry>? ResolvedAddresses { get; init; }
     /// <summary>Populated for <c>frame-vars</c> (issue #449).</summary>
     public FrameVariablesResult? FrameVariables { get; init; }
+    /// <summary>Populated for <c>thread-statics</c> (issue #1120).</summary>
+    public ThreadStaticFieldsResult? ThreadStatics { get; init; }
     /// <summary>Total threads in the full artifact before inline projection.</summary>
     public int? TotalThreads { get; init; }
     /// <summary>Threads in the ranked candidate set paged by this view.</summary>

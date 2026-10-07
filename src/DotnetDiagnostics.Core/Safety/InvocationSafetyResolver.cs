@@ -293,7 +293,7 @@ public static class InvocationSafetyResolver
                     DotnetDiagnostics.Core.UseCases.MethodParameterCaptureUseCases.HandleKind,
                     StringComparison.Ordinal) =>
                 Merge(safety, Profile(request.Operation, "sensitive-parameter-values")),
-            "duplicate-strings" or "object" or "frame-vars" =>
+            "duplicate-strings" or "object" or "frame-vars" or "thread-statics" =>
                 Merge(safety, Profile(request.Operation, "sensitive-heap-values")),
             _ => safety,
         };

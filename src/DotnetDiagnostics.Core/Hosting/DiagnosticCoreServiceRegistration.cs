@@ -202,6 +202,7 @@ public static class DiagnosticCoreServiceRegistration
         services.AddSingleton<DotnetDiagnostics.Core.Threads.IThreadSnapshotInspector, DotnetDiagnostics.Core.Threads.RoutingThreadSnapshotInspector>();
         services.AddSingleton<DotnetDiagnostics.Core.Symbols.INativeAddressResolver, DotnetDiagnostics.Core.Symbols.ClrMdNativeAddressResolver>();
         services.AddSingleton<DotnetDiagnostics.Core.Threads.IFrameVariableResolver, DotnetDiagnostics.Core.Threads.ClrMdFrameVariableResolver>();
+        services.AddSingleton<DotnetDiagnostics.Core.Threads.IThreadStaticFieldResolver, DotnetDiagnostics.Core.Threads.ClrMdThreadStaticFieldResolver>();
         services.AddSingleton<DotnetDiagnostics.Core.JitCapture.IJitMethodCapturer, DotnetDiagnostics.Core.JitCapture.ClrMdJitMethodCapturer>();
         services.AddSingleton<DotnetDiagnostics.Core.Investigation.IInvestigationPlanner>(_ =>
             new DotnetDiagnostics.Core.Investigation.InvestigationPlanner());

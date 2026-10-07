@@ -83,6 +83,18 @@ public sealed partial class QuerySnapshotTool
     // object-typed locals/parameters per frame — the ClrMD `!clrstack -a` equivalent (issue #449).
     internal const string FrameVarsView = "frame-vars";
 
+    // Thread-snapshot view that re-opens the origin and reads every [ThreadStatic] field of one
+    // caller-named type on every thread captured in the snapshot (issue #1120). Requires
+    // `typeFullName` — unscoped "list every type with ThreadStatic fields" is out of scope since
+    // ClrMD 4.x removed unbounded ClrHeap.EnumerateTypes()-style enumeration.
+    internal const string ThreadStaticsView = "thread-statics";
+
+    // Fallback instance used when `threadStaticFieldResolver` is not DI-injected (e.g. unit tests
+    // calling these overloads directly without caring about `thread-statics`). Stateless, so a
+    // single shared instance is safe. Mirrors how `durableCaptures`/`deprecation` stay optional on
+    // this surface without forcing every existing call site to thread a new required argument.
+    private static readonly IThreadStaticFieldResolver DefaultThreadStaticFieldResolver = new ClrMdThreadStaticFieldResolver();
+
     // Legacy default views, mirrored so unified callers can omit `view` and still get
     // the same projection the kind's legacy tool returned by default.
     internal const string DefaultHeapView = "top-types";
@@ -142,7 +154,7 @@ public sealed partial class QuerySnapshotTool
         [Description("Kind-specific view; omit for default. Durable selectors add bounded records and composition children. Historical views never reattach; see tool-reference.md.")] string? view = null,
         [Description("Ranked entries: defaults 50 heap/thread/collection, 25 off-CPU/diff. Inline caps: threads 8, locks 12, retention paths 10; full evidence stays behind the handle.")] int? topN = null,
         [Description("Heap top-types/growth: bytes|instances. CPU top-methods: exclusive|inclusive|running. Running is on-CPU self samples only for OS backends; otherwise frequency candidates, not scheduler state.")] string rankBy = "bytes",
-        [Description("Heap view='retention-paths' only: case-insensitive substring matched against TypeFullName.")] string? typeFullName = null,
+        [Description("Heap view='retention-paths': case-insensitive substring matched against TypeFullName. Thread view='thread-statics': required EXACT full type name (resolved via ClrHeap.GetTypeByName).")] string? typeFullName = null,
         [Description("Decimal/0x address: heap object/gcroot/objsize; thread lock-graph waiter paging. resolve-address accepts comma-separated native addresses, returning module/RVA/build-id or unmapped.")] string? address = null,
         [Description("Heap views 'duplicate-strings' / 'object' only: opt-in to raw string content / field-value previews (gated by `Diagnostics:AllowSensitiveHeapValues` AND `sensitive-heap-read` scope per docs/authorization.md#modifier-scopes).")] bool includeSensitiveValues = false,
         [Description("stack: managed thread ID (native snapshots: OS TID). frame-vars: required managed ID.")] int? threadId = null,
@@ -187,6 +199,7 @@ public sealed partial class QuerySnapshotTool
         [Description("view='records': row limit 1..1000, default 100; a separate byte budget may return fewer.")]
         int recordPageSize = 100,
         DurableCaptureTools? durableCaptures = null,
+        IThreadStaticFieldResolver? threadStaticFieldResolver = null,
         CancellationToken cancellationToken = default)
     {
         if (captureId is not null)
@@ -292,6 +305,7 @@ public sealed partial class QuerySnapshotTool
             PrincipalAccessor = principalAccessor,
             AddressResolver = addressResolver,
             FrameVariableResolver = frameVariableResolver,
+            ThreadStaticFieldResolver = threadStaticFieldResolver ?? DefaultThreadStaticFieldResolver,
             Lookup = lookup.Value,
             Handle = handle,
             View = view,
@@ -368,6 +382,7 @@ public sealed partial class QuerySnapshotTool
         bool foldAsync = false,
         string? latestOfKind = null,
         int? latestOfKindProcessId = null,
+        IThreadStaticFieldResolver? threadStaticFieldResolver = null,
         CancellationToken cancellationToken = default)
         => QuerySnapshotCursorPaged(
             handles,
@@ -408,6 +423,7 @@ public sealed partial class QuerySnapshotTool
             foldAsync: foldAsync,
             latestOfKind: latestOfKind,
             latestOfKindProcessId: latestOfKindProcessId,
+            threadStaticFieldResolver: threadStaticFieldResolver,
             cancellationToken: cancellationToken);
 
     public static Task<DiagnosticResult<object>> QuerySnapshot(
@@ -447,6 +463,7 @@ public sealed partial class QuerySnapshotTool
         bool foldAsync = false,
         string? latestOfKind = null,
         int? latestOfKindProcessId = null,
+        IThreadStaticFieldResolver? threadStaticFieldResolver = null,
         CancellationToken cancellationToken = default)
         => QuerySnapshotCursorPaged(
             handles,
@@ -487,6 +504,7 @@ public sealed partial class QuerySnapshotTool
             foldAsync: foldAsync,
             latestOfKind: latestOfKind,
             latestOfKindProcessId: latestOfKindProcessId,
+            threadStaticFieldResolver: threadStaticFieldResolver,
             cancellationToken: cancellationToken);
 
 
@@ -782,6 +800,81 @@ public sealed partial class QuerySnapshotTool
             (frameVars.CurrentExceptionType is { } exType ? $"; current exception {exType}." : ".");
         return AsObjectEnvelope(DiagnosticResult.Ok(result, summary));
     }
+
+    private static async Task<DiagnosticResult<object>> ResolveThreadStaticFieldsAsync(
+        ThreadSnapshotArtifact snapshot,
+        IThreadStaticFieldResolver resolver,
+        SensitiveValueGate sensitiveGate,
+        IPrincipalAccessor principalAccessor,
+        string handle,
+        string? typeFullName,
+        bool includeSensitiveValues,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(typeFullName))
+        {
+            return InvalidArgument(nameof(typeFullName), "is required for view='thread-statics' (exact full type name, e.g. 'MyNamespace.MyType')");
+        }
+
+        var principalUnlocksSensitive = principalAccessor.Current?.HasExplicitScope("sensitive-heap-read") == true;
+        var emitSensitive = sensitiveGate.ShouldEmit(includeSensitiveValues, principalUnlocksSensitive);
+
+        async Task<DiagnosticResult<ThreadStaticFieldsResult>> ResolveAsync()
+        {
+            try
+            {
+                var resolved = await resolver.ResolveAsync(
+                    snapshot,
+                    typeFullName,
+                    emitSensitive,
+                    cancellationToken).ConfigureAwait(false);
+                return DiagnosticResult.Ok(resolved, $"Resolved [ThreadStatic] fields of '{typeFullName}' against snapshot '{handle}'.");
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or FileNotFoundException)
+            {
+                return DiagnosticResult.Fail<ThreadStaticFieldsResult>(
+                    $"Could not inspect thread-static fields against snapshot '{handle}': {ex.Message}",
+                    new DiagnosticError("ThreadStaticFieldsUnavailable", ex.Message, handle),
+                    new NextActionHint("collect_thread_snapshot", "Re-capture the snapshot if the origin process or dump is no longer reachable, or check that typeFullName is an exact loaded type name.", null));
+            }
+        }
+
+        var resolution = await ResolveLiveThreadSnapshotViewAsync(
+            snapshot,
+            handle,
+            ThreadStaticsView,
+            ResolveAsync,
+            BuildThreadStaticFieldsRetryArguments(handle, typeFullName, includeSensitiveValues),
+            cancellationToken).ConfigureAwait(false);
+        if (resolution.Error is not null)
+        {
+            return AsObjectEnvelope(resolution);
+        }
+        var threadStatics = resolution.Data!;
+
+        var origin = snapshot.Origin.ToString().ToLowerInvariant();
+        var result = new ThreadSnapshotQueryResult(
+            handle, ThreadStaticsView, origin, snapshot.ProcessId, snapshot.CapturedAt, snapshot.WalkDuration)
+        {
+            ThreadStatics = threadStatics,
+        };
+
+        var fieldCount = threadStatics.Threads.Sum(t => t.Fields.Count);
+        var summary = $"Resolved {fieldCount} [ThreadStatic] field value(s) of '{threadStatics.TypeFullName}' across {threadStatics.Threads.Count} thread(s) from snapshot '{handle}' ({origin}, pid {snapshot.ProcessId}).";
+        return AsObjectEnvelope(DiagnosticResult.Ok(result, summary));
+    }
+
+    private static Dictionary<string, object?> BuildThreadStaticFieldsRetryArguments(
+        string handle,
+        string typeFullName,
+        bool includeSensitiveValues)
+        => new Dictionary<string, object?>
+        {
+            ["handle"] = handle,
+            ["view"] = ThreadStaticsView,
+            ["typeFullName"] = typeFullName,
+            ["includeSensitiveValues"] = includeSensitiveValues,
+        };
 
     private static Dictionary<string, object?> BuildResolveAddressRetryArguments(
         string handle,
@@ -1466,6 +1559,7 @@ public sealed partial class QuerySnapshotTool
         bool foldAsync = false,
         string? latestOfKind = null,
         int? latestOfKindProcessId = null,
+        IThreadStaticFieldResolver? threadStaticFieldResolver = null,
         CancellationToken cancellationToken = default)
         => QuerySnapshotCursorPaged(
             handles,
@@ -1505,6 +1599,7 @@ public sealed partial class QuerySnapshotTool
             foldAsync: foldAsync,
             latestOfKind: latestOfKind,
             latestOfKindProcessId: latestOfKindProcessId,
+            threadStaticFieldResolver: threadStaticFieldResolver,
             cancellationToken: cancellationToken);
 
     // Derived from KindHandlers (QuerySnapshotTool.Dispatch.cs) so the two lists can never drift —

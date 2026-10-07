@@ -61,6 +61,7 @@ public sealed partial class QuerySnapshotTool
         public required IPrincipalAccessor PrincipalAccessor { get; init; }
         public required INativeAddressResolver AddressResolver { get; init; }
         public required IFrameVariableResolver FrameVariableResolver { get; init; }
+        public required IThreadStaticFieldResolver ThreadStaticFieldResolver { get; init; }
         public required HandleLookup Lookup { get; init; }
         public required string Handle { get; init; }
         public required string? View { get; init; }
@@ -197,6 +198,24 @@ public sealed partial class QuerySnapshotTool
                 context.PrincipalAccessor,
                 context.Handle,
                 context.ThreadId,
+                context.IncludeSensitiveValues,
+                context.CancellationToken);
+        }
+
+        if (context.MatchesView(ThreadStaticsView))
+        {
+            if (!RequireScope(context.Principal, ScopeHeapRead, out var heapForbidden))
+            {
+                return Task.FromResult(heapForbidden!);
+            }
+
+            return ResolveThreadStaticFieldsAsync(
+                snapshot,
+                context.ThreadStaticFieldResolver,
+                context.SensitiveGate,
+                context.PrincipalAccessor,
+                context.Handle,
+                context.TypeFullName,
                 context.IncludeSensitiveValues,
                 context.CancellationToken);
         }
