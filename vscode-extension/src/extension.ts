@@ -7,10 +7,12 @@ import {
     describeStreamCompatibilityError,
     isGcCollection,
     isCpuSampleSummary,
+    isHeapCaptureResult,
     parseProcessList,
     parseProtocolFrame,
     type CounterValue,
     type CpuSampleSummary,
+    type HeapCaptureResult,
     type ProtocolFrame,
     type TargetProcess,
 } from "./protocol";
@@ -26,6 +28,19 @@ interface Deferred<T> {
     settled: boolean;
 }
 
+/**
+ * A pending one-shot `capture` request keyed by `requestId` (see `StreamChild.pendingCaptures`).
+ * `kind` disambiguates the result shape the `capture` response frame must be validated against —
+ * `cpu` and `heap` captures share the same request/response envelope but have distinct payloads.
+ */
+type PendingCapture =
+    | { kind: "cpu"; deferred: Deferred<CpuSampleSummary> }
+    | { kind: "heap"; deferred: Deferred<HeapCaptureResult> };
+
+/** Heap snapshot source the user selects before a "Capture Heap Snapshot" request (see #1110). */
+type HeapCaptureSource = "live" | "gcdump";
+
+
 interface StreamChild {
     process: ChildProcessWithoutNullStreams;
     lines: ReadlineInterface;
@@ -37,7 +52,7 @@ interface StreamChild {
     stderrTail: string;
     terminalReceived: boolean;
     startupErrorReported: boolean;
-    pendingCaptures: Map<string, Deferred<CpuSampleSummary>>;
+    pendingCaptures: Map<string, PendingCapture>;
     /**
      * Set before intentionally closing a connection that never started a live session (e.g. a
      * capture-only connection after its result arrives), so the `close` handler can skip reporting
@@ -73,6 +88,7 @@ class CounterPanelController implements vscode.Disposable {
     private startCommandTask?: Promise<void>;
     private startStreamTask?: Promise<void>;
     private captureCpuTask?: Promise<void>;
+    private captureHeapTask?: Promise<void>;
     private connectChildTask?: Promise<StreamChild>;
 
     public constructor(
@@ -138,7 +154,7 @@ class CounterPanelController implements vscode.Disposable {
             return;
         }
 
-        this.postMessage({ type: "captureStatus", state: "running", message: "Capturing CPU…" });
+        this.postMessage({ type: "captureStatus", kind: "cpu", state: "running", message: "Capturing CPU…" });
 
         let session: StreamChild;
         let ownsSession: boolean;
@@ -147,6 +163,7 @@ class CounterPanelController implements vscode.Disposable {
         } catch (error) {
             this.postMessage({
                 type: "captureStatus",
+                kind: "cpu",
                 state: "error",
                 message: withRuntimeGuidance(errorMessage(error)),
             });
@@ -154,7 +171,7 @@ class CounterPanelController implements vscode.Disposable {
         }
 
         const requestId = randomBytes(12).toString("hex");
-        const pending = deferred<CpuSampleSummary>();
+        const pending: PendingCapture = { kind: "cpu", deferred: deferred<CpuSampleSummary>() };
         session.pendingCaptures.set(requestId, pending);
         try {
             this.writeFrame(session, {
@@ -165,25 +182,154 @@ class CounterPanelController implements vscode.Disposable {
                 durationSeconds: 10,
                 topN: 10,
             });
-            const summary = await withTimeout(pending.promise, 60_000);
-            this.postMessage({ type: "capture", summary });
-            this.postMessage({ type: "captureStatus", state: "done", message: "CPU capture complete." });
+            const summary = await withTimeout(pending.deferred.promise, 60_000);
+            this.postMessage({ type: "capture", kind: "cpu", summary });
+            this.postMessage({ type: "captureStatus", kind: "cpu", state: "done", message: "CPU capture complete." });
         } catch (error) {
             this.postMessage({
                 type: "captureStatus",
+                kind: "cpu",
                 state: "error",
                 message: withRuntimeGuidance(errorMessage(error)),
             });
             this.output.appendLine(`CPU capture failed: ${errorMessage(error)}`);
         } finally {
             session.pendingCaptures.delete(requestId);
-            if (ownsSession && !session.sessionId && !session.startInFlight) {
-                // This connection exists only to serve the capture request — no live session was
+            if (ownsSession && !session.sessionId && !session.startInFlight && session.pendingCaptures.size === 0) {
+                // This connection exists only to serve capture requests — no live session was
                 // started on it (and no `start` request is queued/in-flight behind this capture
-                // response, which the single-threaded CLI read loop processes strictly in order),
-                // so close it now instead of leaving an idle CLI child running. Mark the shutdown
-                // as expected so the `close` handler doesn't report it as an unexpected CLI exit
-                // over whatever status the capture itself just posted.
+                // response, which the single-threaded CLI read loop processes strictly in order).
+                // Only close it once every other capture sharing this connection (e.g. a heap
+                // capture that overlapped with this CPU capture) has also finished, so completing
+                // one capture never tears down the connection out from under a sibling capture
+                // still in flight. Mark the shutdown as expected so the `close` handler doesn't
+                // report it as an unexpected CLI exit over whatever status the capture itself just
+                // posted.
+                session.expectedShutdown = true;
+                await this.closeChild(session);
+            }
+        }
+    }
+
+    public captureHeap(): Promise<void> {
+        if (!this.captureHeapTask) {
+            this.captureHeapTask = this.captureHeapCore().finally(() => {
+                this.captureHeapTask = undefined;
+            });
+        }
+        return this.captureHeapTask;
+    }
+
+    /**
+     * Takes a single point-in-time heap snapshot. Both supported sources (`live` via ClrMD/ptrace,
+     * `gcdump` via EventPipe) are High risk / Acknowledge in Core's `InvocationSafetyRegistry`
+     * (unlike CPU sampling's Moderate risk), so — unlike `captureCpuCore` — this flow first asks
+     * the user to choose a source, then shows a native modal explaining that source's impact, and
+     * only sends the capture request (with `acknowledgeRisk: "high"`) after explicit acknowledgement.
+     */
+    private async captureHeapCore(): Promise<void> {
+        if (this.disposed) {
+            return;
+        }
+
+        const target = this.selectedTarget ?? await this.ensureTargetAndPanel();
+        if (!target || this.disposed) {
+            return;
+        }
+
+        const sourcePick = await vscode.window.showQuickPick(
+            [
+                {
+                    label: "Live (ClrMD via ptrace)",
+                    description: "Attaches via ptrace and suspends the target",
+                    source: "live" as HeapCaptureSource,
+                },
+                {
+                    label: "GC Dump (EventPipe)",
+                    description: "Induces a blocking Gen2 GC",
+                    source: "gcdump" as HeapCaptureSource,
+                },
+            ],
+            { placeHolder: "Select a heap snapshot source" },
+        );
+        if (!sourcePick || this.disposed) {
+            return;
+        }
+
+        const acknowledged = await vscode.window.showWarningMessage(
+            describeHeapCaptureRisk(sourcePick.source, sourcePick.label),
+            { modal: true },
+            "Acknowledge and Capture",
+            "Cancel",
+        );
+        if (acknowledged !== "Acknowledge and Capture" || this.disposed) {
+            return;
+        }
+
+        this.postMessage({
+            type: "captureStatus",
+            kind: "heap",
+            state: "running",
+            message: `Capturing heap snapshot (${sourcePick.label})…`,
+        });
+
+        let session: StreamChild;
+        let ownsSession: boolean;
+        try {
+            ({ session, owns: ownsSession } = await this.acquireChild());
+        } catch (error) {
+            this.postMessage({
+                type: "captureStatus",
+                kind: "heap",
+                state: "error",
+                message: withRuntimeGuidance(errorMessage(error)),
+            });
+            return;
+        }
+
+        const requestId = randomBytes(12).toString("hex");
+        const pending: PendingCapture = { kind: "heap", deferred: deferred<HeapCaptureResult>() };
+        session.pendingCaptures.set(requestId, pending);
+        try {
+            this.writeFrame(session, {
+                type: "capture",
+                requestId,
+                kind: "heap",
+                processId: target.processId,
+                source: sourcePick.source,
+                topTypes: 20,
+                acknowledgeRisk: "high",
+            });
+            // A `gcdump` capture induces and waits out a blocking Gen2 GC, and a `live` capture
+            // suspends the whole target during a ClrMD walk — both can legitimately take longer
+            // than the CPU capture's fixed-duration sample, so this uses a longer ceiling.
+            const result = await withTimeout(pending.deferred.promise, 120_000);
+            this.postMessage({ type: "capture", kind: "heap", source: sourcePick.source, result });
+            this.postMessage({
+                type: "captureStatus",
+                kind: "heap",
+                state: "done",
+                message: "Heap snapshot capture complete.",
+            });
+        } catch (error) {
+            this.postMessage({
+                type: "captureStatus",
+                kind: "heap",
+                state: "error",
+                message: withRuntimeGuidance(errorMessage(error)),
+            });
+            this.output.appendLine(`Heap snapshot capture failed: ${errorMessage(error)}`);
+        } finally {
+            session.pendingCaptures.delete(requestId);
+            if (ownsSession && !session.sessionId && !session.startInFlight && session.pendingCaptures.size === 0) {
+                // This connection exists only to serve capture requests — no live session was
+                // started on it (and no `start` request is queued/in-flight behind this capture
+                // response, which the single-threaded CLI read loop processes strictly in order).
+                // Only close it once every other capture sharing this connection (e.g. a CPU and a
+                // heap capture that overlapped) has also finished, so completing one capture never
+                // tears down the connection out from under a sibling capture still in flight.
+                // Mark the shutdown as expected so the `close` handler doesn't report it as an
+                // unexpected CLI exit over whatever status the capture itself just posted.
                 session.expectedShutdown = true;
                 await this.closeChild(session);
             }
@@ -247,12 +393,17 @@ class CounterPanelController implements vscode.Disposable {
         this.postMessage({ type: "status", state: "stopping", message: "Stopping and draining EventPipe…" });
         try {
             this.writeFrame(child, { type: "cancel", sessionId: child.sessionId });
-            // The CLI reads requests strictly in order on a shared connection. If a CPU capture is
-            // in flight (e.g. triggered while this live session was streaming), this `cancel` frame
-            // sits queued behind it and won't be read until the capture's ~10s sampling window and
-            // response processing finish. Give that case extra headroom instead of racing a fixed
-            // 10s timeout and force-killing the process while a capture is still legitimately busy.
-            const timeoutMs = child.pendingCaptures.size > 0 ? 25_000 : 10_000;
+            // The CLI reads requests strictly in order on a shared connection. If a capture is in
+            // flight (e.g. triggered while this live session was streaming), this `cancel` frame
+            // sits queued behind it and won't be read until that capture's response is fully
+            // processed. Give that case extra headroom instead of racing a fixed 10s timeout and
+            // force-killing the process while a capture is still legitimately busy. A pending heap
+            // capture can legitimately run far longer than a CPU capture (a `gcdump` induces and
+            // waits out a blocking Gen2 GC; a `live` walk suspends and walks the whole heap), so
+            // size the timeout to the longest capture ceiling actually in flight rather than a
+            // single CPU-sized constant.
+            const hasPendingHeapCapture = [...child.pendingCaptures.values()].some(pending => pending.kind === "heap");
+            const timeoutMs = hasPendingHeapCapture ? 125_000 : child.pendingCaptures.size > 0 ? 25_000 : 10_000;
             await withTimeout(child.terminal.promise, timeoutMs);
         } catch (error) {
             this.output.appendLine(`Could not confirm CLI stream shutdown: ${errorMessage(error)}`);
@@ -327,6 +478,8 @@ class CounterPanelController implements vscode.Disposable {
                 void this.stopCounters();
             } else if (message.type === "captureCpu") {
                 void this.captureCpu();
+            } else if (message.type === "captureHeap") {
+                void this.captureHeap();
             }
         }, undefined, []);
         panel.onDidDispose(() => {
@@ -502,7 +655,7 @@ class CounterPanelController implements vscode.Disposable {
             session.terminal.resolve();
             session.closed.resolve();
             for (const pending of session.pendingCaptures.values()) {
-                pending.reject(new Error("The CLI connection closed before the capture completed."));
+                pending.deferred.reject(new Error("The CLI connection closed before the capture completed."));
             }
             session.pendingCaptures.clear();
             if (this.activeChild === session) {
@@ -638,10 +791,12 @@ class CounterPanelController implements vscode.Disposable {
                 if (!pending) {
                     break;
                 }
-                if (isCpuSampleSummary(frame.result)) {
-                    pending.resolve(frame.result);
+                if (pending.kind === "cpu" && isCpuSampleSummary(frame.result)) {
+                    pending.deferred.resolve(frame.result);
+                } else if (pending.kind === "heap" && isHeapCaptureResult(frame.result)) {
+                    pending.deferred.resolve(frame.result);
                 } else {
-                    pending.reject(new Error("The CLI returned a capture result in an unexpected shape."));
+                    pending.deferred.reject(new Error("The CLI returned a capture result in an unexpected shape."));
                 }
                 break;
             }
@@ -651,12 +806,17 @@ class CounterPanelController implements vscode.Disposable {
                 const error = new Error(
                     frame.code === "protocol_version_unsupported"
                         ? `CLI protocol mismatch: ${message}`
-                        : message,
+                        // An older CLI build that predates #1110 does not recognize the "heap"
+                        // capture kind; surface a concise upgrade hint instead of the raw CLI
+                        // error, matching the protocol-version-mismatch compatibility message.
+                        : frame.code === "unsupported_capture_kind"
+                            ? withRuntimeGuidance(message)
+                            : message,
                 );
                 const requestId = typeof frame.requestId === "string" ? frame.requestId : undefined;
                 const pendingCapture = requestId ? session.pendingCaptures.get(requestId) : undefined;
                 if (pendingCapture) {
-                    pendingCapture.reject(error);
+                    pendingCapture.deferred.reject(error);
                 } else if (!session.handshake.settled) {
                     session.handshake.reject(error);
                 } else if (!session.started.settled) {
@@ -786,6 +946,7 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.commands.registerCommand("dotnetDiagnostics.startCounters", () => controller.startCounters()),
         vscode.commands.registerCommand("dotnetDiagnostics.stopCounters", () => controller.stopCounters()),
         vscode.commands.registerCommand("dotnetDiagnostics.captureCpu", () => controller.captureCpu()),
+        vscode.commands.registerCommand("dotnetDiagnostics.captureHeap", () => controller.captureHeap()),
     );
 }
 
@@ -819,7 +980,15 @@ class DiagnosticsActionsProvider implements vscode.TreeDataProvider<vscode.TreeI
             title: "Capture CPU Now",
         };
 
-        return [start, stop, captureCpu];
+        const captureHeap = new vscode.TreeItem("Capture Heap Snapshot", vscode.TreeItemCollapsibleState.None);
+        captureHeap.description = "Take a point-in-time heap snapshot (live or GC dump)";
+        captureHeap.iconPath = new vscode.ThemeIcon("archive");
+        captureHeap.command = {
+            command: "dotnetDiagnostics.captureHeap",
+            title: "Capture Heap Snapshot",
+        };
+
+        return [start, stop, captureCpu, captureHeap];
     }
 }
 
@@ -864,6 +1033,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       <label for="metric">Counter</label><select id="metric" aria-label="Select counter"></select>
       <button id="start">Start</button><button id="stop" disabled>Stop</button>
       <button id="captureCpu">Capture CPU now</button>
+      <button id="captureHeap">Capture heap snapshot</button>
     </div>
   </header>
   <div id="status" role="status">Connecting to CLI…</div>
@@ -893,12 +1063,25 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     </div>
   </section>
 
+  <section class="panel">
+    <h3>Heap snapshot</h3>
+    <div id="captureHeapStatus"></div>
+    <div id="captureHeapResult" class="empty">
+      <div id="captureHeapHeadline"></div>
+      <table id="captureHeapTable">
+        <thead><tr><th>Type</th><th>Instances</th><th>Bytes</th></tr></thead>
+        <tbody id="captureHeapBody"></tbody>
+      </table>
+    </div>
+  </section>
+
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     const metricSelect = document.getElementById('metric');
     const startButton = document.getElementById('start');
     const stopButton = document.getElementById('stop');
     const captureCpuButton = document.getElementById('captureCpu');
+    const captureHeapButton = document.getElementById('captureHeap');
     const statusElement = document.getElementById('status');
     const valueElement = document.getElementById('value');
     const qualityElement = document.getElementById('quality');
@@ -911,6 +1094,10 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     const captureResultElement = document.getElementById('captureResult');
     const captureHeadline = document.getElementById('captureHeadline');
     const captureBody = document.getElementById('captureBody');
+    const captureHeapStatusElement = document.getElementById('captureHeapStatus');
+    const captureHeapResultElement = document.getElementById('captureHeapResult');
+    const captureHeapHeadline = document.getElementById('captureHeapHeadline');
+    const captureHeapBody = document.getElementById('captureHeapBody');
     const counters = new Map();
     const maxSeries = ${MAX_WEBVIEW_SERIES};
     // Defensive backstops in case a timestamp is missing/unparseable and time-based eviction
@@ -1129,6 +1316,49 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       });
     }
 
+    // Same one-shot replace-not-append semantics as renderCapture, for heap snapshots. 'result'
+    // is the trimmed DiagnosticResult projection the CLI streaming protocol emits for a "heap"
+    // capture: summary/data (topTypesByBytes, suspendDuration, gcDumpStatus, warnings, quality) -
+    // see CliStreamingProtocol.HandleHeapCaptureAsync.
+    function renderHeapCapture(source, result) {
+      captureHeapResultElement.classList.remove('empty');
+      const data = result && result.data;
+      const headlineParts = [source === 'gcdump' ? 'GC dump' : 'Live heap', 'snapshot'];
+      if (data && typeof data.processId === 'number') headlineParts.push('· PID ' + data.processId);
+      if (source === 'live' && data && typeof data.suspendDuration === 'string') {
+        const suspendMs = parseTimeSpanToMs(data.suspendDuration);
+        headlineParts.push('· suspended ' + (Number.isFinite(suspendMs) ? suspendMs.toFixed(1) + ' ms' : data.suspendDuration));
+      }
+      if (source === 'gcdump' && data && data.gcDumpStatus) {
+        const status = data.gcDumpStatus;
+        const flags = [];
+        if (status.timedOut) flags.push('timed out');
+        if (status.readerFailed) flags.push('reader failed');
+        if (flags.length) headlineParts.push('· ' + flags.join(', '));
+      }
+      if (result && (!data || data.warnings && data.warnings.length)) {
+        const warnings = data && data.warnings ? data.warnings : [];
+        if (warnings.length) headlineParts.push('· ' + warnings.length + ' warning(s)');
+      }
+      captureHeapHeadline.textContent = headlineParts.join(' ');
+      captureHeapBody.innerHTML = '';
+      const topTypes = (data && data.topTypesByBytes) || [];
+      topTypes.forEach(typeStat => {
+        const row = document.createElement('tr');
+        const cells = [
+          String(typeStat.typeFullName || ''),
+          String(typeStat.instanceCount),
+          String(typeStat.totalBytes),
+        ];
+        cells.forEach(text => {
+          const cell = document.createElement('td');
+          cell.textContent = text;
+          row.appendChild(cell);
+        });
+        captureHeapBody.appendChild(row);
+      });
+    }
+
     window.addEventListener('message', event => {
       const message = event.data;
       if (!message || typeof message.type !== 'string') return;
@@ -1143,9 +1373,14 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         } else {
           addCounter(message);
         }
+      } else if (message.type === 'captureStatus' && message.kind === 'heap') {
+        captureHeapStatusElement.textContent = message.message || message.state || '';
+        captureHeapButton.disabled = message.state === 'running';
       } else if (message.type === 'captureStatus') {
         captureStatusElement.textContent = message.message || message.state || '';
         captureCpuButton.disabled = message.state === 'running';
+      } else if (message.type === 'capture' && message.kind === 'heap') {
+        renderHeapCapture(message.source, message.result);
       } else if (message.type === 'capture') {
         renderCapture(message.summary);
       } else if (message.type === 'historyDuration') {
@@ -1188,6 +1423,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     startButton.addEventListener('click', () => vscode.postMessage({ type: 'start' }));
     stopButton.addEventListener('click', () => vscode.postMessage({ type: 'stop' }));
     captureCpuButton.addEventListener('click', () => vscode.postMessage({ type: 'captureCpu' }));
+    captureHeapButton.addEventListener('click', () => vscode.postMessage({ type: 'captureHeap' }));
     window.addEventListener('resize', resizeCanvas);
     resizeCanvas();
     updateButtons(false);
@@ -1269,9 +1505,25 @@ function errorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * Risk-acknowledgement wording shown in the modal before a heap-snapshot capture is sent. Mirrors
+ * the exact descriptor text Core's `InvocationSafetyRegistry.InspectHeapProfile` uses for
+ * `inspect-heap --source live`/`--source gcdump` (both High risk / Acknowledge, unlike CPU
+ * sampling's Moderate risk) so CLI/MCP users see consistent risk framing in the extension.
+ */
+function describeHeapCaptureRisk(source: HeapCaptureSource, label: string): string {
+    const impact = source === "live"
+        ? "A live ClrMD heap walk attaches with ptrace, suspends the target, and exposes heap type and object-graph metadata. This may expose possibly confidential data."
+        : "GC dump capture induces a managed GC and exposes aggregate heap type metadata. This may expose possibly confidential data.";
+    return `Capture heap snapshot (${label})? ${impact} This is a high-risk operation that requires explicit acknowledgement before it runs against the selected process.`;
+}
+
 function withRuntimeGuidance(message: string): string {
     if (/protocol mismatch|protocol version/i.test(message)) {
         return `${message} Update dotnet-diagnostics-cli to a version compatible with this extension.`;
+    }
+    if (/unsupported_capture_kind|capture kind 'heap' is not supported/i.test(message)) {
+        return `${message} Update dotnet-diagnostics-cli to a version that supports the 'heap' capture kind.`;
     }
     if (/ENOENT|not found|cannot find the file/i.test(message)) {
         return `${message}\nInstall dotnet-diagnostics-cli explicitly with 'dotnet tool install -g dotnet-diagnostics-cli', or set the machine-scoped dotnetDiagnostics.cliPath.`;

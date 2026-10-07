@@ -31,7 +31,7 @@ frames. The CLI path can be set in the machine-scoped `dotnetDiagnostics.cliPath
 extension host must be able to execute it. Runtime, missing-tool, and protocol-version errors are
 shown with actionable guidance.
 
-Use **Capture CPU Now** (toolbar button, tree-view action, or Command Palette command
+Use **Capture CPU Now** (tree-view action or Command Palette command
 `dotnetDiagnostics.captureCpu`) to take a single point-in-time CPU sample of the selected process.
 Unlike the counters/GC timeline, a capture is a one-shot snapshot: it reuses the panel's active
 streaming connection if one is open, or opens (and then closes) a short-lived CLI connection
@@ -39,9 +39,26 @@ otherwise, and renders its own top-hotspot table (module, method, inclusive/excl
 counts) that is replaced by the next capture rather than appended to a history. A capture does not
 start or stop the live counters/GC session, and it is not compared against any baseline.
 
+Use **Capture Heap Snapshot** (tree-view action or Command Palette command
+`dotnetDiagnostics.captureHeap`) to take a single point-in-time heap snapshot. Unlike CPU sampling,
+this capture requires choosing a **source**: **Live** (ClrMD via `ptrace`) or **GC Dump** (EventPipe).
+Both sources are classified High risk / Acknowledge in Core's invocation-safety registry (CPU
+sampling is only Moderate), so after picking a source the extension shows a native modal describing
+its impact — a live walk attaches with `ptrace`, suspends the target, and exposes heap type and
+object-graph metadata; a GC dump induces a managed GC and exposes aggregate heap type metadata; both
+may expose possibly confidential data — and only sends the capture request once you select
+**Acknowledge and Capture**. The result panel shows the top types by total bytes (type, instance
+count, bytes), the suspend duration for `live` captures, and any concerning GC-dump completion flags
+(e.g. timed out, reader failed) for `gcdump` captures; each capture replaces the previous rendering.
+A live heap walk needs the same `ptrace`/`CAP_SYS_PTRACE` access as other live memory readers (see
+AGENTS.md's "🪪 `CAP_SYS_PTRACE` for live memory readers" section) and fails with an actionable
+permission-denied message when that access is unavailable. A GC dump instead goes through the
+diagnostic IPC channel but induces a blocking Gen2 GC pause on the target while it runs.
+
 Live streaming requires a CLI build that supports `stream --protocol jsonl` and the multi-kind
-`kinds`/`capture` protocol (CLI builds from this repository starting with #1099). A CLI installed
-from an older package may still support process discovery but not live streaming; update it or
+`kinds`/`capture` protocol (CLI builds from this repository starting with #1099); the `heap` capture
+kind requires a CLI build from #1110 or later. A CLI installed from an older package may still
+support process discovery (or CPU capture) but reject an unrecognized capture kind; update it or
 point `dotnetDiagnostics.cliPath` at a compatible executable. The extension fails with a concise
 compatibility message instead of displaying CLI help output in the counters panel.
 

@@ -6,6 +6,7 @@ const {
     parseProtocolFrame,
     isGcCollection,
     isCpuSampleSummary,
+    isHeapCaptureResult,
 } = require("../out/protocol.js");
 
 test("process list parser retains valid targets without exposing command lines", () => {
@@ -82,4 +83,62 @@ test("CPU sample summary validator accepts a bounded hotspot list", () => {
     assert.equal(isCpuSampleSummary(summary), true);
     assert.equal(isCpuSampleSummary({ ...summary, topHotspots: [{ frame: {} }] }), false);
     assert.equal(isCpuSampleSummary({ ...summary, totalSamples: "42" }), false);
+});
+
+test("heap capture result validator accepts a successful live snapshot projection", () => {
+    const result = {
+        summary: "Captured a live heap snapshot for PID 123.",
+        data: {
+            processId: 123,
+            suspendDuration: "00:00:00.1234567",
+            topTypesByBytes: [
+                { typeFullName: "System.String", instanceCount: 10, totalBytes: 1024, totalBytesPercent: 42.5 },
+            ],
+            topTypesByInstances: [
+                { typeFullName: "System.String", instanceCount: 10, totalBytes: 1024, totalBytesPercent: 42.5 },
+            ],
+        },
+    };
+    assert.equal(isHeapCaptureResult(result), true);
+});
+
+test("heap capture result validator accepts a gcdump snapshot with completion status", () => {
+    const result = {
+        summary: "Captured a gcdump heap snapshot for PID 123.",
+        data: {
+            processId: 123,
+            suspendDuration: "00:00:00",
+            topTypesByBytes: [],
+            topTypesByInstances: [],
+            warnings: ["Export of the underlying trace was not requested."],
+            gcDumpStatus: {
+                gcStopObserved: true,
+                eventStreamCompleted: true,
+                timedOut: false,
+                readerFailed: false,
+                traceExportRequested: false,
+                traceExportCompleted: false,
+            },
+        },
+    };
+    assert.equal(isHeapCaptureResult(result), true);
+});
+
+test("heap capture result validator accepts an error-only projection with no data", () => {
+    assert.equal(isHeapCaptureResult({ summary: "No process found matching the requested id." }), true);
+});
+
+test("heap capture result validator rejects malformed shapes", () => {
+    assert.equal(isHeapCaptureResult(null), false);
+    assert.equal(isHeapCaptureResult({ summary: 42 }), false);
+    assert.equal(isHeapCaptureResult({ summary: "ok", data: { processId: "123" } }), false);
+    assert.equal(isHeapCaptureResult({
+        summary: "ok",
+        data: {
+            processId: 123,
+            suspendDuration: "00:00:00",
+            topTypesByBytes: [{ typeFullName: "X" }],
+            topTypesByInstances: [],
+        },
+    }), false);
 });
