@@ -166,6 +166,7 @@ public sealed class ClrMdDumpInspector : IDumpInspector
             AsyncOperations = summary.AsyncOperations,
             Timers = summary.Timers,
             AssemblyLoadContexts = summary.AssemblyLoadContexts,
+            ComWrappers = summary.ComWrappers,
             Warnings = warnings.Count > 0 ? warnings : null,
         };
     }
@@ -238,6 +239,7 @@ public sealed class ClrMdDumpInspector : IDumpInspector
             AsyncOperations = summary.AsyncOperations,
             Timers = summary.Timers,
             AssemblyLoadContexts = summary.AssemblyLoadContexts,
+            ComWrappers = summary.ComWrappers,
             Warnings = warnings.Count > 0 ? warnings : null,
         };
     }
@@ -279,8 +281,9 @@ public sealed class ClrMdDumpInspector : IDumpInspector
         var asyncOperations = ClrMdAsyncStateMachineWalker.WalkPendingAsyncOperations(runtime, warnings, ct);
         var timers = ClrMdTaskTimerAnalyzer.BuildView(walk.TaskTimers, opts.SnapshotTopTypes, BuildTypeIdentity, TryReadMvid);
         var assemblyLoadContexts = ClrMdAssemblyLoadContextAnalyzer.BuildView(runtime, walk.AssemblyLoadContexts, warnings, ct);
+        var comWrappers = WalkComWrapperCleanupBacklog(runtime, walk.ComWrappers, warnings, ct);
 
-        return new RuntimeSummary(byBytes, byInstances, heapSummary, retention, roots, finalizable, walk.Segments, statics, delegates, duplicates, gcHandles, asyncOperations, timers, assemblyLoadContexts);
+        return new RuntimeSummary(byBytes, byInstances, heapSummary, retention, roots, finalizable, walk.Segments, statics, delegates, duplicates, gcHandles, asyncOperations, timers, assemblyLoadContexts, comWrappers);
     }
 
     private readonly record struct RuntimeSummary(
@@ -297,7 +300,60 @@ public sealed class ClrMdDumpInspector : IDumpInspector
         GcHandlesView GcHandles,
         IReadOnlyList<AsyncOperationStat> AsyncOperations,
         TaskTimerLeakView Timers,
-        AssemblyLoadContextLeakView AssemblyLoadContexts);
+        AssemblyLoadContextLeakView AssemblyLoadContexts,
+        ComWrappersView ComWrappers);
+
+    /// <summary>
+    /// Counts the runtime's own COM cleanup-queue backlog once per capture (not per-object, unlike
+    /// the per-object CCW/RCW detection folded into <see cref="ClrMdHeapWalker.Walk"/>) — a growing
+    /// backlog that doesn't drain capture-to-capture is itself a leak smell (issue #1118).
+    /// </summary>
+    private static ComWrappersView WalkComWrapperCleanupBacklog(
+        ClrRuntime runtime,
+        ComWrapperAggregation.Builder sink,
+        List<string> warnings,
+        CancellationToken ct)
+    {
+        try
+        {
+            foreach (var entry in runtime.EnumerateRcwCleanupData())
+            {
+                ct.ThrowIfCancellationRequested();
+                sink.AddRcwCleanupEntry(new ComCleanupBacklogEntry(
+                    entry.Rcw,
+                    entry.Context,
+                    entry.Thread,
+                    entry.IsFreeThreaded));
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            warnings.Add($"RCW cleanup-queue enumeration aborted partway through: {ex.GetType().Name} ({ex.Message}).");
+        }
+
+        try
+        {
+            foreach (var _ in runtime.EnumerateSyncBlockCleanupData())
+            {
+                ct.ThrowIfCancellationRequested();
+                sink.AddSyncBlockCleanupEntry();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            warnings.Add($"Sync-block cleanup-queue enumeration aborted partway through: {ex.GetType().Name} ({ex.Message}).");
+        }
+
+        return sink.BuildView();
+    }
 
     private StaticFieldStat[] WalkStaticFields(
         ClrRuntime runtime, int topN, List<string> warnings, CancellationToken ct)

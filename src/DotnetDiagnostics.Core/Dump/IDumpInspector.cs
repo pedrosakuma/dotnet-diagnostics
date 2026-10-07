@@ -162,6 +162,11 @@ public sealed record HeapSnapshotArtifact(
     public TaskTimerLeakView? Timers { get; init; }
     /// <summary>AssemblyLoadContext / collectible-assembly leak candidates aggregated from live heap objects.</summary>
     public AssemblyLoadContextLeakView? AssemblyLoadContexts { get; init; }
+    /// <summary>COM RCW/CCW leak candidates aggregated from live heap objects, plus the runtime's
+    /// pending-cleanup queue backlog (issue #1118). Populated unconditionally for every successful
+    /// walk — resolving <c>HasComCallableWrapper</c>/<c>HasRuntimeCallableWrapper</c> is a cached
+    /// dictionary lookup after the first call, not a per-object ClrMD round-trip.</summary>
+    public ComWrappersView? ComWrappers { get; init; }
     /// <summary>Diagnostic warnings emitted during the walk (degraded data, ClrMD limitations, …).</summary>
     public IReadOnlyList<string>? Warnings { get; init; }
     /// <summary>Relative path (under the artifact root) of the persisted raw .nettrace when the gcdump capture was run with exportTrace=true; <c>null</c> otherwise (issue #445).</summary>

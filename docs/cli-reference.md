@@ -1458,7 +1458,7 @@ decisions accrue over time, so a sustained window is best.
 
 Heap-snapshot handles (`inspect-heap`) expose the projection views rendered from the walked snapshot
 (`top-types`, `retention-paths`, `roots-by-kind`, `finalizer-queue`, `fragmentation`, `static-fields`,
-`delegate-targets`, `gchandles`, `async`, `timers`, `alc`) plus two address-addressed drilldowns:
+`delegate-targets`, `gchandles`, `async`, `timers`, `alc`, `com-wrappers`) plus two address-addressed drilldowns:
 
 | View | What it shows | Relevant flags |
 | --- | --- | --- |

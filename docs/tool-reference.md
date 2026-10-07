@@ -525,7 +525,7 @@ Views available per `kind`:
 | `networking-snapshot` | `collect_events(kind="networking")` | `summary` (default), `byOperation`, `queue`, `tls`, `dns` |
 | `in-flight-requests` | `collect_events(kind="requests")` | `summary` (default), `requests`, `longRunning` |
 | `startup-snapshot` | `collect_events(kind="startup")` | `summary` (default), `assemblies`, `modules`, `di`, `timeline` |
-| `heap-snapshot` | `inspect_heap` / `inspect_heap(source="live")` / `inspect_heap(source="dump")` / `inspect_heap(source="gcdump")` | `top-types` (default), `retention-paths`, `roots-by-kind`, `finalizer-queue`, `fragmentation`, `static-fields`, `delegate-targets`, `duplicate-strings`, `gchandles`, `timers`, `alc`, `object`, `gcroot`, `objsize`, `async`, `diff`, `growth` |
+| `heap-snapshot` | `inspect_heap` / `inspect_heap(source="live")` / `inspect_heap(source="dump")` / `inspect_heap(source="gcdump")` | `top-types` (default), `retention-paths`, `roots-by-kind`, `finalizer-queue`, `fragmentation`, `static-fields`, `delegate-targets`, `duplicate-strings`, `gchandles`, `timers`, `alc`, `com-wrappers`, `object`, `gcroot`, `objsize`, `async`, `diff`, `growth` |
 | `thread-snapshot` | `collect_thread_snapshot` | `top-blocked` (default), `threads-summary`, `stack`, `lock-graph`, `deadlocks`, `unique-stacks`, `async-stalls`, `wait-chains`, `threadpool`, `resolve-address`, `frame-vars` |
 | `off-cpu-snapshot` | `collect_sample(kind="off_cpu")` | `topStacks` (default), `byThread`, `stack` |
 | `cpu-sample` / `allocation-sample` / `native-alloc-sample` / `native-lock-contention-sample` | `collect_sample(kind="cpu")` / `collect_sample(kind="allocation")` / `collect_sample(kind="native-alloc")` / `collect_sample(kind="native-lock-contention")` | `call-tree`, `top-methods`, `by-module`, `by-namespace`, `hot-path`, `caller-callee`, `triage`, `diff` |
@@ -591,6 +591,25 @@ collectible leaks. Retention hints are computed during the heap walk for at most
 collectible ALCs per snapshot, using the same bounded root-search machinery as `gcroot`
 (64 frames / 250,000 visited objects); additional contexts are still listed without a
 path. NativeAOT has no DAC/ClrMD heap walk, so this view is CoreCLR-only.
+
+`heap-snapshot` `view="com-wrappers"` projects the already-walked heap into a COM
+RCW/CCW leak drilldown: total ComCallableWrapper (CCW) and RuntimeCallableWrapper (RCW)
+counts and ref-counts, the top managed types hosting each, and — separately, collected once
+per capture rather than per object — the runtime's own RCW and sync-block pending-cleanup
+queue backlogs (`ClrRuntime.EnumerateRcwCleanupData()` / `EnumerateSyncBlockCleanupData()`).
+Detection is unconditional (no opt-in flag): `ClrObject.HasComCallableWrapper` /
+`HasRuntimeCallableWrapper` resolve through ClrMD's cached SyncBlock lookup, the same cost
+profile as the existing unconditional `IsFree`/`IsDelegate` checks in the same walk loop. Two
+leak smells surface directly: RCWs where `IsDisconnected` is true but the wrapper is still
+reachable from the managed heap (native side thinks it's gone, nothing freed the managed
+side — missing `Marshal.ReleaseComObject`/`Dispose`), and a non-draining RCW cleanup-queue
+backlog across successive captures (RCWs created faster than cleaned up). `WinRtObjectCount`
+reports RCWs whose ClrMD `WinRTObject` property is non-zero (it is a `ulong` handle to an
+internal WinRT object, not a boolean flag — the view only exposes the derived "is this a WinRT
+RCW" distinction, never the raw pointer). The cleanup-backlog sample is bounded to the first 50
+entries per queue; the reported counts are always exact even when the inline sample is
+truncated. This data only appears on processes that actually use COM interop (COM/WinRT
+interop, `System.Runtime.InteropServices`); most managed-only processes report all-zero.
 
 `thread-snapshot` `view="wait-chains"` builds ranked, multi-hop **wait-chains** that span the
 three ways a .NET thread stalls, all from the already-captured snapshot (no re-collection):
@@ -3122,7 +3141,7 @@ through [`query_snapshot`](#query_snapshot) without re-walking the heap.
 (~10 min TTL). Drill further via [`query_snapshot`](#query_snapshot) with any of
 the heap views: `top-types`, `retention-paths`, `roots-by-kind`,
 `finalizer-queue`, `fragmentation`, `static-fields`, `delegate-targets`,
-`duplicate-strings`, `gchandles`, `timers`, `alc`, `object`, `gcroot`, `objsize`,
+`duplicate-strings`, `gchandles`, `timers`, `alc`, `com-wrappers`, `object`, `gcroot`, `objsize`,
 `async`, `diff`, `growth`.
 
 For `source="gcdump"`, only `top-types` is supported from the captured artifact.
@@ -3305,7 +3324,7 @@ contract.
 
 - **heap** (`inspect_heap`): `top-types` (default), `retention-paths`,
   `roots-by-kind`, `finalizer-queue`, `fragmentation`, `static-fields`,
-  `delegate-targets`, `duplicate-strings`, `gchandles`, `timers`, `alc`,
+  `delegate-targets`, `duplicate-strings`, `gchandles`, `timers`, `alc`, `com-wrappers`,
   `object`, `gcroot`, `objsize`, `async`, `diff`, `growth`.
 - **thread** (`collect_thread_snapshot`): `top-blocked` (default),
   `threads-summary`, `stack`, `lock-graph`, `deadlocks`, `unique-stacks`,
