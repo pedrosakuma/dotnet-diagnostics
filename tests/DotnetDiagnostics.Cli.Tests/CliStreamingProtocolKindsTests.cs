@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using System.Threading.Channels;
 using DotnetDiagnostics.Cli;
 using DotnetDiagnostics.Core.Artifacts;
 using DotnetDiagnostics.Core.Dump;
@@ -384,6 +385,8 @@ public sealed class CliStreamingProtocolKindsTests
             var heapData = heapFrame.GetProperty("result").GetProperty("data");
             heapData.GetProperty("filePath").GetString().Should().Be(dump.FilePath);
             heapData.GetProperty("topTypesByBytes").GetArrayLength().Should().BeGreaterThan(0);
+            heapData.GetProperty("handle").GetString().Should().NotBeNullOrWhiteSpace(
+                "the extension needs the handle id to issue follow-up `query` requests (#1116)");
 
             var threadFrame = frames[2].RootElement;
             threadFrame.GetProperty("type").GetString().Should().Be("capture");
@@ -392,6 +395,122 @@ public sealed class CliStreamingProtocolKindsTests
             var threadData = threadFrame.GetProperty("result").GetProperty("data");
             threadData.GetProperty("origin").GetString().Should().Be("dump");
             threadData.GetProperty("totalThreads").GetInt32().Should().BeGreaterThan(0);
+            threadData.GetProperty("handle").GetString().Should().NotBeNullOrWhiteSpace(
+                "the extension needs the handle id to issue follow-up `query` requests (#1116)");
+
+            // #1116: follow-up `query` requests must be sent *after* reading the real handle id off
+            // a capture response (the extension does exactly this), so this needs an interactive
+            // session rather than a flat batch of pre-serialized requests.
+            await using var session = await InteractiveCliSession.StartAsync();
+            await session.SendAsync(new { type = "hello", protocolVersion = 1 });
+            await session.ReadFrameAsync();
+
+            await session.SendAsync(new
+            {
+                type = "capture",
+                requestId = "heap-dump",
+                kind = "heap",
+                source = "dump",
+                dumpFile = dump.FilePath,
+                topTypes = 10,
+            });
+            var heapCapture = await session.ReadFrameAsync();
+            var heapHandle = heapCapture.GetProperty("result").GetProperty("data").GetProperty("handle").GetString();
+
+            await session.SendAsync(new
+            {
+                type = "capture",
+                requestId = "heap-dump-rich",
+                kind = "heap",
+                source = "dump",
+                dumpFile = dump.FilePath,
+                topTypes = 10,
+                includeStaticFields = true,
+                includeDelegateTargets = true,
+                includeRetentionPaths = true,
+            });
+            var heapRichCapture = await session.ReadFrameAsync();
+            var heapRichHandle = heapRichCapture.GetProperty("result").GetProperty("data").GetProperty("handle").GetString();
+
+            await session.SendAsync(new { type = "capture", requestId = "thread-dump", kind = "thread-snapshot", dumpFile = dump.FilePath });
+            var threadCapture = await session.ReadFrameAsync();
+            var threadHandle = threadCapture.GetProperty("result").GetProperty("data").GetProperty("handle").GetString();
+
+            // The 7 always-available heap views, queried against the plain (non-opt-in) heap handle.
+            foreach (var view in new[] { "roots-by-kind", "finalizer-queue", "fragmentation", "gchandles", "async", "timers", "alc" })
+            {
+                await session.SendAsync(new { type = "query", requestId = $"q-{view}", handle = heapHandle, view });
+                var frame = await session.ReadFrameAsync();
+                frame.GetProperty("type").GetString().Should().Be("query");
+                frame.GetProperty("requestId").GetString().Should().Be($"q-{view}");
+                frame.GetProperty("handle").GetString().Should().Be(heapHandle);
+                frame.GetProperty("view").GetString().Should().Be(view);
+                frame.GetProperty("result").GetProperty("view").GetString().Should().Be(view);
+            }
+
+            // A capability-gated view not requested at capture time must fail with a friendly,
+            // non-crashing error rather than a null-ref — see HeapSnapshotQueryDispatcher.cs:405-409.
+            await session.SendAsync(new { type = "query", requestId = "q-static-not-captured", handle = heapHandle, view = "static-fields" });
+            var notCaptured = await session.ReadFrameAsync();
+            notCaptured.GetProperty("type").GetString().Should().Be("error");
+            notCaptured.GetProperty("code").GetString().Should().Be("view_not_captured");
+
+            // `delegate-targets` shares the same "ViewNotCaptured" Core error kind as `static-fields`.
+            await session.SendAsync(new { type = "query", requestId = "q-delegate-not-captured", handle = heapHandle, view = "delegate-targets" });
+            var delegateNotCaptured = await session.ReadFrameAsync();
+            delegateNotCaptured.GetProperty("type").GetString().Should().Be("error");
+            delegateNotCaptured.GetProperty("code").GetString().Should().Be("view_not_captured");
+
+            // `retention-paths` is the one opt-in view whose Core error kind differs
+            // ("RetentionPathsMissing", not "ViewNotCaptured" - see
+            // HeapSnapshotQueryDispatcher.cs:179) — assert the distinct code explicitly so a future
+            // Core rename doesn't silently regress to a generic/wrong error without a failing test.
+            await session.SendAsync(new { type = "query", requestId = "q-retention-not-captured", handle = heapHandle, view = "retention-paths" });
+            var retentionNotCaptured = await session.ReadFrameAsync();
+            retentionNotCaptured.GetProperty("type").GetString().Should().Be("error");
+            retentionNotCaptured.GetProperty("code").GetString().Should().Be("retention_paths_missing");
+
+            // The 3 opt-in heap views, queried against the richly-captured handle.
+            foreach (var view in new[] { "static-fields", "delegate-targets", "retention-paths" })
+            {
+                await session.SendAsync(new { type = "query", requestId = $"q-{view}", handle = heapRichHandle, view });
+                var frame = await session.ReadFrameAsync();
+                frame.GetProperty("type").GetString().Should().Be("query");
+                frame.GetProperty("handle").GetString().Should().Be(heapRichHandle);
+                frame.GetProperty("view").GetString().Should().Be(view);
+                frame.GetProperty("result").GetProperty("view").GetString().Should().Be(view);
+            }
+
+            // The 4 thread views.
+            foreach (var view in new[] { "deadlocks", "unique-stacks", "wait-chains", "threadpool" })
+            {
+                await session.SendAsync(new { type = "query", requestId = $"q-{view}", handle = threadHandle, view });
+                var frame = await session.ReadFrameAsync();
+                frame.GetProperty("type").GetString().Should().Be("query");
+                frame.GetProperty("handle").GetString().Should().Be(threadHandle);
+                frame.GetProperty("view").GetString().Should().Be(view);
+                frame.GetProperty("result").GetProperty("view").GetString().Should().Be(view);
+            }
+
+            // Unknown handle.
+            await session.SendAsync(new { type = "query", requestId = "q-unknown-handle", handle = "does-not-exist", view = "roots-by-kind" });
+            var unknownHandle = await session.ReadFrameAsync();
+            unknownHandle.GetProperty("type").GetString().Should().Be("error");
+            unknownHandle.GetProperty("code").GetString().Should().Be("unknown_handle");
+
+            // Unknown view name entirely.
+            await session.SendAsync(new { type = "query", requestId = "q-unknown-view", handle = heapHandle, view = "bogus-view" });
+            var unknownView = await session.ReadFrameAsync();
+            unknownView.GetProperty("type").GetString().Should().Be("error");
+            unknownView.GetProperty("code").GetString().Should().Be("unsupported_query_view");
+
+            // A real view name, but not one offered for this handle's kind (thread view on a heap handle).
+            await session.SendAsync(new { type = "query", requestId = "q-wrong-kind-view", handle = heapHandle, view = "threadpool" });
+            var wrongKindView = await session.ReadFrameAsync();
+            wrongKindView.GetProperty("type").GetString().Should().Be("error");
+            wrongKindView.GetProperty("code").GetString().Should().Be("unsupported_query_view");
+
+            await session.CompleteAsync();
         }
         finally
         {
@@ -402,6 +521,126 @@ public sealed class CliStreamingProtocolKindsTests
             catch
             {
                 // Best-effort cleanup; dump files are large and transient test scratch.
+            }
+        }
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task Query_MissingRequiredFields_ReturnsInvalidQueryError()
+    {
+        var (frames, _) = await RunInProcessAsync(
+            new { type = "hello", protocolVersion = 1 },
+            new { type = "query", requestId = "missing-handle", view = "roots-by-kind" },
+            new { type = "query", requestId = "missing-view", handle = "whatever" },
+            new { type = "query", handle = "whatever", view = "roots-by-kind" });
+
+        foreach (var frame in frames.Skip(1).Select(f => f.RootElement))
+        {
+            frame.GetProperty("type").GetString().Should().Be("error");
+            frame.GetProperty("code").GetString().Should().Be("invalid_query");
+        }
+    }
+
+    /// <summary>
+    /// A fully interactive in-process CLI session: unlike <see cref="RunInProcessAsync"/> (which
+    /// pre-serializes every request up front), this lets the test read a capture response — and in
+    /// particular the <c>result.data.handle</c> it just produced — before composing the next
+    /// request, exactly as the VS Code extension does for a follow-up <c>query</c> after a
+    /// <c>capture</c> (issue #1116). Wraps <see cref="CliHost.RunAsync(string[], TextReader, TextWriter, TextWriter, CancellationToken, CliRuntimeOptions?)"/>
+    /// over a pair of unbounded <see cref="Channel{T}"/>-backed <see cref="TextReader"/>/<see cref="TextWriter"/>
+    /// adapters so the background CLI loop and the foreground test can hand off line-by-line.
+    /// </summary>
+    private sealed class InteractiveCliSession : IAsyncDisposable
+    {
+        private readonly ChannelTextReader _stdin;
+        private readonly ChannelTextWriter _stdout;
+        private readonly Task<int> _runTask;
+
+        private InteractiveCliSession(ChannelTextReader stdin, ChannelTextWriter stdout, Task<int> runTask)
+        {
+            _stdin = stdin;
+            _stdout = stdout;
+            _runTask = runTask;
+        }
+
+        public static Task<InteractiveCliSession> StartAsync()
+        {
+            var stdin = new ChannelTextReader();
+            var stdout = new ChannelTextWriter();
+            var stderr = new StringWriter();
+            var runTask = CliHost.RunAsync(["stream", "--protocol", "jsonl"], stdin, stdout, stderr, CancellationToken.None);
+            return Task.FromResult(new InteractiveCliSession(stdin, stdout, runTask));
+        }
+
+        public Task SendAsync(object request) => _stdin.WriteLineAsync(JsonSerializer.Serialize(request));
+
+        public async Task<JsonElement> ReadFrameAsync()
+        {
+            var line = await _stdout.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+            return JsonDocument.Parse(line!).RootElement;
+        }
+
+        public async Task CompleteAsync()
+        {
+            _stdin.Complete();
+            await _runTask.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            _stdin.Complete();
+            try
+            {
+                await _runTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Best-effort shutdown if the test already asserted everything it needed.
+            }
+        }
+
+        /// <summary>A <see cref="TextReader"/> whose lines are supplied on demand via <see cref="WriteLineAsync"/>.</summary>
+        private sealed class ChannelTextReader : TextReader
+        {
+            private readonly Channel<string?> _channel = Channel.CreateUnbounded<string?>();
+
+            public Task WriteLineAsync(string line) => _channel.Writer.WriteAsync(line).AsTask();
+
+            public void Complete() => _channel.Writer.TryComplete();
+
+            public override async ValueTask<string?> ReadLineAsync(CancellationToken cancellationToken)
+            {
+                try
+                {
+                    return await _channel.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch (ChannelClosedException)
+                {
+                    return null;
+                }
+            }
+        }
+
+        /// <summary>A <see cref="TextWriter"/> that republishes each written line onto a readable channel.</summary>
+        private sealed class ChannelTextWriter : TextWriter
+        {
+            private readonly Channel<string> _channel = Channel.CreateUnbounded<string>();
+
+            public override Encoding Encoding => Encoding.UTF8;
+
+            public override Task WriteLineAsync(ReadOnlyMemory<char> buffer, CancellationToken cancellationToken = default)
+                => _channel.Writer.WriteAsync(buffer.ToString(), cancellationToken).AsTask();
+
+            public async Task<string?> ReadLineAsync()
+            {
+                try
+                {
+                    return await _channel.Reader.ReadAsync().ConfigureAwait(false);
+                }
+                catch (ChannelClosedException)
+                {
+                    return null;
+                }
             }
         }
     }
@@ -418,7 +657,8 @@ public sealed class CliStreamingProtocolKindsTests
         public string Root { get; }
     }
 
-
+    /// <summary>
+    /// Serializes <paramref name="requests"/> as newline-delimited JSON, feeding them as stdin
     /// request lines, feeding EOF immediately afterward so <see cref="CliStreamingProtocol.RunAsync"/>
     /// returns on its own. Returns every frame written to stdout in order, plus the exit code.
     /// </summary>
