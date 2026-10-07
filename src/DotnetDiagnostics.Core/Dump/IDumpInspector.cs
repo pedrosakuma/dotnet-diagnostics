@@ -83,6 +83,11 @@ public interface IDumpInspector
 /// <param name="SnapshotDuplicateStringTopN">Number of duplicate-string entries retained for the duplicate-strings drilldown view. Defaults to 100.</param>
 /// <param name="DuplicateStringPreviewLength">Maximum characters of each string preview returned by the duplicate-strings view. Defaults to 80.</param>
 /// <param name="SymbolPath">Optional NT_SYMBOL_PATH-style search path. Precedence: symbolPath > MCP_SYMBOL_PATH > _NT_SYMBOL_PATH > target MainModule directory.</param>
+/// <param name="VerifyHeap">When true, runs ClrMD's own <c>ClrHeap.VerifyHeap()</c> corruption-triage
+/// pass — a distinct, more expensive internal walk than the ordinary type/instance walk above
+/// (issue #1119). Off by default. <b>Dump-only</b>: ignored by the live-heap inspection path —
+/// live corruption verification is explicitly deferred to avoid an unbounded additional suspend
+/// window.</param>
 public sealed record DumpInspectionOptions(
     int TopTypes = 20,
     int SnapshotTopTypes = 200,
@@ -97,7 +102,8 @@ public sealed record DumpInspectionOptions(
     bool IncludeDuplicateStrings = false,
     int SnapshotDuplicateStringTopN = 100,
     int DuplicateStringPreviewLength = 80,
-    string? SymbolPath = null);
+    string? SymbolPath = null,
+    bool VerifyHeap = false);
 
 /// <summary>Where a <see cref="HeapSnapshotArtifact"/> came from.</summary>
 public enum HeapSnapshotOrigin
@@ -167,6 +173,10 @@ public sealed record HeapSnapshotArtifact(
     /// walk — resolving <c>HasComCallableWrapper</c>/<c>HasRuntimeCallableWrapper</c> is a cached
     /// dictionary lookup after the first call, not a per-object ClrMD round-trip.</summary>
     public ComWrappersView? ComWrappers { get; init; }
+    /// <summary>Result of the opt-in <c>ClrHeap.VerifyHeap()</c> corruption-triage pass. Gated by
+    /// <see cref="DumpInspectionOptions.VerifyHeap"/> and only ever populated for
+    /// <see cref="HeapSnapshotOrigin.Dump"/> captures — <c>null</c> otherwise (issue #1119).</summary>
+    public HeapIntegrityView? HeapIntegrity { get; init; }
     /// <summary>Diagnostic warnings emitted during the walk (degraded data, ClrMD limitations, …).</summary>
     public IReadOnlyList<string>? Warnings { get; init; }
     /// <summary>Relative path (under the artifact root) of the persisted raw .nettrace when the gcdump capture was run with exportTrace=true; <c>null</c> otherwise (issue #445).</summary>
