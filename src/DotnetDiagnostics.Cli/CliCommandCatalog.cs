@@ -376,12 +376,15 @@ inspect-heap options:
       --include-delegate-targets  Group MulticastDelegate invocation lists by (target, method).
       --include-duplicate-strings Rank duplicate strings by aggregate retained bytes.
       --symbol-path <path>      NT_SYMBOL_PATH-style search path (remote servers off by default).
+      --verify-heap              --source dump only: run ClrHeap.VerifyHeap() corruption triage
+                                (slower than the base walk; results via query-snapshot --view heap-integrity).
       --export-trace            --source gcdump: persist the raw .nettrace under the artifact root
                                 (fetch later with get-bytes --kind trace).
 """,
 """
   dotnet-diagnostics-cli inspect-heap --pid 1234 --top-types 30 --acknowledge-risk high
   dotnet-diagnostics-cli inspect-heap --source dump --dump-file ./app.dmp
+  dotnet-diagnostics-cli inspect-heap --source dump --dump-file ./app.dmp --verify-heap
   dotnet-diagnostics-cli inspect-heap --source gcdump --pid 1234 --acknowledge-risk high   # induced GC, no ptrace
   dotnet-diagnostics-cli inspect-heap --launch --acknowledge-risk high -- dotnet App.dll   # ptrace_scope=1, no privilege
 """,
@@ -396,6 +399,7 @@ inspect-heap options:
                 "--include-delegate-targets",
                 "--include-duplicate-strings",
                 "--symbol-path",
+                "--verify-heap",
                 "--export-trace",
             ]),
         new(

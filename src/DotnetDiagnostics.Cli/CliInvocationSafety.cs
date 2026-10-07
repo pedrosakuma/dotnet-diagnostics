@@ -170,6 +170,7 @@ internal static class CliInvocationSafety
             ("includeStaticFields", options.IncludeStaticFields),
             ("includeDelegateTargets", options.IncludeDelegateTargets),
             ("includeDuplicateStrings", options.IncludeDuplicateStrings),
+            ("verifyHeap", options.VerifyHeap),
             ("exportTrace", options.ExportTrace),
             ("symbolPath", options.SymbolPath));
     }

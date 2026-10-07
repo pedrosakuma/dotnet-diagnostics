@@ -460,6 +460,12 @@ internal static partial class CliCommands
             return false;
         }
 
+        if (options.VerifyHeap && source != "dump")
+        {
+            error = $"inspect-heap --verify-heap requires --source dump (it is not supported for --source {source}).";
+            return false;
+        }
+
         return true;
     }
 
