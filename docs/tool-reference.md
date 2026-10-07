@@ -611,6 +611,23 @@ entries per queue; the reported counts are always exact even when the inline sam
 truncated. This data only appears on processes that actually use COM interop (COM/WinRT
 interop, `System.Runtime.InteropServices`); most managed-only processes report all-zero.
 
+`heap-snapshot` `view="heap-integrity"` is a **dump-only, opt-in** corruption-triage
+drilldown (issue #1119). It is populated only when `inspect_heap(source="dump", verifyHeap=true)`
+captured the snapshot; it is never available for `source="live"`/`source="gcdump"` captures
+(`verifyHeap` is rejected up front for those sources) and returns `ViewNotCaptured` otherwise —
+mirroring the `gchandles`/`includeDuplicateStrings` precedent of "absent unless explicitly
+requested". Internally it runs ClrMD's own `ClrHeap.VerifyHeap()`, a **second, independent,
+more expensive full-heap walk** distinct from `ClrMdHeapWalker`'s normal per-object pass — it is
+never folded into the default walk, so enabling it noticeably slows down `inspect_heap`. Each
+reported `HeapCorruptionStat` carries the object address, best-effort type name, size,
+`ObjectCorruption` kind, offset, and a `ClrObject` flag. The corruption list is capped at
+`HeapIntegrityAggregation.MaxCapturedCorruptions` (500) entries, enforced at collection time
+(never materializing an unbounded list); when ClrMD reports more corrupt objects than the cap,
+`totalCorruptions` still reflects the true count and `notes` names the cap constant plus the
+number of omitted entries. Live heap corruption verification is explicitly out of scope — it
+would add an unbounded second suspend window on top of the normal live walk — and any heap
+mutation/repair is out of scope entirely; this view is strictly read-only triage evidence.
+
 `thread-snapshot` `view="wait-chains"` builds ranked, multi-hop **wait-chains** that span the
 three ways a .NET thread stalls, all from the already-captured snapshot (no re-collection):
 (1) **sync monitor lock** — a thread waiting on a contended SyncBlock → the thread that *owns* it
@@ -3134,6 +3151,7 @@ through [`query_snapshot`](#query_snapshot) without re-walking the heap.
 | `includeStaticFields` | `bool` | `false` | Rank loaded types' static reference fields by referenced size — surfaces "singleton grew forever" leaks |
 | `includeDelegateTargets` | `bool` | `false` | Group `MulticastDelegate` invocation lists by (target type, method) — surfaces "event handler never unsubscribed" leaks |
 | `includeDuplicateStrings` | `bool` | `false` | Hash every `System.String` and rank by aggregate retained bytes — surfaces missing interning |
+| `verifyHeap` | `bool` | `false` | Dump-only. Runs ClrMD's own `ClrHeap.VerifyHeap()` corruption walk (a second, more expensive full-heap pass distinct from the normal object walk) and populates the `heap-integrity` view. Forbidden for `source="live"`/`source="gcdump"` (issue #1119) |
 | `symbolPath` | `string?` | — | NT_SYMBOL_PATH-style search path. Remote symbol servers are **off by default** (issue #165) — `srv*http(s)://…` must be on `Diagnostics:SymbolServerAllowlist` |
 | `exportTrace` | `bool` | `false` | `source="gcdump"` only. Persist the raw `.nettrace` under the artifact root and return its relative path for `get_bytes(kind="trace")` |
 
@@ -3141,8 +3159,8 @@ through [`query_snapshot`](#query_snapshot) without re-walking the heap.
 (~10 min TTL). Drill further via [`query_snapshot`](#query_snapshot) with any of
 the heap views: `top-types`, `retention-paths`, `roots-by-kind`,
 `finalizer-queue`, `fragmentation`, `static-fields`, `delegate-targets`,
-`duplicate-strings`, `gchandles`, `timers`, `alc`, `com-wrappers`, `object`, `gcroot`, `objsize`,
-`async`, `diff`, `growth`.
+`duplicate-strings`, `gchandles`, `timers`, `alc`, `com-wrappers`, `heap-integrity`, `object`,
+`gcroot`, `objsize`, `async`, `diff`, `growth`.
 
 For `source="gcdump"`, only `top-types` is supported from the captured artifact.
 The collector aggregates observed `GCBulkNode`/`GCBulkType` records into type and
