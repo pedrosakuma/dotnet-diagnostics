@@ -36,6 +36,7 @@ internal static partial class CliCommands
                 principalAllowsSymbolsRemote: true,
                 options.DumpFile!, topTypes, options.IncludeRetentionPaths, retentionLimit,
                 options.IncludeStaticFields, options.IncludeDelegateTargets, options.IncludeDuplicateStrings,
+                options.IncludeRetainedExceptions,
                 NullIfEmpty(options.SymbolPath), deprecation: null, verifyHeap: options.VerifyHeap,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
 
@@ -63,6 +64,7 @@ internal static partial class CliCommands
             principalAllowsSymbolsRemote: true,
             options.Pid, topTypes, options.IncludeRetentionPaths, retentionLimit,
             options.IncludeStaticFields, options.IncludeDelegateTargets, options.IncludeDuplicateStrings,
+            options.IncludeRetainedExceptions,
             NullIfEmpty(options.SymbolPath), deprecation: null, cancellationToken).ConfigureAwait(false);
 
         return BuildResult<LiveHeapInspection>(liveResult, static (sb, data) => RenderTopTypes(sb, data.TopTypesByBytes));

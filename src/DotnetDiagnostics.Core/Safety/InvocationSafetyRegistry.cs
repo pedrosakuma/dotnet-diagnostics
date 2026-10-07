@@ -151,7 +151,7 @@ public static class InvocationSafetyRegistry
             "source",
             null,
             DiagnosticOperationCatalog.HeapSources.All,
-            ["includeRetentionPaths", "includeStaticFields", "includeDelegateTargets", "includeDuplicateStrings", "verifyHeap", "exportTrace", "symbolPath", "persist"],
+            ["includeRetentionPaths", "includeStaticFields", "includeDelegateTargets", "includeDuplicateStrings", "verifyHeap", "includeRetainedExceptions", "exportTrace", "symbolPath", "persist"],
             DiagnosticOperationCatalog.HeapSources.All.Select(InspectHeapProfile)
                 .Concat(
                 [
@@ -171,6 +171,8 @@ public static class InvocationSafetyRegistry
                         "Duplicate-string analysis hashes target strings; later drilldown can request raw values.")),
                     ModifierProfile("verify-heap", ("verifyHeap", "true"), HeapMetadataModifier(
                         "ClrHeap.VerifyHeap() walks the entire heap a second time and is slower than the base walk; it exposes the same heap type/object-graph metadata as other optional passes.")),
+                    ModifierProfile("retained-exceptions", ("includeRetainedExceptions", "true"), HeapMetadataModifier(
+                        "Retained-exception aggregation exposes target exception type names and a bounded sample of exception messages, which may contain confidential data.")),
                     ModifierProfile("export-trace", ("exportTrace", "true"), Descriptor(
                         InvocationRiskLevel.High,
                         InvocationApprovalPolicy.Acknowledge,

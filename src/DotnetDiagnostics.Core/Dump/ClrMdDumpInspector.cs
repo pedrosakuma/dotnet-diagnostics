@@ -162,6 +162,7 @@ public sealed class ClrMdDumpInspector : IDumpInspector
             StaticFields = summary.StaticFields,
             DelegateTargets = summary.DelegateTargets,
             DuplicateStrings = summary.DuplicateStrings,
+            RetainedExceptionsByType = summary.RetainedExceptions,
             GcHandles = summary.GcHandles,
             AsyncOperations = summary.AsyncOperations,
             Timers = summary.Timers,
@@ -242,6 +243,7 @@ public sealed class ClrMdDumpInspector : IDumpInspector
             StaticFields = summary.StaticFields,
             DelegateTargets = summary.DelegateTargets,
             DuplicateStrings = summary.DuplicateStrings,
+            RetainedExceptionsByType = summary.RetainedExceptions,
             GcHandles = summary.GcHandles,
             AsyncOperations = summary.AsyncOperations,
             Timers = summary.Timers,
@@ -331,6 +333,7 @@ public sealed class ClrMdDumpInspector : IDumpInspector
 
         var delegates = walk.DelegateTargets;
         var duplicates = walk.DuplicateStrings;
+        var retainedExceptions = walk.RetainedExceptions;
 
         var gcHandles = WalkGcHandles(runtime, ct);
         var asyncOperations = ClrMdAsyncStateMachineWalker.WalkPendingAsyncOperations(runtime, warnings, ct);
@@ -338,7 +341,7 @@ public sealed class ClrMdDumpInspector : IDumpInspector
         var assemblyLoadContexts = ClrMdAssemblyLoadContextAnalyzer.BuildView(runtime, walk.AssemblyLoadContexts, warnings, ct);
         var comWrappers = WalkComWrapperCleanupBacklog(runtime, walk.ComWrappers, warnings, ct);
 
-        return new RuntimeSummary(byBytes, byInstances, heapSummary, retention, roots, finalizable, walk.Segments, statics, delegates, duplicates, gcHandles, asyncOperations, timers, assemblyLoadContexts, comWrappers);
+        return new RuntimeSummary(byBytes, byInstances, heapSummary, retention, roots, finalizable, walk.Segments, statics, delegates, duplicates, retainedExceptions, gcHandles, asyncOperations, timers, assemblyLoadContexts, comWrappers);
     }
 
     private readonly record struct RuntimeSummary(
@@ -352,6 +355,7 @@ public sealed class ClrMdDumpInspector : IDumpInspector
         IReadOnlyList<StaticFieldStat>? StaticFields,
         IReadOnlyList<DelegateTargetStat>? DelegateTargets,
         IReadOnlyList<DuplicateStringStat>? DuplicateStrings,
+        IReadOnlyList<RetainedExceptionTypeStat>? RetainedExceptions,
         GcHandlesView GcHandles,
         IReadOnlyList<AsyncOperationStat> AsyncOperations,
         TaskTimerLeakView Timers,

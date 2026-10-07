@@ -334,7 +334,7 @@ public sealed class CliOptionsTests
             {
                 "inspect-heap", "--source", "dump", "--dump-file", "./app.dmp", "--top-types", "30",
                 "--include-retention-paths", "--retention-path-limit", "12", "--include-static-fields",
-                "--include-delegate-targets", "--include-duplicate-strings", "--symbol-path", @"C:\syms",
+                "--include-delegate-targets", "--include-duplicate-strings", "--include-retained-exceptions", "--symbol-path", @"C:\syms",
             },
             out var error);
 
@@ -348,6 +348,7 @@ public sealed class CliOptionsTests
         options.IncludeStaticFields.Should().BeTrue();
         options.IncludeDelegateTargets.Should().BeTrue();
         options.IncludeDuplicateStrings.Should().BeTrue();
+        options.IncludeRetainedExceptions.Should().BeTrue();
         options.SymbolPath.Should().Be(@"C:\syms");
     }
 
@@ -391,6 +392,7 @@ public sealed class CliOptionsTests
         options.IncludeStaticFields.Should().BeFalse();
         options.IncludeDelegateTargets.Should().BeFalse();
         options.IncludeDuplicateStrings.Should().BeFalse();
+        options.IncludeRetainedExceptions.Should().BeFalse();
         options.SymbolPath.Should().BeNull();
         options.DumpType.Should().BeNull();
         options.OutDir.Should().BeNull();

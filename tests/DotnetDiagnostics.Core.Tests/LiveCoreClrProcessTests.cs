@@ -1724,6 +1724,49 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
     }
 
     [Fact(Timeout = 60_000)]
+    public async Task DumpInspector_QueryRetainedExceptionsView_FindsCachedExceptions_FromBadCodeSample()
+    {
+        const int leakedExceptionCount = 10;
+        await using var badSample = await StartPublishedSampleAsync("BadCodeSample");
+        using var http = new HttpClient { BaseAddress = new Uri(badSample.BaseUrl) };
+        using var response = await http.GetAsync($"/exception-cache-leak?count={leakedExceptionCount}", CancellationToken.None);
+        response.EnsureSuccessStatusCode();
+        using (var payload = JsonDocument.Parse(await response.Content.ReadAsStringAsync(CancellationToken.None)))
+        {
+            payload.RootElement.GetProperty("totalLeaked").GetInt32().Should().BeGreaterThanOrEqualTo(leakedExceptionCount);
+        }
+
+        HeapSnapshotArtifact snapshot;
+        try
+        {
+            snapshot = await new ClrMdDumpInspector().InspectLiveAsync(
+                badSample.ProcessId,
+                new DumpInspectionOptions(TopTypes: 25, IncludeRetainedExceptions: true),
+                CancellationToken.None);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            throw SkipException.ForReason($"ptrace/ClrMD attach unavailable in this environment: {ex.Message}");
+        }
+
+        var projection = HeapSnapshotQueryDispatcher.Dispatch(snapshot, "retained-exceptions-test", "retained-exceptions", topN: 20, rankBy: "bytes", typeFullName: null);
+
+        projection.Result.Should().NotBeNull();
+        projection.Result!.IsError.Should().BeFalse();
+        projection.Result.Data.Should().NotBeNull();
+        projection.Result.Data!.RetainedExceptions.Should().NotBeNull();
+
+        var invalidOperationBucket = projection.Result.Data.RetainedExceptions!
+            .FirstOrDefault(stat => stat.TypeFullName.Contains(nameof(InvalidOperationException), StringComparison.Ordinal));
+
+        invalidOperationBucket.Should().NotBeNull();
+        invalidOperationBucket!.InstanceCount.Should().BeGreaterThanOrEqualTo(leakedExceptionCount);
+        invalidOperationBucket.Samples.Should().NotBeNullOrEmpty();
+        invalidOperationBucket.Samples!.Should().OnlyContain(sample => sample.Message != null && sample.Message.Contains("BadCodeSample retained exception", StringComparison.Ordinal));
+        projection.Result.Summary.Should().Contain("retained exception");
+    }
+
+    [Fact(Timeout = 60_000)]
     public async Task ThreadSnapshot_InspectLive_EnumeratesManagedThreads()
     {
         EnsureSampleRunning();

@@ -82,6 +82,8 @@ public interface IDumpInspector
 /// <param name="IncludeDuplicateStrings">When true, hash every System.String during the heap walk and rank by aggregate retained bytes (count × char-bytes). Cheap (folded into the existing single heap pass) but allocates one hash per unique string.</param>
 /// <param name="SnapshotDuplicateStringTopN">Number of duplicate-string entries retained for the duplicate-strings drilldown view. Defaults to 100.</param>
 /// <param name="DuplicateStringPreviewLength">Maximum characters of each string preview returned by the duplicate-strings view. Defaults to 80.</param>
+/// <param name="IncludeRetainedExceptions">When true, detect every live Exception-derived object during the heap walk (via <c>ClrObject.IsException</c>/<c>AsException()</c>) and group by type — surfaces exceptions retained in a cache/static field/event-args long after they stopped propagating. Cheap (folded into the existing single heap pass).</param>
+/// <param name="SnapshotRetainedExceptionTopN">Number of exception-type entries retained for the retained-exceptions drilldown view. Defaults to 100.</param>
 /// <param name="SymbolPath">Optional NT_SYMBOL_PATH-style search path. Precedence: symbolPath > MCP_SYMBOL_PATH > _NT_SYMBOL_PATH > target MainModule directory.</param>
 /// <param name="VerifyHeap">When true, runs ClrMD's own <c>ClrHeap.VerifyHeap()</c> corruption-triage
 /// pass — a distinct, more expensive internal walk than the ordinary type/instance walk above
@@ -103,7 +105,9 @@ public sealed record DumpInspectionOptions(
     int SnapshotDuplicateStringTopN = 100,
     int DuplicateStringPreviewLength = 80,
     string? SymbolPath = null,
-    bool VerifyHeap = false);
+    bool VerifyHeap = false,
+    bool IncludeRetainedExceptions = false,
+    int SnapshotRetainedExceptionTopN = 100);
 
 /// <summary>Where a <see cref="HeapSnapshotArtifact"/> came from.</summary>
 public enum HeapSnapshotOrigin
@@ -160,6 +164,10 @@ public sealed record HeapSnapshotArtifact(
     public IReadOnlyList<DelegateTargetStat>? DelegateTargets { get; init; }
     /// <summary>Top duplicate strings by aggregate retained bytes. Gated by <see cref="DumpInspectionOptions.IncludeDuplicateStrings"/>.</summary>
     public IReadOnlyList<DuplicateStringStat>? DuplicateStrings { get; init; }
+    /// <summary>Live Exception-derived objects grouped by type — surfaces exceptions retained in a
+    /// cache/static field/event-args long after they stopped propagating. Gated by
+    /// <see cref="DumpInspectionOptions.IncludeRetainedExceptions"/>.</summary>
+    public IReadOnlyList<RetainedExceptionTypeStat>? RetainedExceptionsByType { get; init; }
     /// <summary>Aggregated GCHandle table grouped by public GCHandleType-compatible buckets.</summary>
     public GcHandlesView? GcHandles { get; init; }
     /// <summary>Pending async state machines reconstructed from the heap (SOS DumpAsync-style view).</summary>
@@ -272,6 +280,30 @@ public sealed record DuplicateStringStat(
     long InstanceCount,
     long TotalBytes,
     bool PreviewTruncated);
+
+/// <summary>Type-aggregated entry from the retained-exceptions drilldown. One row per concrete
+/// exception type still reachable from the heap (not necessarily in-flight) — a growing
+/// <see cref="InstanceCount"/> across repeated snapshots is the classic "exception cache/leak"
+/// smell (e.g. an exception stashed in a <c>ConcurrentDictionary</c>, a static "last error" field,
+/// or long-lived event args).</summary>
+public sealed record RetainedExceptionTypeStat(
+    string TypeFullName,
+    string? ModuleName,
+    long InstanceCount,
+    long TotalBytes)
+{
+    /// <summary>A small bounded sample (see <see cref="ClrMdHeapWalker"/>) of individual instances of
+    /// this type, each carrying a truncated <c>Message</c> and <c>HResult</c> — enough to distinguish
+    /// "the same cached timeout" from "a thousand distinct validation failures" without dumping every
+    /// instance on the heap.</summary>
+    public IReadOnlyList<RetainedExceptionSample>? Samples { get; init; }
+}
+
+/// <summary>One sampled exception instance within a <see cref="RetainedExceptionTypeStat"/> bucket.</summary>
+public sealed record RetainedExceptionSample(
+    string? Message,
+    bool MessageTruncated,
+    int HResult);
 
 /// <summary>One pending async state machine surfaced by <c>query_snapshot(view="async")</c>.</summary>
 public sealed record AsyncOperationStat(

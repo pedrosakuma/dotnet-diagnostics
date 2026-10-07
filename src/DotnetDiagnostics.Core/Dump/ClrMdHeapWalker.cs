@@ -18,6 +18,7 @@ internal static class ClrMdHeapWalker
         var segmentStats = new List<SegmentStat>(runtime.Heap.Segments.Length);
         Dictionary<DelegateKey, RawDelegateStat>? delegates = opts.IncludeDelegateTargets ? new() : null;
         Dictionary<string, RawStringStat>? strings = opts.IncludeDuplicateStrings ? new(StringComparer.Ordinal) : null;
+        Dictionary<string, RawExceptionStat>? exceptions = opts.IncludeRetainedExceptions ? new(StringComparer.Ordinal) : null;
         var taskTimers = new ClrMdTaskTimerAnalyzer.RawTaskTimerAggregation();
         var assemblyLoadContexts = new ClrMdAssemblyLoadContextAnalyzer.RawAssemblyLoadContextAggregation();
         // Unconditional (no opts gate): ClrObject.HasComCallableWrapper/HasRuntimeCallableWrapper
@@ -33,10 +34,12 @@ internal static class ClrMdHeapWalker
         var delegateCap = opts.IncludeDelegateTargets ? Math.Max(opts.SnapshotDelegateTargetTopN * 32, 4096) : 0;
         var stringCap = opts.IncludeDuplicateStrings ? Math.Max(opts.SnapshotDuplicateStringTopN * 32, 4096) : 0;
         var stringObjectScanCap = opts.IncludeDuplicateStrings ? Math.Max(stringCap * 64L, 1_000_000L) : 0L;
+        var exceptionCap = opts.IncludeRetainedExceptions ? Math.Max(opts.SnapshotRetainedExceptionTopN * 32, 4096) : 0;
         long stringObjectsScanned = 0;
         var delegateCapHit = false;
         var stringCapHit = false;
         var stringObjectCapHit = false;
+        var exceptionCapHit = false;
 
         foreach (var segment in runtime.Heap.Segments)
         {
@@ -103,6 +106,15 @@ internal static class ClrMdHeapWalker
                 {
                     comWrapperDetectionDisabled = !AggregateComWrapper(obj, buildTypeIdentity, comWrappers);
                 }
+
+                if (exceptions is not null && obj.IsException && !exceptionCapHit)
+                {
+                    AggregateException(obj, size, exceptions);
+                    if (exceptions.Count > exceptionCap)
+                    {
+                        exceptionCapHit = true;
+                    }
+                }
             }
 
             var length = (long)segment.Length;
@@ -143,6 +155,11 @@ internal static class ClrMdHeapWalker
             warnings.Add($"Duplicate-string aggregation hit object-scan cap of {stringObjectScanCap:N0} string instances — results reflect only the strings encountered before the cap.");
         }
 
+        if (exceptionCapHit)
+        {
+            warnings.Add($"Retained-exception aggregation hit cap of {exceptionCap} unique types — results are truncated to the types seen so far.");
+        }
+
         var snapshotTopN = Math.Max(opts.TopTypes, opts.SnapshotTopTypes);
         var copyStats = stats.Values
             .Select(stat => ToTypeStat(stat, totalBytes, buildTypeIdentity))
@@ -155,6 +172,7 @@ internal static class ClrMdHeapWalker
             segmentStats,
             delegates is null ? null : BuildDelegateStats(delegates, opts.SnapshotDelegateTargetTopN, tryReadMvid),
             strings is null ? null : BuildDuplicateStringStats(strings, opts.SnapshotDuplicateStringTopN, opts.DuplicateStringPreviewLength),
+            exceptions is null ? null : BuildRetainedExceptionStats(exceptions, opts.SnapshotRetainedExceptionTopN),
             taskTimers,
             assemblyLoadContexts,
             comWrappers);
@@ -451,12 +469,69 @@ internal static class ClrMdHeapWalker
         return ok;
     }
 
+    /// <summary>Maximum number of per-instance samples (Message + HResult) retained per exception type.</summary>
+    private const int MaxRetainedExceptionSamplesPerType = 5;
+    /// <summary>Maximum characters of an exception <c>Message</c> retained in a sample preview.</summary>
+    private const int RetainedExceptionMessagePreviewLength = 256;
+
+    private static void AggregateException(ClrObject obj, long objSize, Dictionary<string, RawExceptionStat> sink)
+    {
+        try
+        {
+            var clrException = obj.AsException();
+            if (clrException is null) return;
+
+            var typeName = obj.Type?.Name ?? "<unknown>";
+            if (!sink.TryGetValue(typeName, out var entry))
+            {
+                entry = new RawExceptionStat(typeName, obj.Type?.Module?.Name);
+                sink[typeName] = entry;
+            }
+
+            entry.Count++;
+            entry.TotalBytes += objSize;
+
+            if (entry.Samples.Count < MaxRetainedExceptionSamplesPerType)
+            {
+                var message = clrException.Message;
+                var truncated = message is not null && message.Length > RetainedExceptionMessagePreviewLength;
+                var preview = truncated ? message![..RetainedExceptionMessagePreviewLength] : message;
+                entry.Samples.Add(new RetainedExceptionSample(preview, truncated, clrException.HResult));
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private static RetainedExceptionTypeStat[] BuildRetainedExceptionStats(
+        Dictionary<string, RawExceptionStat> agg,
+        int topN)
+        => agg.Values
+            .OrderByDescending(e => e.TotalBytes)
+            .ThenByDescending(e => e.Count)
+            .Take(topN)
+            .Select(e =>
+            {
+                var moduleFile = e.ModuleName is { } mp ? Path.GetFileName(mp) : null;
+                return new RetainedExceptionTypeStat(
+                    TypeFullName: e.TypeName,
+                    ModuleName: moduleFile,
+                    InstanceCount: e.Count,
+                    TotalBytes: e.TotalBytes)
+                {
+                    Samples = e.Samples.ToArray(),
+                };
+            })
+            .ToArray();
+
     internal readonly record struct HeapWalkResult(
         IReadOnlyList<TypeStat> ByBytes,
         IReadOnlyList<TypeStat> ByInstances,
         IReadOnlyList<SegmentStat> Segments,
         IReadOnlyList<DelegateTargetStat>? DelegateTargets,
         IReadOnlyList<DuplicateStringStat>? DuplicateStrings,
+        IReadOnlyList<RetainedExceptionTypeStat>? RetainedExceptions,
         ClrMdTaskTimerAnalyzer.RawTaskTimerAggregation TaskTimers,
         ClrMdAssemblyLoadContextAnalyzer.RawAssemblyLoadContextAggregation AssemblyLoadContexts,
         ComWrapperAggregation.Builder ComWrappers);
@@ -520,5 +595,20 @@ internal static class ClrMdHeapWalker
         public int Length { get; }
         public long Count;
         public long TotalBytes;
+    }
+
+    private sealed class RawExceptionStat
+    {
+        public RawExceptionStat(string typeName, string? moduleName)
+        {
+            TypeName = typeName;
+            ModuleName = moduleName;
+        }
+
+        public string TypeName { get; }
+        public string? ModuleName { get; }
+        public long Count;
+        public long TotalBytes;
+        public List<RetainedExceptionSample> Samples { get; } = [];
     }
 }
