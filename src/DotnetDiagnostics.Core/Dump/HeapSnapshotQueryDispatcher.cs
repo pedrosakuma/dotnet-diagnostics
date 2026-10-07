@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using DotnetDiagnostics.Core;
 
 namespace DotnetDiagnostics.Core.Dump;
@@ -31,7 +32,7 @@ public static class HeapSnapshotQueryDispatcher
     private static readonly string[] Projection =
     {
         "top-types", "retention-paths", "roots-by-kind", "finalizer-queue", "fragmentation",
-        "static-fields", "delegate-targets", "gchandles", "async", "timers", "alc",
+        "static-fields", "delegate-targets", "gchandles", "async", "timers", "alc", "com-wrappers",
     };
 
     private static readonly HashSet<string> ProjectionSet = new(Projection, StringComparer.Ordinal);
@@ -101,7 +102,8 @@ public static class HeapSnapshotQueryDispatcher
             "gchandles" => QueryGcHandles(snapshot, handle),
             "async" => QueryAsync(snapshot, handle, topN),
             "timers" => QueryTimers(snapshot, handle, topN),
-            _ => QueryAssemblyLoadContexts(snapshot, handle, topN),
+            "alc" => QueryAssemblyLoadContexts(snapshot, handle, topN),
+            _ => QueryComWrappers(snapshot, handle, topN),
         };
 
         return new HeapDispatchOutcome(result, false, false);
@@ -537,6 +539,36 @@ public static class HeapSnapshotQueryDispatcher
 
         var name = string.IsNullOrWhiteSpace(stat.Name) ? "<unnamed>" : stat.Name;
         return $"`{name}` @ 0x{stat.Address:x} ({stat.AssemblyCount:N0} assembl{(stat.AssemblyCount == 1 ? "y" : "ies")})";
+    }
+
+    private static DiagnosticResult<HeapSnapshotQueryResult> QueryComWrappers(
+        HeapSnapshotArtifact snapshot, string handle, int topN)
+    {
+        var origin = snapshot.Origin.ToString();
+        var comWrappers = snapshot.ComWrappers ?? new ComWrappersView(0, 0, [], 0, 0, 0, 0, [], 0, [], 0, []);
+        var sliced = comWrappers with
+        {
+            TopCcwTypes = comWrappers.TopCcwTypes.Take(topN).ToImmutableArray(),
+            TopRcwTypes = comWrappers.TopRcwTypes.Take(topN).ToImmutableArray(),
+            RcwCleanupBacklogSample = comWrappers.RcwCleanupBacklogSample.Take(topN).ToImmutableArray(),
+        };
+
+        var summary = sliced.CcwCount == 0 && sliced.RcwCount == 0 && sliced.RcwCleanupBacklogCount == 0 && sliced.SyncBlockCleanupBacklogCount == 0
+            ? $"Snapshot '{handle}' has no live COM callable wrappers (CCWs), runtime callable wrappers (RCWs), or pending COM cleanup-queue entries."
+            : $"Returning COM RCW/CCW leak candidates from snapshot '{handle}' ({origin}, pid {snapshot.ProcessId}) — ccw={sliced.CcwCount:N0}, rcw={sliced.RcwCount:N0}, rcwDisconnected={sliced.RcwDisconnectedCount:N0}, rcwCleanupBacklog={sliced.RcwCleanupBacklogCount:N0}, syncBlockCleanupBacklog={sliced.SyncBlockCleanupBacklogCount:N0}.";
+
+        if (sliced.Notes.Length > 0)
+        {
+            summary += $" Notes: {sliced.Notes[0]}";
+        }
+
+        var result = new HeapSnapshotQueryResult(handle, "com-wrappers", origin, snapshot.ProcessId, snapshot.CapturedAt)
+        {
+            ComWrappers = sliced,
+            Quality = GcDumpEvidence.GetApplicableQuality(snapshot),
+        };
+
+        return DiagnosticResult.Ok(result, summary);
     }
 
     private static DiagnosticResult<T> InvalidArg<T>(string parameterName, string requirement)

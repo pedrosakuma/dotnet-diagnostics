@@ -60,4 +60,6 @@ public sealed record HeapSnapshotQueryResult(
     public TaskTimerLeakView? Timers { get; init; }
     /// <summary>Populated when <see cref="View"/> is <c>"alc"</c>.</summary>
     public AssemblyLoadContextLeakView? AssemblyLoadContexts { get; init; }
+    /// <summary>Populated when <see cref="View"/> is <c>"com-wrappers"</c>.</summary>
+    public ComWrappersView? ComWrappers { get; init; }
 }

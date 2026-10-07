@@ -20,6 +20,16 @@ internal static class ClrMdHeapWalker
         Dictionary<string, RawStringStat>? strings = opts.IncludeDuplicateStrings ? new(StringComparer.Ordinal) : null;
         var taskTimers = new ClrMdTaskTimerAnalyzer.RawTaskTimerAggregation();
         var assemblyLoadContexts = new ClrMdAssemblyLoadContextAnalyzer.RawAssemblyLoadContextAggregation();
+        // Unconditional (no opts gate): ClrObject.HasComCallableWrapper/HasRuntimeCallableWrapper
+        // resolve via ClrHeap.GetSyncBlocks(), which lazily builds a cached SyncBlockContainer once
+        // per runtime and then does an O(1) dictionary lookup per object — the same cost class as
+        // the already-unconditional obj.IsFree/obj.IsDelegate checks in this loop (issue #1118).
+        var comWrappers = new ComWrapperAggregation.Builder();
+        // GetSyncBlocks() only caches its result on success — if SyncBlockContainer construction
+        // itself throws (e.g. a corrupted dump), every subsequent object would otherwise retry the
+        // same expensive, failing enumeration. Trip this once on the first infrastructure-level
+        // failure so the remaining walk doesn't pay for repeated failed retries.
+        var comWrapperDetectionDisabled = false;
         var delegateCap = opts.IncludeDelegateTargets ? Math.Max(opts.SnapshotDelegateTargetTopN * 32, 4096) : 0;
         var stringCap = opts.IncludeDuplicateStrings ? Math.Max(opts.SnapshotDuplicateStringTopN * 32, 4096) : 0;
         var stringObjectScanCap = opts.IncludeDuplicateStrings ? Math.Max(stringCap * 64L, 1_000_000L) : 0L;
@@ -89,6 +99,10 @@ internal static class ClrMdHeapWalker
 
                 ClrMdTaskTimerAnalyzer.Aggregate(obj, size, taskTimers);
                 ClrMdAssemblyLoadContextAnalyzer.Aggregate(obj, size, assemblyLoadContexts);
+                if (!comWrapperDetectionDisabled)
+                {
+                    comWrapperDetectionDisabled = !AggregateComWrapper(obj, buildTypeIdentity, comWrappers);
+                }
             }
 
             var length = (long)segment.Length;
@@ -142,7 +156,8 @@ internal static class ClrMdHeapWalker
             delegates is null ? null : BuildDelegateStats(delegates, opts.SnapshotDelegateTargetTopN, tryReadMvid),
             strings is null ? null : BuildDuplicateStringStats(strings, opts.SnapshotDuplicateStringTopN, opts.DuplicateStringPreviewLength),
             taskTimers,
-            assemblyLoadContexts);
+            assemblyLoadContexts,
+            comWrappers);
     }
 
     private static string ClassifySegmentGeneration(ClrSegment segment) => segment.Kind switch
@@ -372,6 +387,70 @@ internal static class ClrMdHeapWalker
             })
             .ToArray();
 
+    /// <summary>
+    /// Per-object CCW/RCW detection folded into the single heap-walk pass (issue #1118).
+    /// <c>HasComCallableWrapper</c>/<c>HasRuntimeCallableWrapper</c> are backed by a cached,
+    /// lazily-built sync-block lookup (see remarks on <see cref="ComWrapperAggregation"/>) that is
+    /// only cached on success — so CCW and RCW detection are tried independently (one failing
+    /// doesn't skip the other), and the caller stops calling this method entirely after the first
+    /// failure (see <see cref="ComWrapperAggregation.Builder.MarkDetectionUnavailable"/>) rather than
+    /// re-paying for a failing lookup on every remaining object.
+    /// </summary>
+    /// <returns><c>false</c> when COM-wrapper detection itself failed and should not be retried for
+    /// subsequent objects in this walk; <c>true</c> otherwise (including ordinary non-CCW/RCW objects).</returns>
+    private static bool AggregateComWrapper(
+        ClrObject obj,
+        Func<ClrType?, TypeIdentity?> buildTypeIdentity,
+        ComWrapperAggregation.Builder sink)
+    {
+        var ok = true;
+
+        try
+        {
+            if (obj.HasComCallableWrapper)
+            {
+                var ccw = obj.GetComCallableWrapper();
+                if (ccw is not null)
+                {
+                    sink.AddCcw(new ComWrapperAggregation.CcwSample(
+                        obj.Type?.Name,
+                        ccw.RefCount,
+                        ccw.Interfaces.Length,
+                        buildTypeIdentity(obj.Type)));
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            sink.MarkDetectionUnavailable($"CCW detection aborted: {ex.GetType().Name} ({ex.Message}).");
+            ok = false;
+        }
+
+        try
+        {
+            if (obj.HasRuntimeCallableWrapper)
+            {
+                var rcw = obj.GetRuntimeCallableWrapper();
+                if (rcw is not null)
+                {
+                    sink.AddRcw(new ComWrapperAggregation.RcwSample(
+                        obj.Type?.Name,
+                        rcw.RefCount,
+                        rcw.IsDisconnected,
+                        rcw.WinRTObject != 0,
+                        buildTypeIdentity(obj.Type)));
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            sink.MarkDetectionUnavailable($"RCW detection aborted: {ex.GetType().Name} ({ex.Message}).");
+            ok = false;
+        }
+
+        return ok;
+    }
+
     internal readonly record struct HeapWalkResult(
         IReadOnlyList<TypeStat> ByBytes,
         IReadOnlyList<TypeStat> ByInstances,
@@ -379,7 +458,8 @@ internal static class ClrMdHeapWalker
         IReadOnlyList<DelegateTargetStat>? DelegateTargets,
         IReadOnlyList<DuplicateStringStat>? DuplicateStrings,
         ClrMdTaskTimerAnalyzer.RawTaskTimerAggregation TaskTimers,
-        ClrMdAssemblyLoadContextAnalyzer.RawAssemblyLoadContextAggregation AssemblyLoadContexts);
+        ClrMdAssemblyLoadContextAnalyzer.RawAssemblyLoadContextAggregation AssemblyLoadContexts,
+        ComWrapperAggregation.Builder ComWrappers);
 
     private readonly record struct TypeKey(string TypeName, string? ModuleName, ulong ModuleImageBase);
 

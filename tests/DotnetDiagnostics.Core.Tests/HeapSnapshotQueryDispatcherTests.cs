@@ -27,6 +27,7 @@ public class HeapSnapshotQueryDispatcherTests
     [InlineData("async")]
     [InlineData("timers")]
     [InlineData("alc")]
+    [InlineData("com-wrappers")]
     public void ProjectionViews_RenderResult(string view)
     {
         var outcome = HeapSnapshotQueryDispatcher.Dispatch(Snapshot(), Handle, view, topN: 10, rankBy: "bytes", typeFullName: null);
@@ -164,9 +165,10 @@ public class HeapSnapshotQueryDispatcherTests
     }
 
     [Fact]
-    public void ProjectionViews_ExposesElevenViews_WithoutServerOnly()
+    public void ProjectionViews_ExposesTwelveViews_WithoutServerOnly()
     {
-        HeapSnapshotQueryDispatcher.ProjectionViews.Should().HaveCount(11);
+        HeapSnapshotQueryDispatcher.ProjectionViews.Should().HaveCount(12);
+        HeapSnapshotQueryDispatcher.ProjectionViews.Should().Contain("com-wrappers");
         HeapSnapshotQueryDispatcher.ProjectionViews.Should().NotContain("object");
         HeapSnapshotQueryDispatcher.ProjectionViews.Should().NotContain("duplicate-strings");
     }
