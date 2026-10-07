@@ -596,9 +596,11 @@ public static class HeapSnapshotQueryDispatcher
         }
 
         var view = snapshot.HeapIntegrity;
-        var summary = view.TotalCorruptions == 0
-            ? $"Snapshot '{handle}' passed ClrHeap.VerifyHeap() with zero corrupted objects detected ({origin}, pid {snapshot.ProcessId})."
-            : $"Returning heap-integrity verification from snapshot '{handle}' ({origin}, pid {snapshot.ProcessId}) — ClrHeap.VerifyHeap() found {view.TotalCorruptions:N0} corrupted object(s). First: `{view.Corruptions[0].Kind}` at 0x{view.Corruptions[0].ObjectAddress:x}{(view.Corruptions[0].TypeFullName is null ? string.Empty : $" (`{view.Corruptions[0].TypeFullName}`)")}.";
+        var summary = !view.Completed
+            ? $"Heap-integrity verification from snapshot '{handle}' ({origin}, pid {snapshot.ProcessId}) did NOT complete — ClrHeap.VerifyHeap() failed partway through. {view.TotalCorruptions:N0} corrupted object(s) observed before the failure (a lower bound, not an exact count)."
+            : view.TotalCorruptions == 0
+                ? $"Snapshot '{handle}' passed ClrHeap.VerifyHeap() with zero corrupted objects detected ({origin}, pid {snapshot.ProcessId})."
+                : $"Returning heap-integrity verification from snapshot '{handle}' ({origin}, pid {snapshot.ProcessId}) — ClrHeap.VerifyHeap() found {view.TotalCorruptions:N0} corrupted object(s). First: `{view.Corruptions[0].Kind}` at 0x{view.Corruptions[0].ObjectAddress:x}{(view.Corruptions[0].TypeFullName is null ? string.Empty : $" (`{view.Corruptions[0].TypeFullName}`)")}.";
 
         if (view.Notes.Count > 0)
         {

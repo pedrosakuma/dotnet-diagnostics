@@ -251,6 +251,27 @@ public class HeapSnapshotQueryDispatcherTests
     }
 
     [Fact]
+    public void HeapIntegrity_IncompletePass_NeverRendersAsHealthy_EvenWithZeroObservedCorruptions()
+    {
+        // Regression (code review, #1119): a VerifyHeap() enumeration that fails before finding
+        // any corruption must not be indistinguishable from an actually-clean heap.
+        var view = HeapIntegrityAggregation.Build(
+            Array.Empty<HeapCorruptionStat>(),
+            totalObserved: 0,
+            failureMessage: "ClrHeap.VerifyHeap() failed partway through (boom); verification did not complete.");
+        var snapshot = Snapshot() with { HeapIntegrity = view };
+
+        view.Completed.Should().BeFalse();
+
+        var outcome = HeapSnapshotQueryDispatcher.Dispatch(snapshot, Handle, "heap-integrity", topN: 10, rankBy: null, typeFullName: null);
+
+        outcome.Result!.Error.Should().BeNull();
+        outcome.Result.Summary.Should().NotContain("passed ClrHeap.VerifyHeap()");
+        outcome.Result.Summary.Should().Contain("did NOT complete");
+        outcome.Result.Data!.HeapIntegrity!.Notes.Should().ContainSingle(n => n.Contains("failed partway through"));
+    }
+
+    [Fact]
     public void HeapIntegrityAggregation_Build_UnderCap_ReportsNoNotes()
     {
         var captured = Enumerable.Range(0, 10)
@@ -281,6 +302,38 @@ public class HeapSnapshotQueryDispatcherTests
         view.Truncated.Should().BeTrue();
         view.Notes.Should().ContainSingle();
         view.Notes[0].Should().Contain($"MaxCapturedCorruptions={cap}").And.Contain("137");
+    }
+
+    [Fact]
+    public void HeapIntegrityAggregation_Build_WithFailureMessage_MarksIncompleteEvenWithZeroObserved()
+    {
+        var view = HeapIntegrityAggregation.Build(
+            Array.Empty<HeapCorruptionStat>(),
+            totalObserved: 0,
+            failureMessage: "ClrHeap.VerifyHeap() failed partway through (boom).");
+
+        view.Completed.Should().BeFalse();
+        view.TotalCorruptions.Should().Be(0);
+        view.Notes.Should().ContainSingle().Which.Should().Contain("failed partway through");
+    }
+
+    [Fact]
+    public void HeapIntegrityAggregation_Build_WithFailureMessageAndCapOverflow_ReportsBothNotes()
+    {
+        const int cap = HeapIntegrityAggregation.MaxCapturedCorruptions;
+        var captured = Enumerable.Range(0, cap)
+            .Select(i => new HeapCorruptionStat((ulong)i, "T", 0, "ObjectTooLarge", 0, 0))
+            .ToArray();
+
+        var view = HeapIntegrityAggregation.Build(
+            captured,
+            totalObserved: cap + 5,
+            failureMessage: "ClrHeap.VerifyHeap() failed partway through (boom).");
+
+        view.Completed.Should().BeFalse();
+        view.Notes.Should().HaveCount(2);
+        view.Notes[0].Should().Contain("MaxCapturedCorruptions");
+        view.Notes[1].Should().Contain("failed partway through");
     }
 
     private static HeapSnapshotArtifact Snapshot() => new(

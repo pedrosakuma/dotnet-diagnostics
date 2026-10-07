@@ -619,14 +619,19 @@ mirroring the `gchandles`/`includeDuplicateStrings` precedent of "absent unless 
 requested". Internally it runs ClrMD's own `ClrHeap.VerifyHeap()`, a **second, independent,
 more expensive full-heap walk** distinct from `ClrMdHeapWalker`'s normal per-object pass — it is
 never folded into the default walk, so enabling it noticeably slows down `inspect_heap`. Each
-reported `HeapCorruptionStat` carries the object address, best-effort type name, size,
-`ObjectCorruption` kind, offset, and a `ClrObject` flag. The corruption list is capped at
+reported `HeapCorruptionStat` carries the object address, best-effort type name, corruption
+offset, `ObjectCorruption` kind, and the object's sync-block indices (`syncBlockIndex`,
+`clrSyncBlockIndex`). The corruption list is capped at
 `HeapIntegrityAggregation.MaxCapturedCorruptions` (500) entries, enforced at collection time
 (never materializing an unbounded list); when ClrMD reports more corrupt objects than the cap,
 `totalCorruptions` still reflects the true count and `notes` names the cap constant plus the
-number of omitted entries. Live heap corruption verification is explicitly out of scope — it
-would add an unbounded second suspend window on top of the normal live walk — and any heap
-mutation/repair is out of scope entirely; this view is strictly read-only triage evidence.
+number of omitted entries. If `ClrHeap.VerifyHeap()` itself throws partway through, the view's
+`completed` flag is `false` and `totalCorruptions` becomes a lower bound rather than an exact
+count — a `false`/zero-corruption result in that case is never reported as a "clean"/"passed"
+heap; `notes` records the partial failure. Live heap corruption verification is explicitly out
+of scope — it would add an unbounded second suspend window on top of the normal live walk — and
+any heap mutation/repair is out of scope entirely; this view is strictly read-only triage
+evidence.
 
 `thread-snapshot` `view="wait-chains"` builds ranked, multi-hop **wait-chains** that span the
 three ways a .NET thread stalls, all from the already-captured snapshot (no re-collection):

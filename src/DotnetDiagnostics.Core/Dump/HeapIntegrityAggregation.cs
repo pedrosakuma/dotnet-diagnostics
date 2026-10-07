@@ -6,15 +6,23 @@ namespace DotnetDiagnostics.Core.Dump;
 /// walk. Dump-only; gated by <see cref="DumpInspectionOptions.VerifyHeap"/>.
 /// </summary>
 /// <param name="TotalCorruptions">Total corrupted objects ClrMD reported across the full pass —
-/// an exact count even when <see cref="Corruptions"/> is capped.</param>
+/// an exact count even when <see cref="Corruptions"/> is capped. When <see cref="Completed"/> is
+/// <c>false</c>, this is only a lower bound (the count observed before the enumeration failed).</param>
 /// <param name="Corruptions">Bounded list of corrupted objects, capped at
 /// <see cref="HeapIntegrityAggregation.MaxCapturedCorruptions"/>.</param>
-/// <param name="Notes">Non-empty only when the cap in <see cref="Corruptions"/> was hit, or the
-/// underlying <c>VerifyHeap()</c> enumeration failed partway through.</param>
+/// <param name="Notes">Non-empty when the cap in <see cref="Corruptions"/> was hit, or the
+/// underlying <c>VerifyHeap()</c> enumeration failed partway through (see <see cref="Completed"/>).</param>
+/// <param name="Completed">
+/// <c>false</c> when <c>ClrHeap.VerifyHeap()</c> threw before finishing its pass. A <c>false</c>
+/// value means <see cref="TotalCorruptions"/> is a lower bound, not an exact count — in
+/// particular, <c>TotalCorruptions == 0 &amp;&amp; !Completed</c> must never be reported as a
+/// "clean"/"passed" heap: verification did not actually finish.
+/// </param>
 public sealed record HeapIntegrityView(
     int TotalCorruptions,
     IReadOnlyList<HeapCorruptionStat> Corruptions,
-    IReadOnlyList<string> Notes)
+    IReadOnlyList<string> Notes,
+    bool Completed = true)
 {
     /// <summary>True when <see cref="TotalCorruptions"/> exceeds the number of entries retained in <see cref="Corruptions"/>.</summary>
     public bool Truncated => TotalCorruptions > Corruptions.Count;
@@ -48,22 +56,37 @@ public static class HeapIntegrityAggregation
     /// Builds the bounded view from the entries retained during collection (already capped at
     /// <see cref="MaxCapturedCorruptions"/>) plus the exact total observed during the full pass.
     /// </summary>
+    /// <param name="captured">Corruption entries retained so far (already capped at <paramref name="cap"/>).</param>
+    /// <param name="totalObserved">Exact count observed during the pass, or a lower bound when <paramref name="failureMessage"/> is set.</param>
+    /// <param name="cap">Maximum number of entries <paramref name="captured"/> may hold.</param>
+    /// <param name="failureMessage">
+    /// Non-null when <c>ClrHeap.VerifyHeap()</c> threw before completing its enumeration. When
+    /// set, the returned view has <see cref="HeapIntegrityView.Completed"/> = <c>false</c> and
+    /// always carries a note, even if no corruption was observed before the failure — a
+    /// zero-corruption count from an incomplete pass must never read as "healthy".
+    /// </param>
     public static HeapIntegrityView Build(
         IReadOnlyList<HeapCorruptionStat> captured,
         int totalObserved,
-        int cap = MaxCapturedCorruptions)
+        int cap = MaxCapturedCorruptions,
+        string? failureMessage = null)
     {
         ArgumentNullException.ThrowIfNull(captured);
         var omitted = Math.Max(0, totalObserved - captured.Count);
-        var notes = omitted > 0
-            ? new[]
-              {
-                  $"ClrHeap.VerifyHeap() found {totalObserved:N0} corrupted object(s); retained the first " +
-                  $"{captured.Count:N0} after reaching HeapIntegrityAggregation.MaxCapturedCorruptions={cap}. " +
-                  $"{omitted:N0} additional corruption entr{(omitted == 1 ? "y" : "ies")} were omitted.",
-              }
-            : Array.Empty<string>();
+        var notes = new List<string>();
+        if (omitted > 0)
+        {
+            notes.Add(
+                $"ClrHeap.VerifyHeap() found {totalObserved:N0} corrupted object(s); retained the first " +
+                $"{captured.Count:N0} after reaching HeapIntegrityAggregation.MaxCapturedCorruptions={cap}. " +
+                $"{omitted:N0} additional corruption entr{(omitted == 1 ? "y" : "ies")} were omitted.");
+        }
 
-        return new HeapIntegrityView(totalObserved, captured, notes);
+        if (failureMessage is not null)
+        {
+            notes.Add(failureMessage);
+        }
+
+        return new HeapIntegrityView(totalObserved, captured, notes, Completed: failureMessage is null);
     }
 }

@@ -79,9 +79,11 @@ public static class HeapInspectionUseCases
 
             if (verifyHeap && snapshot.HeapIntegrity is not null)
             {
-                summary += snapshot.HeapIntegrity.TotalCorruptions == 0
-                    ? " ClrHeap.VerifyHeap() found zero corrupted objects."
-                    : $" ClrHeap.VerifyHeap() found {snapshot.HeapIntegrity.TotalCorruptions:N0} corrupted object(s) — see query_snapshot(view='heap-integrity').";
+                summary += snapshot.HeapIntegrity.Completed
+                    ? (snapshot.HeapIntegrity.TotalCorruptions == 0
+                        ? " ClrHeap.VerifyHeap() found zero corrupted objects."
+                        : $" ClrHeap.VerifyHeap() found {snapshot.HeapIntegrity.TotalCorruptions:N0} corrupted object(s) — see query_snapshot(view='heap-integrity').")
+                    : $" ClrHeap.VerifyHeap() did not complete — see query_snapshot(view='heap-integrity') for the partial result.";
             }
 
             var hint = BuildHeapDrilldownHint(handle.Id, topByBytes);

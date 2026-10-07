@@ -263,6 +263,7 @@ public sealed class ClrMdDumpInspector : IDumpInspector
     {
         var captured = new List<HeapCorruptionStat>();
         var total = 0;
+        string? failureMessage = null;
         try
         {
             foreach (var corruption in runtime.Heap.VerifyHeap())
@@ -287,12 +288,15 @@ public sealed class ClrMdDumpInspector : IDumpInspector
         }
         catch (Exception ex)
         {
-            warnings.Add(
-                $"Heap-integrity verification (ClrHeap.VerifyHeap) failed partway through: {ex.Message}. " +
-                $"Returning the {captured.Count:N0} corruption(s) observed before the failure.");
+            // Never let a partial/failed pass read as "clean" — Build() marks the view
+            // Completed=false and always attaches this note, even when total == 0.
+            failureMessage =
+                $"ClrHeap.VerifyHeap() failed partway through ({ex.Message}); verification did not complete. " +
+                $"Returning the {total:N0} corruption(s) observed before the failure — this is a lower bound, not an exact count.";
+            warnings.Add(failureMessage);
         }
 
-        return HeapIntegrityAggregation.Build(captured, total);
+        return HeapIntegrityAggregation.Build(captured, total, failureMessage: failureMessage);
     }
 
     private RuntimeSummary SummarizeRuntime(
