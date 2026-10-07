@@ -102,6 +102,42 @@ Unsupported `kind` values, an inactive/invalid `processId`, or an out-of-range `
 produce an `error` frame (`unsupported_capture_kind`, `invalid_capture`, or `capture_safety_rejected`)
 instead.
 
+Heap (`kind:"heap"`) and thread-snapshot (`kind:"thread-snapshot"`) captures also echo a `handle`
+field in their `data` payload — the same `IDiagnosticHandleStore` id the `query_snapshot` MCP tool
+uses for follow-up drilldowns. Pass it to a `query` request (below) on the **same still-open
+connection** to read one of the views already computed at capture time, without re-attaching or
+re-walking anything.
+
+### Follow-up drilldown queries (`query`)
+
+Once a heap or thread-snapshot `capture` response has returned a `handle`, send a `query` request to
+read one of its pre-computed views — no new ClrMD work happens; this dispatches to the same Core
+view dispatchers (`HeapSnapshotQueryDispatcher`, `ThreadSnapshotQueryDispatcher`) the `query_snapshot`
+MCP tool uses, scoped to the handle already registered by the prior capture:
+
+```json
+{"type":"query","requestId":"q-1","handle":"<handle-id>","view":"roots-by-kind"}
+```
+
+```json
+{"type":"query","requestId":"q-1","handle":"<handle-id>","view":"roots-by-kind","result":{...}}
+```
+
+Heap handles support `roots-by-kind`, `finalizer-queue`, `fragmentation`, `gchandles`, `async`,
+`timers`, and `alc` unconditionally, plus `static-fields`, `delegate-targets`, and
+`retention-paths` — these three are opt-in at capture time via `includeStaticFields`,
+`includeDelegateTargets`, and `includeRetentionPaths` boolean fields on the heap `capture` request
+(all default `false`; querying one of these views without having opted in at capture time returns a
+`view_not_captured` error). Thread-snapshot handles support `deadlocks`, `unique-stacks`,
+`wait-chains`, and `threadpool`. An optional `topN` caps ranked results the same way it does for the
+`cpu` capture. Address-targeted drilldown views (`object`, `gcroot`, `objsize`,
+`duplicate-strings`, `resolve-address`, `frame-vars`) are intentionally not exposed through this
+request — they remain MCP-only `query_snapshot` views pending a future protocol extension.
+
+An unknown `handle`, a `view` not valid for that handle's kind, or a not-yet-captured opt-in view
+produce an `error` frame (`unknown_handle`, `unsupported_query_view`, or `view_not_captured`) instead
+of a `query` response.
+
 Core also supports composed sessions with typed finite results and incremental callbacks for other
 collectors, but those APIs do not add JSONL commands beyond the `kinds`/`capture` shapes above, and
 this protocol does not enable durable recording. Use the existing finite CLI commands and their

@@ -10,6 +10,7 @@ import {
     isCpuSampleSummary,
     isDumpHeapCaptureResult,
     isHeapCaptureResult,
+    isQueryResult,
     isThreadCaptureResult,
     parseProcessList,
     parseProtocolFrame,
@@ -17,10 +18,63 @@ import {
     type CpuSampleSummary,
     type DumpHeapCaptureResult,
     type HeapCaptureResult,
+    type QueryResult,
     type ThreadCaptureResult,
     type ProtocolFrame,
     type TargetProcess,
 } from "./protocol";
+
+/**
+ * The 7 heap query views available unconditionally once any heap snapshot is captured, plus the 3
+ * opt-in views gated by `includeStaticFields`/`includeDelegateTargets`/`includeRetentionPaths` on
+ * the `capture` request. Mirrors `CliStreamingProtocol.HeapQueryViews` (issue #1116); kept as two
+ * separate lists so the always-available ones can be queried unconditionally while the opt-in ones
+ * are only queried when the corresponding checkbox was selected before capture.
+ */
+const ALWAYS_AVAILABLE_HEAP_QUERY_VIEWS = ["roots-by-kind", "finalizer-queue", "fragmentation", "gchandles", "async", "timers", "alc"] as const;
+
+/** The 4 thread query views available once a thread snapshot is captured. Mirrors `CliStreamingProtocol.ThreadQueryViews` (issue #1116). */
+const THREAD_QUERY_VIEWS = ["deadlocks", "unique-stacks", "wait-chains", "threadpool"] as const;
+
+/**
+ * The 3 opt-in heap capture enrichments a user can select before a heap capture runs (issue
+ * #1116). All default to unchecked/`false`, matching the CLI's own defaults.
+ */
+interface HeapQueryOptIns {
+    includeStaticFields: boolean;
+    includeDelegateTargets: boolean;
+    includeRetentionPaths: boolean;
+}
+
+const HEAP_QUERY_OPT_IN_PICKS: Array<{ label: string; description: string; key: keyof HeapQueryOptIns }> = [
+    { label: "Static fields", description: "Capture static field values for the `static-fields` drilldown view", key: "includeStaticFields" },
+    { label: "Delegate targets", description: "Capture delegate target instances for the `delegate-targets` drilldown view", key: "includeDelegateTargets" },
+    { label: "Retention paths", description: "Capture GC root retention paths for the `retention-paths` drilldown view", key: "includeRetentionPaths" },
+];
+
+/**
+ * Prompts for the 3 opt-in heap enrichments via a multi-select QuickPick (all unchecked/`false`
+ * by default). Returns `undefined` if the user cancels the picker (distinct from selecting none),
+ * so callers can abort the capture flow the same way they do for the source/risk prompts.
+ */
+async function pickHeapQueryOptIns(): Promise<HeapQueryOptIns | undefined> {
+    const picked = await vscode.window.showQuickPick(
+        HEAP_QUERY_OPT_IN_PICKS.map(item => ({ label: item.label, description: item.description, key: item.key })),
+        {
+            canPickMany: true,
+            placeHolder: "Optionally include richer heap drilldown views (all unchecked by default)",
+        },
+    );
+    if (picked === undefined) {
+        return undefined;
+    }
+    const selectedKeys = new Set(picked.map(item => item.key));
+    return {
+        includeStaticFields: selectedKeys.has("includeStaticFields"),
+        includeDelegateTargets: selectedKeys.has("includeDelegateTargets"),
+        includeRetentionPaths: selectedKeys.has("includeRetentionPaths"),
+    };
+}
 
 const execFile = promisify(execFileCallback);
 const PROTOCOL_VERSION = 1;
@@ -60,6 +114,8 @@ interface StreamChild {
     terminalReceived: boolean;
     startupErrorReported: boolean;
     pendingCaptures: Map<string, PendingCapture>;
+    /** Pending follow-up `query` requests keyed by `requestId` (issue #1116), analogous to `pendingCaptures`. */
+    pendingQueries: Map<string, Deferred<QueryResult>>;
     /**
      * Set before intentionally closing a connection that never started a live session (e.g. a
      * capture-only connection after its result arrives), so the `close` handler can skip reporting
@@ -264,6 +320,15 @@ class CounterPanelController implements vscode.Disposable {
             return;
         }
 
+        // Opt-in heap drilldown enrichments (issue #1116): purely additive to what the CLI
+        // records at capture time, so this doesn't change the risk tier already resolved for
+        // `sourcePick.source` above — just ask before the risk modal so the acknowledgement
+        // covers the final request shape.
+        const queryOptIns = await pickHeapQueryOptIns();
+        if (!queryOptIns || this.disposed) {
+            return;
+        }
+
         const acknowledged = await vscode.window.showWarningMessage(
             describeHeapCaptureRisk(sourcePick.source, sourcePick.label),
             { modal: true },
@@ -307,6 +372,9 @@ class CounterPanelController implements vscode.Disposable {
                 source: sourcePick.source,
                 topTypes: 20,
                 acknowledgeRisk: "high",
+                includeStaticFields: queryOptIns.includeStaticFields,
+                includeDelegateTargets: queryOptIns.includeDelegateTargets,
+                includeRetentionPaths: queryOptIns.includeRetentionPaths,
             });
             // A `gcdump` capture induces and waits out a blocking Gen2 GC, and a `live` capture
             // suspends the whole target during a ClrMD walk — both can legitimately take longer
@@ -319,6 +387,14 @@ class CounterPanelController implements vscode.Disposable {
                 state: "done",
                 message: "Heap snapshot capture complete.",
             });
+            // Follow-up `query` drilldown requests (issue #1116), sent sequentially on this same
+            // connection — matching `DumpAnalysisPanelController`'s sequential-not-concurrent
+            // discipline, since the CLI's request loop processes one request at a time per
+            // connection.
+            const handle = result.data?.handle;
+            if (handle) {
+                await this.runHeapQueries(session, handle, queryOptIns);
+            }
         } catch (error) {
             this.postMessage({
                 type: "captureStatus",
@@ -340,6 +416,68 @@ class CounterPanelController implements vscode.Disposable {
                 // unexpected CLI exit over whatever status the capture itself just posted.
                 session.expectedShutdown = true;
                 await this.closeChild(session);
+            }
+        }
+    }
+
+    /**
+     * Sends a follow-up `query` request for `view` against `handle` on `session` (issue #1116)
+     * and awaits its response. A pure in-memory read of an already-registered handle, so this
+     * uses a much shorter ceiling than a capture — there is no attach/suspend/walk to wait out.
+     */
+    private async sendQuery(session: StreamChild, handle: string, view: string): Promise<QueryResult> {
+        const requestId = randomBytes(12).toString("hex");
+        const pending = deferred<QueryResult>();
+        session.pendingQueries.set(requestId, pending);
+        try {
+            this.writeFrame(session, { type: "query", requestId, handle, view });
+            return await withTimeout(pending.promise, 30_000);
+        } finally {
+            session.pendingQueries.delete(requestId);
+        }
+    }
+
+    /**
+     * Issues the 7 always-available heap `query` views, plus whichever of the 3 opt-in views the
+     * user selected before capture, sequentially (not concurrently — see `sendQuery`'s doc
+     * comment) against the just-captured `handle`. Each view's result (or failure) is posted to
+     * the webview independently so one slow/failing view doesn't block the others from rendering.
+     */
+    private async runHeapQueries(session: StreamChild, handle: string, optIns: HeapQueryOptIns): Promise<void> {
+        const views: string[] = [...ALWAYS_AVAILABLE_HEAP_QUERY_VIEWS];
+        if (optIns.includeStaticFields) {
+            views.push("static-fields");
+        }
+        if (optIns.includeDelegateTargets) {
+            views.push("delegate-targets");
+        }
+        if (optIns.includeRetentionPaths) {
+            views.push("retention-paths");
+        }
+
+        for (const view of views) {
+            try {
+                const result = await this.sendQuery(session, handle, view);
+                this.postMessage({ type: "query", kind: "heap", view, result });
+            } catch (error) {
+                this.postMessage({ type: "queryError", kind: "heap", view, message: errorMessage(error) });
+                this.output.appendLine(`Heap query view '${view}' failed: ${errorMessage(error)}`);
+            }
+        }
+    }
+
+    /**
+     * Issues the 4 thread `query` views sequentially against the just-captured `handle`, mirroring
+     * `runHeapQueries`.
+     */
+    private async runThreadQueries(session: StreamChild, handle: string): Promise<void> {
+        for (const view of THREAD_QUERY_VIEWS) {
+            try {
+                const result = await this.sendQuery(session, handle, view);
+                this.postMessage({ type: "query", kind: "thread-snapshot", view, result });
+            } catch (error) {
+                this.postMessage({ type: "queryError", kind: "thread-snapshot", view, message: errorMessage(error) });
+                this.output.appendLine(`Thread query view '${view}' failed: ${errorMessage(error)}`);
             }
         }
     }
@@ -424,6 +562,12 @@ class CounterPanelController implements vscode.Disposable {
                 state: "done",
                 message: "Thread snapshot capture complete.",
             });
+            // Follow-up `query` drilldown requests (issue #1116) — same sequential discipline as
+            // runHeapQueries/captureHeapCore.
+            const handle = result.data?.handle;
+            if (handle) {
+                await this.runThreadQueries(session, handle);
+            }
         } catch (error) {
             this.postMessage({
                 type: "captureStatus",
@@ -724,6 +868,7 @@ class CounterPanelController implements vscode.Disposable {
             terminalReceived: false,
             startupErrorReported: false,
             pendingCaptures: new Map(),
+            pendingQueries: new Map(),
             expectedShutdown: false,
             startInFlight: false,
             closing: false,
@@ -764,6 +909,10 @@ class CounterPanelController implements vscode.Disposable {
                 pending.deferred.reject(new Error("The CLI connection closed before the capture completed."));
             }
             session.pendingCaptures.clear();
+            for (const pending of session.pendingQueries.values()) {
+                pending.reject(new Error("The CLI connection closed before the query completed."));
+            }
+            session.pendingQueries.clear();
             if (this.activeChild === session) {
                 this.activeChild = undefined;
                 this.statusBar.text = "$(pulse) .NET Counters";
@@ -900,6 +1049,22 @@ class CounterPanelController implements vscode.Disposable {
                 break;
             }
 
+            // Follow-up heap/thread-snapshot drilldown response for a handle registered by a
+            // prior `capture` on this same connection (issue #1116).
+            case "query": {
+                const requestId = typeof frame.requestId === "string" ? frame.requestId : undefined;
+                const pending = requestId ? session.pendingQueries.get(requestId) : undefined;
+                if (!pending) {
+                    break;
+                }
+                if (isQueryResult(frame.result)) {
+                    pending.resolve(frame.result);
+                } else {
+                    pending.reject(new Error("The CLI returned a query result in an unexpected shape."));
+                }
+                break;
+            }
+
             case "error": {
                 const message = typeof frame.message === "string" ? frame.message : "The CLI returned a protocol error.";
                 const error = new Error(
@@ -915,8 +1080,11 @@ class CounterPanelController implements vscode.Disposable {
                 );
                 const requestId = typeof frame.requestId === "string" ? frame.requestId : undefined;
                 const pendingCapture = requestId ? session.pendingCaptures.get(requestId) : undefined;
+                const pendingQuery = requestId ? session.pendingQueries.get(requestId) : undefined;
                 if (pendingCapture) {
                     pendingCapture.deferred.reject(error);
+                } else if (pendingQuery) {
+                    pendingQuery.reject(error);
                 } else if (!session.handshake.settled) {
                     session.handshake.reject(error);
                 } else if (!session.started.settled) {
@@ -1048,6 +1216,8 @@ interface DumpAnalysisChild {
     stderrTail: string;
     terminated: boolean;
     pendingCaptures: Map<string, DumpAnalysisPendingCapture>;
+    /** Pending follow-up `query` requests keyed by `requestId` (issue #1116), analogous to `pendingCaptures`. */
+    pendingQueries: Map<string, Deferred<QueryResult>>;
 }
 
 /**
@@ -1066,7 +1236,12 @@ class DumpAnalysisPanelController implements vscode.Disposable {
     /** Tracked so `dispose()` can forcibly end an in-flight capture-only connection when the panel is closed mid-analysis. */
     private activeChild: DumpAnalysisChild | undefined;
 
-    public constructor(private readonly dumpFilePath: string, private readonly output: vscode.OutputChannel) {
+    public constructor(
+        private readonly dumpFilePath: string,
+        private readonly output: vscode.OutputChannel,
+        /** The 3 opt-in heap enrichments selected before analysis started (issue #1116). */
+        private readonly heapQueryOptIns: HeapQueryOptIns,
+    ) {
         const fileName = basename(dumpFilePath);
         this.panel = vscode.window.createWebviewPanel(
             "dotnetDiagnostics.dumpAnalysis",
@@ -1138,6 +1313,9 @@ class DumpAnalysisPanelController implements vscode.Disposable {
                 source: "dump",
                 dumpFile: this.dumpFilePath,
                 topTypes: 20,
+                includeStaticFields: this.heapQueryOptIns.includeStaticFields,
+                includeDelegateTargets: this.heapQueryOptIns.includeDelegateTargets,
+                includeRetentionPaths: this.heapQueryOptIns.includeRetentionPaths,
             });
             // Offline dump parsing has no live target to time out against, but this still needs a
             // ceiling so a stuck/huge dump can't hang the panel forever; large dumps can take a
@@ -1145,6 +1323,13 @@ class DumpAnalysisPanelController implements vscode.Disposable {
             const result = await withTimeout(pending.deferred.promise, 180_000);
             this.postMessage({ type: "capture", kind: "heap", source: "dump", result });
             this.postMessage({ type: "captureStatus", kind: "heap", state: "done", message: "Heap analysis complete." });
+            // Follow-up `query` drilldown requests (issue #1116), sent sequentially — see this
+            // class's `run()` doc comment for why the CLI connection can't handle concurrent
+            // requests.
+            const handle = result.data?.handle;
+            if (handle) {
+                await this.runHeapQueries(child, handle);
+            }
         } catch (error) {
             const message = withRuntimeGuidance(errorMessage(error));
             this.postMessage({ type: "captureStatus", kind: "heap", state: "error", message });
@@ -1169,12 +1354,66 @@ class DumpAnalysisPanelController implements vscode.Disposable {
             const result = await withTimeout(pending.deferred.promise, 180_000);
             this.postMessage({ type: "capture", kind: "thread-snapshot", result });
             this.postMessage({ type: "captureStatus", kind: "thread-snapshot", state: "done", message: "Thread/lock analysis complete." });
+            const handle = result.data?.handle;
+            if (handle) {
+                await this.runThreadQueries(child, handle);
+            }
         } catch (error) {
             const message = withRuntimeGuidance(errorMessage(error));
             this.postMessage({ type: "captureStatus", kind: "thread-snapshot", state: "error", message });
             this.output.appendLine(`Dump thread-snapshot analysis failed: ${message}`);
         } finally {
             child.pendingCaptures.delete(requestId);
+        }
+    }
+
+    /** See `CounterPanelController.sendQuery`'s doc comment — identical reasoning, different connection type. */
+    private async sendQuery(child: DumpAnalysisChild, handle: string, view: string): Promise<QueryResult> {
+        const requestId = randomBytes(12).toString("hex");
+        const pending = deferred<QueryResult>();
+        child.pendingQueries.set(requestId, pending);
+        try {
+            this.writeFrame(child, { type: "query", requestId, handle, view });
+            return await withTimeout(pending.promise, 30_000);
+        } finally {
+            child.pendingQueries.delete(requestId);
+        }
+    }
+
+    /** See `CounterPanelController.runHeapQueries`'s doc comment. */
+    private async runHeapQueries(child: DumpAnalysisChild, handle: string): Promise<void> {
+        const views: string[] = [...ALWAYS_AVAILABLE_HEAP_QUERY_VIEWS];
+        if (this.heapQueryOptIns.includeStaticFields) {
+            views.push("static-fields");
+        }
+        if (this.heapQueryOptIns.includeDelegateTargets) {
+            views.push("delegate-targets");
+        }
+        if (this.heapQueryOptIns.includeRetentionPaths) {
+            views.push("retention-paths");
+        }
+
+        for (const view of views) {
+            try {
+                const result = await this.sendQuery(child, handle, view);
+                this.postMessage({ type: "query", kind: "heap", view, result });
+            } catch (error) {
+                this.postMessage({ type: "queryError", kind: "heap", view, message: errorMessage(error) });
+                this.output.appendLine(`Heap query view '${view}' failed: ${errorMessage(error)}`);
+            }
+        }
+    }
+
+    /** See `CounterPanelController.runThreadQueries`'s doc comment. */
+    private async runThreadQueries(child: DumpAnalysisChild, handle: string): Promise<void> {
+        for (const view of THREAD_QUERY_VIEWS) {
+            try {
+                const result = await this.sendQuery(child, handle, view);
+                this.postMessage({ type: "query", kind: "thread-snapshot", view, result });
+            } catch (error) {
+                this.postMessage({ type: "queryError", kind: "thread-snapshot", view, message: errorMessage(error) });
+                this.output.appendLine(`Thread query view '${view}' failed: ${errorMessage(error)}`);
+            }
         }
     }
 
@@ -1193,6 +1432,7 @@ class DumpAnalysisPanelController implements vscode.Disposable {
             stderrTail: "",
             terminated: false,
             pendingCaptures: new Map(),
+            pendingQueries: new Map(),
         };
         this.activeChild = child;
 
@@ -1213,6 +1453,10 @@ class DumpAnalysisPanelController implements vscode.Disposable {
                 pending.deferred.reject(new Error("The CLI connection closed before the capture completed."));
             }
             child.pendingCaptures.clear();
+            for (const pending of child.pendingQueries.values()) {
+                pending.reject(new Error("The CLI connection closed before the query completed."));
+            }
+            child.pendingQueries.clear();
             child.closed.resolve();
         });
 
@@ -1265,6 +1509,21 @@ class DumpAnalysisPanelController implements vscode.Disposable {
                 break;
             }
 
+            // Follow-up heap/thread-snapshot drilldown response (issue #1116) — see `CounterPanelController`'s matching case.
+            case "query": {
+                const requestId = typeof frame.requestId === "string" ? frame.requestId : undefined;
+                const pending = requestId ? child.pendingQueries.get(requestId) : undefined;
+                if (!pending) {
+                    break;
+                }
+                if (isQueryResult(frame.result)) {
+                    pending.resolve(frame.result);
+                } else {
+                    pending.reject(new Error("The CLI returned a query result in an unexpected shape."));
+                }
+                break;
+            }
+
             case "error": {
                 const message = typeof frame.message === "string" ? frame.message : "The CLI returned a protocol error.";
                 const error = new Error(
@@ -1276,8 +1535,11 @@ class DumpAnalysisPanelController implements vscode.Disposable {
                 );
                 const requestId = typeof frame.requestId === "string" ? frame.requestId : undefined;
                 const pending = requestId ? child.pendingCaptures.get(requestId) : undefined;
+                const pendingQuery = requestId ? child.pendingQueries.get(requestId) : undefined;
                 if (pending) {
                     pending.deferred.reject(error);
+                } else if (pendingQuery) {
+                    pendingQuery.reject(error);
                 } else if (!child.handshake.settled) {
                     child.handshake.reject(error);
                 } else {
@@ -1298,6 +1560,9 @@ class DumpAnalysisPanelController implements vscode.Disposable {
         }
         for (const pending of child.pendingCaptures.values()) {
             pending.deferred.reject(error);
+        }
+        for (const pending of child.pendingQueries.values()) {
+            pending.reject(error);
         }
     }
 
@@ -1361,7 +1626,15 @@ async function analyzeDumpFile(output: vscode.OutputChannel, context: vscode.Ext
         return;
     }
 
-    const controller = new DumpAnalysisPanelController(dumpFilePath, output);
+    // Opt-in heap drilldown enrichments (issue #1116) — asked up front since this panel fires the
+    // heap capture immediately on construction, with no separate risk-acknowledgement step to
+    // piggyback on (dump-sourced captures are Moderate/Warn risk, not High/Acknowledge).
+    const queryOptIns = await pickHeapQueryOptIns();
+    if (!queryOptIns) {
+        return;
+    }
+
+    const controller = new DumpAnalysisPanelController(dumpFilePath, output, queryOptIns);
     // Registered so extension deactivation disposes any still-open dump-analysis panel (and kills
     // its in-flight capture-only connection) rather than leaking a child process past host shutdown.
     context.subscriptions.push(controller);
@@ -1481,6 +1754,14 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     #gcHeadline { margin:.3rem 0 .6rem; color:var(--vscode-descriptionForeground); }
     #captureStatus { color:var(--vscode-descriptionForeground); margin:.3rem 0; }
     .empty { display:none; }
+    .query-views { margin-top:.8rem; }
+    details.query-view { border:1px solid var(--vscode-panel-border); border-radius:3px; margin-bottom:.5rem; }
+    details.query-view > summary { cursor:pointer; padding:.4rem .6rem; font-weight:600; }
+    details.query-view[open] > summary { border-bottom:1px solid var(--vscode-panel-border); }
+    details.query-view pre { margin:0; padding:.6rem; white-space:pre-wrap; word-break:break-word; font-size:.85rem; max-height:360px; overflow:auto; }
+    details.query-view.query-view-error > summary { color:var(--vscode-errorForeground); }
+    details.query-view.query-view-deadlocks { border-color:var(--vscode-errorForeground); border-width:2px; }
+    details.query-view.query-view-deadlocks > summary { color:var(--vscode-errorForeground); font-size:1.05rem; }
   </style>
 </head>
 <body>
@@ -1530,6 +1811,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         <thead><tr><th>Type</th><th>Instances</th><th>Bytes</th></tr></thead>
         <tbody id="captureHeapBody"></tbody>
       </table>
+      <div id="heapQueryViews" class="query-views"></div>
     </div>
   </section>
 
@@ -1542,6 +1824,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         <thead><tr><th>Thread</th><th>State</th><th>Wait reason</th><th>Top frame</th></tr></thead>
         <tbody id="captureThreadBody"></tbody>
       </table>
+      <div id="threadQueryViews" class="query-views"></div>
     </div>
   </section>
 
@@ -1875,6 +2158,65 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       });
     }
 
+    // Friendly labels for the 11 follow-up drilldown views (issue #1116). 'deadlocks' is called
+    // out here only for its title; the visual prominence (border/color, open-by-default) is driven
+    // by the 'query-view-deadlocks' CSS class applied in renderQueryView below.
+    const QUERY_VIEW_LABELS = {
+      'roots-by-kind': 'GC roots by kind',
+      'finalizer-queue': 'Finalizer queue',
+      'fragmentation': 'Heap fragmentation',
+      'gchandles': 'GC handles',
+      'async': 'Async state machines',
+      'timers': 'Timers',
+      'alc': 'AssemblyLoadContexts',
+      'static-fields': 'Static fields',
+      'delegate-targets': 'Delegate targets',
+      'retention-paths': 'Retention paths',
+      'deadlocks': 'Deadlocks',
+      'unique-stacks': 'Unique stacks',
+      'wait-chains': 'Wait chains',
+      'threadpool': 'Thread pool',
+    };
+
+    // Renders one follow-up 'query' drilldown result (or its error) as a collapsible details
+    // section inside the given container. This is a deliberately generic JSON-dump renderer rather
+    // than 11 bespoke per-view tables: the view result shapes come directly from
+    // HeapSnapshotQueryDispatcher/ThreadSnapshotQueryDispatcher and are already structured for
+    // human/LLM reading, so a formatted JSON block is a reasonable first cut. 'deadlocks' gets
+    // extra visual weight (open by default, distinct border/color) since it's the single most
+    // actionable output of this feature - an inferred wait-for cycle.
+    function renderQueryView(containerId, view, resultOrMessage, isError) {
+      const container = document.getElementById(containerId);
+      if (!container) return;
+      const elementId = containerId + '-' + view;
+      let details = document.getElementById(elementId);
+      if (!details) {
+        details = document.createElement('details');
+        details.id = elementId;
+        details.className = 'query-view';
+        if (view === 'deadlocks') {
+          details.open = true;
+          details.classList.add('query-view-deadlocks');
+        }
+        const summary = document.createElement('summary');
+        summary.textContent = QUERY_VIEW_LABELS[view] || view;
+        const pre = document.createElement('pre');
+        details.appendChild(summary);
+        details.appendChild(pre);
+        container.appendChild(details);
+      }
+      const summary = details.querySelector('summary');
+      const pre = details.querySelector('pre');
+      details.classList.toggle('query-view-error', !!isError);
+      if (isError) {
+        summary.textContent = (QUERY_VIEW_LABELS[view] || view) + ' (unavailable)';
+        pre.textContent = String(resultOrMessage);
+      } else {
+        summary.textContent = QUERY_VIEW_LABELS[view] || view;
+        pre.textContent = JSON.stringify(resultOrMessage, null, 2);
+      }
+    }
+
     window.addEventListener('message', event => {
       const message = event.data;
       if (!message || typeof message.type !== 'string') return;
@@ -1904,6 +2246,14 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         renderThreadCapture(message.result);
       } else if (message.type === 'capture') {
         renderCapture(message.summary);
+      } else if (message.type === 'query' && message.kind === 'heap') {
+        renderQueryView('heapQueryViews', message.view, message.result, false);
+      } else if (message.type === 'query' && message.kind === 'thread-snapshot') {
+        renderQueryView('threadQueryViews', message.view, message.result, false);
+      } else if (message.type === 'queryError' && message.kind === 'heap') {
+        renderQueryView('heapQueryViews', message.view, message.message, true);
+      } else if (message.type === 'queryError' && message.kind === 'thread-snapshot') {
+        renderQueryView('threadQueryViews', message.view, message.message, true);
       } else if (message.type === 'historyDuration') {
         if (typeof message.seconds === 'number' && Number.isFinite(message.seconds) && message.seconds > 0) {
           historyDurationMs = message.seconds * 1000;
@@ -2021,6 +2371,14 @@ export function renderDumpAnalysisHtml(dumpFileName: string, nonce: string): str
     table { border-collapse:collapse; width:100%; font-size:.9rem; }
     th, td { text-align:left; padding:.25rem .6rem; border-bottom:1px solid var(--vscode-panel-border); }
     .empty { display:none; }
+    .query-views { margin-top:.8rem; }
+    details.query-view { border:1px solid var(--vscode-panel-border); border-radius:3px; margin-bottom:.5rem; }
+    details.query-view > summary { cursor:pointer; padding:.4rem .6rem; font-weight:600; }
+    details.query-view[open] > summary { border-bottom:1px solid var(--vscode-panel-border); }
+    details.query-view pre { margin:0; padding:.6rem; white-space:pre-wrap; word-break:break-word; font-size:.85rem; max-height:360px; overflow:auto; }
+    details.query-view.query-view-error > summary { color:var(--vscode-errorForeground); }
+    details.query-view.query-view-deadlocks { border-color:var(--vscode-errorForeground); border-width:2px; }
+    details.query-view.query-view-deadlocks > summary { color:var(--vscode-errorForeground); font-size:1.05rem; }
     .status { color:var(--vscode-descriptionForeground); margin:.3rem 0; }
   </style>
 </head>
@@ -2040,6 +2398,7 @@ export function renderDumpAnalysisHtml(dumpFileName: string, nonce: string): str
         <thead><tr><th>Type</th><th>Instances</th><th>Bytes</th></tr></thead>
         <tbody id="captureHeapBody"></tbody>
       </table>
+      <div id="heapQueryViews" class="query-views"></div>
     </div>
   </section>
 
@@ -2052,6 +2411,7 @@ export function renderDumpAnalysisHtml(dumpFileName: string, nonce: string): str
         <thead><tr><th>Thread</th><th>State</th><th>Wait reason</th><th>Top frame</th></tr></thead>
         <tbody id="captureThreadBody"></tbody>
       </table>
+      <div id="threadQueryViews" class="query-views"></div>
     </div>
   </section>
 
@@ -2139,6 +2499,57 @@ export function renderDumpAnalysisHtml(dumpFileName: string, nonce: string): str
       });
     }
 
+    // See renderHtml's identical QUERY_VIEW_LABELS/renderQueryView for the full rationale; kept as
+    // a duplicate copy here since this is a separate self-contained webview template/script.
+    const QUERY_VIEW_LABELS = {
+      'roots-by-kind': 'GC roots by kind',
+      'finalizer-queue': 'Finalizer queue',
+      'fragmentation': 'Heap fragmentation',
+      'gchandles': 'GC handles',
+      'async': 'Async state machines',
+      'timers': 'Timers',
+      'alc': 'AssemblyLoadContexts',
+      'static-fields': 'Static fields',
+      'delegate-targets': 'Delegate targets',
+      'retention-paths': 'Retention paths',
+      'deadlocks': 'Deadlocks',
+      'unique-stacks': 'Unique stacks',
+      'wait-chains': 'Wait chains',
+      'threadpool': 'Thread pool',
+    };
+
+    function renderQueryView(containerId, view, resultOrMessage, isError) {
+      const container = document.getElementById(containerId);
+      if (!container) return;
+      const elementId = containerId + '-' + view;
+      let details = document.getElementById(elementId);
+      if (!details) {
+        details = document.createElement('details');
+        details.id = elementId;
+        details.className = 'query-view';
+        if (view === 'deadlocks') {
+          details.open = true;
+          details.classList.add('query-view-deadlocks');
+        }
+        const summary = document.createElement('summary');
+        summary.textContent = QUERY_VIEW_LABELS[view] || view;
+        const pre = document.createElement('pre');
+        details.appendChild(summary);
+        details.appendChild(pre);
+        container.appendChild(details);
+      }
+      const summary = details.querySelector('summary');
+      const pre = details.querySelector('pre');
+      details.classList.toggle('query-view-error', !!isError);
+      if (isError) {
+        summary.textContent = (QUERY_VIEW_LABELS[view] || view) + ' (unavailable)';
+        pre.textContent = String(resultOrMessage);
+      } else {
+        summary.textContent = QUERY_VIEW_LABELS[view] || view;
+        pre.textContent = JSON.stringify(resultOrMessage, null, 2);
+      }
+    }
+
     window.addEventListener('message', event => {
       const message = event.data;
       if (!message || typeof message.type !== 'string') return;
@@ -2150,6 +2561,14 @@ export function renderDumpAnalysisHtml(dumpFileName: string, nonce: string): str
         renderDumpHeapCapture(message.result);
       } else if (message.type === 'capture' && message.kind === 'thread-snapshot') {
         renderDumpThreadCapture(message.result);
+      } else if (message.type === 'query' && message.kind === 'heap') {
+        renderQueryView('heapQueryViews', message.view, message.result, false);
+      } else if (message.type === 'query' && message.kind === 'thread-snapshot') {
+        renderQueryView('threadQueryViews', message.view, message.result, false);
+      } else if (message.type === 'queryError' && message.kind === 'heap') {
+        renderQueryView('heapQueryViews', message.view, message.message, true);
+      } else if (message.type === 'queryError' && message.kind === 'thread-snapshot') {
+        renderQueryView('threadQueryViews', message.view, message.message, true);
       }
     });
   </script>

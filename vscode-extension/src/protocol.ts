@@ -71,6 +71,8 @@ export interface HeapCaptureResult {
         topTypesByInstances: HeapTypeStat[];
         warnings?: string[] | null;
         gcDumpStatus?: GcDumpCaptureStatus | null;
+        /** The `IDiagnosticHandleStore` handle registered for this snapshot; lets the extension issue follow-up `query` requests on the same connection (#1116). */
+        handle?: string | null;
     } | null;
 }
 
@@ -88,6 +90,8 @@ export interface DumpHeapCaptureResult {
         topTypesByBytes: HeapTypeStat[];
         topTypesByInstances: HeapTypeStat[];
         warnings?: string[] | null;
+        /** See `HeapCaptureResult.data.handle` (#1116). */
+        handle?: string | null;
     } | null;
 }
 
@@ -129,7 +133,25 @@ export interface ThreadCaptureResult {
         omittedLocks?: number | null;
         threads?: ThreadSnapshotThread[] | null;
         locks?: ThreadSnapshotLock[] | null;
+        /** See `HeapCaptureResult.data.handle` (#1116). */
+        handle?: string | null;
     } | null;
+}
+
+/**
+ * The trimmed `query` response payload for a follow-up heap/thread-snapshot drilldown view
+ * (#1116). `view`-specific fields (e.g. `rootsByKind`, `deadlocks`) vary by which of the 10
+ * heap/4 thread views was requested — see `CliStreamingProtocol.TrimHeapQueryResult`/
+ * `TrimThreadQueryResult` for the exact per-view field lists — so this only pins down the
+ * envelope fields every view shares and leaves the rest to the per-view renderer.
+ */
+export interface QueryResult {
+    handle: string;
+    view: string;
+    origin?: string | null;
+    processId?: number | null;
+    capturedAt?: string | null;
+    [key: string]: unknown;
 }
 
 export interface ProtocolFrame {
@@ -281,6 +303,13 @@ function isThreadSnapshotThread(value: unknown): value is ThreadSnapshotThread {
         && typeof value.isLikelyBlocked === "boolean"
         && Array.isArray(value.frames)
         && value.frames.every(frame => typeof frame === "string");
+}
+
+/** Validates only the shared envelope (`handle`/`view`); the rest of the shape is view-specific and left to the caller's renderer (#1116). */
+export function isQueryResult(value: unknown): value is QueryResult {
+    return isRecord(value)
+        && typeof value.handle === "string"
+        && typeof value.view === "string";
 }
 
 function isThreadSnapshotLock(value: unknown): value is ThreadSnapshotLock {
