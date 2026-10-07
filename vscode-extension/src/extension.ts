@@ -323,8 +323,13 @@ class CounterPanelController implements vscode.Disposable {
         // Opt-in heap drilldown enrichments (issue #1116): purely additive to what the CLI
         // records at capture time, so this doesn't change the risk tier already resolved for
         // `sourcePick.source` above — just ask before the risk modal so the acknowledgement
-        // covers the final request shape.
-        const queryOptIns = await pickHeapQueryOptIns();
+        // covers the final request shape. A `gcdump` artifact only ever retains per-type node/byte
+        // totals (HeapSnapshotQueryDispatcher rejects every one of the 10 heap `query` views below
+        // except `top-types`, which isn't part of this feature's scope), so there is nothing useful
+        // to opt into or to query afterwards — skip both for that source.
+        const queryOptIns = sourcePick.source === "gcdump"
+            ? { includeStaticFields: false, includeDelegateTargets: false, includeRetentionPaths: false }
+            : await pickHeapQueryOptIns();
         if (!queryOptIns || this.disposed) {
             return;
         }
@@ -390,9 +395,10 @@ class CounterPanelController implements vscode.Disposable {
             // Follow-up `query` drilldown requests (issue #1116), sent sequentially on this same
             // connection — matching `DumpAnalysisPanelController`'s sequential-not-concurrent
             // discipline, since the CLI's request loop processes one request at a time per
-            // connection.
+            // connection. Skipped for `gcdump`: see the opt-in comment above for why none of these
+            // views apply to a gcdump-origin snapshot.
             const handle = result.data?.handle;
-            if (handle) {
+            if (handle && sourcePick.source !== "gcdump") {
                 await this.runHeapQueries(session, handle, queryOptIns);
             }
         } catch (error) {
@@ -422,8 +428,11 @@ class CounterPanelController implements vscode.Disposable {
 
     /**
      * Sends a follow-up `query` request for `view` against `handle` on `session` (issue #1116)
-     * and awaits its response. A pure in-memory read of an already-registered handle, so this
-     * uses a much shorter ceiling than a capture — there is no attach/suspend/walk to wait out.
+     * and awaits its response. A pure in-memory read of an already-registered handle is normally
+     * fast, but this shares one serialized CLI connection with capture requests (the request loop
+     * fully processes one request before reading the next line), so a query issued shortly after
+     * another in-flight capture/query can sit queued behind it for a while; 60s gives that a
+     * reasonable margin without being as generous as a capture's own ceiling.
      */
     private async sendQuery(session: StreamChild, handle: string, view: string): Promise<QueryResult> {
         const requestId = randomBytes(12).toString("hex");
@@ -431,7 +440,7 @@ class CounterPanelController implements vscode.Disposable {
         session.pendingQueries.set(requestId, pending);
         try {
             this.writeFrame(session, { type: "query", requestId, handle, view });
-            return await withTimeout(pending.promise, 30_000);
+            return await withTimeout(pending.promise, 60_000);
         } finally {
             session.pendingQueries.delete(requestId);
         }
@@ -1374,7 +1383,7 @@ class DumpAnalysisPanelController implements vscode.Disposable {
         child.pendingQueries.set(requestId, pending);
         try {
             this.writeFrame(child, { type: "query", requestId, handle, view });
-            return await withTimeout(pending.promise, 30_000);
+            return await withTimeout(pending.promise, 60_000);
         } finally {
             child.pendingQueries.delete(requestId);
         }
@@ -2234,9 +2243,17 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       } else if (message.type === 'captureStatus' && message.kind === 'heap') {
         captureHeapStatusElement.textContent = message.message || message.state || '';
         captureHeapButton.disabled = message.state === 'running';
+        if (message.state === 'running') {
+          // Clear any query-view sections left over from a previous capture so a stale
+          // opt-in/gcdump-origin section can't be mistaken for data from the capture in flight.
+          document.getElementById('heapQueryViews').innerHTML = '';
+        }
       } else if (message.type === 'captureStatus' && message.kind === 'thread-snapshot') {
         captureThreadStatusElement.textContent = message.message || message.state || '';
         captureThreadSnapshotButton.disabled = message.state === 'running';
+        if (message.state === 'running') {
+          document.getElementById('threadQueryViews').innerHTML = '';
+        }
       } else if (message.type === 'captureStatus') {
         captureStatusElement.textContent = message.message || message.state || '';
         captureCpuButton.disabled = message.state === 'running';
@@ -2555,8 +2572,14 @@ export function renderDumpAnalysisHtml(dumpFileName: string, nonce: string): str
       if (!message || typeof message.type !== 'string') return;
       if (message.type === 'captureStatus' && message.kind === 'heap') {
         captureHeapStatusElement.textContent = message.message || message.state || '';
+        if (message.state === 'running') {
+          document.getElementById('heapQueryViews').innerHTML = '';
+        }
       } else if (message.type === 'captureStatus' && message.kind === 'thread-snapshot') {
         captureThreadStatusElement.textContent = message.message || message.state || '';
+        if (message.state === 'running') {
+          document.getElementById('threadQueryViews').innerHTML = '';
+        }
       } else if (message.type === 'capture' && message.kind === 'heap') {
         renderDumpHeapCapture(message.result);
       } else if (message.type === 'capture' && message.kind === 'thread-snapshot') {

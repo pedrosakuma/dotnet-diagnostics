@@ -455,6 +455,21 @@ public sealed class CliStreamingProtocolKindsTests
             notCaptured.GetProperty("type").GetString().Should().Be("error");
             notCaptured.GetProperty("code").GetString().Should().Be("view_not_captured");
 
+            // `delegate-targets` shares the same "ViewNotCaptured" Core error kind as `static-fields`.
+            await session.SendAsync(new { type = "query", requestId = "q-delegate-not-captured", handle = heapHandle, view = "delegate-targets" });
+            var delegateNotCaptured = await session.ReadFrameAsync();
+            delegateNotCaptured.GetProperty("type").GetString().Should().Be("error");
+            delegateNotCaptured.GetProperty("code").GetString().Should().Be("view_not_captured");
+
+            // `retention-paths` is the one opt-in view whose Core error kind differs
+            // ("RetentionPathsMissing", not "ViewNotCaptured" - see
+            // HeapSnapshotQueryDispatcher.cs:179) — assert the distinct code explicitly so a future
+            // Core rename doesn't silently regress to a generic/wrong error without a failing test.
+            await session.SendAsync(new { type = "query", requestId = "q-retention-not-captured", handle = heapHandle, view = "retention-paths" });
+            var retentionNotCaptured = await session.ReadFrameAsync();
+            retentionNotCaptured.GetProperty("type").GetString().Should().Be("error");
+            retentionNotCaptured.GetProperty("code").GetString().Should().Be("retention_paths_missing");
+
             // The 3 opt-in heap views, queried against the richly-captured handle.
             foreach (var view in new[] { "static-fields", "delegate-targets", "retention-paths" })
             {

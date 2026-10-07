@@ -127,16 +127,22 @@ Heap handles support `roots-by-kind`, `finalizer-queue`, `fragmentation`, `gchan
 `timers`, and `alc` unconditionally, plus `static-fields`, `delegate-targets`, and
 `retention-paths` — these three are opt-in at capture time via `includeStaticFields`,
 `includeDelegateTargets`, and `includeRetentionPaths` boolean fields on the heap `capture` request
-(all default `false`; querying one of these views without having opted in at capture time returns a
-`view_not_captured` error). Thread-snapshot handles support `deadlocks`, `unique-stacks`,
-`wait-chains`, and `threadpool`. An optional `topN` caps ranked results the same way it does for the
-`cpu` capture. Address-targeted drilldown views (`object`, `gcroot`, `objsize`,
-`duplicate-strings`, `resolve-address`, `frame-vars`) are intentionally not exposed through this
-request — they remain MCP-only `query_snapshot` views pending a future protocol extension.
+(all default `false`). Querying `static-fields` or `delegate-targets` without having opted in at
+capture time returns a `view_not_captured` error; querying `retention-paths` without
+`includeRetentionPaths` returns `retention_paths_missing` instead (a distinct Core error kind for
+historical reasons — see `HeapSnapshotQueryDispatcher`). Thread-snapshot handles support
+`deadlocks`, `unique-stacks`, `wait-chains`, and `threadpool`. An optional `topN` caps ranked results
+the same way it does for the `cpu` capture. Address-targeted drilldown views (`object`, `gcroot`,
+`objsize`, `duplicate-strings`, `resolve-address`, `frame-vars`) are intentionally not exposed
+through this request — they remain MCP-only `query_snapshot` views pending a future protocol
+extension. Heap handles captured with `source:"gcdump"` support none of the 10 views above except
+`top-types` (outside this feature's scope), since a gcdump retains only per-type node/byte totals;
+expect a `view_unavailable_for_gc_dump` error for every view queried against a gcdump-origin handle.
 
-An unknown `handle`, a `view` not valid for that handle's kind, or a not-yet-captured opt-in view
-produce an `error` frame (`unknown_handle`, `unsupported_query_view`, or `view_not_captured`) instead
-of a `query` response.
+An unknown `handle`, a `view` not valid for that handle's kind, or a view the handle's origin/capture
+options don't support produce an `error` frame (`unknown_handle`, `unsupported_query_view`,
+`view_not_captured`, `retention_paths_missing`, or `view_unavailable_for_gc_dump`) instead of a
+`query` response.
 
 Core also supports composed sessions with typed finite results and incremental callbacks for other
 collectors, but those APIs do not add JSONL commands beyond the `kinds`/`capture` shapes above, and
