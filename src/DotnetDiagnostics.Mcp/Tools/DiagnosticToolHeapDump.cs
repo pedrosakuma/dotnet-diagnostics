@@ -94,6 +94,7 @@ internal static class DiagnosticToolHeapDump
         [Description("When true, hash every System.String during the heap walk and rank by aggregate retained bytes — surfaces missing string-interning. Cheap (folded into the existing heap pass) but allocates one hash per unique string.")] bool includeDuplicateStrings = false,
         [Description("Optional NT_SYMBOL_PATH-style search path reserved for symbol-resolving heap drilldowns. Precedence: symbolPath > MCP_SYMBOL_PATH > _NT_SYMBOL_PATH > target MainModule directory. **Remote symbol servers are OFF by default (issue #165 / M3)** — any `srv*http(s)://…` segment must point at a host on `Diagnostics:SymbolServerAllowlist`.")] string? symbolPath = null,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
+        [Description("When true, runs ClrMD's own ClrHeap.VerifyHeap() corruption-triage pass against the dump — a distinct, slower internal walk than the ordinary type/instance walk above. Off by default; dump-only (issue #1119). Results are retrieved via query_snapshot(view='heap-integrity').")] bool verifyHeap = false,
         CancellationToken cancellationToken = default)
         => HeapInspectionUseCases.InspectDump(
             inspector,
@@ -109,6 +110,7 @@ internal static class DiagnosticToolHeapDump
             includeDuplicateStrings,
             symbolPath,
             deprecation,
+            verifyHeap,
             cancellationToken);
 
     public static Task<DiagnosticResult<LiveHeapInspection>> InspectLiveHeap(

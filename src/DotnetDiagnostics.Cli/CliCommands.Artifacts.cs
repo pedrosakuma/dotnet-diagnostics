@@ -36,7 +36,8 @@ internal static partial class CliCommands
                 principalAllowsSymbolsRemote: true,
                 options.DumpFile!, topTypes, options.IncludeRetentionPaths, retentionLimit,
                 options.IncludeStaticFields, options.IncludeDelegateTargets, options.IncludeDuplicateStrings,
-                NullIfEmpty(options.SymbolPath), deprecation: null, cancellationToken).ConfigureAwait(false);
+                NullIfEmpty(options.SymbolPath), deprecation: null, verifyHeap: options.VerifyHeap,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
 
             return BuildResult<DumpInspection>(dumpResult, static (sb, data) => RenderTopTypes(sb, data.TopTypesByBytes));
         }
