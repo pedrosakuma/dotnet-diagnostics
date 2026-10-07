@@ -136,6 +136,46 @@ public sealed class CliInspectHeapValidationTests
         error.Should().Contain("does not accept --dump-file");
     }
 
+    [Fact]
+    public void Parse_VerifyHeapWithDumpSource_SetsFlagAndSucceeds()
+    {
+        var options = CliOptions.Parse(
+            new[] { "inspect-heap", "--source", "dump", "--dump-file", "./app.dmp", "--verify-heap" }, out _)!;
+
+        options.VerifyHeap.Should().BeTrue();
+        CliCommands.TryResolveHeapSource(options, out var source, out var error).Should().BeTrue();
+        source.Should().Be("dump");
+        error.Should().BeNull();
+    }
+
+    [Fact]
+    public void TryResolveHeapSource_VerifyHeapWithLiveSource_Fails()
+    {
+        var options = CliOptions.Parse(new[] { "inspect-heap", "--source", "live", "--verify-heap" }, out _)!;
+
+        CliCommands.TryResolveHeapSource(options, out _, out var error).Should().BeFalse();
+        error.Should().Contain("--verify-heap").And.Contain("--source dump");
+    }
+
+    [Fact]
+    public void TryResolveHeapSource_VerifyHeapWithGcDumpSource_Fails()
+    {
+        var options = CliOptions.Parse(
+            new[] { "inspect-heap", "--source", "gcdump", "--pid", "1234", "--verify-heap" }, out _)!;
+
+        CliCommands.TryResolveHeapSource(options, out _, out var error).Should().BeFalse();
+        error.Should().Contain("--verify-heap").And.Contain("--source dump");
+    }
+
+    [Fact]
+    public async Task RunAsync_InspectHeapVerifyHeapWithLiveSource_ReturnsTwo()
+    {
+        var (exit, _, stderr) = await RunAsync("inspect-heap", "--source", "live", "--verify-heap");
+
+        exit.Should().Be(2);
+        stderr.Should().Contain("--verify-heap");
+    }
+
     private static async Task<(int Exit, string Stdout, string Stderr)> RunAsync(params string[] args)
     {
         var stdout = new StringWriter(new StringBuilder());
