@@ -1756,13 +1756,13 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         projection.Result.Data.Should().NotBeNull();
         projection.Result.Data!.RetainedExceptions.Should().NotBeNull();
 
-        var invalidOperationBucket = projection.Result.Data.RetainedExceptions!
-            .FirstOrDefault(stat => stat.TypeFullName.Contains(nameof(InvalidOperationException), StringComparison.Ordinal));
+        var retainedBucket = projection.Result.Data.RetainedExceptions!
+            .FirstOrDefault(stat => stat.TypeFullName.Contains("BadCodeSampleRetainedException", StringComparison.Ordinal));
 
-        invalidOperationBucket.Should().NotBeNull();
-        invalidOperationBucket!.InstanceCount.Should().BeGreaterThanOrEqualTo(leakedExceptionCount);
-        invalidOperationBucket.Samples.Should().NotBeNullOrEmpty();
-        invalidOperationBucket.Samples!.Should().OnlyContain(sample => sample.Message != null && sample.Message.Contains("BadCodeSample retained exception", StringComparison.Ordinal));
+        retainedBucket.Should().NotBeNull();
+        retainedBucket!.InstanceCount.Should().BeGreaterThanOrEqualTo(leakedExceptionCount);
+        retainedBucket.Samples.Should().NotBeNullOrEmpty();
+        retainedBucket.Samples!.Should().OnlyContain(sample => sample.Message != null && sample.Message.Contains("BadCodeSample retained exception", StringComparison.Ordinal));
         projection.Result.Summary.Should().Contain("retained exception");
     }
 

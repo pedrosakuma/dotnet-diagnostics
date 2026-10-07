@@ -167,7 +167,6 @@ public class HeapSnapshotQueryDispatcherTests
     }
 
     [Fact]
-    [Fact]
     public void RetainedExceptions_ReturnsViewNotCaptured_WhenFlagWasNotSet()
     {
         var snapshot = Snapshot() with { RetainedExceptionsByType = null };

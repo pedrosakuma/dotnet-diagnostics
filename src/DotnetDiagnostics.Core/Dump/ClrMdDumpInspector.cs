@@ -87,6 +87,7 @@ public sealed class ClrMdDumpInspector : IDumpInspector
         if (opts.SnapshotTopTypes <= 0) throw new ArgumentOutOfRangeException(nameof(opts), "SnapshotTopTypes must be positive.");
         if (opts.RetentionPathLimit <= 0) throw new ArgumentOutOfRangeException(nameof(opts), "RetentionPathLimit must be positive.");
         if (opts.SnapshotRetentionPathTargets <= 0) throw new ArgumentOutOfRangeException(nameof(opts), "SnapshotRetentionPathTargets must be positive.");
+        if (opts.SnapshotRetainedExceptionTopN <= 0) throw new ArgumentOutOfRangeException(nameof(opts), "SnapshotRetainedExceptionTopN must be positive.");
     }
 
     private static Task<T> InspectSnapshotAsync<T>(

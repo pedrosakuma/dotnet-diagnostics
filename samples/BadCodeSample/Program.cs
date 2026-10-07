@@ -464,7 +464,7 @@ app.MapGet("/alc-leak", (int? count) =>
 
 // 13b. Retained/cached exception leak — detect with inspect_heap(includeRetainedExceptions=true) +
 //      query_snapshot(view="retained-exceptions"). Each call throws and catches a distinct
-//      InvalidOperationException, then stashes it in a never-pruned static-equivalent cache
+//      BadCodeSampleRetainedException, then stashes it in a never-pruned static-equivalent cache
 //      (the classic "last error" / error-cache leak smell) instead of letting it propagate or
 //      be collected.
 app.MapGet("/exception-cache-leak", (int? count) =>
@@ -476,9 +476,9 @@ app.MapGet("/exception-cache-leak", (int? count) =>
         {
             try
             {
-                throw new InvalidOperationException($"BadCodeSample retained exception #{leakedExceptions.Count + 1} — simulated failure stashed in an error cache that is never pruned.");
+                throw new BadCodeSampleRetainedException($"BadCodeSample retained exception #{leakedExceptions.Count + 1} — simulated failure stashed in an error cache that is never pruned.");
             }
-            catch (InvalidOperationException ex)
+            catch (BadCodeSampleRetainedException ex)
             {
                 leakedExceptions.Add(ex);
             }
@@ -787,6 +787,13 @@ sealed class LeakedSocketConnection(TcpClient client, NetworkStream stream)
     public TcpClient Client { get; } = client;
     public NetworkStream Stream { get; } = stream;
 }
+
+/// <summary>
+/// Distinct exception type for the <c>/exception-cache-leak</c> endpoint so a live retained-exceptions
+/// test can match on type name without colliding with unrelated <see cref="InvalidOperationException"/>
+/// instances that ASP.NET Core or the runtime may transiently create and not yet have collected.
+/// </summary>
+sealed class BadCodeSampleRetainedException(string message) : Exception(message);
 
 sealed record AlcLeakRoot(
     AssemblyLoadContext Context,
