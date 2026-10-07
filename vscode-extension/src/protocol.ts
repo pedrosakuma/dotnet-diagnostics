@@ -74,6 +74,23 @@ export interface HeapCaptureResult {
     } | null;
 }
 
+/**
+ * The trimmed `DiagnosticResult<DumpInspection>` projection returned by the CLI's one-shot
+ * `capture` request for `kind: "heap"`, `source: "dump"`. Unlike `HeapCaptureResult` there is no
+ * live attach, so `data` identifies the offline dump file instead of a PID/suspend-duration/
+ * GC-dump-status (see `DumpInspection` in `IDumpInspector.cs` vs `LiveHeapInspection`).
+ */
+export interface DumpHeapCaptureResult {
+    summary: string;
+    data?: {
+        filePath: string;
+        fileSizeBytes: number;
+        topTypesByBytes: HeapTypeStat[];
+        topTypesByInstances: HeapTypeStat[];
+        warnings?: string[] | null;
+    } | null;
+}
+
 /** One managed thread observed in a point-in-time thread snapshot capture, trimmed from `ManagedThread`. */
 export interface ThreadSnapshotThread {
     managedThreadId: number;
@@ -201,6 +218,23 @@ export function isHeapCaptureResult(value: unknown): value is HeapCaptureResult 
     return isRecord(data)
         && typeof data.processId === "number"
         && typeof data.suspendDuration === "string"
+        && Array.isArray(data.topTypesByBytes)
+        && data.topTypesByBytes.every(isHeapTypeStat)
+        && Array.isArray(data.topTypesByInstances)
+        && data.topTypesByInstances.every(isHeapTypeStat);
+}
+
+export function isDumpHeapCaptureResult(value: unknown): value is DumpHeapCaptureResult {
+    if (!isRecord(value) || typeof value.summary !== "string") {
+        return false;
+    }
+    if (value.data === undefined || value.data === null) {
+        return true;
+    }
+    const data = value.data;
+    return isRecord(data)
+        && typeof data.filePath === "string"
+        && typeof data.fileSizeBytes === "number"
         && Array.isArray(data.topTypesByBytes)
         && data.topTypesByBytes.every(isHeapTypeStat)
         && Array.isArray(data.topTypesByInstances)

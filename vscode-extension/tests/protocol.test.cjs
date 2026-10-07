@@ -7,6 +7,7 @@ const {
     isGcCollection,
     isCpuSampleSummary,
     isHeapCaptureResult,
+    isDumpHeapCaptureResult,
     isThreadCaptureResult,
 } = require("../out/protocol.js");
 
@@ -141,6 +142,48 @@ test("heap capture result validator rejects malformed shapes", () => {
             topTypesByBytes: [{ typeFullName: "X" }],
             topTypesByInstances: [],
         },
+    }), false);
+});
+
+test("dump heap capture result validator accepts a dump-sourced snapshot projection", () => {
+    const result = {
+        summary: "Captured a heap snapshot from dump '/tmp/sample.dmp'.",
+        data: {
+            filePath: "/tmp/sample.dmp",
+            fileSizeBytes: 104_857_600,
+            topTypesByBytes: [
+                { typeFullName: "System.String", instanceCount: 10, totalBytes: 1024, totalBytesPercent: 42.5 },
+            ],
+            topTypesByInstances: [],
+            warnings: ["Symbol resolution unavailable for module 'native.so'."],
+        },
+    };
+    assert.equal(isDumpHeapCaptureResult(result), true);
+});
+
+test("dump heap capture result validator accepts an error-only projection with no data", () => {
+    assert.equal(isDumpHeapCaptureResult({ summary: "Dump file not found." }), true);
+});
+
+test("dump heap capture result validator rejects malformed shapes and the live-shaped result", () => {
+    assert.equal(isDumpHeapCaptureResult(null), false);
+    assert.equal(isDumpHeapCaptureResult({ summary: 42 }), false);
+    assert.equal(isDumpHeapCaptureResult({ summary: "ok", data: { filePath: "/tmp/x.dmp" } }), false);
+    assert.equal(isDumpHeapCaptureResult({
+        summary: "ok",
+        data: {
+            filePath: "/tmp/x.dmp",
+            fileSizeBytes: 10,
+            topTypesByBytes: [{ typeFullName: "X" }],
+            topTypesByInstances: [],
+        },
+    }), false);
+    // The live-shaped HeapCaptureResult (processId/suspendDuration instead of filePath/fileSizeBytes)
+    // must not satisfy the dump-shaped guard, and vice versa - confirming the two types are kept
+    // distinct rather than accidentally structurally compatible.
+    assert.equal(isDumpHeapCaptureResult({
+        summary: "ok",
+        data: { processId: 123, suspendDuration: "00:00:00", topTypesByBytes: [], topTypesByInstances: [] },
     }), false);
 });
 
