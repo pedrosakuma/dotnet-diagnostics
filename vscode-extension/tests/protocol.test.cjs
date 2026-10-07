@@ -7,6 +7,7 @@ const {
     isGcCollection,
     isCpuSampleSummary,
     isHeapCaptureResult,
+    isThreadCaptureResult,
 } = require("../out/protocol.js");
 
 test("process list parser retains valid targets without exposing command lines", () => {
@@ -139,6 +140,62 @@ test("heap capture result validator rejects malformed shapes", () => {
             suspendDuration: "00:00:00",
             topTypesByBytes: [{ typeFullName: "X" }],
             topTypesByInstances: [],
+        },
+    }), false);
+});
+
+test("thread capture result validator accepts a successful snapshot projection", () => {
+    const result = {
+        summary: "Captured a live thread snapshot for PID 123.",
+        data: {
+            processId: 123,
+            origin: "live",
+            capturedAt: "2026-01-01T00:00:00Z",
+            walkDuration: "00:00:00.1234567",
+            totalThreads: 12,
+            omittedThreads: 4,
+            totalLocks: 2,
+            omittedLocks: 0,
+            threads: [
+                {
+                    managedThreadId: 1,
+                    osThreadId: 5000,
+                    state: "Running",
+                    isAlive: true,
+                    isBackground: false,
+                    isGc: false,
+                    isThreadpoolWorker: true,
+                    lockCount: 0,
+                    currentExceptionType: null,
+                    isLikelyBlocked: false,
+                    inferredWaitReason: null,
+                    frames: ["System.Threading.Monitor.Wait", "MyApp.Worker.Run"],
+                },
+            ],
+            locks: [
+                { objectTypeFullName: "System.Object", ownerManagedThreadId: 2, waitingThreadCount: 1, isContended: true },
+            ],
+        },
+    };
+    assert.equal(isThreadCaptureResult(result), true);
+});
+
+test("thread capture result validator accepts an error-only projection with no data", () => {
+    assert.equal(isThreadCaptureResult({ summary: "No process found matching the requested id." }), true);
+});
+
+test("thread capture result validator rejects malformed shapes", () => {
+    assert.equal(isThreadCaptureResult(null), false);
+    assert.equal(isThreadCaptureResult({ summary: 42 }), false);
+    assert.equal(isThreadCaptureResult({ summary: "ok", data: { processId: "123" } }), false);
+    assert.equal(isThreadCaptureResult({
+        summary: "ok",
+        data: {
+            processId: 123,
+            origin: "live",
+            capturedAt: "2026-01-01T00:00:00Z",
+            walkDuration: "00:00:00",
+            threads: [{ managedThreadId: 1 }],
         },
     }), false);
 });

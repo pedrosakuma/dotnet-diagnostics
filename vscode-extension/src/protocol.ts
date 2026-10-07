@@ -74,6 +74,47 @@ export interface HeapCaptureResult {
     } | null;
 }
 
+/** One managed thread observed in a point-in-time thread snapshot capture, trimmed from `ManagedThread`. */
+export interface ThreadSnapshotThread {
+    managedThreadId: number;
+    osThreadId: number;
+    state: string;
+    isAlive: boolean;
+    isBackground: boolean;
+    isGc: boolean;
+    isThreadpoolWorker: boolean;
+    lockCount: number;
+    currentExceptionType?: string | null;
+    isLikelyBlocked: boolean;
+    inferredWaitReason?: string | null;
+    frames: string[];
+}
+
+/** One contended monitor lock observed in a point-in-time thread snapshot capture, trimmed from `MonitorLockState`. */
+export interface ThreadSnapshotLock {
+    objectTypeFullName?: string | null;
+    ownerManagedThreadId: number;
+    waitingThreadCount: number;
+    isContended: boolean;
+}
+
+/** The trimmed `ThreadSnapshotQueryResult` projection returned by the CLI's one-shot `capture` request for `kind: "thread-snapshot"`. */
+export interface ThreadCaptureResult {
+    summary: string;
+    data?: {
+        processId: number;
+        origin: string;
+        capturedAt: string;
+        walkDuration: string;
+        totalThreads?: number | null;
+        omittedThreads?: number | null;
+        totalLocks?: number | null;
+        omittedLocks?: number | null;
+        threads?: ThreadSnapshotThread[] | null;
+        locks?: ThreadSnapshotLock[] | null;
+    } | null;
+}
+
 export interface ProtocolFrame {
     type: string;
     [key: string]: unknown;
@@ -172,6 +213,47 @@ function isHeapTypeStat(value: unknown): value is HeapTypeStat {
         && typeof value.instanceCount === "number"
         && typeof value.totalBytes === "number"
         && typeof value.totalBytesPercent === "number";
+}
+
+export function isThreadCaptureResult(value: unknown): value is ThreadCaptureResult {
+    if (!isRecord(value) || typeof value.summary !== "string") {
+        return false;
+    }
+    if (value.data === undefined || value.data === null) {
+        return true;
+    }
+    const data = value.data;
+    return isRecord(data)
+        && typeof data.processId === "number"
+        && typeof data.origin === "string"
+        && typeof data.capturedAt === "string"
+        && typeof data.walkDuration === "string"
+        && (data.threads === undefined || data.threads === null
+            || (Array.isArray(data.threads) && data.threads.every(isThreadSnapshotThread)))
+        && (data.locks === undefined || data.locks === null
+            || (Array.isArray(data.locks) && data.locks.every(isThreadSnapshotLock)));
+}
+
+function isThreadSnapshotThread(value: unknown): value is ThreadSnapshotThread {
+    return isRecord(value)
+        && typeof value.managedThreadId === "number"
+        && typeof value.osThreadId === "number"
+        && typeof value.state === "string"
+        && typeof value.isAlive === "boolean"
+        && typeof value.isBackground === "boolean"
+        && typeof value.isGc === "boolean"
+        && typeof value.isThreadpoolWorker === "boolean"
+        && typeof value.lockCount === "number"
+        && typeof value.isLikelyBlocked === "boolean"
+        && Array.isArray(value.frames)
+        && value.frames.every(frame => typeof frame === "string");
+}
+
+function isThreadSnapshotLock(value: unknown): value is ThreadSnapshotLock {
+    return isRecord(value)
+        && typeof value.ownerManagedThreadId === "number"
+        && typeof value.waitingThreadCount === "number"
+        && typeof value.isContended === "boolean";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

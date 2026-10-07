@@ -8,11 +8,13 @@ import {
     isGcCollection,
     isCpuSampleSummary,
     isHeapCaptureResult,
+    isThreadCaptureResult,
     parseProcessList,
     parseProtocolFrame,
     type CounterValue,
     type CpuSampleSummary,
     type HeapCaptureResult,
+    type ThreadCaptureResult,
     type ProtocolFrame,
     type TargetProcess,
 } from "./protocol";
@@ -31,11 +33,13 @@ interface Deferred<T> {
 /**
  * A pending one-shot `capture` request keyed by `requestId` (see `StreamChild.pendingCaptures`).
  * `kind` disambiguates the result shape the `capture` response frame must be validated against —
- * `cpu` and `heap` captures share the same request/response envelope but have distinct payloads.
+ * `cpu`, `heap`, and `thread` captures share the same request/response envelope but have distinct
+ * payloads.
  */
 type PendingCapture =
     | { kind: "cpu"; deferred: Deferred<CpuSampleSummary> }
-    | { kind: "heap"; deferred: Deferred<HeapCaptureResult> };
+    | { kind: "heap"; deferred: Deferred<HeapCaptureResult> }
+    | { kind: "thread-snapshot"; deferred: Deferred<ThreadCaptureResult> };
 
 /** Heap snapshot source the user selects before a "Capture Heap Snapshot" request (see #1110). */
 type HeapCaptureSource = "live" | "gcdump";
@@ -89,6 +93,7 @@ class CounterPanelController implements vscode.Disposable {
     private startStreamTask?: Promise<void>;
     private captureCpuTask?: Promise<void>;
     private captureHeapTask?: Promise<void>;
+    private captureThreadSnapshotTask?: Promise<void>;
     private connectChildTask?: Promise<StreamChild>;
 
     public constructor(
@@ -336,6 +341,105 @@ class CounterPanelController implements vscode.Disposable {
         }
     }
 
+    public captureThreadSnapshot(): Promise<void> {
+        if (!this.captureThreadSnapshotTask) {
+            this.captureThreadSnapshotTask = this.captureThreadSnapshotCore().finally(() => {
+                this.captureThreadSnapshotTask = undefined;
+            });
+        }
+        return this.captureThreadSnapshotTask;
+    }
+
+    /**
+     * Takes a single point-in-time thread snapshot. Unlike heap captures there is only one source
+     * for this VS Code flow — always a live ClrMD attach (the CLI's offline `--dump-file` option
+     * is not relevant to a live panel) — so this skips the source QuickPick and goes straight to
+     * the risk-acknowledgement modal. A live thread snapshot is High risk / Acknowledge in Core's
+     * `InvocationSafetyRegistry` (same tier as heap's `live` source, unlike CPU sampling's
+     * Moderate risk), so the capture request is only sent after explicit acknowledgement.
+     */
+    private async captureThreadSnapshotCore(): Promise<void> {
+        if (this.disposed) {
+            return;
+        }
+
+        const target = this.selectedTarget ?? await this.ensureTargetAndPanel();
+        if (!target || this.disposed) {
+            return;
+        }
+
+        const acknowledged = await vscode.window.showWarningMessage(
+            describeThreadCaptureRisk(),
+            { modal: true },
+            "Acknowledge and Capture",
+            "Cancel",
+        );
+        if (acknowledged !== "Acknowledge and Capture" || this.disposed) {
+            return;
+        }
+
+        this.postMessage({
+            type: "captureStatus",
+            kind: "thread-snapshot",
+            state: "running",
+            message: "Capturing thread snapshot…",
+        });
+
+        let session: StreamChild;
+        let ownsSession: boolean;
+        try {
+            ({ session, owns: ownsSession } = await this.acquireChild());
+        } catch (error) {
+            this.postMessage({
+                type: "captureStatus",
+                kind: "thread-snapshot",
+                state: "error",
+                message: withRuntimeGuidance(errorMessage(error)),
+            });
+            return;
+        }
+
+        const requestId = randomBytes(12).toString("hex");
+        const pending: PendingCapture = { kind: "thread-snapshot", deferred: deferred<ThreadCaptureResult>() };
+        session.pendingCaptures.set(requestId, pending);
+        try {
+            this.writeFrame(session, {
+                type: "capture",
+                requestId,
+                kind: "thread-snapshot",
+                processId: target.processId,
+                maxFramesPerThread: 64,
+                acknowledgeRisk: "high",
+            });
+            // A thread snapshot suspends the whole target during a ClrMD walk, same ceiling
+            // reasoning as heap's `live` source — see captureHeapCore's matching comment.
+            const result = await withTimeout(pending.deferred.promise, 120_000);
+            this.postMessage({ type: "capture", kind: "thread-snapshot", result });
+            this.postMessage({
+                type: "captureStatus",
+                kind: "thread-snapshot",
+                state: "done",
+                message: "Thread snapshot capture complete.",
+            });
+        } catch (error) {
+            this.postMessage({
+                type: "captureStatus",
+                kind: "thread-snapshot",
+                state: "error",
+                message: withRuntimeGuidance(errorMessage(error)),
+            });
+            this.output.appendLine(`Thread snapshot capture failed: ${errorMessage(error)}`);
+        } finally {
+            session.pendingCaptures.delete(requestId);
+            if (ownsSession && !session.sessionId && !session.startInFlight && session.pendingCaptures.size === 0) {
+                // Same connection-reuse bookkeeping as captureCpuCore/captureHeapCore: only close
+                // a capture-only connection once every other capture sharing it has also finished.
+                session.expectedShutdown = true;
+                await this.closeChild(session);
+            }
+        }
+    }
+
     /** Discovers a target process (if needed), opens the panel, and waits for it to initialize. */
     private async ensureTargetAndPanel(): Promise<TargetProcess | undefined> {
         if (this.selectedTarget && this.panel) {
@@ -398,12 +502,13 @@ class CounterPanelController implements vscode.Disposable {
             // sits queued behind it and won't be read until that capture's response is fully
             // processed. Give that case extra headroom instead of racing a fixed 10s timeout and
             // force-killing the process while a capture is still legitimately busy. A pending heap
-            // capture can legitimately run far longer than a CPU capture (a `gcdump` induces and
-            // waits out a blocking Gen2 GC; a `live` walk suspends and walks the whole heap), so
-            // size the timeout to the longest capture ceiling actually in flight rather than a
-            // single CPU-sized constant.
-            const hasPendingHeapCapture = [...child.pendingCaptures.values()].some(pending => pending.kind === "heap");
-            const timeoutMs = hasPendingHeapCapture ? 125_000 : child.pendingCaptures.size > 0 ? 25_000 : 10_000;
+            // or thread-snapshot capture can legitimately run far longer than a CPU capture (a
+            // `gcdump` induces and waits out a blocking Gen2 GC; a `live` heap walk or a thread
+            // snapshot suspends and walks the whole target), so size the timeout to the longest
+            // capture ceiling actually in flight rather than a single CPU-sized constant.
+            const hasPendingLongCapture = [...child.pendingCaptures.values()]
+                .some(pending => pending.kind === "heap" || pending.kind === "thread-snapshot");
+            const timeoutMs = hasPendingLongCapture ? 125_000 : child.pendingCaptures.size > 0 ? 25_000 : 10_000;
             await withTimeout(child.terminal.promise, timeoutMs);
         } catch (error) {
             this.output.appendLine(`Could not confirm CLI stream shutdown: ${errorMessage(error)}`);
@@ -480,6 +585,8 @@ class CounterPanelController implements vscode.Disposable {
                 void this.captureCpu();
             } else if (message.type === "captureHeap") {
                 void this.captureHeap();
+            } else if (message.type === "captureThreadSnapshot") {
+                void this.captureThreadSnapshot();
             }
         }, undefined, []);
         panel.onDidDispose(() => {
@@ -795,6 +902,8 @@ class CounterPanelController implements vscode.Disposable {
                     pending.deferred.resolve(frame.result);
                 } else if (pending.kind === "heap" && isHeapCaptureResult(frame.result)) {
                     pending.deferred.resolve(frame.result);
+                } else if (pending.kind === "thread-snapshot" && isThreadCaptureResult(frame.result)) {
+                    pending.deferred.resolve(frame.result);
                 } else {
                     pending.deferred.reject(new Error("The CLI returned a capture result in an unexpected shape."));
                 }
@@ -806,9 +915,10 @@ class CounterPanelController implements vscode.Disposable {
                 const error = new Error(
                     frame.code === "protocol_version_unsupported"
                         ? `CLI protocol mismatch: ${message}`
-                        // An older CLI build that predates #1110 does not recognize the "heap"
-                        // capture kind; surface a concise upgrade hint instead of the raw CLI
-                        // error, matching the protocol-version-mismatch compatibility message.
+                        // An older CLI build that predates #1110/#1112 does not recognize the
+                        // "heap"/"thread-snapshot" capture kinds; surface a concise upgrade hint
+                        // instead of the raw CLI error, matching the protocol-version-mismatch
+                        // compatibility message.
                         : frame.code === "unsupported_capture_kind"
                             ? withRuntimeGuidance(message)
                             : message,
@@ -947,6 +1057,7 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.commands.registerCommand("dotnetDiagnostics.stopCounters", () => controller.stopCounters()),
         vscode.commands.registerCommand("dotnetDiagnostics.captureCpu", () => controller.captureCpu()),
         vscode.commands.registerCommand("dotnetDiagnostics.captureHeap", () => controller.captureHeap()),
+        vscode.commands.registerCommand("dotnetDiagnostics.captureThreadSnapshot", () => controller.captureThreadSnapshot()),
     );
 }
 
@@ -988,7 +1099,15 @@ class DiagnosticsActionsProvider implements vscode.TreeDataProvider<vscode.TreeI
             title: "Capture Heap Snapshot",
         };
 
-        return [start, stop, captureCpu, captureHeap];
+        const captureThreadSnapshot = new vscode.TreeItem("Capture Thread Snapshot", vscode.TreeItemCollapsibleState.None);
+        captureThreadSnapshot.description = "Take a point-in-time thread/lock snapshot (live)";
+        captureThreadSnapshot.iconPath = new vscode.ThemeIcon("list-tree");
+        captureThreadSnapshot.command = {
+            command: "dotnetDiagnostics.captureThreadSnapshot",
+            title: "Capture Thread Snapshot",
+        };
+
+        return [start, stop, captureCpu, captureHeap, captureThreadSnapshot];
     }
 }
 
@@ -1023,7 +1142,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     th, td { text-align:left; padding:.25rem .6rem; border-bottom:1px solid var(--vscode-panel-border); }
     #gcHeadline { margin:.3rem 0 .6rem; color:var(--vscode-descriptionForeground); }
     #captureStatus { color:var(--vscode-descriptionForeground); margin:.3rem 0; }
-    #captureResult.empty { display:none; }
+    .empty { display:none; }
   </style>
 </head>
 <body>
@@ -1034,6 +1153,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       <button id="start">Start</button><button id="stop" disabled>Stop</button>
       <button id="captureCpu">Capture CPU now</button>
       <button id="captureHeap">Capture heap snapshot</button>
+      <button id="captureThreadSnapshot">Capture thread snapshot</button>
     </div>
   </header>
   <div id="status" role="status">Connecting to CLI…</div>
@@ -1075,6 +1195,18 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     </div>
   </section>
 
+  <section class="panel">
+    <h3>Thread snapshot</h3>
+    <div id="captureThreadStatus"></div>
+    <div id="captureThreadResult" class="empty">
+      <div id="captureThreadHeadline"></div>
+      <table id="captureThreadTable">
+        <thead><tr><th>Thread</th><th>State</th><th>Wait reason</th><th>Top frame</th></tr></thead>
+        <tbody id="captureThreadBody"></tbody>
+      </table>
+    </div>
+  </section>
+
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     const metricSelect = document.getElementById('metric');
@@ -1082,6 +1214,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     const stopButton = document.getElementById('stop');
     const captureCpuButton = document.getElementById('captureCpu');
     const captureHeapButton = document.getElementById('captureHeap');
+    const captureThreadSnapshotButton = document.getElementById('captureThreadSnapshot');
     const statusElement = document.getElementById('status');
     const valueElement = document.getElementById('value');
     const qualityElement = document.getElementById('quality');
@@ -1098,6 +1231,10 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     const captureHeapResultElement = document.getElementById('captureHeapResult');
     const captureHeapHeadline = document.getElementById('captureHeapHeadline');
     const captureHeapBody = document.getElementById('captureHeapBody');
+    const captureThreadStatusElement = document.getElementById('captureThreadStatus');
+    const captureThreadResultElement = document.getElementById('captureThreadResult');
+    const captureThreadHeadline = document.getElementById('captureThreadHeadline');
+    const captureThreadBody = document.getElementById('captureThreadBody');
     const counters = new Map();
     const maxSeries = ${MAX_WEBVIEW_SERIES};
     // Defensive backstops in case a timestamp is missing/unparseable and time-based eviction
@@ -1359,6 +1496,47 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       });
     }
 
+    const MAX_THREAD_ROWS = 20;
+
+    // Same one-shot replace-not-append semantics as renderCapture/renderHeapCapture, for thread
+    // snapshots. 'result' is the trimmed DiagnosticResult projection the CLI streaming protocol
+    // emits for a "thread-snapshot" capture: summary/data (threads, locks, totals) - see
+    // CliStreamingProtocol.HandleThreadSnapshotCaptureAsync. This is a summary-first panel (not a
+    // full stack-dump viewer), so the table is capped at MAX_THREAD_ROWS even though the CLI's own
+    // bounded projection already keeps the wire payload small.
+    function renderThreadCapture(result) {
+      captureThreadResultElement.classList.remove('empty');
+      const data = result && result.data;
+      const headlineParts = ['Thread snapshot'];
+      if (data && typeof data.processId === 'number') headlineParts.push('· PID ' + data.processId);
+      if (data && typeof data.totalThreads === 'number') headlineParts.push('· ' + data.totalThreads + ' thread(s)');
+      if (data && typeof data.totalLocks === 'number' && data.totalLocks > 0) {
+        headlineParts.push('· ' + data.totalLocks + ' lock(s)');
+      }
+      if (data && typeof data.omittedThreads === 'number' && data.omittedThreads > 0) {
+        headlineParts.push('· ' + data.omittedThreads + ' thread(s) omitted inline');
+      }
+      captureThreadHeadline.textContent = headlineParts.join(' ');
+      captureThreadBody.innerHTML = '';
+      const threads = (data && data.threads) || [];
+      threads.slice(0, MAX_THREAD_ROWS).forEach(thread => {
+        const row = document.createElement('tr');
+        const topFrame = Array.isArray(thread.frames) && thread.frames.length > 0 ? thread.frames[0] : '';
+        const cells = [
+          String(thread.managedThreadId),
+          String(thread.state || '') + (thread.isLikelyBlocked ? ' (blocked)' : ''),
+          String(thread.inferredWaitReason || ''),
+          String(topFrame),
+        ];
+        cells.forEach(text => {
+          const cell = document.createElement('td');
+          cell.textContent = text;
+          row.appendChild(cell);
+        });
+        captureThreadBody.appendChild(row);
+      });
+    }
+
     window.addEventListener('message', event => {
       const message = event.data;
       if (!message || typeof message.type !== 'string') return;
@@ -1376,11 +1554,16 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       } else if (message.type === 'captureStatus' && message.kind === 'heap') {
         captureHeapStatusElement.textContent = message.message || message.state || '';
         captureHeapButton.disabled = message.state === 'running';
+      } else if (message.type === 'captureStatus' && message.kind === 'thread-snapshot') {
+        captureThreadStatusElement.textContent = message.message || message.state || '';
+        captureThreadSnapshotButton.disabled = message.state === 'running';
       } else if (message.type === 'captureStatus') {
         captureStatusElement.textContent = message.message || message.state || '';
         captureCpuButton.disabled = message.state === 'running';
       } else if (message.type === 'capture' && message.kind === 'heap') {
         renderHeapCapture(message.source, message.result);
+      } else if (message.type === 'capture' && message.kind === 'thread-snapshot') {
+        renderThreadCapture(message.result);
       } else if (message.type === 'capture') {
         renderCapture(message.summary);
       } else if (message.type === 'historyDuration') {
@@ -1424,6 +1607,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     stopButton.addEventListener('click', () => vscode.postMessage({ type: 'stop' }));
     captureCpuButton.addEventListener('click', () => vscode.postMessage({ type: 'captureCpu' }));
     captureHeapButton.addEventListener('click', () => vscode.postMessage({ type: 'captureHeap' }));
+    captureThreadSnapshotButton.addEventListener('click', () => vscode.postMessage({ type: 'captureThreadSnapshot' }));
     window.addEventListener('resize', resizeCanvas);
     resizeCanvas();
     updateButtons(false);
@@ -1518,12 +1702,18 @@ function describeHeapCaptureRisk(source: HeapCaptureSource, label: string): stri
     return `Capture heap snapshot (${label})? ${impact} This is a high-risk operation that requires explicit acknowledgement before it runs against the selected process.`;
 }
 
+function describeThreadCaptureRisk(): string {
+    return "Capture thread snapshot? A live ClrMD thread walk attaches with ptrace, briefly suspends the target, "
+        + "and exposes stack, type, and method names. This may expose possibly confidential data. This is a "
+        + "high-risk operation that requires explicit acknowledgement before it runs against the selected process.";
+}
+
 function withRuntimeGuidance(message: string): string {
     if (/protocol mismatch|protocol version/i.test(message)) {
         return `${message} Update dotnet-diagnostics-cli to a version compatible with this extension.`;
     }
-    if (/unsupported_capture_kind|capture kind 'heap' is not supported/i.test(message)) {
-        return `${message} Update dotnet-diagnostics-cli to a version that supports the 'heap' capture kind.`;
+    if (/unsupported_capture_kind|capture kind '(heap|thread-snapshot)' is not supported/i.test(message)) {
+        return `${message} Update dotnet-diagnostics-cli to a version that supports this capture kind.`;
     }
     if (/ENOENT|not found|cannot find the file/i.test(message)) {
         return `${message}\nInstall dotnet-diagnostics-cli explicitly with 'dotnet tool install -g dotnet-diagnostics-cli', or set the machine-scoped dotnetDiagnostics.cliPath.`;

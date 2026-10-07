@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using DotnetDiagnostics.Core;
+using DotnetDiagnostics.Core.Collection;
 using DotnetDiagnostics.Core.Counters;
 using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Drilldown;
@@ -9,6 +10,7 @@ using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.Safety;
 using DotnetDiagnostics.Core.Security;
+using DotnetDiagnostics.Core.Threads;
 using DotnetDiagnostics.Core.UseCases;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -19,8 +21,9 @@ namespace DotnetDiagnostics.Cli;
 /// Versioned bidirectional JSON Lines protocol for <c>dotnet-diagnostics-cli stream --protocol jsonl</c>.
 /// Supports one or more concurrently-running live signal kinds (<c>counters</c>, <c>gc</c>) composed
 /// behind a single <see cref="ComposedDiagnosticSession"/> per <c>start</c> request (#1099), plus a
-/// one-shot <c>capture</c> request/response pair for point-in-time kinds (currently <c>cpu</c>) that
-/// does not open a live session. The single-kind counters wire shape from #1091/#1092/#1093 remains
+/// one-shot <c>capture</c> request/response pair for point-in-time kinds (<c>cpu</c>, <c>heap</c>,
+/// <c>thread-snapshot</c>) that does not open a live session. The single-kind counters wire shape
+/// from #1091/#1092/#1093 remains
 /// valid: a <c>start</c> message without a <c>kinds</c> array is treated as a single implicit
 /// <c>counters</c> kind using its top-level fields, so existing clients (the VS Code extension) do
 /// not need changes.
@@ -52,7 +55,12 @@ internal static class CliStreamingProtocol
         };
 
     /// <summary>Point-in-time kinds known to the <c>capture</c> request/response flow.</summary>
-    private static readonly HashSet<string> CaptureKinds = new(StringComparer.Ordinal) { "cpu", "heap" };
+    private static readonly HashSet<string> CaptureKinds = new(StringComparer.Ordinal)
+    {
+        "cpu",
+        "heap",
+        DiagnosticOperationCatalog.ThreadSnapshotCliKind,
+    };
 
     /// <summary>Heap sources accepted by a <c>capture</c> request with <c>kind="heap"</c>.</summary>
     private static readonly HashSet<string> HeapCaptureSources = new(StringComparer.Ordinal)
@@ -438,6 +446,23 @@ internal static class CliStreamingProtocol
             }
         }
 
+        var maxFramesPerThread = 64;
+        if (kind == DiagnosticOperationCatalog.ThreadSnapshotCliKind
+            && root.TryGetProperty("maxFramesPerThread", out var maxFramesElement)
+            && (!maxFramesElement.TryGetInt32(out maxFramesPerThread)
+                || maxFramesPerThread < 1
+                || maxFramesPerThread > ClrMdThreadSnapshotInspector.MaxFramesPerThreadHardCap))
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId,
+                code = "invalid_capture",
+                message = $"'maxFramesPerThread' must be between 1 and {ClrMdThreadSnapshotInspector.MaxFramesPerThreadHardCap}.",
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+
         var acknowledgeRisk = TryGetString(root, "acknowledgeRisk", out var acknowledgeRiskValue)
             ? acknowledgeRiskValue
             : null;
@@ -445,7 +470,11 @@ internal static class CliStreamingProtocol
         // CPU capture reuses the same shared Core safety registry entry as `collect --kind cpu`.
         // A `heap` capture instead reuses the `inspect-heap` entry, which is High risk/Acknowledge
         // for both `live` and `gcdump` sources (see InvocationSafetyRegistry.InspectHeapProfile),
-        // unlike CPU sampling's Moderate risk — so it requires a matching `acknowledgeRisk`.
+        // unlike CPU sampling's Moderate risk — so it requires a matching `acknowledgeRisk`. A
+        // `thread-snapshot` capture (always a live ClrMD attach for this VS Code flow — the CLI's
+        // offline --dump-file option is not relevant here) falls through to the generic
+        // `collect`-kind branch below, which already resolves to the same `live` High-risk profile
+        // as `collect --kind thread-snapshot` (see InvocationSafetyRegistry.CollectThreadSnapshot).
         var safetyOptions = kind == "heap"
             ? new CliOptions { Command = "inspect-heap", Sources = [heapSource!], Pid = processId, AcknowledgeRisk = acknowledgeRisk }
             : new CliOptions { Command = "collect", Kind = kind, Pid = processId, AcknowledgeRisk = acknowledgeRisk };
@@ -479,6 +508,13 @@ internal static class CliStreamingProtocol
             if (kind == "heap")
             {
                 await HandleHeapCaptureAsync(requestId, services, writer, processId, heapSource!, topTypes, cancellationToken)
+                    .ConfigureAwait(false);
+                return;
+            }
+
+            if (kind == DiagnosticOperationCatalog.ThreadSnapshotCliKind)
+            {
+                await HandleThreadSnapshotCaptureAsync(requestId, services, writer, processId, maxFramesPerThread, cancellationToken)
                     .ConfigureAwait(false);
                 return;
             }
@@ -590,6 +626,99 @@ internal static class CliStreamingProtocol
                         warnings = data.Warnings,
                         quality = data.Quality,
                         gcDumpStatus = data.GcDumpStatus,
+                    },
+            },
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Dispatches a <c>thread-snapshot</c> capture to the same Core use case as the CLI's one-shot
+    /// <c>collect --kind thread-snapshot</c> (<see cref="CliCommands"/>), reusing its exact DI
+    /// resolution and call pattern (always a live ClrMD attach for this VS Code flow — the CLI's
+    /// offline <c>--dump-file</c> option is not relevant to a live panel), then writes a trimmed
+    /// <see cref="ThreadSnapshotQueryResult"/> projection that keeps what a VS Code panel needs
+    /// (per-thread id/state/wait-reason/top frames, contended locks, thread pool summary) and drops
+    /// MCP-only drilldown/pagination noise fields.
+    /// </summary>
+    private static async Task HandleThreadSnapshotCaptureAsync(
+        string requestId,
+        IServiceProvider services,
+        ProtocolWriter writer,
+        int processId,
+        int maxFramesPerThread,
+        CancellationToken cancellationToken)
+    {
+        var result = await SamplerUseCases.CollectThreadSnapshot(
+            services.GetRequiredService<IThreadSnapshotInspector>(),
+            services.GetRequiredService<IDiagnosticHandleStore>(),
+            services.GetRequiredService<IProcessContextResolver>(),
+            services.GetRequiredService<SymbolServerAllowlist>(),
+            principalAllowsSymbolsRemote: false,
+            processId,
+            dumpFilePath: null,
+            maxFramesPerThread,
+            includeRuntimeFrames: false,
+            includeNativeFrames: false,
+            symbolPath: null,
+            depth: SamplingDepth.Detail,
+            cancellationToken).ConfigureAwait(false);
+
+        if (result.IsError)
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId,
+                code = "capture_failed",
+                message = result.Error!.Message,
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+
+        var data = result.Data;
+        await writer.WriteAsync(new
+        {
+            type = "capture",
+            requestId,
+            kind = DiagnosticOperationCatalog.ThreadSnapshotCliKind,
+            processId,
+            result = new
+            {
+                summary = result.Summary,
+                data = data is null
+                    ? null
+                    : new
+                    {
+                        processId = data.ProcessId,
+                        origin = data.Origin,
+                        capturedAt = data.CapturedAt,
+                        walkDuration = data.WalkDuration,
+                        totalThreads = data.TotalThreads,
+                        omittedThreads = data.OmittedThreads,
+                        totalLocks = data.TotalLocks,
+                        omittedLocks = data.OmittedLocks,
+                        threads = data.Threads?.Select(static thread => new
+                        {
+                            managedThreadId = thread.ManagedThreadId,
+                            osThreadId = thread.OSThreadId,
+                            state = thread.State,
+                            isAlive = thread.IsAlive,
+                            isBackground = thread.IsBackground,
+                            isGc = thread.IsGc,
+                            isThreadpoolWorker = thread.IsThreadpoolWorker,
+                            lockCount = thread.LockCount,
+                            currentExceptionType = thread.CurrentExceptionType,
+                            isLikelyBlocked = thread.IsLikelyBlocked,
+                            inferredWaitReason = thread.InferredWaitReason,
+                            frames = thread.Frames.Select(static frame => frame.DisplayName).ToArray(),
+                        }),
+                        locks = data.Locks?.Select(static lockState => new
+                        {
+                            objectTypeFullName = lockState.ObjectTypeFullName,
+                            ownerManagedThreadId = lockState.OwnerManagedThreadId,
+                            waitingThreadCount = lockState.WaitingThreadCount,
+                            isContended = lockState.IsContended,
+                        }),
                     },
             },
         }, cancellationToken).ConfigureAwait(false);
