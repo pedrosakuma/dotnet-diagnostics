@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { execFile as execFileCallback, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { basename } from "node:path";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import { promisify } from "node:util";
 import * as vscode from "vscode";
@@ -7,12 +8,14 @@ import {
     describeStreamCompatibilityError,
     isGcCollection,
     isCpuSampleSummary,
+    isDumpHeapCaptureResult,
     isHeapCaptureResult,
     isThreadCaptureResult,
     parseProcessList,
     parseProtocolFrame,
     type CounterValue,
     type CpuSampleSummary,
+    type DumpHeapCaptureResult,
     type HeapCaptureResult,
     type ThreadCaptureResult,
     type ProtocolFrame,
@@ -532,11 +535,7 @@ class CounterPanelController implements vscode.Disposable {
     }
 
     private getCliPath(): string {
-        const configured = vscode.workspace
-            .getConfiguration("dotnetDiagnostics")
-            .get<string>("cliPath", "dotnet-diagnostics-cli")
-            .trim();
-        return configured || "dotnet-diagnostics-cli";
+        return resolveCliPath();
     }
 
     private getHistoryDurationSeconds(): number {
@@ -785,16 +784,7 @@ class CounterPanelController implements vscode.Disposable {
     }
 
     private spawnStream(): ChildProcessWithoutNullStreams {
-        const cliPath = this.getCliPath();
-        try {
-            return spawn(cliPath, ["stream", "--protocol", "jsonl"], {
-                stdio: ["pipe", "pipe", "pipe"],
-                windowsHide: true,
-                shell: false,
-            });
-        } catch (error) {
-            throw new Error(`Could not launch '${cliPath}': ${errorMessage(error)}`);
-        }
+        return spawnStreamingCli(this.getCliPath());
     }
 
     private handleFrame(session: StreamChild, line: string): void {
@@ -1039,6 +1029,345 @@ class CounterPanelController implements vscode.Disposable {
     }
 }
 
+/** A pending one-shot `capture` request on a {@link DumpAnalysisChild} connection, keyed by `requestId`. */
+type DumpAnalysisPendingCapture =
+    | { kind: "heap"; deferred: Deferred<DumpHeapCaptureResult> }
+    | { kind: "thread-snapshot"; deferred: Deferred<ThreadCaptureResult> };
+
+/**
+ * A short-lived, capture-only CLI connection used exactly once by {@link DumpAnalysisPanelController}:
+ * handshake, send both capture requests, collect both results, close. Unlike `StreamChild` there is
+ * no `started`/`sessionId`/counters-session state at all, because this flow never starts a live
+ * streaming session.
+ */
+interface DumpAnalysisChild {
+    process: ChildProcessWithoutNullStreams;
+    lines: ReadlineInterface;
+    handshake: Deferred<void>;
+    closed: Deferred<void>;
+    stderrTail: string;
+    terminated: boolean;
+    pendingCaptures: Map<string, DumpAnalysisPendingCapture>;
+}
+
+/**
+ * Dedicated webview panel for "Analyze Dump File" (#1114). Deliberately NOT built on top of
+ * `CounterPanelController`: that controller's entire model (`TargetProcess`, `selectedTarget`,
+ * start/stop live session, connection reuse across repeated captures) assumes a live PID, and a
+ * dump file has no PID and is analyzed exactly once per panel. This controller instead opens one
+ * short-lived capture-only CLI connection, fires the heap-from-dump and thread-snapshot-from-dump
+ * requests concurrently, renders both results, and closes the connection — it holds no live-session
+ * state and reuses only the module-level spawn/handshake/frame-parsing helpers shared with
+ * `CounterPanelController`.
+ */
+class DumpAnalysisPanelController implements vscode.Disposable {
+    private readonly panel: vscode.WebviewPanel;
+    private disposed = false;
+    /** Tracked so `dispose()` can forcibly end an in-flight capture-only connection when the panel is closed mid-analysis. */
+    private activeChild: DumpAnalysisChild | undefined;
+
+    public constructor(private readonly dumpFilePath: string, private readonly output: vscode.OutputChannel) {
+        const fileName = basename(dumpFilePath);
+        this.panel = vscode.window.createWebviewPanel(
+            "dotnetDiagnostics.dumpAnalysis",
+            `Dump Analysis: ${fileName}`,
+            vscode.ViewColumn.Active,
+            { enableScripts: true, retainContextWhenHidden: true },
+        );
+        this.panel.webview.html = renderDumpAnalysisHtml(fileName, randomBytes(16).toString("hex"));
+        this.panel.onDidDispose(() => {
+            this.dispose();
+        });
+    }
+
+    public reveal(): void {
+        this.panel.reveal(vscode.ViewColumn.Active);
+    }
+
+    public dispose(): void {
+        if (this.disposed) {
+            return;
+        }
+        this.disposed = true;
+        // Best-effort: kill rather than gracefully close, since this can run synchronously from
+        // panel disposal / extension deactivation and must not block on the child's own shutdown.
+        this.activeChild?.process.kill();
+        this.panel.dispose();
+    }
+
+    /**
+     * Opens the capture-only connection, fires the dump captures, renders each result as it
+     * arrives, and always closes the connection afterwards (there is nothing left to reuse it for
+     * — unlike `CounterPanelController`'s capture-only connections, this panel never starts a live
+     * session on the same connection). The two capture requests are sent and awaited one at a time
+     * rather than concurrently: `CliStreamingProtocol`'s request loop fully awaits one `capture`
+     * before reading the next line on a given connection, so sending both at once would only queue
+     * the second behind the first while its own client-side timeout was already ticking.
+     */
+    public async run(): Promise<void> {
+        this.postMessage({ type: "captureStatus", kind: "heap", state: "running", message: "Analyzing heap types from the dump file…" });
+        this.postMessage({ type: "captureStatus", kind: "thread-snapshot", state: "running", message: "Analyzing threads and locks from the dump file…" });
+
+        let child: DumpAnalysisChild;
+        try {
+            child = await this.connect();
+        } catch (error) {
+            const message = withRuntimeGuidance(errorMessage(error));
+            this.postMessage({ type: "captureStatus", kind: "heap", state: "error", message });
+            this.postMessage({ type: "captureStatus", kind: "thread-snapshot", state: "error", message });
+            return;
+        }
+
+        try {
+            await this.captureHeapFromDump(child);
+            await this.captureThreadSnapshotFromDump(child);
+        } finally {
+            await this.close(child);
+        }
+    }
+
+    private async captureHeapFromDump(child: DumpAnalysisChild): Promise<void> {
+        const requestId = randomBytes(12).toString("hex");
+        const pending: DumpAnalysisPendingCapture = { kind: "heap", deferred: deferred<DumpHeapCaptureResult>() };
+        child.pendingCaptures.set(requestId, pending);
+        try {
+            this.writeFrame(child, {
+                type: "capture",
+                requestId,
+                kind: "heap",
+                source: "dump",
+                dumpFile: this.dumpFilePath,
+                topTypes: 20,
+            });
+            // Offline dump parsing has no live target to time out against, but this still needs a
+            // ceiling so a stuck/huge dump can't hang the panel forever; large dumps can take a
+            // while to enumerate, so this is generous compared to the live heap-capture ceiling.
+            const result = await withTimeout(pending.deferred.promise, 180_000);
+            this.postMessage({ type: "capture", kind: "heap", source: "dump", result });
+            this.postMessage({ type: "captureStatus", kind: "heap", state: "done", message: "Heap analysis complete." });
+        } catch (error) {
+            const message = withRuntimeGuidance(errorMessage(error));
+            this.postMessage({ type: "captureStatus", kind: "heap", state: "error", message });
+            this.output.appendLine(`Dump heap analysis failed: ${message}`);
+        } finally {
+            child.pendingCaptures.delete(requestId);
+        }
+    }
+
+    private async captureThreadSnapshotFromDump(child: DumpAnalysisChild): Promise<void> {
+        const requestId = randomBytes(12).toString("hex");
+        const pending: DumpAnalysisPendingCapture = { kind: "thread-snapshot", deferred: deferred<ThreadCaptureResult>() };
+        child.pendingCaptures.set(requestId, pending);
+        try {
+            this.writeFrame(child, {
+                type: "capture",
+                requestId,
+                kind: "thread-snapshot",
+                dumpFile: this.dumpFilePath,
+                maxFramesPerThread: 64,
+            });
+            const result = await withTimeout(pending.deferred.promise, 180_000);
+            this.postMessage({ type: "capture", kind: "thread-snapshot", result });
+            this.postMessage({ type: "captureStatus", kind: "thread-snapshot", state: "done", message: "Thread/lock analysis complete." });
+        } catch (error) {
+            const message = withRuntimeGuidance(errorMessage(error));
+            this.postMessage({ type: "captureStatus", kind: "thread-snapshot", state: "error", message });
+            this.output.appendLine(`Dump thread-snapshot analysis failed: ${message}`);
+        } finally {
+            child.pendingCaptures.delete(requestId);
+        }
+    }
+
+    private async connect(): Promise<DumpAnalysisChild> {
+        let process: ChildProcessWithoutNullStreams;
+        try {
+            process = spawnStreamingCli(resolveCliPath());
+        } catch (error) {
+            throw new Error(withRuntimeGuidance(errorMessage(error)));
+        }
+        const child: DumpAnalysisChild = {
+            process,
+            lines: createInterface({ input: process.stdout }),
+            handshake: deferred<void>(),
+            closed: deferred<void>(),
+            stderrTail: "",
+            terminated: false,
+            pendingCaptures: new Map(),
+        };
+        this.activeChild = child;
+
+        child.lines.on("line", line => this.handleFrame(child, line));
+        process.stdin.on("error", error => this.failPending(child, error));
+        process.stderr.on("data", (chunk: Buffer | string) => {
+            child.stderrTail = (child.stderrTail + chunk.toString()).slice(-8_192);
+        });
+        process.once("error", error => this.failPending(child, error));
+        process.once("close", () => {
+            child.lines.close();
+            child.terminated = true;
+            const details = child.stderrTail.trim();
+            if (details && !child.handshake.settled) {
+                this.failPending(child, new Error(describeStreamCompatibilityError(details)));
+            }
+            for (const pending of child.pendingCaptures.values()) {
+                pending.deferred.reject(new Error("The CLI connection closed before the capture completed."));
+            }
+            child.pendingCaptures.clear();
+            child.closed.resolve();
+        });
+
+        this.writeFrame(child, { type: "hello", protocolVersion: PROTOCOL_VERSION });
+        try {
+            await withTimeout(child.handshake.promise, 10_000);
+        } catch (error) {
+            await this.close(child);
+            throw error;
+        }
+        return child;
+    }
+
+    private handleFrame(child: DumpAnalysisChild, line: string): void {
+        let frame: ProtocolFrame;
+        try {
+            frame = parseProtocolFrame(line);
+        } catch (error) {
+            const compatibilityError = describeStreamCompatibilityError(line);
+            this.failPending(child, new Error(compatibilityError));
+            child.process.kill();
+            return;
+        }
+
+        switch (frame.type) {
+            case "hello":
+                if (frame.protocolVersion !== PROTOCOL_VERSION) {
+                    this.failPending(child, new Error(
+                        `CLI protocol mismatch. Extension supports version ${PROTOCOL_VERSION}; CLI reported ${String(frame.protocolVersion)}.`,
+                    ));
+                    child.process.kill();
+                    return;
+                }
+                child.handshake.resolve();
+                break;
+
+            case "capture": {
+                const requestId = typeof frame.requestId === "string" ? frame.requestId : undefined;
+                const pending = requestId ? child.pendingCaptures.get(requestId) : undefined;
+                if (!pending) {
+                    break;
+                }
+                if (pending.kind === "heap" && isDumpHeapCaptureResult(frame.result)) {
+                    pending.deferred.resolve(frame.result);
+                } else if (pending.kind === "thread-snapshot" && isThreadCaptureResult(frame.result)) {
+                    pending.deferred.resolve(frame.result);
+                } else {
+                    pending.deferred.reject(new Error("The CLI returned a capture result in an unexpected shape."));
+                }
+                break;
+            }
+
+            case "error": {
+                const message = typeof frame.message === "string" ? frame.message : "The CLI returned a protocol error.";
+                const error = new Error(
+                    frame.code === "protocol_version_unsupported"
+                        ? `CLI protocol mismatch: ${message}`
+                        : frame.code === "unsupported_capture_kind"
+                            ? withRuntimeGuidance(message)
+                            : message,
+                );
+                const requestId = typeof frame.requestId === "string" ? frame.requestId : undefined;
+                const pending = requestId ? child.pendingCaptures.get(requestId) : undefined;
+                if (pending) {
+                    pending.deferred.reject(error);
+                } else if (!child.handshake.settled) {
+                    child.handshake.reject(error);
+                } else {
+                    this.output.appendLine(`CLI protocol error: ${message}`);
+                }
+                break;
+            }
+
+            default:
+                this.output.appendLine(`Ignored unexpected CLI protocol frame type '${frame.type}' during dump analysis.`);
+                break;
+        }
+    }
+
+    private failPending(child: DumpAnalysisChild, error: Error): void {
+        if (!child.handshake.settled) {
+            child.handshake.reject(error);
+        }
+        for (const pending of child.pendingCaptures.values()) {
+            pending.deferred.reject(error);
+        }
+    }
+
+    private writeFrame(child: DumpAnalysisChild, frame: object): void {
+        if (!child.process.stdin.writable) {
+            throw new Error("CLI stdin is closed.");
+        }
+        child.process.stdin.write(`${JSON.stringify(frame)}\n`);
+    }
+
+    private postMessage(message: object): void {
+        if (!this.disposed) {
+            void this.panel.webview.postMessage(message);
+        }
+    }
+
+    private async close(child: DumpAnalysisChild): Promise<void> {
+        if (child.process.exitCode === null && child.process.signalCode === null) {
+            try {
+                child.process.stdin.end();
+            } catch (error) {
+                this.output.appendLine(`Could not close CLI stdin: ${errorMessage(error)}`);
+            }
+            try {
+                await withTimeout(child.closed.promise, 5_000);
+            } catch {
+                child.process.kill();
+                try {
+                    await withTimeout(child.closed.promise, 5_000);
+                } catch {
+                    this.output.appendLine("CLI child did not exit after dump analysis and was forcibly terminated.");
+                }
+            }
+        }
+        child.lines.close();
+        if (this.activeChild === child) {
+            this.activeChild = undefined;
+        }
+    }
+}
+
+/**
+ * Command handler for "Analyze Dump File" (#1114): picks an existing dump file from disk (no
+ * extension filter — dumps can be `.dmp`, `.dump`, or extensionless) and opens a dedicated panel
+ * analyzing it. Unlike heap/thread-snapshot live capture, dump-sourced requests resolve to Core's
+ * Moderate/Warn risk profiles rather than High/Acknowledge (see `InvocationSafetyRegistry`'s
+ * `HeapSources.Dump` and `CollectThreadSnapshot`'s `"dump"` profile), so — matching CPU sampling's
+ * existing no-modal posture — this proceeds straight from the file picker to capture with no
+ * risk-acknowledgement modal.
+ */
+async function analyzeDumpFile(output: vscode.OutputChannel, context: vscode.ExtensionContext): Promise<void> {
+    const picked = await vscode.window.showOpenDialog({
+        canSelectMany: false,
+        canSelectFiles: true,
+        canSelectFolders: false,
+        openLabel: "Analyze Dump File",
+        title: "Select a process dump file to analyze",
+    });
+    const dumpFilePath = picked?.[0]?.fsPath;
+    if (!dumpFilePath) {
+        return;
+    }
+
+    const controller = new DumpAnalysisPanelController(dumpFilePath, output);
+    // Registered so extension deactivation disposes any still-open dump-analysis panel (and kills
+    // its in-flight capture-only connection) rather than leaking a child process past host shutdown.
+    context.subscriptions.push(controller);
+    await controller.run();
+}
+
 let activeController: CounterPanelController | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -1058,6 +1387,7 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.commands.registerCommand("dotnetDiagnostics.captureCpu", () => controller.captureCpu()),
         vscode.commands.registerCommand("dotnetDiagnostics.captureHeap", () => controller.captureHeap()),
         vscode.commands.registerCommand("dotnetDiagnostics.captureThreadSnapshot", () => controller.captureThreadSnapshot()),
+        vscode.commands.registerCommand("dotnetDiagnostics.analyzeDumpFile", () => analyzeDumpFile(output, context)),
     );
 }
 
@@ -1107,7 +1437,15 @@ class DiagnosticsActionsProvider implements vscode.TreeDataProvider<vscode.TreeI
             title: "Capture Thread Snapshot",
         };
 
-        return [start, stop, captureCpu, captureHeap, captureThreadSnapshot];
+        const analyzeDumpFile = new vscode.TreeItem("Analyze Dump File", vscode.TreeItemCollapsibleState.None);
+        analyzeDumpFile.description = "Analyze heap types and threads/locks from an existing dump";
+        analyzeDumpFile.iconPath = new vscode.ThemeIcon("file-binary");
+        analyzeDumpFile.command = {
+            command: "dotnetDiagnostics.analyzeDumpFile",
+            title: "Analyze Dump File",
+        };
+
+        return [start, stop, captureCpu, captureHeap, captureThreadSnapshot, analyzeDumpFile];
     }
 }
 
@@ -1628,6 +1966,193 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     vscode.postMessage({ type: 'ready' });
   </script>
 
+</body>
+</html>`;
+}
+
+/** Shared with `DumpAnalysisPanelController` so both live-counters and dump-analysis connections resolve the CLI path identically. */
+function resolveCliPath(): string {
+    const configured = vscode.workspace
+        .getConfiguration("dotnetDiagnostics")
+        .get<string>("cliPath", "dotnet-diagnostics-cli")
+        .trim();
+    return configured || "dotnet-diagnostics-cli";
+}
+
+/**
+ * Spawns `dotnet-diagnostics-cli stream --protocol jsonl`. Shared by `CounterPanelController`
+ * (live counters + its capture-only reuse path) and the dump-analysis flow below, which opens its
+ * own short-lived connection without any `TargetProcess`/live-session state.
+ */
+function spawnStreamingCli(cliPath: string): ChildProcessWithoutNullStreams {
+    try {
+        return spawn(cliPath, ["stream", "--protocol", "jsonl"], {
+            stdio: ["pipe", "pipe", "pipe"],
+            windowsHide: true,
+            shell: false,
+        });
+    } catch (error) {
+        throw new Error(`Could not launch '${cliPath}': ${errorMessage(error)}`);
+    }
+}
+
+/**
+ * Renders the dedicated "Analyze Dump File" webview (#1114): a standalone page (no counters
+ * chart, no start/stop controls, no `TargetProcess`) with two result panels — heap top-types and
+ * thread/lock snapshot — populated once both dump-sourced captures complete. Visually consistent
+ * with (but intentionally not code-shared with) `renderHtml`'s heap/thread capture panels, because
+ * `DumpHeapCaptureResult`'s shape (`filePath`/`fileSizeBytes`, no `processId`/`suspendDuration`/
+ * `gcDumpStatus`) differs from the live `HeapCaptureResult` the counters panel renders.
+ */
+export function renderDumpAnalysisHtml(dumpFileName: string, nonce: string): string {
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}';">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dump analysis</title>
+  <style nonce="${nonce}">
+    body { color: var(--vscode-foreground); background: var(--vscode-editor-background); font-family: var(--vscode-font-family); padding: 0 1.2rem; }
+    header h2 { margin-bottom: .2rem; }
+    #error { color:var(--vscode-errorForeground); white-space:pre-wrap; }
+    section.panel { margin-top:1.4rem; }
+    section.panel h3 { margin-bottom:.3rem; }
+    table { border-collapse:collapse; width:100%; font-size:.9rem; }
+    th, td { text-align:left; padding:.25rem .6rem; border-bottom:1px solid var(--vscode-panel-border); }
+    .empty { display:none; }
+    .status { color:var(--vscode-descriptionForeground); margin:.3rem 0; }
+  </style>
+</head>
+<body>
+  <header>
+    <h2>Dump analysis</h2>
+    <div>${escapeHtml(dumpFileName)}</div>
+  </header>
+  <div id="error" role="alert"></div>
+
+  <section class="panel">
+    <h3>Heap snapshot</h3>
+    <div id="captureHeapStatus" class="status"></div>
+    <div id="captureHeapResult" class="empty">
+      <div id="captureHeapHeadline"></div>
+      <table id="captureHeapTable">
+        <thead><tr><th>Type</th><th>Instances</th><th>Bytes</th></tr></thead>
+        <tbody id="captureHeapBody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h3>Thread snapshot</h3>
+    <div id="captureThreadStatus" class="status"></div>
+    <div id="captureThreadResult" class="empty">
+      <div id="captureThreadHeadline"></div>
+      <table id="captureThreadTable">
+        <thead><tr><th>Thread</th><th>State</th><th>Wait reason</th><th>Top frame</th></tr></thead>
+        <tbody id="captureThreadBody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <script nonce="${nonce}">
+    const vscode = acquireVsCodeApi();
+    const errorElement = document.getElementById('error');
+    const captureHeapStatusElement = document.getElementById('captureHeapStatus');
+    const captureHeapResultElement = document.getElementById('captureHeapResult');
+    const captureHeapHeadline = document.getElementById('captureHeapHeadline');
+    const captureHeapBody = document.getElementById('captureHeapBody');
+    const captureThreadStatusElement = document.getElementById('captureThreadStatus');
+    const captureThreadResultElement = document.getElementById('captureThreadResult');
+    const captureThreadHeadline = document.getElementById('captureThreadHeadline');
+    const captureThreadBody = document.getElementById('captureThreadBody');
+
+    // 'result' is the trimmed DiagnosticResult<DumpInspection> projection the CLI streaming
+    // protocol emits for a "heap" capture with source "dump" - see
+    // CliStreamingProtocol.HandleHeapCaptureAsync's dump branch. Unlike the live counters panel's
+    // renderHeapCapture, there is no processId/suspendDuration/gcDumpStatus to show; instead the
+    // dump file path and size identify what was analyzed.
+    function renderDumpHeapCapture(result) {
+      captureHeapResultElement.classList.remove('empty');
+      const data = result && result.data;
+      const headlineParts = ['Heap snapshot from dump'];
+      if (data && typeof data.fileSizeBytes === 'number') {
+        headlineParts.push('· ' + (data.fileSizeBytes / (1024 * 1024)).toFixed(1) + ' MB');
+      }
+      const warnings = (data && data.warnings) || [];
+      if (warnings.length) headlineParts.push('· ' + warnings.length + ' warning(s)');
+      captureHeapHeadline.textContent = headlineParts.join(' ');
+      captureHeapBody.innerHTML = '';
+      const topTypes = (data && data.topTypesByBytes) || [];
+      topTypes.forEach(typeStat => {
+        const row = document.createElement('tr');
+        const cells = [
+          String(typeStat.typeFullName || ''),
+          String(typeStat.instanceCount),
+          String(typeStat.totalBytes),
+        ];
+        cells.forEach(text => {
+          const cell = document.createElement('td');
+          cell.textContent = text;
+          row.appendChild(cell);
+        });
+        captureHeapBody.appendChild(row);
+      });
+    }
+
+    const MAX_THREAD_ROWS = 20;
+
+    // 'result' is the trimmed DiagnosticResult<ThreadSnapshotQueryResult> projection the CLI
+    // streaming protocol emits for a "thread-snapshot" capture with dumpFile set - see
+    // CliStreamingProtocol.HandleThreadSnapshotCaptureAsync. ThreadSnapshotQueryResult's shape is
+    // identical regardless of live vs. dump origin (only data.origin differs), so this mirrors the
+    // live counters panel's renderThreadCapture.
+    function renderDumpThreadCapture(result) {
+      captureThreadResultElement.classList.remove('empty');
+      const data = result && result.data;
+      const headlineParts = ['Thread snapshot from dump'];
+      if (data && typeof data.totalThreads === 'number') headlineParts.push('· ' + data.totalThreads + ' thread(s)');
+      if (data && typeof data.totalLocks === 'number' && data.totalLocks > 0) {
+        headlineParts.push('· ' + data.totalLocks + ' lock(s)');
+      }
+      if (data && typeof data.omittedThreads === 'number' && data.omittedThreads > 0) {
+        headlineParts.push('· ' + data.omittedThreads + ' thread(s) omitted inline');
+      }
+      captureThreadHeadline.textContent = headlineParts.join(' ');
+      captureThreadBody.innerHTML = '';
+      const threads = (data && data.threads) || [];
+      threads.slice(0, MAX_THREAD_ROWS).forEach(thread => {
+        const row = document.createElement('tr');
+        const topFrame = Array.isArray(thread.frames) && thread.frames.length > 0 ? thread.frames[0] : '';
+        const cells = [
+          String(thread.managedThreadId),
+          String(thread.state || '') + (thread.isLikelyBlocked ? ' (blocked)' : ''),
+          String(thread.inferredWaitReason || ''),
+          String(topFrame),
+        ];
+        cells.forEach(text => {
+          const cell = document.createElement('td');
+          cell.textContent = text;
+          row.appendChild(cell);
+        });
+        captureThreadBody.appendChild(row);
+      });
+    }
+
+    window.addEventListener('message', event => {
+      const message = event.data;
+      if (!message || typeof message.type !== 'string') return;
+      if (message.type === 'captureStatus' && message.kind === 'heap') {
+        captureHeapStatusElement.textContent = message.message || message.state || '';
+      } else if (message.type === 'captureStatus' && message.kind === 'thread-snapshot') {
+        captureThreadStatusElement.textContent = message.message || message.state || '';
+      } else if (message.type === 'capture' && message.kind === 'heap') {
+        renderDumpHeapCapture(message.result);
+      } else if (message.type === 'capture' && message.kind === 'thread-snapshot') {
+        renderDumpThreadCapture(message.result);
+      }
+    });
+  </script>
 </body>
 </html>`;
 }

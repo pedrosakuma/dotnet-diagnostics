@@ -70,11 +70,32 @@ snapshot needs the same `ptrace`/`CAP_SYS_PTRACE` access as the heap capture's `
 AGENTS.md's "🪪 `CAP_SYS_PTRACE` for live memory readers" section) and fails with an actionable
 permission-denied message when that access is unavailable.
 
+Use **Analyze Dump File** (tree-view action or Command Palette command
+`dotnetDiagnostics.analyzeDumpFile`) to inspect heap types and threads/locks from a process dump
+file that already exists on disk. This opens a native file picker (no extension filter — dumps can
+be `.dmp`, `.dump`, or extensionless) and, once you choose a file, a **new, dedicated webview
+panel** titled after the dump's file name — separate from the live counters panel, because that
+panel's entire model (selected target, start/stop session) assumes a live PID, and a dump file has
+none. The panel opens a short-lived capture-only CLI connection and fires both a heap-from-dump and
+a thread-snapshot-from-dump request against it, rendering a heap top-types table (type, instance
+count, bytes, plus the dump's file size and any analysis warnings) and a thread/lock table (thread
+id, state, inferred wait reason, top stack frame) as each result arrives; the connection closes once
+both complete. Dump-sourced heap and thread-snapshot analysis is classified **Moderate risk / Warn**
+in Core's invocation-safety registry — not the High risk / Acknowledge tier of their live
+counterparts — because there is no live attach or target suspension involved, only offline parsing
+of a file already on disk. Matching CPU sampling's existing no-modal posture, this command proceeds
+straight from the file picker to analysis with **no risk-acknowledgement modal**. This command only
+**analyzes** an existing dump file — it does not capture/generate a new process dump, and it does
+not support interactive gcroot/object-graph drilldown by address; both remain out of scope for this
+command.
+
 Live streaming requires a CLI build that supports `stream --protocol jsonl` and the multi-kind
 `kinds`/`capture` protocol (CLI builds from this repository starting with #1099); the `heap` capture
 kind requires a CLI build from #1110 or later, and the `thread-snapshot` capture kind requires a CLI
-build from #1112 or later. A CLI installed from an older package may still support process discovery
-(or CPU/heap capture) but reject an unrecognized capture kind; update it or point
+build from #1112 or later. Analyzing a dump file requires a CLI build from #1114 or later, which adds
+the `dump` heap-capture source and the `dumpFile` field accepted by both the `heap` and
+`thread-snapshot` capture kinds. A CLI installed from an older package may still support process
+discovery (or CPU/heap capture) but reject an unrecognized capture kind or field; update it or point
 `dotnetDiagnostics.cliPath` at a compatible executable. The extension fails with a concise
 compatibility message instead of displaying CLI help output in the counters panel.
 

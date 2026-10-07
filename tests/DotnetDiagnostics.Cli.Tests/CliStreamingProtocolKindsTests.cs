@@ -2,6 +2,8 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using DotnetDiagnostics.Cli;
+using DotnetDiagnostics.Core.Artifacts;
+using DotnetDiagnostics.Core.Dump;
 using DotnetDiagnostics.TestSupport;
 using FluentAssertions;
 
@@ -117,10 +119,59 @@ public sealed class CliStreamingProtocolKindsTests
     {
         var (frames, _) = await RunInProcessAsync(
             new { type = "hello", protocolVersion = 1 },
-            new { type = "capture", requestId = "c1", kind = "heap", processId = 999_999, source = "dump" });
+            new { type = "capture", requestId = "c1", kind = "heap", processId = 999_999, source = "bogus" });
 
         frames[1].RootElement.GetProperty("code").GetString().Should().Be("invalid_capture");
         frames[1].RootElement.GetProperty("message").GetString().Should().Contain("source");
+    }
+
+    [Fact]
+    public async Task Capture_HeapDumpWithMissingDumpFile_ReturnsInvalidCaptureError()
+    {
+        var (frames, _) = await RunInProcessAsync(
+            new { type = "hello", protocolVersion = 1 },
+            new { type = "capture", requestId = "c1", kind = "heap", source = "dump" });
+
+        frames[1].RootElement.GetProperty("code").GetString().Should().Be("invalid_capture");
+        frames[1].RootElement.GetProperty("message").GetString().Should().Contain("dumpFile");
+    }
+
+    [Fact]
+    public async Task Capture_HeapDumpWithProcessIdAndDumpFile_ReturnsInvalidCaptureError()
+    {
+        var (frames, _) = await RunInProcessAsync(
+            new { type = "hello", protocolVersion = 1 },
+            new
+            {
+                type = "capture",
+                requestId = "c1",
+                kind = "heap",
+                source = "dump",
+                processId = 999_999,
+                dumpFile = "does-not-matter.dmp",
+            });
+
+        frames[1].RootElement.GetProperty("code").GetString().Should().Be("invalid_capture");
+        frames[1].RootElement.GetProperty("message").GetString().Should().Contain("processId");
+        frames[1].RootElement.GetProperty("message").GetString().Should().Contain("dumpFile");
+    }
+
+    [Fact]
+    public async Task Capture_HeapLiveWithDumpFile_ReturnsInvalidCaptureError()
+    {
+        var (frames, _) = await RunInProcessAsync(
+            new { type = "hello", protocolVersion = 1 },
+            new
+            {
+                type = "capture",
+                requestId = "c1",
+                kind = "heap",
+                source = "live",
+                dumpFile = "does-not-matter.dmp",
+            });
+
+        frames[1].RootElement.GetProperty("code").GetString().Should().Be("invalid_capture");
+        frames[1].RootElement.GetProperty("message").GetString().Should().Contain("dumpFile");
     }
 
     [Fact]
@@ -211,6 +262,160 @@ public sealed class CliStreamingProtocolKindsTests
 
         frames[1].RootElement.GetProperty("type").GetString().Should().Be("error");
         frames[1].RootElement.GetProperty("code").GetString().Should().Be("capture_safety_rejected");
+    }
+
+    [Fact]
+    public async Task Capture_ThreadSnapshotWithMissingProcessIdAndDumpFile_ReturnsInvalidCaptureError()
+    {
+        var (frames, _) = await RunInProcessAsync(
+            new { type = "hello", protocolVersion = 1 },
+            new { type = "capture", requestId = "c1", kind = "thread-snapshot" });
+
+        frames[1].RootElement.GetProperty("code").GetString().Should().Be("invalid_capture");
+        frames[1].RootElement.GetProperty("message").GetString().Should().Contain("processId");
+        frames[1].RootElement.GetProperty("message").GetString().Should().Contain("dumpFile");
+    }
+
+    [Fact]
+    public async Task Capture_ThreadSnapshotWithProcessIdAndDumpFile_ReturnsInvalidCaptureError()
+    {
+        var (frames, _) = await RunInProcessAsync(
+            new { type = "hello", protocolVersion = 1 },
+            new
+            {
+                type = "capture",
+                requestId = "c1",
+                kind = "thread-snapshot",
+                processId = 999_999,
+                dumpFile = "does-not-matter.dmp",
+            });
+
+        frames[1].RootElement.GetProperty("code").GetString().Should().Be("invalid_capture");
+        frames[1].RootElement.GetProperty("message").GetString().Should().Contain("mutually exclusive");
+    }
+
+    [Fact]
+    public async Task Capture_ThreadSnapshotDumpWithoutAcknowledgeRisk_ReturnsCaptureResult()
+    {
+        // A dump-sourced thread-snapshot resolves to the Moderate/Warn safety profile (unlike a
+        // live attach's High/Acknowledge), so it never needs "acknowledgeRisk" — even a
+        // non-existent dump file should fail at the Core use-case layer (capture_failed), not at
+        // the safety-preflight layer (capture_safety_rejected).
+        var (frames, _) = await RunInProcessAsync(
+            new { type = "hello", protocolVersion = 1 },
+            new
+            {
+                type = "capture",
+                requestId = "c1",
+                kind = "thread-snapshot",
+                dumpFile = "does-not-exist.dmp",
+            });
+
+        frames[1].RootElement.GetProperty("type").GetString().Should().Be("error");
+        frames[1].RootElement.GetProperty("code").GetString().Should().Be("capture_failed");
+    }
+
+    [Fact]
+    public async Task Capture_HeapDumpWithoutAcknowledgeRisk_ReturnsCaptureResult()
+    {
+        // Same Moderate/Warn posture as the thread-snapshot dump case above.
+        var (frames, _) = await RunInProcessAsync(
+            new { type = "hello", protocolVersion = 1 },
+            new
+            {
+                type = "capture",
+                requestId = "c1",
+                kind = "heap",
+                source = "dump",
+                dumpFile = "does-not-exist.dmp",
+            });
+
+        frames[1].RootElement.GetProperty("type").GetString().Should().Be("error");
+        frames[1].RootElement.GetProperty("code").GetString().Should().Be("capture_failed");
+    }
+
+    [Fact(Timeout = 120_000)]
+    public async Task Capture_HeapAndThreadSnapshotFromDump_RoundTrip()
+    {
+        await using var target = await LiveSampleProcess.StartPublishedAsync(
+            "CoreClrSample",
+            new LiveSampleOptions
+            {
+                BindHttpPort = true,
+                HarvestListeningUrl = true,
+                DiagnosticTimeout = TimeSpan.FromSeconds(30),
+            });
+
+        var dumpRoot = Path.Combine(Path.GetTempPath(), $"dotnet-diagnostics-cli-dump-protocol-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dumpRoot);
+        try
+        {
+            var dumper = new DiagnosticsClientDumper(new InlineArtifactRootProvider(dumpRoot));
+            var dump = await dumper.WriteDumpAsync(
+                target.ProcessId, ProcessDumpType.WithHeap, outputDirectory: null, CancellationToken.None);
+            File.Exists(dump.FilePath).Should().BeTrue();
+
+            var (frames, _) = await RunInProcessAsync(
+                new { type = "hello", protocolVersion = 1 },
+                new
+                {
+                    type = "capture",
+                    requestId = "heap-dump",
+                    kind = "heap",
+                    source = "dump",
+                    dumpFile = dump.FilePath,
+                    topTypes = 10,
+                },
+                new
+                {
+                    type = "capture",
+                    requestId = "thread-dump",
+                    kind = "thread-snapshot",
+                    dumpFile = dump.FilePath,
+                });
+
+            var heapFrame = frames[1].RootElement;
+            heapFrame.GetProperty("type").GetString().Should().Be("capture");
+            heapFrame.GetProperty("requestId").GetString().Should().Be("heap-dump");
+            heapFrame.GetProperty("source").GetString().Should().Be("dump");
+            heapFrame.GetProperty("dumpFile").GetString().Should().Be(dump.FilePath);
+            heapFrame.TryGetProperty("processId", out _).Should().BeFalse(
+                "a dump-sourced heap capture has no PID to report");
+            var heapData = heapFrame.GetProperty("result").GetProperty("data");
+            heapData.GetProperty("filePath").GetString().Should().Be(dump.FilePath);
+            heapData.GetProperty("topTypesByBytes").GetArrayLength().Should().BeGreaterThan(0);
+
+            var threadFrame = frames[2].RootElement;
+            threadFrame.GetProperty("type").GetString().Should().Be("capture");
+            threadFrame.GetProperty("requestId").GetString().Should().Be("thread-dump");
+            threadFrame.GetProperty("dumpFile").GetString().Should().Be(dump.FilePath);
+            var threadData = threadFrame.GetProperty("result").GetProperty("data");
+            threadData.GetProperty("origin").GetString().Should().Be("dump");
+            threadData.GetProperty("totalThreads").GetInt32().Should().BeGreaterThan(0);
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(dumpRoot, recursive: true);
+            }
+            catch
+            {
+                // Best-effort cleanup; dump files are large and transient test scratch.
+            }
+        }
+    }
+
+    /// <summary>Minimal <see cref="IArtifactRootProvider"/> that pins the root to a caller-supplied directory.</summary>
+    private sealed class InlineArtifactRootProvider : IArtifactRootProvider
+    {
+        public InlineArtifactRootProvider(string root)
+        {
+            Root = Path.GetFullPath(root);
+            Directory.CreateDirectory(Root);
+        }
+
+        public string Root { get; }
     }
 
 

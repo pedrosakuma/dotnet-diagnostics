@@ -61,6 +61,10 @@
       {
         "command": "dotnetDiagnostics.captureThreadSnapshot",
         "title": ".NET Diagnostics: Capture Thread Snapshot"
+      },
+      {
+        "command": "dotnetDiagnostics.analyzeDumpFile",
+        "title": ".NET Diagnostics: Analyze Dump File"
       }
     ],
     "configuration": {

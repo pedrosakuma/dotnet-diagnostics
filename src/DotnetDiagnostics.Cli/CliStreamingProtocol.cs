@@ -67,6 +67,7 @@ internal static class CliStreamingProtocol
     {
         DiagnosticOperationCatalog.HeapSources.Live,
         DiagnosticOperationCatalog.HeapSources.GcDump,
+        DiagnosticOperationCatalog.HeapSources.Dump,
     };
 
     public static async Task<int> RunAsync(
@@ -376,16 +377,125 @@ internal static class CliStreamingProtocol
             return;
         }
 
-        if (!TryGetInt32(root, "processId", out var processId) || processId <= 0)
+        // `dumpFile` is a mutually-exclusive alternative to `processId` for a 'heap' capture with
+        // `source="dump"` and for a `thread-snapshot` capture — both dispatch to the same offline
+        // Core use cases the one-shot CLI's `--dump-file` option already serves
+        // (HeapInspectionUseCases.InspectDump / SamplerUseCases.CollectThreadSnapshot). 'cpu' and a
+        // 'heap' capture with `source="live"`/`"gcdump"` never accept a dump file; they always
+        // require a live `processId`.
+        var dumpFile = TryGetString(root, "dumpFile", out var dumpFileValue) && !string.IsNullOrWhiteSpace(dumpFileValue)
+            ? dumpFileValue
+            : null;
+
+        string? heapSource = null;
+        if (kind == "heap")
         {
-            await writer.WriteAsync(new
+            if (!TryGetString(root, "source", out heapSource) || !HeapCaptureSources.Contains(heapSource))
             {
-                type = "error",
-                requestId,
-                code = "invalid_capture",
-                message = "A positive integer 'processId' is required.",
-            }, CancellationToken.None).ConfigureAwait(false);
-            return;
+                await writer.WriteAsync(new
+                {
+                    type = "error",
+                    requestId,
+                    code = "invalid_capture",
+                    message = "'source' must be 'live', 'gcdump', or 'dump' for a 'heap' capture.",
+                }, CancellationToken.None).ConfigureAwait(false);
+                return;
+            }
+        }
+
+        var processIdPresent = root.TryGetProperty("processId", out var processIdElement)
+            && processIdElement.ValueKind != JsonValueKind.Null;
+
+        int? processId = null;
+        if (kind == "heap" && heapSource == DiagnosticOperationCatalog.HeapSources.Dump)
+        {
+            // `source="dump"` already discriminates the offline path; `processId` is not just
+            // optional here, it doesn't apply at all — a dump has no PID to attach to.
+            if (dumpFile is null)
+            {
+                await writer.WriteAsync(new
+                {
+                    type = "error",
+                    requestId,
+                    code = "invalid_capture",
+                    message = "A non-empty string 'dumpFile' is required for a 'heap' capture with source=\"dump\".",
+                }, CancellationToken.None).ConfigureAwait(false);
+                return;
+            }
+
+            if (processIdPresent)
+            {
+                await writer.WriteAsync(new
+                {
+                    type = "error",
+                    requestId,
+                    code = "invalid_capture",
+                    message = "'processId' is not supported for a 'heap' capture with source=\"dump\"; use 'dumpFile' only.",
+                }, CancellationToken.None).ConfigureAwait(false);
+                return;
+            }
+        }
+        else if (kind == DiagnosticOperationCatalog.ThreadSnapshotCliKind)
+        {
+            // Unlike heap, thread-snapshot has no separate discriminator field — `processId` vs
+            // `dumpFile` presence alone selects the live or offline path, so exactly one is required.
+            if (dumpFile is not null && processIdPresent)
+            {
+                await writer.WriteAsync(new
+                {
+                    type = "error",
+                    requestId,
+                    code = "invalid_capture",
+                    message = "'processId' and 'dumpFile' are mutually exclusive for a 'thread-snapshot' capture.",
+                }, CancellationToken.None).ConfigureAwait(false);
+                return;
+            }
+
+            if (dumpFile is null)
+            {
+                if (!TryGetInt32(root, "processId", out var threadSnapshotPid) || threadSnapshotPid <= 0)
+                {
+                    await writer.WriteAsync(new
+                    {
+                        type = "error",
+                        requestId,
+                        code = "invalid_capture",
+                        message = "Either a positive integer 'processId' or a non-empty string 'dumpFile' is required for a 'thread-snapshot' capture.",
+                    }, CancellationToken.None).ConfigureAwait(false);
+                    return;
+                }
+                processId = threadSnapshotPid;
+            }
+        }
+        else
+        {
+            // 'cpu', or 'heap' with source "live"/"gcdump": always a live attach by processId.
+            if (dumpFile is not null)
+            {
+                await writer.WriteAsync(new
+                {
+                    type = "error",
+                    requestId,
+                    code = "invalid_capture",
+                    message = kind == "heap"
+                        ? $"'dumpFile' is only supported for a 'heap' capture with source=\"dump\" (got source=\"{heapSource}\")."
+                        : $"'dumpFile' is not supported for a '{kind}' capture.",
+                }, CancellationToken.None).ConfigureAwait(false);
+                return;
+            }
+
+            if (!TryGetInt32(root, "processId", out var requiredPid) || requiredPid <= 0)
+            {
+                await writer.WriteAsync(new
+                {
+                    type = "error",
+                    requestId,
+                    code = "invalid_capture",
+                    message = "A positive integer 'processId' is required.",
+                }, CancellationToken.None).ConfigureAwait(false);
+                return;
+            }
+            processId = requiredPid;
         }
 
         var durationSeconds = 10;
@@ -416,22 +526,9 @@ internal static class CliStreamingProtocol
             return;
         }
 
-        string? heapSource = null;
         var topTypes = 20;
         if (kind == "heap")
         {
-            if (!TryGetString(root, "source", out heapSource) || !HeapCaptureSources.Contains(heapSource))
-            {
-                await writer.WriteAsync(new
-                {
-                    type = "error",
-                    requestId,
-                    code = "invalid_capture",
-                    message = "'source' must be 'live' or 'gcdump' for a 'heap' capture.",
-                }, CancellationToken.None).ConfigureAwait(false);
-                return;
-            }
-
             if (root.TryGetProperty("topTypes", out var topTypesElement)
                 && (!topTypesElement.TryGetInt32(out topTypes) || topTypes is < 1 or > 500))
             {
@@ -468,16 +565,17 @@ internal static class CliStreamingProtocol
             : null;
 
         // CPU capture reuses the same shared Core safety registry entry as `collect --kind cpu`.
-        // A `heap` capture instead reuses the `inspect-heap` entry, which is High risk/Acknowledge
-        // for both `live` and `gcdump` sources (see InvocationSafetyRegistry.InspectHeapProfile),
-        // unlike CPU sampling's Moderate risk — so it requires a matching `acknowledgeRisk`. A
-        // `thread-snapshot` capture (always a live ClrMD attach for this VS Code flow — the CLI's
-        // offline --dump-file option is not relevant here) falls through to the generic
-        // `collect`-kind branch below, which already resolves to the same `live` High-risk profile
-        // as `collect --kind thread-snapshot` (see InvocationSafetyRegistry.CollectThreadSnapshot).
+        // A `heap` capture instead reuses the `inspect-heap` entry: `live`/`gcdump` sources are High
+        // risk/Acknowledge (see InvocationSafetyRegistry.InspectHeapProfile), but `dump` resolves to
+        // the same Moderate risk/Warn profile the CLI's own `inspect-heap --source dump` gets — no
+        // `acknowledgeRisk` is required for it. A `thread-snapshot` capture falls through to the
+        // generic `collect`-kind branch below: a live ClrMD attach resolves to the `live` High-risk
+        // profile (see InvocationSafetyRegistry.CollectThreadSnapshot), while a dump-sourced one
+        // (`dumpFile` set, `processId` absent) resolves to its Moderate/Warn `dump` profile, keyed
+        // off the same `dumpFile`/`dumpFilePath` argument the one-shot CLI's `--dump-file` sets.
         var safetyOptions = kind == "heap"
-            ? new CliOptions { Command = "inspect-heap", Sources = [heapSource!], Pid = processId, AcknowledgeRisk = acknowledgeRisk }
-            : new CliOptions { Command = "collect", Kind = kind, Pid = processId, AcknowledgeRisk = acknowledgeRisk };
+            ? new CliOptions { Command = "inspect-heap", Sources = [heapSource!], Pid = processId, DumpFile = dumpFile, AcknowledgeRisk = acknowledgeRisk }
+            : new CliOptions { Command = "collect", Kind = kind, Pid = processId, DumpFile = dumpFile, AcknowledgeRisk = acknowledgeRisk };
         var safety = await CliSafetyPreflight.RunAsync(
             safetyOptions,
             handles: null,
@@ -507,21 +605,21 @@ internal static class CliStreamingProtocol
         {
             if (kind == "heap")
             {
-                await HandleHeapCaptureAsync(requestId, services, writer, processId, heapSource!, topTypes, cancellationToken)
+                await HandleHeapCaptureAsync(requestId, services, writer, processId, dumpFile, heapSource!, topTypes, cancellationToken)
                     .ConfigureAwait(false);
                 return;
             }
 
             if (kind == DiagnosticOperationCatalog.ThreadSnapshotCliKind)
             {
-                await HandleThreadSnapshotCaptureAsync(requestId, services, writer, processId, maxFramesPerThread, cancellationToken)
+                await HandleThreadSnapshotCaptureAsync(requestId, services, writer, processId, dumpFile, maxFramesPerThread, cancellationToken)
                     .ConfigureAwait(false);
                 return;
             }
 
             var sampler = services.GetRequiredService<ICpuSampler>();
             var result = await sampler.SampleAsync(
-                processId,
+                processId!.Value,
                 TimeSpan.FromSeconds(durationSeconds),
                 topN,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -554,19 +652,77 @@ internal static class CliStreamingProtocol
     /// Dispatches a <c>heap</c> capture to the same Core use cases as the CLI's one-shot
     /// <c>inspect-heap</c> command (<see cref="CliCommands"/>), mirroring its exact DI resolution
     /// and call pattern, then writes a trimmed <see cref="DiagnosticResult{T}"/> projection that
-    /// keeps what a VS Code panel needs (top types by bytes, suspend duration/GC-dump status,
-    /// warnings, quality notes) and drops MCP-only noise fields.
+    /// keeps what a VS Code panel needs and drops MCP-only noise fields. A <c>dump</c> source reads
+    /// an offline <see cref="DumpInspection"/> — no <c>processId</c>/suspend-duration/GC-dump-status
+    /// fields, since there's no live attach — while <c>live</c>/<c>gcdump</c> keep the existing
+    /// <see cref="LiveHeapInspection"/> projection (top types by bytes, suspend duration/GC-dump
+    /// status, warnings, quality notes).
     /// </summary>
     private static async Task HandleHeapCaptureAsync(
         string requestId,
         IServiceProvider services,
         ProtocolWriter writer,
-        int processId,
+        int? processId,
+        string? dumpFile,
         string source,
         int topTypes,
         CancellationToken cancellationToken)
     {
         var handles = services.GetRequiredService<IDiagnosticHandleStore>();
+
+        if (source == DiagnosticOperationCatalog.HeapSources.Dump)
+        {
+            var dumpInspector = services.GetRequiredService<IDumpInspector>();
+            var dumpAllowlist = services.GetRequiredService<SymbolServerAllowlist>();
+            var dumpResult = await HeapInspectionUseCases.InspectDump(
+                dumpInspector, handles, dumpAllowlist,
+                principalAllowsSymbolsRemote: true,
+                dumpFile!, topTypes, includeRetentionPaths: false, retentionPathLimit: 8,
+                includeStaticFields: false, includeDelegateTargets: false, includeDuplicateStrings: false,
+                symbolPath: null, deprecation: null, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (dumpResult.IsError)
+            {
+                await writer.WriteAsync(new
+                {
+                    type = "error",
+                    requestId,
+                    code = "capture_failed",
+                    message = dumpResult.Error!.Message,
+                }, CancellationToken.None).ConfigureAwait(false);
+                return;
+            }
+
+            var dumpData = dumpResult.Data;
+            await writer.WriteAsync(new
+            {
+                type = "capture",
+                requestId,
+                kind = "heap",
+                source,
+                dumpFile,
+                result = new
+                {
+                    summary = dumpResult.Summary,
+                    data = dumpData is null
+                        ? null
+                        : new
+                        {
+                            filePath = dumpData.FilePath,
+                            fileSizeBytes = dumpData.FileSizeBytes,
+                            runtime = dumpData.Runtime,
+                            heap = dumpData.Heap,
+                            topTypesByBytes = dumpData.TopTypesByBytes,
+                            topTypesByInstances = dumpData.TopTypesByInstances,
+                            warnings = dumpData.Warnings,
+                            quality = dumpData.Quality,
+                        },
+                },
+            }, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
         var resolver = services.GetRequiredService<IProcessContextResolver>();
 
         DiagnosticResult<LiveHeapInspection> result;
@@ -574,7 +730,7 @@ internal static class CliStreamingProtocol
         {
             var collector = services.GetRequiredService<IGcDumpHeapSnapshotCollector>();
             result = await HeapInspectionUseCases.InspectGcDump(
-                collector, handles, resolver, processId, topTypes, timeout: null, exportTrace: false, cancellationToken)
+                collector, handles, resolver, processId!.Value, topTypes, timeout: null, exportTrace: false, cancellationToken)
                 .ConfigureAwait(false);
         }
         else
@@ -584,7 +740,7 @@ internal static class CliStreamingProtocol
             result = await HeapInspectionUseCases.InspectLiveHeap(
                 inspector, handles, resolver, allowlist,
                 principalAllowsSymbolsRemote: true,
-                processId, topTypes, includeRetentionPaths: false, retentionPathLimit: 8,
+                processId!.Value, topTypes, includeRetentionPaths: false, retentionPathLimit: 8,
                 includeStaticFields: false, includeDelegateTargets: false, includeDuplicateStrings: false,
                 symbolPath: null, deprecation: null, cancellationToken)
                 .ConfigureAwait(false);
@@ -634,17 +790,21 @@ internal static class CliStreamingProtocol
     /// <summary>
     /// Dispatches a <c>thread-snapshot</c> capture to the same Core use case as the CLI's one-shot
     /// <c>collect --kind thread-snapshot</c> (<see cref="CliCommands"/>), reusing its exact DI
-    /// resolution and call pattern (always a live ClrMD attach for this VS Code flow — the CLI's
-    /// offline <c>--dump-file</c> option is not relevant to a live panel), then writes a trimmed
-    /// <see cref="ThreadSnapshotQueryResult"/> projection that keeps what a VS Code panel needs
-    /// (per-thread id/state/wait-reason/top frames, contended locks, thread pool summary) and drops
-    /// MCP-only drilldown/pagination noise fields.
+    /// resolution and call pattern. <paramref name="processId"/> and <paramref name="dumpFile"/> are
+    /// mutually exclusive (validated by the caller): a live ClrMD attach is used when
+    /// <paramref name="processId"/> is given, and an offline dump read (mirroring the CLI's
+    /// <c>--dump-file</c> option) is used when <paramref name="dumpFile"/> is given. Either origin
+    /// projects the same <see cref="ThreadSnapshotQueryResult"/> shape — only <c>data.Origin</c>
+    /// differs ("live" vs "dump") — trimmed to what a VS Code panel needs (per-thread
+    /// id/state/wait-reason/top frames, contended locks, thread pool summary), dropping MCP-only
+    /// drilldown/pagination noise fields.
     /// </summary>
     private static async Task HandleThreadSnapshotCaptureAsync(
         string requestId,
         IServiceProvider services,
         ProtocolWriter writer,
-        int processId,
+        int? processId,
+        string? dumpFile,
         int maxFramesPerThread,
         CancellationToken cancellationToken)
     {
@@ -655,7 +815,7 @@ internal static class CliStreamingProtocol
             services.GetRequiredService<SymbolServerAllowlist>(),
             principalAllowsSymbolsRemote: false,
             processId,
-            dumpFilePath: null,
+            dumpFilePath: dumpFile,
             maxFramesPerThread,
             includeRuntimeFrames: false,
             includeNativeFrames: false,
@@ -682,6 +842,7 @@ internal static class CliStreamingProtocol
             requestId,
             kind = DiagnosticOperationCatalog.ThreadSnapshotCliKind,
             processId,
+            dumpFile,
             result = new
             {
                 summary = result.Summary,
@@ -954,13 +1115,21 @@ Start requires requestId and processId. Send either the legacy single-kind shape
 composed session. Send stop or cancel with the returned sessionId. Send
 {"type":"capture","requestId":...,"kind":"cpu","processId":...,"durationSeconds":10,"topN":25}
 for a one-shot point-in-time capture that does not open a live session. A heap snapshot capture
-uses {"type":"capture","requestId":...,"kind":"heap","processId":...,"source":"live"|"gcdump",
+uses {"type":"capture","requestId":...,"kind":"heap","processId":...,"source":"live"|"gcdump"|"dump",
 "topTypes":20,"acknowledgeRisk":"high"}: "source" is required ("live" attaches via ptrace and
-suspends the target; "gcdump" uses EventPipe and induces a blocking Gen2 GC); "topTypes" is
-optional (default 20, range 1-500). Both heap sources are High risk/Acknowledge (unlike cpu's
+suspends the target; "gcdump" uses EventPipe and induces a blocking Gen2 GC; "dump" reads an
+existing dump file offline and requires "dumpFile" instead of "processId"); "topTypes" is
+optional (default 20, range 1-500). "live"/"gcdump" are High risk/Acknowledge (unlike cpu's
 Moderate risk), so the request is rejected with code "capture_safety_rejected" unless
-"acknowledgeRisk" equals the resolved risk name (currently "high").
+"acknowledgeRisk" equals the resolved risk name (currently "high"); "dump" is Moderate risk/Warn
+(like cpu) and never requires "acknowledgeRisk". A thread-snapshot capture uses
+{"type":"capture","requestId":...,"kind":"thread-snapshot","processId":...,"maxFramesPerThread":64}
+for a live ClrMD attach (High risk/Acknowledge), or the same shape with "dumpFile" instead of
+"processId" to read an existing dump file offline (Moderate risk/Warn, no acknowledgeRisk needed).
+"processId" and "dumpFile" are mutually exclusive for "heap" source="dump" and "thread-snapshot"
+requests — exactly one is required.
 """;
+
 
     private sealed record StartRequest(string RequestId, int ProcessId, IReadOnlyList<KindRequest> Kinds);
 
