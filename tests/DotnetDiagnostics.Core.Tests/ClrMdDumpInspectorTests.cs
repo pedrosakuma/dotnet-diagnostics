@@ -21,4 +21,30 @@ public sealed class ClrMdDumpInspectorTests
             .Should()
             .Equal(50L, 40L, 30L);
     }
+
+    [Fact]
+    public void DumpInspectionOptions_VerifyHeap_DefaultsToFalse()
+    {
+        // Off-by-default regression guard (#1119): ClrHeap.VerifyHeap() is a second, more
+        // expensive full-heap walk and must never run unless explicitly opted into.
+        var options = new DumpInspectionOptions();
+
+        options.VerifyHeap.Should().BeFalse();
+    }
+
+    [Fact]
+    public void HeapSnapshotArtifact_HeapIntegrity_DefaultsToNull_WhenNotCaptured()
+    {
+        var artifact = new HeapSnapshotArtifact(
+            Origin: HeapSnapshotOrigin.Dump,
+            ProcessId: 123,
+            CapturedAt: DateTimeOffset.UtcNow,
+            WalkDuration: TimeSpan.FromMilliseconds(1),
+            Runtime: new DumpRuntimeInfo("CoreCLR", "10.0.0", "X64", IsServerGC: false, HeapCount: 1),
+            Heap: new DumpHeapSummary(0, 0, 0, 0, 0, 0, 0),
+            TopTypesByBytes: Array.Empty<TypeStat>(),
+            TopTypesByInstances: Array.Empty<TypeStat>());
+
+        artifact.HeapIntegrity.Should().BeNull();
+    }
 }
