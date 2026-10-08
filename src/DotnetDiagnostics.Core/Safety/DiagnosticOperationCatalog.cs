@@ -255,6 +255,7 @@ public static class DiagnosticOperationCatalog
         public const string Growth = "growth";
         public const string ResolveAddress = "resolve-address";
         public const string FrameVariables = "frame-vars";
+        public const string ThreadStatics = "thread-statics";
         public const string ObjectView = "object";
         public const string GcRoot = "gcroot";
         public const string ObjectSize = "objsize";
@@ -270,7 +271,7 @@ public static class DiagnosticOperationCatalog
             Add(HeapSnapshotQueryDispatcher.ProjectionViews);
             Add([ObjectView, GcRoot, ObjectSize, DuplicateStrings, Diff, Growth]);
             Add(ThreadSnapshotQueryDispatcher.SessionViews);
-            Add([ResolveAddress, FrameVariables]);
+            Add([ResolveAddress, FrameVariables, ThreadStatics]);
             Add(OffCpuQueryDispatcher.SessionViews);
             Add(CpuSampleQueryDispatcher.SessionViews);
             Add([Diff]);

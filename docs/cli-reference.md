@@ -1490,7 +1490,7 @@ captured in the artifact:
 Thread-snapshot handles (`collect --kind thread-snapshot`, or a gated `--capture thread-snapshot`
 inside a `session`) expose the call-stack / blocking views (`threads-summary`, `stack`,
 `lock-graph`, `deadlocks`, `top-blocked`, `unique-stacks`, `async-stalls`, `wait-chains`,
-`threadpool`) plus `frame-vars`:
+`threadpool`) plus `frame-vars` and `thread-statics`:
 
 | View | What it shows | Relevant flags |
 | --- | --- | --- |
@@ -1501,9 +1501,22 @@ inside a `session`) expose the call-stack / blocking views (`threads-summary`, `
 | `async-stalls` | stalled `async` state machines and their await points | — |
 | `unique-stacks` | threads folded into shared stack signatures, ranked by group size | `--frames-to-hash` (top frames in the signature hash, default `20`), `--min-count` (drop groups smaller than N, default `1`) |
 | `frame-vars` | one thread's local variables and parameters for a chosen stack frame (re-opens the origin via ClrMD) | `--thread-id <id>` (required) |
+| `thread-statics` | one named type's `[ThreadStatic]` field values on every captured thread (re-opens the origin via ClrMD) | `--type-filter <ExactFullTypeName>` (required) |
 
 `frame-vars` requires `--thread-id` to pick the thread whose frame variables to resolve; the thread must
 be present in the captured snapshot.
+
+`thread-statics` (issue #1120) requires `--type-filter` as the EXACT full type name (resolved via
+ClrMD's `ClrHeap.GetTypeByName`, not a substring match like the heap `retention-paths` view's reuse of
+the same flag); omitting it returns `InvalidArgument`. It re-opens the snapshot origin the same way
+`frame-vars` does (dump reload or live re-attach — the cached artifact retains no live `ClrRuntime`) and
+reports, per thread, each `[ThreadStatic]` field's name, `IsInitialized` flag, and a
+truncated value preview. A thread that never touched the field's storage slot reports
+`IsInitialized: false` with no preview rather than a garbage/default value. This is deliberately
+scoped to one caller-named type — there is no unscoped "list every `[ThreadStatic]` field in the
+process" mode, since ClrMD 4.x removed unscoped type enumeration. The standalone CLI holds no
+sensitive-value gate, so value previews are always suppressed in-session (same posture as `frame-vars`);
+use the MCP server's `query_snapshot` tool with `includeSensitiveValues` for gated previews.
 MCP and CLI session queries share the same versioned opaque cursors. Pass a returned cursor unchanged
 to the next `query` command; it is bound to the snapshot handle, view, deterministic final sort key,
 and (for waiter pages) lock address. Malformed and cross-handle cursors fail with `InvalidArgument`.

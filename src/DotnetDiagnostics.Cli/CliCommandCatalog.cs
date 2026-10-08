@@ -465,6 +465,7 @@ query options:
     wait-chains      Inferred wait chains with per-edge source/confidence.
     threadpool       Thread-pool queue/worker statistics.
     frame-vars       Object-typed locals/parameters on each frame via ClrMD re-open; requires --thread-id.
+    thread-statics   [ThreadStatic] field values per thread via ClrMD re-open; requires --type-filter (exact type name).
   Continue bounded pages with --cursor using nextThreadCursor, nextLockCursor, or
   nextWaiterCursor from the prior response. --offset is compatibility-only and rejects values > 256.
 """,
@@ -589,6 +590,7 @@ session notes:
   diag> collect --kind counters --pid 1234 --capture-when 'cpu>0' --capture thread-snapshot --window 30
   diag> query --handle <id> --view threads-summary
   diag> query --handle <id> --view frame-vars --thread-id 7
+  diag> query --handle <id> --view thread-statics --type-filter MyNamespace.MyType
   diag> exit
 
   dotnet-diagnostics-cli session --launch --acknowledge-risk high -- dotnet App.dll   # binds the launched child for the session

@@ -668,7 +668,7 @@ public static class InvocationSafetyRegistry
     private static InvocationSafetyProfile QuerySnapshotProfile(string view)
     {
         var normalized = view.ToLowerInvariant();
-        if (normalized is "frame-vars" or "resolve-address" or "object" or "gcroot" or "objsize")
+        if (normalized is "frame-vars" or "thread-statics" or "resolve-address" or "object" or "gcroot" or "objsize")
         {
             return Profile(
                 view,

@@ -237,7 +237,11 @@ internal sealed record CliOptions
     /// <summary>Ranking for the heap <c>top-types</c> view (<c>--rank-by</c>): <c>bytes</c> (default) or <c>instances</c>. Honoured only by the stateful <c>session</c> <c>query</c> path.</summary>
     public string? RankBy { get; init; }
 
-    /// <summary>Case-insensitive type substring for the heap <c>retention-paths</c> view (<c>--type-filter</c>). Honoured only by the stateful <c>session</c> <c>query</c> path.</summary>
+    /// <summary>
+    /// Case-insensitive type substring for the heap <c>retention-paths</c> view, or the required
+    /// EXACT full type name for the thread-snapshot <c>thread-statics</c> view (<c>--type-filter</c>).
+    /// Honoured only by the stateful <c>session</c> <c>query</c> path.
+    /// </summary>
     public string? TypeFilter { get; init; }
 
     /// <summary>Managed object address (decimal or <c>0x</c>-hex) for heap object/root views or thread-snapshot <c>lock-graph</c> waiter selection (<c>--address</c>).</summary>

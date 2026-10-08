@@ -335,7 +335,7 @@ internal static class ToolInvocationScopeResolver
         _ = proxyInvocation;
 
         var view = NormalizeDiscriminator(GetString(arguments, "view"));
-        if (IsDiscriminator(view, "frame-vars"))
+        if (IsDiscriminator(view, "frame-vars") || IsDiscriminator(view, "thread-statics"))
         {
             Add(additional, PtraceScope);
             Add(additional, HeapReadScope);
@@ -356,7 +356,7 @@ internal static class ToolInvocationScopeResolver
         {
             Add(modifiers, SensitiveParameterReadScope);
         }
-        else if (view is "duplicate-strings" or "object" or "frame-vars" &&
+        else if (view is "duplicate-strings" or "object" or "frame-vars" or "thread-statics" &&
                  policies?.SensitiveValueGate?.IsAllowedByServer != true)
         {
             Add(modifiers, SensitiveHeapReadScope);

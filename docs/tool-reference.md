@@ -526,7 +526,7 @@ Views available per `kind`:
 | `in-flight-requests` | `collect_events(kind="requests")` | `summary` (default), `requests`, `longRunning` |
 | `startup-snapshot` | `collect_events(kind="startup")` | `summary` (default), `assemblies`, `modules`, `di`, `timeline` |
 | `heap-snapshot` | `inspect_heap` / `inspect_heap(source="live")` / `inspect_heap(source="dump")` / `inspect_heap(source="gcdump")` | `top-types` (default), `retention-paths`, `roots-by-kind`, `finalizer-queue`, `fragmentation`, `static-fields`, `delegate-targets`, `duplicate-strings`, `gchandles`, `timers`, `alc`, `com-wrappers`, `object`, `gcroot`, `objsize`, `async`, `diff`, `growth` |
-| `thread-snapshot` | `collect_thread_snapshot` | `top-blocked` (default), `threads-summary`, `stack`, `lock-graph`, `deadlocks`, `unique-stacks`, `async-stalls`, `wait-chains`, `threadpool`, `resolve-address`, `frame-vars` |
+| `thread-snapshot` | `collect_thread_snapshot` | `top-blocked` (default), `threads-summary`, `stack`, `lock-graph`, `deadlocks`, `unique-stacks`, `async-stalls`, `wait-chains`, `threadpool`, `resolve-address`, `frame-vars`, `thread-statics` |
 | `off-cpu-snapshot` | `collect_sample(kind="off_cpu")` | `topStacks` (default), `byThread`, `stack` |
 | `cpu-sample` / `allocation-sample` / `native-alloc-sample` / `native-lock-contention-sample` | `collect_sample(kind="cpu")` / `collect_sample(kind="allocation")` / `collect_sample(kind="native-alloc")` / `collect_sample(kind="native-lock-contention")` | `call-tree`, `top-methods`, `by-module`, `by-namespace`, `hot-path`, `caller-callee`, `triage`, `diff` |
 
@@ -851,6 +851,27 @@ optimized-away locals are not enumerable. Raw string previews and the exception 
 scope. For **live-origin** thread snapshots, this view still requires the original process; after
 it exits the handle survives, but `query_snapshot` returns a structured `ProcessExited` error for
 `frame-vars`.
+
+`view="thread-statics"` (thread-snapshot, issue #1120) reads every `[ThreadStatic]` field of one
+caller-named type across every thread in the snapshot. It requires `typeFullName` (the EXACT full
+type name, resolved via ClrMD's `ClrHeap.GetTypeByName` — not a substring, unlike the heap
+`retention-paths` view's `typeFullName`); omitting it returns a structured `InvalidArgument` error.
+This is a deliberate, narrower scope than an unbounded "list every ThreadStatic field in the
+process" mode: ClrMD 4.x removed unscoped `ClrHeap.EnumerateTypes()`-style enumeration (see
+`microsoft/clrmd:doc/FAQ.md` for the reimplementation recipe this sidesteps), so the view always
+requires the caller to name the type up front. Like `frame-vars`, it re-opens the snapshot origin
+(dump file or live pid — same footprint as `inspect_heap` live/dump) rather than reading from the
+cached artifact, because a `ThreadSnapshotArtifact` retains no live `ClrRuntime` handle. For each
+thread present in the snapshot it reports the managed thread ID, the field name, `IsInitialized`
+(a thread that never touched the slot reports `false` with no value — not a garbage/default
+value), and a truncated string/object/primitive value preview. Value previews
+for **every** field kind — strings, object references, and primitives alike — are gated behind
+`includeSensitiveValues` AND `Diagnostics:AllowSensitiveHeapValues` or the `sensitive-heap-read`
+scope; this is intentionally more conservative than `frame-vars` (which gates only string/exception
+previews), because `ClrThreadStaticField.Read<T>` makes primitive thread-static values readable too.
+For **live-origin** thread snapshots, this view still requires the original process; after it exits
+the handle survives, but `query_snapshot` returns a structured `ProcessExited` error for
+`thread-statics`.
 
 > **Note — `event-source` truncation:** the collector stops storing events
 > once it reaches `maxEvents`, but keeps counting the total. The
@@ -3190,7 +3211,7 @@ owning thread, waiter count) from a live process or a dump. Returns a bounded,
 decision-oriented thread projection inline plus a `thread-snapshot` `handle`
 (~10 min TTL) for
 deadlock / unique-stack / wait-chain drilldown. Handles now survive producer-PID
-exit until TTL; only `resolve-address` and `frame-vars` still require the original
+exit until TTL; only `resolve-address`, `frame-vars`, and `thread-statics` still require the original
 live process. The inline ranking places owner-and-waiter deadlock candidates,
 contended-lock owners, threads with active exceptions, and running application
 frames before generic wait/park noise. Candidate ranking does not prove a cycle;
@@ -3211,7 +3232,7 @@ evaluate inferred wait-for cycle candidates with `query_snapshot(view="deadlocks
 **Returns:** `ThreadSnapshotQueryResult` + `thread-snapshot` handle. Drill via
 [`query_snapshot`](#query_snapshot) thread views: `threads-summary`, `stack`,
 `lock-graph`, `deadlocks`, `top-blocked`, `unique-stacks`, `async-stalls`,
-`wait-chains`, `threadpool`, `resolve-address`, `frame-vars`.
+`wait-chains`, `threadpool`, `resolve-address`, `frame-vars`, `thread-statics`.
 
 **Scope:** `ptrace`. **Requires:** live attach needs `CAP_SYS_PTRACE` on Linux.
 
@@ -3351,9 +3372,9 @@ contract.
   `object`, `gcroot`, `objsize`, `async`, `diff`, `growth`.
 - **thread** (`collect_thread_snapshot`): `top-blocked` (default),
   `threads-summary`, `stack`, `lock-graph`, `deadlocks`, `unique-stacks`,
-  `async-stalls`, `wait-chains`, `threadpool`, `resolve-address`, `frame-vars`.
+  `async-stalls`, `wait-chains`, `threadpool`, `resolve-address`, `frame-vars`, `thread-statics`.
   Live-origin handles remain queryable after process exit for the artifact-only
-  views; `resolve-address` and `frame-vars` instead return a structured
+  views; `resolve-address`, `frame-vars`, and `thread-statics` instead return a structured
   `ProcessExited` error once the original live process is gone.
 - **off-CPU** (`collect_sample(kind="off_cpu")`): `topStacks` (default),
   `byThread`, `stack`.

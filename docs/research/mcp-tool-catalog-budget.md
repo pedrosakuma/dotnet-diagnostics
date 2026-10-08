@@ -48,6 +48,28 @@ path confinement, chunk limits, module selection, and explicit routing guidance.
 No schema fields or safety metadata were removed. This is an integration
 measurement, not release acceptance or Windows validation.
 
+### Issue #1120 validation (2026-10-08)
+
+The `thread-statics` view added to `collect_thread_snapshot`/`query_snapshot`
+(`[ThreadStatic]` field inspection per thread) measures **282,450 bytes** for
+the maximal 17-tool catalog, up from a pre-PR base `5be1063` measurement of
+**281,866 bytes** — only **134 bytes** of headroom remained under the prior
+**282,000-byte** ceiling before this feature.
+
+The output model was trimmed to the issue's literal spec first: managed
+thread ID, field name, `IsInitialized`, and a truncated value preview only —
+no OS thread ID, no per-field type name/address/truncation flag, and the
+shared `typeFullName` parameter description was shortened rather than grown.
+Even after that trim, one new nested per-thread/per-field output-schema array
+is irreducible prose-free structural growth (the same category of growth
+documented in the issue #986 entry below), not prose that can be shortened
+further.
+
+Issue #1120 raises the strict ceiling **282,000 → 283,000 bytes**
+(**+1,000 bytes / +0.355%**), leaving **~550 bytes** of headroom above the new
+measurement. Like the #986 precedent, this is a bounded diagnostic-contract
+exception, not a general license to increase the budget.
+
 ### Issue #986 validation (2026-09-18)
 
 The CrashGuard observation contract at

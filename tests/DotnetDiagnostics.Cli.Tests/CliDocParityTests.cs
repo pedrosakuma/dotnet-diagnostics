@@ -72,6 +72,16 @@ public sealed class CliDocParityTests
     }
 
     [Fact]
+    public void CliReference_DocumentsThreadStaticsView()
+    {
+        // thread-statics is the CLI-only addition on top of the Core thread-snapshot session views (#1120).
+        var doc = ReadCliReference();
+
+        doc.Should().Contain("`thread-statics`",
+            "docs/cli-reference.md must document the thread-snapshot 'thread-statics' drilldown view.");
+    }
+
+    [Fact]
     public void CliReference_DocumentsEveryAdvertisedCompletionFlag()
     {
         // Every long flag the shell-completion catalog advertises must be documented, so completion can

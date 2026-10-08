@@ -1766,6 +1766,51 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
     }
 
     [Fact(Timeout = 60_000)]
+    public async Task ThreadStatics_ResolveLive_RecoversDistinctPerThreadValues()
+    {
+        EnsureSampleRunning();
+        var baseUrl = await EnsureListeningUrlAsync(TimeSpan.FromSeconds(30));
+        using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
+
+        using var response = await http.GetAsync("/thread-statics/workers?ms=10000");
+        response.EnsureSuccessStatusCode();
+        using var payload = JsonDocument.Parse(await response.Content.ReadAsStringAsync(CancellationToken.None));
+        var threadAId = payload.RootElement.GetProperty("threadAId").GetInt32();
+        var threadBId = payload.RootElement.GetProperty("threadBId").GetInt32();
+        var threadUninitializedId = payload.RootElement.GetProperty("threadUninitializedId").GetInt32();
+
+        var inspector = new ClrMdThreadSnapshotInspector();
+        var snapshot = await inspector.InspectLiveAsync(
+            Pid,
+            new ThreadSnapshotOptions(MaxFramesPerThread: 32),
+            CancellationToken.None);
+
+        var resolver = new ClrMdThreadStaticFieldResolver();
+        var result = await resolver.ResolveAsync(
+            snapshot, "ThreadStaticFixture", includeSensitiveValues: true, CancellationToken.None);
+
+        result.TypeFullName.Should().NotBeNullOrEmpty();
+        var byThread = result.Threads.ToDictionary(t => t.ManagedThreadId);
+
+        byThread.Should().ContainKey(threadAId);
+        byThread.Should().ContainKey(threadBId);
+        byThread.Should().ContainKey(threadUninitializedId);
+
+        var fieldA = byThread[threadAId].Fields.Should().ContainSingle(f => f.Name == "Value").Subject;
+        var fieldB = byThread[threadBId].Fields.Should().ContainSingle(f => f.Name == "Value").Subject;
+        var fieldNone = byThread[threadUninitializedId].Fields.Should().ContainSingle(f => f.Name == "Value").Subject;
+
+        fieldA.IsInitialized.Should().BeTrue();
+        fieldA.ValuePreview.Should().Be("thread-a-value");
+        fieldB.IsInitialized.Should().BeTrue();
+        fieldB.ValuePreview.Should().Be("thread-b-value");
+        fieldA.ValuePreview.Should().NotBe(fieldB.ValuePreview, "the two worker threads set distinct values on the same [ThreadStatic] slot");
+
+        fieldNone.IsInitialized.Should().BeFalse("the third worker thread never touched the field");
+        fieldNone.ValuePreview.Should().BeNull("an uninitialized thread-static slot must not surface a garbage/default value");
+    }
+
+    [Fact(Timeout = 60_000)]
     public async Task AsyncStallClassifier_FindsTcsPending_FromBadCodeSample()
     {
         await using var sample = await LiveHttpSample.StartAsync("BadCodeSample", "/");
