@@ -1761,6 +1761,7 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
 
         retainedBucket.Should().NotBeNull();
         retainedBucket!.InstanceCount.Should().BeGreaterThanOrEqualTo(leakedExceptionCount);
+        (snapshot.Warnings ?? []).Should().NotContain(w => w.Contains("could not be resolved", StringComparison.Ordinal), "an unresolved-type skip would mean the walk undercounted (#1132)");
         retainedBucket.Samples.Should().NotBeNullOrEmpty();
         retainedBucket.Samples!.Should().OnlyContain(sample => sample.Message != null && sample.Message.Contains("BadCodeSample retained exception", StringComparison.Ordinal));
         projection.Result.Summary.Should().Contain("retained exception");

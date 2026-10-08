@@ -40,16 +40,27 @@ internal static class ClrMdHeapWalker
         var stringCapHit = false;
         var stringObjectCapHit = false;
         var exceptionCapHit = false;
+        long unresolvedObjects = 0;
 
         foreach (var segment in runtime.Heap.Segments)
         {
             ct.ThrowIfCancellationRequested();
             long segUsed = 0, segFree = 0, segObjs = 0, segFreeObjs = 0;
 
-            foreach (var obj in segment.EnumerateObjects())
+            // carefully=true: the default enumeration silently abandons the REST of the segment the
+            // first time a method table cannot be resolved (possible while the live target is
+            // ptrace-stopped mid-allocation/type-load), undercounting every later object (#1132).
+            // Careful mode resynchronizes on the next valid object instead.
+            foreach (var obj in segment.EnumerateObjects(carefully: true))
             {
                 ct.ThrowIfCancellationRequested();
                 if (obj.Type is null) continue;
+                if (obj.Type.MethodTable == 0)
+                {
+                    unresolvedObjects++;
+                    continue;
+                }
+
                 var size = (long)obj.Size;
                 segObjs++;
 
@@ -138,6 +149,11 @@ internal static class ClrMdHeapWalker
             {
                 FreePercent = freePct,
             });
+        }
+
+        if (unresolvedObjects > 0)
+        {
+            warnings.Add($"Heap walk skipped {unresolvedObjects:N0} object(s) whose type could not be resolved; counts may be slightly low.");
         }
 
         if (delegateCapHit)
