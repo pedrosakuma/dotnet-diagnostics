@@ -70,6 +70,26 @@ snapshot needs the same `ptrace`/`CAP_SYS_PTRACE` access as the heap capture's `
 AGENTS.md's "🪪 `CAP_SYS_PTRACE` for live memory readers" section) and fails with an actionable
 permission-denied message when that access is unavailable.
 
+**Follow-up drilldown views.** After a heap or thread capture succeeds, the extension issues
+follow-up `query` requests against the capture's handle (sequentially, over the same streaming
+connection) and renders each result as its own collapsible section below the summary table; one
+failing view shows an inline error without blocking the others.
+
+- **Heap** (7 always queried): `roots-by-kind`, `finalizer-queue`, `fragmentation`, `gchandles`,
+  `async`, `timers`, `alc`. Three more are opt-in via a multi-select QuickPick shown before a
+  `live` capture (all unchecked by default): **Static fields** (`static-fields`), **Delegate
+  targets** (`delegate-targets`) and **Retention paths** (`retention-paths`). The `gcdump` source
+  skips the picker and the follow-up views, since the CLI rejects every drilldown view for it.
+- **Thread snapshot** (4): `deadlocks` (open by default and highlighted — an inferred wait-for
+  cycle), `unique-stacks`, `wait-chains`, `threadpool`.
+- **Analyze Dump File** runs the same heap/thread views, with the same opt-in picker shown after
+  you choose the file.
+
+Results are rendered as formatted JSON as returned by Core's query dispatchers, not bespoke
+tables. Address-targeted views (`object`, `gcroot`, `objsize`, `duplicate-strings`),
+`retained-exceptions` (#1117) and `thread-statics` (#1120) are not exposed through the streaming
+protocol yet. These views require a CLI build from #1116 or later.
+
 Use **Analyze Dump File** (tree-view action or Command Palette command
 `dotnetDiagnostics.analyzeDumpFile`) to inspect heap types and threads/locks from a process dump
 file that already exists on disk. This opens a native file picker (no extension filter — dumps can
