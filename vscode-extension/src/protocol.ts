@@ -183,6 +183,28 @@ export function buildQueryFrame(requestId: string, handle: string, view: string,
         : { type: "query", requestId, handle, view, typeFilter };
 }
 
+/** Allows at most one task at a time; used to keep non-cancellable on-demand queries from piling up. */
+export class SingleFlightGuard {
+    private busy = false;
+
+    public get inFlight(): boolean {
+        return this.busy;
+    }
+
+    /** Runs `task` unless another one is in flight; resolves to `started: false` for duplicates. */
+    public async run<T>(task: () => Promise<T>): Promise<{ started: true; value: T } | { started: false }> {
+        if (this.busy) {
+            return { started: false };
+        }
+        this.busy = true;
+        try {
+            return { started: true, value: await task() };
+        } finally {
+            this.busy = false;
+        }
+    }
+}
+
 export interface ProtocolFrame {
     type: string;
     [key: string]: unknown;

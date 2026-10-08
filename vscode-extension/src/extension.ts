@@ -15,6 +15,7 @@ import {
     buildQueryFrame,
     parseProcessList,
     parseTypeFilter,
+    SingleFlightGuard,
     parseProtocolFrame,
     type CounterValue,
     type CpuSampleSummary,
@@ -164,6 +165,7 @@ class CounterPanelController implements vscode.Disposable {
      * later capture, a stop, or disposal) to allow on-demand `thread-statics` queries.
      */
     private threadSnapshot?: { session: StreamChild; handle: string };
+    private readonly threadStaticsGuard = new SingleFlightGuard();
     private connectChildTask?: Promise<StreamChild>;
 
     public constructor(
@@ -511,6 +513,20 @@ class CounterPanelController implements vscode.Disposable {
      * (issue #1126). The view needs an exact type name, so it is never auto-queried.
      */
     private async queryThreadStatics(typeFilter: string): Promise<void> {
+        const outcome = await this.threadStaticsGuard.run(async () => {
+            this.postMessage({ type: "threadStaticsState", state: "running" });
+            try {
+                await this.queryThreadStaticsCore(typeFilter);
+            } finally {
+                this.postMessage({ type: "threadStaticsState", state: "idle" });
+            }
+        });
+        if (!outcome.started) {
+            this.output.appendLine("Ignored a duplicate thread-statics request while one is already in flight.");
+        }
+    }
+
+    private async queryThreadStaticsCore(typeFilter: string): Promise<void> {
         const snapshot = this.threadSnapshot;
         const view = "thread-statics";
         if (!snapshot || snapshot.session.closing || snapshot.session.process.exitCode !== null || snapshot.session.process.signalCode !== null) {
@@ -1292,6 +1308,7 @@ class DumpAnalysisPanelController implements vscode.Disposable {
     private activeChild: DumpAnalysisChild | undefined;
     /** Handle of the thread snapshot; the connection stays open (until `dispose`) so `thread-statics` can be queried on demand. */
     private threadHandle: string | undefined;
+    private readonly threadStaticsGuard = new SingleFlightGuard();
 
     public constructor(
         private readonly dumpFilePath: string,
@@ -1373,6 +1390,20 @@ class DumpAnalysisPanelController implements vscode.Disposable {
 
     /** See `CounterPanelController.queryThreadStatics`. */
     private async queryThreadStatics(typeFilter: string): Promise<void> {
+        const outcome = await this.threadStaticsGuard.run(async () => {
+            this.postMessage({ type: "threadStaticsState", state: "running" });
+            try {
+                await this.queryThreadStaticsCore(typeFilter);
+            } finally {
+                this.postMessage({ type: "threadStaticsState", state: "idle" });
+            }
+        });
+        if (!outcome.started) {
+            this.output.appendLine("Ignored a duplicate thread-statics request while one is already in flight.");
+        }
+    }
+
+    private async queryThreadStaticsCore(typeFilter: string): Promise<void> {
         const child = this.activeChild;
         const handle = this.threadHandle;
         const view = "thread-statics";
@@ -2325,20 +2356,29 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
 
     // The thread-statics view needs an exact type name, so it is requested on demand rather than
     // auto-queried; the extension host validates the message again.
+    function setThreadStaticsBusy(busy) {
+      threadStaticsButton.disabled = busy;
+      threadStaticsButton.textContent = busy ? 'Querying…' : 'Query thread statics';
+    }
+
     threadStaticsButton.addEventListener('click', () => {
       const typeFilter = threadStaticsInput.value.trim();
       if (!typeFilter) {
         threadStaticsError.textContent = 'Enter an exact type name.';
         return;
       }
+      if (threadStaticsButton.disabled) return;
       threadStaticsError.textContent = '';
+      setThreadStaticsBusy(true);
       vscode.postMessage({ type: 'queryThreadStatics', typeFilter });
     });
 
     window.addEventListener('message', event => {
       const message = event.data;
       if (!message || typeof message.type !== 'string') return;
-      if (message.type === 'status') {
+      if (message.type === 'threadStaticsState') {
+        setThreadStaticsBusy(message.state === 'running');
+      } else if (message.type === 'status') {
         statusElement.textContent = message.message || message.state;
         errorElement.textContent = message.state === 'error' ? (message.message || '') : '';
         updateButtons(message.state === 'running' || message.state === 'starting' || message.state === 'stopping');
@@ -2691,20 +2731,29 @@ export function renderDumpAnalysisHtml(dumpFileName: string, nonce: string): str
 
     // The thread-statics view needs an exact type name, so it is requested on demand rather than
     // auto-queried; the extension host validates the message again.
+    function setThreadStaticsBusy(busy) {
+      threadStaticsButton.disabled = busy;
+      threadStaticsButton.textContent = busy ? 'Querying…' : 'Query thread statics';
+    }
+
     threadStaticsButton.addEventListener('click', () => {
       const typeFilter = threadStaticsInput.value.trim();
       if (!typeFilter) {
         threadStaticsError.textContent = 'Enter an exact type name.';
         return;
       }
+      if (threadStaticsButton.disabled) return;
       threadStaticsError.textContent = '';
+      setThreadStaticsBusy(true);
       vscode.postMessage({ type: 'queryThreadStatics', typeFilter });
     });
 
     window.addEventListener('message', event => {
       const message = event.data;
       if (!message || typeof message.type !== 'string') return;
-      if (message.type === 'captureStatus' && message.kind === 'heap') {
+      if (message.type === 'threadStaticsState') {
+        setThreadStaticsBusy(message.state === 'running');
+      } else if (message.type === 'captureStatus' && message.kind === 'heap') {
         captureHeapStatusElement.textContent = message.message || message.state || '';
         if (message.state === 'running') {
           document.getElementById('heapQueryViews').innerHTML = '';

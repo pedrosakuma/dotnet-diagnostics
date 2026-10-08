@@ -13,7 +13,7 @@ Module._resolveFilename = function (request, ...rest) {
 };
 
 const { renderHtml, renderDumpAnalysisHtml } = require("../out/extension.js");
-const { buildQueryFrame, parseTypeFilter, MAX_TYPE_FILTER_LENGTH } = require("../out/protocol.js");
+const { SingleFlightGuard, buildQueryFrame, parseTypeFilter, MAX_TYPE_FILTER_LENGTH } = require("../out/protocol.js");
 
 const target = {
     processId: 4242,
@@ -63,6 +63,8 @@ for (const [name, html] of [
 
     test(`${name} webview thread-statics button validates input client-side`, () => {
         const script = extractInlineScript(html);
+        const busyFn = /function setThreadStaticsBusy\(busy\) \{[\s\S]*?\n    \}/.exec(script);
+        assert.ok(busyFn, "expected setThreadStaticsBusy");
         const match = /threadStaticsButton\.addEventListener\('click', \(\) => \{[\s\S]*?\n    \}\);/.exec(script);
         assert.ok(match, "expected the thread-statics click handler");
 
@@ -71,11 +73,13 @@ for (const [name, html] of [
             const input = { value: inputValue };
             const error = { textContent: "" };
             let handler;
-            const button = { addEventListener(_event, fn) { handler = fn; } };
-            new Function("threadStaticsButton", "threadStaticsInput", "threadStaticsError", "vscode", match[0])(
+            const button = { disabled: false, textContent: "Query thread statics", addEventListener(_event, fn) { handler = fn; } };
+            new Function("threadStaticsButton", "threadStaticsInput", "threadStaticsError", "vscode", busyFn[0] + match[0])(
                 button, input, error, { postMessage: message => posted.push(message) });
             handler();
-            return { posted, error: error.textContent };
+            const first = { disabled: button.disabled, text: button.textContent };
+            handler();
+            return { posted, error: error.textContent, first, button };
         }
 
         const empty = run("   ");
@@ -85,8 +89,36 @@ for (const [name, html] of [
         const ok = run("  MyApp.Cache ");
         assert.deepEqual(ok.posted, [{ type: "queryThreadStatics", typeFilter: "MyApp.Cache" }]);
         assert.equal(ok.error, "");
+        assert.deepEqual(ok.first, { disabled: true, text: "Querying…" }, "button must disable on submit; duplicate click posts nothing");
+        assert.equal(empty.first.disabled, false);
     });
 }
+
+test("SingleFlightGuard runs one task at a time and releases on success or failure", async () => {
+    const guard = new SingleFlightGuard();
+    let release;
+    let runs = 0;
+    const first = guard.run(() => { runs++; return new Promise(resolve => { release = resolve; }); });
+    assert.equal(guard.inFlight, true);
+    assert.deepEqual(await guard.run(async () => { runs++; }), { started: false });
+    assert.equal(runs, 1);
+    release("done");
+    assert.deepEqual(await first, { started: true, value: "done" });
+    assert.equal(guard.inFlight, false);
+
+    await assert.rejects(guard.run(async () => { throw new Error("boom"); }), /boom/);
+    assert.equal(guard.inFlight, false);
+    assert.deepEqual(await guard.run(async () => 7), { started: true, value: 7 });
+});
+
+test("live and dump controllers guard thread-statics and report busy state", () => {
+    const source = fs.readFileSync(path.join(__dirname, "..", "src", "extension.ts"), "utf8");
+    assert.equal((source.match(/new SingleFlightGuard\(\)/g) || []).length, 2);
+    assert.equal((source.match(/this\.threadStaticsGuard\.run\(/g) || []).length, 2);
+    assert.equal((source.match(/type: "threadStaticsState", state: "running"/g) || []).length, 2);
+    assert.equal((source.match(/type: "threadStaticsState", state: "idle"/g) || []).length, 2);
+    assert.equal((source.match(/message\.type === 'threadStaticsState'/g) || []).length, 2);
+});
 
 test("extension plumbs includeRetainedExceptions into live and dump capture frames and queries", () => {
     const source = fs.readFileSync(path.join(__dirname, "..", "src", "extension.ts"), "utf8");
