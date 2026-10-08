@@ -51,11 +51,11 @@ internal sealed class BoundedMcpInputStream(Stream input, Func<ILoggerFactory?>?
     private static readonly Action<ILogger, string, Exception?> LogRejected = LoggerMessage.Define<string>(
         LogLevel.Error, new EventId(1, "StdioFrameRejected"), "Rejected stdio MCP frame: {Reason}");
 
-    private void LogInput(string detail)
-    {
-        if (loggerFactory?.Invoke() is { } factory)
-            factory.CreateLogger<BoundedMcpInputStream>().LogWarning("EXPERIMENT stdio input: {Detail}", detail);
-    }
+    private static readonly Action<ILogger, Exception?> LogReadFailed = LoggerMessage.Define(
+        LogLevel.Error, new EventId(2, "StdioInputReadFailed"), "Stdio MCP input read failed");
+
+    private static readonly Action<ILogger, long, Exception?> LogEndOfInput = LoggerMessage.Define<long>(
+        LogLevel.Information, new EventId(3, "StdioInputEnded"), "Stdio MCP input reached end of stream with {BufferedBytes} buffered bytes");
 
     private readonly byte[] _buffer = new byte[McpRequestFraming.CopyBufferBytes];
     private readonly MemoryStream _frame = new(McpRequestFraming.CopyBufferBytes);
@@ -80,14 +80,16 @@ internal sealed class BoundedMcpInputStream(Stream input, Func<ILoggerFactory?>?
                 if (_offset == _count && !_eof)
                 {
                     try { _count = await input.ReadAsync(_buffer, cancellationToken).ConfigureAwait(false); }
-                    catch (Exception ex) when (ex is not InvalidDataException)
+                    catch (Exception ex) when (ex is not (InvalidDataException or OperationCanceledException))
                     {
-                        LogInput(ex.GetType().Name + ": " + ex.Message);
+                        if (loggerFactory?.Invoke() is { } factory)
+                            LogReadFailed(factory.CreateLogger<BoundedMcpInputStream>(), ex);
                         throw;
                     }
                     _offset = 0;
                     _eof = _count == 0;
-                    if (_eof) LogInput("stdin reached EOF with " + _frame.Length + " buffered bytes");
+                    if (_eof && loggerFactory?.Invoke() is { } eofFactory)
+                        LogEndOfInput(eofFactory.CreateLogger<BoundedMcpInputStream>(), _frame.Length, null);
                 }
                 if (_eof) break;
                 var newline = Array.IndexOf(_buffer, (byte)'\n', _offset, _count - _offset);
