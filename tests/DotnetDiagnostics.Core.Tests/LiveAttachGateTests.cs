@@ -42,4 +42,13 @@ public sealed class LiveAttachGateTests
         }));
         using var next = LiveAttachGate.Acquire(900005, CancellationToken.None, TimeSpan.FromMilliseconds(200));
     }
+
+    [Fact]
+    public void Acquire_IdleGatesAreRemoved()
+    {
+        var lease = LiveAttachGate.Acquire(900006, CancellationToken.None);
+        Assert.True(LiveAttachGate.IsTracked(900006));
+        lease.Dispose();
+        Assert.False(LiveAttachGate.IsTracked(900006));
+    }
 }
