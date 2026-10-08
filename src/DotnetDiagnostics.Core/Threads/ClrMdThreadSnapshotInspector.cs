@@ -72,7 +72,10 @@ public sealed class ClrMdThreadSnapshotInspector : IThreadSnapshotInspector
         var capturedAt = DateTimeOffset.UtcNow;
         var processStartedAtUtc = TryGetProcessStartedAtUtc(processId);
         var sw = System.Diagnostics.Stopwatch.StartNew();
+        using var attachLease = LiveAttachGate.Acquire(processId, ct);
         using var target = DataTarget.AttachToProcess(processId, suspend: true);
+        // The attach call itself is not cancellable; bail out (disposing the target resumes it) before walking.
+        ct.ThrowIfCancellationRequested();
         var clrInfo = target.ClrVersions.FirstOrDefault()
             ?? throw new InvalidOperationException($"Process {processId} does not expose a CLR runtime (NativeAOT or non-managed).");
         using var runtime = clrInfo.CreateRuntime();
