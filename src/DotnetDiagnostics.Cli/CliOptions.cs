@@ -140,6 +140,10 @@ internal sealed record CliOptions
     /// <summary>Rank duplicate System.String instances by aggregate retained bytes (<c>--include-duplicate-strings</c>).</summary>
     public bool IncludeDuplicateStrings { get; init; }
 
+    /// <summary>Dump-only (issue #1119): run ClrMD's own <c>ClrHeap.VerifyHeap()</c> corruption-triage
+    /// pass (<c>--verify-heap</c>). Rejected when combined with <c>--source live</c>/<c>gcdump</c>.</summary>
+    public bool VerifyHeap { get; init; }
+
     /// <summary>NT_SYMBOL_PATH-style search path (<c>--symbol-path</c>) for symbol-resolving heap drilldowns.</summary>
     public string? SymbolPath { get; init; }
 
@@ -541,6 +545,7 @@ internal sealed record CliOptions
             new FlagOptionDescriptor(state => state.IncludeStaticFields = true, "--include-static-fields"),
             new FlagOptionDescriptor(state => state.IncludeDelegateTargets = true, "--include-delegate-targets"),
             new FlagOptionDescriptor(state => state.IncludeDuplicateStrings = true, "--include-duplicate-strings"),
+            new FlagOptionDescriptor(state => state.VerifyHeap = true, "--verify-heap"),
             new FlagOptionDescriptor(state => state.Confirm = true, "--confirm"),
             new FlagOptionDescriptor(state => state.ChangesOnly = true, "--changes-only"),
             new FlagOptionDescriptor(state => state.FoldAsync = true, "--fold-async"),
@@ -743,6 +748,8 @@ internal sealed record CliOptions
 
         public bool IncludeDuplicateStrings { get; set; }
 
+        public bool VerifyHeap { get; set; }
+
         public string? SymbolPath { get; set; }
 
         public string? NativeAotMapFile { get; set; }
@@ -924,6 +931,7 @@ internal sealed record CliOptions
                 IncludeStaticFields = IncludeStaticFields,
                 IncludeDelegateTargets = IncludeDelegateTargets,
                 IncludeDuplicateStrings = IncludeDuplicateStrings,
+                VerifyHeap = VerifyHeap,
                 SymbolPath = SymbolPath,
                 NativeAotMapFile = NativeAotMapFile,
                 ResolveSourceLines = ResolveSourceLines,

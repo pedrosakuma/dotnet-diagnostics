@@ -1416,6 +1416,38 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         }
     }
 
+    [Fact]
+    public async Task DumpInspector_VerifyHeap_OnHealthyDump_ReportsZeroCorruption()
+    {
+        EnsureSampleRunning();
+
+        // Dump-only, opt-in heap corruption triage (#1119): ClrHeap.VerifyHeap() against a
+        // known-healthy live sample dump must come back clean (no corrupted objects).
+        var dumpRoot = Path.Combine(Path.GetTempPath(), $"diagnosticsmcp-verifyheap-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dumpRoot);
+        try
+        {
+            var dumper = new DotnetDiagnostics.Core.Dump.DiagnosticsClientDumper(
+                new TestArtifactRootProvider(dumpRoot));
+            var dump = await dumper.WriteDumpAsync(Pid, ProcessDumpType.WithHeap, outputDirectory: null, CancellationToken.None);
+            File.Exists(dump.FilePath).Should().BeTrue();
+
+            var inspector = new ClrMdDumpInspector();
+            var inspection = await inspector.InspectAsync(
+                dump.FilePath,
+                new DumpInspectionOptions(TopTypes: 25, VerifyHeap: true),
+                CancellationToken.None);
+
+            inspection.HeapIntegrity.Should().NotBeNull("VerifyHeap=true must populate the HeapIntegrity view");
+            inspection.HeapIntegrity!.TotalCorruptions.Should().Be(0, "a healthy sample process dump must not report corrupted objects");
+            inspection.HeapIntegrity.Corruptions.Should().BeEmpty();
+        }
+        finally
+        {
+            try { Directory.Delete(dumpRoot, recursive: true); } catch { /* best-effort */ }
+        }
+    }
+
     [Fact(Timeout = 60_000)]
     public async Task DumpInspector_InspectsObjectGcRootAndObjectSize_FromLiveHeapSnapshot()
     {

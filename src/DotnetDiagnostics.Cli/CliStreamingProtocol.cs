@@ -771,7 +771,7 @@ internal static class CliStreamingProtocol
                 principalAllowsSymbolsRemote: true,
                 dumpFile!, topTypes, includeRetentionPaths: includeRetentionPaths, retentionPathLimit: 8,
                 includeStaticFields: includeStaticFields, includeDelegateTargets: includeDelegateTargets, includeDuplicateStrings: false,
-                symbolPath: null, deprecation: null, cancellationToken)
+                symbolPath: null, deprecation: null, cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
 
             if (dumpResult.IsError)

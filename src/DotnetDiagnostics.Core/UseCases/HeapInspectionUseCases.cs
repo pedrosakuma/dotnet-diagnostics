@@ -47,6 +47,7 @@ public static class HeapInspectionUseCases
         bool includeDuplicateStrings = false,
         string? symbolPath = null,
         ISymbolServerDeprecationSink? deprecation = null,
+        bool verifyHeap = false,
         CancellationToken cancellationToken = default)
     {
         // B4 / issue #165 / M3: same SSRF guard as CPU sampling.
@@ -64,7 +65,8 @@ public static class HeapInspectionUseCases
                     IncludeStaticFields: includeStaticFields,
                     IncludeDelegateTargets: includeDelegateTargets,
                     IncludeDuplicateStrings: includeDuplicateStrings,
-                    SymbolPath: symbolPath),
+                    SymbolPath: symbolPath,
+                    VerifyHeap: verifyHeap),
                 cancellationToken).ConfigureAwait(false);
 
             var handle = handles.Register(snapshot.ProcessId, HeapSnapshotKind, snapshot, HeapSnapshotHandleTtl, evictWhenProcessExits: false);
@@ -74,6 +76,15 @@ public static class HeapInspectionUseCases
             var summary = topByBytes.Count == 0
                 ? $"Inspected {dumpFilePath} — runtime {inspection.Runtime.Name} {inspection.Runtime.Version}, heap walk produced no objects. Snapshot handle: `{handle.Id}`."
                 : $"Inspected {dumpFilePath} — heap {inspection.Heap.TotalBytes:N0} bytes; top retained type: `{topByBytes[0].TypeFullName}` ({topByBytes[0].TotalBytesPercent}% / {topByBytes[0].InstanceCount:N0} instances). Snapshot handle: `{handle.Id}`.";
+
+            if (verifyHeap && snapshot.HeapIntegrity is not null)
+            {
+                summary += snapshot.HeapIntegrity.Completed
+                    ? (snapshot.HeapIntegrity.TotalCorruptions == 0
+                        ? " ClrHeap.VerifyHeap() found zero corrupted objects."
+                        : $" ClrHeap.VerifyHeap() found {snapshot.HeapIntegrity.TotalCorruptions:N0} corrupted object(s) — see query_snapshot(view='heap-integrity').")
+                    : $" ClrHeap.VerifyHeap() did not complete — see query_snapshot(view='heap-integrity') for the partial result.";
+            }
 
             var hint = BuildHeapDrilldownHint(handle.Id, topByBytes);
             return hint is null

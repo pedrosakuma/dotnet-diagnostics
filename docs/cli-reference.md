@@ -784,12 +784,14 @@ Walk the managed heap of a live process or a `.dmp`.
 | `--include-static-fields` | Rank static reference fields by referenced object size. |
 | `--include-delegate-targets` | Group `MulticastDelegate` invocation lists by (target, method). |
 | `--include-duplicate-strings` | Rank duplicate strings by aggregate retained bytes. |
+| `--verify-heap` | `--source dump` only. Runs ClrMD's own `ClrHeap.VerifyHeap()` corruption walk (a second, slower full-heap pass) and populates `query-snapshot --view heap-integrity`. Rejected for `--source live`/`--source gcdump` (issue #1119). |
 | `--symbol-path <path>` | `NT_SYMBOL_PATH`-style search path (remote servers off by default). |
 | `--export-trace` | `--source gcdump`: keep the raw `.nettrace` under the artifact root and print its relative path (default off — the trace is deleted after parsing). Fetch it later with `get-bytes --kind trace`. |
 
 ```bash
 dotnet-diagnostics-cli inspect-heap --pid 1234 --top-types 30 --acknowledge-risk high
 dotnet-diagnostics-cli inspect-heap --source dump --dump-file ./app.dmp
+dotnet-diagnostics-cli inspect-heap --source dump --dump-file ./app.dmp --verify-heap  # corruption triage (#1119)
 dotnet-diagnostics-cli inspect-heap --source gcdump --pid 1234 --acknowledge-risk high   # induced GC, no ptrace
 dotnet-diagnostics-cli inspect-heap --source gcdump --pid 1234 --export-trace --acknowledge-risk high  # keep raw .nettrace
 dotnet-diagnostics-cli inspect-heap --launch --acknowledge-risk high -- dotnet App.dll   # ptrace_scope=1, no privilege
@@ -1458,7 +1460,8 @@ decisions accrue over time, so a sustained window is best.
 
 Heap-snapshot handles (`inspect-heap`) expose the projection views rendered from the walked snapshot
 (`top-types`, `retention-paths`, `roots-by-kind`, `finalizer-queue`, `fragmentation`, `static-fields`,
-`delegate-targets`, `gchandles`, `async`, `timers`, `alc`, `com-wrappers`) plus two address-addressed drilldowns:
+`delegate-targets`, `gchandles`, `async`, `timers`, `alc`, `com-wrappers`, `heap-integrity`) plus two
+address-addressed drilldowns:
 
 | View | What it shows | Relevant flags |
 | --- | --- | --- |
@@ -1466,6 +1469,7 @@ Heap-snapshot handles (`inspect-heap`) expose the projection views rendered from
 | `retention-paths` | short GC retention chains | `--type-filter <substring>`, `--top` (`--top-types` compatibility alias) |
 | `gcroot` | shortest GC-root chain for one object (SOS `!gcroot`) | `--address <decimal\|0x-hex>` (**dump-origin handles only**) |
 | `object` | one managed object's shape (SOS `!do`) | `--address <decimal\|0x-hex>` (**dump-origin handles only**) |
+| `heap-integrity` | `ClrHeap.VerifyHeap()` corruption triage | none (requires the handle was captured with `--verify-heap`; dump-origin only) |
 
 `gcroot` and `object` re-open the snapshot's origin with ClrMD to answer the address-scoped question.
 The Core-only session serves them for **dump-origin** handles (`inspect-heap --source dump`) by re-reading

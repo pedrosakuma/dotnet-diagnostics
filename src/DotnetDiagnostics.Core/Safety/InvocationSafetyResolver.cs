@@ -232,6 +232,10 @@ public static class InvocationSafetyResolver
         {
             safety = Merge(safety, Profile(request.Operation, "duplicate-strings"));
         }
+        if (IsTrue(request, "verifyHeap"))
+        {
+            safety = Merge(safety, Profile(request.Operation, "verify-heap"));
+        }
         if (source == DiagnosticOperationCatalog.HeapSources.GcDump
             && IsTrue(request, "exportTrace"))
         {

@@ -32,7 +32,7 @@ public static class HeapSnapshotQueryDispatcher
     private static readonly string[] Projection =
     {
         "top-types", "retention-paths", "roots-by-kind", "finalizer-queue", "fragmentation",
-        "static-fields", "delegate-targets", "gchandles", "async", "timers", "alc", "com-wrappers",
+        "static-fields", "delegate-targets", "gchandles", "async", "timers", "alc", "com-wrappers", "heap-integrity",
     };
 
     private static readonly HashSet<string> ProjectionSet = new(Projection, StringComparer.Ordinal);
@@ -103,7 +103,8 @@ public static class HeapSnapshotQueryDispatcher
             "async" => QueryAsync(snapshot, handle, topN),
             "timers" => QueryTimers(snapshot, handle, topN),
             "alc" => QueryAssemblyLoadContexts(snapshot, handle, topN),
-            _ => QueryComWrappers(snapshot, handle, topN),
+            "com-wrappers" => QueryComWrappers(snapshot, handle, topN),
+            _ => QueryHeapIntegrity(snapshot, handle),
         };
 
         return new HeapDispatchOutcome(result, false, false);
@@ -576,6 +577,43 @@ public static class HeapSnapshotQueryDispatcher
             $"Argument '{parameterName}' {requirement}.",
             new DiagnosticError("InvalidArgument", $"Argument '{parameterName}' {requirement}.", parameterName),
             new NextActionHint("inspect_process", "Re-issue with valid arguments. See tool schema for ranges and defaults."));
+
+    private static DiagnosticResult<HeapSnapshotQueryResult> QueryHeapIntegrity(HeapSnapshotArtifact snapshot, string handle)
+    {
+        var origin = snapshot.Origin.ToString();
+        if (snapshot.HeapIntegrity is null)
+        {
+            var detail = snapshot.Origin == HeapSnapshotOrigin.Dump
+                ? "Re-run inspect_heap(source='dump', verifyHeap=true) against this dump to capture a ClrHeap.VerifyHeap() pass."
+                : "heap-integrity is a dump-only, opt-in ClrHeap.VerifyHeap() pass; capture a dump and re-run inspect_heap(source='dump', verifyHeap=true).";
+            return DiagnosticResult.Fail<HeapSnapshotQueryResult>(
+                $"Snapshot '{handle}' was captured without heap-integrity verification.",
+                new DiagnosticError("ViewNotCaptured", detail, handle),
+                new NextActionHint(
+                    "inspect_heap",
+                    "Re-run inspect_heap(source='dump', verifyHeap=true) to walk ClrHeap.VerifyHeap() for this dump.",
+                    snapshot.Origin == HeapSnapshotOrigin.Dump ? BuildRecaptureArguments(snapshot, "verifyHeap") : null));
+        }
+
+        var view = snapshot.HeapIntegrity;
+        var summary = !view.Completed
+            ? $"Heap-integrity verification from snapshot '{handle}' ({origin}, pid {snapshot.ProcessId}) did NOT complete — ClrHeap.VerifyHeap() failed partway through. {view.TotalCorruptions:N0} corrupted object(s) observed before the failure (a lower bound, not an exact count)."
+            : view.TotalCorruptions == 0
+                ? $"Snapshot '{handle}' passed ClrHeap.VerifyHeap() with zero corrupted objects detected ({origin}, pid {snapshot.ProcessId})."
+                : $"Returning heap-integrity verification from snapshot '{handle}' ({origin}, pid {snapshot.ProcessId}) — ClrHeap.VerifyHeap() found {view.TotalCorruptions:N0} corrupted object(s). First: `{view.Corruptions[0].Kind}` at 0x{view.Corruptions[0].ObjectAddress:x}{(view.Corruptions[0].TypeFullName is null ? string.Empty : $" (`{view.Corruptions[0].TypeFullName}`)")}.";
+
+        if (view.Notes.Count > 0)
+        {
+            summary += $" Notes: {view.Notes[0]}";
+        }
+
+        var result = new HeapSnapshotQueryResult(handle, "heap-integrity", origin, snapshot.ProcessId, snapshot.CapturedAt)
+        {
+            HeapIntegrity = view,
+            Quality = GcDumpEvidence.GetApplicableQuality(snapshot),
+        };
+        return DiagnosticResult.Ok(result, summary);
+    }
 
     private static Dictionary<string, object?>? BuildRecaptureArguments(
         HeapSnapshotArtifact snapshot,

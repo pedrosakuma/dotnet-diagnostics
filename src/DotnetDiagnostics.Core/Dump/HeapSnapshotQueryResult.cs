@@ -62,4 +62,6 @@ public sealed record HeapSnapshotQueryResult(
     public AssemblyLoadContextLeakView? AssemblyLoadContexts { get; init; }
     /// <summary>Populated when <see cref="View"/> is <c>"com-wrappers"</c>.</summary>
     public ComWrappersView? ComWrappers { get; init; }
+    /// <summary>Populated when <see cref="View"/> is <c>"heap-integrity"</c>.</summary>
+    public HeapIntegrityView? HeapIntegrity { get; init; }
 }
