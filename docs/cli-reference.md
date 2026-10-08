@@ -125,14 +125,22 @@ MCP tool uses, scoped to the handle already registered by the prior capture:
 
 Heap handles support `roots-by-kind`, `finalizer-queue`, `fragmentation`, `gchandles`, `async`,
 `timers`, and `alc` unconditionally, plus `static-fields`, `delegate-targets`, and
-`retention-paths` — these three are opt-in at capture time via `includeStaticFields`,
-`includeDelegateTargets`, and `includeRetentionPaths` boolean fields on the heap `capture` request
+`retention-paths`, and `retained-exceptions` — these four are opt-in at capture time via
+`includeStaticFields`, `includeDelegateTargets`, `includeRetentionPaths`, and
+`includeRetainedExceptions` boolean fields on the heap `capture` request
 (all default `false`). Querying `static-fields` or `delegate-targets` without having opted in at
-capture time returns a `view_not_captured` error; querying `retention-paths` without
+capture time (and `retained-exceptions` without `includeRetainedExceptions`) returns a
+`view_not_captured` error; querying `retention-paths` without
 `includeRetentionPaths` returns `retention_paths_missing` instead (a distinct Core error kind for
 historical reasons — see `HeapSnapshotQueryDispatcher`). Thread-snapshot handles support
-`deadlocks`, `unique-stacks`, `wait-chains`, and `threadpool`. An optional `topN` caps ranked results
-the same way it does for the `cpu` capture. Address-targeted drilldown views (`object`, `gcroot`,
+`deadlocks`, `unique-stacks`, `wait-chains`, `threadpool`, and `thread-statics`. An optional `topN`
+caps ranked results the same way it does for the `cpu` capture. `thread-statics` re-opens the
+handle's origin (live process or dump) via ClrMD, like the REPL view of the same name, and requires
+the optional `typeFilter` string on the `query` request (the EXACT full type name); omitting it
+returns an `invalid_query` error. `typeFilter` is ignored by every other view.
+`thread-statics` results are bounded by `topN` (default 50, max 500) threads: the `result` carries
+`threadStatics` (`typeFullName`, `threads`, optional `warnings`), plus `totalThreads`,
+`omittedThreads`, and `notes` (a truncation note when `omittedThreads > 0`). Address-targeted drilldown views (`object`, `gcroot`,
 `objsize`, `duplicate-strings`, `resolve-address`, `frame-vars`) are intentionally not exposed
 through this request — they remain MCP-only `query_snapshot` views pending a future protocol
 extension. Heap handles captured with `source:"gcdump"` support none of the 10 views above except
