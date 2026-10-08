@@ -1510,9 +1510,9 @@ be present in the captured snapshot.
 ClrMD's `ClrHeap.GetTypeByName`, not a substring match like the heap `retention-paths` view's reuse of
 the same flag); omitting it returns `InvalidArgument`. It re-opens the snapshot origin the same way
 `frame-vars` does (dump reload or live re-attach — the cached artifact retains no live `ClrRuntime`) and
-reports, per thread, each `[ThreadStatic]` field's name, type, `IsInitialized` flag, address, and a
+reports, per thread, each `[ThreadStatic]` field's name, `IsInitialized` flag, and a
 truncated value preview. A thread that never touched the field's storage slot reports
-`IsInitialized: false` with no address/preview rather than a garbage/default value. This is deliberately
+`IsInitialized: false` with no preview rather than a garbage/default value. This is deliberately
 scoped to one caller-named type — there is no unscoped "list every `[ThreadStatic]` field in the
 process" mode, since ClrMD 4.x removed unscoped type enumeration. The standalone CLI holds no
 sensitive-value gate, so value previews are always suppressed in-session (same posture as `frame-vars`);

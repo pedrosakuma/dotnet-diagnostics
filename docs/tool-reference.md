@@ -862,9 +862,9 @@ process" mode: ClrMD 4.x removed unscoped `ClrHeap.EnumerateTypes()`-style enume
 requires the caller to name the type up front. Like `frame-vars`, it re-opens the snapshot origin
 (dump file or live pid — same footprint as `inspect_heap` live/dump) rather than reading from the
 cached artifact, because a `ThreadSnapshotArtifact` retains no live `ClrRuntime` handle. For each
-thread present in the snapshot it reports the field name, declared type name, `IsInitialized` (a
-thread that never touched the slot reports `false` with no address/value — not a garbage/default
-value), the field address, and a truncated string/object/primitive value preview. Value previews
+thread present in the snapshot it reports the managed thread ID, the field name, `IsInitialized`
+(a thread that never touched the slot reports `false` with no value — not a garbage/default
+value), and a truncated string/object/primitive value preview. Value previews
 for **every** field kind — strings, object references, and primitives alike — are gated behind
 `includeSensitiveValues` AND `Diagnostics:AllowSensitiveHeapValues` or the `sensitive-heap-read`
 scope; this is intentionally more conservative than `frame-vars` (which gates only string/exception

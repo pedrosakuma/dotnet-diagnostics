@@ -63,7 +63,7 @@ public sealed class ClrMdThreadStaticFieldResolver : IThreadStaticFieldResolver
                 ct.ThrowIfCancellationRequested();
                 fields.Add(ToFieldValue(field, thread, includeSensitiveValues));
             }
-            threads.Add(new ThreadStaticFieldsForThread(thread.ManagedThreadId, thread.OSThreadId, fields));
+            threads.Add(new ThreadStaticFieldsForThread(thread.ManagedThreadId, fields));
         }
 
         if (missingThreadCount > 0)
@@ -84,7 +84,6 @@ public sealed class ClrMdThreadStaticFieldResolver : IThreadStaticFieldResolver
     private static ThreadStaticFieldValue ToFieldValue(ClrThreadStaticField field, ClrThread thread, bool includeSensitiveValues)
     {
         var name = field.Name ?? $"<offset+0x{field.Offset:x}>";
-        var typeName = field.Type?.Name ?? field.ElementType.ToString();
 
         bool isInitialized;
         try
@@ -100,28 +99,17 @@ public sealed class ClrMdThreadStaticFieldResolver : IThreadStaticFieldResolver
 
         if (!isInitialized)
         {
-            return new ThreadStaticFieldValue(name, typeName, IsInitialized: false);
+            return new ThreadStaticFieldValue(name, IsInitialized: false);
         }
 
-        string? address = null;
-        try
-        {
-            address = $"0x{field.GetAddress(thread):x}";
-        }
-        catch (Exception)
-        {
-            // Address is best-effort metadata; a failure here must not block the value preview.
-        }
+        var (preview, _) = includeSensitiveValues ? ReadPreview(field, thread) : (null, false);
 
-        var (preview, truncated) = includeSensitiveValues ? ReadPreview(field, thread) : (null, false);
-
-        return new ThreadStaticFieldValue(name, typeName, IsInitialized: true)
+        return new ThreadStaticFieldValue(name, IsInitialized: true)
         {
-            Address = address,
             ValuePreview = preview,
-            ValuePreviewTruncated = truncated,
         };
     }
+
 
     private static (string? Preview, bool Truncated) ReadPreview(ClrThreadStaticField field, ClrThread thread)
     {

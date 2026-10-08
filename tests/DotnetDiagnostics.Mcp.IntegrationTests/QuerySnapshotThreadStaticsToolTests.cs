@@ -24,9 +24,9 @@ public sealed class QuerySnapshotThreadStaticsToolTests
 
         var stub = new StubThreadStaticResolver(new ThreadStaticFieldsResult("Fixture.Thing", new[]
         {
-            new ThreadStaticFieldsForThread(12, 10012u, new[]
+            new ThreadStaticFieldsForThread(12, new[]
             {
-                new ThreadStaticFieldValue("Value", "System.String", IsInitialized: true) { ValuePreview = "secret" },
+                new ThreadStaticFieldValue("Value", IsInitialized: true) { ValuePreview = "secret" },
             }),
         }));
 

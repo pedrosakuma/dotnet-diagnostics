@@ -1808,7 +1808,6 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
 
         fieldNone.IsInitialized.Should().BeFalse("the third worker thread never touched the field");
         fieldNone.ValuePreview.Should().BeNull("an uninitialized thread-static slot must not surface a garbage/default value");
-        fieldNone.Address.Should().BeNull();
     }
 
     [Fact(Timeout = 60_000)]

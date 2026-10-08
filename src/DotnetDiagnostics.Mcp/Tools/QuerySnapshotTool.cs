@@ -154,7 +154,7 @@ public sealed partial class QuerySnapshotTool
         [Description("Kind-specific view; omit for default. Durable selectors add bounded records and composition children. Historical views never reattach; see tool-reference.md.")] string? view = null,
         [Description("Ranked entries: defaults 50 heap/thread/collection, 25 off-CPU/diff. Inline caps: threads 8, locks 12, retention paths 10; full evidence stays behind the handle.")] int? topN = null,
         [Description("Heap top-types/growth: bytes|instances. CPU top-methods: exclusive|inclusive|running. Running is on-CPU self samples only for OS backends; otherwise frequency candidates, not scheduler state.")] string rankBy = "bytes",
-        [Description("Heap view='retention-paths': case-insensitive substring matched against TypeFullName. Thread view='thread-statics': required EXACT full type name (resolved via ClrHeap.GetTypeByName).")] string? typeFullName = null,
+        [Description("Heap view='retention-paths': substring match on TypeFullName. Thread view='thread-statics': required exact full type name.")] string? typeFullName = null,
         [Description("Decimal/0x address: heap object/gcroot/objsize; thread lock-graph waiter paging. resolve-address accepts comma-separated native addresses, returning module/RVA/build-id or unmapped.")] string? address = null,
         [Description("Heap views 'duplicate-strings' / 'object' only: opt-in to raw string content / field-value previews (gated by `Diagnostics:AllowSensitiveHeapValues` AND `sensitive-heap-read` scope per docs/authorization.md#modifier-scopes).")] bool includeSensitiveValues = false,
         [Description("stack: managed thread ID (native snapshots: OS TID). frame-vars: required managed ID.")] int? threadId = null,

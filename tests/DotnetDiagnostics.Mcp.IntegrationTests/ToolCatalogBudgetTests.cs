@@ -29,7 +29,17 @@ public sealed class ToolCatalogBudgetTests : IClassFixture<ToolCatalogBudgetTest
     // observation facts add 1,072 output-schema bytes (no prose), reaching
     // 281,048. The explicit 282,000 ceiling preserves all eight diagnostic
     // fields with 952 bytes of headroom; it does not restore 3% headroom.
-    private const int MaximumCatalogBytes = 282_000;
+    // Issue #1120: base 5be1063 (pre-thread-statics) measures 281,866 bytes —
+    // only 134 bytes of headroom remained under 282,000. The new
+    // query_snapshot(view="thread-statics")/collect_thread_snapshot output
+    // model was trimmed to the issue's literal spec (managed thread id, field
+    // name, IsInitialized, truncated value preview only — no OS thread id,
+    // no per-field type name/address/truncation flag), and the shared
+    // typeFullName parameter description was shortened rather than grown.
+    // Even after that trim the structural output-schema cost of one new
+    // nested per-thread/per-field array is irreducible prose-free growth,
+    // measuring 282,450 bytes. 283,000 restores ~550 bytes of headroom.
+    private const int MaximumCatalogBytes = 283_000;
 
     private readonly FullCatalogFactory _factory;
     private readonly ITestOutputHelper _output;
