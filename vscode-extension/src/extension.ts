@@ -12,7 +12,9 @@ import {
     isHeapCaptureResult,
     isQueryResult,
     isThreadCaptureResult,
+    buildQueryFrame,
     parseProcessList,
+    parseTypeFilter,
     parseProtocolFrame,
     type CounterValue,
     type CpuSampleSummary,
@@ -33,27 +35,29 @@ import {
  */
 const ALWAYS_AVAILABLE_HEAP_QUERY_VIEWS = ["roots-by-kind", "finalizer-queue", "fragmentation", "gchandles", "async", "timers", "alc"] as const;
 
-/** The 4 thread query views available once a thread snapshot is captured. Mirrors `CliStreamingProtocol.ThreadQueryViews` (issue #1116). */
+/** The 4 thread query views queried automatically once a thread snapshot is captured. Mirrors `CliStreamingProtocol.ThreadQueryViews` (issue #1116). `thread-statics` is excluded: it needs an exact type name, so it is requested on demand. */
 const THREAD_QUERY_VIEWS = ["deadlocks", "unique-stacks", "wait-chains", "threadpool"] as const;
 
 /**
- * The 3 opt-in heap capture enrichments a user can select before a heap capture runs (issue
+ * The 4 opt-in heap capture enrichments a user can select before a heap capture runs (issue
  * #1116). All default to unchecked/`false`, matching the CLI's own defaults.
  */
 interface HeapQueryOptIns {
     includeStaticFields: boolean;
     includeDelegateTargets: boolean;
     includeRetentionPaths: boolean;
+    includeRetainedExceptions: boolean;
 }
 
 const HEAP_QUERY_OPT_IN_PICKS: Array<{ label: string; description: string; key: keyof HeapQueryOptIns }> = [
     { label: "Static fields", description: "Capture static field values for the `static-fields` drilldown view", key: "includeStaticFields" },
     { label: "Delegate targets", description: "Capture delegate target instances for the `delegate-targets` drilldown view", key: "includeDelegateTargets" },
     { label: "Retention paths", description: "Capture GC root retention paths for the `retention-paths` drilldown view", key: "includeRetentionPaths" },
+    { label: "Retained exceptions", description: "Capture exception objects and their retainers for the `retained-exceptions` drilldown view", key: "includeRetainedExceptions" },
 ];
 
 /**
- * Prompts for the 3 opt-in heap enrichments via a multi-select QuickPick (all unchecked/`false`
+ * Prompts for the 4 opt-in heap enrichments via a multi-select QuickPick (all unchecked/`false`
  * by default). Returns `undefined` if the user cancels the picker (distinct from selecting none),
  * so callers can abort the capture flow the same way they do for the source/risk prompts.
  */
@@ -73,6 +77,7 @@ async function pickHeapQueryOptIns(): Promise<HeapQueryOptIns | undefined> {
         includeStaticFields: selectedKeys.has("includeStaticFields"),
         includeDelegateTargets: selectedKeys.has("includeDelegateTargets"),
         includeRetentionPaths: selectedKeys.has("includeRetentionPaths"),
+        includeRetainedExceptions: selectedKeys.has("includeRetainedExceptions"),
     };
 }
 
@@ -153,6 +158,12 @@ class CounterPanelController implements vscode.Disposable {
     private captureCpuTask?: Promise<void>;
     private captureHeapTask?: Promise<void>;
     private captureThreadSnapshotTask?: Promise<void>;
+    /**
+     * The most recent thread snapshot handle and the connection that owns it. Handles live in the
+     * CLI process, so the connection is kept open after a thread capture (until it is closed by a
+     * later capture, a stop, or disposal) to allow on-demand `thread-statics` queries.
+     */
+    private threadSnapshot?: { session: StreamChild; handle: string };
     private connectChildTask?: Promise<StreamChild>;
 
     public constructor(
@@ -328,7 +339,7 @@ class CounterPanelController implements vscode.Disposable {
         // except `top-types`, which isn't part of this feature's scope), so there is nothing useful
         // to opt into or to query afterwards — skip both for that source.
         const queryOptIns = sourcePick.source === "gcdump"
-            ? { includeStaticFields: false, includeDelegateTargets: false, includeRetentionPaths: false }
+            ? { includeStaticFields: false, includeDelegateTargets: false, includeRetentionPaths: false, includeRetainedExceptions: false }
             : await pickHeapQueryOptIns();
         if (!queryOptIns || this.disposed) {
             return;
@@ -380,6 +391,7 @@ class CounterPanelController implements vscode.Disposable {
                 includeStaticFields: queryOptIns.includeStaticFields,
                 includeDelegateTargets: queryOptIns.includeDelegateTargets,
                 includeRetentionPaths: queryOptIns.includeRetentionPaths,
+                includeRetainedExceptions: queryOptIns.includeRetainedExceptions,
             });
             // A `gcdump` capture induces and waits out a blocking Gen2 GC, and a `live` capture
             // suspends the whole target during a ClrMD walk — both can legitimately take longer
@@ -434,12 +446,12 @@ class CounterPanelController implements vscode.Disposable {
      * another in-flight capture/query can sit queued behind it for a while; 60s gives that a
      * reasonable margin without being as generous as a capture's own ceiling.
      */
-    private async sendQuery(session: StreamChild, handle: string, view: string): Promise<QueryResult> {
+    private async sendQuery(session: StreamChild, handle: string, view: string, typeFilter?: string): Promise<QueryResult> {
         const requestId = randomBytes(12).toString("hex");
         const pending = deferred<QueryResult>();
         session.pendingQueries.set(requestId, pending);
         try {
-            this.writeFrame(session, { type: "query", requestId, handle, view });
+            this.writeFrame(session, buildQueryFrame(requestId, handle, view, typeFilter));
             return await withTimeout(pending.promise, 60_000);
         } finally {
             session.pendingQueries.delete(requestId);
@@ -462,6 +474,9 @@ class CounterPanelController implements vscode.Disposable {
         }
         if (optIns.includeRetentionPaths) {
             views.push("retention-paths");
+        }
+        if (optIns.includeRetainedExceptions) {
+            views.push("retained-exceptions");
         }
 
         for (const view of views) {
@@ -488,6 +503,26 @@ class CounterPanelController implements vscode.Disposable {
                 this.postMessage({ type: "queryError", kind: "thread-snapshot", view, message: errorMessage(error) });
                 this.output.appendLine(`Thread query view '${view}' failed: ${errorMessage(error)}`);
             }
+        }
+    }
+
+    /**
+     * Runs the on-demand `thread-statics` query for `typeFilter` against the last thread snapshot
+     * (issue #1126). The view needs an exact type name, so it is never auto-queried.
+     */
+    private async queryThreadStatics(typeFilter: string): Promise<void> {
+        const snapshot = this.threadSnapshot;
+        const view = "thread-statics";
+        if (!snapshot || snapshot.session.closing || snapshot.session.process.exitCode !== null || snapshot.session.process.signalCode !== null) {
+            this.postMessage({ type: "queryError", kind: "thread-snapshot", view, message: "No active thread snapshot. Capture a thread snapshot first." });
+            return;
+        }
+        try {
+            const result = await this.sendQuery(snapshot.session, snapshot.handle, view, typeFilter);
+            this.postMessage({ type: "query", kind: "thread-snapshot", view, result });
+        } catch (error) {
+            this.postMessage({ type: "queryError", kind: "thread-snapshot", view, message: errorMessage(error) });
+            this.output.appendLine(`Thread query view '${view}' failed: ${errorMessage(error)}`);
         }
     }
 
@@ -552,6 +587,8 @@ class CounterPanelController implements vscode.Disposable {
         const requestId = randomBytes(12).toString("hex");
         const pending: PendingCapture = { kind: "thread-snapshot", deferred: deferred<ThreadCaptureResult>() };
         session.pendingCaptures.set(requestId, pending);
+        this.threadSnapshot = undefined;
+        let keepSession = false;
         try {
             this.writeFrame(session, {
                 type: "capture",
@@ -575,6 +612,8 @@ class CounterPanelController implements vscode.Disposable {
             // runHeapQueries/captureHeapCore.
             const handle = result.data?.handle;
             if (handle) {
+                this.threadSnapshot = { session, handle };
+                keepSession = true;
                 await this.runThreadQueries(session, handle);
             }
         } catch (error) {
@@ -587,7 +626,7 @@ class CounterPanelController implements vscode.Disposable {
             this.output.appendLine(`Thread snapshot capture failed: ${errorMessage(error)}`);
         } finally {
             session.pendingCaptures.delete(requestId);
-            if (ownsSession && !session.sessionId && !session.startInFlight && session.pendingCaptures.size === 0) {
+            if (ownsSession && !keepSession && !session.sessionId && !session.startInFlight && session.pendingCaptures.size === 0) {
                 // Same connection-reuse bookkeeping as captureCpuCore/captureHeapCore: only close
                 // a capture-only connection once every other capture sharing it has also finished.
                 session.expectedShutdown = true;
@@ -739,6 +778,13 @@ class CounterPanelController implements vscode.Disposable {
                 void this.captureHeap();
             } else if (message.type === "captureThreadSnapshot") {
                 void this.captureThreadSnapshot();
+            } else if (message.type === "queryThreadStatics") {
+                const typeFilter = parseTypeFilter(message.typeFilter);
+                if (typeFilter === undefined) {
+                    this.postMessage({ type: "queryError", kind: "thread-snapshot", view: "thread-statics", message: "A non-empty exact type name is required." });
+                } else {
+                    void this.queryThreadStatics(typeFilter);
+                }
             }
         }, undefined, []);
         panel.onDidDispose(() => {
@@ -1244,6 +1290,8 @@ class DumpAnalysisPanelController implements vscode.Disposable {
     private disposed = false;
     /** Tracked so `dispose()` can forcibly end an in-flight capture-only connection when the panel is closed mid-analysis. */
     private activeChild: DumpAnalysisChild | undefined;
+    /** Handle of the thread snapshot; the connection stays open (until `dispose`) so `thread-statics` can be queried on demand. */
+    private threadHandle: string | undefined;
 
     public constructor(
         private readonly dumpFilePath: string,
@@ -1259,6 +1307,17 @@ class DumpAnalysisPanelController implements vscode.Disposable {
             { enableScripts: true, retainContextWhenHidden: true },
         );
         this.panel.webview.html = renderDumpAnalysisHtml(fileName, randomBytes(16).toString("hex"));
+        this.panel.webview.onDidReceiveMessage(message => {
+            if (!isRecord(message) || message.type !== "queryThreadStatics") {
+                return;
+            }
+            const typeFilter = parseTypeFilter(message.typeFilter);
+            if (typeFilter === undefined) {
+                this.postMessage({ type: "queryError", kind: "thread-snapshot", view: "thread-statics", message: "A non-empty exact type name is required." });
+            } else {
+                void this.queryThreadStatics(typeFilter);
+            }
+        });
         this.panel.onDidDispose(() => {
             this.dispose();
         });
@@ -1306,7 +1365,27 @@ class DumpAnalysisPanelController implements vscode.Disposable {
             await this.captureHeapFromDump(child);
             await this.captureThreadSnapshotFromDump(child);
         } finally {
-            await this.close(child);
+            if (!this.threadHandle) {
+                await this.close(child);
+            }
+        }
+    }
+
+    /** See `CounterPanelController.queryThreadStatics`. */
+    private async queryThreadStatics(typeFilter: string): Promise<void> {
+        const child = this.activeChild;
+        const handle = this.threadHandle;
+        const view = "thread-statics";
+        if (!child || !handle || child.terminated) {
+            this.postMessage({ type: "queryError", kind: "thread-snapshot", view, message: "No active thread snapshot for this dump." });
+            return;
+        }
+        try {
+            const result = await this.sendQuery(child, handle, view, typeFilter);
+            this.postMessage({ type: "query", kind: "thread-snapshot", view, result });
+        } catch (error) {
+            this.postMessage({ type: "queryError", kind: "thread-snapshot", view, message: errorMessage(error) });
+            this.output.appendLine(`Thread query view '${view}' failed: ${errorMessage(error)}`);
         }
     }
 
@@ -1325,6 +1404,7 @@ class DumpAnalysisPanelController implements vscode.Disposable {
                 includeStaticFields: this.heapQueryOptIns.includeStaticFields,
                 includeDelegateTargets: this.heapQueryOptIns.includeDelegateTargets,
                 includeRetentionPaths: this.heapQueryOptIns.includeRetentionPaths,
+                includeRetainedExceptions: this.heapQueryOptIns.includeRetainedExceptions,
             });
             // Offline dump parsing has no live target to time out against, but this still needs a
             // ceiling so a stuck/huge dump can't hang the panel forever; large dumps can take a
@@ -1365,6 +1445,7 @@ class DumpAnalysisPanelController implements vscode.Disposable {
             this.postMessage({ type: "captureStatus", kind: "thread-snapshot", state: "done", message: "Thread/lock analysis complete." });
             const handle = result.data?.handle;
             if (handle) {
+                this.threadHandle = handle;
                 await this.runThreadQueries(child, handle);
             }
         } catch (error) {
@@ -1377,12 +1458,12 @@ class DumpAnalysisPanelController implements vscode.Disposable {
     }
 
     /** See `CounterPanelController.sendQuery`'s doc comment — identical reasoning, different connection type. */
-    private async sendQuery(child: DumpAnalysisChild, handle: string, view: string): Promise<QueryResult> {
+    private async sendQuery(child: DumpAnalysisChild, handle: string, view: string, typeFilter?: string): Promise<QueryResult> {
         const requestId = randomBytes(12).toString("hex");
         const pending = deferred<QueryResult>();
         child.pendingQueries.set(requestId, pending);
         try {
-            this.writeFrame(child, { type: "query", requestId, handle, view });
+            this.writeFrame(child, buildQueryFrame(requestId, handle, view, typeFilter));
             return await withTimeout(pending.promise, 60_000);
         } finally {
             child.pendingQueries.delete(requestId);
@@ -1400,6 +1481,9 @@ class DumpAnalysisPanelController implements vscode.Disposable {
         }
         if (this.heapQueryOptIns.includeRetentionPaths) {
             views.push("retention-paths");
+        }
+        if (this.heapQueryOptIns.includeRetainedExceptions) {
+            views.push("retained-exceptions");
         }
 
         for (const view of views) {
@@ -1765,6 +1849,9 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     .empty { display:none; }
     .query-views { margin-top:.8rem; }
     details.query-view { border:1px solid var(--vscode-panel-border); border-radius:3px; margin-bottom:.5rem; }
+    .statics-form { margin:.5rem 0; display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; }
+    .statics-form input { min-width:20rem; }
+    .statics-error { color: var(--vscode-errorForeground); }
     details.query-view > summary { cursor:pointer; padding:.4rem .6rem; font-weight:600; }
     details.query-view[open] > summary { border-bottom:1px solid var(--vscode-panel-border); }
     details.query-view pre { margin:0; padding:.6rem; white-space:pre-wrap; word-break:break-word; font-size:.85rem; max-height:360px; overflow:auto; }
@@ -1833,6 +1920,11 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         <thead><tr><th>Thread</th><th>State</th><th>Wait reason</th><th>Top frame</th></tr></thead>
         <tbody id="captureThreadBody"></tbody>
       </table>
+      <div class="statics-form">
+        <input id="threadStaticsType" type="text" maxlength="512" placeholder="Exact type name for thread statics, e.g. MyApp.Cache" />
+        <button id="threadStaticsButton" type="button">Query thread statics</button>
+        <span id="threadStaticsError" class="statics-error"></span>
+      </div>
       <div id="threadQueryViews" class="query-views"></div>
     </div>
   </section>
@@ -1862,6 +1954,9 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     const captureHeapHeadline = document.getElementById('captureHeapHeadline');
     const captureHeapBody = document.getElementById('captureHeapBody');
     const captureThreadStatusElement = document.getElementById('captureThreadStatus');
+    const threadStaticsInput = document.getElementById('threadStaticsType');
+    const threadStaticsButton = document.getElementById('threadStaticsButton');
+    const threadStaticsError = document.getElementById('threadStaticsError');
     const captureThreadResultElement = document.getElementById('captureThreadResult');
     const captureThreadHeadline = document.getElementById('captureThreadHeadline');
     const captureThreadBody = document.getElementById('captureThreadBody');
@@ -2181,10 +2276,12 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       'static-fields': 'Static fields',
       'delegate-targets': 'Delegate targets',
       'retention-paths': 'Retention paths',
+      'retained-exceptions': 'Retained exceptions',
       'deadlocks': 'Deadlocks',
       'unique-stacks': 'Unique stacks',
       'wait-chains': 'Wait chains',
       'threadpool': 'Thread pool',
+      'thread-statics': 'Thread statics',
     };
 
     // Renders one follow-up 'query' drilldown result (or its error) as a collapsible details
@@ -2225,6 +2322,18 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         pre.textContent = JSON.stringify(resultOrMessage, null, 2);
       }
     }
+
+    // The thread-statics view needs an exact type name, so it is requested on demand rather than
+    // auto-queried; the extension host validates the message again.
+    threadStaticsButton.addEventListener('click', () => {
+      const typeFilter = threadStaticsInput.value.trim();
+      if (!typeFilter) {
+        threadStaticsError.textContent = 'Enter an exact type name.';
+        return;
+      }
+      threadStaticsError.textContent = '';
+      vscode.postMessage({ type: 'queryThreadStatics', typeFilter });
+    });
 
     window.addEventListener('message', event => {
       const message = event.data;
@@ -2390,6 +2499,9 @@ export function renderDumpAnalysisHtml(dumpFileName: string, nonce: string): str
     .empty { display:none; }
     .query-views { margin-top:.8rem; }
     details.query-view { border:1px solid var(--vscode-panel-border); border-radius:3px; margin-bottom:.5rem; }
+    .statics-form { margin:.5rem 0; display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; }
+    .statics-form input { min-width:20rem; }
+    .statics-error { color: var(--vscode-errorForeground); }
     details.query-view > summary { cursor:pointer; padding:.4rem .6rem; font-weight:600; }
     details.query-view[open] > summary { border-bottom:1px solid var(--vscode-panel-border); }
     details.query-view pre { margin:0; padding:.6rem; white-space:pre-wrap; word-break:break-word; font-size:.85rem; max-height:360px; overflow:auto; }
@@ -2428,6 +2540,11 @@ export function renderDumpAnalysisHtml(dumpFileName: string, nonce: string): str
         <thead><tr><th>Thread</th><th>State</th><th>Wait reason</th><th>Top frame</th></tr></thead>
         <tbody id="captureThreadBody"></tbody>
       </table>
+      <div class="statics-form">
+        <input id="threadStaticsType" type="text" maxlength="512" placeholder="Exact type name for thread statics, e.g. MyApp.Cache" />
+        <button id="threadStaticsButton" type="button">Query thread statics</button>
+        <span id="threadStaticsError" class="statics-error"></span>
+      </div>
       <div id="threadQueryViews" class="query-views"></div>
     </div>
   </section>
@@ -2440,6 +2557,9 @@ export function renderDumpAnalysisHtml(dumpFileName: string, nonce: string): str
     const captureHeapHeadline = document.getElementById('captureHeapHeadline');
     const captureHeapBody = document.getElementById('captureHeapBody');
     const captureThreadStatusElement = document.getElementById('captureThreadStatus');
+    const threadStaticsInput = document.getElementById('threadStaticsType');
+    const threadStaticsButton = document.getElementById('threadStaticsButton');
+    const threadStaticsError = document.getElementById('threadStaticsError');
     const captureThreadResultElement = document.getElementById('captureThreadResult');
     const captureThreadHeadline = document.getElementById('captureThreadHeadline');
     const captureThreadBody = document.getElementById('captureThreadBody');
@@ -2529,10 +2649,12 @@ export function renderDumpAnalysisHtml(dumpFileName: string, nonce: string): str
       'static-fields': 'Static fields',
       'delegate-targets': 'Delegate targets',
       'retention-paths': 'Retention paths',
+      'retained-exceptions': 'Retained exceptions',
       'deadlocks': 'Deadlocks',
       'unique-stacks': 'Unique stacks',
       'wait-chains': 'Wait chains',
       'threadpool': 'Thread pool',
+      'thread-statics': 'Thread statics',
     };
 
     function renderQueryView(containerId, view, resultOrMessage, isError) {
@@ -2566,6 +2688,18 @@ export function renderDumpAnalysisHtml(dumpFileName: string, nonce: string): str
         pre.textContent = JSON.stringify(resultOrMessage, null, 2);
       }
     }
+
+    // The thread-statics view needs an exact type name, so it is requested on demand rather than
+    // auto-queried; the extension host validates the message again.
+    threadStaticsButton.addEventListener('click', () => {
+      const typeFilter = threadStaticsInput.value.trim();
+      if (!typeFilter) {
+        threadStaticsError.textContent = 'Enter an exact type name.';
+        return;
+      }
+      threadStaticsError.textContent = '';
+      vscode.postMessage({ type: 'queryThreadStatics', typeFilter });
+    });
 
     window.addEventListener('message', event => {
       const message = event.data;
