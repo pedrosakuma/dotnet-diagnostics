@@ -71,7 +71,8 @@ internal static class CliStreamingProtocol
     };
 
     /// <summary>
-    /// The 7 always-available + 3 opt-in heap-snapshot views exposed through a <c>query</c> request
+    /// The 7 always-available + 4 opt-in heap-snapshot views (<c>static-fields</c>, <c>delegate-targets</c>,
+    /// <c>retention-paths</c>, <c>retained-exceptions</c>) exposed through a <c>query</c> request
     /// against a <c>heap-snapshot</c>-kind handle (issue #1116). Deliberately excludes the
     /// address-targeted <c>object</c>/<c>gcroot</c>/<c>objsize</c>/<c>duplicate-strings</c> views
     /// (<see cref="HeapSnapshotQueryDispatcher"/>'s <c>ServerOnlyView</c> set) and <c>top-types</c>
@@ -90,10 +91,12 @@ internal static class CliStreamingProtocol
         "static-fields",
         "delegate-targets",
         "retention-paths",
+        "retained-exceptions",
     };
 
     /// <summary>
-    /// The 4 richer thread-snapshot views exposed through a <c>query</c> request against a
+    /// The 4 richer thread-snapshot views plus <c>thread-statics</c> (issue #1126; requires a non-empty
+    /// <c>typeFilter</c> and re-opens the handle's origin via ClrMD) exposed through a <c>query</c> request against a
     /// <c>thread-snapshot</c>-kind handle (issue #1116). Deliberately excludes
     /// <c>threads-summary</c>/<c>top-blocked</c>/<c>stack</c>/<c>lock-graph</c>/<c>async-stalls</c>
     /// (already covered inline by the <c>capture</c> response's <c>threads</c>/<c>locks</c>
@@ -105,6 +108,7 @@ internal static class CliStreamingProtocol
         "unique-stacks",
         "wait-chains",
         "threadpool",
+        "thread-statics",
     };
 
     public static async Task<int> RunAsync(
@@ -591,6 +595,7 @@ internal static class CliStreamingProtocol
         var includeStaticFields = false;
         var includeDelegateTargets = false;
         var includeRetentionPaths = false;
+        var includeRetainedExceptions = false;
         if (kind == "heap")
         {
             if (!TryGetOptionalBool(root, "includeStaticFields", out includeStaticFields))
@@ -625,6 +630,18 @@ internal static class CliStreamingProtocol
                     requestId,
                     code = "invalid_capture",
                     message = "'includeRetentionPaths' must be a boolean.",
+                }, CancellationToken.None).ConfigureAwait(false);
+                return;
+            }
+
+            if (!TryGetOptionalBool(root, "includeRetainedExceptions", out includeRetainedExceptions))
+            {
+                await writer.WriteAsync(new
+                {
+                    type = "error",
+                    requestId,
+                    code = "invalid_capture",
+                    message = "'includeRetainedExceptions' must be a boolean.",
                 }, CancellationToken.None).ConfigureAwait(false);
                 return;
             }
@@ -694,7 +711,7 @@ internal static class CliStreamingProtocol
             {
                 await HandleHeapCaptureAsync(
                     requestId, services, writer, processId, dumpFile, heapSource!, topTypes,
-                    includeStaticFields, includeDelegateTargets, includeRetentionPaths, cancellationToken)
+                    includeStaticFields, includeDelegateTargets, includeRetentionPaths, includeRetainedExceptions, cancellationToken)
                     .ConfigureAwait(false);
                 return;
             }
@@ -758,6 +775,7 @@ internal static class CliStreamingProtocol
         bool includeStaticFields,
         bool includeDelegateTargets,
         bool includeRetentionPaths,
+        bool includeRetainedExceptions,
         CancellationToken cancellationToken)
     {
         var handles = services.GetRequiredService<IDiagnosticHandleStore>();
@@ -771,7 +789,7 @@ internal static class CliStreamingProtocol
                 principalAllowsSymbolsRemote: true,
                 dumpFile!, topTypes, includeRetentionPaths: includeRetentionPaths, retentionPathLimit: 8,
                 includeStaticFields: includeStaticFields, includeDelegateTargets: includeDelegateTargets, includeDuplicateStrings: false,
-                includeRetainedExceptions: false,
+                includeRetainedExceptions: includeRetainedExceptions,
                 symbolPath: null, deprecation: null, cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
 
@@ -836,7 +854,7 @@ internal static class CliStreamingProtocol
                 principalAllowsSymbolsRemote: true,
                 processId!.Value, topTypes, includeRetentionPaths: includeRetentionPaths, retentionPathLimit: 8,
                 includeStaticFields: includeStaticFields, includeDelegateTargets: includeDelegateTargets, includeDuplicateStrings: false,
-                includeRetainedExceptions: false,
+                includeRetainedExceptions: includeRetainedExceptions,
                 symbolPath: null, deprecation: null, cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -1047,6 +1065,25 @@ internal static class CliStreamingProtocol
             return;
         }
 
+        string? typeFilter = null;
+        if (root.TryGetProperty("typeFilter", out var typeFilterElement)
+            && typeFilterElement.ValueKind != JsonValueKind.Null)
+        {
+            if (typeFilterElement.ValueKind != JsonValueKind.String)
+            {
+                await writer.WriteAsync(new
+                {
+                    type = "error",
+                    requestId,
+                    code = "invalid_query",
+                    message = "'typeFilter' must be a string.",
+                }, CancellationToken.None).ConfigureAwait(false);
+                return;
+            }
+
+            typeFilter = typeFilterElement.GetString();
+        }
+
         var handles = services.GetRequiredService<IDiagnosticHandleStore>();
         var lookup = handles.LookupWithKind(handle);
         if (lookup.Status != DiagnosticHandleLookupStatus.Found || lookup.Lookup is not { } found)
@@ -1069,7 +1106,7 @@ internal static class CliStreamingProtocol
 
         if (found.Kind == SamplerUseCases.ThreadSnapshotKind)
         {
-            await HandleThreadQueryAsync(requestId, writer, handle, view, topN, found.Artifact, cancellationToken).ConfigureAwait(false);
+            await HandleThreadQueryAsync(requestId, services, writer, handle, view, topN, typeFilter, found.Artifact, cancellationToken).ConfigureAwait(false);
             return;
         }
 
@@ -1158,10 +1195,12 @@ internal static class CliStreamingProtocol
     /// </summary>
     private static async Task HandleThreadQueryAsync(
         string requestId,
+        IServiceProvider services,
         ProtocolWriter writer,
         string handle,
         string view,
         int topN,
+        string? typeFilter,
         object artifact,
         CancellationToken cancellationToken)
     {
@@ -1179,6 +1218,13 @@ internal static class CliStreamingProtocol
         }
 
         var snapshot = (ThreadSnapshotArtifact)artifact;
+        if (normalizedView == "thread-statics")
+        {
+            await HandleThreadStaticsQueryAsync(requestId, services, writer, handle, snapshot, typeFilter, cancellationToken)
+                .ConfigureAwait(false);
+            return;
+        }
+
         var result = ThreadSnapshotQueryDispatcher.Dispatch(
             snapshot, handle, normalizedView, threadId: null, topN, framesToHash: 20, minCount: 1);
 
@@ -1201,6 +1247,73 @@ internal static class CliStreamingProtocol
             handle,
             view = normalizedView,
             result = TrimThreadQueryResult(result.Data!),
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Renders the <c>thread-statics</c> view: re-opens the snapshot origin (live pid or dump) via
+    /// <see cref="IThreadStaticFieldResolver"/>, the same resolver the CLI <c>session</c> REPL uses.
+    /// Requires <paramref name="typeFilter"/> as the EXACT full type name.
+    /// </summary>
+    private static async Task HandleThreadStaticsQueryAsync(
+        string requestId,
+        IServiceProvider services,
+        ProtocolWriter writer,
+        string handle,
+        ThreadSnapshotArtifact snapshot,
+        string? typeFilter,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(typeFilter))
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId,
+                code = "invalid_query",
+                message = "A non-empty string 'typeFilter' (exact full type name) is required for view 'thread-statics'.",
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+
+        var resolver = services.GetRequiredService<IThreadStaticFieldResolver>();
+        ThreadStaticFieldsResult threadStatics;
+        try
+        {
+            threadStatics = await resolver.ResolveAsync(
+                snapshot, typeFilter, includeSensitiveValues: false, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId,
+                code = "query_failed",
+                message = $"thread-statics: {ex.Message}",
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+
+        await writer.WriteAsync(new
+        {
+            type = "query",
+            requestId,
+            handle,
+            view = "thread-statics",
+            result = new
+            {
+                handle,
+                view = "thread-statics",
+                origin = snapshot.Origin.ToString().ToLowerInvariant(),
+                processId = snapshot.ProcessId,
+                capturedAt = snapshot.CapturedAt,
+                threadStatics,
+            },
         }, cancellationToken).ConfigureAwait(false);
     }
 
@@ -1233,6 +1346,7 @@ internal static class CliStreamingProtocol
         sortedBy = data.SortedBy,
         timers = data.Timers,
         assemblyLoadContexts = data.AssemblyLoadContexts,
+        retainedExceptions = data.RetainedExceptions,
     };
 
     /// <summary>
@@ -1553,7 +1667,15 @@ Moderate risk), so the request is rejected with code "capture_safety_rejected" u
 for a live ClrMD attach (High risk/Acknowledge), or the same shape with "dumpFile" instead of
 "processId" to read an existing dump file offline (Moderate risk/Warn, no acknowledgeRisk needed).
 "processId" and "dumpFile" are mutually exclusive for "heap" source="dump" and "thread-snapshot"
-requests — exactly one is required.
+requests — exactly one is required. A heap capture also accepts the optional booleans
+"includeStaticFields", "includeDelegateTargets", "includeRetentionPaths" and
+"includeRetainedExceptions" (all default false; they enable the matching query views and are
+ignored for source="gcdump"). A {"type":"query","requestId":...,"handle":...,"view":...} request
+reads a view of a prior capture's handle: heap views are roots-by-kind, finalizer-queue,
+fragmentation, gchandles, async, timers, alc, static-fields, delegate-targets, retention-paths and
+retained-exceptions; thread-snapshot views are deadlocks, unique-stacks, wait-chains, threadpool and
+thread-statics. The optional "typeFilter" string is the exact full type name that thread-statics
+requires (otherwise error code "invalid_query"); it is ignored by every other view.
 """;
 
 

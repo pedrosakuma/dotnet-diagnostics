@@ -336,6 +336,100 @@ public sealed class CliStreamingProtocolKindsTests
     }
 
     [Fact(Timeout = 120_000)]
+    public async Task Query_RetainedExceptionsAndThreadStatics_FromDump_RoundTrip()
+    {
+        await using var target = await LiveSampleProcess.StartPublishedAsync(
+            "CoreClrSample",
+            new LiveSampleOptions
+            {
+                BindHttpPort = true,
+                HarvestListeningUrl = true,
+                DiagnosticTimeout = TimeSpan.FromSeconds(30),
+            });
+
+        var dumpRoot = Path.Combine(Path.GetTempPath(), $"dotnet-diagnostics-cli-dump-protocol-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dumpRoot);
+        try
+        {
+            var dumper = new DiagnosticsClientDumper(new InlineArtifactRootProvider(dumpRoot));
+            var dump = await dumper.WriteDumpAsync(
+                target.ProcessId, ProcessDumpType.WithHeap, outputDirectory: null, CancellationToken.None);
+
+            await using var session = await InteractiveCliSession.StartAsync();
+            await session.SendAsync(new { type = "hello", protocolVersion = 1 });
+            await session.ReadFrameAsync();
+
+            await session.SendAsync(new { type = "capture", requestId = "heap-dump", kind = "heap", source = "dump", dumpFile = dump.FilePath, topTypes = 10 });
+            var heapHandle = (await session.ReadFrameAsync()).GetProperty("result").GetProperty("data").GetProperty("handle").GetString();
+
+            await session.SendAsync(new { type = "capture", requestId = "thread-dump", kind = "thread-snapshot", dumpFile = dump.FilePath });
+            var threadHandle = (await session.ReadFrameAsync()).GetProperty("result").GetProperty("data").GetProperty("handle").GetString();
+
+            // #1126: retained-exceptions is opt-in at capture time.
+            await session.SendAsync(new { type = "query", requestId = "q-retained-not-captured", handle = heapHandle, view = "retained-exceptions" });
+            var retainedNotCaptured = await session.ReadFrameAsync();
+            retainedNotCaptured.GetProperty("type").GetString().Should().Be("error");
+            retainedNotCaptured.GetProperty("code").GetString().Should().Be("view_not_captured");
+
+            await session.SendAsync(new
+            {
+                type = "capture",
+                requestId = "heap-dump-retained",
+                kind = "heap",
+                source = "dump",
+                dumpFile = dump.FilePath,
+                topTypes = 10,
+                includeRetainedExceptions = true,
+            });
+            var heapRetainedCapture = await session.ReadFrameAsync();
+            var heapRetainedHandle = heapRetainedCapture.GetProperty("result").GetProperty("data").GetProperty("handle").GetString();
+            await session.SendAsync(new { type = "query", requestId = "q-retained", handle = heapRetainedHandle, view = "retained-exceptions" });
+            var retained = await session.ReadFrameAsync();
+            retained.GetProperty("type").GetString().Should().Be("query");
+            retained.GetProperty("view").GetString().Should().Be("retained-exceptions");
+            retained.GetProperty("result").GetProperty("view").GetString().Should().Be("retained-exceptions");
+
+            // #1126: thread-statics requires a non-empty typeFilter; typeFilter is rejected when not a string.
+            foreach (var typeFilter in new object?[] { null, "", "   " })
+            {
+                await session.SendAsync(new { type = "query", requestId = "q-statics-missing", handle = threadHandle, view = "thread-statics", typeFilter });
+                var missing = await session.ReadFrameAsync();
+                missing.GetProperty("type").GetString().Should().Be("error");
+                missing.GetProperty("code").GetString().Should().Be("invalid_query");
+                missing.GetProperty("message").GetString().Should().Contain("typeFilter");
+            }
+
+            await session.SendAsync(new { type = "query", requestId = "q-statics-bad-type", handle = threadHandle, view = "thread-statics", typeFilter = 5 });
+            var badTypeFilter = await session.ReadFrameAsync();
+            badTypeFilter.GetProperty("type").GetString().Should().Be("error");
+            badTypeFilter.GetProperty("code").GetString().Should().Be("invalid_query");
+
+            // thread-statics is a thread view only.
+            await session.SendAsync(new { type = "query", requestId = "q-statics-heap", handle = heapHandle, view = "thread-statics", typeFilter = "System.Object" });
+            var staticsOnHeap = await session.ReadFrameAsync();
+            staticsOnHeap.GetProperty("code").GetString().Should().Be("unsupported_query_view");
+
+            // typeFilter is ignored on other thread views.
+            await session.SendAsync(new { type = "query", requestId = "q-deadlocks-filter", handle = threadHandle, view = "deadlocks", typeFilter = "Anything" });
+            var ignoredFilter = await session.ReadFrameAsync();
+            ignoredFilter.GetProperty("type").GetString().Should().Be("query");
+
+            await session.CompleteAsync();
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(dumpRoot, recursive: true);
+            }
+            catch
+            {
+                // Best-effort cleanup of transient dump scratch.
+            }
+        }
+    }
+
+    [Fact(Timeout = 120_000)]
     public async Task Capture_HeapAndThreadSnapshotFromDump_RoundTrip()
     {
         await using var target = await LiveSampleProcess.StartPublishedAsync(
@@ -523,6 +617,37 @@ public sealed class CliStreamingProtocolKindsTests
                 // Best-effort cleanup; dump files are large and transient test scratch.
             }
         }
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task Capture_HeapWithNonBooleanIncludeRetainedExceptions_ReturnsInvalidCaptureError()
+    {
+        var (frames, _) = await RunInProcessAsync(
+            new { type = "hello", protocolVersion = 1 },
+            new
+            {
+                type = "capture",
+                requestId = "c1",
+                kind = "heap",
+                processId = 999_999,
+                source = "live",
+                includeRetainedExceptions = "yes",
+            });
+
+        frames[1].RootElement.GetProperty("type").GetString().Should().Be("error");
+        frames[1].RootElement.GetProperty("code").GetString().Should().Be("invalid_capture");
+        frames[1].RootElement.GetProperty("message").GetString().Should().Contain("includeRetainedExceptions");
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task Query_NonStringTypeFilter_ReturnsInvalidQueryError()
+    {
+        var (frames, _) = await RunInProcessAsync(
+            new { type = "hello", protocolVersion = 1 },
+            new { type = "query", requestId = "q1", handle = "whatever", view = "thread-statics", typeFilter = 7 });
+
+        frames[1].RootElement.GetProperty("type").GetString().Should().Be("error");
+        frames[1].RootElement.GetProperty("code").GetString().Should().Be("invalid_query");
     }
 
     [Fact(Timeout = 30_000)]
