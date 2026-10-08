@@ -332,6 +332,50 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         snapshot.ProcessorCount.Should().BeGreaterThan(0);
     }
 
+    // Probe requests only establish subscription readiness. Their queued stack snapshots are answered
+    // without a live ClrMD attach so the target request's snapshot is the only attach, instead of racing
+    // a back-to-back suspend/resume of the same process (which can stall the attach indefinitely).
+    private sealed class ProbeGatedThreadInspector(IThreadSnapshotInspector inner) : IThreadSnapshotInspector
+    {
+        private readonly TaskCompletionSource _drained = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _observed;
+        private int _answered;
+        private volatile bool _targetReleased;
+
+        public Task ProbeSnapshotsDrained => _drained.Task;
+
+        public void NoteRequestObserved() => Interlocked.Increment(ref _observed);
+
+        public void ReleaseTarget() => _targetReleased = true;
+
+        public Task<ThreadSnapshotArtifact> InspectLiveAsync(
+            int processId,
+            ThreadSnapshotOptions? options = null,
+            CancellationToken cancellationToken = default)
+        {
+            if (_targetReleased)
+            {
+                return inner.InspectLiveAsync(processId, options, cancellationToken);
+            }
+
+            var answered = Interlocked.Increment(ref _answered);
+            if (answered >= Volatile.Read(ref _observed))
+            {
+                _drained.TrySetResult();
+            }
+
+            return Task.FromResult(new ThreadSnapshotArtifact(
+                ThreadSnapshotOrigin.Live, processId, DateTimeOffset.UtcNow, TimeSpan.Zero,
+                "probe", "probe", [], []));
+        }
+
+        public Task<ThreadSnapshotArtifact> InspectDumpAsync(
+            string dumpFilePath,
+            ThreadSnapshotOptions? options = null,
+            CancellationToken cancellationToken = default) =>
+            inner.InspectDumpAsync(dumpFilePath, options, cancellationToken);
+    }
+
     [Fact(Timeout = 60_000)]
     public async Task LiveCounterSession_StreamsSequencedUpdates_AndStopsCleanly()
     {
@@ -725,15 +769,31 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
             BaseAddress = new Uri(sample.BaseUrl),
             Timeout = TimeSpan.FromSeconds(30),
         };
-        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(35));
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(50));
         var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var collector = new RequestsNowCollector(new ClrMdThreadSnapshotInspector())
-        {
-            RequestObserved = () => ready.TrySetResult(),
-        };
+        var targetCaptured = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         const string traceId = "0123456789abcdef0123456789abcdef";
+        // The window is an upper bound only: it ends as soon as the target's stack snapshot is stored,
+        // so a slow ClrMD attach (or a queued probe snapshot) cannot outlast the capture.
+        var inspector = new ProbeGatedThreadInspector(new ClrMdThreadSnapshotInspector());
+        var collector = new RequestsNowCollector(inspector)
+        {
+            RequestObserved = () =>
+            {
+                inspector.NoteRequestObserved();
+                ready.TrySetResult();
+            },
+            SnapshotStored = storedTraceId =>
+            {
+                if (storedTraceId == traceId)
+                {
+                    targetCaptured.TrySetResult();
+                }
+            },
+            EarlyStop = targetCaptured.Task,
+        };
         var collection = collector.CollectAsync(
-            sample.ProcessId, TimeSpan.FromSeconds(10), topFrames: 8, cancellation.Token);
+            sample.ProcessId, TimeSpan.FromSeconds(40), topFrames: 8, cancellation.Token);
         Task<HttpResponseMessage>? driver = null;
         try
         {
@@ -746,8 +806,10 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
             }
             ready.Task.IsCompletedSuccessfully.Should().BeTrue(
                 "the request subscription must be observed before starting the target request");
+            await inspector.ProbeSnapshotsDrained.WaitAsync(cancellation.Token);
             await Task.Delay(requestDelayMilliseconds, cancellation.Token);
             collection.IsCompleted.Should().BeFalse("the target must start within the capture window");
+            inspector.ReleaseTarget();
             using var requestMessage = new HttpRequestMessage(HttpMethod.Get, "/slow-hang?seconds=20");
             requestMessage.Headers.TryAddWithoutValidation("traceparent", $"00-{traceId}-9999999999999999-01");
             driver = http.SendAsync(requestMessage, cancellation.Token);

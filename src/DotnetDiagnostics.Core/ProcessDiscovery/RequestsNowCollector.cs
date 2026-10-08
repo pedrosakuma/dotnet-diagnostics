@@ -33,6 +33,12 @@ public sealed class RequestsNowCollector : IRequestsNowCollector
     private readonly ILogger<RequestsNowCollector> _logger;
     internal Action? RequestObserved { get; init; }
 
+    /// <summary>Invoked with the trace id once a request's start-thread frames have been stored.</summary>
+    internal Action<string>? SnapshotStored { get; init; }
+
+    /// <summary>When set, completing this task ends the capture window early.</summary>
+    internal Task? EarlyStop { get; init; }
+
     public RequestsNowCollector(
         IThreadSnapshotInspector threadSnapshotInspector,
         ILogger<RequestsNowCollector>? logger = null)
@@ -96,7 +102,10 @@ public sealed class RequestsNowCollector : IRequestsNowCollector
                         var frames = FindFramesForThread(threadSnapshot, snapshotRequest.ThreadId, topFrames);
                         if (requests.TryGetValue(snapshotRequest.Key, out var existing))
                         {
-                            requests.TryUpdate(snapshotRequest.Key, existing with { TopFrames = frames }, existing);
+                            if (requests.TryUpdate(snapshotRequest.Key, existing with { TopFrames = frames }, existing) && frames.Length > 0)
+                            {
+                                SnapshotStored?.Invoke(existing.TraceId);
+                            }
                         }
                     }
                     catch (OperationCanceledException) when (snapshotCancellation.IsCancellationRequested)
@@ -160,7 +169,11 @@ public sealed class RequestsNowCollector : IRequestsNowCollector
 
         try
         {
-            await Task.Delay(window, cancellationToken).ConfigureAwait(false);
+            using var windowCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            var windowElapsed = Task.Delay(window, windowCancellation.Token);
+            await (EarlyStop is null ? windowElapsed : Task.WhenAny(windowElapsed, EarlyStop)).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            await windowCancellation.CancelAsync().ConfigureAwait(false);
         }
         finally
         {
