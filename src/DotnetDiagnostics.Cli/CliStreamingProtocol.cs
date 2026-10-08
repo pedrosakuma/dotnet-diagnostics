@@ -1220,7 +1220,7 @@ internal static class CliStreamingProtocol
         var snapshot = (ThreadSnapshotArtifact)artifact;
         if (normalizedView == "thread-statics")
         {
-            await HandleThreadStaticsQueryAsync(requestId, services, writer, handle, snapshot, typeFilter, cancellationToken)
+            await HandleThreadStaticsQueryAsync(requestId, services, writer, handle, snapshot, typeFilter, topN, cancellationToken)
                 .ConfigureAwait(false);
             return;
         }
@@ -1262,6 +1262,7 @@ internal static class CliStreamingProtocol
         string handle,
         ThreadSnapshotArtifact snapshot,
         string? typeFilter,
+        int topN,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(typeFilter))
@@ -1299,6 +1300,7 @@ internal static class CliStreamingProtocol
             return;
         }
 
+        var bounded = BoundThreadStatics(threadStatics, topN);
         await writer.WriteAsync(new
         {
             type = "query",
@@ -1312,9 +1314,37 @@ internal static class CliStreamingProtocol
                 origin = snapshot.Origin.ToString().ToLowerInvariant(),
                 processId = snapshot.ProcessId,
                 capturedAt = snapshot.CapturedAt,
-                threadStatics,
+                threadStatics = bounded.ThreadStatics,
+                totalThreads = bounded.TotalThreads,
+                omittedThreads = bounded.OmittedThreads,
+                notes = bounded.Notes,
             },
         }, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal sealed record BoundedThreadStatics(
+        ThreadStaticFieldsResult ThreadStatics, int TotalThreads, int OmittedThreads, IReadOnlyList<string> Notes);
+
+    /// <summary>
+    /// Caps the per-thread matrix of a <c>thread-statics</c> result to <paramref name="topN"/> threads
+    /// (the validated <c>topN</c>, default 50, max 500) so one frame cannot grow with thread count;
+    /// truncation is reported through <c>totalThreads</c>/<c>omittedThreads</c>/<c>notes</c>.
+    /// </summary>
+    internal static BoundedThreadStatics BoundThreadStatics(ThreadStaticFieldsResult full, int topN)
+    {
+        var total = full.Threads.Count;
+        if (total <= topN)
+        {
+            return new BoundedThreadStatics(full, total, 0, []);
+        }
+
+        var omitted = total - topN;
+        var bounded = full with { Threads = [.. full.Threads.Take(topN)] };
+        return new BoundedThreadStatics(
+            bounded,
+            total,
+            omitted,
+            [$"thread-statics: returned {topN} of {total} thread(s) (topN cap); {omitted} omitted. Raise 'topN' (max 500) to see more."]);
     }
 
     /// <summary>

@@ -137,7 +137,10 @@ historical reasons — see `HeapSnapshotQueryDispatcher`). Thread-snapshot handl
 caps ranked results the same way it does for the `cpu` capture. `thread-statics` re-opens the
 handle's origin (live process or dump) via ClrMD, like the REPL view of the same name, and requires
 the optional `typeFilter` string on the `query` request (the EXACT full type name); omitting it
-returns an `invalid_query` error. `typeFilter` is ignored by every other view. Address-targeted drilldown views (`object`, `gcroot`,
+returns an `invalid_query` error. `typeFilter` is ignored by every other view.
+`thread-statics` results are bounded by `topN` (default 50, max 500) threads: the `result` carries
+`threadStatics` (`typeFullName`, `threads`, optional `warnings`), plus `totalThreads`,
+`omittedThreads`, and `notes` (a truncation note when `omittedThreads > 0`). Address-targeted drilldown views (`object`, `gcroot`,
 `objsize`, `duplicate-strings`, `resolve-address`, `frame-vars`) are intentionally not exposed
 through this request — they remain MCP-only `query_snapshot` views pending a future protocol
 extension. Heap handles captured with `source:"gcdump"` support none of the 10 views above except

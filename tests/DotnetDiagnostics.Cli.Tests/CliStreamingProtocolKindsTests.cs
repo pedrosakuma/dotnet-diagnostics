@@ -5,6 +5,7 @@ using System.Threading.Channels;
 using DotnetDiagnostics.Cli;
 using DotnetDiagnostics.Core.Artifacts;
 using DotnetDiagnostics.Core.Dump;
+using DotnetDiagnostics.Core.Threads;
 using DotnetDiagnostics.TestSupport;
 using FluentAssertions;
 
@@ -637,6 +638,26 @@ public sealed class CliStreamingProtocolKindsTests
         frames[1].RootElement.GetProperty("type").GetString().Should().Be("error");
         frames[1].RootElement.GetProperty("code").GetString().Should().Be("invalid_capture");
         frames[1].RootElement.GetProperty("message").GetString().Should().Contain("includeRetainedExceptions");
+    }
+
+    [Fact]
+    public void BoundThreadStatics_CapsThreadsAndReportsOmitted()
+    {
+        var threads = Enumerable.Range(1, 7)
+            .Select(i => new ThreadStaticFieldsForThread(i, [new ThreadStaticFieldValue("F", true)]))
+            .ToArray();
+        var full = new ThreadStaticFieldsResult("My.Type", threads);
+
+        var capped = CliStreamingProtocol.BoundThreadStatics(full, 3);
+        capped.ThreadStatics.Threads.Should().HaveCount(3);
+        capped.TotalThreads.Should().Be(7);
+        capped.OmittedThreads.Should().Be(4);
+        capped.Notes.Should().ContainSingle().Which.Should().Contain("4 omitted");
+
+        var uncapped = CliStreamingProtocol.BoundThreadStatics(full, 7);
+        uncapped.ThreadStatics.Threads.Should().HaveCount(7);
+        uncapped.OmittedThreads.Should().Be(0);
+        uncapped.Notes.Should().BeEmpty();
     }
 
     [Fact(Timeout = 30_000)]
