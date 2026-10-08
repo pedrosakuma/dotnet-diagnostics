@@ -438,9 +438,18 @@ public sealed class CliStreamingProtocolKindsTests
             new LiveSampleOptions
             {
                 BindHttpPort = true,
-                HarvestListeningUrl = true,
+                WaitForHttpReady = true,
+                ReadinessPath = "/weatherforecast",
                 DiagnosticTimeout = TimeSpan.FromSeconds(30),
             });
+
+        // The PortableThreadPool singleton only exists once the sample has served work on the
+        // pool; dumping a freshly started process yields no ThreadPool snapshot (#1130).
+        using (var warmup = new HttpClient { BaseAddress = new Uri(target.BaseUrl), Timeout = TimeSpan.FromSeconds(30) })
+        using (var warmupResponse = await warmup.GetAsync("/weatherforecast"))
+        {
+            warmupResponse.EnsureSuccessStatusCode();
+        }
 
         var dumpRoot = Path.Combine(Path.GetTempPath(), $"dotnet-diagnostics-cli-dump-protocol-{Guid.NewGuid():N}");
         Directory.CreateDirectory(dumpRoot);
