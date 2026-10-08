@@ -125,19 +125,13 @@ public sealed class StdioCaptureAuthorityClientTests : IDisposable
             await process.StandardInput.WriteAsync(Encoding.UTF8.GetString(
                 McpRequestFramingTests.Frame(65537, capture: true)));
             await process.StandardInput.FlushAsync(timeout.Token);
-            var stderr = new StringBuilder();
-            string? line;
-            while ((line = await process.StandardError.ReadLineAsync(timeout.Token)) is not null)
-            {
-                stderr.AppendLine(line);
-                if (line.Contains("64 KiB", StringComparison.Ordinal))
-                    break;
-            }
-            process.StandardInput.Close();
+            // The host stops after rejecting the frame; stderr completes only once it has flushed and exited.
+            var stderrTask = process.StandardError.ReadToEndAsync(timeout.Token);
             var output = await process.StandardOutput.ReadToEndAsync(timeout.Token);
             await process.WaitForExitAsync(timeout.Token);
+            var stderr = await stderrTask;
             output.Should().NotContain("\"id\":2", "the oversized request must not reach tools/call");
-            stderr.ToString().Should().Contain("64 KiB");
+            stderr.Should().Contain("64 KiB");
         }
         finally
         {

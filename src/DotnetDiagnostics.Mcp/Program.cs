@@ -320,7 +320,7 @@ static async Task<int> RunStdioAsync(string[] args)
             enableOrchestratorTools: orchestratorEnabled,
             servicesAccessor: () => stdioServicesHolder)
         .WithStreamServerTransport(
-            new BoundedMcpInputStream(Console.OpenStandardInput()), Console.OpenStandardOutput());
+            new BoundedMcpInputStream(Console.OpenStandardInput(), () => stdioLoggerFactoryHolder), Console.OpenStandardOutput());
 
     var host = hostBuilder.Build();
     stdioLoggerFactoryHolder = host.Services.GetRequiredService<ILoggerFactory>();
