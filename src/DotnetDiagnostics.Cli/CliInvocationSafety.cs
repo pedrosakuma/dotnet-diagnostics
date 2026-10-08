@@ -171,6 +171,7 @@ internal static class CliInvocationSafety
             ("includeDelegateTargets", options.IncludeDelegateTargets),
             ("includeDuplicateStrings", options.IncludeDuplicateStrings),
             ("verifyHeap", options.VerifyHeap),
+            ("includeRetainedExceptions", options.IncludeRetainedExceptions),
             ("exportTrace", options.ExportTrace),
             ("symbolPath", options.SymbolPath));
     }

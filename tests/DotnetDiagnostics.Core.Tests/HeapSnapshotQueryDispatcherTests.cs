@@ -29,6 +29,7 @@ public class HeapSnapshotQueryDispatcherTests
     [InlineData("alc")]
     [InlineData("com-wrappers")]
     [InlineData("heap-integrity")]
+    [InlineData("retained-exceptions")]
     public void ProjectionViews_RenderResult(string view)
     {
         var outcome = HeapSnapshotQueryDispatcher.Dispatch(Snapshot(), Handle, view, topN: 10, rankBy: "bytes", typeFullName: null);
@@ -166,11 +167,41 @@ public class HeapSnapshotQueryDispatcherTests
     }
 
     [Fact]
+    public void RetainedExceptions_ReturnsViewNotCaptured_WhenFlagWasNotSet()
+    {
+        var snapshot = Snapshot() with { RetainedExceptionsByType = null };
+
+        var outcome = HeapSnapshotQueryDispatcher.Dispatch(snapshot, Handle, "retained-exceptions", topN: 10, rankBy: "bytes", typeFullName: null);
+
+        outcome.ServerOnlyView.Should().BeFalse();
+        outcome.UnknownView.Should().BeFalse();
+        outcome.Result.Should().NotBeNull();
+        outcome.Result!.IsError.Should().BeTrue();
+        outcome.Result.Error!.Kind.Should().Be("ViewNotCaptured");
+    }
+
+    [Fact]
+    public void RetainedExceptions_SurfacesTypeAndMessageSample()
+    {
+        var outcome = HeapSnapshotQueryDispatcher.Dispatch(Snapshot(), Handle, "retained-exceptions", topN: 10, rankBy: "bytes", typeFullName: null);
+
+        outcome.Result!.IsError.Should().BeFalse();
+        var data = outcome.Result.Data!;
+        data.RetainedExceptions.Should().NotBeNull();
+        data.RetainedExceptions!.Should().ContainSingle(stat => stat.TypeFullName == "System.InvalidOperationException");
+        var stat = data.RetainedExceptions!.Single();
+        stat.InstanceCount.Should().Be(10);
+        stat.Samples.Should().NotBeNullOrEmpty();
+        stat.Samples!.Single().Message.Should().Be("cached failure");
+    }
+
+    [Fact]
     public void ProjectionViews_ExposesThirteenViews_WithoutServerOnly()
     {
-        HeapSnapshotQueryDispatcher.ProjectionViews.Should().HaveCount(13);
+        HeapSnapshotQueryDispatcher.ProjectionViews.Should().HaveCount(14);
         HeapSnapshotQueryDispatcher.ProjectionViews.Should().Contain("com-wrappers");
         HeapSnapshotQueryDispatcher.ProjectionViews.Should().Contain("heap-integrity");
+        HeapSnapshotQueryDispatcher.ProjectionViews.Should().Contain("retained-exceptions");
         HeapSnapshotQueryDispatcher.ProjectionViews.Should().NotContain("object");
         HeapSnapshotQueryDispatcher.ProjectionViews.Should().NotContain("duplicate-strings");
     }
@@ -379,5 +410,12 @@ public class HeapSnapshotQueryDispatcherTests
             ],
             Notes: ["Retention hints are capped."]),
         HeapIntegrity = new HeapIntegrityView(0, Array.Empty<HeapCorruptionStat>(), Array.Empty<string>()),
+        RetainedExceptionsByType = new[]
+        {
+            new RetainedExceptionTypeStat("System.InvalidOperationException", null, 10, 1280)
+            {
+                Samples = new[] { new RetainedExceptionSample("cached failure", false, unchecked((int)0x80131509)) },
+            },
+        },
     };
 }

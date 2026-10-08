@@ -180,6 +180,7 @@ internal static class CaptureArtifactCodec
         if (snapshot.AsyncOperations is not null) views.Add("async");
         if (snapshot.Timers is not null) views.Add("timers");
         if (snapshot.AssemblyLoadContexts is not null) views.Add("alc");
+        if (snapshot.RetainedExceptionsByType is not null) views.Add("retained-exceptions");
         return views;
     }
 

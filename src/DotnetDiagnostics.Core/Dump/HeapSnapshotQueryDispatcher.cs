@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Diagnostics;
 using DotnetDiagnostics.Core;
 
 namespace DotnetDiagnostics.Core.Dump;
@@ -33,6 +34,7 @@ public static class HeapSnapshotQueryDispatcher
     {
         "top-types", "retention-paths", "roots-by-kind", "finalizer-queue", "fragmentation",
         "static-fields", "delegate-targets", "gchandles", "async", "timers", "alc", "com-wrappers", "heap-integrity",
+        "retained-exceptions",
     };
 
     private static readonly HashSet<string> ProjectionSet = new(Projection, StringComparer.Ordinal);
@@ -104,7 +106,9 @@ public static class HeapSnapshotQueryDispatcher
             "timers" => QueryTimers(snapshot, handle, topN),
             "alc" => QueryAssemblyLoadContexts(snapshot, handle, topN),
             "com-wrappers" => QueryComWrappers(snapshot, handle, topN),
-            _ => QueryHeapIntegrity(snapshot, handle),
+            "heap-integrity" => QueryHeapIntegrity(snapshot, handle),
+            "retained-exceptions" => QueryRetainedExceptions(snapshot, handle, topN),
+            _ => throw new UnreachableException($"Unhandled projection view '{normalized}' passed ProjectionSet validation."),
         };
 
         return new HeapDispatchOutcome(result, false, false);
@@ -397,6 +401,35 @@ public static class HeapSnapshotQueryDispatcher
                 "query-delegate-targets",
                 Math.Max(0, snapshot.DelegateTargets.Count - slice.Length),
                 "Lower-ranked delegate target groups were omitted from this bounded response."),
+        };
+        return DiagnosticResult.Ok(result, summary);
+    }
+
+    private static DiagnosticResult<HeapSnapshotQueryResult> QueryRetainedExceptions(
+        HeapSnapshotArtifact snapshot, string handle, int topN)
+    {
+        var origin = snapshot.Origin.ToString();
+        if (snapshot.RetainedExceptionsByType is null)
+        {
+            return DiagnosticResult.Fail<HeapSnapshotQueryResult>(
+                $"Snapshot '{handle}' was captured without retained-exception aggregation.",
+                new DiagnosticError("ViewNotCaptured", "Re-run inspect_heap with includeRetainedExceptions=true.", handle),
+                new NextActionHint("inspect_heap",
+                    "Re-walk with includeRetainedExceptions=true to populate retained exception types.",
+                    BuildRecaptureArguments(snapshot, "includeRetainedExceptions")));
+        }
+        var slice = snapshot.RetainedExceptionsByType.Take(topN).ToArray();
+        var summary = slice.Length == 0
+            ? $"Snapshot '{handle}' has no live exception objects on the heap."
+            : $"Returning {slice.Length} retained exception type(s) from snapshot '{handle}' ({origin}, pid {snapshot.ProcessId}). Top: `{slice[0].TypeFullName}` — {slice[0].InstanceCount:N0} instance(s), {slice[0].TotalBytes:N0} bytes. Exceptions still reachable long after they stopped propagating are a classic exception-cache/leak smell — compare across snapshots to see if the count keeps growing.";
+        var result = new HeapSnapshotQueryResult(handle, "retained-exceptions", origin, snapshot.ProcessId, snapshot.CapturedAt)
+        {
+            RetainedExceptions = slice,
+            Quality = GcDumpEvidence.WithApplicableProjection(
+                snapshot,
+                "query-retained-exceptions",
+                Math.Max(0, snapshot.RetainedExceptionsByType.Count - slice.Length),
+                "Lower-ranked exception types were omitted from this bounded response."),
         };
         return DiagnosticResult.Ok(result, summary);
     }

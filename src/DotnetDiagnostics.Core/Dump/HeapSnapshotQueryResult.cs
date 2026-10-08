@@ -44,6 +44,8 @@ public sealed record HeapSnapshotQueryResult(
     public IReadOnlyList<DelegateTargetStat>? DelegateTargets { get; init; }
     /// <summary>Populated when <see cref="View"/> is <c>"duplicate-strings"</c>.</summary>
     public IReadOnlyList<DuplicateStringStat>? DuplicateStrings { get; init; }
+    /// <summary>Populated when <see cref="View"/> is <c>"retained-exceptions"</c>.</summary>
+    public IReadOnlyList<RetainedExceptionTypeStat>? RetainedExceptions { get; init; }
     /// <summary>Populated when <see cref="View"/> is <c>"gchandles"</c>.</summary>
     public GcHandlesView? GcHandles { get; init; }
     /// <summary>Populated when <see cref="View"/> is <c>"object"</c>.</summary>

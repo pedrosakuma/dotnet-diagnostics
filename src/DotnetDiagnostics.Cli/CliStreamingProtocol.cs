@@ -771,6 +771,7 @@ internal static class CliStreamingProtocol
                 principalAllowsSymbolsRemote: true,
                 dumpFile!, topTypes, includeRetentionPaths: includeRetentionPaths, retentionPathLimit: 8,
                 includeStaticFields: includeStaticFields, includeDelegateTargets: includeDelegateTargets, includeDuplicateStrings: false,
+                includeRetainedExceptions: false,
                 symbolPath: null, deprecation: null, cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
 
@@ -835,6 +836,7 @@ internal static class CliStreamingProtocol
                 principalAllowsSymbolsRemote: true,
                 processId!.Value, topTypes, includeRetentionPaths: includeRetentionPaths, retentionPathLimit: 8,
                 includeStaticFields: includeStaticFields, includeDelegateTargets: includeDelegateTargets, includeDuplicateStrings: false,
+                includeRetainedExceptions: false,
                 symbolPath: null, deprecation: null, cancellationToken)
                 .ConfigureAwait(false);
         }

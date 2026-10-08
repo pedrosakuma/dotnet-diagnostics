@@ -45,6 +45,7 @@ public static class HeapInspectionUseCases
         bool includeStaticFields = false,
         bool includeDelegateTargets = false,
         bool includeDuplicateStrings = false,
+        bool includeRetainedExceptions = false,
         string? symbolPath = null,
         ISymbolServerDeprecationSink? deprecation = null,
         bool verifyHeap = false,
@@ -65,6 +66,7 @@ public static class HeapInspectionUseCases
                     IncludeStaticFields: includeStaticFields,
                     IncludeDelegateTargets: includeDelegateTargets,
                     IncludeDuplicateStrings: includeDuplicateStrings,
+                    IncludeRetainedExceptions: includeRetainedExceptions,
                     SymbolPath: symbolPath,
                     VerifyHeap: verifyHeap),
                 cancellationToken).ConfigureAwait(false);
@@ -109,6 +111,7 @@ public static class HeapInspectionUseCases
         bool includeStaticFields = false,
         bool includeDelegateTargets = false,
         bool includeDuplicateStrings = false,
+        bool includeRetainedExceptions = false,
         string? symbolPath = null,
         ISymbolServerDeprecationSink? deprecation = null,
         CancellationToken cancellationToken = default)
@@ -133,6 +136,7 @@ public static class HeapInspectionUseCases
                     IncludeStaticFields: includeStaticFields,
                     IncludeDelegateTargets: includeDelegateTargets,
                     IncludeDuplicateStrings: includeDuplicateStrings,
+                    IncludeRetainedExceptions: includeRetainedExceptions,
                     SymbolPath: symbolPath),
                 cancellationToken).ConfigureAwait(false);
 
@@ -159,6 +163,7 @@ public static class HeapInspectionUseCases
             ["includeStaticFields"] = includeStaticFields,
             ["includeDelegateTargets"] = includeDelegateTargets,
             ["includeDuplicateStrings"] = includeDuplicateStrings,
+            ["includeRetainedExceptions"] = includeRetainedExceptions,
             ["symbolPath"] = symbolPath,
         }).ConfigureAwait(false);
     }

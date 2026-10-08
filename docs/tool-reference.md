@@ -525,7 +525,7 @@ Views available per `kind`:
 | `networking-snapshot` | `collect_events(kind="networking")` | `summary` (default), `byOperation`, `queue`, `tls`, `dns` |
 | `in-flight-requests` | `collect_events(kind="requests")` | `summary` (default), `requests`, `longRunning` |
 | `startup-snapshot` | `collect_events(kind="startup")` | `summary` (default), `assemblies`, `modules`, `di`, `timeline` |
-| `heap-snapshot` | `inspect_heap` / `inspect_heap(source="live")` / `inspect_heap(source="dump")` / `inspect_heap(source="gcdump")` | `top-types` (default), `retention-paths`, `roots-by-kind`, `finalizer-queue`, `fragmentation`, `static-fields`, `delegate-targets`, `duplicate-strings`, `gchandles`, `timers`, `alc`, `com-wrappers`, `object`, `gcroot`, `objsize`, `async`, `diff`, `growth` |
+| `heap-snapshot` | `inspect_heap` / `inspect_heap(source="live")` / `inspect_heap(source="dump")` / `inspect_heap(source="gcdump")` | `top-types` (default), `retention-paths`, `roots-by-kind`, `finalizer-queue`, `fragmentation`, `static-fields`, `delegate-targets`, `duplicate-strings`, `retained-exceptions`, `gchandles`, `timers`, `alc`, `com-wrappers`, `object`, `gcroot`, `objsize`, `async`, `diff`, `growth` |
 | `thread-snapshot` | `collect_thread_snapshot` | `top-blocked` (default), `threads-summary`, `stack`, `lock-graph`, `deadlocks`, `unique-stacks`, `async-stalls`, `wait-chains`, `threadpool`, `resolve-address`, `frame-vars`, `thread-statics` |
 | `off-cpu-snapshot` | `collect_sample(kind="off_cpu")` | `topStacks` (default), `byThread`, `stack` |
 | `cpu-sample` / `allocation-sample` / `native-alloc-sample` / `native-lock-contention-sample` | `collect_sample(kind="cpu")` / `collect_sample(kind="allocation")` / `collect_sample(kind="native-alloc")` / `collect_sample(kind="native-lock-contention")` | `call-tree`, `top-methods`, `by-module`, `by-namespace`, `hot-path`, `caller-callee`, `triage`, `diff` |
@@ -3152,8 +3152,8 @@ name and captures the events it emits in the window. Use for HTTP activity
 ## `inspect_heap`
 
 Inspects a managed heap and returns the top retained types plus optional
-retention paths, roots, static-field owners, delegate targets, and duplicate
-strings. Registers a `heap-snapshot` drilldown handle so follow-up questions go
+retention paths, roots, static-field owners, delegate targets, duplicate
+strings, and retained exceptions. Registers a `heap-snapshot` drilldown handle so follow-up questions go
 through [`query_snapshot`](#query_snapshot) without re-walking the heap.
 
 **Backend discriminator (`source`, required):**
@@ -3178,6 +3178,7 @@ through [`query_snapshot`](#query_snapshot) without re-walking the heap.
 | `includeDelegateTargets` | `bool` | `false` | Group `MulticastDelegate` invocation lists by (target type, method) — surfaces "event handler never unsubscribed" leaks |
 | `includeDuplicateStrings` | `bool` | `false` | Hash every `System.String` and rank by aggregate retained bytes — surfaces missing interning |
 | `verifyHeap` | `bool` | `false` | Dump-only. Runs ClrMD's own `ClrHeap.VerifyHeap()` corruption walk (a second, more expensive full-heap pass distinct from the normal object walk) and populates the `heap-integrity` view. Forbidden for `source="live"`/`source="gcdump"` (issue #1119) |
+| `includeRetainedExceptions` | `bool` | `false` | Aggregate exception objects still reachable on the heap (e.g. cached in a static field or collection) by type — instance count, total bytes, and a small sample of recent messages/HResults per top type. Surfaces "exception used as cache value" / "last-error" leak patterns |
 | `symbolPath` | `string?` | — | NT_SYMBOL_PATH-style search path. Remote symbol servers are **off by default** (issue #165) — `srv*http(s)://…` must be on `Diagnostics:SymbolServerAllowlist` |
 | `exportTrace` | `bool` | `false` | `source="gcdump"` only. Persist the raw `.nettrace` under the artifact root and return its relative path for `get_bytes(kind="trace")` |
 
@@ -3185,7 +3186,7 @@ through [`query_snapshot`](#query_snapshot) without re-walking the heap.
 (~10 min TTL). Drill further via [`query_snapshot`](#query_snapshot) with any of
 the heap views: `top-types`, `retention-paths`, `roots-by-kind`,
 `finalizer-queue`, `fragmentation`, `static-fields`, `delegate-targets`,
-`duplicate-strings`, `gchandles`, `timers`, `alc`, `com-wrappers`, `heap-integrity`, `object`,
+`duplicate-strings`, `retained-exceptions`, `gchandles`, `timers`, `alc`, `com-wrappers`, `heap-integrity`, `object`,
 `gcroot`, `objsize`, `async`, `diff`, `growth`.
 
 For `source="gcdump"`, only `top-types` is supported from the captured artifact.
@@ -3368,7 +3369,7 @@ contract.
 
 - **heap** (`inspect_heap`): `top-types` (default), `retention-paths`,
   `roots-by-kind`, `finalizer-queue`, `fragmentation`, `static-fields`,
-  `delegate-targets`, `duplicate-strings`, `gchandles`, `timers`, `alc`, `com-wrappers`,
+  `delegate-targets`, `duplicate-strings`, `retained-exceptions`, `gchandles`, `timers`, `alc`, `com-wrappers`,
   `object`, `gcroot`, `objsize`, `async`, `diff`, `growth`.
 - **thread** (`collect_thread_snapshot`): `top-blocked` (default),
   `threads-summary`, `stack`, `lock-graph`, `deadlocks`, `unique-stacks`,

@@ -375,6 +375,7 @@ inspect-heap options:
       --include-static-fields   Rank static reference fields by referenced object size.
       --include-delegate-targets  Group MulticastDelegate invocation lists by (target, method).
       --include-duplicate-strings Rank duplicate strings by aggregate retained bytes.
+      --include-retained-exceptions Aggregate exception objects still reachable on the heap by type (leak detection).
       --symbol-path <path>      NT_SYMBOL_PATH-style search path (remote servers off by default).
       --verify-heap              --source dump only: run ClrHeap.VerifyHeap() corruption triage
                                 (slower than the base walk; results via query-snapshot --view heap-integrity).
@@ -398,6 +399,7 @@ inspect-heap options:
                 "--include-static-fields",
                 "--include-delegate-targets",
                 "--include-duplicate-strings",
+                "--include-retained-exceptions",
                 "--symbol-path",
                 "--verify-heap",
                 "--export-trace",

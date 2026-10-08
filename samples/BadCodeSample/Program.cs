@@ -61,6 +61,7 @@ var leakedSockets = new List<LeakedSocketConnection>();
 var leakedHandleWindows = new List<(nint[] HandlePointers, byte[][] Payloads)>();
 var leakedTimers = new List<Timer>();
 var leakedAssemblyLoadContexts = new List<AlcLeakRoot>();
+var leakedExceptions = new List<Exception>();
 var leakedNativeAllocations = new List<nint>();
 var badCodeEndpoints = new[]
 {
@@ -79,6 +80,7 @@ var badCodeEndpoints = new[]
     "/handle-leak?type=pinned|normal|weak&count=200&seconds=10",
     "/timer-leak?count=50",
     "/alc-leak?count=4",
+    "/exception-cache-leak?count=10",
     "/native-bloat?mb=128",
     "/meter-spam?count=5&kind=counter",
     "/log-spam?count=200&level=warning",
@@ -460,6 +462,32 @@ app.MapGet("/alc-leak", (int? count) =>
     }
 });
 
+// 13b. Retained/cached exception leak — detect with inspect_heap(includeRetainedExceptions=true) +
+//      query_snapshot(view="retained-exceptions"). Each call throws and catches a distinct
+//      BadCodeSampleRetainedException, then stashes it in a never-pruned static-equivalent cache
+//      (the classic "last error" / error-cache leak smell) instead of letting it propagate or
+//      be collected.
+app.MapGet("/exception-cache-leak", (int? count) =>
+{
+    var n = Math.Clamp(count ?? 10, 1, 10_000);
+    lock (leakedExceptions)
+    {
+        for (var i = 0; i < n; i++)
+        {
+            try
+            {
+                throw new BadCodeSampleRetainedException($"BadCodeSample retained exception #{leakedExceptions.Count + 1} — simulated failure stashed in an error cache that is never pruned.");
+            }
+            catch (BadCodeSampleRetainedException ex)
+            {
+                leakedExceptions.Add(ex);
+            }
+        }
+
+        return Results.Ok(new { added = n, totalLeaked = leakedExceptions.Count });
+    }
+});
+
 // 14. Native/unmanaged RSS growth with a flat managed heap — detect with inspect_process(view="resources")
 app.MapGet("/native-bloat", (int? mb) =>
 {
@@ -759,6 +787,13 @@ sealed class LeakedSocketConnection(TcpClient client, NetworkStream stream)
     public TcpClient Client { get; } = client;
     public NetworkStream Stream { get; } = stream;
 }
+
+/// <summary>
+/// Distinct exception type for the <c>/exception-cache-leak</c> endpoint so a live retained-exceptions
+/// test can match on type name without colliding with unrelated <see cref="InvalidOperationException"/>
+/// instances that ASP.NET Core or the runtime may transiently create and not yet have collected.
+/// </summary>
+sealed class BadCodeSampleRetainedException(string message) : Exception(message);
 
 sealed record AlcLeakRoot(
     AssemblyLoadContext Context,

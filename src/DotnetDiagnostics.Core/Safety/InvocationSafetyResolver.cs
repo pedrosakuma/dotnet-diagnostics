@@ -236,6 +236,10 @@ public static class InvocationSafetyResolver
         {
             safety = Merge(safety, Profile(request.Operation, "verify-heap"));
         }
+        if (IsTrue(request, "includeRetainedExceptions"))
+        {
+            safety = Merge(safety, Profile(request.Operation, "retained-exceptions"));
+        }
         if (source == DiagnosticOperationCatalog.HeapSources.GcDump
             && IsTrue(request, "exportTrace"))
         {

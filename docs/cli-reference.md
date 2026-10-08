@@ -785,6 +785,7 @@ Walk the managed heap of a live process or a `.dmp`.
 | `--include-delegate-targets` | Group `MulticastDelegate` invocation lists by (target, method). |
 | `--include-duplicate-strings` | Rank duplicate strings by aggregate retained bytes. |
 | `--verify-heap` | `--source dump` only. Runs ClrMD's own `ClrHeap.VerifyHeap()` corruption walk (a second, slower full-heap pass) and populates `query-snapshot --view heap-integrity`. Rejected for `--source live`/`--source gcdump` (issue #1119). |
+| `--include-retained-exceptions` | Aggregate heap-resident exception instances by type (count, total bytes, bounded sample) to surface exceptions retained beyond normal propagation (e.g. caches, static fields). |
 | `--symbol-path <path>` | `NT_SYMBOL_PATH`-style search path (remote servers off by default). |
 | `--export-trace` | `--source gcdump`: keep the raw `.nettrace` under the artifact root and print its relative path (default off — the trace is deleted after parsing). Fetch it later with `get-bytes --kind trace`. |
 

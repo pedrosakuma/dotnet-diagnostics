@@ -1117,6 +1117,7 @@ public sealed class DiagnosticTools
         [Description("When true, enumerate every loaded type's static reference fields ranked by directly-referenced object size — surfaces 'singleton that grew forever' leaks. Off by default; adds an extra pass over AppDomains × Modules × Types.")] bool includeStaticFields = false,
         [Description("When true, detect MulticastDelegate instances during the heap walk and group their invocation list by (target type, method) — surfaces 'event handler never unsubscribed' leaks. Cheap (folded into the existing heap pass).") ] bool includeDelegateTargets = false,
         [Description("When true, hash every System.String during the heap walk and rank by aggregate retained bytes — surfaces missing string-interning. Cheap (folded into the existing heap pass) but allocates one hash per unique string.")] bool includeDuplicateStrings = false,
+        [Description("When true, aggregate exception objects still reachable on the heap (e.g. cached/retained in a static field or collection) by type — instance count, total bytes, and a small sample of recent messages/HResults per top type. Surfaces 'exception used as cache value' / 'last-error' leak patterns. Cheap (folded into the existing heap pass).")] bool includeRetainedExceptions = false,
         [Description("Optional NT_SYMBOL_PATH-style search path reserved for symbol-resolving heap drilldowns. Precedence: symbolPath > MCP_SYMBOL_PATH > _NT_SYMBOL_PATH > target MainModule directory. **Remote symbol servers are OFF by default (issue #165 / M3)** — any `srv*http(s)://…` segment must point at a host on `Diagnostics:SymbolServerAllowlist`.")] string? symbolPath = null,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
         [Description("When true, runs ClrMD's own ClrHeap.VerifyHeap() corruption-triage pass against the dump — a distinct, slower internal walk than the ordinary type/instance walk above. Off by default; dump-only (issue #1119). Results are retrieved via query_snapshot(view='heap-integrity').")] bool verifyHeap = false,
@@ -1133,6 +1134,7 @@ public sealed class DiagnosticTools
             includeStaticFields,
             includeDelegateTargets,
             includeDuplicateStrings,
+            includeRetainedExceptions,
             symbolPath,
             deprecation,
             verifyHeap,
@@ -1164,6 +1166,7 @@ public sealed class DiagnosticTools
         [Description("When true, enumerate every loaded type's static reference fields ranked by directly-referenced object size — surfaces 'singleton that grew forever' leaks. Off by default; lengthens the suspend window.")] bool includeStaticFields = false,
         [Description("When true, detect MulticastDelegate instances during the heap walk and group their invocation list by (target type, method) — surfaces 'event handler never unsubscribed' leaks. Cheap (folded into the existing heap pass).") ] bool includeDelegateTargets = false,
         [Description("When true, hash every System.String during the heap walk and rank by aggregate retained bytes — surfaces missing string-interning. Cheap (folded into the existing heap pass) but allocates one hash per unique string.")] bool includeDuplicateStrings = false,
+        [Description("When true, aggregate exception objects still reachable on the heap (e.g. cached/retained in a static field or collection) by type — instance count, total bytes, and a small sample of recent messages/HResults per top type. Surfaces 'exception used as cache value' / 'last-error' leak patterns. Cheap (folded into the existing heap pass).")] bool includeRetainedExceptions = false,
         [Description("Optional NT_SYMBOL_PATH-style search path reserved for symbol-resolving heap drilldowns. Precedence: symbolPath > MCP_SYMBOL_PATH > _NT_SYMBOL_PATH > target MainModule directory. **Remote symbol servers are OFF by default (issue #165 / M3)** — any `srv*http(s)://…` segment must point at a host on `Diagnostics:SymbolServerAllowlist`.")] string? symbolPath = null,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
         CancellationToken cancellationToken = default)
@@ -1180,6 +1183,7 @@ public sealed class DiagnosticTools
             includeStaticFields,
             includeDelegateTargets,
             includeDuplicateStrings,
+            includeRetainedExceptions,
             symbolPath,
             deprecation,
             cancellationToken);
@@ -1216,6 +1220,7 @@ public sealed class DiagnosticTools
         "`static-fields` (top static reference fields by directly-referenced object size — requires the original inspect call to have set includeStaticFields=true), " +
         "`delegate-targets` (delegate / event-handler subscribers grouped by (target type, method) — requires includeDelegateTargets=true), " +
         "`duplicate-strings` (duplicate System.String contents ranked by aggregate retained bytes — requires includeDuplicateStrings=true), " +
+        "`retained-exceptions` (exception instances still reachable on the heap, aggregated by type with instance count/bytes and a small message sample — requires includeRetainedExceptions=true), " +
         "`gchandles` (GCHandle table aggregated by public GCHandleType-compatible buckets with top target types), " +
         "`timers` (live System.Threading.Timer / Task / TaskCompletionSource objects grouped by timer callback and task type), " +
         "`alc` (live AssemblyLoadContext instances, collectible contexts, loaded assemblies, and bounded retention hints for suspected collectible leaks), " +
