@@ -45,6 +45,12 @@ public static class CpuSampleQueryDispatcher
     /// </summary>
     public const string TriageView = "triage";
 
+    /// <summary>
+    /// Leaf samples attributed to the compiled code version (optimization tier) they landed in
+    /// (issue #1075). EventPipe managed CPU captures only.
+    /// </summary>
+    public const string CodeVersionsView = "code-versions";
+
     /// <summary>Default number of rows returned by the ranked CPU views.</summary>
     public const int DefaultTopN = 20;
 
@@ -74,7 +80,7 @@ public static class CpuSampleQueryDispatcher
 
     private static readonly string[] Views =
     {
-        CallTreeView, TopMethodsView, ByModuleView, ByNamespaceView, HotPathView, CallerCalleeView, TriageView,
+        CallTreeView, TopMethodsView, ByModuleView, ByNamespaceView, HotPathView, CallerCalleeView, TriageView, CodeVersionsView,
     };
 
     /// <summary>The view names this dispatcher can render from a trace alone (drill-down without re-sampling).</summary>
@@ -205,6 +211,51 @@ public static class CpuSampleQueryDispatcher
             : DiagnosticResult.Ok(view, summary,
                 new NextActionHint("query_snapshot", "Drill into the hottest method's callers/callees.",
                     new Dictionary<string, object?> { ["handle"] = handle, ["view"] = CallerCalleeView, ["rootMethodFilter"] = top[0].Method }));
+    }
+
+    /// <summary>
+    /// Renders the <c>code-versions</c> view: leaf samples per compiled code version, so a method row is
+    /// never silently the sum of several machine-code bodies. Optionally filtered by a method substring.
+    /// </summary>
+    public static DiagnosticResult<CodeVersionsView> RenderCodeVersions(
+        CpuSampleTraceArtifact artifact, string handle, string? methodFilter, int topN)
+    {
+        ArgumentNullException.ThrowIfNull(artifact);
+        if (topN < 1) return InvalidArg<CodeVersionsView>(nameof(topN), "must be >= 1");
+
+        var profile = artifact.CodeVersions;
+        if (profile is null)
+        {
+            return DiagnosticResult.Fail<CodeVersionsView>(
+                $"Handle '{handle}' carries no code-version attribution.",
+                new DiagnosticError("NotSupported", "Code-version attribution is only collected by the EventPipe managed CPU sampler (collect_sample kind=\"cpu\" with the default backend).", null),
+                new NextActionHint("query_snapshot", "Use a call-tree or top-methods view instead.",
+                    new Dictionary<string, object?> { ["handle"] = handle, ["view"] = TopMethodsView }));
+        }
+
+        IEnumerable<CodeVersionSampleRow> rows = profile.Versions;
+        if (!string.IsNullOrWhiteSpace(methodFilter))
+        {
+            rows = rows.Where(r => r.Method.Contains(methodFilter, StringComparison.OrdinalIgnoreCase));
+        }
+
+        var matched = rows.ToList();
+        var top = matched.Take(topN).ToList();
+        var view = new CodeVersionsView(
+            artifact.ProcessId, profile.TotalSamples, profile.ResolvedSamples, profile.UnresolvedSamples,
+            profile.PublishedVersions, matched.Count, top.Count < matched.Count, top, profile.Notes)
+        {
+            EvidenceBackend = artifact.Evidence?.Backend,
+            EvidenceKind = artifact.Evidence?.Kind,
+        };
+
+        var multi = top.Count(r => r.MethodVersionCount > 1);
+        var summary = top.Count == 0
+            ? "No sampled code versions matched."
+            : $"{top.Count} of {matched.Count} sampled code version(s); {profile.ResolvedSamples}/{profile.TotalSamples} leaf samples resolved to a published version. {multi} row(s) belong to a method sampled in more than one version — do not sum them as one body.";
+        return DiagnosticResult.Ok(view, summary,
+            new NextActionHint("query_snapshot", "Rank methods by exclusive samples.",
+                new Dictionary<string, object?> { ["handle"] = handle, ["view"] = TopMethodsView }));
     }
 
     /// <summary>Renders the <c>by-module</c> view: samples aggregated per assembly.</summary>

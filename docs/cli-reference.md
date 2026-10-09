@@ -1351,6 +1351,7 @@ exposes drilldown views computed from the merged call tree without re-sampling:
 | `by-namespace` | samples grouped by namespace | `--top`, `--rank-by` |
 | `hot-path` | the dominant stack from the root down; CPU handles include per-frame `selfSamples` | `--threshold` (percent, default `50`) |
 | `caller-callee` | a focus method with its direct callers + callees; CPU handles include the focus method's `selfSamples` | `--root-method-filter <substring>` (required), `--top` |
+| `code-versions` | leaf samples per compiled code version (optimization tier, address range, stable `versionId`); EventPipe CPU handles only | `--root-method-filter <substring>` (optional), `--top` |
 | `triage` | one round-trip bundle: measured on-CPU leaders for OS-backed captures, otherwise conservative stack-frequency candidates; heuristic wait categories; dominant hot-path leaf; and an evidence-aware verdict (`on-cpu-observed` or `unclassified`) | `--top` (default `5`, smaller than the usual `20`), `--threshold` (hot-path leaf, default `50`) |
 
 For session ranked views, `--top` is preferred. The older `--top-types` remains a compatibility

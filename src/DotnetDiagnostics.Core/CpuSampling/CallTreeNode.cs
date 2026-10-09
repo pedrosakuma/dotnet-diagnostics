@@ -118,6 +118,12 @@ public sealed record CpuSampleTraceArtifact(
     public IReadOnlyList<string> Notes { get; init; } = [];
 
     /// <summary>
+    /// Leaf samples joined to the compiled code version (optimization tier) they landed in (issue #1075).
+    /// Populated by the EventPipe managed sampler only.
+    /// </summary>
+    public CodeVersionProfile? CodeVersions { get; init; }
+
+    /// <summary>
     /// Insertion-bounded per-module native leaf identity and verified-range coverage.
     /// Populated by the Windows ETW sampler.
     /// </summary>

@@ -1213,6 +1213,27 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         result.Artifact.Root.Children.Should().NotBeEmpty("the call-tree artifact must capture at least one stack");
     }
 
+    [Fact]
+    public async Task CpuSampler_AttributesLeafSamplesToPublishedCodeVersions()
+    {
+        EnsureSampleRunning();
+
+        var result = await new EventPipeCpuSampler().SampleAsync(
+            Pid, TimeSpan.FromSeconds(3), topN: 10, cancellationToken: CancellationToken.None);
+
+        var profile = result.Artifact.CodeVersions;
+        profile.Should().NotBeNull();
+        profile!.PublishedVersions.Should().BeGreaterThan(0, "the session-end rundown must publish method bodies");
+        profile.ResolvedSamples.Should().BeGreaterThan(0);
+        profile.Versions.Should().OnlyContain(v => v.OptimizationTier.Length > 0 && v.StartAddress.StartsWith("0x"));
+        profile.Versions.Select(v => v.VersionId).Should().OnlyHaveUniqueItems();
+        profile.ResolvedSamples.Should().Be(profile.Versions.Sum(v => v.Samples));
+
+        var view = CpuSampleQueryDispatcher.RenderCodeVersions(result.Artifact, "h", null, 5);
+        view.Error.Should().BeNull();
+        view.Data!.Versions.Should().NotBeEmpty();
+    }
+
     [LinuxOnlyFact(Timeout = 60_000)]
     public async Task CpuSampler_EventPipeDoesNotConvertBlockedOrUnmatchedLeavesIntoOnCpuEvidence()
     {
