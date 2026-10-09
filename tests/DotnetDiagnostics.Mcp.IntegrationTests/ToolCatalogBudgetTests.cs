@@ -39,7 +39,13 @@ public sealed class ToolCatalogBudgetTests : IClassFixture<ToolCatalogBudgetTest
     // Even after that trim the structural output-schema cost of one new
     // nested per-thread/per-field array is irreducible prose-free growth,
     // measuring 282,450 bytes. 283,000 restores ~550 bytes of headroom.
-    private const int MaximumCatalogBytes = 283_000;
+    // Issue #1077: base 282,687 bytes. Never returning a sampled percentage without
+    // its count adds the nullable SignalBucket.SampleCount and
+    // CollectBatchInvestigationDigest.CpuTotalSamples output-schema properties
+    // (no prose), measuring 283,702 bytes. All other sample counts/denominators
+    // were added to summaries and handle-store query results, which are not in
+    // tools/list. 284,000 keeps ~300 bytes of headroom.
+    private const int MaximumCatalogBytes = 284_000;
 
     private readonly FullCatalogFactory _factory;
     private readonly ITestOutputHelper _output;

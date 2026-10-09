@@ -59,7 +59,7 @@ public sealed class ExceptionByThrowSiteProvider : ISignalProvider<ExceptionSign
         var drillTopN = Math.Max(MaxBuckets, context.RetainedEventCount);
         yield return new SignalGroup(
             Signal: "exceptions.by-throw-site",
-            Summary: $"Exceptions concentrate at one throw-site: {ranked[0].ExceptionType} @ {ranked[0].ThrowSite} ({topPercent:0.#}% of stack-resolved events).",
+            Summary: $"Exceptions concentrate at one throw-site: {ranked[0].ExceptionType} @ {ranked[0].ThrowSite} ({topPercent:0.#}% = {ranked[0].Count} of {context.ThrowSiteSampleTotal} stack-resolved events).",
             Salience: Math.Min(1.0, topShare),
             Buckets: buckets,
             NextAction: new NextActionHint(

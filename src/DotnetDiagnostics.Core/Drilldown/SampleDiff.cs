@@ -8,7 +8,8 @@ public sealed record MethodDiffKey(SymbolRef Symbol, MethodIdentity? Identity = 
 public sealed record CpuDiffMetric(
     long ExclusiveSamples,
     long InclusiveSamples,
-    double ExclusivePercent);
+    double ExclusivePercent,
+    long TotalSamples);
 
 public sealed record HeapDiffMetric(
     long TotalBytes,

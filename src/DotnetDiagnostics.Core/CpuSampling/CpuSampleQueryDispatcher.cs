@@ -198,7 +198,7 @@ public static class CpuSampleQueryDispatcher
             ? "No methods aggregated — the trace captured no attributable frames."
             : normalizedSort == "running"
                 ? BuildRunningRankSummary(artifact.Evidence, top, ranked.Count)
-                : $"Top {top.Count} method(s) by {normalizedSort} samples (of {ranked.Count} total). Hottest: {top[0].Method} ({top[0].ExclusiveSamples} exclusive / {top[0].InclusiveSamples} inclusive){FormatSelfSamples(top[0].SelfSamples)}{FormatWaitReason(top[0].WaitReason)}.";
+                : $"Top {top.Count} method(s) by {normalizedSort} samples (of {ranked.Count} total). Hottest: {top[0].Method} ({top[0].ExclusiveSamples} exclusive / {top[0].InclusiveSamples} inclusive of {artifact.TotalSamples} total samples){FormatSelfSamples(top[0].SelfSamples)}{FormatWaitReason(top[0].WaitReason)}.";
 
         return top.Count == 0
             ? DiagnosticResult.Ok(view, summary)
@@ -233,7 +233,7 @@ public static class CpuSampleQueryDispatcher
 
         var summary = top.Count == 0
             ? $"No {groupBy} groups aggregated."
-            : $"Top {top.Count} {groupBy}(s) by exclusive samples (of {ranked.Count}). Hottest: {top[0].Group} ({top[0].ExclusiveSamples} exclusive / {top[0].InclusiveSamples} inclusive){FormatSelfSamples(top[0].SelfSamples)}.";
+            : $"Top {top.Count} {groupBy}(s) by exclusive samples (of {ranked.Count}). Hottest: {top[0].Group} ({top[0].ExclusiveSamples} exclusive / {top[0].InclusiveSamples} inclusive of {artifact.TotalSamples} total samples){FormatSelfSamples(top[0].SelfSamples)}.";
 
         return DiagnosticResult.Ok(view, summary,
             new NextActionHint("query_snapshot", "Rank individual methods.",
@@ -260,7 +260,7 @@ public static class CpuSampleQueryDispatcher
 
         var summary = frames.Count == 0
             ? "No dominant call chain — the root has no children."
-            : $"Hot path is {depth} frame(s) deep at a {thresholdPercent:0.#}% threshold. Leaf: {frames[^1].Method} ({frames[^1].InclusivePercent:0.#}% inclusive{FormatSelfSamples(frames[^1].SelfSamples)}).";
+            : $"Hot path is {depth} frame(s) deep at a {thresholdPercent:0.#}% threshold. Leaf: {frames[^1].Method} ({frames[^1].InclusivePercent:0.#}% = {frames[^1].InclusiveSamples} of {artifact.TotalSamples} samples inclusive{FormatSelfSamples(frames[^1].SelfSamples)}).";
 
         var hintArguments = new Dictionary<string, object?> { ["handle"] = handle, ["view"] = CallTreeView };
         if (frames.Count > 0)
@@ -325,7 +325,7 @@ public static class CpuSampleQueryDispatcher
             SelfSamples = selfSamples,
         };
 
-        var summary = BuildTriageSummary(verdict, topBusy, topWaitCategories, hotPathLeaf, artifact.Evidence);
+        var summary = BuildTriageSummary(verdict, topBusy, topWaitCategories, hotPathLeaf, artifact.Evidence, artifact.TotalSamples);
         var hint = topBusy.Count > 0
             ? new NextActionHint("query_snapshot", "Drill into the top busy method's callers/callees.",
                 new Dictionary<string, object?> { ["handle"] = handle, ["view"] = CallerCalleeView, ["rootMethodFilter"] = topBusy[0].Method })
@@ -362,7 +362,8 @@ public static class CpuSampleQueryDispatcher
         List<MethodSampleStat> topBusy,
         List<CpuWaitCategoryStat> topWaitCategories,
         HotPathFrame? hotPathLeaf,
-        CpuSampleEvidence? evidence)
+        CpuSampleEvidence? evidence,
+        long totalSamples)
     {
         if (topBusy.Count == 0)
         {
@@ -371,17 +372,17 @@ public static class CpuSampleQueryDispatcher
 
         var busy = topBusy[0];
         var summary = evidence?.Kind == CpuSampleEvidenceKind.OsOnCpuSamples
-            ? $"Verdict: {verdict}. Top measured on-CPU method: {busy.Method} ({busy.SelfSamples?.RunningSamples ?? 0} on-CPU / {busy.ExclusiveSamples} exclusive samples)."
-            : $"Verdict: {verdict}. Top stack-frequency candidate: {busy.Method} ({busy.ExclusiveSamples} exclusive observations; scheduler state is not established).";
+            ? $"Verdict: {verdict}. Top measured on-CPU method: {busy.Method} ({busy.SelfSamples?.RunningSamples ?? 0} on-CPU / {busy.ExclusiveSamples} exclusive of {totalSamples} total samples)."
+            : $"Verdict: {verdict}. Top stack-frequency candidate: {busy.Method} ({busy.ExclusiveSamples} exclusive of {totalSamples} total observations; scheduler state is not established).";
         if (topWaitCategories.Count > 0)
         {
             var wait = topWaitCategories[0];
-            summary += $" Top heuristic wait category: {wait.WaitReason} ({wait.ExclusivePercent:0.#}% of observations across {wait.MethodCount} method(s)).";
+            summary += $" Top heuristic wait category: {wait.WaitReason} ({wait.ExclusivePercent:0.#}% = {wait.ExclusiveSamples} of {totalSamples} observations across {wait.MethodCount} method(s)).";
         }
 
         if (hotPathLeaf is not null)
         {
-            summary += $" Hot-path leaf: {hotPathLeaf.Method} ({hotPathLeaf.InclusivePercent:0.#}% inclusive).";
+            summary += $" Hot-path leaf: {hotPathLeaf.Method} ({hotPathLeaf.InclusivePercent:0.#}% = {hotPathLeaf.InclusiveSamples} of {totalSamples} samples inclusive).";
         }
 
         return summary;
@@ -430,7 +431,7 @@ public static class CpuSampleQueryDispatcher
         };
 
         var summary =
-            $"{view.Method}: {view.InclusiveSamples} inclusive ({view.InclusivePercent:0.#}%) / {view.ExclusiveSamples} exclusive samples{FormatSelfSamples(view.SelfSamples)} — {view.Callers.Count} caller(s), {view.Callees.Count} callee(s).";
+            $"{view.Method}: {view.InclusiveSamples} inclusive ({view.InclusivePercent:0.#}% of {view.TotalSamples} total samples) / {view.ExclusiveSamples} exclusive samples{FormatSelfSamples(view.SelfSamples)} — {view.Callers.Count} caller(s), {view.Callees.Count} callee(s).";
 
         var nextMethod = view.Callers.Count > 0
             ? view.Callers[0].Method

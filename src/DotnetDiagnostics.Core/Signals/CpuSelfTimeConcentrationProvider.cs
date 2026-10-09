@@ -105,12 +105,12 @@ public sealed class CpuSelfTimeConcentrationProvider : ISignalProvider<CpuSignal
         }
 
         var buckets = frames
-            .Select(f => new SignalBucket(f.Method, Math.Round(f.Exclusive * 100.0 / totalSelfSamples, 1), "%", context.HandleId))
+            .Select(f => new SignalBucket(f.Method, Math.Round(f.Exclusive * 100.0 / totalSelfSamples, 1), "%", context.HandleId, f.Exclusive))
             .ToArray();
 
         var summary = buckets.Length > 1
-            ? $"CPU self-time is concentrated: {buckets[0].Magnitude:0.#}% in {frames[0].Method}; top {buckets.Length} frames account for {buckets.Sum(b => b.Magnitude):0.#}%."
-            : $"CPU self-time is concentrated: {buckets[0].Magnitude:0.#}% in {frames[0].Method}.";
+            ? $"CPU self-time is concentrated: {buckets[0].Magnitude:0.#}% ({buckets[0].SampleCount} of {totalSelfSamples} self samples) in {frames[0].Method}; top {buckets.Length} frames account for {buckets.Sum(b => b.Magnitude):0.#}% ({buckets.Sum(b => b.SampleCount)} samples)."
+            : $"CPU self-time is concentrated: {buckets[0].Magnitude:0.#}% ({buckets[0].SampleCount} of {totalSelfSamples} self samples) in {frames[0].Method}.";
 
         yield return new SignalGroup(
             Signal: "cpu.self-time.concentration",

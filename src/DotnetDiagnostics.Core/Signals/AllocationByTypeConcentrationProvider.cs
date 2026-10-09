@@ -46,7 +46,7 @@ public sealed class AllocationByTypeConcentrationProvider : ISignalProvider<Allo
         var top1Percent = Math.Round(top1Share * 100.0, 1);
         yield return new SignalGroup(
             Signal: "allocations.by-type",
-            Summary: $"Allocated bytes concentrate on one type: {ranked[0].TypeName} is {top1Percent:0.#}% ({ranked[0].TotalBytes:N0} bytes).",
+            Summary: $"Allocated bytes concentrate on one type: {ranked[0].TypeName} is {top1Percent:0.#}% ({ranked[0].TotalBytes:N0} of {context.TotalBytes:N0} sampled bytes).",
             Salience: Math.Min(1.0, top1Share),
             Buckets: buckets,
             NextAction: new NextActionHint(

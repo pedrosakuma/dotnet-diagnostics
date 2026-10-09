@@ -176,7 +176,7 @@ public sealed class InvestigationPlanner : IInvestigationPlanner
 
         var terminals = new List<InvestigationTerminal>
         {
-            ReportTerminal("report-cpu", "CPU hotspot identified", "High CPU in {frame}: {exclusivePct}% exclusive. Optimize or parallelize."),
+            ReportTerminal("report-cpu", "CPU hotspot identified", "High CPU in {frame}: {exclusivePct}% exclusive ({exclusiveSamples} of {totalSamples} samples). Optimize or parallelize."),
             ReportTerminal("report-loh", "LOH allocation pressure identified", "LOH allocations {pct}%: recommend ArrayPool / chunking."),
             ReportTerminal("report-tp-starvation", "ThreadPool starvation confirmed", "Worker injection storm: locate sync-over-async or blocking I/O."),
             ReportTerminal("report-exceptions", "Exception storm identified", "{exceptionType} accounts for {pct}% of throws: add guard rails / fix root cause."),
@@ -191,7 +191,7 @@ public sealed class InvestigationPlanner : IInvestigationPlanner
                 ConditionId: "user-hotspot-conclusive",
                 Description: "A user-code frame holds > 30% exclusive samples AND matches the symptom description.",
                 Action: "stop_and_report_root_cause",
-                ReportTemplate: "CPU hotspot in {frame}: {exclusivePct}% exclusive. Optimize or parallelize."),
+                ReportTemplate: "CPU hotspot in {frame}: {exclusivePct}% exclusive ({exclusiveSamples} of {totalSamples} samples). Optimize or parallelize."),
             new EarlyStopCondition(
                 ConditionId: "max-tool-calls-reached",
                 Description: "MaxToolCalls reached without conclusive evidence — stop and report what was learned.",

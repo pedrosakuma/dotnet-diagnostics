@@ -1384,12 +1384,14 @@ diag(pid 1234)> collect --kind allocation --duration 10
 ... allocation summary ...
   → handle 1TB3... (expires 23:12:18Z) — query --handle 1TB3... --view <call-tree|top-methods|...>
   → investigation digest (cpu + allocation correlated):
-    top cpu self-time: MyApp.Worker.Crunch (61.4%), MyApp.Worker.Parse (12.8%)
-    top wait categories: ThreadPool worker idle wait (9.1%)
-    hot-path leaf: MyApp.Worker.Crunch (depth 3, 61.4% inclusive)
+    top cpu self-time: MyApp.Worker.Crunch (61.4% = 614 samples), MyApp.Worker.Parse (12.8% = 128 samples) [of 1000 total samples]
+    top wait categories: ThreadPool worker idle wait (9.1% = 91 samples) [of 1000 total samples]
+    hot-path leaf: MyApp.Worker.Crunch (depth 3, 61.4% = 614 samples inclusive) [of 1000 total samples]
     top allocation types (bytes): MyApp.Widget (612,000 bytes), MyApp.Gadget (88,400 bytes)
     top allocation call sites: MyApp.Worker.Allocate (612,000 bytes)
 ```
+
+Every sampled percentage is printed beside the sample count it rests on and the total it is taken against (issue #1077).
 
 Collecting only one of the two kinds prints no digest — it is only worth surfacing once it correlates
 both collectors. This reuses the exact same `DotnetDiagnostics.Core.CpuSampling.InvestigationDigestBuilder`

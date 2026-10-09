@@ -24,6 +24,9 @@ public sealed record InvestigationDigest(
     IReadOnlyList<AllocationSite>? TopAllocationCallsites)
 {
     public CpuSampleEvidence? CpuEvidence { get; init; }
+
+    /// <summary>Total CPU samples every CPU percentage in this digest is taken against (issue #1077).</summary>
+    public long? CpuTotalSamples { get; init; }
 }
 
 /// <summary>
@@ -101,6 +104,7 @@ public static class InvestigationDigestBuilder
             topAllocationCallsites)
         {
             CpuEvidence = cpuTrace?.Evidence,
+            CpuTotalSamples = cpuTrace?.TotalSamples,
         };
     }
 }

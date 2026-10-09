@@ -733,7 +733,7 @@ ranked by exclusive samples descending), and the dominant `hot-path` leaf. It re
 `verdict`: `"on-cpu-observed"` only for OS-backed captures with observations, otherwise
 `"unclassified"`. The summary string states the evidence-safe leader, the top heuristic wait
 category (if any) with its observation percentage, and the
-hot-path leaf. The `NextActionHint` points at `caller-callee` anchored on the top busy method (or at
+hot-path leaf; every percentage in a summary is paired with its sample count and the total it is taken against. The `NextActionHint` points at `caller-callee` anchored on the top busy method (or at
 `call-tree` when no attributable method was found).
 
 CPU comparisons also carry this evidence contract. OS-backed captures can produce performance
@@ -1937,6 +1937,7 @@ a "first page" summary that otherwise costs two or more separate `query_snapshot
 |---|---|---|
 | `topCpuSelfTime` | `cpu` present | Evidence-aware exclusive method candidates — measured on-CPU for OS-backed captures, stack-frequency candidates for EventPipe — capped at `CpuSampleQueryDispatcher.CompactTopN` (5). |
 | `topCpuWaitCategories` | `cpu` present | Top wait/noise categories grouped by `WaitReason`, summed by exclusive samples. |
+| `cpuTotalSamples` | `cpu` present | The total CPU samples every percentage in the digest is taken against (issue #1077). |
 | `hotPathLeaf` / `hotPathDepth` | `cpu` present | The dominant hot-path leaf frame and its depth (same `hot-path` view logic, default 50% threshold). |
 | `topAllocationTypes` | `allocation` present | Top allocated types by bytes (`AllocationSample.TopByBytes`), capped at 5. |
 | `topAllocationCallsites` | `allocation` present | Top allocation call sites by attributed bytes (`AllocationSample.TopBySite`), capped at 5. |

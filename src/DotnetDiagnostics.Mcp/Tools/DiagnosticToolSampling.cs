@@ -750,7 +750,7 @@ internal static class DiagnosticToolSampling
                 ? $" Self evidence: {self.RunningSamples} on-CPU / {self.WaitingSamples} heuristic-wait / {self.UnknownSamples} unknown."
                 : string.Empty;
             leadPhrase =
-                $"Most frequent exclusive stack leaf: {topSelfTime.Frame.Method} ({topSelfTime.ExclusiveSamples} observations, {selfPercent:0.#}% of stack samples).{splitSuffix} " +
+                $"Most frequent exclusive stack leaf: {topSelfTime.Frame.Method} ({topSelfTime.ExclusiveSamples} of {sample.TotalSamples} observations, {selfPercent:0.#}% of stack samples).{splitSuffix} " +
                 $"Rank self-time with query_snapshot(handle=\"{handleId}\", view=\"top-methods\") or walk the call path with view=\"call-tree\".";
         }
         else if (top is not null)

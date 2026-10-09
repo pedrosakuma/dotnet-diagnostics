@@ -82,6 +82,9 @@ public sealed class DotnetDiagnosticsReportExporter : IExporter
         return sb.ToString();
     }
 
+    private static string TotalSuffix(InvestigationDigest digest)
+        => digest.CpuTotalSamples is { } total ? FormattableString.Invariant($" [of {total} total samples]") : string.Empty;
+
     /// <summary>
     /// Renders the cross-collector "investigation digest" (issue #827) for a benchmark that carried
     /// both <c>cpu</c> and <c>allocation</c> <see cref="DiagnosticKindAttribute"/>s — the same
@@ -100,21 +103,21 @@ public sealed class DotnetDiagnosticsReportExporter : IExporter
                 : "Top stack-frequency candidates (CPU state unknown)";
             sb.Append("- **").Append(label).Append(":** ")
                 .AppendLine(Escape(string.Join(", ", topCpu.Select(m =>
-                    FormattableString.Invariant($"{m.Method} ({m.ExclusivePercent:N1}%)")))));
+                    FormattableString.Invariant($"{m.Method} ({m.ExclusivePercent:N1}% = {m.ExclusiveSamples} samples)"))) + TotalSuffix(digest)));
         }
 
         if (digest.TopCpuWaitCategories is { Count: > 0 } topWait)
         {
             sb.Append("- **Top heuristic wait categories:** ")
                 .AppendLine(Escape(string.Join(", ", topWait.Select(w =>
-                    FormattableString.Invariant($"{w.WaitReason} ({w.ExclusivePercent:N1}%)")))));
+                    FormattableString.Invariant($"{w.WaitReason} ({w.ExclusivePercent:N1}% = {w.ExclusiveSamples} samples)"))) + TotalSuffix(digest)));
         }
 
         if (digest.HotPathLeaf is { } leaf)
         {
             sb.Append("- **Hot-path leaf:** ")
                 .AppendLine(Escape(FormattableString.Invariant(
-                    $"{leaf.Method} (depth {digest.HotPathDepth}, {leaf.InclusivePercent:N1}% inclusive)")));
+                    $"{leaf.Method} (depth {digest.HotPathDepth}, {leaf.InclusivePercent:N1}% = {leaf.InclusiveSamples} samples inclusive)") + TotalSuffix(digest)));
         }
 
         if (digest.TopAllocationTypes is { Count: > 0 } topTypes)
