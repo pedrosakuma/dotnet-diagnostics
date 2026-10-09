@@ -333,6 +333,21 @@ internal static partial class CliCommands
         var isNativeLockContention = string.Equals(options.Kind, "native-lock-contention", StringComparison.Ordinal);
         var isThreadSnapshot = string.Equals(options.Kind, "thread-snapshot", StringComparison.Ordinal);
 
+        if (options.CaptureInlining)
+        {
+            if (!isCpu)
+            {
+                error = "--capture-inlining requires 'collect --kind cpu'.";
+                return false;
+            }
+
+            if (string.Equals(options.CpuBackend, "os", StringComparison.OrdinalIgnoreCase))
+            {
+                error = "--capture-inlining is supported only with --cpu-backend eventpipe/automatic.";
+                return false;
+            }
+        }
+
         if (options.CpuBackend is not null)
         {
             if (!isCpu)

@@ -73,6 +73,7 @@ public sealed partial class QuerySnapshotTool
         CpuSampleQueryDispatcher.CallerCalleeView,
         CpuSampleQueryDispatcher.TriageView,
         CpuSampleQueryDispatcher.CodeVersionsView,
+        CpuSampleQueryDispatcher.InliningView,
         DiffView,
     };
 

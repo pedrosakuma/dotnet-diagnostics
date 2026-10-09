@@ -33,6 +33,7 @@ public interface ICpuSampler
         MethodInstantiationResolutionOptions? methodInstantiationResolution = null,
         NativeAotSymbolResolutionOptions? nativeAotSymbols = null,
         bool exportTrace = false,
+        CpuCaptureOptions? captureOptions = null,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -48,6 +49,7 @@ public interface ICpuSampler
         NativeAotSymbolResolutionOptions? nativeAotSymbols,
         bool exportTrace,
         CpuSamplingMode mode,
+        CpuCaptureOptions? captureOptions = null,
         CancellationToken cancellationToken = default)
     {
         if (mode != CpuSamplingMode.Automatic)
@@ -64,9 +66,20 @@ public interface ICpuSampler
             methodInstantiationResolution,
             nativeAotSymbols,
             exportTrace,
+            captureOptions,
             cancellationToken);
     }
 }
+
+/// <summary>
+/// Opt-in, higher-volume capture extras for the EventPipe CPU backend. All off by default so the default
+/// session keywords stay unchanged.
+/// </summary>
+/// <param name="CaptureInlining">
+/// Also enable the JitTracing keyword (0x1000) and record JIT inlining decisions per compiled code version
+/// (issue #1076, <c>query_snapshot(view="inlining")</c>). Rejected by backends that cannot provide it.
+/// </param>
+public sealed record CpuCaptureOptions(bool CaptureInlining = false);
 
 /// <summary>
 /// Optional NativeAOT identity resolution (issue #395). When <see cref="MapFilePath"/> points at the

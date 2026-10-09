@@ -528,7 +528,7 @@ Views available per `kind`:
 | `heap-snapshot` | `inspect_heap` / `inspect_heap(source="live")` / `inspect_heap(source="dump")` / `inspect_heap(source="gcdump")` | `top-types` (default), `retention-paths`, `roots-by-kind`, `finalizer-queue`, `fragmentation`, `static-fields`, `delegate-targets`, `duplicate-strings`, `retained-exceptions`, `gchandles`, `timers`, `alc`, `com-wrappers`, `object`, `gcroot`, `objsize`, `async`, `diff`, `growth` |
 | `thread-snapshot` | `collect_thread_snapshot` | `top-blocked` (default), `threads-summary`, `stack`, `lock-graph`, `deadlocks`, `unique-stacks`, `async-stalls`, `wait-chains`, `threadpool`, `resolve-address`, `frame-vars`, `thread-statics` |
 | `off-cpu-snapshot` | `collect_sample(kind="off_cpu")` | `topStacks` (default), `byThread`, `stack` |
-| `cpu-sample` / `allocation-sample` / `native-alloc-sample` / `native-lock-contention-sample` | `collect_sample(kind="cpu")` / `collect_sample(kind="allocation")` / `collect_sample(kind="native-alloc")` / `collect_sample(kind="native-lock-contention")` | `call-tree`, `top-methods`, `by-module`, `by-namespace`, `hot-path`, `caller-callee`, `triage`, `code-versions`, `diff` |
+| `cpu-sample` / `allocation-sample` / `native-alloc-sample` / `native-lock-contention-sample` | `collect_sample(kind="cpu")` / `collect_sample(kind="allocation")` / `collect_sample(kind="native-alloc")` / `collect_sample(kind="native-lock-contention")` | `call-tree`, `top-methods`, `by-module`, `by-namespace`, `hot-path`, `caller-callee`, `triage`, `code-versions`, `inlining`, `diff` |
 
 Authorization is applied per kind at the dispatcher (`heap-read` for heap,
 `ptrace` for thread, `eventpipe` for off-CPU, `investigation-export` for
@@ -748,6 +748,22 @@ sampler populates it (other backends return `NotSupported`). Tiers come from the
 `MethodDCStartVerbose`. Retention is bounded at insertion (`MaxPublishedVersions` = 262144,
 `MaxDistinctLeafAddresses` = 16384); a cap hit adds an explicit `notes` entry with the drop count.
 `unresolvedSamples` counts leaves outside every published range (native/stub frames, overflow).
+
+`view="inlining"` (issue #1076) explains a method with zero samples ("folded into X"). It lists the
+JIT inlining decisions recorded per compiled code version: `versionId` (same id as `code-versions`),
+`optimizationTier`, `inliner`, `inlinee`, `succeeded`, `reason` (the JIT refusal reason for failed
+decisions) and `count`; `rootMethodFilter` matches inliner or inlinee by substring and `topN` caps
+rows. It is opt-in: pass `collect_sample(kind="cpu", captureInlining=true)` (EventPipe backend only;
+`cpuBackend="Os"` and NativeAOT are rejected) to enable the `JitTracing` keyword (0x1000) at Verbose
+level, which is high-volume. Without the opt-in the view returns `NotSupported`. The inlining events
+carry names only, so each decision is attributed to a code version by a per-thread join
+(`MethodJittingStarted` → inlining events → `MethodLoadVerbose` with the same method id); decisions
+that cannot be joined are counted in `unattributedDecisions` instead of being guessed. When
+`captureInlining` is on, `code-versions` rows also carry `inlinedInto`: up to five methods that
+inlined the row's method (name-based match, hint only). Retention is bounded at insertion
+(`MaxInliningRecords` = 65536, `MaxPendingThreads` = 1024, `MaxPendingDecisions` = 65536, `MaxDecisionsPerCompilation` = 4096,
+`MaxNameLength` = 512); each cap hit adds a `notes` entry with the drop count. Inlining data is
+not persisted by durable captures yet.
 
 CPU comparisons also carry this evidence contract. OS-backed captures can produce performance
 verdicts only against compatible OS-backed evidence. EventPipe-to-EventPipe comparisons remain
@@ -1697,6 +1713,7 @@ dispatches by `kind` to the underlying CPU / off-CPU / allocation / native-alloc
 | `nativeAllocSamplePeriod` | `long` | `1000` | `native-alloc` on **Linux** only. Record one callchain per N allocator hits (throttles recorded samples, not the per-call uprobe trap cost). Ignored by the Windows ETW VirtualAlloc backend, which records every committed allocation. |
 | `nativeLockContentionSamplePeriod` | `long` | `5000` | `native-lock-contention` on **Linux** only (no Windows backend — see below). Record one callchain per N `pthread_mutex_lock`/`pthread_mutex_unlock` calls. Defaults **5x higher** than `nativeAllocSamplePeriod` because mutex fast-path acquisitions are typically far more frequent than allocator calls on lock-heavy workloads, so a lower period would multiply uprobe trap overhead without adding attribution value. |
 | `exportTrace` | `bool` | `false` | `cpu` only. When `true`, the raw `.nettrace` (normally deleted after parsing) is kept under `MCP_ARTIFACT_ROOT/traces/` and its relative path returned on the result. Fetch the bytes with `get_bytes(kind="trace")` for offline PerfView/Speedscope/Perfetto analysis. |
+| `captureInlining` | `bool` | `false` | `cpu` only, EventPipe backend. When `true`, also records JIT inlining decisions per compiled code version (JitTracing keyword, high event volume) so `query_snapshot(view="inlining")` can explain methods with no samples. Rejected with `cpuBackend="Os"` and NativeAOT targets. |
 
 **Returns:** `CollectSampleEnvelope` — a polymorphic record carrying the
 `kind` discriminator plus exactly one populated payload field
@@ -3400,7 +3417,7 @@ contract.
   handles additionally accept `trace` with a required `traceId`.
 - **cpu-sample / allocation-sample / native-alloc-sample / native-lock-contention-sample**: `call-tree`
   (default), `top-methods`, `by-module`, `by-namespace`, `hot-path`,
-  `caller-callee`, `triage`, `code-versions`, `diff`.
+  `caller-callee`, `triage`, `code-versions`, `inlining`, `diff`.
 
 **Common view-specific parameters** (each ignored outside its view):
 `rankBy` (`bytes`/`instances`), `typeFullName`, `address`,

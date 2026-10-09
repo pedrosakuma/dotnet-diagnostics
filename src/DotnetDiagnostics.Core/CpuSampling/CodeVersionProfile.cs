@@ -18,7 +18,8 @@ public sealed record CodeVersionSampleRow(
     long ReJitId,
     long Samples,
     int MethodVersionCount,
-    long MethodSamples);
+    long MethodSamples,
+    IReadOnlyList<string>? InlinedInto = null);
 
 /// <summary>
 /// Bounded join of leaf samples to the published code version they landed in (issue #1075).
@@ -232,6 +233,6 @@ public sealed class CodeVersionCensus
         return new CodeVersionProfile(_total, resolved, _total - resolved, _versions.Count, rows, notes);
     }
 
-    private static string FormatVersionId(PublishedCodeVersion v)
+    internal static string FormatVersionId(PublishedCodeVersion v)
         => string.Create(CultureInfo.InvariantCulture, $"{v.ModuleId:x}:{v.MethodToken:x8}@{v.StartAddress:x}");
 }

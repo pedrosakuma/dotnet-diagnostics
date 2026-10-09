@@ -219,6 +219,25 @@ app.MapGet("/generics", (int? iterations) =>
 })
 .WithName("GenericInstantiations");
 
+// Forces a fresh JIT compilation per request (issue #1076): methods in a dynamic assembly are not
+// tiered, so the JIT compiles the caller with optimization, takes (and traces) an inlining decision
+// for the small callee every time, and reports a normal MethodLoad event.
+app.MapGet("/jit-inline-probe", (int? value) =>
+{
+    var asm = System.Reflection.Emit.AssemblyBuilder.DefineDynamicAssembly(new System.Reflection.AssemblyName("InlineProbe" + Guid.NewGuid().ToString("N")), System.Reflection.Emit.AssemblyBuilderAccess.RunAndCollect);
+    var type = asm.DefineDynamicModule("m").DefineType("InlineProbeType", System.Reflection.TypeAttributes.Public | System.Reflection.TypeAttributes.Abstract | System.Reflection.TypeAttributes.Sealed);
+    var method = type.DefineMethod("InlineProbeCaller", System.Reflection.MethodAttributes.Public | System.Reflection.MethodAttributes.Static, typeof(int), [typeof(int)]);
+    var il = method.GetILGenerator();
+    il.Emit(System.Reflection.Emit.OpCodes.Ldarg_0);
+    il.Emit(System.Reflection.Emit.OpCodes.Ldc_I4_1);
+    il.Emit(System.Reflection.Emit.OpCodes.Call, typeof(JitInlineFixture).GetMethod(nameof(JitInlineFixture.AddOne))!);
+    il.Emit(System.Reflection.Emit.OpCodes.Ret);
+    var created = type.CreateType();
+    var result = (int)created.GetMethod("InlineProbeCaller")!.Invoke(null, [value ?? 41])!;
+    return Results.Json(new { result });
+})
+.WithName("JitInlineProbe");
+
 app.MapGet("/activity", async (int? delayMs, bool? collectGc) =>
 {
     var delay = Math.Clamp(delayMs ?? 50, 1, 2_000);
@@ -374,6 +393,12 @@ static class ThreadStaticFixture
 {
     [ThreadStatic]
     public static string? Value;
+}
+
+public static class JitInlineFixture
+{
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int AddOne(int value, int delta) => value + delta;
 }
 
 static class GenericFixture

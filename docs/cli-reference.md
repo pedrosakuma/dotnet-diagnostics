@@ -529,6 +529,7 @@ See [networking correlation and capture quality](networking-correlation.md).
 | `--window <seconds>` | Required with `--capture-when`. Hard upper bound on how long the watch is armed (1–300). |
 | `--symbol-path <path>` | `NT_SYMBOL_PATH`-style search path for `cpu`, `off_cpu` and `thread-snapshot` symbol resolution. Remote symbol servers remain allowlist-gated just like `inspect-heap`. |
 | `--export-trace` | `cpu`: keep the raw `.nettrace` under the artifact root and surface its relative path (default off — the trace is deleted after parsing). Fetch it later with `get-bytes --kind trace`. |
+| `--capture-inlining` | `cpu` (EventPipe only): also record JIT inlining decisions per compiled code version (JitTracing keyword, high event volume) so `query --view inlining` can explain methods with no samples. Rejected with `--cpu-backend os`. |
 | `--resolve-source-lines` / `--no-resolve-source-lines` | `cpu`: enable/disable source file:line resolution for the top hotspots. Default **on**. |
 | `--resolve-method-instantiations` | `cpu`: opt in to a second ClrMD attach after sampling to recover closed generic method signatures for the hottest managed frames. |
 | `--native-aot-map <file>` | `cpu` (and gated `--capture cpu-sample`) against a **NativeAOT** target: resolve method names from a `.map.xml` file (the AOT compiler's symbol map) so hot frames show managed method identities instead of raw addresses. Ignored for CoreCLR targets, which resolve symbols from runtime metadata. |
@@ -1352,6 +1353,7 @@ exposes drilldown views computed from the merged call tree without re-sampling:
 | `hot-path` | the dominant stack from the root down; CPU handles include per-frame `selfSamples` | `--threshold` (percent, default `50`) |
 | `caller-callee` | a focus method with its direct callers + callees; CPU handles include the focus method's `selfSamples` | `--root-method-filter <substring>` (required), `--top` |
 | `code-versions` | leaf samples per compiled code version (optimization tier, address range, stable `versionId`); EventPipe CPU handles only | `--root-method-filter <substring>` (optional), `--top` |
+| `inlining` | JIT inlining decisions per compiled code version (inliner, inlinee, outcome, refusal reason); needs `collect --capture-inlining` | `--root-method-filter <substring>` (optional), `--top` |
 | `triage` | one round-trip bundle: measured on-CPU leaders for OS-backed captures, otherwise conservative stack-frequency candidates; heuristic wait categories; dominant hot-path leaf; and an evidence-aware verdict (`on-cpu-observed` or `unclassified`) | `--top` (default `5`, smaller than the usual `20`), `--threshold` (hot-path leaf, default `50`) |
 
 For session ranked views, `--top` is preferred. The older `--top-types` remains a compatibility

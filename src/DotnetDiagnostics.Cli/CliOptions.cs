@@ -122,6 +122,9 @@ internal sealed record CliOptions
     /// <summary>When set (<c>--export-trace</c>), persists the raw .nettrace under the artifact root for offline analysis (<c>inspect-heap --source gcdump</c>). Surfaces the path so it can be fetched with <c>get-bytes --kind trace</c>.</summary>
     public bool ExportTrace { get; init; }
 
+    /// <summary>When set (<c>--capture-inlining</c>), <c>collect --kind cpu</c> also records JIT inlining decisions per compiled code version (<c>query --view inlining</c>). EventPipe backend only.</summary>
+    public bool CaptureInlining { get; init; }
+
     /// <summary>Top-N type count (<c>--top-types</c>) for <c>inspect-heap</c>. Null applies the default (20).</summary>
     public int? TopTypes { get; init; }
 
@@ -548,6 +551,7 @@ internal sealed record CliOptions
             new FlagOptionDescriptor(state => state.UnsafeProvider = true, "--unsafe-provider"),
             new FlagOptionDescriptor(state => state.IncludeHttpDestination = true, "--include-http-destination"),
             new FlagOptionDescriptor(state => state.ExportTrace = true, "--export-trace"),
+            new FlagOptionDescriptor(state => state.CaptureInlining = true, "--capture-inlining"),
             new FlagOptionDescriptor(state => state.IncludeRetentionPaths = true, "--include-retention-paths"),
             new FlagOptionDescriptor(state => state.IncludeStaticFields = true, "--include-static-fields"),
             new FlagOptionDescriptor(state => state.IncludeDelegateTargets = true, "--include-delegate-targets"),
@@ -744,6 +748,8 @@ internal sealed record CliOptions
 
         public bool ExportTrace { get; set; }
 
+        public bool CaptureInlining { get; set; }
+
         public int? TopTypes { get; set; }
 
         public bool IncludeRetentionPaths { get; set; }
@@ -934,6 +940,7 @@ internal sealed record CliOptions
                 Depth = Depth,
                 UnsafeProvider = UnsafeProvider,
                 ExportTrace = ExportTrace,
+                CaptureInlining = CaptureInlining,
                 DumpFile = DumpFile,
                 TopTypes = TopTypes,
                 IncludeRetentionPaths = IncludeRetentionPaths,

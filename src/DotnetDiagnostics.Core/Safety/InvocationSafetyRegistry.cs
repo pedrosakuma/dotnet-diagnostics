@@ -102,7 +102,7 @@ public static class InvocationSafetyRegistry
             "kind",
             DiagnosticOperationCatalog.CollectSampleKinds.Cpu,
             DiagnosticOperationCatalog.CollectSampleKinds.All,
-            ["resolveMethodInstantiations", "exportTrace", "symbolPath", "includeSensitiveValues", "persist"],
+            ["resolveMethodInstantiations", "exportTrace", "captureInlining", "symbolPath", "includeSensitiveValues", "persist"],
             DiagnosticOperationCatalog.CollectSampleKinds.All.Select(CollectSampleProfile)
                 .Concat(
                 [
@@ -116,6 +116,8 @@ public static class InvocationSafetyRegistry
                         [DataExposure.RawTrace, DataExposure.PossiblePii, DataExposure.PossibleSecrets, DataExposure.PossibleConfidentialData],
                         [InvocationSideEffect.WritesArtifact],
                         SensitiveArtifactMitigations)),
+                    ModifierProfile("capture-inlining", ("captureInlining", "true"), ModerateSampling(
+                        "Inlining capture enables the high-volume JitTracing keyword and exposes target-controlled method names.")),
                     RemoteSymbolsProfile(),
                     PersistCaptureProfile(),
                 ]));

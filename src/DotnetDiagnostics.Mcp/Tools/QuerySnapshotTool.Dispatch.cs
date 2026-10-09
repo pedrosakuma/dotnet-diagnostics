@@ -327,6 +327,8 @@ public sealed partial class QuerySnapshotTool
                     CpuSampleQueryDispatcher.RenderHotPath(trace, context.Handle, context.HotPathThresholdPercent)),
                 CpuSampleQueryDispatcher.TriageView => AsObjectEnvelope(
                     CpuSampleQueryDispatcher.RenderTriage(trace, context.Handle, cpuTopN, context.HotPathThresholdPercent)),
+                CpuSampleQueryDispatcher.InliningView => AsObjectEnvelope(
+                    CpuSampleQueryDispatcher.RenderInlining(trace, context.Handle, context.RootMethodFilter, cpuTopN)),
                 CpuSampleQueryDispatcher.CodeVersionsView => AsObjectEnvelope(
                     CpuSampleQueryDispatcher.RenderCodeVersions(trace, context.Handle, context.RootMethodFilter, cpuTopN)),
                 CpuSampleQueryDispatcher.CallerCalleeView => AsObjectEnvelope(

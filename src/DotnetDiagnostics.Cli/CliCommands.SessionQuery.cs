@@ -565,6 +565,8 @@ internal static partial class CliCommands
                 return BuildResult(CpuSampleQueryDispatcher.RenderHotPath(trace, handle, options.Threshold ?? CpuSampleQueryDispatcher.DefaultHotPathThresholdPercent), SerializeQuery);
             case CpuSampleQueryDispatcher.CallerCalleeView:
                 return BuildResult(CpuSampleQueryDispatcher.RenderCallerCallee(trace, handle, options.RootMethodFilter, topN), SerializeQuery);
+            case CpuSampleQueryDispatcher.InliningView:
+                return BuildResult(CpuSampleQueryDispatcher.RenderInlining(trace, handle, options.RootMethodFilter, topN), SerializeQuery);
             case CpuSampleQueryDispatcher.CodeVersionsView:
                 return BuildResult(CpuSampleQueryDispatcher.RenderCodeVersions(trace, handle, options.RootMethodFilter, topN), SerializeQuery);
             case CpuSampleQueryDispatcher.TriageView:

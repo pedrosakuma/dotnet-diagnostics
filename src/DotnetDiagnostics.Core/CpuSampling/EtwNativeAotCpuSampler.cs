@@ -80,8 +80,14 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
         MethodInstantiationResolutionOptions? methodInstantiationResolution = null,
         NativeAotSymbolResolutionOptions? nativeAotSymbols = null,
         bool exportTrace = false,
+        CpuCaptureOptions? captureOptions = null,
         CancellationToken cancellationToken = default)
     {
+        if (captureOptions?.CaptureInlining == true)
+        {
+            throw new ArgumentException("JIT inlining capture is available only with the EventPipe CPU backend.", nameof(captureOptions));
+        }
+
         if (duration <= TimeSpan.Zero || duration > TimeSpan.FromMinutes(5))
         {
             throw new ArgumentOutOfRangeException(nameof(duration), "Duration must be (0, 5min].");

@@ -65,6 +65,17 @@ and release acceptance are tracked separately in #1001, #1007 and #1005.
 enforced at insertion inside the trace-conversion pass; hits are reported in `notes[]` with the drop
 count. Only leaf frames are attributed, so per-sample cost is one dictionary update.
 
+### EventPipe JIT inlining census (`inlining`, issue #1076)
+
+Opt-in via `captureInlining` (JitTracing keyword, Verbose level). `InliningCensus` keeps at most
+`MaxInliningRecords` (65536) aggregated rows keyed by (code version, inliner, inlinee, outcome,
+reason), at most `MaxPendingThreads` (1024) threads, at most `MaxPendingDecisions` (65536) buffered decisions across all of them with an in-flight compilation and at most
+`MaxDecisionsPerCompilation` (4096) buffered decisions per compilation; names are truncated to
+`MaxNameLength` (512) characters. All caps are enforced at insertion inside the trace-conversion
+pass. Dropped, replaced or never-joined decisions are counted as unattributed and each cap hit is
+reported in `notes[]` with the constant name and the drop count. The 256 MB circular EventPipe buffer
+is unchanged; the extra JitTracing volume is the reason the capture is opt-in.
+
 ### Pure efficiency refactors — no data loss at any cap
 
 | Collector | What changed | Result vs. before |

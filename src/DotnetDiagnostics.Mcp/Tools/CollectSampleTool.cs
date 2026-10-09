@@ -119,6 +119,8 @@ public sealed class CollectSampleTool
         CpuSamplingMode cpuBackend = CpuSamplingMode.Automatic,
         [Description("kind='cpu' only. If true, persists the raw .nettrace under the artifact root and returns its relative path so it can be fetched with get_bytes(kind='trace') for offline PerfView/Speedscope/Perfetto analysis. Defaults to false.")]
         bool exportTrace = false,
+        [Description("kind='cpu' only, EventPipe. Also record JIT inlining decisions per code version (high event volume) for query_snapshot(view='inlining'). Default false.")]
+        bool captureInlining = false,
         [Description("kind='native-alloc' on Linux only. perf sample period — record one callchain per this many allocator hits. Must be >= 1. Defaults to 1000. Higher reduces overhead and resolution; throttles recorded samples but not the per-call uprobe trap cost. Ignored by the Windows ETW VirtualAlloc backend, which records every allocation.")]
         long nativeAllocSamplePeriod = 1000,
         [Description("kind='native-lock-contention' on Linux only (there is no Windows backend). perf sample period — record one callchain per this many pthread_mutex_lock/unlock hits. Must be >= 1. Defaults to 5000 — higher than nativeAllocSamplePeriod's default because mutex fast-path calls are typically far more frequent than allocator calls on lock-heavy workloads.")]
@@ -165,6 +167,7 @@ public sealed class CollectSampleTool
                     cpuBackend,
                     depth,
                     exportTrace,
+                    captureInlining,
                     deprecation,
                     requestContext,
                     cancellationToken).ConfigureAwait(false),
@@ -411,6 +414,7 @@ public sealed class CollectSampleTool
                      "maxResolvedMethodInstantiations",
                      "nativeAotMapFile",
                      "exportTrace",
+                     "captureInlining",
                      "nativeAllocSamplePeriod",
                      "nativeLockContentionSamplePeriod",
                  })

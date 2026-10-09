@@ -250,6 +250,7 @@ public sealed partial class CaptureArtifactCodecTests
                 "caller-callee" => CpuSampleQueryDispatcher.RenderCallerCallee(cpu, "stable", "LeafA", 50),
                 "triage" => CpuSampleQueryDispatcher.RenderTriage(cpu, "stable", 50, 80),
                 "code-versions" => CpuSampleQueryDispatcher.RenderCodeVersions(cpu, "stable", null, 50),
+                "inlining" => CpuSampleQueryDispatcher.RenderInlining(cpu, "stable", null, 50),
                 _ => throw new InvalidOperationException(view),
             };
         }

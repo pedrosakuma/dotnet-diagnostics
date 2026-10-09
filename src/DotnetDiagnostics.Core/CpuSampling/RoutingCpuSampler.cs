@@ -40,6 +40,7 @@ public sealed class RoutingCpuSampler : ICpuSampler
         MethodInstantiationResolutionOptions? methodInstantiationResolution = null,
         NativeAotSymbolResolutionOptions? nativeAotSymbols = null,
         bool exportTrace = false,
+        CpuCaptureOptions? captureOptions = null,
         CancellationToken cancellationToken = default)
         => await SampleAsync(
             processId,
@@ -50,6 +51,7 @@ public sealed class RoutingCpuSampler : ICpuSampler
             nativeAotSymbols,
             exportTrace,
             CpuSamplingMode.Automatic,
+            captureOptions,
             cancellationToken).ConfigureAwait(false);
 
     public async Task<CpuSampleResult> SampleAsync(
@@ -61,8 +63,17 @@ public sealed class RoutingCpuSampler : ICpuSampler
         NativeAotSymbolResolutionOptions? nativeAotSymbols,
         bool exportTrace,
         CpuSamplingMode mode,
+        CpuCaptureOptions? captureOptions = null,
         CancellationToken cancellationToken = default)
     {
+        var captureInlining = captureOptions?.CaptureInlining == true;
+        if (captureInlining && mode == CpuSamplingMode.Os)
+        {
+            throw new ArgumentException(
+                "JIT inlining capture is available only with the EventPipe CPU backend.",
+                nameof(captureOptions));
+        }
+
         if (mode == CpuSamplingMode.Os && exportTrace)
         {
             throw new ArgumentException(
@@ -83,7 +94,14 @@ public sealed class RoutingCpuSampler : ICpuSampler
         {
             return await _managed.SampleAsync(
                 processId, duration, topN, sourceResolution, methodInstantiationResolution,
-                nativeAotSymbols: null, exportTrace, cancellationToken).ConfigureAwait(false);
+                nativeAotSymbols: null, exportTrace, captureOptions, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (captureInlining)
+        {
+            throw new ArgumentException(
+                "JIT inlining capture is available only with the EventPipe CPU backend.",
+                nameof(captureOptions));
         }
 
         if (!caps.CanSampleOsCpu)
@@ -124,7 +142,7 @@ public sealed class RoutingCpuSampler : ICpuSampler
             if (_etw.IsAvailable())
             {
                 _logger.LogInformation("Routing CPU sample for pid {Pid} to ETW kernel profiling (NativeAOT on Windows).", processId);
-                return await _etw.SampleAsync(processId, duration, topN, sourceResolution, methodInstantiationResolution: null, nativeAotSymbols: null, exportTrace: false, cancellationToken).ConfigureAwait(false);
+                return await _etw.SampleAsync(processId, duration, topN, sourceResolution, methodInstantiationResolution: null, nativeAotSymbols: null, exportTrace: false, captureOptions: null, cancellationToken).ConfigureAwait(false);
             }
 
             throw new InvalidOperationException(
@@ -137,7 +155,7 @@ public sealed class RoutingCpuSampler : ICpuSampler
         if (_perf.IsAvailable())
         {
             _logger.LogInformation("Routing CPU sample for pid {Pid} to perf fallback (NativeAOT on Linux).", processId);
-            return await _perf.SampleAsync(processId, duration, topN, sourceResolution, methodInstantiationResolution: null, nativeAotSymbols, exportTrace: false, cancellationToken).ConfigureAwait(false);
+            return await _perf.SampleAsync(processId, duration, topN, sourceResolution, methodInstantiationResolution: null, nativeAotSymbols, exportTrace: false, captureOptions: null, cancellationToken).ConfigureAwait(false);
         }
 
         throw new InvalidOperationException(
