@@ -321,6 +321,18 @@ jobs:
         timeout-minutes: 5
         run: dotnet pack src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj --no-build --no-restore --configuration Release -o artifacts/nupkg-smoke
 
+      - name: Install VS Code extension dependencies
+        if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        timeout-minutes: 5
+        working-directory: vscode-extension
+        run: npm ci --ignore-scripts
+
+      - name: Test (VS Code extension)
+        if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        timeout-minutes: 5
+        working-directory: vscode-extension
+        run: npm test
+
       - name: Verify expected test results
         if: ${{ always() && needs.changes.outputs.code == 'true' }}
         shell: bash
