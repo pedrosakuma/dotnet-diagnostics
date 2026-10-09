@@ -121,6 +121,8 @@ public sealed partial class CaptureArtifactCodecTests
             Evidence = CpuSampleEvidence.EventPipeSampleProfiler,
             SelfSamples = new(0, 1, 6),
             Notes = [Rich],
+            CodeVersions = new(7, 6, 1, 3,
+                [new("1:00000001@1000", "Demo", "LeafA", "OptimizedTier1", "0x1000", 64, 0, 6, 1, 6)], [Rich]),
         };
     }
 

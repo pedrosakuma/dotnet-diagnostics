@@ -612,3 +612,22 @@ internal static class CpuSampleAnalytics
                 a.Representative.Identity))
             .ToList();
 }
+
+/// <summary>
+/// <c>code-versions</c> projection (issue #1075): leaf samples per compiled code version. Rows are capped
+/// at <c>topN</c>; <see cref="Truncated"/> reports a cut.
+/// </summary>
+public sealed record CodeVersionsView(
+    int ProcessId,
+    long TotalSamples,
+    long ResolvedSamples,
+    long UnresolvedSamples,
+    long PublishedVersions,
+    int MatchedVersions,
+    bool Truncated,
+    IReadOnlyList<CodeVersionSampleRow> Versions,
+    IReadOnlyList<string> Notes)
+{
+    public CpuSampleBackend? EvidenceBackend { get; init; }
+    public CpuSampleEvidenceKind? EvidenceKind { get; init; }
+}

@@ -8,6 +8,7 @@ using Microsoft.Diagnostics.NETCore.Client;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
 using Microsoft.Diagnostics.Tracing.Parsers;
+using Microsoft.Diagnostics.Tracing.Parsers.Clr;
 using DotnetDiagnostics.Core.Symbols;
 using DotnetDiagnostics.Core.Threads;
 using Microsoft.Extensions.Logging;
@@ -151,6 +152,7 @@ public sealed class EventPipeCpuSampler : ICpuSampler
                 Evidence = CpuSampleEvidence.EventPipeSampleProfiler,
                 SelfSamples = aggregate.SelfSamples,
                 Notes = aggregate.RecordingNotes ?? [],
+                CodeVersions = aggregate.CodeVersions,
             };
             return new CpuSampleResult(summary, artifact);
         }
@@ -255,7 +257,19 @@ public sealed class EventPipeCpuSampler : ICpuSampler
         CancellationToken cancellationToken)
     {
         var symbolicationStopwatch = Stopwatch.StartNew();
-        var etlxPath = TraceLog.CreateFromEventPipeDataFile(tracePath);
+        // TraceLog swallows method load/rundown events into its own symbol tables and drops the tier, so
+        // the census subscribes on the same dispatcher during the single conversion pass.
+        var codeVersions = new CodeVersionCensus();
+        string etlxPath;
+        using (var source = new EventPipeEventSource(tracePath))
+        {
+            var rundown = new ClrRundownTraceEventParser(source);
+            rundown.MethodDCStopVerbose += data => RecordPublishedVersion(codeVersions, data);
+            rundown.MethodDCStartVerbose += data => RecordPublishedVersion(codeVersions, data);
+            source.Clr.MethodLoadVerbose += data => RecordPublishedVersion(codeVersions, data);
+            etlxPath = TraceLog.CreateFromEventTraceLogFile(source, Path.ChangeExtension(tracePath, ".etlx"), null);
+        }
+
         try
         {
             using var traceLog = new TraceLog(etlxPath);
@@ -342,6 +356,11 @@ public sealed class EventPipeCpuSampler : ICpuSampler
 
                     isLeaf = false;
                     frame = frame.Caller;
+                }
+
+                if (stackFrames.Count > 0 && callStack.CodeAddress is { Address: not 0 } leafAddress)
+                {
+                    codeVersions.AddLeafSample(leafAddress.Address, stackFrames[0].Module, stackFrames[0].Display);
                 }
 
                 // stack is leaf→root; reverse to root→leaf for tree traversal.
@@ -480,7 +499,8 @@ public sealed class EventPipeCpuSampler : ICpuSampler
                 aggregationDuration,
                 methodInstantiationResolutionDuration,
                 selfSamples,
-                replayStacks?.GetNotes());
+                replayStacks?.GetNotes(),
+                codeVersions.Build());
         }
         finally
         {
@@ -1047,7 +1067,22 @@ public sealed class EventPipeCpuSampler : ICpuSampler
         TimeSpan AggregationDuration,
         TimeSpan MethodInstantiationResolutionDuration,
         SelfSampleBreakdown? SelfSamples,
-        IReadOnlyList<string>? RecordingNotes = null);
+        IReadOnlyList<string>? RecordingNotes = null,
+        CodeVersionProfile? CodeVersions = null);
+
+    // MethodDCStopVerbose (rundown) is the only source of names/tiers in a sampling capture; DCStart
+    // repeats the same bodies and Load/Unload events can overlap it, so the census de-duplicates.
+    private static void RecordPublishedVersion(CodeVersionCensus census, MethodLoadUnloadVerboseTraceData e)
+    {
+        census.AddPublishedVersion(new PublishedCodeVersion(
+            (ulong)e.MethodID,
+            (ulong)e.ModuleID,
+            (uint)e.MethodToken,
+            (ulong)e.MethodStartAddress,
+            (uint)e.MethodSize,
+            (ulong)e.ReJITID,
+            e.OptimizationTier.ToString()));
+    }
 
     private static CallTreeNode EmptyRoot() => new(new SampledFrame(string.Empty, "<root>"), 0, 0, Array.Empty<CallTreeNode>());
 

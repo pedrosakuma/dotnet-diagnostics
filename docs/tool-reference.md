@@ -528,7 +528,7 @@ Views available per `kind`:
 | `heap-snapshot` | `inspect_heap` / `inspect_heap(source="live")` / `inspect_heap(source="dump")` / `inspect_heap(source="gcdump")` | `top-types` (default), `retention-paths`, `roots-by-kind`, `finalizer-queue`, `fragmentation`, `static-fields`, `delegate-targets`, `duplicate-strings`, `retained-exceptions`, `gchandles`, `timers`, `alc`, `com-wrappers`, `object`, `gcroot`, `objsize`, `async`, `diff`, `growth` |
 | `thread-snapshot` | `collect_thread_snapshot` | `top-blocked` (default), `threads-summary`, `stack`, `lock-graph`, `deadlocks`, `unique-stacks`, `async-stalls`, `wait-chains`, `threadpool`, `resolve-address`, `frame-vars`, `thread-statics` |
 | `off-cpu-snapshot` | `collect_sample(kind="off_cpu")` | `topStacks` (default), `byThread`, `stack` |
-| `cpu-sample` / `allocation-sample` / `native-alloc-sample` / `native-lock-contention-sample` | `collect_sample(kind="cpu")` / `collect_sample(kind="allocation")` / `collect_sample(kind="native-alloc")` / `collect_sample(kind="native-lock-contention")` | `call-tree`, `top-methods`, `by-module`, `by-namespace`, `hot-path`, `caller-callee`, `triage`, `diff` |
+| `cpu-sample` / `allocation-sample` / `native-alloc-sample` / `native-lock-contention-sample` | `collect_sample(kind="cpu")` / `collect_sample(kind="allocation")` / `collect_sample(kind="native-alloc")` / `collect_sample(kind="native-lock-contention")` | `call-tree`, `top-methods`, `by-module`, `by-namespace`, `hot-path`, `caller-callee`, `triage`, `code-versions`, `diff` |
 
 Authorization is applied per kind at the dispatcher (`heap-read` for heap,
 `ptrace` for thread, `eventpipe` for off-CPU, `investigation-export` for
@@ -735,6 +735,19 @@ ranked by exclusive samples descending), and the dominant `hot-path` leaf. It re
 category (if any) with its observation percentage, and the
 hot-path leaf; every percentage in a summary is paired with its sample count and the total it is taken against. The `NextActionHint` points at `caller-callee` anchored on the top busy method (or at
 `call-tree` when no attributable method was found).
+
+`view="code-versions"` (issue #1075) joins each sample's **leaf** instruction pointer to the compiled
+code version it landed in, so a method row is not silently the sum of several machine-code bodies
+(under tiered compilation one method is published as `QuickJitted`, `OptimizedTier1OSR`,
+`OptimizedTier1`, …). Each row carries a stable `versionId` (`moduleId:methodToken@startAddress`),
+`optimizationTier`, `startAddress`, `size`, `reJitId`, `samples`, and `methodVersionCount` /
+`methodSamples` — a `methodVersionCount > 1` means the same method was sampled in several versions.
+`topN` caps rows and `rootMethodFilter` filters by method substring. Only the EventPipe managed
+sampler populates it (other backends return `NotSupported`). Tiers come from the session-end rundown
+(`MethodDCStopVerbose`; a sampling capture has no `MethodLoadVerbose`), de-duplicated against
+`MethodDCStartVerbose`. Retention is bounded at insertion (`MaxPublishedVersions` = 262144,
+`MaxDistinctLeafAddresses` = 16384); a cap hit adds an explicit `notes` entry with the drop count.
+`unresolvedSamples` counts leaves outside every published range (native/stub frames, overflow).
 
 CPU comparisons also carry this evidence contract. OS-backed captures can produce performance
 verdicts only against compatible OS-backed evidence. EventPipe-to-EventPipe comparisons remain
@@ -3387,7 +3400,7 @@ contract.
   handles additionally accept `trace` with a required `traceId`.
 - **cpu-sample / allocation-sample / native-alloc-sample / native-lock-contention-sample**: `call-tree`
   (default), `top-methods`, `by-module`, `by-namespace`, `hot-path`,
-  `caller-callee`, `triage`, `diff`.
+  `caller-callee`, `triage`, `code-versions`, `diff`.
 
 **Common view-specific parameters** (each ignored outside its view):
 `rankBy` (`bytes`/`instances`), `typeFullName`, `address`,

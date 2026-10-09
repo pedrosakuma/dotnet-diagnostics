@@ -57,6 +57,14 @@ can directly modify the storage directory. It prevents ordinary diagnostic file
 operations from bypassing the managed package lifecycle. Capture implementation
 and release acceptance are tracked separately in #1001, #1007 and #1005.
 
+### EventPipe CPU code-version attribution (`code-versions`, issue #1075)
+
+`CodeVersionCensus` keeps at most `MaxPublishedVersions` (262144) compact published-range records
+(de-duplicated by method id + start address, so rundown `DCStart`/`DCStop` count once) and at most
+`MaxDistinctLeafAddresses` (16384) distinct leaf instruction pointers with counts. Both caps are
+enforced at insertion inside the trace-conversion pass; hits are reported in `notes[]` with the drop
+count. Only leaf frames are attributed, so per-sample cost is one dictionary update.
+
 ### Pure efficiency refactors — no data loss at any cap
 
 | Collector | What changed | Result vs. before |
