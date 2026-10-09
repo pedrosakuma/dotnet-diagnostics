@@ -76,7 +76,7 @@ RUN if [ "$INCLUDE_PORTABLE_CAPTURE_WORKER" = "true" ]; then \
     /p:UseAppHost=true
 
 # mcr.microsoft.com/dotnet/aspnet:10.0
-FROM mcr.microsoft.com/dotnet/aspnet@sha256:1fa23fc4872d95fd71c2833ebe65d7e84a43b2d51a31d119516852f13d9505a7 AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet@sha256:222759b391a1aaf241166672c8f99b2d4ada452e7b5319f3c6e8f265a37b5ad4 AS runtime
 WORKDIR /app
 
 # Loopback is a safe default for cleartext HTTP. Operators exposing the container
