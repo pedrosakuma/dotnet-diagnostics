@@ -76,19 +76,24 @@ connection) and renders each result as its own collapsible section below the sum
 failing view shows an inline error without blocking the others.
 
 - **Heap** (7 always queried): `roots-by-kind`, `finalizer-queue`, `fragmentation`, `gchandles`,
-  `async`, `timers`, `alc`. Three more are opt-in via a multi-select QuickPick shown before a
+  `async`, `timers`, `alc`. Four more are opt-in via a multi-select QuickPick shown before a
   `live` capture (all unchecked by default): **Static fields** (`static-fields`), **Delegate
-  targets** (`delegate-targets`) and **Retention paths** (`retention-paths`). The `gcdump` source
+  targets** (`delegate-targets`), **Retention paths** (`retention-paths`) and **Retained
+  exceptions** (`retained-exceptions`). The `gcdump` source
   skips the picker and the follow-up views, since the CLI rejects every drilldown view for it.
 - **Thread snapshot** (4): `deadlocks` (open by default and highlighted — an inferred wait-for
-  cycle), `unique-stacks`, `wait-chains`, `threadpool`.
+  cycle), `unique-stacks`, `wait-chains`, `threadpool`. `thread-statics` needs an exact type name,
+  so it is never queried automatically: after a thread snapshot, type the exact type name into the
+  **Query thread statics** box and press the button (an empty name is rejected in the panel; one
+  query runs at a time, and the result is capped server-side with explicit omitted counts).
 - **Analyze Dump File** runs the same heap/thread views, with the same opt-in picker shown after
   you choose the file.
 
 Results are rendered as formatted JSON as returned by Core's query dispatchers, not bespoke
-tables. Address-targeted views (`object`, `gcroot`, `objsize`, `duplicate-strings`),
-`retained-exceptions` (#1117) and `thread-statics` (#1120) are not exposed through the streaming
-protocol yet. These views require a CLI build from #1116 or later.
+tables. Address-targeted views (`object`, `gcroot`, `objsize`, `duplicate-strings`) are not
+exposed through the streaming protocol yet. These views require a CLI build from #1116 or later;
+`retained-exceptions` and `thread-statics` require a CLI build from #1126 or later, and an older CLI
+rejects the new capture option or query and surfaces it as an unavailable view.
 
 Use **Analyze Dump File** (tree-view action or Command Palette command
 `dotnetDiagnostics.analyzeDumpFile`) to inspect heap types and threads/locks from a process dump
@@ -108,15 +113,6 @@ straight from the file picker to analysis with **no risk-acknowledgement modal**
 **analyzes** an existing dump file — it does not capture/generate a new process dump, and it does
 not support interactive gcroot/object-graph drilldown by address; both remain out of scope for this
 command.
-
-Heap and thread captures also show follow-up drilldown views. Before a non-GC-dump heap capture
-(and before Analyze Dump File) a multi-select picker offers four opt-in enrichments, all unchecked
-by default: **Static fields**, **Delegate targets**, **Retention paths**, and **Retained
-exceptions** (the `retained-exceptions` view). The `thread-statics` view needs an exact type name,
-so it is never queried automatically: after a thread snapshot, type the exact type name into the
-**Query thread statics** box and press the button; an empty name is rejected in the panel. Both
-views require a CLI build from #1126 or later; with an older CLI the new capture option or query
-is rejected and surfaces as an unavailable view.
 
 Live streaming requires a CLI build that supports `stream --protocol jsonl` and the multi-kind
 `kinds`/`capture` protocol (CLI builds from this repository starting with #1099); the `heap` capture
