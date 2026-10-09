@@ -19,7 +19,7 @@ delivered rate.
 ## Experiment
 
 `samples/SamplingAliasProbe` (not part of the solution): one thread loops over `PathA`,
-`PathB` (byte-identical work) and `PathM` (~1% of wall time). `Stopwatch` ticks per path are
+`PathB` (byte-identical work) and `PathM` (~1% of one dominant path, ≈0.5% of total path time). `Stopwatch` ticks per path are
 the wall-clock truth. `run-matrix.py` launches the probe, captures with
 `dotnet-diagnostics collect --kind cpu --duration 12 --top 100`, and records inclusive samples
 per path. The loop *chunk* (length of each A/B call) is varied from 0.25 ms to 20 ms while
@@ -34,22 +34,22 @@ with the ~690/s in the issue and well under 1 kHz. Individual captures ranged ~4
 
 **A vs B skew** (`(B−A)/(A+B)`, sampled), per chunk size, 4 captures each:
 
-| chunk (ms) | mean skew | sd across captures | binomial SE (n≈6000) |
+| chunk (ms) | mean skew | sd across captures | binomial SE (1/√mean(A+B)) |
 |---|---|---|---|
-| 0.25 | +0.36% | 1.16 | 1.14 |
-| 0.5 | −0.44% | 1.30 | 1.09 |
-| 1 | −0.03% | 0.88 | 1.07 |
-| 2 | +0.11% | 0.33 | 1.13 |
-| 5 | +0.06% | 0.70 | 1.13 |
-| 10 | −0.15% | 0.55 | 1.10 |
-| 20 | +0.35% | 0.62 | 1.05 |
+| 0.25 | +0.36% | 1.16 | 1.24 |
+| 0.5 | −0.44% | 1.30 | 1.16 |
+| 1 | −0.03% | 0.88 | 1.14 |
+| 2 | +0.11% | 0.33 | 1.08 |
+| 5 | +0.06% | 0.70 | 1.16 |
+| 10 | −0.15% | 0.55 | 1.09 |
+| 20 | +0.35% | 0.62 | 1.14 |
 
 Pooled over 28 captures: mean +0.04%, sd 0.80%, t = 0.24. Signs are mixed, and the spread is
 at or below binomial noise. **No significant, direction-holding bias and no dependence on loop
 period.** The −5…−8% (and sign flip) from the issue did not reproduce.
 
-**Minority path (PathM, ≈1.0% of wall time by Stopwatch).** Samples observed vs expected from
-wall-clock share, summed over the 4 captures per chunk size:
+**Minority path (PathM, ≈0.48% of total Stopwatch path time).** Samples observed vs expected from
+that wall-clock share, summed over the 4 captures per chunk size:
 
 | chunk (ms) | PathM call length | observed | expected | observed/expected |
 |---|---|---|---|---|
@@ -61,8 +61,9 @@ wall-clock share, summed over the 4 captures per chunk size:
 | 10 | ~102 µs | 102 | 171 | 60% |
 | 20 | ~204 µs | 125 | 145 | 86% |
 
-Overall 290 observed vs ~1105 expected (26%). The shortfall is large, in one direction, and
-shrinks monotonically as each call gets longer while total work is unchanged. Individual
+Overall 290 observed vs ~1105 expected (26%). The shortfall is large and always in one direction. It is
+severe (2–8%) for calls up to ~20 µs (not monotonic within that range) and recovers clearly
+only above ~50 µs, while total work is unchanged. Individual
 captures of the short-call configurations frequently contain zero PathM samples, matching the
 issue's 69/0/0/1 observation.
 
