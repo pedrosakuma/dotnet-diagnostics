@@ -99,8 +99,8 @@ panel's entire model (selected target, start/stop session) assumes a live PID, a
 none. The panel opens a short-lived capture-only CLI connection and fires both a heap-from-dump and
 a thread-snapshot-from-dump request against it, rendering a heap top-types table (type, instance
 count, bytes, plus the dump's file size and any analysis warnings) and a thread/lock table (thread
-id, state, inferred wait reason, top stack frame) as each result arrives; the connection closes once
-both complete. Dump-sourced heap and thread-snapshot analysis is classified **Moderate risk / Warn**
+id, state, inferred wait reason, top stack frame) as each result arrives; the connection stays open
+until the panel is closed so on-demand drilldown queries can reuse the thread snapshot. Dump-sourced heap and thread-snapshot analysis is classified **Moderate risk / Warn**
 in Core's invocation-safety registry — not the High risk / Acknowledge tier of their live
 counterparts — because there is no live attach or target suspension involved, only offline parsing
 of a file already on disk. Matching CPU sampling's existing no-modal posture, this command proceeds
@@ -108,6 +108,15 @@ straight from the file picker to analysis with **no risk-acknowledgement modal**
 **analyzes** an existing dump file — it does not capture/generate a new process dump, and it does
 not support interactive gcroot/object-graph drilldown by address; both remain out of scope for this
 command.
+
+Heap and thread captures also show follow-up drilldown views. Before a non-GC-dump heap capture
+(and before Analyze Dump File) a multi-select picker offers four opt-in enrichments, all unchecked
+by default: **Static fields**, **Delegate targets**, **Retention paths**, and **Retained
+exceptions** (the `retained-exceptions` view). The `thread-statics` view needs an exact type name,
+so it is never queried automatically: after a thread snapshot, type the exact type name into the
+**Query thread statics** box and press the button; an empty name is rejected in the panel. Both
+views require a CLI build from #1126 or later; with an older CLI the new capture option or query
+is rejected and surfaces as an unavailable view.
 
 Live streaming requires a CLI build that supports `stream --protocol jsonl` and the multi-kind
 `kinds`/`capture` protocol (CLI builds from this repository starting with #1099); the `heap` capture

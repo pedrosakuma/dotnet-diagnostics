@@ -46,8 +46,17 @@ internal static class McpRequestFraming
 }
 
 /// <summary>Bounds complete newline-delimited messages before the SDK's line reader sees them.</summary>
-internal sealed class BoundedMcpInputStream(Stream input) : Stream
+internal sealed class BoundedMcpInputStream(Stream input, Func<ILoggerFactory?>? loggerFactory = null) : Stream
 {
+    private static readonly Action<ILogger, string, Exception?> LogRejected = LoggerMessage.Define<string>(
+        LogLevel.Error, new EventId(1, "StdioFrameRejected"), "Rejected stdio MCP frame: {Reason}");
+
+    private static readonly Action<ILogger, Exception?> LogReadFailed = LoggerMessage.Define(
+        LogLevel.Error, new EventId(2, "StdioInputReadFailed"), "Stdio MCP input read failed");
+
+    private static readonly Action<ILogger, long, Exception?> LogEndOfInput = LoggerMessage.Define<long>(
+        LogLevel.Information, new EventId(3, "StdioInputEnded"), "Stdio MCP input reached end of stream with {BufferedBytes} buffered bytes");
+
     private readonly byte[] _buffer = new byte[McpRequestFraming.CopyBufferBytes];
     private readonly MemoryStream _frame = new(McpRequestFraming.CopyBufferBytes);
     private int _offset;
@@ -70,23 +79,41 @@ internal sealed class BoundedMcpInputStream(Stream input) : Stream
             {
                 if (_offset == _count && !_eof)
                 {
-                    _count = await input.ReadAsync(_buffer, cancellationToken).ConfigureAwait(false);
+                    try { _count = await input.ReadAsync(_buffer, cancellationToken).ConfigureAwait(false); }
+                    catch (Exception ex) when (ex is not (InvalidDataException or OperationCanceledException))
+                    {
+                        if (loggerFactory?.Invoke() is { } factory)
+                            LogReadFailed(factory.CreateLogger<BoundedMcpInputStream>(), ex);
+                        throw;
+                    }
                     _offset = 0;
                     _eof = _count == 0;
+                    if (_eof && loggerFactory?.Invoke() is { } eofFactory)
+                        LogEndOfInput(eofFactory.CreateLogger<BoundedMcpInputStream>(), _frame.Length, null);
                 }
                 if (_eof) break;
                 var newline = Array.IndexOf(_buffer, (byte)'\n', _offset, _count - _offset);
                 var length = newline < 0 ? _count - _offset : newline - _offset + 1;
                 if (_frame.Length + length > McpRequestFraming.MaximumFrameBytes)
-                    throw new InvalidDataException("MCP request exceeds the 1 MiB transport frame limit.");
+                    throw Rejected(new InvalidDataException("MCP request exceeds the 1 MiB transport frame limit."));
                 _frame.Write(_buffer, _offset, length);
                 _offset += length;
                 if (newline >= 0) break;
             }
-            McpRequestFraming.Validate(_frame.GetBuffer().AsSpan(0, checked((int)_frame.Length)));
+            try { McpRequestFraming.Validate(_frame.GetBuffer().AsSpan(0, checked((int)_frame.Length))); }
+            catch (InvalidDataException ex) { throw Rejected(ex); }
             _frame.Position = 0;
         }
         return _frame.Read(buffer.Span);
+    }
+
+    // Logged at the rejection point so the reason is queued before host shutdown begins;
+    // otherwise the SDK's later BackgroundService failure log can lose the race with logger disposal.
+    private InvalidDataException Rejected(InvalidDataException exception)
+    {
+        if (loggerFactory?.Invoke() is { } factory)
+            LogRejected(factory.CreateLogger<BoundedMcpInputStream>(), exception.Message, null);
+        return exception;
     }
 
     public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)

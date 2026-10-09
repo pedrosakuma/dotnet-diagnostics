@@ -154,6 +154,57 @@ export interface QueryResult {
     [key: string]: unknown;
 }
 
+/** Maximum accepted length of a `typeFilter` string sent with a `query` request. */
+export const MAX_TYPE_FILTER_LENGTH = 512;
+
+/**
+ * Validates the `typeFilter` of a `thread-statics` webview request. Returns the trimmed exact type
+ * name, or `undefined` when the value is not a non-empty, bounded string without control characters.
+ */
+export function parseTypeFilter(value: unknown): string | undefined {
+    if (typeof value !== "string") {
+        return undefined;
+    }
+    const trimmed = value.trim();
+    // eslint-disable-next-line no-control-regex
+    if (trimmed.length === 0 || trimmed.length > MAX_TYPE_FILTER_LENGTH || /[\u0000-\u001f\u007f]/.test(trimmed)) {
+        return undefined;
+    }
+    return trimmed;
+}
+
+/**
+ * Builds a `query` request frame. `typeFilter` is only sent when provided (the CLI requires it
+ * for the `thread-statics` view and ignores it for every other view).
+ */
+export function buildQueryFrame(requestId: string, handle: string, view: string, typeFilter?: string): ProtocolFrame {
+    return typeFilter === undefined
+        ? { type: "query", requestId, handle, view }
+        : { type: "query", requestId, handle, view, typeFilter };
+}
+
+/** Allows at most one task at a time; used to keep non-cancellable on-demand queries from piling up. */
+export class SingleFlightGuard {
+    private busy = false;
+
+    public get inFlight(): boolean {
+        return this.busy;
+    }
+
+    /** Runs `task` unless another one is in flight; resolves to `started: false` for duplicates. */
+    public async run<T>(task: () => Promise<T>): Promise<{ started: true; value: T } | { started: false }> {
+        if (this.busy) {
+            return { started: false };
+        }
+        this.busy = true;
+        try {
+            return { started: true, value: await task() };
+        } finally {
+            this.busy = false;
+        }
+    }
+}
+
 export interface ProtocolFrame {
     type: string;
     [key: string]: unknown;
