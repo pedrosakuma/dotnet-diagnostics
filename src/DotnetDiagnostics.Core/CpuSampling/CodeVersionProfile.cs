@@ -139,10 +139,11 @@ public sealed class CodeVersionCensus
 
         var perVersion = new Dictionary<int, (long Samples, string Module, string Method)>();
         long resolved = 0;
+        long ambiguous = 0;
         foreach (var (ip, leaf) in _leaves.OrderBy(kv => kv.Key))
         {
             // Upper bound: first range starting after ip. Scan back a few entries so versions sharing a
-            // start address (distinct MethodIds) are still considered; ties resolve to the highest MethodId.
+            // start address (distinct MethodIds) are still considered; overlaps are reported as ambiguous.
             int lo = 0, hi = starts.Length;
             while (lo < hi)
             {
@@ -151,13 +152,21 @@ public sealed class CodeVersionCensus
             }
 
             var match = -1;
+            var containing = 0;
             for (var i = lo - 1; i >= 0 && i >= lo - 4; i--)
             {
                 if (ip - ranges[i].StartAddress < ranges[i].Size)
                 {
                     match = i;
-                    break;
+                    containing++;
                 }
+            }
+
+            // Overlapping ranges (reused or shared code) cannot be told apart without lifetimes; refuse to guess.
+            if (containing > 1)
+            {
+                ambiguous += leaf.Count;
+                continue;
             }
 
             if (match < 0)
@@ -213,6 +222,11 @@ public sealed class CodeVersionCensus
         if (_overflowSamples > 0)
         {
             notes.Add($"MaxDistinctLeafAddresses ({MaxDistinctLeafAddresses}) reached; {_overflowSamples} samples with new leaf addresses were not attributed.");
+        }
+
+        if (ambiguous > 0)
+        {
+            notes.Add($"{ambiguous} samples fell in overlapping published code ranges and were left unresolved rather than attributed arbitrarily.");
         }
 
         return new CodeVersionProfile(_total, resolved, _total - resolved, _versions.Count, rows, notes);

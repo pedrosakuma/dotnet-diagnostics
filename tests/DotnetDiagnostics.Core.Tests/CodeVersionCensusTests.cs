@@ -63,6 +63,21 @@ public sealed class CodeVersionCensusTests
     }
 
     [Fact]
+    public void OverlappingRanges_AreLeftUnresolvedWithNote()
+    {
+        var c = new CodeVersionCensus();
+        c.AddPublishedVersion(V(1, 0x1000, 0x100, "A"));
+        c.AddPublishedVersion(V(2, 0x1000, 0x100, "B"));
+        c.AddLeafSample(0x1010, "m", "X");
+
+        var p = c.Build();
+
+        p.Versions.Should().BeEmpty();
+        p.UnresolvedSamples.Should().Be(1);
+        p.Notes.Should().Contain(n => n.Contains("overlapping"));
+    }
+
+    [Fact]
     public void Build_IsDeterministicRegardlessOfInsertionOrder()
     {
         static CodeVersionProfile Make(bool reverse)
