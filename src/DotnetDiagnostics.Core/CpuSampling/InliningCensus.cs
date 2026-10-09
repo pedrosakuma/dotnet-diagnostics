@@ -50,6 +50,9 @@ public sealed class InliningCensus
     /// <summary>Maximum buffered decisions for one in-flight compilation.</summary>
     public const int MaxDecisionsPerCompilation = 4_096;
 
+    /// <summary>Maximum buffered decisions across all in-flight compilations.</summary>
+    public const int MaxPendingDecisions = 65_536;
+
     /// <summary>Maximum length of any retained name or reason string; longer ones are truncated.</summary>
     public const int MaxNameLength = 512;
 
@@ -63,6 +66,8 @@ public sealed class InliningCensus
     private long _droppedRecords;
     private long _droppedPending;
     private long _droppedPerCompilation;
+    private long _droppedPendingBudget;
+    private int _pendingDecisions;
     private long _truncatedStrings;
 
     private sealed class Pending(ulong methodId, string compiledMethod)
@@ -85,7 +90,7 @@ public sealed class InliningCensus
     public void OnJittingStarted(uint threadId, ulong methodId, string compiledMethod)
     {
         // An unfinished previous compilation is dropped; its decisions stay counted but unattributed.
-        _pending.Remove(threadId);
+        DiscardPending(threadId);
 
         if (_pending.Count >= MaxPendingThreads)
         {
@@ -120,6 +125,14 @@ public sealed class InliningCensus
             return;
         }
 
+        if (_pendingDecisions >= MaxPendingDecisions)
+        {
+            _droppedPendingBudget++;
+            return;
+        }
+
+        _pendingDecisions++;
+
         pending.Decisions.Add(new InliningDecision(
             Clip(decision.Inliner), Clip(decision.Inlinee), decision.Succeeded,
             decision.FailReason is null ? null : Clip(decision.FailReason)));
@@ -136,7 +149,7 @@ public sealed class InliningCensus
             return;
         }
 
-        _pending.Remove(threadId);
+        DiscardPending(threadId);
         if (pending.Decisions.Count == 0 || version.StartAddress == 0)
         {
             return;
@@ -165,10 +178,19 @@ public sealed class InliningCensus
         }
     }
 
+    private void DiscardPending(uint threadId)
+    {
+        if (_pending.Remove(threadId, out var removed))
+        {
+            _pendingDecisions -= removed.Decisions.Count;
+        }
+    }
+
     /// <summary>Builds the deterministic profile. Compilations still open at the end are unattributed.</summary>
     public InliningProfile Build()
     {
         _pending.Clear();
+        _pendingDecisions = 0;
 
         var rows = _rows
             .Select(kv => new InliningDecisionRow(
@@ -191,6 +213,11 @@ public sealed class InliningCensus
         if (_droppedRecords > 0)
         {
             notes.Add($"MaxInliningRecords ({MaxInliningRecords}) reached; {_droppedRecords} inlining decisions were dropped.");
+        }
+
+        if (_droppedPendingBudget > 0)
+        {
+            notes.Add($"MaxPendingDecisions ({MaxPendingDecisions}) reached; {_droppedPendingBudget} decisions were not buffered and are unattributed.");
         }
 
         if (_droppedPending > 0)

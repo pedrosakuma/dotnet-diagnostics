@@ -69,7 +69,7 @@ count. Only leaf frames are attributed, so per-sample cost is one dictionary upd
 
 Opt-in via `captureInlining` (JitTracing keyword, Verbose level). `InliningCensus` keeps at most
 `MaxInliningRecords` (65536) aggregated rows keyed by (code version, inliner, inlinee, outcome,
-reason), at most `MaxPendingThreads` (1024) threads with an in-flight compilation and at most
+reason), at most `MaxPendingThreads` (1024) threads, at most `MaxPendingDecisions` (65536) buffered decisions across all of them with an in-flight compilation and at most
 `MaxDecisionsPerCompilation` (4096) buffered decisions per compilation; names are truncated to
 `MaxNameLength` (512) characters. All caps are enforced at insertion inside the trace-conversion
 pass. Dropped, replaced or never-joined decisions are counted as unattributed and each cap hit is

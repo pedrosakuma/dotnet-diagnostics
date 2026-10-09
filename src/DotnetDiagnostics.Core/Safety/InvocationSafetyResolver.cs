@@ -197,6 +197,12 @@ public static class InvocationSafetyResolver
             safety = Merge(safety, Profile(request.Operation, "export-trace"));
         }
 
+        if (kind == DiagnosticOperationCatalog.CollectSampleKinds.Cpu
+            && IsTrue(request, "captureInlining"))
+        {
+            safety = Merge(safety, Profile(request.Operation, "capture-inlining"));
+        }
+
         var resolvesSymbols = kind == DiagnosticOperationCatalog.CollectSampleKinds.OffCpu
             || kind == DiagnosticOperationCatalog.CollectSampleKinds.Cpu
                 && !string.Equals(Get(request, "resolveSourceLines"), "false", StringComparison.OrdinalIgnoreCase);

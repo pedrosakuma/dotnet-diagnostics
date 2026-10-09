@@ -761,7 +761,7 @@ carry names only, so each decision is attributed to a code version by a per-thre
 that cannot be joined are counted in `unattributedDecisions` instead of being guessed. When
 `captureInlining` is on, `code-versions` rows also carry `inlinedInto`: up to five methods that
 inlined the row's method (name-based match, hint only). Retention is bounded at insertion
-(`MaxInliningRecords` = 65536, `MaxPendingThreads` = 1024, `MaxDecisionsPerCompilation` = 4096,
+(`MaxInliningRecords` = 65536, `MaxPendingThreads` = 1024, `MaxPendingDecisions` = 65536, `MaxDecisionsPerCompilation` = 4096,
 `MaxNameLength` = 512); each cap hit adds a `notes` entry with the drop count. Inlining data is
 not persisted by durable captures yet.
 

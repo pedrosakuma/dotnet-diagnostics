@@ -116,6 +116,10 @@ internal static class DiagnosticToolSampling
                 },
                 ctx);
         }
+        catch (ArgumentException ex) when (captureInlining && ex.ParamName == "captureOptions")
+        {
+            return InvalidArg<CpuSample>(nameof(captureInlining), "is supported only by the EventPipe CPU backend");
+        }
         catch (CpuSamplingUnavailableException ex)
         {
             return DiagnosticResult.Fail<CpuSample>(

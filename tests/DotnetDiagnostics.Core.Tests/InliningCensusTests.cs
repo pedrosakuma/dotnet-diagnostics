@@ -151,6 +151,27 @@ public sealed class InliningCensusTests
     }
 
     [Fact]
+    public void MaxPendingDecisions_BoundsBufferingAcrossThreadsWithNote()
+    {
+        var c = new InliningCensus();
+        var threads = InliningCensus.MaxPendingDecisions / InliningCensus.MaxDecisionsPerCompilation;
+        for (uint t = 1; t <= threads + 1; t++)
+        {
+            c.OnJittingStarted(t, t, "M" + t);
+            var count = t <= threads ? InliningCensus.MaxDecisionsPerCompilation : 10;
+            for (var i = 0; i < count; i++)
+            {
+                c.OnInlining(t, Ok("M" + t, "Callee" + i));
+            }
+        }
+
+        var p = c.Build();
+
+        p.Notes.Should().Contain(n => n.Contains("MaxPendingDecisions") && n.Contains("10 decisions were not buffered"));
+        p.UnattributedDecisions.Should().Be(p.TotalDecisions);
+    }
+
+    [Fact]
     public void MaxInliningRecords_IsEnforcedAtInsertionWithNote()
     {
         var c = new InliningCensus();
