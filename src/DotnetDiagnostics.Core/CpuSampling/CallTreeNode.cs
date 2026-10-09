@@ -124,6 +124,12 @@ public sealed record CpuSampleTraceArtifact(
     public CodeVersionProfile? CodeVersions { get; init; }
 
     /// <summary>
+    /// JIT inlining decisions joined to the code version that took them (issue #1076). Null unless the
+    /// capture opted in with <c>captureInlining</c>; EventPipe managed sampler only.
+    /// </summary>
+    public InliningProfile? Inlining { get; init; }
+
+    /// <summary>
     /// Insertion-bounded per-module native leaf identity and verified-range coverage.
     /// Populated by the Windows ETW sampler.
     /// </summary>

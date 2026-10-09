@@ -239,6 +239,8 @@ collect options:
       --symbol-path <path>      NT_SYMBOL_PATH-style search path for cpu, off_cpu and
                                 thread-snapshot symbol resolution.
       --export-trace            cpu: persist the raw .nettrace under the artifact root.
+      --capture-inlining        cpu: also record JIT inlining decisions per compiled code version
+                                (EventPipe backend; higher event volume).
       --resolve-source-lines    cpu: resolve top hotspots to source file:line (default on).
       --no-resolve-source-lines cpu: disable source file:line resolution.
       --resolve-method-instantiations
@@ -313,6 +315,7 @@ collect options:
                 "--interval",
                 "--symbol-path",
                 "--export-trace",
+                "--capture-inlining",
                 "--resolve-source-lines",
                 "--no-resolve-source-lines",
                 "--resolve-method-instantiations",

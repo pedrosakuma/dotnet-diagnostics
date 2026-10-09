@@ -46,6 +46,7 @@ internal static class DiagnosticToolSampling
         [Description("Verbosity (summary|detail|raw). Default 'summary' returns the top-3 hotspots inline. 'detail' returns the requested topN (default 25). 'raw' is equivalent to detail. The full sample is always retained behind the issued handle — drill in with query_snapshot(view='call-tree').")]
         SamplingDepth depth = SamplingDepth.Summary,
         [Description("If true, persists the raw .nettrace under the artifact root and returns its relative path so it can be fetched with get_bytes(kind='trace') for offline PerfView/Speedscope/Perfetto analysis. Defaults to false (the trace is parsed then deleted).")] bool exportTrace = false,
+        bool captureInlining = false,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
         RequestContext<CallToolRequestParams>? requestContext = null,
         CancellationToken cancellationToken = default)
@@ -55,6 +56,10 @@ internal static class DiagnosticToolSampling
         if (cpuBackend == CpuSamplingMode.Os && exportTrace)
         {
             return InvalidArg<CpuSample>(nameof(exportTrace), "is supported only by the EventPipe CPU backend");
+        }
+        if (cpuBackend == CpuSamplingMode.Os && captureInlining)
+        {
+            return InvalidArg<CpuSample>(nameof(captureInlining), "is supported only by the EventPipe CPU backend");
         }
         if (cpuBackend == CpuSamplingMode.Os && resolveMethodInstantiations)
         {
@@ -96,7 +101,7 @@ internal static class DiagnosticToolSampling
                 "collect_sample(kind=\"cpu\")",
                 TimeSpan.FromSeconds(durationSeconds),
                 TimeSpan.FromSeconds(1),
-                ct => sampler.SampleAsync(pid, TimeSpan.FromSeconds(durationSeconds), topN, srcOpts, instantiationOpts, nativeAotOpts, exportTrace, cpuBackend, ct),
+                ct => sampler.SampleAsync(pid, TimeSpan.FromSeconds(durationSeconds), topN, srcOpts, instantiationOpts, nativeAotOpts, exportTrace, cpuBackend, captureInlining ? new CpuCaptureOptions(CaptureInlining: true) : null, ct),
                 cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

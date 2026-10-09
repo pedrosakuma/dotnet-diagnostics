@@ -228,6 +228,7 @@ internal static partial class CliCommands
             ParseCpuSamplingMode(options.CpuBackend),
             ParseDepth(options.Depth),
             options.ExportTrace,
+            options.CaptureInlining,
             cancellationToken).ConfigureAwait(false));
 
     private static CpuSamplingMode ParseCpuSamplingMode(string? value)

@@ -252,6 +252,7 @@ public sealed class DiagnosticTools
         [Description("Verbosity (summary|detail|raw). Default 'summary' returns the top-3 hotspots inline. 'detail' returns the requested topN (default 25). 'raw' is equivalent to detail. The full sample is always retained behind the issued handle — drill in with query_snapshot(view='call-tree').")]
         SamplingDepth depth = SamplingDepth.Summary,
         [Description("If true, persists the raw .nettrace under the artifact root and returns its relative path so it can be fetched with get_bytes(kind='trace') for offline PerfView/Speedscope/Perfetto analysis. Defaults to false (the trace is parsed then deleted).")] bool exportTrace = false,
+        bool captureInlining = false,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
         RequestContext<CallToolRequestParams>? requestContext = null,
         CancellationToken cancellationToken = default)
@@ -273,6 +274,7 @@ public sealed class DiagnosticTools
             cpuBackend,
             depth,
             exportTrace,
+            captureInlining,
             deprecation,
             requestContext,
             cancellationToken).ConfigureAwait(false);

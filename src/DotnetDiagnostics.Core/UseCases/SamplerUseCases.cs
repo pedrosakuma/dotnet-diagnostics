@@ -45,6 +45,7 @@ public static class SamplerUseCases
         string? nativeAotMapFile = null,
         SamplingDepth depth = SamplingDepth.Summary,
         bool exportTrace = false,
+        bool captureInlining = false,
         CancellationToken cancellationToken = default)
         => await CollectCpuSample(
             sampler,
@@ -62,6 +63,7 @@ public static class SamplerUseCases
             CpuSamplingMode.Automatic,
             depth,
             exportTrace,
+            captureInlining,
             cancellationToken).ConfigureAwait(false);
 
     public static async Task<DiagnosticResult<CpuSample>> CollectCpuSample(
@@ -80,6 +82,7 @@ public static class SamplerUseCases
         CpuSamplingMode cpuSamplingMode,
         SamplingDepth depth = SamplingDepth.Summary,
         bool exportTrace = false,
+        bool captureInlining = false,
         CancellationToken cancellationToken = default)
     {
         if (durationSeconds < 1) return InvalidArg<CpuSample>(nameof(durationSeconds), "must be >= 1");
@@ -87,6 +90,10 @@ public static class SamplerUseCases
         if (cpuSamplingMode == CpuSamplingMode.Os && exportTrace)
         {
             return InvalidArg<CpuSample>(nameof(exportTrace), "is supported only by the EventPipe CPU backend");
+        }
+        if (cpuSamplingMode == CpuSamplingMode.Os && captureInlining)
+        {
+            return InvalidArg<CpuSample>(nameof(captureInlining), "is supported only by the EventPipe CPU backend");
         }
         if (cpuSamplingMode == CpuSamplingMode.Os && resolveMethodInstantiations)
         {
@@ -129,7 +136,12 @@ public static class SamplerUseCases
                 nativeAotOpts,
                 exportTrace,
                 cpuSamplingMode,
+                captureInlining ? new CpuCaptureOptions(CaptureInlining: true) : null,
                 cancellationToken).ConfigureAwait(false);
+        }
+        catch (ArgumentException ex) when (captureInlining && ex.ParamName == "captureOptions")
+        {
+            return InvalidArg<CpuSample>(nameof(captureInlining), "is supported only by the EventPipe CPU backend");
         }
         catch (CpuSamplingUnavailableException ex)
         {

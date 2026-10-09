@@ -51,10 +51,11 @@ public sealed class EventPipeCpuSampler : ICpuSampler
         MethodInstantiationResolutionOptions? methodInstantiationResolution = null,
         NativeAotSymbolResolutionOptions? nativeAotSymbols = null,
         bool exportTrace = false,
+        CpuCaptureOptions? captureOptions = null,
         CancellationToken cancellationToken = default)
         => await SampleCoreAsync(
             client: null, resumeAsync: null, processId, duration, topN, sourceResolution,
-            methodInstantiationResolution, nativeAotSymbols, exportTrace, cancellationToken).ConfigureAwait(false);
+            methodInstantiationResolution, nativeAotSymbols, exportTrace, captureOptions?.CaptureInlining == true, cancellationToken).ConfigureAwait(false);
 
     /// <summary>
     /// True cold-start CPU sampling (issue #446): arms the sampling session on a <b>suspended</b>
@@ -74,7 +75,7 @@ public sealed class EventPipeCpuSampler : ICpuSampler
         ArgumentNullException.ThrowIfNull(target);
         return await SampleCoreAsync(
             target.Client, target.ResumeAsync, target.ProcessId, duration, topN, sourceResolution,
-            methodInstantiationResolution, nativeAotSymbols, exportTrace, cancellationToken).ConfigureAwait(false);
+            methodInstantiationResolution, nativeAotSymbols, exportTrace, captureInlining: false, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<CpuSampleResult> SampleCoreAsync(
@@ -87,6 +88,7 @@ public sealed class EventPipeCpuSampler : ICpuSampler
         MethodInstantiationResolutionOptions? methodInstantiationResolution,
         NativeAotSymbolResolutionOptions? nativeAotSymbols,
         bool exportTrace,
+        bool captureInlining,
         CancellationToken cancellationToken = default)
     {
         if (duration <= TimeSpan.Zero || duration > TimeSpan.FromMinutes(5))
@@ -110,7 +112,7 @@ public sealed class EventPipeCpuSampler : ICpuSampler
 
         try
         {
-            var captureTimings = await CollectTraceAsync(client, resumeAsync, processId, tracePath, duration, exportPath is not null, cancellationToken).ConfigureAwait(false);
+            var captureTimings = await CollectTraceAsync(client, resumeAsync, processId, tracePath, duration, exportPath is not null, captureInlining, cancellationToken).ConfigureAwait(false);
             if (exportPath is not null)
             {
                 SafeArtifactPath.SetRestrictiveFilePermissions(exportPath);
@@ -122,6 +124,7 @@ public sealed class EventPipeCpuSampler : ICpuSampler
                 sourceResolution,
                 methodInstantiationResolution,
                 observationSink,
+                captureInlining,
                 cancellationToken).ConfigureAwait(false);
             // Rank self-time (exclusive) across the WHOLE merged tree, not the inclusive-capped
             // TopHotspots — the true global leaf can sit outside the inclusive top-N on a deep stack.
@@ -153,6 +156,7 @@ public sealed class EventPipeCpuSampler : ICpuSampler
                 SelfSamples = aggregate.SelfSamples,
                 Notes = aggregate.RecordingNotes ?? [],
                 CodeVersions = aggregate.CodeVersions,
+                Inlining = aggregate.Inlining,
             };
             return new CpuSampleResult(summary, artifact);
         }
@@ -183,16 +187,19 @@ public sealed class EventPipeCpuSampler : ICpuSampler
         var rel = Path.GetRelativePath(root, fullPath);
         return rel.Replace(Path.DirectorySeparatorChar, '/');
     }
+    // JitTracing (0x1000) delivers the inlining events only at Verbose level; both are opt-in because of the volume.
+    private const long JitTracingKeyword = 0x1000;
 
-    private async Task<CpuCapturePhaseTimings> CollectTraceAsync(DiagnosticsClient? providedClient, Func<ValueTask>? resumeAsync, int pid, string outputPath, TimeSpan duration, bool restricted, CancellationToken ct)
+
+    private async Task<CpuCapturePhaseTimings> CollectTraceAsync(DiagnosticsClient? providedClient, Func<ValueTask>? resumeAsync, int pid, string outputPath, TimeSpan duration, bool restricted, bool captureInlining, CancellationToken ct)
     {
         var providers = new[]
         {
             new EventPipeProvider("Microsoft-DotNETCore-SampleProfiler", EventLevel.Informational),
             new EventPipeProvider(
                 "Microsoft-Windows-DotNETRuntime",
-                EventLevel.Informational,
-                (long)ClrTraceEventParser.Keywords.Default),
+                captureInlining ? EventLevel.Verbose : EventLevel.Informational,
+                (long)ClrTraceEventParser.Keywords.Default | (captureInlining ? JitTracingKeyword : 0)),
         };
 
         var client = providedClient ?? new DiagnosticsClient(pid);
@@ -254,19 +261,36 @@ public sealed class EventPipeCpuSampler : ICpuSampler
         SourceResolutionOptions? sourceResolution,
         MethodInstantiationResolutionOptions? methodInstantiationResolution,
         ICaptureObservationSink? observationSink,
+        bool captureInlining,
         CancellationToken cancellationToken)
     {
         var symbolicationStopwatch = Stopwatch.StartNew();
         // TraceLog swallows method load/rundown events into its own symbol tables and drops the tier, so
         // the census subscribes on the same dispatcher during the single conversion pass.
         var codeVersions = new CodeVersionCensus();
+        var inlining = captureInlining ? new InliningCensus() : null;
         string etlxPath;
         using (var source = new EventPipeEventSource(tracePath))
         {
             var rundown = new ClrRundownTraceEventParser(source);
             rundown.MethodDCStopVerbose += data => RecordPublishedVersion(codeVersions, data);
             rundown.MethodDCStartVerbose += data => RecordPublishedVersion(codeVersions, data);
-            source.Clr.MethodLoadVerbose += data => RecordPublishedVersion(codeVersions, data);
+            source.Clr.MethodLoadVerbose += data =>
+            {
+                RecordPublishedVersion(codeVersions, data);
+                inlining?.OnMethodLoaded((uint)data.ThreadID, ToPublished(data));
+            };
+            if (inlining is not null)
+            {
+                source.Clr.MethodJittingStarted += data => inlining.OnJittingStarted((uint)data.ThreadID, (ulong)data.MethodID, Qualify(data.MethodNamespace, data.MethodName));
+                source.Clr.MethodInliningSucceeded += data => inlining.OnInlining(
+                    (uint)data.ThreadID,
+                    new InliningDecision(Qualify(data.InlinerNamespace, data.InlinerName), Qualify(data.InlineeNamespace, data.InlineeName), true, null));
+                source.Clr.MethodInliningFailed += data => inlining.OnInlining(
+                    (uint)data.ThreadID,
+                    new InliningDecision(Qualify(data.InlinerNamespace, data.InlinerName), Qualify(data.InlineeNamespace, data.InlineeName), false, data.FailReason));
+            }
+
             etlxPath = TraceLog.CreateFromEventTraceLogFile(source, Path.ChangeExtension(tracePath, ".etlx"), null);
         }
 
@@ -500,7 +524,8 @@ public sealed class EventPipeCpuSampler : ICpuSampler
                 methodInstantiationResolutionDuration,
                 selfSamples,
                 replayStacks?.GetNotes(),
-                codeVersions.Build());
+                codeVersions.Build(),
+                inlining?.Build());
         }
         finally
         {
@@ -1068,21 +1093,28 @@ public sealed class EventPipeCpuSampler : ICpuSampler
         TimeSpan MethodInstantiationResolutionDuration,
         SelfSampleBreakdown? SelfSamples,
         IReadOnlyList<string>? RecordingNotes = null,
-        CodeVersionProfile? CodeVersions = null);
+        CodeVersionProfile? CodeVersions = null,
+        InliningProfile? Inlining = null);
 
     // MethodDCStopVerbose (rundown) is the only source of names/tiers in a sampling capture; DCStart
     // repeats the same bodies and Load/Unload events can overlap it, so the census de-duplicates.
     private static void RecordPublishedVersion(CodeVersionCensus census, MethodLoadUnloadVerboseTraceData e)
     {
-        census.AddPublishedVersion(new PublishedCodeVersion(
+        census.AddPublishedVersion(ToPublished(e));
+    }
+
+    private static PublishedCodeVersion ToPublished(MethodLoadUnloadVerboseTraceData e)
+        => new(
             (ulong)e.MethodID,
             (ulong)e.ModuleID,
             (uint)e.MethodToken,
             (ulong)e.MethodStartAddress,
             (uint)e.MethodSize,
             (ulong)e.ReJITID,
-            e.OptimizationTier.ToString()));
-    }
+            e.OptimizationTier.ToString());
+
+    private static string Qualify(string? ns, string? name)
+        => string.IsNullOrEmpty(ns) ? name ?? string.Empty : ns + "." + name;
 
     private static CallTreeNode EmptyRoot() => new(new SampledFrame(string.Empty, "<root>"), 0, 0, Array.Empty<CallTreeNode>());
 

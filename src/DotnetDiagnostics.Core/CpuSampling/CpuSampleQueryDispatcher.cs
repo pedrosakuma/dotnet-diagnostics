@@ -18,7 +18,7 @@ namespace DotnetDiagnostics.Core.CpuSampling;
 /// (allocation-sample wraps it in an <see cref="AllocationSampleArtifact"/>); use
 /// <see cref="ResolveTrace"/> to unwrap the stored artifact regardless of which kind issued it.
 /// </remarks>
-public static class CpuSampleQueryDispatcher
+public static partial class CpuSampleQueryDispatcher
 {
     /// <summary>The merged caller→callee call tree (the original drill-down projection).</summary>
     public const string CallTreeView = "call-tree";
@@ -51,6 +51,12 @@ public static class CpuSampleQueryDispatcher
     /// </summary>
     public const string CodeVersionsView = "code-versions";
 
+    /// <summary>
+    /// JIT inlining decisions per compiled code version (issue #1076). Present only when the capture
+    /// opted in with <c>captureInlining</c> (EventPipe managed CPU captures).
+    /// </summary>
+    public const string InliningView = "inlining";
+
     /// <summary>Default number of rows returned by the ranked CPU views.</summary>
     public const int DefaultTopN = 20;
 
@@ -80,7 +86,7 @@ public static class CpuSampleQueryDispatcher
 
     private static readonly string[] Views =
     {
-        CallTreeView, TopMethodsView, ByModuleView, ByNamespaceView, HotPathView, CallerCalleeView, TriageView, CodeVersionsView,
+        CallTreeView, TopMethodsView, ByModuleView, ByNamespaceView, HotPathView, CallerCalleeView, TriageView, CodeVersionsView, InliningView,
     };
 
     /// <summary>The view names this dispatcher can render from a trace alone (drill-down without re-sampling).</summary>
@@ -240,7 +246,7 @@ public static class CpuSampleQueryDispatcher
         }
 
         var matched = rows.ToList();
-        var top = matched.Take(topN).ToList();
+        var top = AnnotateInlinedInto(matched.Take(topN), artifact.Inlining);
         var view = new CodeVersionsView(
             artifact.ProcessId, profile.TotalSamples, profile.ResolvedSamples, profile.UnresolvedSamples,
             profile.PublishedVersions, matched.Count, top.Count < matched.Count, top, profile.Notes)

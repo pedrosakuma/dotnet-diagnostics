@@ -1234,6 +1234,54 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         view.Data!.Versions.Should().NotBeEmpty();
     }
 
+    [Fact]
+    public async Task CpuSampler_CaptureInlining_RecordsDecisionsPerCompiledVersion()
+    {
+        EnsureSampleRunning();
+
+        var baseUrl = await _sample!.WaitForListeningUrlAsync(TimeSpan.FromSeconds(30), "/weatherforecast");
+        using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
+        using var stopLoad = new CancellationTokenSource();
+        // Every request JITs a fresh DynamicMethod that inlines JitInlineFixture.AddOne, so the capture
+        // window is guaranteed to contain inlining decisions regardless of tiering state.
+        var load = Task.Run(async () =>
+        {
+            while (!stopLoad.IsCancellationRequested)
+            {
+                using var response = await http.GetAsync("/jit-inline-probe", CancellationToken.None);
+                response.EnsureSuccessStatusCode();
+                await Task.Delay(50, CancellationToken.None);
+            }
+        });
+
+        CpuSampleResult result;
+        try
+        {
+            result = await new EventPipeCpuSampler().SampleAsync(
+                Pid, TimeSpan.FromSeconds(4), topN: 10, captureOptions: new CpuCaptureOptions(CaptureInlining: true), cancellationToken: CancellationToken.None);
+        }
+        finally
+        {
+            await stopLoad.CancelAsync();
+            await load;
+        }
+
+        var profile = result.Artifact.Inlining;
+        profile.Should().NotBeNull();
+        profile!.TotalDecisions.Should().BeGreaterThan(0, "JitTracing (0x1000) must deliver MethodJitInliningSucceeded/Failed events");
+        var probe = profile.Decisions.Where(d => d.Succeeded && d.Inlinee.EndsWith("JitInlineFixture.AddOne", StringComparison.Ordinal)).ToList();
+        probe.Should().NotBeEmpty("the probe callee is always inlined by the optimizing JIT; unattributed: {0}", profile.UnattributedDecisions);
+        probe.Should().OnlyContain(d => d.OptimizationTier.Length > 0 && d.VersionId.Contains('@', StringComparison.Ordinal));
+        probe.Select(d => d.VersionId).Distinct().Count().Should().BeGreaterThan(1, "the decision is re-taken at every compilation");
+
+        var view = CpuSampleQueryDispatcher.RenderInlining(result.Artifact, "h", "AddOne", 5);
+        view.Error.Should().BeNull();
+        view.Data!.Decisions.Should().NotBeEmpty();
+
+        var plain = await new EventPipeCpuSampler().SampleAsync(Pid, TimeSpan.FromSeconds(1), topN: 5, cancellationToken: CancellationToken.None);
+        plain.Artifact.Inlining.Should().BeNull("inlining capture is opt-in");
+    }
+
     [LinuxOnlyFact(Timeout = 60_000)]
     public async Task CpuSampler_EventPipeDoesNotConvertBlockedOrUnmatchedLeavesIntoOnCpuEvidence()
     {

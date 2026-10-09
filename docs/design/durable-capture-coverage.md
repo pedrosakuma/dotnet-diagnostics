@@ -104,7 +104,7 @@ their individual events.
 
 The CPU-tree snapshot views below mean exactly
 `call-tree`, `top-methods`, `by-module`, `by-namespace`, `hot-path`,
-`caller-callee`, `triage`, and `code-versions`, as dispatched by `CpuSampleQueryDispatcher`.
+`caller-callee`, `triage`, `code-versions`, and `inlining`, as dispatched by `CpuSampleQueryDispatcher`.
 No top-N-only substitution is made.
 
 | Operation | Handle kind / actual registered type | Retained detail / snapshot queries | Hooks needed, and limits |

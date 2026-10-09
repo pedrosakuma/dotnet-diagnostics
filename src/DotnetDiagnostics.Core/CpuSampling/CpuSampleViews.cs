@@ -631,3 +631,24 @@ public sealed record CodeVersionsView(
     public CpuSampleBackend? EvidenceBackend { get; init; }
     public CpuSampleEvidenceKind? EvidenceKind { get; init; }
 }
+
+/// <summary>
+/// <c>inlining</c> projection (issue #1076): JIT inlining decisions per compiled code version. Rows are
+/// capped at <c>topN</c>; <see cref="Truncated"/> reports a cut.
+/// </summary>
+public sealed record InliningView(
+    int ProcessId,
+    long TotalDecisions,
+    long AttributedDecisions,
+    long UnattributedDecisions,
+    long SucceededDecisions,
+    long RefusedDecisions,
+    long VersionsWithDecisions,
+    int MatchedRows,
+    bool Truncated,
+    IReadOnlyList<InliningDecisionRow> Decisions,
+    IReadOnlyList<string> Notes)
+{
+    public CpuSampleBackend? EvidenceBackend { get; init; }
+    public CpuSampleEvidenceKind? EvidenceKind { get; init; }
+}

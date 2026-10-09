@@ -139,6 +139,7 @@ internal static class CliInvocationSafety
                 ("resolveMethodInstantiations", options.ResolveMethodInstantiations),
                 ("resolveSourceLines", options.ResolveSourceLines),
                 ("exportTrace", options.ExportTrace),
+                ("captureInlining", options.CaptureInlining),
                 ("symbolPath", options.SymbolPath));
         }
 

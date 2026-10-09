@@ -195,6 +195,7 @@ internal sealed class InProcessDiagnosticCollector : IDisposable
                 methodInstantiationResolution: null,
                 nativeAotSymbols: null,
                 exportTrace: false,
+                captureOptions: null,
                 cancellationToken).ConfigureAwait(false);
         }
         catch (InvalidOperationException ex) when (
