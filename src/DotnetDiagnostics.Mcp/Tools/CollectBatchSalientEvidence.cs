@@ -186,6 +186,7 @@ internal static class CollectBatchSalientEvidence
             {
                 CpuEvidenceBackend = digest.CpuEvidence?.Backend,
                 CpuEvidenceKind = digest.CpuEvidence?.Kind,
+                CpuTotalSamples = digest.CpuTotalSamples,
             },
         };
     }

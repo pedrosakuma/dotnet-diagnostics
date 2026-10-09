@@ -1154,7 +1154,7 @@ public sealed partial class QuerySnapshotTool
             currentLookup.Handle.ProcessId,
             topN,
             depth,
-            BuildJourneyDiffSummary(diff, currentHandle, comparisonHandles),
+            BuildJourneyDiffSummary(diff, currentHandle, comparisonHandles, snapshots),
             currentLookup.Handle.Origin == HandleOrigin.Live,
             currentLookup.Handle.Origin,
             allowResourceLink: !string.Equals(
@@ -1241,7 +1241,7 @@ public sealed partial class QuerySnapshotTool
         return parts.Count == 0 ? null : string.Join(" ", parts);
     }
 
-    private static string BuildJourneyDiffSummary(SnapshotJourneyDiff diff, string currentHandle, string[] comparisonHandles)
+    private static string BuildJourneyDiffSummary(SnapshotJourneyDiff diff, string currentHandle, string[] comparisonHandles, IReadOnlyList<ComparableSnapshot> snapshots)
     {
         var baseSummary = $"Compared {diff.Kind} handle '{currentHandle}' across {comparisonHandles.Length + 1} captures: {diff.MetricSeries.Count} metric series, {diff.KeyMatrix.Count} key rows — verdict {diff.Verdict}.";
         // Dispersion mode compares unordered replicas (issue #812 narrative only makes sense for an
@@ -1251,7 +1251,7 @@ public sealed partial class QuerySnapshotTool
             return baseSummary;
         }
 
-        var narrative = BuildCpuJourneyNarrative(diff);
+        var narrative = BuildCpuJourneyNarrative(diff, snapshots);
         return narrative is null ? baseSummary : $"{baseSummary} {narrative}";
     }
 
@@ -1262,7 +1262,7 @@ public sealed partial class QuerySnapshotTool
     /// deltas here are always first-capture-to-last-capture (see <c>SnapshotDiffer</c>), matching the
     /// "moved from X to Y" phrasing even when more than two captures are compared.
     /// </summary>
-    private static string? BuildCpuJourneyNarrative(SnapshotJourneyDiff diff)
+    private static string? BuildCpuJourneyNarrative(SnapshotJourneyDiff diff, IReadOnlyList<ComparableSnapshot> snapshots)
     {
         var parts = new List<string>(2);
 
@@ -1275,16 +1275,31 @@ public sealed partial class QuerySnapshotTool
             var first = topRow.Values[0]!.Value;
             var last = topRow.Values[^1]!.Value;
             var direction = topRow.DeltaAbs >= 0 ? "grew" : "shrank";
-            var totalSeries = diff.MetricSeries.FirstOrDefault(s => string.Equals(s.Definition.Name, "totalSamples", StringComparison.Ordinal));
-            var totals = totalSeries is { Values.Count: > 0 } && totalSeries.Values[0] is { } firstTotal && totalSeries.Values[^1] is { } lastTotal
-                ? string.Create(CultureInfo.InvariantCulture, $" of {firstTotal:0} -> {lastTotal:0} total samples")
-                : string.Empty;
+            var totals = string.Empty;
+            if (snapshots.Count > 0)
+            {
+                var firstSide = CpuSampleShare(snapshots[0], topRow.Key);
+                var lastSide = CpuSampleShare(snapshots[^1], topRow.Key);
+                totals = string.Create(CultureInfo.InvariantCulture, $" [{firstSide} -> {lastSide}]");
+            }
+
             parts.Add(string.Create(
                 CultureInfo.InvariantCulture,
                 $"Top hotspot share {direction}: {topRow.DisplayName} {first:F1}% \u2192 {last:F1}% ({(topRow.DeltaAbs >= 0 ? "+" : string.Empty)}{topRow.DeltaAbs:F1}pp){totals}."));
         }
 
         return parts.Count == 0 ? null : string.Join(" ", parts);
+    }
+
+    private static string CpuSampleShare(ComparableSnapshot snapshot, ComparableKey key)
+    {
+        static double? Metric(IReadOnlyList<MetricValue> metrics, string name)
+            => metrics.FirstOrDefault(m => string.Equals(m.Definition.Name, name, StringComparison.Ordinal))?.Value;
+
+        var total = Metric(snapshot.Metrics, "totalSamples");
+        var row = snapshot.Rows.FirstOrDefault(r => r.Key == key);
+        var count = row is null ? null : Metric(row.Metrics, "exclusiveSamples");
+        return string.Create(CultureInfo.InvariantCulture, $"{count?.ToString("0", CultureInfo.InvariantCulture) ?? "0"} of {total?.ToString("0", CultureInfo.InvariantCulture) ?? "?"} samples");
     }
 
     private static DiagnosticResult<object> HandleExpiredError(string? side, string handle)

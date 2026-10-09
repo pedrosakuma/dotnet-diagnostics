@@ -121,7 +121,7 @@ public sealed class QuerySnapshotDiffToolTests
 
         result.Error.Should().BeNull();
         result.Summary.Should().Contain("Top hotspot share grew: MyApp.Worker.DoWork");
-        result.Summary.Should().Contain("total samples", "journey narratives must state the sample totals the shares rest on");
+        result.Summary.Should().MatchRegex(@"\d+ of \d+ samples", "journey narratives must state the sample counts and totals the shares rest on");
         result.Summary.Should().NotContain("Waiting/noise share");
     }
 

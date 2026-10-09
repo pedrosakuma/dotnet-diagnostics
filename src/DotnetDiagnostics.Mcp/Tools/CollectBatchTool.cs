@@ -589,6 +589,9 @@ public sealed record CollectBatchInvestigationDigest(
 {
     public CpuSampleBackend? CpuEvidenceBackend { get; init; }
     public CpuSampleEvidenceKind? CpuEvidenceKind { get; init; }
+
+    /// <summary>Total CPU samples every CPU percentage in this digest is taken against.</summary>
+    public long? CpuTotalSamples { get; init; }
 }
 
 /// <param name="Tool">Echoes the request's Tool.</param>

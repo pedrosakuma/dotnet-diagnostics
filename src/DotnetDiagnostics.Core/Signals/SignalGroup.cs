@@ -40,8 +40,10 @@ public sealed record SignalGroup(
 /// <param name="Magnitude">The member's magnitude within the grouping (e.g. a percentage or a count).</param>
 /// <param name="Unit">Optional unit for <see cref="Magnitude"/> (e.g. "%", "samples", "bytes").</param>
 /// <param name="Handle">Optional drill-down handle the member was derived from.</param>
+/// <param name="SampleCount">Number of samples the magnitude rests on; always set when <paramref name="Unit"/> is a sampled percentage (issue #1077).</param>
 public sealed record SignalBucket(
     string Key,
     double Magnitude,
     string? Unit = null,
-    string? Handle = null);
+    string? Handle = null,
+    long? SampleCount = null);

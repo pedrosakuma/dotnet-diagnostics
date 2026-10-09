@@ -56,12 +56,12 @@ public sealed class CpuSelfTimeByNamespaceProvider : ISignalProvider<CpuSignalCo
 
         var buckets = byNamespace
             .Take(MaxBuckets)
-            .Select(g => new SignalBucket(g.Namespace, g.Exclusive, "samples", context.HandleId))
+            .Select(g => new SignalBucket(g.Namespace, Math.Round(g.Exclusive * 100.0 / totalSelfSamples, 1), "%", context.HandleId, g.Exclusive))
             .ToArray();
 
         yield return new SignalGroup(
             Signal: "cpu.self-time.by-namespace",
-            Summary: $"CPU self-time concentrates in namespace {byNamespace[0].Namespace} ({buckets[0].Magnitude:0.#} of {totalSelfSamples} self samples = {topShare * 100.0:0.#}%).",
+            Summary: $"CPU self-time concentrates in namespace {byNamespace[0].Namespace} ({buckets[0].Magnitude:0.#}% = {buckets[0].SampleCount} of {totalSelfSamples} self samples).",
             Salience: Math.Min(1.0, topShare),
             Buckets: buckets,
             NextAction: new NextActionHint(
