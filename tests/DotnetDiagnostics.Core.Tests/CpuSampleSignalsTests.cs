@@ -113,7 +113,9 @@ public sealed class CpuSampleSignalsTests
         var concentration = CpuSampleSignals.Detect(sample, "h")
             .Should().ContainSingle(s => s.Signal == "cpu.self-time.concentration").Subject;
         concentration.Buckets[0].Key.Should().Be("MyApp.HotLoop()");
-        concentration.Buckets[0].Magnitude.Should().Be(100);
+        concentration.Buckets[0].Magnitude.Should().Be(55);
+        concentration.Buckets[0].Unit.Should().Be("samples");
+        concentration.Summary.Should().Contain("55 of 55 self samples");
     }
 
     [Fact]
@@ -147,7 +149,9 @@ public sealed class CpuSampleSignalsTests
         var concentration = CpuSampleSignals.Detect(sample, "h")
             .Should().ContainSingle(s => s.Signal == "cpu.self-time.concentration").Subject;
         concentration.Buckets[0].Key.Should().Be("MyApp.RealCpuHotspot()");
-        concentration.Buckets[0].Magnitude.Should().Be(100);
+        concentration.Buckets[0].Magnitude.Should().Be(40);
+        concentration.Buckets[0].Unit.Should().Be("samples");
+        concentration.Summary.Should().Contain("40 of 40 self samples");
     }
 
     // ---- Resource path (from the stored CpuSampleTraceArtifact, full tree) ----------------------

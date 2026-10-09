@@ -146,6 +146,8 @@ public sealed class InvestigationTelemetry : IInvestigationTelemetryEmitter, IDi
             activity.SetTag(prefix + "module", h.Symbol.Module);
             activity.SetTag(prefix + "exclusive_percent", h.ExclusivePercent);
             activity.SetTag(prefix + "inclusive_percent", h.InclusivePercent);
+            activity.SetTag(prefix + "exclusive_samples", h.ExclusiveSamples);
+            activity.SetTag(prefix + "inclusive_samples", h.InclusiveSamples);
         }
     }
 

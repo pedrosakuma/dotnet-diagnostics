@@ -42,7 +42,7 @@ public sealed class AllocationBySiteConcentrationProvider : ISignalProvider<Allo
         var top1Percent = Math.Round(top1Share * 100.0, 1);
         yield return new SignalGroup(
             Signal: "allocations.by-site",
-            Summary: $"Allocated bytes concentrate at one call site: {ranked[0].Frame.Method} is {top1Percent:0.#}% ({ranked[0].TotalBytes:N0} bytes).",
+            Summary: $"Allocated bytes concentrate at one call site: {ranked[0].Frame.Method} is {top1Percent:0.#}% ({ranked[0].TotalBytes:N0} of {context.TotalBytes:N0} sampled bytes).",
             Salience: Math.Min(1.0, top1Share),
             Buckets: buckets,
             NextAction: new NextActionHint(

@@ -1235,7 +1235,7 @@ public sealed partial class QuerySnapshotTool
             var direction = deltaAbs >= 0 ? "grew" : "shrank";
             parts.Add(string.Create(
                 CultureInfo.InvariantCulture,
-                $"Top hotspot share {direction}: {topMover.Key.Symbol.MethodFullName} {topMover.Baseline.ExclusivePercent:F1}% \u2192 {topMover.Current.ExclusivePercent:F1}% ({(deltaAbs >= 0 ? "+" : string.Empty)}{deltaAbs:F1}pp)."));
+                $"Top hotspot share {direction}: {topMover.Key.Symbol.MethodFullName} {topMover.Baseline.ExclusivePercent:F1}% ({topMover.Baseline.ExclusiveSamples} of {topMover.Baseline.TotalSamples} samples) \u2192 {topMover.Current.ExclusivePercent:F1}% ({topMover.Current.ExclusiveSamples} of {topMover.Current.TotalSamples} samples) ({(deltaAbs >= 0 ? "+" : string.Empty)}{deltaAbs:F1}pp)."));
         }
 
         return parts.Count == 0 ? null : string.Join(" ", parts);
@@ -1275,9 +1275,13 @@ public sealed partial class QuerySnapshotTool
             var first = topRow.Values[0]!.Value;
             var last = topRow.Values[^1]!.Value;
             var direction = topRow.DeltaAbs >= 0 ? "grew" : "shrank";
+            var totalSeries = diff.MetricSeries.FirstOrDefault(s => string.Equals(s.Definition.Name, "totalSamples", StringComparison.Ordinal));
+            var totals = totalSeries is { Values.Count: > 0 } && totalSeries.Values[0] is { } firstTotal && totalSeries.Values[^1] is { } lastTotal
+                ? string.Create(CultureInfo.InvariantCulture, $" of {firstTotal:0} -> {lastTotal:0} total samples")
+                : string.Empty;
             parts.Add(string.Create(
                 CultureInfo.InvariantCulture,
-                $"Top hotspot share {direction}: {topRow.DisplayName} {first:F1}% \u2192 {last:F1}% ({(topRow.DeltaAbs >= 0 ? "+" : string.Empty)}{topRow.DeltaAbs:F1}pp)."));
+                $"Top hotspot share {direction}: {topRow.DisplayName} {first:F1}% \u2192 {last:F1}% ({(topRow.DeltaAbs >= 0 ? "+" : string.Empty)}{topRow.DeltaAbs:F1}pp){totals}."));
         }
 
         return parts.Count == 0 ? null : string.Join(" ", parts);

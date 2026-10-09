@@ -121,6 +121,7 @@ public sealed class QuerySnapshotDiffToolTests
 
         result.Error.Should().BeNull();
         result.Summary.Should().Contain("Top hotspot share grew: MyApp.Worker.DoWork");
+        result.Summary.Should().Contain("total samples", "journey narratives must state the sample totals the shares rest on");
         result.Summary.Should().NotContain("Waiting/noise share");
     }
 
@@ -147,7 +148,7 @@ public sealed class QuerySnapshotDiffToolTests
         var result = await QuerySnapshot(store, currentHandle.Id, baselineHandle.Id, topN: 1);
 
         result.Error.Should().BeNull();
-        result.Summary.Should().Contain("Top hotspot share grew: MyApp.Worker.MethodA 50.0% \u2192 60.0% (+10.0pp)");
+        result.Summary.Should().Contain("Top hotspot share grew: MyApp.Worker.MethodA 50.0% (500 of 1000 samples) \u2192 60.0% (600 of 1000 samples) (+10.0pp)");
     }
 
     [Fact]

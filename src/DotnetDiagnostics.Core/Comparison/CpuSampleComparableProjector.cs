@@ -57,6 +57,9 @@ public static class CpuSampleComparableProjection
         var metrics = string.Equals(kind, "cpu-sample", StringComparison.Ordinal)
             ? ProjectSelfSampleMetrics(snapshot)
             : Array.Empty<MetricValue>();
+        // Denominator for every percent-bearing metric/row in this snapshot (issue #1077).
+        metrics = [Metric("totalSamples", MetricRole.Context, BetterDirection.Neutral,
+            MetricAggregation.Total, MetricNormalization.None, "samples", snapshot.TotalSamples), .. metrics];
         return new ComparableSnapshot(
             Schema: ComparableSnapshot.SchemaV1,
             Kind: kind,
@@ -173,7 +176,8 @@ public static class CpuSampleComparableProjection
             result[new MethodDiffKey(row.Symbol, row.Identity)] = new CpuDiffMetric(
                 ExclusiveSamples: row.ExclusiveSamples,
                 InclusiveSamples: row.InclusiveSamples,
-                ExclusivePercent: Math.Round(100.0 * row.ExclusiveSamples / totalSamples, 2));
+                ExclusivePercent: Math.Round(100.0 * row.ExclusiveSamples / totalSamples, 2),
+                TotalSamples: artifact.TotalSamples);
         }
 
         return result;

@@ -59,19 +59,19 @@ internal static class CliInvestigationDigestFormatter
             var label = digest.CpuEvidence?.Kind == CpuSampleEvidenceKind.OsOnCpuSamples
                 ? "top measured on-CPU self samples"
                 : "top stack-frequency candidates (CPU state unknown)";
-            lines.Add($"    {label}: " + string.Join(", ", topCpu.Select(FormatMethodStat)));
+            lines.Add($"    {label}: " + string.Join(", ", topCpu.Select(FormatMethodStat)) + FormatTotal(digest));
         }
 
         if (digest.TopCpuWaitCategories is { Count: > 0 } topWait)
         {
-            lines.Add("    top heuristic wait categories: " + string.Join(", ", topWait.Select(FormatWaitStat)));
+            lines.Add("    top heuristic wait categories: " + string.Join(", ", topWait.Select(FormatWaitStat)) + FormatTotal(digest));
         }
 
         if (digest.HotPathLeaf is { } leaf)
         {
             lines.Add(string.Create(
                 CultureInfo.InvariantCulture,
-                $"    hot-path leaf: {leaf.Method} (depth {digest.HotPathDepth}, {leaf.InclusivePercent:N1}% inclusive)"));
+                $"    hot-path leaf: {leaf.Method} (depth {digest.HotPathDepth}, {leaf.InclusivePercent:N1}% = {leaf.InclusiveSamples} samples inclusive)") + FormatTotal(digest));
         }
 
         if (digest.TopAllocationTypes is { Count: > 0 } topTypes)
@@ -88,10 +88,13 @@ internal static class CliInvestigationDigestFormatter
     }
 
     private static string FormatMethodStat(MethodSampleStat stat)
-        => string.Create(CultureInfo.InvariantCulture, $"{stat.Method} ({stat.ExclusivePercent:N1}%)");
+        => string.Create(CultureInfo.InvariantCulture, $"{stat.Method} ({stat.ExclusivePercent:N1}% = {stat.ExclusiveSamples} samples)");
 
     private static string FormatWaitStat(CpuWaitCategoryStat stat)
-        => string.Create(CultureInfo.InvariantCulture, $"{stat.WaitReason} ({stat.ExclusivePercent:N1}%)");
+        => string.Create(CultureInfo.InvariantCulture, $"{stat.WaitReason} ({stat.ExclusivePercent:N1}% = {stat.ExclusiveSamples} samples)");
+
+    private static string FormatTotal(InvestigationDigest digest)
+        => digest.CpuTotalSamples is { } total ? string.Create(CultureInfo.InvariantCulture, $" [of {total} total samples]") : string.Empty;
 
     private static string FormatAllocatedType(AllocatedType type)
         => string.Create(CultureInfo.InvariantCulture, $"{type.TypeName} ({type.TotalBytes:N0} bytes)");
