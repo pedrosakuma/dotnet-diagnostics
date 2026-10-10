@@ -244,7 +244,7 @@ public sealed class RuntimeCaptureObservationTests
         sink.Observations.Count(o => o.Category == "gc.suspension").Should().Be(3);
         sink.Observations.Count(o => o.Category == "gc.restart").Should().Be(3);
         var orphan = sink.Observations.Single(o => o.Category == "gc.correlation");
-        orphan.Name.Should().Be("orphan-collection-end");
+        orphan.Name.Should().Be("window-start-collection-end");
         orphan.Timestamp.Should().BeNull();
         var pause = sink.Observations.First(o => o.Category == "gc.suspension");
         Field(pause, "durationTicks").Integer.Should().Be(TimeSpan.FromMilliseconds(10).Ticks);

@@ -186,4 +186,17 @@ public sealed class GcCaptureStateTests
         result.IgnoredReasons.Should().HaveCount(16);
         result.Limitations["ignored-reason-cap-16"].Should().Be(4);
     }
+
+    [Fact]
+    public void CollectionStopBeforeAnyStart_IsWindowStartTruncation_NotPairingLoss()
+    {
+        var state = new GcCaptureState(10);
+        state.CollectionEnd(1, 7, 1, T(5));
+        state.CollectionBegin(1, 8, 1, T(10), 2, "Induced", "NonConcurrentGC");
+        state.CollectionEnd(1, 8, 1, T(20));
+        state.CollectionEnd(1, 9, 1, T(30));
+        var result = Finish(state);
+        result.Limitations["window-start-collection-end"].Should().Be(1);
+        result.Limitations["orphan-collection-end"].Should().Be(1, "a stop after observed starts is a mid-stream pairing loss");
+    }
 }
