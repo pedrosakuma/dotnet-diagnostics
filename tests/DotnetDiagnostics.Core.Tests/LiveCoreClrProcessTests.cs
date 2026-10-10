@@ -1258,7 +1258,7 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         try
         {
             result = await new EventPipeCpuSampler().SampleAsync(
-                Pid, TimeSpan.FromSeconds(4), topN: 10, captureOptions: new CpuCaptureOptions(CaptureInlining: true), cancellationToken: CancellationToken.None);
+                Pid, TimeSpan.FromSeconds(4), 10, null, null, null, false, new CpuCaptureOptions(CaptureInlining: true), CancellationToken.None);
         }
         finally
         {

@@ -33,7 +33,6 @@ public interface ICpuSampler
         MethodInstantiationResolutionOptions? methodInstantiationResolution = null,
         NativeAotSymbolResolutionOptions? nativeAotSymbols = null,
         bool exportTrace = false,
-        CpuCaptureOptions? captureOptions = null,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -49,7 +48,6 @@ public interface ICpuSampler
         NativeAotSymbolResolutionOptions? nativeAotSymbols,
         bool exportTrace,
         CpuSamplingMode mode,
-        CpuCaptureOptions? captureOptions = null,
         CancellationToken cancellationToken = default)
     {
         if (mode != CpuSamplingMode.Automatic)
@@ -66,7 +64,76 @@ public interface ICpuSampler
             methodInstantiationResolution,
             nativeAotSymbols,
             exportTrace,
-            captureOptions,
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Samples with opt-in <see cref="CpuCaptureOptions"/>. Added as a separate overload (with
+    /// <paramref name="captureOptions"/> required) so existing positional callers and existing
+    /// <see cref="ICpuSampler"/> implementers keep compiling and binding unchanged. Implementers that
+    /// do not support any capture extra inherit this default, which rejects requested extras.
+    /// </summary>
+    Task<CpuSampleResult> SampleAsync(
+        int processId,
+        TimeSpan duration,
+        int topN,
+        SourceResolutionOptions? sourceResolution,
+        MethodInstantiationResolutionOptions? methodInstantiationResolution,
+        NativeAotSymbolResolutionOptions? nativeAotSymbols,
+        bool exportTrace,
+        CpuCaptureOptions? captureOptions,
+        CancellationToken cancellationToken = default)
+    {
+        if (captureOptions?.CaptureInlining == true)
+        {
+            throw new ArgumentException(
+                "JIT inlining capture is not supported by this CPU sampler.",
+                nameof(captureOptions));
+        }
+
+        return SampleAsync(
+            processId,
+            duration,
+            topN,
+            sourceResolution,
+            methodInstantiationResolution,
+            nativeAotSymbols,
+            exportTrace,
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Explicit evidence source plus opt-in <see cref="CpuCaptureOptions"/>.
+    /// </summary>
+    Task<CpuSampleResult> SampleAsync(
+        int processId,
+        TimeSpan duration,
+        int topN,
+        SourceResolutionOptions? sourceResolution,
+        MethodInstantiationResolutionOptions? methodInstantiationResolution,
+        NativeAotSymbolResolutionOptions? nativeAotSymbols,
+        bool exportTrace,
+        CpuSamplingMode mode,
+        CpuCaptureOptions? captureOptions,
+        CancellationToken cancellationToken = default)
+    {
+        if (captureOptions?.CaptureInlining == true)
+        {
+            throw new ArgumentException(
+                "JIT inlining capture is not supported by this CPU sampler.",
+                nameof(captureOptions));
+        }
+
+        // Delegate to the original mode overload so legacy routing implementers that override it still receive the call.
+        return SampleAsync(
+            processId,
+            duration,
+            topN,
+            sourceResolution,
+            methodInstantiationResolution,
+            nativeAotSymbols,
+            exportTrace,
+            mode,
             cancellationToken);
     }
 }

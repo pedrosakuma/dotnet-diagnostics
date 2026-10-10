@@ -118,7 +118,7 @@ public sealed class CollectCpuSampleSecurityTests
         public int Invocations { get; private set; }
         public CpuSamplingMode? LastMode { get; private set; }
 
-        public Task<CpuSampleResult> SampleAsync(int processId, TimeSpan duration, int topN = 25, SourceResolutionOptions? sourceResolution = null, MethodInstantiationResolutionOptions? methodInstantiationResolution = null, NativeAotSymbolResolutionOptions? nativeAotSymbols = null, bool exportTrace = false, CpuCaptureOptions? captureOptions = null, CancellationToken cancellationToken = default)
+        public Task<CpuSampleResult> SampleAsync(int processId, TimeSpan duration, int topN = 25, SourceResolutionOptions? sourceResolution = null, MethodInstantiationResolutionOptions? methodInstantiationResolution = null, NativeAotSymbolResolutionOptions? nativeAotSymbols = null, bool exportTrace = false, CancellationToken cancellationToken = default)
         {
             Invocations++;
             var summary = new CpuSample(processId, DateTimeOffset.UtcNow, duration, 0, Array.Empty<Hotspot>());
@@ -136,7 +136,6 @@ public sealed class CollectCpuSampleSecurityTests
             NativeAotSymbolResolutionOptions? nativeAotSymbols,
             bool exportTrace,
             CpuSamplingMode mode,
-            CpuCaptureOptions? captureOptions,
             CancellationToken cancellationToken = default)
         {
             LastMode = mode;
@@ -148,7 +147,6 @@ public sealed class CollectCpuSampleSecurityTests
                 methodInstantiationResolution,
                 nativeAotSymbols,
                 exportTrace,
-                captureOptions,
                 cancellationToken);
         }
     }
@@ -157,7 +155,7 @@ public sealed class CollectCpuSampleSecurityTests
     {
         public int Invocations { get; private set; }
 
-        public Task<CpuSampleResult> SampleAsync(int processId, TimeSpan duration, int topN = 25, SourceResolutionOptions? sourceResolution = null, MethodInstantiationResolutionOptions? methodInstantiationResolution = null, NativeAotSymbolResolutionOptions? nativeAotSymbols = null, bool exportTrace = false, CpuCaptureOptions? captureOptions = null, CancellationToken cancellationToken = default)
+        public Task<CpuSampleResult> SampleAsync(int processId, TimeSpan duration, int topN = 25, SourceResolutionOptions? sourceResolution = null, MethodInstantiationResolutionOptions? methodInstantiationResolution = null, NativeAotSymbolResolutionOptions? nativeAotSymbols = null, bool exportTrace = false, CancellationToken cancellationToken = default)
         {
             Invocations++;
             throw new InvalidOperationException("should not be reached when symbol path is rejected");
