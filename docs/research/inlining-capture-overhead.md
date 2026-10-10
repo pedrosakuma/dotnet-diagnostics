@@ -64,15 +64,18 @@ Reading: median CPU +7.7 %, p50 +6 %, p99 +6.6 % (the p99 ranges overlap), trace
 are descriptive for this workload; with n≈11–13 and a noisy shared host they are not a confidence interval.
 The sampled-CPU-sample count is unchanged, so the keyword did not visibly distort sampling here.
 
-**Target crashes (not attributable to this change).** 4 of 28 capture runs (1 off, 3 on) ended with the
-*target* exiting with code 139 (SIGSEGV) and the capture failing with `FormatException: Read past end of
-stream` on the truncated trace; separate earlier attempts also saw the target die during warm-up *before any
-capture started*, and a no-delay request loop in the live test killed the target the same way. The common
-factor is the per-request collectible dynamic assembly churn at full request rate, so the failures are
-attributed to that load pattern (a runtime-side crash), not to JitTracing; the on/off split (3 vs 1) is too
-small to say whether the keyword raises the rate. The live test keeps the 50 ms inter-request delay the older
-inlining test used and did not crash in the runs observed. These runs are excluded from the table and
-reported here instead.
+**Target crashes (follow-up, issue #1154).** 4 of 28 capture runs (1 off, 3 on) ended with the *target* exiting
+with code 139 (SIGSEGV) and the capture failing with `FormatException: Read past end of stream` on the truncated
+trace. The original attribution to the load pattern alone was **not** confirmed: a controlled follow-up
+(WSL2, 16 shared CPUs, published `CoreClrSample`, same `/jit-inline-probe?spin=0` full-rate loop, 24 fresh
+processes per arm) saw **0/24 crashes with no capture**, 8/24 with a default CPU capture and 4/24 with
+`captureInlining` (3 SIGSEGV, 1 SIGABRT `The RX block to map as RW was not found`). `captureInlining` therefore
+did not raise the rate over a default CPU capture (8/24 vs 4/24). The same pattern reproduced without ASP.NET
+(a console app creating `RunAndCollect` dynamic assemblies in a loop: 0/24 without capture, 8/24 with a CPU
+capture). In the `dotnet-trace` arm the target died when the 10 s window ended (the `Stop` command failed), which points at session stop/rundown under ongoing churn. Raw-provider bisection
+with `dotnet-trace` (16 runs per arm) crashed only with the SampleProfiler provider plus rundown (3/16); rundown off
+or runtime-only providers gave 0/16. The crash site is the same `libcoreclr` frames on a native thread with no managed stack in all 7 SIGSEGV dumps examined (symbols unavailable, so the function is unidentified); this points at a runtime-side defect rather than the sampler or sample, but the root cause is not proven. Not tested: Windows, other runtime patch versions, non-WSL hosts. The live test keeps the 50 ms
+inter-request delay and did not crash in the runs observed. These runs are excluded from the table above.
 
 ## Limits — what was not measured
 
