@@ -735,6 +735,13 @@ dotnet-diagnostics-cli collect --kind thread-snapshot --dump-file ./app.dmp --in
 `--export-trace` and `--resolve-method-instantiations` are EventPipe-only. The CLI
 rejects either option with `--cpu-backend os` rather than silently ignoring it.
 
+CPU snapshot `notes` report the effective samples/s per sampled thread (total samples over
+the requested duration and the number of distinct threads with a sample); counts are never
+adjusted. With the default EventPipe backend they also warn that paths made of calls under
+about 100 µs can be under-counted by 10x or more (measured at roughly 1-10% of the expected
+share); cross-check with `--cpu-backend os` or a Stopwatch measurement. The `os` backend
+notes its fixed 99 Hz instead and has no such caveat.
+
 > **Cold-start capture (`--suspend-startup`).** `collect --kind startup` attaching to an
 > already-running pid only sees loader/DI activity emitted *after* attach — the initial cold start
 > (especially non-replayed DI call-site construction/resolution activity) is gone. Pair

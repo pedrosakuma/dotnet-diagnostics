@@ -133,7 +133,7 @@ internal static class PerfScriptParser
             samplesEmitted++;
             if (!onSample(new PerfSample(samplePid, frames,
                 retainDimensions ? TryExtractTimestamp(header) : null,
-                retainDimensions ? TryExtractThreadId(header) : null)))
+                TryExtractThreadId(header))))
             {
                 return new PerfScriptParseResult(samplesEmitted, Completed: false);
             }
