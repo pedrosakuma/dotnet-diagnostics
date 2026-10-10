@@ -155,20 +155,23 @@ public sealed class EventPipeCpuSampler : ICpuSampler
                 SessionDrainDuration = captureTimings.SessionDrainDuration,
                 MethodInstantiationResolutionDuration = aggregate.MethodInstantiationResolutionDuration,
             };
+            var notes = (aggregate.RecordingNotes ?? [])
+                .Concat(CpuSamplingNotes.ForEventPipe(aggregate.Total, duration, aggregate.SampledThreads, aggregate.SampledThreadsSaturated))
+                .ToArray();
             var summary = new CpuSample(processId, startedAt, duration, aggregate.Total, aggregate.Hotspots)
             {
                 Evidence = CpuSampleEvidence.EventPipeSampleProfiler,
                 SelfSamples = aggregate.SelfSamples,
                 TopSelfTime = topSelfTime,
                 Timings = timings,
-                Notes = aggregate.RecordingNotes ?? [],
+                Notes = notes,
             };
             var relativeTrace = exportPath is null ? null : RelativeToRoot(exportPath);
             var artifact = new CpuSampleTraceArtifact(processId, startedAt, duration, aggregate.Total, aggregate.Root, aggregate.Sources, aggregate.Identities, TracePath: relativeTrace)
             {
                 Evidence = CpuSampleEvidence.EventPipeSampleProfiler,
                 SelfSamples = aggregate.SelfSamples,
-                Notes = aggregate.RecordingNotes ?? [],
+                Notes = notes,
                 CodeVersions = aggregate.CodeVersions,
                 Inlining = aggregate.Inlining,
             };
@@ -343,6 +346,7 @@ public sealed class EventPipeCpuSampler : ICpuSampler
             var codeAddressByKey = new Dictionary<string, Microsoft.Diagnostics.Tracing.Etlx.TraceCodeAddress>(StringComparer.Ordinal);
             var rootBuilder = new CallTreeBuilder();
             long total = 0;
+            var threadTracker = new CpuSamplingNotes.ThreadTracker();
             long unknownSamples = 0;
             long waitingSamples = 0;
             var aggregationStopwatch = Stopwatch.StartNew();
@@ -365,6 +369,7 @@ public sealed class EventPipeCpuSampler : ICpuSampler
                 }
 
                 total++;
+                threadTracker.Add(traceEvent.ThreadID);
                 var stackFrames = new List<(string Key, string Module, string Display)>();
                 var candidateFrames = new List<MethodInstantiationCandidate>();
                 MethodInstantiationCandidate? leafCandidate = null;
@@ -540,7 +545,9 @@ public sealed class EventPipeCpuSampler : ICpuSampler
                 selfSamples,
                 WithInliningLossNote(replayStacks?.GetNotes(), inlining is not null ? traceLog.EventsLost : 0),
                 codeVersions.Build(),
-                inlining?.Build());
+                inlining?.Build(),
+                threadTracker.Count,
+                threadTracker.Saturated);
         }
         finally
         {
@@ -1122,7 +1129,9 @@ public sealed class EventPipeCpuSampler : ICpuSampler
         SelfSampleBreakdown? SelfSamples,
         IReadOnlyList<string>? RecordingNotes = null,
         CodeVersionProfile? CodeVersions = null,
-        InliningProfile? Inlining = null);
+        InliningProfile? Inlining = null,
+        int SampledThreads = 0,
+        bool SampledThreadsSaturated = false);
 
     // MethodDCStopVerbose (rundown) is the only source of names/tiers in a sampling capture; DCStart
     // repeats the same bodies and Load/Unload events can overlap it, so the census de-duplicates.

@@ -2142,6 +2142,18 @@ sample counts. The backend is runtime-specific:
   clock domain as profile interrupts. Unresolved frames remain valid on-CPU
   observations and are reported in `notes`. CLR event-derived names are preserved
   independently of native PDB/DIA validation; the notes distinguish both sources.
+
+**Sample-rate and short-call notes (CPU).** Every CPU snapshot's `notes` states the
+effective rate: total samples divided by the requested duration and by the number of
+distinct sampled threads (threads with at least one retained sample, tracked up to 4,096;
+past that the note says "at least" threads / "at most" rate). Sample counts are never
+adjusted. The EventPipe backend also adds a caveat: in measured runs, paths made of calls
+under about 100 µs were observed at roughly 1-10% of their expected share (about 60% at
+~100 µs, about 86% at ~200 µs), with roughly 625 samples/s per busy thread, so small
+percentages for such paths may be off by 10x or more; cross-check with
+`--cpu-backend os` or a Stopwatch measurement. The `os` (perf) backend instead states its
+fixed 99 Hz and carries no such caveat. The cause of the EventPipe effect is not established,
+and Windows and jittered sampling are untested. Evidence: issue #1147.
 - **NativeAOT** — Linux `perf` or Windows ETW sampled-profile backends. These are
   true on-core profilers; their `selfSamples` usually land entirely in
   `runningSamples`.

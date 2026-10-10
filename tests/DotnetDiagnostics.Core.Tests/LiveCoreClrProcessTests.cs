@@ -1213,6 +1213,24 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         result.Artifact.Root.Children.Should().NotBeEmpty("the call-tree artifact must capture at least one stack");
     }
 
+    // Structural only: the sample app's thread mix is not controlled, so the only deterministic
+    // bound on the per-thread rate is the sampler's ~1 kHz ceiling (observed ~625/s per busy thread).
+    [Fact]
+    public async Task CpuSampler_EmitsSampleRateAndShortCallNotes()
+    {
+        EnsureSampleRunning();
+
+        var result = await new EventPipeCpuSampler().SampleAsync(
+            Pid, TimeSpan.FromSeconds(3), topN: 5, cancellationToken: CancellationToken.None);
+
+        var rateNote = result.Summary.Notes.Should().ContainSingle(n => n.StartsWith("Effective sample rate:", StringComparison.Ordinal)).Subject;
+        var match = System.Text.RegularExpressions.Regex.Match(rateNote, @"^Effective sample rate: (?:at most )?(\d+) samples/s per sampled thread");
+        match.Success.Should().BeTrue(rateNote);
+        int.Parse(match.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture).Should().BeInRange(1, 1100);
+        result.Summary.Notes.Should().ContainSingle(n => n.Contains("--cpu-backend os", StringComparison.Ordinal));
+        result.Artifact.Notes.Should().Equal(result.Summary.Notes);
+    }
+
     [Fact]
     public async Task CpuSampler_AttributesLeafSamplesToPublishedCodeVersions()
     {

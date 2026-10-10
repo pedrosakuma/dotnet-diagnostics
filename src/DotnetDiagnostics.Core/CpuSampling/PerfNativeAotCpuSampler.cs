@@ -200,6 +200,11 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
                     $"CoreCLR JIT module-map retention reached JitMapEmitter.MaxTrackedModules={JitMapEmitter.MaxTrackedModules:N0}; " +
                     $"{jitMap.DroppedModuleCount:N0} later module-load event(s) were dropped, so affected method identities omit module metadata.");
             }
+            foreach (var note in CpuSamplingNotes.ForOsBackend(
+                aggregate.Total, duration, aggregate.SampledThreads, aggregate.SampledThreadsSaturated, _samplingFrequencyHz))
+            {
+                notes.Add(note);
+            }
             var summary = new CpuSample(processId, startedAt, duration, aggregate.Total, aggregate.Hotspots)
             {
                 Evidence = CpuSampleEvidence.LinuxPerfOnCpu,
