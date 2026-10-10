@@ -33,29 +33,34 @@ internal static class FrameVariableAttribution
         IEnumerable<(FrameIdentity Frame, T Root)> roots)
     {
         var result = new FrameAttributionResult<T>(frames.Count);
+        var bySp = new Dictionary<ulong, List<int>>();
+        for (var i = 0; i < frames.Count; i++)
+        {
+            if (!bySp.TryGetValue(frames[i].StackPointer, out var list)) bySp[frames[i].StackPointer] = list = new List<int>();
+            list.Add(i);
+        }
+
         foreach (var (frame, root) in roots)
         {
+            if (!bySp.TryGetValue(frame.StackPointer, out var sameSp))
+            {
+                result.Unmatched++;
+                continue;
+            }
+
             var exact = -1;
             var exactCount = 0;
-            var spOnly = -1;
-            var spOnlyCount = 0;
-            for (var i = 0; i < frames.Count; i++)
+            foreach (var i in sameSp)
             {
-                if (frames[i].StackPointer != frame.StackPointer) continue;
-                spOnlyCount++;
-                spOnly = i;
-                if (frames[i] == frame)
-                {
-                    exactCount++;
-                    exact = i;
-                }
+                if (frames[i] != frame) continue;
+                exactCount++;
+                exact = i;
             }
 
             if (exactCount == 1) result.PerFrame[exact].Add(root);
             else if (exactCount > 1) result.Ambiguous++;
-            else if (spOnlyCount == 1) result.PerFrame[spOnly].Add(root);
-            else if (spOnlyCount > 1) result.Ambiguous++;
-            else result.Unmatched++;
+            else if (sameSp.Count == 1) result.PerFrame[sameSp[0]].Add(root);
+            else result.Ambiguous++;
         }
         return result;
     }

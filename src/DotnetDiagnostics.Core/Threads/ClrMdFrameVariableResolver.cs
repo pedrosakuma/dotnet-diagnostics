@@ -90,7 +90,7 @@ public sealed class ClrMdFrameVariableResolver : IFrameVariableResolver
 
         if (attribution.Ambiguous > 0)
         {
-            warnings.Add($"{attribution.Ambiguous} stack root(s) matched several frames sharing the same stack pointer, instruction pointer and method, so ownership is ambiguous; they are not attributed to any frame.");
+            warnings.Add($"{attribution.Ambiguous} stack root(s) could not be told apart between several frames sharing the same stack pointer (no unique stack pointer + instruction pointer + method match), so ownership is ambiguous; they are not attributed to any frame.");
         }
         if (attribution.Unmatched > 0)
         {
