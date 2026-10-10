@@ -246,7 +246,7 @@ public static partial class CpuSampleQueryDispatcher
         }
 
         var matched = rows.ToList();
-        var top = AnnotateInlinedInto(matched.Take(topN), artifact.Inlining);
+        var top = AnnotateInlinedInto(matched.Take(topN), profile.Versions, artifact.Inlining);
         var view = new CodeVersionsView(
             artifact.ProcessId, profile.TotalSamples, profile.ResolvedSamples, profile.UnresolvedSamples,
             profile.PublishedVersions, matched.Count, top.Count < matched.Count, top, profile.Notes)

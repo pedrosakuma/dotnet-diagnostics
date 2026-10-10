@@ -123,6 +123,10 @@ public sealed partial class CaptureArtifactCodecTests
             Notes = [Rich],
             CodeVersions = new(7, 6, 1, 3,
                 [new("1:00000001@1000", "Demo", "LeafA", "OptimizedTier1", "0x1000", 64, 0, 6, 1, 6)], [Rich]),
+            Inlining = new(3, 2, 1, 2, 1, 1,
+                [new("1:00000001@1000", "Demo.Root", "OptimizedTier1", "Demo.Root", "Demo.LeafA", true, null, 2),
+                    new("1:00000001@1000", "Demo.Root", "OptimizedTier1", "Demo.Root", "Demo.Big", false, "too many IL bytes", 1)],
+                [Rich]),
         };
     }
 

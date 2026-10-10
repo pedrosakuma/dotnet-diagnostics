@@ -56,8 +56,12 @@ public static partial class CpuSampleQueryDispatcher
     }
 
     // Explains zero- or low-sample methods: lists the compiled versions that inlined this method. The
-    // runtime's inlining events carry names only, so this matching is name-based, not address-based.
-    private static List<CodeVersionSampleRow> AnnotateInlinedInto(IEnumerable<CodeVersionSampleRow> rows, InliningProfile? inlining)
+    // runtime's inlining events carry names only (no signature, no address), so this is a name-based hint:
+    // namespace, type and method must match exactly after generic arity markers are normalized. When the
+    // name cannot identify one method (overloads sampled in the profile, or several distinct inlinee names
+    // collapsing to the same normalized name) the hint is flagged ambiguous instead of asserted.
+    private static List<CodeVersionSampleRow> AnnotateInlinedInto(
+        IEnumerable<CodeVersionSampleRow> rows, IReadOnlyList<CodeVersionSampleRow> allRows, InliningProfile? inlining)
     {
         var list = rows.ToList();
         if (inlining is null || inlining.Decisions.Count == 0)
@@ -65,7 +69,7 @@ public static partial class CpuSampleQueryDispatcher
             return list;
         }
 
-        var byInlinee = new Dictionary<string, SortedSet<string>>(StringComparer.Ordinal);
+        var byInlinee = new Dictionary<string, (SortedSet<string> Versions, HashSet<string> RawNames)>(StringComparer.Ordinal);
         foreach (var d in inlining.Decisions)
         {
             if (!d.Succeeded)
@@ -73,31 +77,45 @@ public static partial class CpuSampleQueryDispatcher
                 continue;
             }
 
-            if (!byInlinee.TryGetValue(d.Inlinee, out var set))
+            var key = NormalizeName(d.Inlinee);
+            if (!byInlinee.TryGetValue(key, out var entry))
             {
-                set = new SortedSet<string>(StringComparer.Ordinal);
-                byInlinee[d.Inlinee] = set;
+                entry = (new SortedSet<string>(StringComparer.Ordinal), new HashSet<string>(StringComparer.Ordinal));
+                byInlinee[key] = entry;
             }
 
-            set.Add($"{d.CompiledMethod} [{d.OptimizationTier}] ({d.VersionId})");
+            entry.Versions.Add($"{d.CompiledMethod} [{d.OptimizationTier}] ({d.VersionId})");
+            entry.RawNames.Add(d.Inlinee);
+        }
+
+        var signaturesByName = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+        foreach (var r in allRows)
+        {
+            var key = NormalizeName(StripSignature(r.Method));
+            if (!signaturesByName.TryGetValue(key, out var sigs))
+            {
+                sigs = new HashSet<string>(StringComparer.Ordinal);
+                signaturesByName[key] = sigs;
+            }
+
+            sigs.Add(r.Method);
         }
 
         for (var i = 0; i < list.Count; i++)
         {
-            var name = StripSignature(list[i].Method);
-            var hits = new SortedSet<string>(StringComparer.Ordinal);
-            foreach (var (inlinee, versions) in byInlinee)
+            var key = NormalizeName(StripSignature(list[i].Method));
+            if (!byInlinee.TryGetValue(key, out var entry))
             {
-                if (NamesMatch(name, inlinee))
-                {
-                    hits.UnionWith(versions);
-                }
+                continue;
             }
 
-            if (hits.Count > 0)
+            var ambiguous = entry.RawNames.Count > 1
+                || (signaturesByName.TryGetValue(key, out var sigs) && sigs.Count > 1);
+            list[i] = list[i] with
             {
-                list[i] = list[i] with { InlinedInto = hits.Take(MaxInlinedIntoPerRow).ToArray() };
-            }
+                InlinedInto = entry.Versions.Take(MaxInlinedIntoPerRow).ToArray(),
+                InlinedIntoAmbiguous = ambiguous ? true : null,
+            };
         }
 
         return list;
@@ -109,8 +127,31 @@ public static partial class CpuSampleQueryDispatcher
         return paren < 0 ? method : method[..paren];
     }
 
-    private static bool NamesMatch(string a, string b)
-        => string.Equals(a, b, StringComparison.Ordinal)
-           || a.EndsWith("." + b, StringComparison.Ordinal)
-           || b.EndsWith("." + a, StringComparison.Ordinal);
+    // Removes generic arity markers (`1, `2) so App.Svc`1.Run and App.Svc.Run compare equal.
+    private static string NormalizeName(string name)
+    {
+        var tick = name.IndexOf('`', StringComparison.Ordinal);
+        if (tick < 0)
+        {
+            return name;
+        }
+
+        var sb = new System.Text.StringBuilder(name.Length);
+        for (var i = 0; i < name.Length; i++)
+        {
+            if (name[i] == '`')
+            {
+                while (i + 1 < name.Length && char.IsAsciiDigit(name[i + 1]))
+                {
+                    i++;
+                }
+
+                continue;
+            }
+
+            sb.Append(name[i]);
+        }
+
+        return sb.ToString();
+    }
 }
