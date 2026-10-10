@@ -199,4 +199,15 @@ public sealed class GcCaptureStateTests
         result.Limitations["window-start-collection-end"].Should().Be(1);
         result.Limitations["orphan-collection-end"].Should().Be(1, "a stop after observed starts is a mid-stream pairing loss");
     }
+
+    [Fact]
+    public void BackgroundStopOlderThanObservedStarts_IsWindowStartTruncation()
+    {
+        var state = new GcCaptureState(10);
+        state.CollectionBegin(1, 9, 1, T(10), 0, "AllocSmall", "ForegroundGC");
+        state.CollectionEnd(1, 9, 1, T(20));
+        state.CollectionEnd(1, 8, 1, T(30));
+        var result = Finish(state);
+        result.Limitations.Should().ContainKey("window-start-collection-end").And.NotContainKey("orphan-collection-end");
+    }
 }

@@ -26,7 +26,7 @@ internal sealed class GcCaptureState
     private DateTimeOffset? _lastPauseEnd;
     private bool _unreliable;
     private bool _sawBoundary;
-    private bool _sawCollectionBegin;
+    private readonly Dictionary<int, uint> _firstBeginCount = [];
     private readonly ICaptureObservationSink? _sink;
 
     internal GcCaptureState(int cap, ICaptureObservationSink? sink = null,
@@ -70,7 +70,7 @@ internal sealed class GcCaptureState
     {
         if (!Identity(clr, version)) return;
         var key = (clr, count);
-        _sawCollectionBegin = true;
+        if (!_firstBeginCount.TryGetValue(clr, out var first) || count < first) _firstBeginCount[clr] = count;
         if (_collections.Remove(key)) Count("conflicting-collection-begin");
         if (_collections.Count >= MaxPendingCollections)
         {
@@ -85,9 +85,9 @@ internal sealed class GcCaptureState
         if (!Identity(clr, version)) return;
         if (!_collections.Remove((clr, count), out var start))
         {
-            // A stop before any observed start is a collection already running when the session began:
-            // window-edge truncation, distinct from a mid-stream pairing loss.
-            Count(_sawCollectionBegin ? "orphan-collection-end" : WindowStartCollectionEnd);
+            // GC indexes only grow, so a stop older than every observed start is a collection already
+            // running when the session began: window-edge truncation, distinct from a mid-stream pairing loss.
+            Count(!_firstBeginCount.TryGetValue(clr, out var first) || count < first ? WindowStartCollectionEnd : "orphan-collection-end");
             return;
         }
         if (at < start.At)
