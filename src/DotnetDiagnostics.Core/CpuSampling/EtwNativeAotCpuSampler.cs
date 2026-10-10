@@ -72,7 +72,7 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
         return elevated;
     }
 
-    public async Task<CpuSampleResult> SampleAsync(
+    public Task<CpuSampleResult> SampleAsync(
         int processId,
         TimeSpan duration,
         int topN = 25,
@@ -80,7 +80,21 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
         MethodInstantiationResolutionOptions? methodInstantiationResolution = null,
         NativeAotSymbolResolutionOptions? nativeAotSymbols = null,
         bool exportTrace = false,
-        CpuCaptureOptions? captureOptions = null,
+        CancellationToken cancellationToken = default)
+        => SampleAsync(
+            processId, duration, topN, sourceResolution, methodInstantiationResolution, nativeAotSymbols, exportTrace,
+            captureOptions: null,
+            cancellationToken);
+
+    public async Task<CpuSampleResult> SampleAsync(
+        int processId,
+        TimeSpan duration,
+        int topN,
+        SourceResolutionOptions? sourceResolution,
+        MethodInstantiationResolutionOptions? methodInstantiationResolution,
+        NativeAotSymbolResolutionOptions? nativeAotSymbols,
+        bool exportTrace,
+        CpuCaptureOptions? captureOptions,
         CancellationToken cancellationToken = default)
     {
         if (captureOptions?.CaptureInlining == true)

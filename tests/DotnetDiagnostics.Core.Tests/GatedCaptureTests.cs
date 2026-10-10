@@ -310,7 +310,6 @@ public sealed class GatedCaptureTests
             MethodInstantiationResolutionOptions? methodInstantiationResolution = null,
             NativeAotSymbolResolutionOptions? nativeAotSymbols = null,
             bool exportTrace = false,
-            CpuCaptureOptions? captureOptions = null,
             CancellationToken cancellationToken = default)
         {
             var startedAt = DateTimeOffset.UnixEpoch;
