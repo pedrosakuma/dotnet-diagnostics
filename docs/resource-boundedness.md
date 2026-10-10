@@ -74,7 +74,11 @@ reason), at most `MaxPendingThreads` (1024) threads, at most `MaxPendingDecision
 `MaxNameLength` (512) characters. All caps are enforced at insertion inside the trace-conversion
 pass. Dropped, replaced or never-joined decisions are counted as unattributed and each cap hit is
 reported in `notes[]` with the constant name and the drop count. The 256 MB circular EventPipe buffer
-is unchanged; the extra JitTracing volume is the reason the capture is opt-in.
+(`EventPipeCpuSampler.CircularBufferMB`) is unchanged; the extra JitTracing volume is the reason the capture is opt-in.
+When that buffer overflows during a `captureInlining` capture, the trace's lost-event count is reported
+in `notes[]` (the CPU samples and decisions are then under-counted); captures without loss add no note.
+The measured volume and overhead on one machine are in
+[`research/inlining-capture-overhead.md`](./research/inlining-capture-overhead.md).
 
 ### Pure efficiency refactors — no data loss at any cap
 

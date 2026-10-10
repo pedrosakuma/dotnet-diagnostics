@@ -352,4 +352,16 @@ public sealed class InliningCensusTests
         rows[0].InlinedInto.Should().ContainSingle();
         rows[0].InlinedIntoAmbiguous.Should().BeTrue();
     }
+
+    [Fact]
+    public void InliningLossNote_IsEmittedOnlyWhenEventsWereLost()
+    {
+        EventPipeCpuSampler.WithInliningLossNote(null, 0).Should().BeNull();
+        EventPipeCpuSampler.WithInliningLossNote(["existing"], 0).Should().Equal("existing");
+
+        var notes = EventPipeCpuSampler.WithInliningLossNote(["existing"], 42);
+
+        notes.Should().HaveCount(2);
+        notes![1].Should().Contain("42 lost event(s)").And.Contain("CircularBufferMB=256");
+    }
 }
