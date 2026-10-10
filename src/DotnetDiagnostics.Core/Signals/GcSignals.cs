@@ -32,9 +32,15 @@ public static class GcSignals
             handleId,
             summary.Suspension is { IsAuthoritative: true } evidence ? evidence.TotalSuspensionTime : null,
             summary.Suspension is { } quality && quality.Completion == "normal-stop"
-                && !quality.Limitations.Keys.Any(k => k.Contains("collection", StringComparison.Ordinal)
-                    || k.Contains("transport", StringComparison.Ordinal) || k.Contains("identity", StringComparison.Ordinal))));
+                && !quality.Limitations.Keys.Any(VoidsCollectionCounts)));
     }
+
+    // Collections cut by either edge of the observation window are truncation, not pairing loss:
+    // every completed collection is still counted exactly.
+    private static bool VoidsCollectionCounts(string key) =>
+        key is not (GcCaptureState.WindowStartCollectionEnd or GcCaptureState.WindowEndCollectionBegin)
+        && (key.Contains("collection", StringComparison.Ordinal)
+            || key.Contains("transport", StringComparison.Ordinal) || key.Contains("identity", StringComparison.Ordinal));
 
     /// <summary>Runs every registered provider over the context and ranks the union by salience.</summary>
     public static IReadOnlyList<SignalGroup> Detect(GcSignalContext context)

@@ -45,6 +45,32 @@ public sealed class GcSignalsTests
             Suspension: new("no-detected-loss", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow + duration, null,
                 "normal-stop", totalPauseTime, totalPauseTime, 1, 0, [], new Dictionary<string, long>()));
 
+    private static GcSummary WithLimitations(params string[] keys)
+    {
+        var baseSummary = Summary(TimeSpan.FromSeconds(4), 10, TimeSpan.FromMilliseconds(50), new[] { new GenerationStats(2, 10) });
+        return baseSummary with
+        {
+            Suspension = baseSummary.Suspension! with { Limitations = keys.ToDictionary(k => k, _ => 1L) },
+        };
+    }
+
+    [Theory]
+    [InlineData("window-start-collection-end")]
+    [InlineData("right-censored-collection")]
+    public void Gen2Share_StillEmits_WhenCollectionIsCutByWindowEdge(string limitation)
+    {
+        GcSignals.Detect(WithLimitations(limitation), "h").Should().ContainSingle(s => s.Signal == "gc.gen2-share");
+    }
+
+    [Theory]
+    [InlineData("orphan-collection-end")]
+    [InlineData("conflicting-collection-begin")]
+    [InlineData("transport-events-lost")]
+    public void Gen2Share_Suppressed_WhenCollectionPairingIsLost(string limitation)
+    {
+        GcSignals.Detect(WithLimitations(limitation), "h").Should().NotContain(s => s.Signal == "gc.gen2-share");
+    }
+
     // ---- pause-time share -------------------------------------------------------------------
 
     [Fact]

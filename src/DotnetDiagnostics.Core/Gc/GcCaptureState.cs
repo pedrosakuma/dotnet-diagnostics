@@ -10,6 +10,8 @@ internal sealed class GcCaptureState
     internal const int MaxSuspensionStates = 128;
     internal const int MaxRuntimeIdentities = 16;
     internal const int MaxRetainedIntervals = 100_000;
+    internal const string WindowStartCollectionEnd = "window-start-collection-end";
+    internal const string WindowEndCollectionBegin = "right-censored-collection";
     private readonly int _cap;
     private readonly Dictionary<(int Clr, uint Count), CollectionStart> _collections = [];
     private readonly Dictionary<(int Clr, int Thread), SuspensionState> _suspensions = [];
@@ -24,6 +26,7 @@ internal sealed class GcCaptureState
     private DateTimeOffset? _lastPauseEnd;
     private bool _unreliable;
     private bool _sawBoundary;
+    private readonly Dictionary<int, uint> _firstBeginCount = [];
     private readonly ICaptureObservationSink? _sink;
 
     internal GcCaptureState(int cap, ICaptureObservationSink? sink = null,
@@ -67,6 +70,7 @@ internal sealed class GcCaptureState
     {
         if (!Identity(clr, version)) return;
         var key = (clr, count);
+        if (!_firstBeginCount.TryGetValue(clr, out var first) || count < first) _firstBeginCount[clr] = count;
         if (_collections.Remove(key)) Count("conflicting-collection-begin");
         if (_collections.Count >= MaxPendingCollections)
         {
@@ -81,7 +85,9 @@ internal sealed class GcCaptureState
         if (!Identity(clr, version)) return;
         if (!_collections.Remove((clr, count), out var start))
         {
-            Count("orphan-collection-end");
+            // GC indexes only grow, so a stop older than every observed start is a collection already
+            // running when the session began: window-edge truncation, distinct from a mid-stream pairing loss.
+            Count(!_firstBeginCount.TryGetValue(clr, out var first) || count < first ? WindowStartCollectionEnd : "orphan-collection-end");
             return;
         }
         if (at < start.At)
@@ -181,7 +187,7 @@ internal sealed class GcCaptureState
     {
         foreach (var state in _suspensions.Values.Where(s => s.IsGc))
             Count(state.Closed ? "missing-restart-stop" : "right-censored-suspension", !state.Closed);
-        foreach (var _ in _collections) Count("right-censored-collection");
+        foreach (var _ in _collections) Count(WindowEndCollectionBegin);
         if (eventsLost > 0) { _limitations["transport-events-lost"] = eventsLost; _unreliable = true; }
         if (Collections.ObservedCollections > int.MaxValue) Count("legacy-collection-count-saturated");
         if (completion != "normal-stop") Count("incomplete-processing", true);

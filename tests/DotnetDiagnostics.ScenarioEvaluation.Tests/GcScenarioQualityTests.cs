@@ -17,11 +17,13 @@ public sealed class GcScenarioQualityTests
     [Fact]
     public void QualityNotesExplainSuppressedGen2SignalWithoutRelaxingItsGate()
     {
-        var summary = Summary(new Dictionary<string, long> { ["right-censored-collection"] = 1 });
-        ScenarioLiveRunner.DescribeGcQuality(summary).Should().Contain("gc.limitation:right-censored-collection=1");
+        var summary = Summary(new Dictionary<string, long> { ["orphan-collection-end"] = 1 });
+        ScenarioLiveRunner.DescribeGcQuality(summary).Should().Contain("gc.limitation:orphan-collection-end=1");
         GcSignals.Detect(summary, "test").Should().NotContain(signal => signal.Signal == "gc.gen2-share");
         GcSignals.Detect(Summary(new Dictionary<string, long>()), "test")
             .Should().Contain(signal => signal.Signal == "gc.gen2-share");
+        GcSignals.Detect(Summary(new Dictionary<string, long> { ["right-censored-collection"] = 1 }), "test")
+            .Should().Contain(signal => signal.Signal == "gc.gen2-share", "a collection cut by the window edge is truncation, not pairing loss");
     }
 
     [Fact]
