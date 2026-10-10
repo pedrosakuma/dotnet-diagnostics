@@ -760,10 +760,13 @@ carry names only, so each decision is attributed to a code version by a per-thre
 (`MethodJittingStarted` → inlining events → `MethodLoadVerbose` with the same method id); decisions
 that cannot be joined are counted in `unattributedDecisions` instead of being guessed. When
 `captureInlining` is on, `code-versions` rows also carry `inlinedInto`: up to five methods that
-inlined the row's method (name-based match, hint only). Retention is bounded at insertion
+inlined the row's method. The match is a name-based hint only: namespace, type and method must match exactly
+(generic arity markers such as `` `1 `` are normalized), the events carry no signature, and when overloads of the
+method were sampled or distinct generic arities collapse to one name the row also sets `inlinedIntoAmbiguous`. Retention is bounded at insertion
 (`MaxInliningRecords` = 65536, `MaxPendingThreads` = 1024, `MaxPendingDecisions` = 65536, `MaxDecisionsPerCompilation` = 4096,
 `MaxNameLength` = 512); each cap hit adds a `notes` entry with the drop count. Inlining data is
-not persisted by durable captures yet.
+persisted by durable captures: the full encode/decode round trip is covered, and the `inlining` view is
+answerable from a restored capture.
 
 CPU comparisons also carry this evidence contract. OS-backed captures can produce performance
 verdicts only against compatible OS-backed evidence. EventPipe-to-EventPipe comparisons remain

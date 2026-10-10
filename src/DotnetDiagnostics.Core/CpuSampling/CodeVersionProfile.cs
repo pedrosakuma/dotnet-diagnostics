@@ -19,7 +19,8 @@ public sealed record CodeVersionSampleRow(
     long Samples,
     int MethodVersionCount,
     long MethodSamples,
-    IReadOnlyList<string>? InlinedInto = null);
+    IReadOnlyList<string>? InlinedInto = null,
+    bool? InlinedIntoAmbiguous = null);
 
 /// <summary>
 /// Bounded join of leaf samples to the published code version they landed in (issue #1075).

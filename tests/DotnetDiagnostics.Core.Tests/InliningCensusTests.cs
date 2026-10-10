@@ -269,4 +269,87 @@ public sealed class InliningCensusTests
             .Should().ContainSingle().Which.Should().Contain("P.Work").And.Contain("OptimizedTier1");
         versions.Single(v => v.Method.StartsWith("P.Work", StringComparison.Ordinal)).InlinedInto.Should().BeNull();
     }
+
+    private static List<CodeVersionSampleRow> Annotate(string[] rowMethods, params (string Compiled, string Inlinee)[] decisions)
+    {
+        var c = new InliningCensus();
+        uint id = 1;
+        foreach (var (compiled, inlinee) in decisions)
+        {
+            c.OnJittingStarted(1, id, compiled);
+            c.OnInlining(1, Ok(compiled, inlinee));
+            c.OnMethodLoaded(1, V(id, 0x1000 * id, "OptimizedTier1"));
+            id++;
+        }
+
+        var root = new CallTreeNode(new SampledFrame(string.Empty, "<root>"), 0, 0, []);
+        var rows = rowMethods.Select(m => new CodeVersionSampleRow("v:" + m, "m", m, "OptimizedTier1", "0x1", 1, 0, 0, 1, 0)).ToList();
+        var artifact = new CpuSampleTraceArtifact(1, DateTimeOffset.UnixEpoch, TimeSpan.FromSeconds(1), 0, root)
+        {
+            Inlining = c.Build(),
+            CodeVersions = new CodeVersionProfile(0, 0, 0, rows.Count, rows, []),
+        };
+        return CpuSampleQueryDispatcher.RenderCodeVersions(artifact, "h", null, 50).Data!.Versions.ToList();
+    }
+
+    [Fact]
+    public void InlinedInto_ExactNamespaceTypeMethodMatch_IsNotAmbiguous()
+    {
+        var rows = Annotate(["App.Svc.Run(int)"], ("App.Host.Main", "App.Svc.Run"));
+        rows[0].InlinedInto.Should().ContainSingle();
+        rows[0].InlinedIntoAmbiguous.Should().BeNull();
+    }
+
+    [Fact]
+    public void InlinedInto_DifferentNamespaceSuffix_DoesNotMatch()
+    {
+        var rows = Annotate(["App.Svc.Run(int)"], ("X.Main", "Other.App.Svc.Run"));
+        rows[0].InlinedInto.Should().BeNull();
+    }
+
+    [Fact]
+    public void InlinedInto_BareMethodNameDoesNotMatchQualifiedName()
+    {
+        Annotate(["Run(int)"], ("X.Main", "App.Svc.Run"))[0].InlinedInto.Should().BeNull();
+        Annotate(["App.Svc.Run(int)"], ("X.Main", "Run"))[0].InlinedInto.Should().BeNull();
+    }
+
+    [Fact]
+    public void InlinedInto_GenericArityIsNormalized()
+    {
+        var rows = Annotate(["App.Svc.Run(int)"], ("X.Main", "App.Svc`1.Run"));
+        rows[0].InlinedInto.Should().ContainSingle();
+        rows[0].InlinedIntoAmbiguous.Should().BeNull();
+    }
+
+    [Fact]
+    public void InlinedInto_OverloadsAreFlaggedAmbiguous()
+    {
+        var rows = Annotate(["App.Svc.Run(int)", "App.Svc.Run(string)"], ("X.Main", "App.Svc.Run"));
+        rows.Should().OnlyContain(r => r.InlinedInto != null && r.InlinedIntoAmbiguous == true);
+    }
+
+    [Fact]
+    public void InlinedInto_CollidingGenericArities_AreFlaggedAmbiguous()
+    {
+        var rows = Annotate(["App.Svc.Run(int)"], ("X.A", "App.Svc`1.Run"), ("X.B", "App.Svc`2.Run"));
+        rows[0].InlinedInto.Should().HaveCount(2);
+        rows[0].InlinedIntoAmbiguous.Should().BeTrue();
+    }
+
+    [Fact]
+    public void InlinedInto_ClosedGenericSampledFrameMatches()
+    {
+        var rows = Annotate(["App.Svc`1[System.Int32].Run(int)"], ("X.Main", "App.Svc`1.Run"));
+        rows[0].InlinedInto.Should().ContainSingle();
+        rows[0].InlinedIntoAmbiguous.Should().BeNull();
+    }
+
+    [Fact]
+    public void InlinedInto_CrossArityMatchIsFlaggedAmbiguous()
+    {
+        var rows = Annotate(["App.Svc`2.Run(int)"], ("X.Main", "App.Svc`1.Run"));
+        rows[0].InlinedInto.Should().ContainSingle();
+        rows[0].InlinedIntoAmbiguous.Should().BeTrue();
+    }
 }
