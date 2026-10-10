@@ -37,7 +37,7 @@ background load was not controlled), .NET SDK 10.0.401 / runtime 10.0.x, `CoreCl
 commit based on `1a0242e`.
 
 **Protocol.** For each round a *fresh* target process was started and warmed with 30 requests, then a single
-sequential client looped `GET /jit-inline-probe?spin=0` (each request defines a fresh collectible
+sequential client looped `GET /jit-inline-probe?spin=0` (`spin` present opts into the `Mix` call; each request defines a fresh collectible
 `DynamicMethod` assembly, JITs an optimized caller and takes a traced inlining decision) while
 `EventPipeCpuSampler.SampleAsync(duration: 10 s, exportTrace: true)` ran. Rounds alternated
 off→on / on→off. Metrics: target CPU time over the window (`Process.TotalProcessorTime` delta), client request

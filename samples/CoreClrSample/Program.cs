@@ -231,12 +231,21 @@ app.MapGet("/jit-inline-probe", (int? value, int? spin) =>
     il.Emit(System.Reflection.Emit.OpCodes.Ldarg_0);
     il.Emit(System.Reflection.Emit.OpCodes.Ldc_I4_1);
     il.Emit(System.Reflection.Emit.OpCodes.Call, typeof(JitInlineFixture).GetMethod(nameof(JitInlineFixture.AddOne))!);
-    il.Emit(System.Reflection.Emit.OpCodes.Call, typeof(JitInlineFixture).GetMethod(nameof(JitInlineFixture.Mix))!);
+    if (spin is not null)
+    {
+        il.Emit(System.Reflection.Emit.OpCodes.Call, typeof(JitInlineFixture).GetMethod(nameof(JitInlineFixture.Mix))!);
+    }
+
     il.Emit(System.Reflection.Emit.OpCodes.Ret);
     var created = type.CreateType();
     var result = (int)created.GetMethod("InlineProbeCaller")!.Invoke(null, [value ?? 41])!;
     // Bounded CPU burn through the unoptimized caller so the inlinee also owns a standalone, sampled body.
-    var spun = JitInlineFixture.SpinUnoptimized(Math.Clamp(spin ?? 0, 0, 5_000_000));
+    if (spin is null)
+    {
+        return Results.Json(new { result });
+    }
+
+    var spun = JitInlineFixture.SpinUnoptimized(Math.Clamp(spin.Value, 0, 5_000_000));
     return Results.Json(new { result, spun });
 })
 .WithName("JitInlineProbe");
