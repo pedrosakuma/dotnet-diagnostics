@@ -32,7 +32,7 @@ public sealed class RoutingCpuSampler : ICpuSampler
         _logger = logger ?? NullLogger<RoutingCpuSampler>.Instance;
     }
 
-    public async Task<CpuSampleResult> SampleAsync(
+    public Task<CpuSampleResult> SampleAsync(
         int processId,
         TimeSpan duration,
         int topN = 25,
@@ -40,19 +40,43 @@ public sealed class RoutingCpuSampler : ICpuSampler
         MethodInstantiationResolutionOptions? methodInstantiationResolution = null,
         NativeAotSymbolResolutionOptions? nativeAotSymbols = null,
         bool exportTrace = false,
-        CpuCaptureOptions? captureOptions = null,
         CancellationToken cancellationToken = default)
-        => await SampleAsync(
-            processId,
-            duration,
-            topN,
-            sourceResolution,
-            methodInstantiationResolution,
-            nativeAotSymbols,
-            exportTrace,
+        => SampleAsync(
+            processId, duration, topN, sourceResolution, methodInstantiationResolution, nativeAotSymbols, exportTrace,
+            captureOptions: null,
+            cancellationToken);
+
+    public Task<CpuSampleResult> SampleAsync(
+        int processId,
+        TimeSpan duration,
+        int topN,
+        SourceResolutionOptions? sourceResolution,
+        MethodInstantiationResolutionOptions? methodInstantiationResolution,
+        NativeAotSymbolResolutionOptions? nativeAotSymbols,
+        bool exportTrace,
+        CpuCaptureOptions? captureOptions,
+        CancellationToken cancellationToken = default)
+        => SampleAsync(
+            processId, duration, topN, sourceResolution, methodInstantiationResolution, nativeAotSymbols, exportTrace,
             CpuSamplingMode.Automatic,
             captureOptions,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken);
+
+    public Task<CpuSampleResult> SampleAsync(
+        int processId,
+        TimeSpan duration,
+        int topN,
+        SourceResolutionOptions? sourceResolution,
+        MethodInstantiationResolutionOptions? methodInstantiationResolution,
+        NativeAotSymbolResolutionOptions? nativeAotSymbols,
+        bool exportTrace,
+        CpuSamplingMode mode,
+        CancellationToken cancellationToken = default)
+        => SampleAsync(
+            processId, duration, topN, sourceResolution, methodInstantiationResolution, nativeAotSymbols, exportTrace,
+            mode,
+            captureOptions: null,
+            cancellationToken);
 
     public async Task<CpuSampleResult> SampleAsync(
         int processId,
@@ -63,7 +87,7 @@ public sealed class RoutingCpuSampler : ICpuSampler
         NativeAotSymbolResolutionOptions? nativeAotSymbols,
         bool exportTrace,
         CpuSamplingMode mode,
-        CpuCaptureOptions? captureOptions = null,
+        CpuCaptureOptions? captureOptions,
         CancellationToken cancellationToken = default)
     {
         var captureInlining = captureOptions?.CaptureInlining == true;
