@@ -63,7 +63,9 @@ internal sealed class PerfScriptAggregationBuilder
         }
 
         TotalSamples++;
-        if (sample.ThreadId is { } threadId)
+        // Default `perf script` headers carry a single id that is the TID; `pid/tid` headers carry both.
+        var threadId = sample.ThreadId ?? sample.ProcessId;
+        if (threadId != 0)
         {
             _threads.Add(threadId);
         }

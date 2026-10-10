@@ -85,4 +85,26 @@ public sealed class CpuSamplingNotesTests
         result.SampledThreads.Should().Be(2);
         result.SampledThreadsSaturated.Should().BeFalse();
     }
+
+    [Fact]
+    public async Task PerfAggregation_CountsThreadsFromDefaultShapedHeaders()
+    {
+        const string text = """
+            worker-thread  90001 [001] 123.456: cycles:
+                7f123 A+0x1 (/app/a.so)
+
+            worker-thread  90001 [001] 123.457: cycles:
+                7f123 A+0x1 (/app/a.so)
+
+            worker-thread  90002 [002] 123.458: cycles:
+                7f123 A+0x1 (/app/a.so)
+
+            """;
+        using var reader = new StringReader(text);
+
+        var result = await PerfNativeAotCpuSampler.AggregateAsync(reader, 0, 1);
+
+        result.Total.Should().Be(3);
+        result.SampledThreads.Should().Be(2);
+    }
 }
