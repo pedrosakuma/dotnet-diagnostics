@@ -1300,6 +1300,59 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         plain.Artifact.Inlining.Should().BeNull("inlining capture is opt-in");
     }
 
+    [Fact(Timeout = 120_000)]
+    public async Task CpuSampler_CaptureInlining_AnnotatesSampledInlineeWithItsInliner()
+    {
+        EnsureSampleRunning();
+
+        var baseUrl = await _sample!.WaitForListeningUrlAsync(TimeSpan.FromSeconds(30), "/weatherforecast");
+        using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
+        using var stopLoad = new CancellationTokenSource();
+        // Each request JITs a fresh optimized caller that inlines JitInlineFixture.Mix (a traced decision) and
+        // then spins an unoptimized caller that keeps calling the standalone Mix body, so Mix is sampled too.
+        var load = Task.Run(async () =>
+        {
+            while (!stopLoad.IsCancellationRequested)
+            {
+                using var response = await http.GetAsync("/jit-inline-probe?spin=2000000", CancellationToken.None);
+                response.EnsureSuccessStatusCode();
+                await Task.Delay(50, CancellationToken.None);
+            }
+        });
+
+        CpuSampleResult? result = null;
+        IReadOnlyList<CodeVersionSampleRow> rows = [];
+        try
+        {
+            // Wait on the observed condition (a sampled Mix row), not a fixed delay; fail loudly at the deadline.
+            var deadline = Stopwatch.StartNew();
+            while (rows.Count == 0 && deadline.Elapsed < TimeSpan.FromSeconds(90))
+            {
+                result = await new EventPipeCpuSampler().SampleAsync(
+                    Pid, TimeSpan.FromSeconds(4), 10, null, null, null, false, new CpuCaptureOptions(CaptureInlining: true), CancellationToken.None);
+                result.Artifact.Inlining.Should().NotBeNull();
+                result.Artifact.Inlining!.TotalDecisions.Should().BeGreaterThan(0, "JitTracing (0x1000) must deliver inlining events");
+                var view = CpuSampleQueryDispatcher.RenderCodeVersions(result.Artifact, "h", "JitInlineFixture.Mix", 50);
+                view.Error.Should().BeNull();
+                rows = view.Data!.Versions.Where(r => r.Samples > 0).ToList();
+            }
+        }
+        finally
+        {
+            await stopLoad.CancelAsync();
+            await load;
+        }
+
+        rows.Should().NotBeEmpty("the standalone Mix body must be sampled within the deadline");
+        foreach (var row in rows)
+        {
+            output.WriteLine($"row={row.Method} samples={row.Samples} inlinedInto={row.InlinedInto?.Count} ambiguous={row.InlinedIntoAmbiguous}");
+            row.InlinedInto.Should().NotBeNullOrEmpty("a successful inlining decision names Mix as inlinee");
+            row.InlinedInto!.Should().Contain(i => i.Contains("InlineProbeType.InlineProbeCaller", StringComparison.Ordinal));
+            row.InlinedIntoAmbiguous.Should().BeNull();
+        }
+    }
+
     [LinuxOnlyFact(Timeout = 60_000)]
     public async Task CpuSampler_EventPipeDoesNotConvertBlockedOrUnmatchedLeavesIntoOnCpuEvidence()
     {

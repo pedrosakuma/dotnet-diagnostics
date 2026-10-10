@@ -764,7 +764,8 @@ inlined the row's method. The match is a name-based hint only: namespace, type a
 (generic arity markers such as `` `1 `` are normalized), the events carry no signature, and when overloads of the
 method were sampled or distinct generic arities collapse to one name the row also sets `inlinedIntoAmbiguous`. Retention is bounded at insertion
 (`MaxInliningRecords` = 65536, `MaxPendingThreads` = 1024, `MaxPendingDecisions` = 65536, `MaxDecisionsPerCompilation` = 4096,
-`MaxNameLength` = 512); each cap hit adds a `notes` entry with the drop count. Inlining data is
+`MaxNameLength` = 512); each cap hit adds a `notes` entry with the drop count, and so does EventPipe buffer
+loss (`EventPipeCpuSampler.CircularBufferMB`, 256 MB) when the session reported lost events. Inlining data is
 persisted by durable captures: the full encode/decode round trip is covered, and the `inlining` view is
 answerable from a restored capture.
 

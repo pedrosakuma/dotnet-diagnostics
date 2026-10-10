@@ -206,6 +206,7 @@ public sealed class EventPipeCpuSampler : ICpuSampler
     }
     // JitTracing (0x1000) delivers the inlining events only at Verbose level; both are opt-in because of the volume.
     private const long JitTracingKeyword = 0x1000;
+    private const int CircularBufferMB = 256;
 
 
     private async Task<CpuCapturePhaseTimings> CollectTraceAsync(DiagnosticsClient? providedClient, Func<ValueTask>? resumeAsync, int pid, string outputPath, TimeSpan duration, bool restricted, bool captureInlining, CancellationToken ct)
@@ -222,7 +223,7 @@ public sealed class EventPipeCpuSampler : ICpuSampler
         var client = providedClient ?? new DiagnosticsClient(pid);
         var sessionStartStopwatch = Stopwatch.StartNew();
         var session = await client
-            .StartEventPipeSessionWithTimeoutAsync(providers, requestRundown: true, circularBufferMB: 256, TimeSpan.FromSeconds(30), ct)
+            .StartEventPipeSessionWithTimeoutAsync(providers, requestRundown: true, circularBufferMB: CircularBufferMB, TimeSpan.FromSeconds(30), ct)
             .ConfigureAwait(false);
         var sessionStartDuration = sessionStartStopwatch.Elapsed;
 
@@ -542,7 +543,7 @@ public sealed class EventPipeCpuSampler : ICpuSampler
                 aggregationDuration,
                 methodInstantiationResolutionDuration,
                 selfSamples,
-                replayStacks?.GetNotes(),
+                WithInliningLossNote(replayStacks?.GetNotes(), inlining is not null ? traceLog.EventsLost : 0),
                 codeVersions.Build(),
                 inlining?.Build(),
                 threadTracker.Count,
@@ -1100,6 +1101,19 @@ public sealed class EventPipeCpuSampler : ICpuSampler
         TimeSpan SessionDrainDuration)
     {
         public TimeSpan TotalDuration => SessionStartDuration + CaptureDuration + SessionDrainDuration;
+    }
+
+    // The 256 MB EventPipe circular buffer (CollectTraceAsync circularBufferMB) can overwrite events when the
+    // high-volume JitTracing keyword is on, which would silently under-count inlining decisions.
+    internal static IReadOnlyList<string>? WithInliningLossNote(IReadOnlyList<string>? notes, long eventsLost)
+    {
+        if (eventsLost <= 0)
+        {
+            return notes;
+        }
+
+        var note = $"captureInlining: the EventPipe session reported {eventsLost} lost event(s) (EventPipeCpuSampler.CircularBufferMB={CircularBufferMB} MB circular buffer overflowed); inlining decisions, CPU samples and code-version attribution may be under-counted.";
+        return notes is null ? [note] : [.. notes, note];
     }
 
     private sealed record CpuAggregationResult(

@@ -222,7 +222,7 @@ app.MapGet("/generics", (int? iterations) =>
 // Forces a fresh JIT compilation per request (issue #1076): methods in a dynamic assembly are not
 // tiered, so the JIT compiles the caller with optimization, takes (and traces) an inlining decision
 // for the small callee every time, and reports a normal MethodLoad event.
-app.MapGet("/jit-inline-probe", (int? value) =>
+app.MapGet("/jit-inline-probe", (int? value, int? spin) =>
 {
     var asm = System.Reflection.Emit.AssemblyBuilder.DefineDynamicAssembly(new System.Reflection.AssemblyName("InlineProbe" + Guid.NewGuid().ToString("N")), System.Reflection.Emit.AssemblyBuilderAccess.RunAndCollect);
     var type = asm.DefineDynamicModule("m").DefineType("InlineProbeType", System.Reflection.TypeAttributes.Public | System.Reflection.TypeAttributes.Abstract | System.Reflection.TypeAttributes.Sealed);
@@ -231,10 +231,22 @@ app.MapGet("/jit-inline-probe", (int? value) =>
     il.Emit(System.Reflection.Emit.OpCodes.Ldarg_0);
     il.Emit(System.Reflection.Emit.OpCodes.Ldc_I4_1);
     il.Emit(System.Reflection.Emit.OpCodes.Call, typeof(JitInlineFixture).GetMethod(nameof(JitInlineFixture.AddOne))!);
+    if (spin is not null)
+    {
+        il.Emit(System.Reflection.Emit.OpCodes.Call, typeof(JitInlineFixture).GetMethod(nameof(JitInlineFixture.Mix))!);
+    }
+
     il.Emit(System.Reflection.Emit.OpCodes.Ret);
     var created = type.CreateType();
     var result = (int)created.GetMethod("InlineProbeCaller")!.Invoke(null, [value ?? 41])!;
-    return Results.Json(new { result });
+    // Bounded CPU burn through the unoptimized caller so the inlinee also owns a standalone, sampled body.
+    if (spin is null)
+    {
+        return Results.Json(new { result });
+    }
+
+    var spun = JitInlineFixture.SpinUnoptimized(Math.Clamp(spin.Value, 0, 5_000_000));
+    return Results.Json(new { result, spun });
 })
 .WithName("JitInlineProbe");
 
@@ -399,6 +411,42 @@ public static class JitInlineFixture
 {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int AddOne(int value, int delta) => value + delta;
+
+    // Inlined into the dynamic probe caller (a traced decision) while SpinUnoptimized keeps calling the
+    // standalone body through a delegate, so the same method is both an inlinee and a sampled code version.
+    // The loop is what makes the standalone body sampleable, and it is also why the JIT would judge the
+    // inline unprofitable without the AggressiveInlining hint.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int Mix(int value)
+    {
+        // The back edge is a GC safepoint: the sampler can only stop a thread at a safepoint, so a loop-free
+        // leaf body would never own a sample of its own.
+        for (var round = 0; round < Rounds; round++)
+        {
+            value = value / Divisor + value % Divisor * 31 + round;
+        }
+
+        return value;
+    }
+
+    // Mutable statics keep the arithmetic real (not folded or strength-reduced).
+    public static int Divisor = 1021;
+    public static int Rounds = 4;
+
+    // Invoking Mix through a delegate keeps the call out of any inliner, so its standalone body stays hot.
+    private static readonly Func<int, int> MixCallback = Mix;
+
+    [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.NoOptimization)]
+    public static int SpinUnoptimized(int iterations)
+    {
+        var acc = 0;
+        for (var i = 0; i < iterations; i++)
+        {
+            acc = MixCallback(acc ^ i);
+        }
+
+        return acc;
+    }
 }
 
 static class GenericFixture
