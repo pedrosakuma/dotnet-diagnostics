@@ -336,4 +336,20 @@ public sealed class InliningCensusTests
         rows[0].InlinedInto.Should().HaveCount(2);
         rows[0].InlinedIntoAmbiguous.Should().BeTrue();
     }
+
+    [Fact]
+    public void InlinedInto_ClosedGenericSampledFrameMatches()
+    {
+        var rows = Annotate(["App.Svc`1[System.Int32].Run(int)"], ("X.Main", "App.Svc`1.Run"));
+        rows[0].InlinedInto.Should().ContainSingle();
+        rows[0].InlinedIntoAmbiguous.Should().BeNull();
+    }
+
+    [Fact]
+    public void InlinedInto_CrossArityMatchIsFlaggedAmbiguous()
+    {
+        var rows = Annotate(["App.Svc`2.Run(int)"], ("X.Main", "App.Svc`1.Run"));
+        rows[0].InlinedInto.Should().ContainSingle();
+        rows[0].InlinedIntoAmbiguous.Should().BeTrue();
+    }
 }

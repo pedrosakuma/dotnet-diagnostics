@@ -109,8 +109,10 @@ public static partial class CpuSampleQueryDispatcher
                 continue;
             }
 
+            var rowArity = ArityMarkers(StripSignature(list[i].Method));
             var ambiguous = entry.RawNames.Count > 1
-                || (signaturesByName.TryGetValue(key, out var sigs) && sigs.Count > 1);
+                || (signaturesByName.TryGetValue(key, out var sigs) && sigs.Count > 1)
+                || (rowArity.Length > 0 && entry.RawNames.Any(n => ArityMarkers(n) is { Length: > 0 } a && a != rowArity));
             list[i] = list[i] with
             {
                 InlinedInto = entry.Versions.Take(MaxInlinedIntoPerRow).ToArray(),
@@ -127,29 +129,74 @@ public static partial class CpuSampleQueryDispatcher
         return paren < 0 ? method : method[..paren];
     }
 
-    // Removes generic arity markers (`1, `2) so App.Svc`1.Run and App.Svc.Run compare equal.
+    // Removes generic arity markers (`1, `2) and constructed type arguments ([System.Int32]) so
+    // App.Svc`1[System.Int32].Run, App.Svc`1.Run and App.Svc.Run compare equal.
     private static string NormalizeName(string name)
     {
-        var tick = name.IndexOf('`', StringComparison.Ordinal);
-        if (tick < 0)
+        if (name.AsSpan().IndexOfAny('`', '[') < 0)
         {
             return name;
         }
 
         var sb = new System.Text.StringBuilder(name.Length);
+        var depth = 0;
         for (var i = 0; i < name.Length; i++)
         {
-            if (name[i] == '`')
+            var ch = name[i];
+            if (ch == '[')
+            {
+                depth++;
+            }
+            else if (ch == ']')
+            {
+                if (depth > 0)
+                {
+                    depth--;
+                }
+            }
+            else if (depth == 0 && ch == '`')
             {
                 while (i + 1 < name.Length && char.IsAsciiDigit(name[i + 1]))
                 {
                     i++;
                 }
-
-                continue;
             }
+            else if (depth == 0)
+            {
+                sb.Append(ch);
+            }
+        }
 
-            sb.Append(name[i]);
+        return sb.ToString();
+    }
+
+    // The arity markers of a name (e.g. "`1`2"), used to detect cross-arity matches.
+    private static string ArityMarkers(string name)
+    {
+        var sb = new System.Text.StringBuilder();
+        var depth = 0;
+        for (var i = 0; i < name.Length; i++)
+        {
+            var ch = name[i];
+            if (ch == '[')
+            {
+                depth++;
+            }
+            else if (ch == ']')
+            {
+                if (depth > 0)
+                {
+                    depth--;
+                }
+            }
+            else if (depth == 0 && ch == '`')
+            {
+                sb.Append('`');
+                while (i + 1 < name.Length && char.IsAsciiDigit(name[i + 1]))
+                {
+                    sb.Append(name[++i]);
+                }
+            }
         }
 
         return sb.ToString();
