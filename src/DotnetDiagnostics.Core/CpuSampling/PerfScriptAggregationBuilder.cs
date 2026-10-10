@@ -13,7 +13,9 @@ internal readonly record struct PerfScriptAggregationResult(
     long JitCandidateFrames = 0,
     long ResolvedJitFrames = 0,
     long UnresolvedJitCandidateFrames = 0,
-    bool Truncated = false);
+    bool Truncated = false,
+    int SampledThreads = 0,
+    bool SampledThreadsSaturated = false);
 
 internal sealed class PerfScriptAggregationBuilder
 {
@@ -33,6 +35,7 @@ internal sealed class PerfScriptAggregationBuilder
     private readonly ICaptureObservationSink? _sink;
     private readonly string _category;
     private readonly long? _samplePeriod;
+    private readonly CpuSamplingNotes.ThreadTracker _threads = new();
 
     public PerfScriptAggregationBuilder(
         NativeAotMethodMap? methodMap = null,
@@ -60,6 +63,10 @@ internal sealed class PerfScriptAggregationBuilder
         }
 
         TotalSamples++;
+        if (sample.ThreadId is { } threadId)
+        {
+            _threads.Add(threadId);
+        }
 
         var rootToLeaf = new List<(string Key, string Module, string Display, MethodIdentity? Identity)>(sample.Frames.Count);
         for (var i = sample.Frames.Count - 1; i >= 0; i--)
@@ -172,7 +179,9 @@ internal sealed class PerfScriptAggregationBuilder
             Root: _callTree.Build(),
             SymbolSource: _symbolSource,
             Identities: identityView,
-            Truncated: truncated);
+            Truncated: truncated,
+            SampledThreads: _threads.Count,
+            SampledThreadsSaturated: _threads.Saturated);
     }
 
     private static string BuildAggregationKey(string module, string display, MethodIdentity? identity)
