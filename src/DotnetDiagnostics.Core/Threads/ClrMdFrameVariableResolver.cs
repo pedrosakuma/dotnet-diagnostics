@@ -41,41 +41,40 @@ public sealed class ClrMdFrameVariableResolver : IFrameVariableResolver
 
         var warnings = new List<string>();
 
-        // Index stack roots by their owning frame's stack pointer so each variable lands on the
-        // right frame. Roots whose StackFrame is null are kept in a fallback bucket.
-        var rootsByFrameSp = new Dictionary<ulong, List<ClrStackRoot>>();
         var orphanRoots = new List<ClrStackRoot>();
+        var identifiedRoots = new List<(FrameIdentity Frame, ClrStackRoot Root)>();
         foreach (var root in thread.EnumerateStackRoots())
         {
             ct.ThrowIfCancellationRequested();
-            var sp = root.StackFrame?.StackPointer ?? 0;
-            if (sp == 0)
+            if (root.StackFrame is not { StackPointer: not 0 } rf)
             {
                 orphanRoots.Add(root);
                 continue;
             }
-            if (!rootsByFrameSp.TryGetValue(sp, out var list))
-            {
-                list = new List<ClrStackRoot>();
-                rootsByFrameSp[sp] = list;
-            }
-            list.Add(root);
+            identifiedRoots.Add((IdentityOf(rf), root));
         }
 
-        var frames = new List<FrameVariables>();
-        var index = 0;
+        var emitted = new List<ClrStackFrame>();
         foreach (var f in thread.EnumerateStackTrace())
         {
             ct.ThrowIfCancellationRequested();
             if (f.Method is null && f.Kind != ClrStackFrameKind.ManagedMethod) continue;
+            emitted.Add(f);
+        }
 
+        var attribution = FrameVariableAttribution.Attribute(
+            emitted.Select(IdentityOf).ToArray(), identifiedRoots);
+
+        var frames = new List<FrameVariables>();
+        var index = 0;
+        foreach (var f in emitted)
+        {
             var display = f.Method?.Signature ?? f.Method?.Name ?? f.FrameName ?? "<unknown>";
             var typeFqn = f.Method?.Type?.Name;
             var modulePath = f.Method?.Type?.Module?.Name;
             var moduleName = !string.IsNullOrEmpty(modulePath) ? System.IO.Path.GetFileName(modulePath) : null;
 
-            rootsByFrameSp.TryGetValue(f.StackPointer, out var frameRoots);
-            var variables = (frameRoots ?? Enumerable.Empty<ClrStackRoot>())
+            var variables = attribution.PerFrame[index]
                 .Select(r => ToVariable(r, includeSensitiveValues))
                 .ToArray();
 
@@ -89,6 +88,14 @@ public sealed class ClrMdFrameVariableResolver : IFrameVariableResolver
                 Variables: variables));
         }
 
+        if (attribution.Ambiguous > 0)
+        {
+            warnings.Add($"{attribution.Ambiguous} stack root(s) matched several frames sharing the same stack pointer, instruction pointer and method, so ownership is ambiguous; they are not attributed to any frame.");
+        }
+        if (attribution.Unmatched > 0)
+        {
+            warnings.Add($"{attribution.Unmatched} stack root(s) belong to a frame that is not in the emitted frame list and were not attributed.");
+        }
         if (orphanRoots.Count > 0)
         {
             warnings.Add($"{orphanRoots.Count} stack root(s) could not be attributed to a specific frame.");
@@ -105,6 +112,9 @@ public sealed class ClrMdFrameVariableResolver : IFrameVariableResolver
             Warnings = warnings.Count == 0 ? null : warnings,
         };
     }
+
+    private static FrameIdentity IdentityOf(ClrStackFrame f) =>
+        new(f.StackPointer, f.InstructionPointer, f.Method?.MethodDesc ?? 0);
 
     private static FrameVariable ToVariable(ClrStackRoot root, bool includeSensitiveValues)
     {
