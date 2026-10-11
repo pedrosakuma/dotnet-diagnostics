@@ -2284,6 +2284,8 @@ reports the aggregate symbol-resolution quality of `topHotspots`:
 - `PdbResolved` — the legacy Windows ETW aggregate label for named frames.
   `notes` distinguish native PDB/DIA range-validated names from CLR event-derived
   names. It is not proof of complete module coverage or native ICU attribution.
+- `JitMapResolved` — managed frames resolved from the captured CoreCLR JIT code
+  map, not from ELF symbols.
 - `Unknown` / omitted — commonly a CoreCLR EventPipe sample (that path resolves
   managed names directly; this field does not apply), or an OS-backed capture
   with no classifiable frames.

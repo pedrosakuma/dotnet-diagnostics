@@ -19,6 +19,12 @@ Options:
   --build                    Omit --no-build when invoking dotnet test.
   --max-crash-retries <n>    Retry count for crash-only outcomes (default: 1).
   --attempt-timeout-seconds <n> Whole-command deadline, including teardown (default: 180).
+  --reassess-linux-culture-lookup
+                              Opt in to the fixed #929 protocol: 10 Linux trials, no retries,
+                              one explicit culture-lookup platform override, and a fresh output path.
+  --windows-culture-lookup-controls
+                              Opt in to the fixed #929 Windows control protocol: 3 trials, no retries,
+                              and a fresh output path.
   --help                     Show this help.
 EOF
 }
@@ -30,6 +36,8 @@ repetitions=1
 max_crash_retries=1
 attempt_timeout_seconds=180
 use_no_build=true
+reassess_linux_culture_lookup=false
+windows_culture_lookup_controls=false
 declare -a scenarios=()
 
 while [[ $# -gt 0 ]]; do
@@ -72,6 +80,14 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || { echo "missing value for --attempt-timeout-seconds" >&2; exit 2; }
       attempt_timeout_seconds="$2"
       shift 2
+      ;;
+    --reassess-linux-culture-lookup)
+      reassess_linux_culture_lookup=true
+      shift
+      ;;
+    --windows-culture-lookup-controls)
+      windows_culture_lookup_controls=true
+      shift
       ;;
     --help|-h)
       usage
@@ -168,6 +184,60 @@ if [[ ${#invalid_scenarios[@]} -gt 0 ]]; then
   exit 2
 fi
 
+capture_culture_lookup_run_metadata=false
+if [[ "$reassess_linux_culture_lookup" == true && "$windows_culture_lookup_controls" == true ]]; then
+  echo "Linux reassessment and Windows control modes cannot be combined." >&2
+  exit 2
+elif [[ "$reassess_linux_culture_lookup" == true ]]; then
+  capture_culture_lookup_run_metadata=true
+  current_platform=$("$python_bin" - <<'PY'
+import platform
+print(platform.system().lower())
+PY
+)
+  [[ "$current_platform" == "linux" ]] || {
+    echo "--reassess-linux-culture-lookup is valid only on Linux." >&2
+    exit 2
+  }
+  [[ ${#scenarios[@]} -eq 1 && "${scenarios[0]}" == "culture-lookup" ]] || {
+    echo "--reassess-linux-culture-lookup requires exactly --scenario culture-lookup." >&2
+    exit 2
+  }
+  [[ "$repetitions" -eq 10 && "$max_crash_retries" -eq 0 && "$attempt_timeout_seconds" -eq 180 ]] || {
+    echo "The #929 protocol requires --repetitions 10, --max-crash-retries 0, and --attempt-timeout-seconds 180." >&2
+    exit 2
+  }
+  [[ ! -e "$results_root" && ! -L "$results_root" ]] || {
+    echo "The #929 output path must not already exist: $results_root" >&2
+    exit 2
+  }
+elif [[ "$windows_culture_lookup_controls" == true ]]; then
+  capture_culture_lookup_run_metadata=true
+  current_platform=$("$python_bin" - <<'PY'
+import platform
+print(platform.system().lower())
+PY
+)
+  [[ "$current_platform" == "windows" ]] || {
+    echo "--windows-culture-lookup-controls is valid only on Windows." >&2
+    exit 2
+  }
+  [[ ${#scenarios[@]} -eq 1 && "${scenarios[0]}" == "culture-lookup" ]] || {
+    echo "--windows-culture-lookup-controls requires exactly --scenario culture-lookup." >&2
+    exit 2
+  }
+  [[ "$repetitions" -eq 3 && "$max_crash_retries" -eq 0 && "$attempt_timeout_seconds" -eq 180 ]] || {
+    echo "The #929 Windows control protocol requires --repetitions 3, --max-crash-retries 0, and --attempt-timeout-seconds 180." >&2
+    exit 2
+  }
+  [[ ! -e "$results_root" && ! -L "$results_root" ]] || {
+    echo "The #929 output path must not already exist: $results_root" >&2
+    exit 2
+  }
+elif [[ ${#scenarios[@]} -eq 1 && "${scenarios[0]}" == "culture-lookup" ]]; then
+  capture_culture_lookup_run_metadata=true
+fi
+
 attempts_root="$results_root/attempts"
 logs_root="$results_root/logs"
 test_results_root="$results_root/testresults"
@@ -176,6 +246,77 @@ metadata_root="$results_root/metadata"
 
 rm -rf "$results_root"
 mkdir -p "$attempts_root" "$logs_root" "$test_results_root" "$trial_results_root" "$metadata_root"
+
+if [[ "$capture_culture_lookup_run_metadata" == true ]]; then
+  git_commit="$(git rev-parse HEAD)"
+  dotnet_sdk_version="$(dotnet --version)"
+  protocol="scenario-culture-lookup"
+  if [[ "$reassess_linux_culture_lookup" == true ]]; then
+    protocol="issue-929-linux-culture-lookup"
+  elif [[ "$windows_culture_lookup_controls" == true ]]; then
+    protocol="issue-929-windows-culture-lookup-controls"
+  fi
+  "$python_bin" - "$metadata_root/execution.json" "$project" "$git_commit" "$dotnet_sdk_version" "$protocol" <<'PY'
+import hashlib
+import json
+import pathlib
+import platform
+import subprocess
+import sys
+from datetime import datetime, timezone
+
+metadata_path = pathlib.Path(sys.argv[1])
+project = pathlib.Path(sys.argv[2])
+root = pathlib.Path.cwd()
+tracked_changes = subprocess.run(
+    ["git", "status", "--porcelain", "--untracked-files=no"],
+    cwd=root,
+    check=True,
+    capture_output=True,
+    text=True,
+).stdout
+assets_path = project.parent / "obj" / "project.assets.json"
+if not assets_path.is_file():
+    raise SystemExit(f"Required restored package identity file is missing: {assets_path}")
+assets = json.loads(assets_path.read_text(encoding="utf-8"))
+source_paths = [
+    pathlib.Path("global.json"),
+    pathlib.Path("Directory.Packages.props"),
+    pathlib.Path("tests/DotnetDiagnostics.ScenarioEvaluation.Tests/DotnetDiagnostics.ScenarioEvaluation.Tests.csproj"),
+    pathlib.Path("tests/DotnetDiagnostics.ScenarioEvaluation.Tests/ScenarioLiveTests.cs"),
+    pathlib.Path("tests/DotnetDiagnostics.ScenarioEvaluation.Tests/ScenarioLiveRunner.cs"),
+    pathlib.Path("tests/DotnetDiagnostics.ScenarioEvaluation.Tests/CultureLookupBackendTests.cs"),
+    pathlib.Path("tests/DotnetDiagnostics.ScenarioEvaluation.Tests/Scenarios/culture-lookup.scenario.json"),
+    pathlib.Path("scripts/run-scenario-evaluation-isolated.sh"),
+    pathlib.Path(".github/workflows/scenario-evaluation-isolated.yml"),
+]
+source_hashes = {}
+for relative_path in source_paths:
+    path = root / relative_path
+    if not path.is_file():
+        raise SystemExit(f"Required source identity file is missing: {path}")
+    source_hashes[relative_path.as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+
+metadata = {
+    "schemaVersion": 1,
+    "protocol": sys.argv[5],
+    "generatedAtUtc": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+    "gitCommit": sys.argv[3],
+    "trackedWorkingTreeDirty": bool(tracked_changes),
+    "trackedWorkingTreeStatus": tracked_changes.splitlines(),
+    "dotnetSdkVersion": sys.argv[4],
+    "dotnetRuntimes": subprocess.run(
+        ["dotnet", "--list-runtimes"], check=True, capture_output=True, text=True
+    ).stdout.splitlines(),
+    "platform": platform.platform(),
+    "architecture": platform.machine(),
+    "runtimeTarget": assets.get("runtimeTarget", {}).get("name"),
+    "resolvedPackages": sorted(assets.get("libraries", {}).keys()),
+    "sourceSha256": source_hashes,
+}
+metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+PY
+fi
 
 test_filter="FullyQualifiedName~DotnetDiagnostics.ScenarioEvaluation.Tests.ScenarioIsolatedTrialTests.IsolatedTrial_ExecutesScenarioFromEnvironment"
 overall_exit=0
@@ -426,7 +567,13 @@ PY
   done
 done
 
-"$python_bin" - "$results_root" "$repetitions" "$max_crash_retries" "${scenarios[@]}" <<'PY'
+summary_mode="standard"
+if [[ "$reassess_linux_culture_lookup" == true ]]; then
+  summary_mode="linux-reassessment"
+elif [[ "$windows_culture_lookup_controls" == true ]]; then
+  summary_mode="windows-controls"
+fi
+"$python_bin" - "$results_root" "$repetitions" "$max_crash_retries" "$summary_mode" "${scenarios[@]}" <<'PY'
 import json
 import pathlib
 import sys
@@ -435,7 +582,8 @@ from collections import Counter
 results_root = pathlib.Path(sys.argv[1])
 repetitions = int(sys.argv[2])
 max_crash_retries = int(sys.argv[3])
-selected_scenarios = sys.argv[4:]
+summary_mode = sys.argv[4]
+selected_scenarios = sys.argv[5:]
 trial_dir = results_root / "trials"
 trial_files = sorted(trial_dir.glob("*.result.json"))
 trial_summaries = []
@@ -459,6 +607,10 @@ summary = {
     "repetitions": repetitions,
     "maxCrashRetries": max_crash_retries,
     "selectedScenarios": selected_scenarios,
+    "reassessmentMode": {
+        "linux-reassessment": "issue-929-linux-culture-lookup",
+        "windows-controls": "issue-929-windows-culture-lookup-controls",
+    }.get(summary_mode),
     "totals": {
         "passed": totals.get("passed", 0),
         "failed": totals.get("failed", 0),
@@ -466,6 +618,9 @@ summary = {
     },
     "trials": trial_summaries,
 }
+execution_metadata = results_root / "metadata" / "execution.json"
+if execution_metadata.is_file():
+    summary["executionMetadata"] = json.loads(execution_metadata.read_text(encoding="utf-8"))
 (results_root / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
 print(json.dumps(summary, indent=2))
 PY
