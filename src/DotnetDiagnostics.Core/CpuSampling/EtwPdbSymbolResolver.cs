@@ -22,6 +22,7 @@ internal enum NativeSymbolResolverOpenStatus
     MatchingPdbUnavailable,
     DiaUnavailable,
     PdbRejected,
+    SymbolLookupBudgetExceeded,
 }
 
 internal enum NativeSymbolProvenance
@@ -272,38 +273,99 @@ internal sealed class EtwPdbSymbolResolverPool : IDisposable
 
     public static EtwPdbSymbolResolverPool Open(
         SymbolReader? symbolReader,
-        IReadOnlyList<TraceModuleFile> modules)
+        IReadOnlyList<TraceModuleFile> modules,
+        EtwSymbolLookupBudget budget)
     {
-        var pool = new EtwPdbSymbolResolverPool();
+        ArgumentNullException.ThrowIfNull(budget);
         if (symbolReader is null)
         {
-            foreach (var module in modules.DistinctBy(module => module.ModuleFileIndex))
-            {
-                pool.openStatuses.Add(module.ModuleFileIndex, NativeSymbolResolverOpenStatus.SymbolSourceUnavailable);
-                pool.openStatusCounts[NativeSymbolResolverOpenStatus.SymbolSourceUnavailable]
-                    = pool.openStatusCounts.GetValueOrDefault(NativeSymbolResolverOpenStatus.SymbolSourceUnavailable) + 1;
-            }
-            return pool;
+            return OpenCore(
+                modules,
+                module => module.ModuleFileIndex,
+                budget,
+                setServerTimeout: null,
+                enterCacheOnly: null,
+                (TraceModuleFile module, out EtwPdbSymbolResolver? resolver, out NativeSymbolResolverOpenStatus status) =>
+                {
+                    resolver = null;
+                    status = NativeSymbolResolverOpenStatus.SymbolSourceUnavailable;
+                    return false;
+                });
         }
 
+        return OpenCore(
+            modules,
+            module => module.ModuleFileIndex,
+            budget,
+            setServerTimeout: timeout => symbolReader.ServerTimeout = timeout,
+            enterCacheOnly: () => symbolReader.Options |= SymbolReaderOptions.CacheOnly,
+            (TraceModuleFile module, out EtwPdbSymbolResolver? resolver, out NativeSymbolResolverOpenStatus status) =>
+                EtwPdbSymbolResolver.TryOpen(symbolReader, module, out resolver, out status));
+    }
+
+    internal delegate bool ModuleOpener<TModule>(
+        TModule module,
+        out EtwPdbSymbolResolver? resolver,
+        out NativeSymbolResolverOpenStatus status);
+
+    /// <summary>
+    /// Opens each distinct module once. Once the shared budget is spent, symbol-server requests are
+    /// disabled (cache-only) so that the remaining modules cannot extend the stall, and modules whose
+    /// PDB is then not locally available are reported as <see cref="NativeSymbolResolverOpenStatus.SymbolLookupBudgetExceeded"/>.
+    /// </summary>
+    internal static EtwPdbSymbolResolverPool OpenCore<TModule>(
+        IEnumerable<TModule> modules,
+        Func<TModule, ModuleFileIndex> moduleIndex,
+        EtwSymbolLookupBudget budget,
+        Action<TimeSpan>? setServerTimeout,
+        Action? enterCacheOnly,
+        ModuleOpener<TModule> open)
+    {
+        var pool = new EtwPdbSymbolResolverPool();
+        var cacheOnly = false;
         foreach (var module in modules)
         {
-            if (pool.openStatuses.ContainsKey(module.ModuleFileIndex))
+            var index = moduleIndex(module);
+            if (pool.openStatuses.ContainsKey(index))
             {
                 continue;
             }
 
-            if (EtwPdbSymbolResolver.TryOpen(symbolReader, module, out var resolver, out var status))
+            var budgetExhaustedBeforeLookup = budget.IsExhausted;
+            if (budgetExhaustedBeforeLookup)
             {
-                pool.resolvers.Add(module.ModuleFileIndex, resolver!);
+                if (!cacheOnly)
+                {
+                    cacheOnly = true;
+                    enterCacheOnly?.Invoke();
+                }
+            }
+            else
+            {
+                setServerTimeout?.Invoke(budget.GetNextServerTimeout());
             }
 
-            pool.openStatuses.Add(module.ModuleFileIndex, status);
+            if (open(module, out var resolver, out var status))
+            {
+                pool.resolvers.Add(index, resolver!);
+            }
+            else if (budgetExhaustedBeforeLookup && status == NativeSymbolResolverOpenStatus.MatchingPdbUnavailable)
+            {
+                status = NativeSymbolResolverOpenStatus.SymbolLookupBudgetExceeded;
+            }
+
+            pool.openStatuses.Add(index, status);
             pool.openStatusCounts[status] = pool.openStatusCounts.GetValueOrDefault(status) + 1;
         }
 
+        pool.LookupElapsed = budget.Elapsed;
+        pool.LookupBudget = budget.Total;
         return pool;
     }
+
+    public TimeSpan LookupElapsed { get; private set; }
+
+    public TimeSpan LookupBudget { get; private set; }
 
     public NativeSymbolResolution Resolve(TraceCodeAddress? codeAddress)
     {
@@ -336,5 +398,52 @@ internal sealed class EtwPdbSymbolResolverPool : IDisposable
         {
             resolver.Dispose();
         }
+    }
+}
+
+/// <summary>
+/// Bounds the aggregate time spent locating PDBs for one ETW processing pass. SymbolReader already bounds each
+/// server request (<see cref="SymbolReader.ServerTimeout"/>), but not the sum over every module and server.
+/// </summary>
+internal sealed class EtwSymbolLookupBudget
+{
+    internal static readonly TimeSpan DefaultTotal = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan MinimumServerTimeout = TimeSpan.FromSeconds(1);
+
+    private readonly TimeProvider timeProvider;
+    private readonly long startTimestamp;
+    private readonly TimeSpan maxServerTimeout;
+
+    public EtwSymbolLookupBudget(TimeSpan total, TimeSpan maxServerTimeout, TimeProvider? timeProvider = null)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(total, TimeSpan.Zero);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(maxServerTimeout, TimeSpan.Zero);
+        Total = total;
+        this.maxServerTimeout = maxServerTimeout;
+        this.timeProvider = timeProvider ?? TimeProvider.System;
+        startTimestamp = this.timeProvider.GetTimestamp();
+    }
+
+    public TimeSpan Total { get; }
+
+    public TimeSpan Elapsed => timeProvider.GetElapsedTime(startTimestamp);
+
+    public bool IsExhausted => Elapsed >= Total;
+
+    /// <summary>
+    /// SymbolReader issues several sequential server requests per module, each bounded by
+    /// <see cref="SymbolReader.ServerTimeout"/>, and an in-flight lookup cannot be cancelled through its supported
+    /// API. Against a blackholed server one module's lookup was measured at 126 s with a 30 s timeout and 48 s with a
+    /// 7.5 s timeout, so each request receives a quarter of the remaining budget. The achieved bound is the budget
+    /// plus at most one module's in-flight lookup; later modules are looked up in the cache only.
+    /// </summary>
+    internal const int ServerRequestsPerLookup = 4;
+
+    /// <summary>The next request is bounded by its share of the remaining budget, but never shorter than one second.</summary>
+    public TimeSpan GetNextServerTimeout()
+    {
+        var share = (Total - Elapsed) / ServerRequestsPerLookup;
+        var bounded = share < maxServerTimeout ? share : maxServerTimeout;
+        return bounded < MinimumServerTimeout ? MinimumServerTimeout : bounded;
     }
 }
