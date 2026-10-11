@@ -184,7 +184,7 @@ public sealed partial class MonitoredRunnerTests
                 },
             }
         };
-        var launcher = new ScriptedWorkerLauncher(ScriptedWorkerBehavior.SuccessfulRecovery, awaitIdentityEvent: true);
+        var launcher = new ScriptedWorkerLauncher(ScriptedWorkerBehavior.SuccessfulRecovery);
         var execution = MonitoredExecutionPlanner.Expand().Single(item => item.CaseId == "F3" && item.Candidate == "A");
         var outcome = await MonitoredCampaignRunner.RunExecutionForComponentAsync(fixture, execution, launcher,
             TimeSpan.FromSeconds(10), CancellationToken.None);
