@@ -879,7 +879,7 @@ to offline `dotnet-dump analyze`. Pass the `ManagedThreadId` via `threadId`. Eac
 `TypeFullName`, the object `Address` (hex), the register/stack `Location`, and pin/interior flags;
 the current managed exception type is surfaced when the thread is faulting. It is **best-effort**:
 ClrMD 3.x exposes object references but not source-level names, and value-type (struct/primitive) or
-optimized-away locals are not enumerable. Raw string previews and the exception message require
+optimized-away locals are not enumerable. Frames are matched to roots by stack pointer **plus** instruction pointer and method (consecutive frames, e.g. runtime transition frames and their managed frame, can share a stack pointer); a root that cannot be told apart between several frames is not attributed to any of them and a `Warnings` entry reports the ambiguity. Raw string previews and the exception message require
 `includeSensitiveValues` AND `Diagnostics:AllowSensitiveHeapValues` or the `sensitive-heap-read`
 scope. For **live-origin** thread snapshots, this view still requires the original process; after
 it exits the handle survives, but `query_snapshot` returns a structured `ProcessExited` error for
