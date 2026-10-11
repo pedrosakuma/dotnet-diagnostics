@@ -16,7 +16,7 @@ public sealed partial class MonitoredRunnerTests
         var fixture = PrepareComponentExecution();
         var execution = fixture.Manifest.Plan.Executions.Single(item => item.CaseId == "F3" && item.Candidate == "A");
         var launcher = new ScriptedWorkerLauncher(ScriptedWorkerBehavior.SuccessfulRecovery,
-            awaitIdentityEvent: true, recoveryExitCode: exitCode);
+            recoveryExitCode: exitCode);
         Func<Task> run = async () =>
         {
             var outcome = await MonitoredCampaignRunner.RunExecutionForComponentAsync(fixture, execution,
