@@ -164,6 +164,7 @@ internal sealed class NativeLeafCoverageCollector
                 NativeSymbolResolverOpenStatus.MatchingPdbUnavailable => NativeLeafResolutionStatus.MatchingPdbUnavailable,
                 NativeSymbolResolverOpenStatus.DiaUnavailable => NativeLeafResolutionStatus.DiaUnavailable,
                 NativeSymbolResolverOpenStatus.PdbRejected => NativeLeafResolutionStatus.PdbRejected,
+                NativeSymbolResolverOpenStatus.SymbolLookupBudgetExceeded => NativeLeafResolutionStatus.SymbolLookupBudgetExceeded,
                 _ => NativeLeafResolutionStatus.Unavailable,
             },
         };

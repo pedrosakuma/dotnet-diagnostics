@@ -2356,6 +2356,15 @@ Common examples:
 The same override shape is exposed by `collect_sample(kind="cpu")`, `collect_sample(kind="off_cpu")`,
 `collect_thread_snapshot`, `inspect_heap(source="dump")`, and `inspect_heap(source="live")`.
 
+**Windows ETW CPU symbol-server budget.** On the Windows ETW CPU sampler, PDB discovery for the target's
+modules (including symbol-server downloads) shares a 30-second aggregate budget per capture. `SymbolReader`
+bounds each server request but not the sum over modules, so an unreachable server previously stalled the
+capture (observed beyond 240 s) while each module waited out its own timeouts. Once the budget is spent, remaining modules are looked up in the local
+symbol cache only; those still unresolved are reported as `SymbolLookupBudgetExceeded` in the module lookup note
+and in native leaf coverage, which does not weaken the kernel on-CPU evidence. The bound is the budget plus at
+most one in-flight module lookup (measured about 48 s in total against a blackholed server). Warm the symbol
+cache (for example with a prior capture against the public symbol server) to resolve those modules.
+
 **Opt-in closed generics (`resolveMethodInstantiations`).** On Linux, EventPipe alone only knows the
 open `MethodDef` for generic methods like `Echo<T>`. When you enable this flag, the server performs
 an additional ClrMD attach after the trace ends, resolves the hottest instruction pointers back to
