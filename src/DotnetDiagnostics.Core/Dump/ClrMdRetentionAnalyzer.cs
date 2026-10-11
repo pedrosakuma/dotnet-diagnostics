@@ -200,7 +200,7 @@ internal static class ClrMdRetentionAnalyzer
         var queue = new Queue<(ulong Address, int Depth)>();
         var remainingTargets = new HashSet<ulong>(targets);
 
-        foreach (var root in runtime.Heap.EnumerateRoots())
+        foreach (var root in ClrMdRootEnumerator.Enumerate(runtime))
         {
             ct.ThrowIfCancellationRequested();
             var addr = root.Object.Address;
