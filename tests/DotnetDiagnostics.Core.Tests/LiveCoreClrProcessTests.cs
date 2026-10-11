@@ -2683,6 +2683,19 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
     }
 
     [Fact(Timeout = 60_000)]
+    public async Task InspectLive_SkipsDacStackRoots_AndReportsIt()
+    {
+        EnsureSampleRunning();
+
+        var heap = await new ClrMdDumpInspector().InspectLiveAsync(Pid, new DumpInspectionOptions(TopTypes: 5), CancellationToken.None);
+
+        heap.Warnings.Should().Contain(ClrMdRootEnumerator.SkippedStackRootsWarning);
+        heap.RootsByKind.Should().NotBeNull();
+        heap.RootsByKind!.Should().NotBeEmpty();
+        heap.RootsByKind!.Select(r => r.RootKind).Should().NotContain(kind => kind == "Stack" || kind == "LocalVar");
+    }
+
+    [Fact(Timeout = 60_000)]
     public async Task Diff_RejectsMixedKinds()
     {
         EnsureSampleRunning();

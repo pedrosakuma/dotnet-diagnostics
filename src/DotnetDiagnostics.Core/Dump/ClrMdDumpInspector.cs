@@ -488,9 +488,14 @@ public sealed class ClrMdDumpInspector : IDumpInspector
         // distinct objects per kind. Useful for spotting "I have 50k pinning handles holding X MB".
         var byKind = new Dictionary<string, RawRootStat>(StringComparer.Ordinal);
 
+        if (ClrMdRootEnumerator.SkipsStackRoots(runtime))
+        {
+            warnings.Add(ClrMdRootEnumerator.SkippedStackRootsWarning);
+        }
+
         try
         {
-            foreach (var root in runtime.Heap.EnumerateRoots())
+            foreach (var root in ClrMdRootEnumerator.Enumerate(runtime))
             {
                 ct.ThrowIfCancellationRequested();
                 var kind = root.RootKind.ToString();

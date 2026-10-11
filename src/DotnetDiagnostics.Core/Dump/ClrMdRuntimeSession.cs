@@ -28,6 +28,7 @@ internal sealed class ClrMdRuntimeSession : IDisposable
             var clrInfo = target.ClrVersions.FirstOrDefault()
                 ?? throw new InvalidOperationException($"Process {processId} does not expose a CLR runtime (NativeAOT or non-managed).");
             var runtime = clrInfo.CreateRuntime();
+            ClrMdRootEnumerator.MarkLive(runtime);
             return new ClrMdRuntimeSession(target, clrInfo, runtime, processId);
         }
         catch
