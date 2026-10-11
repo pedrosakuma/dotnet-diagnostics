@@ -3217,7 +3217,14 @@ public sealed partial class MonitoredRunnerTests : IDisposable
             // before the monitor can observe, or a sweep that lands inside that window reports
             // UnclassifiedReadOnlyDescriptor and the run is wrongly judged incomplete.
             // Peek leaves the identity event for the runner; real launchers are unchanged.
-            process.StandardOutput.Peek().Should().BeGreaterThanOrEqualTo(0);
+            var peek = Task.Run(() => process.StandardOutput.Peek());
+            if (!peek.Wait(TimeSpan.FromSeconds(30)))
+            {
+                process.Kill(entireProcessTree: true);
+                throw new InvalidOperationException("Scripted worker did not emit its identity event.");
+            }
+
+            peek.Result.Should().BeGreaterThanOrEqualTo(0);
             Identities.Add(MonitoredProcessIdentity.Capture(
                 process,
                 MonitoredProcessRole.Diagnostic));
