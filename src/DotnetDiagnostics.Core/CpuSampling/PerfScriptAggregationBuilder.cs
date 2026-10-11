@@ -69,7 +69,7 @@ internal sealed class PerfScriptAggregationBuilder
             // as resolved; otherwise a trace whose only named frames are JIT frames reads as Stripped.
             var classification = frame.Identity is null
                 ? NativeAotSymbolDemangler.Classify(frame.Symbol)
-                : NativeAotSymbolDemangler.SymbolSource.ElfDemangled;
+                : NativeAotSymbolDemangler.SymbolSource.JitMapResolved;
             _symbolSource = NativeAotSymbolDemangler.Combine(_symbolSource, classification);
             var cacheKey = frame.Identity is null ? frame.Symbol : "\0jit:" + frame.Symbol;
             if (!_displayCache.TryGetValue(cacheKey, out var demangled))

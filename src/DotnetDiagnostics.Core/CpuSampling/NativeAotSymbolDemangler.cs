@@ -349,6 +349,8 @@ public static class NativeAotSymbolDemangler
         /// <summary>Trace mixed multiple distinct sources (e.g. some frames stripped, others
         /// demangled). The LLM should not assume uniform quality across the trace.</summary>
         Mixed,
+        /// <summary>Resolved through the captured CoreCLR JIT code map.</summary>
+        JitMapResolved,
     }
 
     /// <summary>Classifies a perf-emitted symbol so the artifact can carry a coarse source
@@ -369,7 +371,8 @@ public static class NativeAotSymbolDemangler
     /// <summary>Combines two source labels for trace-level rollup. Identical labels collapse;
     /// ElfMangled+ElfDemangled both indicate managed names and collapse to ElfDemangled (the
     /// artifact ships demangled strings); any other combination of distinct concrete sources
-    /// produces <see cref="SymbolSource.Mixed"/> so the consumer knows quality is not uniform.</summary>
+    /// produces <see cref="SymbolSource.Mixed"/> so the consumer knows quality is not uniform.
+    /// JIT-map resolution remains a distinct provenance from ELF symbol resolution.</summary>
     public static SymbolSource Combine(SymbolSource a, SymbolSource b)
     {
         if (a == SymbolSource.Unknown) return b;
