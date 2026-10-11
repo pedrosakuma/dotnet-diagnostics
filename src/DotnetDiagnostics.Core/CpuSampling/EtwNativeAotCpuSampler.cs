@@ -44,6 +44,9 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
     private readonly ILogger<EtwNativeAotCpuSampler> _logger;
     private readonly SymbolPathBuilder _symbolPathBuilder;
 
+    /// <summary>Aggregate time allowed for PDB discovery (including symbol-server downloads) per capture.</summary>
+    internal TimeSpan SymbolLookupBudget { get; init; } = EtwSymbolLookupBudget.DefaultTotal;
+
     public EtwNativeAotCpuSampler(ILogger<EtwNativeAotCpuSampler>? logger = null, SymbolPathBuilder? symbolPathBuilder = null)
     {
         _logger = logger ?? NullLogger<EtwNativeAotCpuSampler>.Instance;
@@ -267,7 +270,7 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
         try
         {
             using var traceLog = TraceLog.OpenOrConvert(etlxPath);
-            var processed = AggregateFromTraceLog(traceLog, processId, startedAt, duration, topN, symbolPath);
+            var processed = AggregateFromTraceLog(traceLog, processId, startedAt, duration, topN, symbolPath, SymbolLookupBudget);
             var aggregationDuration = processed.Summary.Timings.AggregationDuration;
             var totalProcessingDuration = symbolicationStopwatch.Elapsed;
             var symbolicationDuration = totalProcessingDuration > aggregationDuration
@@ -287,7 +290,8 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
         DateTimeOffset startedAt,
         TimeSpan duration,
         int topN,
-        string? symbolPath)
+        string? symbolPath,
+        TimeSpan symbolLookupBudget)
     {
         var inclusive = new Dictionary<string, long>(StringComparer.Ordinal);
         var exclusive = new Dictionary<string, long>(StringComparer.Ordinal);
@@ -309,7 +313,12 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
             .Select(module => module.ModuleFile)
             .ToArray();
         using var symbolReader = symbolPath is null ? null : new SymbolReader(TextWriter.Null, symbolPath);
-        using var nativeSymbols = EtwPdbSymbolResolverPool.Open(symbolReader, targetModules);
+        using var nativeSymbols = EtwPdbSymbolResolverPool.Open(
+            symbolReader,
+            targetModules,
+            new EtwSymbolLookupBudget(
+                symbolLookupBudget,
+                symbolReader?.ServerTimeout ?? TimeSpan.FromSeconds(60)));
         foreach (var module in targetModules)
         {
             nativeLeafCoverageCollector.RegisterModule(CreateModuleIdentity(module, nativeSymbols));
@@ -477,6 +486,13 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
                     .OrderBy(pair => pair.Key)
                     .Select(pair => $"{pair.Key}={pair.Value:N0}"))
                 + ".");
+        }
+        if (nativeSymbols.OpenStatusCounts.TryGetValue(NativeSymbolResolverOpenStatus.SymbolLookupBudgetExceeded, out var budgetExceeded))
+        {
+            notes.Add(
+                $"Windows ETW PDB lookup spent its {nativeSymbols.LookupBudget.TotalSeconds:N0}s aggregate budget (elapsed {nativeSymbols.LookupElapsed.TotalSeconds:N1}s); " +
+                $"{budgetExceeded:N0} module(s) were then looked up in the local symbol cache only and reported SymbolLookupBudgetExceeded. " +
+                "Their PDBs may exist on the configured symbol server; warm the symbol cache or fix connectivity to resolve them.");
         }
         if (nativeLeafCoverage.UnretainedSampleWeight > 0)
         {

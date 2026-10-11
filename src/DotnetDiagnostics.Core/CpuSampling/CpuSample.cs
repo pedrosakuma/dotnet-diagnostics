@@ -89,6 +89,7 @@ public enum NativeLeafResolutionStatus
     OutsideRange,
     LookupFailed,
     Unavailable,
+    SymbolLookupBudgetExceeded,
 }
 
 /// <summary>A retained native leaf PC and its sample weight.</summary>
