@@ -20,7 +20,7 @@ internal static class ClrMdRootEnumerator
     internal const string SkippedStackRootsWarning =
         "Stack roots were not enumerated for this live process: the CLR DAC can fault natively (SIGSEGV) while " +
         "walking the stack of a thread caught mid-transition, which would terminate this host (issue #1160). " +
-        "Root counts and retention paths cover handle and finalizer-queue roots only; analyze a dump " +
+        "Root counts and retention paths cover handle, static and finalizer-queue roots only; analyze a dump " +
         "(collect_process_dump + inspect_heap source=dump) for stack roots, or set " +
         LiveStackRootsEnvironmentVariable + "=1 to accept the risk.";
 
@@ -50,15 +50,86 @@ internal static class ClrMdRootEnumerator
     {
         foreach (var handle in runtime.EnumerateHandles())
         {
-            if (handle.IsStrong)
+            if (!handle.IsStrong)
             {
-                yield return handle;
+                continue;
             }
+
+            yield return handle;
+
+            if (handle.HandleKind == ClrHandleKind.AsyncPinned)
+            {
+                foreach (var pinned in EnumerateAsyncPinnedTargets(handle))
+                {
+                    yield return pinned;
+                }
+            }
+        }
+
+        foreach (var root in runtime.Heap.EnumerateAdditionalRoots())
+        {
+            yield return root;
         }
 
         foreach (var root in runtime.Heap.EnumerateFinalizerRoots())
         {
             yield return root;
         }
+    }
+
+    // Mirrors ClrHeap.EnumerateRoots: an async-pinned handle roots OverlappedData.m_userObject
+    // (or, for an object[] user object, each element) as pinned objects.
+    private static IEnumerable<IClrRoot> EnumerateAsyncPinnedTargets(ClrHandle handle)
+    {
+        var overlapped = handle.Object;
+        if (!overlapped.IsValid || overlapped.Type is null)
+        {
+            yield break;
+        }
+
+        var userObject = overlapped.ReadObjectField("m_userObject");
+        if (!userObject.IsValid || userObject.IsNull)
+        {
+            yield break;
+        }
+
+        if (userObject.IsArray && userObject.Type?.ComponentType?.IsObjectReference == true)
+        {
+            var array = userObject.AsArray();
+            for (var i = 0; i < array.Length; i++)
+            {
+                var element = array.GetObjectValue(i);
+                if (element.IsValid && !element.IsNull)
+                {
+                    yield return new PinnedRoot(element, handle.Address);
+                }
+            }
+        }
+        else
+        {
+            yield return new PinnedRoot(userObject, handle.Address);
+        }
+    }
+
+    private sealed class PinnedRoot(ClrObject target, ulong address) : IClrRoot
+    {
+        public ulong Address { get; } = address;
+
+        public IClrValue Object { get; } = target;
+
+        public ClrRootKind RootKind => ClrRootKind.AsyncPinnedHandle;
+
+        public bool IsInterior => false;
+
+        public bool IsPinned => true;
+
+        public string? RegisterName => null;
+
+        public int RegisterOffset => 0;
+
+        public IClrStackFrame? StackFrame => null;
+
+        public bool Equals(IClrRoot? other) =>
+            other is not null && other.Address == Address && other.Object.Address == Object.Address;
     }
 }

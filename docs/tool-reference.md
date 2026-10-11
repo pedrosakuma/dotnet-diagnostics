@@ -533,7 +533,7 @@ Views available per `kind`:
 **Live heap snapshots and stack roots (issue #1160).** `inspect_heap(source="live")` does not walk
 managed thread stacks for roots: the CLR DAC can fault natively (SIGSEGV in
 `GcInfoDecoder::ReportUntrackedSlots`) on threads caught mid-transition, which would terminate the
-server. `roots-by-kind` and the root set used by `retention-paths` therefore cover handle and
+server. `roots-by-kind` and the root set used by `retention-paths` therefore cover handle, static and
 finalizer-queue roots only, and the snapshot carries a warning saying so. Use `inspect_heap(source="dump")`
 on a `collect_process_dump` capture for stack roots, or set `DOTNET_DBG_MCP_LIVE_STACK_ROOTS=1` to accept
 the crash risk.
