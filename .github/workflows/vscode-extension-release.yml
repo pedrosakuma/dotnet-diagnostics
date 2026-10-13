@@ -1,0 +1,71 @@
+name: VS Code Extension Release
+
+on:
+  push:
+    tags:
+      - 'vscode-v*'
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Test and publish VS Code extension
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: vscode-extension/package-lock.json
+
+      - name: Verify tag matches extension version
+        working-directory: vscode-extension
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          tag_version="${RELEASE_TAG#vscode-v}"
+          package_version="$(node -p "require('./package.json').version")"
+          if [[ "$tag_version" != "$package_version" ]]; then
+            echo "::error::Tag version '$tag_version' does not match vscode-extension/package.json version '$package_version'."
+            exit 1
+          fi
+
+      - name: Install dependencies
+        working-directory: vscode-extension
+        run: npm ci --ignore-scripts
+
+      - name: Test extension
+        working-directory: vscode-extension
+        run: npm test
+
+      - name: Package VSIX
+        working-directory: vscode-extension
+        run: |
+          mkdir -p ../artifacts
+          npm exec -- vsce package --out "../artifacts/dotnet-diagnostics-${GITHUB_REF_NAME#vscode-v}.vsix"
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vscode-extension-${{ github.ref_name }}
+          path: artifacts/*.vsix
+          if-no-files-found: error
+
+      - name: Publish to Visual Studio Marketplace
+        working-directory: vscode-extension
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          if [[ -z "${VSCE_PAT:-}" ]]; then
+            echo "::error::Configure the VSCE_PAT Actions secret with Marketplace publish access before tagging an extension release."
+            exit 1
+          fi
+          npm exec -- vsce publish --packagePath "../artifacts/dotnet-diagnostics-${GITHUB_REF_NAME#vscode-v}.vsix"

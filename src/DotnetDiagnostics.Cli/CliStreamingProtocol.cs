@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using DotnetDiagnostics.Core;
@@ -1357,7 +1358,7 @@ internal static class CliStreamingProtocol
     /// <c>ObjectDetails</c>/<c>GcRoot</c>/<c>ObjectSize</c>/<c>DuplicateStrings</c> (address-targeted
     /// views outside this request type's scope).
     /// </summary>
-    private static object TrimHeapQueryResult(HeapSnapshotQueryResult data) => new
+    internal static object TrimHeapQueryResult(HeapSnapshotQueryResult data) => new
     {
         handle = data.Handle,
         view = data.View,
@@ -1365,17 +1366,83 @@ internal static class CliStreamingProtocol
         processId = data.ProcessId,
         capturedAt = data.CapturedAt,
         quality = data.Quality,
-        retentionPaths = data.RetentionPaths,
+        retentionPaths = data.RetentionPaths?.Select(ProjectRetentionPath),
         rootsByKind = data.RootsByKind,
         finalizableObjects = data.FinalizableObjects,
         segments = data.Segments,
-        staticFields = data.StaticFields,
+        staticFields = data.StaticFields?.Select(static field => new
+        {
+            containingTypeFullName = field.ContainingTypeFullName,
+            moduleName = field.ModuleName,
+            fieldName = field.FieldName,
+            fieldToken = field.FieldToken,
+            valueAddress = FormatAddress(field.ValueAddress),
+            valueTypeFullName = field.ValueTypeFullName,
+            directlyReferencedBytes = field.DirectlyReferencedBytes,
+            appDomainId = field.AppDomainId,
+            containingTypeIdentity = field.ContainingTypeIdentity,
+        }),
         delegateTargets = data.DelegateTargets,
         gcHandles = data.GcHandles,
-        asyncOperations = data.AsyncOperations,
+        asyncOperations = data.AsyncOperations?.Select(static operation => new
+        {
+            stateMachineTypeFullName = operation.StateMachineTypeFullName,
+            state = operation.State,
+            awaiterTypeFullName = operation.AwaiterTypeFullName,
+            directSizeBytes = operation.DirectSizeBytes,
+            stateMachineAddress = FormatAddress(operation.StateMachineAddress),
+            taskAddress = operation.TaskAddress is { } taskAddress ? FormatAddress(taskAddress) : null,
+            taskId = operation.TaskId,
+            taskTypeFullName = operation.TaskTypeFullName,
+            continuationObjectTypeFullName = operation.ContinuationObjectTypeFullName,
+            stack = operation.Stack?.Select(static frame => new
+            {
+                stateMachineTypeFullName = frame.StateMachineTypeFullName,
+                state = frame.State,
+                awaiterTypeFullName = frame.AwaiterTypeFullName,
+                stateMachineAddress = FormatAddress(frame.StateMachineAddress),
+                taskAddress = frame.TaskAddress is { } frameTaskAddress ? FormatAddress(frameTaskAddress) : null,
+                taskId = frame.TaskId,
+                continuationObjectTypeFullName = frame.ContinuationObjectTypeFullName,
+            }),
+            observedOrder = operation.ObservedOrder,
+        }),
         sortedBy = data.SortedBy,
         timers = data.Timers,
-        assemblyLoadContexts = data.AssemblyLoadContexts,
+        assemblyLoadContexts = data.AssemblyLoadContexts is { } contexts
+            ? new
+            {
+                totalContexts = contexts.TotalContexts,
+                collectibleContexts = contexts.CollectibleContexts,
+                suspectedLeakedCollectibleContexts = contexts.SuspectedLeakedCollectibleContexts,
+                contexts = contexts.Contexts.Select(static context => new
+                {
+                    address = FormatAddress(context.Address),
+                    typeFullName = context.TypeFullName,
+                    name = context.Name,
+                    isCollectible = context.IsCollectible,
+                    isDefault = context.IsDefault,
+                    assemblyCount = context.AssemblyCount,
+                    assemblies = context.Assemblies,
+                    loaderAllocatorHandle = context.LoaderAllocatorHandle is { } loaderAllocatorHandle
+                        ? FormatAddress(loaderAllocatorHandle)
+                        : null,
+                    liveObjectCount = context.LiveObjectCount,
+                    liveBytes = context.LiveBytes,
+                    suspectedLeak = context.SuspectedLeak,
+                    retentionTargetKind = context.RetentionTargetKind,
+                    retentionTargetAddress = context.RetentionTargetAddress is { } retentionTargetAddress
+                        ? FormatAddress(retentionTargetAddress)
+                        : null,
+                    retentionTargetTypeFullName = context.RetentionTargetTypeFullName,
+                    retentionPath = context.RetentionPath is { } retentionPath
+                        ? ProjectRetentionPath(retentionPath)
+                        : null,
+                    notes = context.Notes,
+                }),
+                notes = contexts.Notes,
+            }
+            : null,
         retainedExceptions = data.RetainedExceptions,
     };
 
@@ -1387,7 +1454,7 @@ internal static class CliStreamingProtocol
     /// (address/thread-id-targeted views outside scope), <c>FramesPerThreadLimit</c> (only relevant to
     /// <c>Threads</c>/<c>Thread</c>).
     /// </summary>
-    private static object TrimThreadQueryResult(ThreadSnapshotQueryResult data) => new
+    internal static object TrimThreadQueryResult(ThreadSnapshotQueryResult data) => new
     {
         handle = data.Handle,
         view = data.View,
@@ -1395,11 +1462,78 @@ internal static class CliStreamingProtocol
         processId = data.ProcessId,
         capturedAt = data.CapturedAt,
         walkDuration = data.WalkDuration,
-        deadlocks = data.Deadlocks,
+        deadlocks = data.Deadlocks?.Select(static cycle => new
+        {
+            cycleMembers = cycle.CycleMembers,
+            lockChain = cycle.LockChain.Select(static link => new
+            {
+                waitingThreadId = link.WaitingThreadId,
+                ownerThreadId = link.OwnerThreadId,
+                lockObjectAddress = FormatAddress(link.LockObjectAddress),
+                lockObjectTypeFullName = link.LockObjectTypeFullName,
+                lockKind = link.LockKind,
+                edgeSource = link.EdgeSource,
+                confidence = link.Confidence,
+            }),
+            recommendedCommands = cycle.RecommendedCommands,
+            classification = cycle.Classification,
+            confidence = cycle.Confidence,
+        }),
         uniqueStacks = data.UniqueStacks,
         waitChains = data.WaitChains,
-        threadPool = data.ThreadPool,
+        threadPool = data.ThreadPool is { } threadPool
+            ? new
+            {
+                initialized = threadPool.Initialized,
+                usingPortableThreadPool = threadPool.UsingPortableThreadPool,
+                usingWindowsThreadPool = threadPool.UsingWindowsThreadPool,
+                workers = threadPool.Workers,
+                iocp = threadPool.Iocp,
+                queues = new
+                {
+                    globalQueueLength = threadPool.Queues.GlobalQueueLength,
+                    globalQueues = threadPool.Queues.GlobalQueues.Select(static queue => new
+                    {
+                        name = queue.Name,
+                        queueLength = queue.QueueLength,
+                        queueIndex = queue.QueueIndex,
+                        queueAddress = queue.QueueAddress is { } queueAddress
+                            ? FormatAddress(queueAddress)
+                            : null,
+                    }),
+                    localQueues = threadPool.Queues.LocalQueues.Select(static queue => new
+                    {
+                        queueAddress = FormatAddress(queue.QueueAddress),
+                        queueLength = queue.QueueLength,
+                        managedThreadId = queue.ManagedThreadId,
+                        osThreadId = queue.OSThreadId,
+                        queueIndex = queue.QueueIndex,
+                    }),
+                },
+                pendingWorkItems = threadPool.PendingWorkItems,
+                cpuUtilization = threadPool.CpuUtilization,
+                hillClimbing = threadPool.HillClimbing,
+                notes = threadPool.Notes,
+            }
+            : null,
     };
+
+    private static object ProjectRetentionPath(RetentionPath path) => new
+    {
+        targetTypeFullName = path.TargetTypeFullName,
+        targetObjectAddress = FormatAddress(path.TargetObjectAddress),
+        chain = path.Chain.Select(static frame => new
+        {
+            typeFullName = frame.TypeFullName,
+            objectAddress = FormatAddress(frame.ObjectAddress),
+            rootKind = frame.RootKind,
+        }),
+        truncated = path.Truncated,
+        targetIdentity = path.TargetIdentity,
+    };
+
+    private static string FormatAddress(ulong address) =>
+        "0x" + address.ToString("x", CultureInfo.InvariantCulture);
 
     /// <summary>
     /// Converts a Core <see cref="DiagnosticError.Kind"/> (PascalCase, e.g. <c>"ViewNotCaptured"</c>)

@@ -5,6 +5,11 @@
   "version": "0.1.0",
   "publisher": "pedrosakuma",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pedrosakuma/dotnet-diagnostics.git",
+    "directory": "vscode-extension"
+  },
   "engines": {
     "vscode": "^1.96.0"
   },
@@ -96,6 +101,7 @@
   "devDependencies": {
     "@types/node": "^20.17.0",
     "@types/vscode": "^1.96.0",
+    "@vscode/vsce": "3.3.2",
     "typescript": "^5.7.2"
   }
 }
