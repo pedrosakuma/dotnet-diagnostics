@@ -210,6 +210,23 @@ test("deadlock candidates are expanded and retain caveats about snapshot inferen
     assert.match(details.textContent, /validate the wait-for edges/);
 });
 
+test("unique stacks show frame display names and fractional shares as percentages", () => {
+    const { renderQueryView, makeContainer } = loadRenderer();
+    const container = makeContainer("threadQueryViews");
+
+    renderQueryView("threadQueryViews", "unique-stacks", {
+        uniqueStacks: [{
+            threadCount: 2,
+            threadPercentage: 0.5,
+            sampleThreads: [],
+            canonicalFrames: [{ displayName: "Sample.Run()" }, { displayName: "Sample.Main()" }],
+        }],
+    }, false);
+
+    assert.match(container.textContent, /Sample\.Run\(\)\s+→\s+Sample\.Main\(\)/);
+    assert.match(container.textContent, /50%/);
+});
+
 test("retained-exception samples are rendered without interpreting application text as markup", () => {
     const { renderQueryView, makeContainer } = loadRenderer();
     const container = makeContainer("heapQueryViews");

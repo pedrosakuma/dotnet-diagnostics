@@ -1369,7 +1369,22 @@ internal static class CliStreamingProtocol
         retentionPaths = data.RetentionPaths?.Select(ProjectRetentionPath),
         rootsByKind = data.RootsByKind,
         finalizableObjects = data.FinalizableObjects,
-        segments = data.Segments,
+        segments = data.Segments?.Select(static segment => new
+        {
+            logicalHeap = segment.LogicalHeap,
+            kind = segment.Kind,
+            generation = segment.Generation,
+            start = FormatAddress(segment.Start),
+            end = FormatAddress(segment.End),
+            length = segment.Length,
+            committedBytes = segment.CommittedBytes,
+            reservedBytes = segment.ReservedBytes,
+            usedBytes = segment.UsedBytes,
+            freeBytes = segment.FreeBytes,
+            objectCount = segment.ObjectCount,
+            freeObjectCount = segment.FreeObjectCount,
+            freePercent = segment.FreePercent,
+        }),
         staticFields = data.StaticFields?.Select(static field => new
         {
             containingTypeFullName = field.ContainingTypeFullName,
@@ -1479,7 +1494,28 @@ internal static class CliStreamingProtocol
             classification = cycle.Classification,
             confidence = cycle.Confidence,
         }),
-        uniqueStacks = data.UniqueStacks,
+        uniqueStacks = data.UniqueStacks?.Select(static group => new
+        {
+            signatureHash = group.SignatureHash,
+            threadCount = group.ThreadCount,
+            threadPercentage = group.ThreadPercentage,
+            inferredWaitReason = group.InferredWaitReason,
+            sampleThreads = group.SampleThreads,
+            canonicalFrames = group.CanonicalFrames.Select(static frame => new
+            {
+                kind = frame.Kind,
+                displayName = frame.DisplayName,
+                typeFullName = frame.TypeFullName,
+                moduleName = frame.ModuleName,
+                instructionPointer = FormatAddress(frame.InstructionPointer),
+                stackPointer = FormatAddress(frame.StackPointer),
+                identity = frame.Identity,
+                addressKind = frame.AddressKind,
+                rva = frame.Rva is { } rva ? FormatAddress(rva) : null,
+                loadBase = frame.LoadBase is { } loadBase ? FormatAddress(loadBase) : null,
+                buildId = frame.BuildId,
+            }),
+        }),
         waitChains = data.WaitChains,
         threadPool = data.ThreadPool is { } threadPool
             ? new

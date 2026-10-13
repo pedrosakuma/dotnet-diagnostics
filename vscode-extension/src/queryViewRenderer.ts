@@ -452,11 +452,11 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
             break;
         case "unique-stacks":
             nested("Stack groups", result.uniqueStacks,
-                row => formatValue(row.threadCount) + " thread(s) · " + formatPercent(row.threadPercentage),
+                row => formatValue(row.threadCount) + " thread(s) · " + formatPercent(typeof row.threadPercentage === "number" ? row.threadPercentage * 100 : row.threadPercentage),
                 (body, row) => {
                     metrics([
                         ["Threads", row.threadCount],
-                        ["Share", formatPercent(row.threadPercentage)],
+                        ["Share", formatPercent(typeof row.threadPercentage === "number" ? row.threadPercentage * 100 : row.threadPercentage)],
                         ["Wait reason", row.inferredWaitReason],
                     ], body);
                     fieldTable(body, "Threads in group", row.sampleThreads, [
@@ -466,7 +466,7 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
                     const frames = Array.isArray(row.canonicalFrames) ? row.canonicalFrames : [];
                     appendMessage(body, frames.map(frame => {
                         const item = frame && typeof frame === "object" ? frame as Record<string, unknown> : {};
-                        return formatValue(item.method) || formatValue(item.methodName) || formatValue(item);
+                        return typeof item.displayName === "string" && item.displayName ? item.displayName : formatValue(item);
                     }).join("  →  "), "query-view-chain");
                 },
                 "No stack groups matched the requested threshold.");

@@ -101,4 +101,41 @@ public sealed class CliStreamingAddressProjectionTests
         root.GetProperty("threadPool").GetProperty("queues").GetProperty("globalQueues")[0].GetProperty("queueAddress").GetString().Should().Be(AddressText);
         root.GetProperty("threadPool").GetProperty("queues").GetProperty("localQueues")[0].GetProperty("queueAddress").GetString().Should().Be(AddressText);
     }
+
+    [Fact]
+    public void HeapSegmentsProjection_SerializesBoundsAsExactHexStrings()
+    {
+        var result = new HeapSnapshotQueryResult("heap-handle", "fragmentation", "dump", 42, DateTimeOffset.UnixEpoch)
+        {
+            Segments = [new SegmentStat(0, "SOH", "Gen0", Address, Address, 16, 16, 16, 8, 8, 1, 1) { FreePercent = 50 }],
+        };
+
+        using var document = JsonDocument.Parse(JsonSerializer.Serialize(CliStreamingProtocol.TrimHeapQueryResult(result), JsonOptions));
+        var segment = document.RootElement.GetProperty("segments")[0];
+        segment.GetProperty("start").GetString().Should().Be(AddressText);
+        segment.GetProperty("end").GetString().Should().Be(AddressText);
+        segment.GetProperty("freePercent").GetDouble().Should().Be(50);
+    }
+
+    [Fact]
+    public void UniqueStacksProjection_SerializesFrameAddressesAsExactHexStrings()
+    {
+        var frame = new ManagedStackFrame("managed", "Sample.Run()", "Sample", "Sample.dll", Address, Address)
+        {
+            Rva = Address,
+            LoadBase = Address,
+        };
+        var result = new ThreadSnapshotQueryResult("thread-handle", "unique-stacks", "dump", 42, DateTimeOffset.UnixEpoch, TimeSpan.Zero)
+        {
+            UniqueStacks = [new UniqueThreadStackGroup("hash", 1, 0.5, [], [frame])],
+        };
+
+        using var document = JsonDocument.Parse(JsonSerializer.Serialize(CliStreamingProtocol.TrimThreadQueryResult(result), JsonOptions));
+        var projected = document.RootElement.GetProperty("uniqueStacks")[0].GetProperty("canonicalFrames")[0];
+        projected.GetProperty("displayName").GetString().Should().Be("Sample.Run()");
+        projected.GetProperty("instructionPointer").GetString().Should().Be(AddressText);
+        projected.GetProperty("stackPointer").GetString().Should().Be(AddressText);
+        projected.GetProperty("rva").GetString().Should().Be(AddressText);
+        projected.GetProperty("loadBase").GetString().Should().Be(AddressText);
+    }
 }
