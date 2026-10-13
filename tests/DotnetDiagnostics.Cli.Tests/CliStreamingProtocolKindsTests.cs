@@ -27,7 +27,7 @@ public sealed class CliStreamingProtocolKindsTests
     public async Task Start_WithUnknownKind_ReturnsInvalidStartError()
     {
         var (frames, exit) = await RunInProcessAsync(
-            new { type = "hello", protocolVersion = 1 },
+            new { type = "hello", protocolVersion = 2 },
             new
             {
                 type = "start",
@@ -47,7 +47,7 @@ public sealed class CliStreamingProtocolKindsTests
     public async Task Start_WithEmptyKindsArray_ReturnsInvalidStartError()
     {
         var (frames, _) = await RunInProcessAsync(
-            new { type = "hello", protocolVersion = 1 },
+            new { type = "hello", protocolVersion = 2 },
             new { type = "start", requestId = "r1", processId = 999_999, kinds = Array.Empty<object>() });
 
         frames[1].RootElement.GetProperty("code").GetString().Should().Be("invalid_start");
@@ -58,7 +58,7 @@ public sealed class CliStreamingProtocolKindsTests
     public async Task Start_WithDuplicateKind_ReturnsInvalidStartError()
     {
         var (frames, _) = await RunInProcessAsync(
-            new { type = "hello", protocolVersion = 1 },
+            new { type = "hello", protocolVersion = 2 },
             new
             {
                 type = "start",
@@ -75,7 +75,7 @@ public sealed class CliStreamingProtocolKindsTests
     public async Task Capture_WithUnsupportedKind_ReturnsUnsupportedCaptureKindError()
     {
         var (frames, _) = await RunInProcessAsync(
-            new { type = "hello", protocolVersion = 1 },
+            new { type = "hello", protocolVersion = 2 },
             new { type = "capture", requestId = "c1", kind = "memory", processId = 999_999 });
 
         frames[1].RootElement.GetProperty("type").GetString().Should().Be("error");
@@ -87,7 +87,7 @@ public sealed class CliStreamingProtocolKindsTests
     public async Task Capture_WithMissingProcessId_ReturnsInvalidCaptureError()
     {
         var (frames, _) = await RunInProcessAsync(
-            new { type = "hello", protocolVersion = 1 },
+            new { type = "hello", protocolVersion = 2 },
             new { type = "capture", requestId = "c1", kind = "cpu" });
 
         frames[1].RootElement.GetProperty("code").GetString().Should().Be("invalid_capture");
@@ -98,7 +98,7 @@ public sealed class CliStreamingProtocolKindsTests
     public async Task Capture_WithOutOfRangeDuration_ReturnsInvalidCaptureError()
     {
         var (frames, _) = await RunInProcessAsync(
-            new { type = "hello", protocolVersion = 1 },
+            new { type = "hello", protocolVersion = 2 },
             new { type = "capture", requestId = "c1", kind = "cpu", processId = 999_999, durationSeconds = 10_000 });
 
         frames[1].RootElement.GetProperty("code").GetString().Should().Be("invalid_capture");
@@ -109,7 +109,7 @@ public sealed class CliStreamingProtocolKindsTests
     public async Task Capture_HeapWithMissingSource_ReturnsInvalidCaptureError()
     {
         var (frames, _) = await RunInProcessAsync(
-            new { type = "hello", protocolVersion = 1 },
+            new { type = "hello", protocolVersion = 2 },
             new { type = "capture", requestId = "c1", kind = "heap", processId = 999_999 });
 
         frames[1].RootElement.GetProperty("code").GetString().Should().Be("invalid_capture");
@@ -120,7 +120,7 @@ public sealed class CliStreamingProtocolKindsTests
     public async Task Capture_HeapWithInvalidSource_ReturnsInvalidCaptureError()
     {
         var (frames, _) = await RunInProcessAsync(
-            new { type = "hello", protocolVersion = 1 },
+            new { type = "hello", protocolVersion = 2 },
             new { type = "capture", requestId = "c1", kind = "heap", processId = 999_999, source = "bogus" });
 
         frames[1].RootElement.GetProperty("code").GetString().Should().Be("invalid_capture");
@@ -131,7 +131,7 @@ public sealed class CliStreamingProtocolKindsTests
     public async Task Capture_HeapDumpWithMissingDumpFile_ReturnsInvalidCaptureError()
     {
         var (frames, _) = await RunInProcessAsync(
-            new { type = "hello", protocolVersion = 1 },
+            new { type = "hello", protocolVersion = 2 },
             new { type = "capture", requestId = "c1", kind = "heap", source = "dump" });
 
         frames[1].RootElement.GetProperty("code").GetString().Should().Be("invalid_capture");
@@ -142,7 +142,7 @@ public sealed class CliStreamingProtocolKindsTests
     public async Task Capture_HeapDumpWithProcessIdAndDumpFile_ReturnsInvalidCaptureError()
     {
         var (frames, _) = await RunInProcessAsync(
-            new { type = "hello", protocolVersion = 1 },
+            new { type = "hello", protocolVersion = 2 },
             new
             {
                 type = "capture",
@@ -162,7 +162,7 @@ public sealed class CliStreamingProtocolKindsTests
     public async Task Capture_HeapLiveWithDumpFile_ReturnsInvalidCaptureError()
     {
         var (frames, _) = await RunInProcessAsync(
-            new { type = "hello", protocolVersion = 1 },
+            new { type = "hello", protocolVersion = 2 },
             new
             {
                 type = "capture",
@@ -180,7 +180,7 @@ public sealed class CliStreamingProtocolKindsTests
     public async Task Capture_HeapWithOutOfRangeTopTypes_ReturnsInvalidCaptureError()
     {
         var (frames, _) = await RunInProcessAsync(
-            new { type = "hello", protocolVersion = 1 },
+            new { type = "hello", protocolVersion = 2 },
             new { type = "capture", requestId = "c1", kind = "heap", processId = 999_999, source = "live", topTypes = 0 });
 
         frames[1].RootElement.GetProperty("code").GetString().Should().Be("invalid_capture");
@@ -191,7 +191,7 @@ public sealed class CliStreamingProtocolKindsTests
     public async Task Capture_HeapLiveWithoutAcknowledgeRisk_ReturnsSafetyRejectedError()
     {
         var (frames, _) = await RunInProcessAsync(
-            new { type = "hello", protocolVersion = 1 },
+            new { type = "hello", protocolVersion = 2 },
             new { type = "capture", requestId = "c1", kind = "heap", processId = 999_999, source = "live" });
 
         frames[1].RootElement.GetProperty("type").GetString().Should().Be("error");
@@ -203,7 +203,7 @@ public sealed class CliStreamingProtocolKindsTests
     public async Task Capture_HeapGcDumpWithWrongAcknowledgeRisk_ReturnsSafetyRejectedError()
     {
         var (frames, _) = await RunInProcessAsync(
-            new { type = "hello", protocolVersion = 1 },
+            new { type = "hello", protocolVersion = 2 },
             new
             {
                 type = "capture",
@@ -222,7 +222,7 @@ public sealed class CliStreamingProtocolKindsTests
     public async Task Capture_ThreadSnapshotWithOutOfRangeMaxFramesPerThread_ReturnsInvalidCaptureError()
     {
         var (frames, _) = await RunInProcessAsync(
-            new { type = "hello", protocolVersion = 1 },
+            new { type = "hello", protocolVersion = 2 },
             new
             {
                 type = "capture",
@@ -240,7 +240,7 @@ public sealed class CliStreamingProtocolKindsTests
     public async Task Capture_ThreadSnapshotWithoutAcknowledgeRisk_ReturnsSafetyRejectedError()
     {
         var (frames, _) = await RunInProcessAsync(
-            new { type = "hello", protocolVersion = 1 },
+            new { type = "hello", protocolVersion = 2 },
             new { type = "capture", requestId = "c1", kind = "thread-snapshot", processId = 999_999 });
 
         frames[1].RootElement.GetProperty("type").GetString().Should().Be("error");
@@ -252,7 +252,7 @@ public sealed class CliStreamingProtocolKindsTests
     public async Task Capture_ThreadSnapshotWithWrongAcknowledgeRisk_ReturnsSafetyRejectedError()
     {
         var (frames, _) = await RunInProcessAsync(
-            new { type = "hello", protocolVersion = 1 },
+            new { type = "hello", protocolVersion = 2 },
             new
             {
                 type = "capture",
@@ -270,7 +270,7 @@ public sealed class CliStreamingProtocolKindsTests
     public async Task Capture_ThreadSnapshotWithMissingProcessIdAndDumpFile_ReturnsInvalidCaptureError()
     {
         var (frames, _) = await RunInProcessAsync(
-            new { type = "hello", protocolVersion = 1 },
+            new { type = "hello", protocolVersion = 2 },
             new { type = "capture", requestId = "c1", kind = "thread-snapshot" });
 
         frames[1].RootElement.GetProperty("code").GetString().Should().Be("invalid_capture");
@@ -282,7 +282,7 @@ public sealed class CliStreamingProtocolKindsTests
     public async Task Capture_ThreadSnapshotWithProcessIdAndDumpFile_ReturnsInvalidCaptureError()
     {
         var (frames, _) = await RunInProcessAsync(
-            new { type = "hello", protocolVersion = 1 },
+            new { type = "hello", protocolVersion = 2 },
             new
             {
                 type = "capture",
@@ -304,7 +304,7 @@ public sealed class CliStreamingProtocolKindsTests
         // non-existent dump file should fail at the Core use-case layer (capture_failed), not at
         // the safety-preflight layer (capture_safety_rejected).
         var (frames, _) = await RunInProcessAsync(
-            new { type = "hello", protocolVersion = 1 },
+            new { type = "hello", protocolVersion = 2 },
             new
             {
                 type = "capture",
@@ -322,7 +322,7 @@ public sealed class CliStreamingProtocolKindsTests
     {
         // Same Moderate/Warn posture as the thread-snapshot dump case above.
         var (frames, _) = await RunInProcessAsync(
-            new { type = "hello", protocolVersion = 1 },
+            new { type = "hello", protocolVersion = 2 },
             new
             {
                 type = "capture",
@@ -357,7 +357,7 @@ public sealed class CliStreamingProtocolKindsTests
                 target.ProcessId, ProcessDumpType.WithHeap, outputDirectory: null, CancellationToken.None);
 
             await using var session = await InteractiveCliSession.StartAsync();
-            await session.SendAsync(new { type = "hello", protocolVersion = 1 });
+            await session.SendAsync(new { type = "hello", protocolVersion = 2 });
             await session.ReadFrameAsync();
 
             await session.SendAsync(new { type = "capture", requestId = "heap-dump", kind = "heap", source = "dump", dumpFile = dump.FilePath, topTypes = 10 });
@@ -461,7 +461,7 @@ public sealed class CliStreamingProtocolKindsTests
             File.Exists(dump.FilePath).Should().BeTrue();
 
             var (frames, _) = await RunInProcessAsync(
-                new { type = "hello", protocolVersion = 1 },
+                new { type = "hello", protocolVersion = 2 },
                 new
                 {
                     type = "capture",
@@ -506,7 +506,7 @@ public sealed class CliStreamingProtocolKindsTests
             // a capture response (the extension does exactly this), so this needs an interactive
             // session rather than a flat batch of pre-serialized requests.
             await using var session = await InteractiveCliSession.StartAsync();
-            await session.SendAsync(new { type = "hello", protocolVersion = 1 });
+            await session.SendAsync(new { type = "hello", protocolVersion = 2 });
             await session.ReadFrameAsync();
 
             await session.SendAsync(new
@@ -633,7 +633,7 @@ public sealed class CliStreamingProtocolKindsTests
     public async Task Capture_HeapWithNonBooleanIncludeRetainedExceptions_ReturnsInvalidCaptureError()
     {
         var (frames, _) = await RunInProcessAsync(
-            new { type = "hello", protocolVersion = 1 },
+            new { type = "hello", protocolVersion = 2 },
             new
             {
                 type = "capture",
@@ -673,7 +673,7 @@ public sealed class CliStreamingProtocolKindsTests
     public async Task Query_NonStringTypeFilter_ReturnsInvalidQueryError()
     {
         var (frames, _) = await RunInProcessAsync(
-            new { type = "hello", protocolVersion = 1 },
+            new { type = "hello", protocolVersion = 2 },
             new { type = "query", requestId = "q1", handle = "whatever", view = "thread-statics", typeFilter = 7 });
 
         frames[1].RootElement.GetProperty("type").GetString().Should().Be("error");
@@ -684,7 +684,7 @@ public sealed class CliStreamingProtocolKindsTests
     public async Task Query_MissingRequiredFields_ReturnsInvalidQueryError()
     {
         var (frames, _) = await RunInProcessAsync(
-            new { type = "hello", protocolVersion = 1 },
+            new { type = "hello", protocolVersion = 2 },
             new { type = "query", requestId = "missing-handle", view = "roots-by-kind" },
             new { type = "query", requestId = "missing-view", handle = "whatever" },
             new { type = "query", handle = "whatever", view = "roots-by-kind" });
@@ -859,7 +859,7 @@ public sealed class CliStreamingProtocolKindsTests
         using var cli = CliStreamingProtocolTests.StartCliProcess();
         try
         {
-            await CliStreamingProtocolTests.WriteRequestAsync(cli, new { type = "hello", protocolVersion = 1 });
+            await CliStreamingProtocolTests.WriteRequestAsync(cli, new { type = "hello", protocolVersion = 2 });
             using (var hello = await CliStreamingProtocolTests.ReadFrameAsync(cli))
             {
                 hello.RootElement.GetProperty("type").GetString().Should().Be("hello");
@@ -976,7 +976,7 @@ public sealed class CliStreamingProtocolKindsTests
         using var cli = CliStreamingProtocolTests.StartCliProcess();
         try
         {
-            await CliStreamingProtocolTests.WriteRequestAsync(cli, new { type = "hello", protocolVersion = 1 });
+            await CliStreamingProtocolTests.WriteRequestAsync(cli, new { type = "hello", protocolVersion = 2 });
             using (var hello = await CliStreamingProtocolTests.ReadFrameAsync(cli))
             {
                 hello.RootElement.GetProperty("type").GetString().Should().Be("hello");
@@ -1035,7 +1035,7 @@ public sealed class CliStreamingProtocolKindsTests
         using var cli = CliStreamingProtocolTests.StartCliProcess();
         try
         {
-            await CliStreamingProtocolTests.WriteRequestAsync(cli, new { type = "hello", protocolVersion = 1 });
+            await CliStreamingProtocolTests.WriteRequestAsync(cli, new { type = "hello", protocolVersion = 2 });
             using (var hello = await CliStreamingProtocolTests.ReadFrameAsync(cli))
             {
                 hello.RootElement.GetProperty("type").GetString().Should().Be("hello");
@@ -1125,7 +1125,7 @@ public sealed class CliStreamingProtocolKindsTests
         using var cli = CliStreamingProtocolTests.StartCliProcess();
         try
         {
-            await CliStreamingProtocolTests.WriteRequestAsync(cli, new { type = "hello", protocolVersion = 1 });
+            await CliStreamingProtocolTests.WriteRequestAsync(cli, new { type = "hello", protocolVersion = 2 });
             using (var hello = await CliStreamingProtocolTests.ReadFrameAsync(cli))
             {
                 hello.RootElement.GetProperty("type").GetString().Should().Be("hello");
@@ -1186,7 +1186,7 @@ public sealed class CliStreamingProtocolKindsTests
         using var cli = CliStreamingProtocolTests.StartCliProcess();
         try
         {
-            await CliStreamingProtocolTests.WriteRequestAsync(cli, new { type = "hello", protocolVersion = 1 });
+            await CliStreamingProtocolTests.WriteRequestAsync(cli, new { type = "hello", protocolVersion = 2 });
             using (var hello = await CliStreamingProtocolTests.ReadFrameAsync(cli))
             {
                 hello.RootElement.GetProperty("type").GetString().Should().Be("hello");

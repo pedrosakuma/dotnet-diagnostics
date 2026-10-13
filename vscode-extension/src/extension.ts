@@ -84,7 +84,7 @@ async function pickHeapQueryOptIns(): Promise<HeapQueryOptIns | undefined> {
 }
 
 const execFile = promisify(execFileCallback);
-const PROTOCOL_VERSION = 1;
+const PROTOCOL_VERSION = 2;
 const MAX_WEBVIEW_SERIES = 128;
 
 interface Deferred<T> {

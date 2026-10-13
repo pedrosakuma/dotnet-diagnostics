@@ -43,9 +43,9 @@ test("process list parser rejects malformed CLI envelopes", () => {
 });
 
 test("protocol frame parser requires a typed JSON object", () => {
-    assert.deepEqual(parseProtocolFrame('{"type":"hello","protocolVersion":1}'), {
+    assert.deepEqual(parseProtocolFrame('{"type":"hello","protocolVersion":2}'), {
         type: "hello",
-        protocolVersion: 1,
+        protocolVersion: 2,
     });
     assert.throws(() => parseProtocolFrame("[]"), /string type/);
 });

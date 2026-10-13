@@ -603,9 +603,9 @@ session notes:
             "Run the versioned JSONL protocol for live EventCounter sessions.",
 """
 stream options:
-      --protocol jsonl          Required. Uses protocol version 1 over stdin/stdout.
+      --protocol jsonl          Required. Uses protocol version 2 over stdin/stdout.
 
-  Send a hello frame with protocolVersion 1 before start/stop/cancel requests.
+  Send a hello frame with protocolVersion 2 before start/stop/cancel requests.
   stdout contains protocol frames only; diagnostics are written to stderr.
 """,
             "",

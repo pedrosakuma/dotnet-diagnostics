@@ -31,7 +31,7 @@ namespace DotnetDiagnostics.Cli;
 /// </summary>
 internal static class CliStreamingProtocol
 {
-    private const int ProtocolVersion = 1;
+    private const int ProtocolVersion = 2;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
