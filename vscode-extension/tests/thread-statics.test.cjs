@@ -55,8 +55,8 @@ for (const [name, html] of [
 ]) {
     test(`${name} webview labels retained-exceptions and thread-statics`, () => {
         const script = extractInlineScript(html);
-        assert.match(script, /'retained-exceptions': 'Retained exceptions'/);
-        assert.match(script, /'thread-statics': 'Thread statics'/);
+        assert.match(script, /"retained-exceptions":"Retained exceptions"/);
+        assert.match(script, /"thread-statics":"Thread statics"/);
         assert.match(html, /id="threadStaticsType"/);
         assert.match(html, /id="threadStaticsButton"/);
     });

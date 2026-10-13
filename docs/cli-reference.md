@@ -21,12 +21,15 @@ If you want an LLM to drive diagnostics, use the **server** — see [`client-set
 `dotnet-diagnostics-cli stream --protocol jsonl` starts a versioned, bidirectional JSON Lines protocol
 for live runtime signals plus one-shot point-in-time captures. This mode is intended for local clients
 such as the VS Code extension; it bypasses the human-oriented command renderer, reserves stdout for
-protocol frames, and sends diagnostics to stderr. The current protocol version is `1` — adding live
-kinds and the `capture` request did not require a version bump, since both are additive and the legacy
-single-kind counters shape remains fully supported. Send a handshake before any other request:
+protocol frames, and sends diagnostics to stderr. The current protocol version is `2`. Version 2 serializes every
+address-valued field in heap and thread query results (retention paths, static fields, async
+operations, deadlock lock chains, ThreadPool queues, heap segments, and stack frames) as `0x`-prefixed
+hexadecimal strings instead of JSON numbers, because JavaScript clients lose precision above `2^53 - 1`.
+Version 1 is no longer accepted. Additive changes such as new live kinds and the `capture` request do
+not require a version bump. Send a handshake before any other request:
 
 ```json
-{"type":"hello","protocolVersion":1}
+{"type":"hello","protocolVersion":2}
 ```
 
 The CLI replies with the negotiated version.

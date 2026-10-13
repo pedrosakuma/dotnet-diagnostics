@@ -17,8 +17,11 @@ server as a data transport.
 Install the CLI explicitly; the extension never installs or updates tools:
 
 ```sh
-dotnet tool install -g dotnet-diagnostics-cli
+dotnet tool install -g dotnet-diagnostics-cli --version '>=0.29.0'
 ```
+
+The extension requires CLI **0.29.0 or later** (JSONL protocol version 2). Older CLIs are rejected
+with a protocol mismatch error; update with `dotnet tool update -g dotnet-diagnostics-cli`.
 
 The extension adds a **.NET Diagnostics** icon to the Activity Bar. Open its **Live Diagnostics**
 view and select **Start Live Counters**, or use the same command from the Command Palette. Choose a
@@ -89,9 +92,14 @@ failing view shows an inline error without blocking the others.
 - **Analyze Dump File** runs the same heap/thread views, with the same opt-in picker shown after
   you choose the file.
 
-Results are rendered as formatted JSON as returned by Core's query dispatchers, not bespoke
-tables. Address-targeted views (`object`, `gcroot`, `objsize`, `duplicate-strings`) are not
-exposed through the streaming protocol yet. These views require a CLI build from #1116 or later;
+Drilldown results use purpose-built summaries, metric cards, tables, and expandable chains rather
+than a generic JSON dump. The same renderer is used for live captures and dump analysis; it keeps
+provenance and evidence limitations visible, labels inferred deadlocks as candidates, and treats
+retained exception messages as potentially sensitive application data. Unknown future views use a
+compact key/value fallback. Heap and thread object addresses are serialized as hexadecimal strings
+so JavaScript preserves all 64 bits for future address-based navigation. Address-targeted views
+(`object`, `gcroot`, `objsize`, `duplicate-strings`) are not exposed through the streaming protocol
+yet. These views require a CLI build from #1116 or later;
 `retained-exceptions` and `thread-statics` require a CLI build from #1126 or later, and an older CLI
 rejects the new capture option or query and surfaces it as an unavailable view.
 
@@ -151,3 +159,21 @@ npm test
 Open this folder in VS Code and press F5 to launch an Extension Development Host. The package
 manifest is scoped to the workspace/machine; no executable path can be supplied by workspace
 settings.
+
+## Releasing
+
+The extension is versioned independently from the CLI and the .NET packages. Bump `version` in
+`package.json` (and `package-lock.json`) and push a matching `ext-vscode-v<version>` tag, for example:
+
+```sh
+npm version --no-git-tag-version 0.2.0
+npm test
+git tag ext-vscode-v0.2.0
+git push origin ext-vscode-v0.2.0
+```
+
+The `VS Code Extension Release` workflow verifies that the tag matches the package version, runs
+the extension tests, packages a VSIX, uploads it as a workflow artifact, and publishes it to the
+Visual Studio Marketplace. Configure the repository Actions secret `VSCE_PAT` with a publisher
+token that has Marketplace management/publish access. The normal CI workflow continues to test
+extension changes on pushes to `main` and pull requests; it does not publish from those builds.

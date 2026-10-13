@@ -248,7 +248,7 @@ public sealed class CliHostTests
     public async Task RunAsync_Stream_MalformedAndInvalidRequestsEmitOnlyJsonlFrames()
     {
         var stdin = new StringReader(
-            "{\"type\":\"hello\",\"protocolVersion\":1}\n" +
+            "{\"type\":\"hello\",\"protocolVersion\":2}\n" +
             "{not-json}\n" +
             "{\"type\":\"start\",\"requestId\":\"bad-pid\",\"processId\":0}\n" +
             "{\"type\":\"start\",\"requestId\":\"oversized-buffer\",\"processId\":1,\"observationCapacity\":16385}\n");
@@ -275,7 +275,7 @@ public sealed class CliHostTests
             .ToArray();
         frames.Should().HaveCount(4);
         frames[0].GetProperty("type").GetString().Should().Be("hello");
-        frames[0].GetProperty("protocolVersion").GetInt32().Should().Be(1);
+        frames[0].GetProperty("protocolVersion").GetInt32().Should().Be(2);
         frames[1].GetProperty("code").GetString().Should().Be("malformed_json");
         frames[2].GetProperty("code").GetString().Should().Be("invalid_start");
         frames[3].GetProperty("code").GetString().Should().Be("invalid_start");
@@ -299,7 +299,7 @@ public sealed class CliHostTests
         stderr.ToString().Should().BeEmpty();
         using var frame = JsonDocument.Parse(stdout.ToString());
         frame.RootElement.GetProperty("code").GetString().Should().Be("protocol_version_unsupported");
-        frame.RootElement.GetProperty("supportedVersions")[0].GetInt32().Should().Be(1);
+        frame.RootElement.GetProperty("supportedVersions")[0].GetInt32().Should().Be(2);
     }
 
     [Fact]

@@ -4,6 +4,7 @@ import { basename } from "node:path";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import { promisify } from "node:util";
 import * as vscode from "vscode";
+import { QUERY_VIEW_RENDERER_SCRIPT, QUERY_VIEW_STYLES } from "./queryViewRenderer";
 import {
     describeStreamCompatibilityError,
     isGcCollection,
@@ -83,7 +84,7 @@ async function pickHeapQueryOptIns(): Promise<HeapQueryOptIns | undefined> {
 }
 
 const execFile = promisify(execFileCallback);
-const PROTOCOL_VERSION = 1;
+const PROTOCOL_VERSION = 2;
 const MAX_WEBVIEW_SERIES = 128;
 
 interface Deferred<T> {
@@ -1878,17 +1879,10 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     #gcHeadline { margin:.3rem 0 .6rem; color:var(--vscode-descriptionForeground); }
     #captureStatus { color:var(--vscode-descriptionForeground); margin:.3rem 0; }
     .empty { display:none; }
-    .query-views { margin-top:.8rem; }
-    details.query-view { border:1px solid var(--vscode-panel-border); border-radius:3px; margin-bottom:.5rem; }
     .statics-form { margin:.5rem 0; display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; }
     .statics-form input { min-width:20rem; }
     .statics-error { color: var(--vscode-errorForeground); }
-    details.query-view > summary { cursor:pointer; padding:.4rem .6rem; font-weight:600; }
-    details.query-view[open] > summary { border-bottom:1px solid var(--vscode-panel-border); }
-    details.query-view pre { margin:0; padding:.6rem; white-space:pre-wrap; word-break:break-word; font-size:.85rem; max-height:360px; overflow:auto; }
-    details.query-view.query-view-error > summary { color:var(--vscode-errorForeground); }
-    details.query-view.query-view-deadlocks { border-color:var(--vscode-errorForeground); border-width:2px; }
-    details.query-view.query-view-deadlocks > summary { color:var(--vscode-errorForeground); font-size:1.05rem; }
+    ${QUERY_VIEW_STYLES}
   </style>
 </head>
 <body>
@@ -1991,6 +1985,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     const captureThreadResultElement = document.getElementById('captureThreadResult');
     const captureThreadHeadline = document.getElementById('captureThreadHeadline');
     const captureThreadBody = document.getElementById('captureThreadBody');
+    ${QUERY_VIEW_RENDERER_SCRIPT}
     const counters = new Map();
     const maxSeries = ${MAX_WEBVIEW_SERIES};
     // Defensive backstops in case a timestamp is missing/unparseable and time-based eviction
@@ -2293,67 +2288,6 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       });
     }
 
-    // Friendly labels for the 11 follow-up drilldown views (issue #1116). 'deadlocks' is called
-    // out here only for its title; the visual prominence (border/color, open-by-default) is driven
-    // by the 'query-view-deadlocks' CSS class applied in renderQueryView below.
-    const QUERY_VIEW_LABELS = {
-      'roots-by-kind': 'GC roots by kind',
-      'finalizer-queue': 'Finalizer queue',
-      'fragmentation': 'Heap fragmentation',
-      'gchandles': 'GC handles',
-      'async': 'Async state machines',
-      'timers': 'Timers',
-      'alc': 'AssemblyLoadContexts',
-      'static-fields': 'Static fields',
-      'delegate-targets': 'Delegate targets',
-      'retention-paths': 'Retention paths',
-      'retained-exceptions': 'Retained exceptions',
-      'deadlocks': 'Deadlocks',
-      'unique-stacks': 'Unique stacks',
-      'wait-chains': 'Wait chains',
-      'threadpool': 'Thread pool',
-      'thread-statics': 'Thread statics',
-    };
-
-    // Renders one follow-up 'query' drilldown result (or its error) as a collapsible details
-    // section inside the given container. This is a deliberately generic JSON-dump renderer rather
-    // than 11 bespoke per-view tables: the view result shapes come directly from
-    // HeapSnapshotQueryDispatcher/ThreadSnapshotQueryDispatcher and are already structured for
-    // human/LLM reading, so a formatted JSON block is a reasonable first cut. 'deadlocks' gets
-    // extra visual weight (open by default, distinct border/color) since it's the single most
-    // actionable output of this feature - an inferred wait-for cycle.
-    function renderQueryView(containerId, view, resultOrMessage, isError) {
-      const container = document.getElementById(containerId);
-      if (!container) return;
-      const elementId = containerId + '-' + view;
-      let details = document.getElementById(elementId);
-      if (!details) {
-        details = document.createElement('details');
-        details.id = elementId;
-        details.className = 'query-view';
-        if (view === 'deadlocks') {
-          details.open = true;
-          details.classList.add('query-view-deadlocks');
-        }
-        const summary = document.createElement('summary');
-        summary.textContent = QUERY_VIEW_LABELS[view] || view;
-        const pre = document.createElement('pre');
-        details.appendChild(summary);
-        details.appendChild(pre);
-        container.appendChild(details);
-      }
-      const summary = details.querySelector('summary');
-      const pre = details.querySelector('pre');
-      details.classList.toggle('query-view-error', !!isError);
-      if (isError) {
-        summary.textContent = (QUERY_VIEW_LABELS[view] || view) + ' (unavailable)';
-        pre.textContent = String(resultOrMessage);
-      } else {
-        summary.textContent = QUERY_VIEW_LABELS[view] || view;
-        pre.textContent = JSON.stringify(resultOrMessage, null, 2);
-      }
-    }
-
     // The thread-statics view needs an exact type name, so it is requested on demand rather than
     // auto-queried; the extension host validates the message again.
     function setThreadStaticsBusy(busy) {
@@ -2537,17 +2471,10 @@ export function renderDumpAnalysisHtml(dumpFileName: string, nonce: string): str
     table { border-collapse:collapse; width:100%; font-size:.9rem; }
     th, td { text-align:left; padding:.25rem .6rem; border-bottom:1px solid var(--vscode-panel-border); }
     .empty { display:none; }
-    .query-views { margin-top:.8rem; }
-    details.query-view { border:1px solid var(--vscode-panel-border); border-radius:3px; margin-bottom:.5rem; }
     .statics-form { margin:.5rem 0; display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; }
     .statics-form input { min-width:20rem; }
     .statics-error { color: var(--vscode-errorForeground); }
-    details.query-view > summary { cursor:pointer; padding:.4rem .6rem; font-weight:600; }
-    details.query-view[open] > summary { border-bottom:1px solid var(--vscode-panel-border); }
-    details.query-view pre { margin:0; padding:.6rem; white-space:pre-wrap; word-break:break-word; font-size:.85rem; max-height:360px; overflow:auto; }
-    details.query-view.query-view-error > summary { color:var(--vscode-errorForeground); }
-    details.query-view.query-view-deadlocks { border-color:var(--vscode-errorForeground); border-width:2px; }
-    details.query-view.query-view-deadlocks > summary { color:var(--vscode-errorForeground); font-size:1.05rem; }
+    ${QUERY_VIEW_STYLES}
     .status { color:var(--vscode-descriptionForeground); margin:.3rem 0; }
   </style>
 </head>
@@ -2603,6 +2530,7 @@ export function renderDumpAnalysisHtml(dumpFileName: string, nonce: string): str
     const captureThreadResultElement = document.getElementById('captureThreadResult');
     const captureThreadHeadline = document.getElementById('captureThreadHeadline');
     const captureThreadBody = document.getElementById('captureThreadBody');
+    ${QUERY_VIEW_RENDERER_SCRIPT}
 
     // 'result' is the trimmed DiagnosticResult<DumpInspection> projection the CLI streaming
     // protocol emits for a "heap" capture with source "dump" - see
@@ -2674,59 +2602,6 @@ export function renderDumpAnalysisHtml(dumpFileName: string, nonce: string): str
         });
         captureThreadBody.appendChild(row);
       });
-    }
-
-    // See renderHtml's identical QUERY_VIEW_LABELS/renderQueryView for the full rationale; kept as
-    // a duplicate copy here since this is a separate self-contained webview template/script.
-    const QUERY_VIEW_LABELS = {
-      'roots-by-kind': 'GC roots by kind',
-      'finalizer-queue': 'Finalizer queue',
-      'fragmentation': 'Heap fragmentation',
-      'gchandles': 'GC handles',
-      'async': 'Async state machines',
-      'timers': 'Timers',
-      'alc': 'AssemblyLoadContexts',
-      'static-fields': 'Static fields',
-      'delegate-targets': 'Delegate targets',
-      'retention-paths': 'Retention paths',
-      'retained-exceptions': 'Retained exceptions',
-      'deadlocks': 'Deadlocks',
-      'unique-stacks': 'Unique stacks',
-      'wait-chains': 'Wait chains',
-      'threadpool': 'Thread pool',
-      'thread-statics': 'Thread statics',
-    };
-
-    function renderQueryView(containerId, view, resultOrMessage, isError) {
-      const container = document.getElementById(containerId);
-      if (!container) return;
-      const elementId = containerId + '-' + view;
-      let details = document.getElementById(elementId);
-      if (!details) {
-        details = document.createElement('details');
-        details.id = elementId;
-        details.className = 'query-view';
-        if (view === 'deadlocks') {
-          details.open = true;
-          details.classList.add('query-view-deadlocks');
-        }
-        const summary = document.createElement('summary');
-        summary.textContent = QUERY_VIEW_LABELS[view] || view;
-        const pre = document.createElement('pre');
-        details.appendChild(summary);
-        details.appendChild(pre);
-        container.appendChild(details);
-      }
-      const summary = details.querySelector('summary');
-      const pre = details.querySelector('pre');
-      details.classList.toggle('query-view-error', !!isError);
-      if (isError) {
-        summary.textContent = (QUERY_VIEW_LABELS[view] || view) + ' (unavailable)';
-        pre.textContent = String(resultOrMessage);
-      } else {
-        summary.textContent = QUERY_VIEW_LABELS[view] || view;
-        pre.textContent = JSON.stringify(resultOrMessage, null, 2);
-      }
     }
 
     // The thread-statics view needs an exact type name, so it is requested on demand rather than

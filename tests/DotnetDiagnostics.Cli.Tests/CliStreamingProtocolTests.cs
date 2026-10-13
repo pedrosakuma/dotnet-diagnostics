@@ -28,11 +28,11 @@ public sealed class CliStreamingProtocolTests
         var stderrTask = cli.StandardError.ReadToEndAsync();
         try
         {
-            await WriteRequestAsync(cli, new { type = "hello", protocolVersion = 1 });
+            await WriteRequestAsync(cli, new { type = "hello", protocolVersion = 2 });
             using (var hello = await ReadFrameAsync(cli))
             {
                 hello.RootElement.GetProperty("type").GetString().Should().Be("hello");
-                hello.RootElement.GetProperty("protocolVersion").GetInt32().Should().Be(1);
+                hello.RootElement.GetProperty("protocolVersion").GetInt32().Should().Be(2);
             }
 
             await WriteRequestAsync(cli, new
