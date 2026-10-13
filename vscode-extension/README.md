@@ -17,8 +17,11 @@ server as a data transport.
 Install the CLI explicitly; the extension never installs or updates tools:
 
 ```sh
-dotnet tool install -g dotnet-diagnostics-cli
+dotnet tool install -g dotnet-diagnostics-cli --version '>=0.29.0'
 ```
+
+The extension requires CLI **0.29.0 or later** (JSONL protocol version 2). Older CLIs are rejected
+with a protocol mismatch error; update with `dotnet tool update -g dotnet-diagnostics-cli`.
 
 The extension adds a **.NET Diagnostics** icon to the Activity Bar. Open its **Live Diagnostics**
 view and select **Start Live Counters**, or use the same command from the Command Palette. Choose a
