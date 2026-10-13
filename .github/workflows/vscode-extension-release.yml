@@ -3,7 +3,7 @@ name: VS Code Extension Release
 on:
   push:
     tags:
-      - 'vscode-v*'
+      - 'ext-vscode-v*'
 
 permissions:
   contents: read
@@ -31,7 +31,7 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          tag_version="${RELEASE_TAG#vscode-v}"
+          tag_version="${RELEASE_TAG#ext-vscode-v}"
           package_version="$(node -p "require('./package.json').version")"
           if [[ "$tag_version" != "$package_version" ]]; then
             echo "::error::Tag version '$tag_version' does not match vscode-extension/package.json version '$package_version'."
@@ -50,7 +50,7 @@ jobs:
         working-directory: vscode-extension
         run: |
           mkdir -p ../artifacts
-          npm exec -- vsce package --out "../artifacts/dotnet-diagnostics-${GITHUB_REF_NAME#vscode-v}.vsix"
+          npm exec -- vsce package --out "../artifacts/dotnet-diagnostics-${GITHUB_REF_NAME#ext-vscode-v}.vsix"
 
       - name: Upload VSIX artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -68,4 +68,4 @@ jobs:
             echo "::error::Configure the VSCE_PAT Actions secret with Marketplace publish access before tagging an extension release."
             exit 1
           fi
-          npm exec -- vsce publish --packagePath "../artifacts/dotnet-diagnostics-${GITHUB_REF_NAME#vscode-v}.vsix"
+          npm exec -- vsce publish --packagePath "../artifacts/dotnet-diagnostics-${GITHUB_REF_NAME#ext-vscode-v}.vsix"

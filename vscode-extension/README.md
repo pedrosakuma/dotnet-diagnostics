@@ -163,13 +163,13 @@ settings.
 ## Releasing
 
 The extension is versioned independently from the CLI and the .NET packages. Bump `version` in
-`package.json` (and `package-lock.json`) and push a matching `vscode-v<version>` tag, for example:
+`package.json` (and `package-lock.json`) and push a matching `ext-vscode-v<version>` tag, for example:
 
 ```sh
 npm version --no-git-tag-version 0.2.0
 npm test
-git tag vscode-v0.2.0
-git push origin vscode-v0.2.0
+git tag ext-vscode-v0.2.0
+git push origin ext-vscode-v0.2.0
 ```
 
 The `VS Code Extension Release` workflow verifies that the tag matches the package version, runs
