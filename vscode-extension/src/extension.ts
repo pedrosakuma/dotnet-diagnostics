@@ -6,6 +6,12 @@ import { promisify } from "node:util";
 import * as vscode from "vscode";
 import { registerOnboarding } from "./onboarding";
 import { QUERY_VIEW_RENDERER_SCRIPT, QUERY_VIEW_STYLES } from "./queryViewRenderer";
+import { CAPTURE_VIEW_RENDERER_SCRIPT } from "./captureViewRenderer";
+import {
+    CAPTURE_KIND_SPECS, buildCaptureRequest, captureTimeoutMs, isCaptureViewResult,
+    parseSources, validateInteger, validateSymbolPath,
+    type CaptureKindSpec, type CaptureParams, type CaptureViewKind, type CaptureViewResult,
+} from "./captureKinds";
 import {
     describeStreamCompatibilityError,
     isGcCollection,
@@ -107,7 +113,8 @@ type PendingCapture =
     | { kind: "cpu"; deferred: Deferred<CpuSampleSummary> }
     | { kind: "exceptions" | "crash-guard"; deferred: Deferred<ExceptionCaptureResult> }
     | { kind: "heap"; deferred: Deferred<HeapCaptureResult> }
-    | { kind: "thread-snapshot"; deferred: Deferred<ThreadCaptureResult> };
+    | { kind: "thread-snapshot"; deferred: Deferred<ThreadCaptureResult> }
+    | { kind: "diagnostics"; captureKind: CaptureViewKind; deferred: Deferred<CaptureViewResult> };
 
 /** Heap snapshot source the user selects before a "Capture Heap Snapshot" request (see #1110). */
 type HeapCaptureSource = "live" | "gcdump";
@@ -163,6 +170,7 @@ class CounterPanelController implements vscode.Disposable {
     private startStreamTask?: Promise<void>;
     private captureCpuTask?: Promise<void>;
     private captureExceptionsTask?: Promise<void>;
+    private captureDiagnosticsTask?: Promise<void>;
     private captureHeapTask?: Promise<void>;
     private captureThreadSnapshotTask?: Promise<void>;
     /**
@@ -350,6 +358,70 @@ class CounterPanelController implements vscode.Disposable {
             const message = withRuntimeGuidance(errorMessage(error));
             this.postMessage({ type: "captureStatus", kind: "exceptions", state: "error", message });
             this.output.appendLine(`Exception capture failed: ${message}`);
+        } finally {
+            session.pendingCaptures.delete(requestId);
+            if (ownsSession && !session.sessionId && !session.startInFlight && session.pendingCaptures.size === 0) {
+                session.expectedShutdown = true;
+                await this.closeChild(session);
+            }
+        }
+    }
+
+    public captureDiagnostics(): Promise<void> {
+        if (!this.captureDiagnosticsTask) {
+            this.captureDiagnosticsTask = this.captureDiagnosticsCore().finally(() => {
+                this.captureDiagnosticsTask = undefined;
+            });
+        }
+        return this.captureDiagnosticsTask;
+    }
+
+    private async captureDiagnosticsCore(): Promise<void> {
+        if (this.disposed) return;
+        const target = this.selectedTarget ?? await this.ensureTargetAndPanel();
+        if (!target || this.disposed) return;
+        const selection = await vscode.window.showQuickPick(
+            CAPTURE_KIND_SPECS.map(spec => ({ label: spec.label, description: spec.description, spec })),
+            { placeHolder: "Select a diagnostic capture; captured names, paths and SQL may contain sensitive data" });
+        if (!selection || this.disposed) return;
+        const spec = selection.spec;
+        const params = await promptCaptureParams(spec);
+        if (!params || this.disposed) return;
+        if (spec.risk === "high") {
+            const acknowledged = await vscode.window.showWarningMessage(
+                "Off-CPU capture uses high-risk kernel scheduler tracing (perf on Linux, ETW on Windows). "
+                + "It requires elevated tracing permissions and can expose stack, symbol and method names.",
+                { modal: true }, "Acknowledge and Capture", "Cancel");
+            if (acknowledged !== "Acknowledge and Capture" || this.disposed) return;
+        }
+        const status = (state: string, message: string): void =>
+            this.postMessage({ type: "captureStatus", kind: "diagnostics", state, message });
+        status("starting", `Preparing ${spec.label} capture...`);
+        let session: StreamChild;
+        let ownsSession: boolean;
+        try {
+            ({ session, owns: ownsSession } = await this.acquireChild());
+        } catch (error) {
+            status("error", withRuntimeGuidance(errorMessage(error)));
+            return;
+        }
+        if (session.pendingCaptures.size > 0 || session.pendingQueries.size > 0 || session.startInFlight) {
+            status("error", "The CLI connection is busy. Wait for the current capture, query or session startup to finish.");
+            return;
+        }
+        const requestId = randomBytes(12).toString("hex");
+        const pending: PendingCapture = { kind: "diagnostics", captureKind: spec.kind, deferred: deferred<CaptureViewResult>() };
+        session.pendingCaptures.set(requestId, pending);
+        try {
+            this.writeFrame(session, buildCaptureRequest(requestId, spec, target.processId, params));
+            status("running", `${spec.label} capture requested (${params.durationSeconds} seconds after startup). Allow time for tracing startup, then reproduce the problem.`);
+            const result = await withTimeout(pending.deferred.promise, captureTimeoutMs(spec.kind, params.durationSeconds));
+            this.postMessage({ type: "capture", kind: "diagnostics", result });
+            status("done", `${spec.label} capture complete.`);
+        } catch (error) {
+            const message = withRuntimeGuidance(errorMessage(error));
+            status("error", message);
+            this.output.appendLine(`${spec.label} capture failed: ${message}`);
         } finally {
             session.pendingCaptures.delete(requestId);
             if (ownsSession && !session.sessionId && !session.startInFlight && session.pendingCaptures.size === 0) {
@@ -863,6 +935,8 @@ class CounterPanelController implements vscode.Disposable {
                 void this.captureCpu();
             } else if (message.type === "captureExceptions") {
                 void this.captureExceptions();
+            } else if (message.type === "captureDiagnostics") {
+                void this.captureDiagnostics();
             } else if (message.type === "captureHeap") {
                 void this.captureHeap();
             } else if (message.type === "captureThreadSnapshot") {
@@ -1181,7 +1255,10 @@ class CounterPanelController implements vscode.Disposable {
                 if (!pending) {
                     break;
                 }
-                if (pending.kind === "cpu" && isCpuSampleSummary(frame.result)) {
+                if (pending.kind === "diagnostics" && frame.kind === pending.captureKind
+                    && isCaptureViewResult(frame.result) && frame.result.kind === pending.captureKind) {
+                    pending.deferred.resolve(frame.result);
+                } else if (pending.kind === "cpu" && isCpuSampleSummary(frame.result)) {
                     pending.deferred.resolve(frame.result);
                 } else if ((pending.kind === "exceptions" || pending.kind === "crash-guard")
                     && isExceptionCaptureResult(frame.result)) {
@@ -1859,6 +1936,7 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.commands.registerCommand("dotnetDiagnostics.stopCounters", () => controller.stopCounters()),
         vscode.commands.registerCommand("dotnetDiagnostics.captureCpu", () => controller.captureCpu()),
         vscode.commands.registerCommand("dotnetDiagnostics.captureExceptions", () => controller.captureExceptions()),
+        vscode.commands.registerCommand("dotnetDiagnostics.captureDiagnostics", () => controller.captureDiagnostics()),
         vscode.commands.registerCommand("dotnetDiagnostics.captureHeap", () => controller.captureHeap()),
         vscode.commands.registerCommand("dotnetDiagnostics.captureThreadSnapshot", () => controller.captureThreadSnapshot()),
         vscode.commands.registerCommand("dotnetDiagnostics.analyzeDumpFile", () => analyzeDumpFile(output, context)),
@@ -1924,7 +2002,11 @@ class DiagnosticsActionsProvider implements vscode.TreeDataProvider<vscode.TreeI
         captureExceptions.description = "Collect exception types, messages and available stacks";
         captureExceptions.iconPath = new vscode.ThemeIcon("warning");
         captureExceptions.command = { command: "dotnetDiagnostics.captureExceptions", title: "Capture Exceptions" };
-        return [start, stop, captureCpu, captureExceptions, captureHeap, captureThreadSnapshot, analyzeDumpFile];
+        const captureDiagnostics = new vscode.TreeItem("Capture Diagnostics", vscode.TreeItemCollapsibleState.None);
+        captureDiagnostics.description = "Allocation, off-CPU, contention, thread pool, GC, requests, Kestrel, DB, networking";
+        captureDiagnostics.iconPath = new vscode.ThemeIcon("search");
+        captureDiagnostics.command = { command: "dotnetDiagnostics.captureDiagnostics", title: "Capture Diagnostics" };
+        return [start, stop, captureCpu, captureExceptions, captureDiagnostics, captureHeap, captureThreadSnapshot, analyzeDumpFile];
     }
 }
 
@@ -1974,6 +2056,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       <button id="start">Start</button><button id="stop" disabled>Stop</button>
       <button id="captureCpu">Capture CPU now</button>
       <button id="captureExceptions">Capture exceptions</button>
+      <button id="captureDiagnostics">Capture diagnostics</button>
       <button id="captureHeap">Capture heap snapshot</button>
       <button id="captureThreadSnapshot">Capture thread snapshot</button>
     </div>
@@ -1997,6 +2080,12 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     <h3>Exception capture</h3>
     <div id="captureExceptionsStatus" role="status"></div>
     <div id="exceptionCaptureViews" class="query-views"></div>
+  </section>
+
+  <section class="panel">
+    <h3>Diagnostics capture</h3>
+    <div id="captureDiagnosticsStatus" role="status"></div>
+    <div id="diagnosticsCaptureViews"></div>
   </section>
 
   <section class="panel">
@@ -2061,6 +2150,8 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     const gcHeadline = document.getElementById('gcHeadline');
     const gcBody = document.getElementById('gcBody');
     const captureStatusElement = document.getElementById('captureStatus');
+    const captureDiagnosticsStatus = document.getElementById('captureDiagnosticsStatus');
+    const captureDiagnosticsButton = document.getElementById('captureDiagnostics');
     const captureResultElement = document.getElementById('captureResult');
     const captureHeadline = document.getElementById('captureHeadline');
     const captureBody = document.getElementById('captureBody');
@@ -2076,6 +2167,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     const captureThreadHeadline = document.getElementById('captureThreadHeadline');
     const captureThreadBody = document.getElementById('captureThreadBody');
     ${QUERY_VIEW_RENDERER_SCRIPT}
+    ${CAPTURE_VIEW_RENDERER_SCRIPT}
     const counters = new Map();
     const maxSeries = ${MAX_WEBVIEW_SERIES};
     // Defensive backstops in case a timestamp is missing/unparseable and time-based eviction
@@ -2417,6 +2509,12 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         captureExceptionsStatus.textContent = message.message || message.state || '';
         captureExceptionsButton.disabled = message.state === 'running' || message.state === 'starting';
         if (message.state === 'running') document.getElementById('exceptionCaptureViews').replaceChildren();
+      } else if (message.type === 'captureStatus' && message.kind === 'diagnostics') {
+        captureDiagnosticsStatus.textContent = message.message || message.state || '';
+        captureDiagnosticsButton.disabled = message.state === 'running' || message.state === 'starting';
+        if (message.state === 'running') document.getElementById('diagnosticsCaptureViews').replaceChildren();
+      } else if (message.type === 'capture' && message.kind === 'diagnostics') {
+        renderCaptureView('diagnosticsCaptureViews', message.result);
       } else if (message.type === 'captureStatus' && message.kind === 'heap') {
         captureHeapStatusElement.textContent = message.message || message.state || '';
         captureHeapButton.disabled = message.state === 'running';
@@ -2492,6 +2590,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     stopButton.addEventListener('click', () => vscode.postMessage({ type: 'stop' }));
     captureCpuButton.addEventListener('click', () => vscode.postMessage({ type: 'captureCpu' }));
     captureExceptionsButton.addEventListener('click', () => vscode.postMessage({ type: 'captureExceptions' }));
+    captureDiagnosticsButton.addEventListener('click', () => vscode.postMessage({ type: 'captureDiagnostics' }));
     captureHeapButton.addEventListener('click', () => vscode.postMessage({ type: 'captureHeap' }));
     captureThreadSnapshotButton.addEventListener('click', () => vscode.postMessage({ type: 'captureThreadSnapshot' }));
     window.addEventListener('resize', resizeCanvas);
@@ -2823,6 +2922,42 @@ function describeHeapCaptureRisk(source: HeapCaptureSource, label: string): stri
         ? "A live ClrMD heap walk attaches with ptrace, suspends the target, and exposes heap type and object-graph metadata. This may expose possibly confidential data."
         : "GC dump capture induces a managed GC and exposes aggregate heap type metadata. This may expose possibly confidential data.";
     return `Capture heap snapshot (${label})? ${impact} This is a high-risk operation that requires explicit acknowledgement before it runs against the selected process.`;
+}
+
+async function promptCaptureParams(spec: CaptureKindSpec): Promise<CaptureParams | undefined> {
+    const duration = await vscode.window.showInputBox({
+        prompt: `${spec.label}: capture duration in seconds (1-300)`, value: "10",
+        validateInput: value => validateInteger(value, 1, 300, "Duration"),
+    });
+    if (duration === undefined) return undefined;
+    const top = await vscode.window.showInputBox({
+        prompt: `${spec.label}: rows per table (1-100)`, value: String(spec.defaultTopN),
+        validateInput: value => validateInteger(value, 1, 100, "Rows per table"),
+    });
+    if (top === undefined) return undefined;
+    const params: CaptureParams = { durationSeconds: Number(duration), topN: Number(top) };
+    if (spec.supportsSymbolPath) {
+        const symbols = await vscode.window.showInputBox({ prompt: "Optional symbol path", validateInput: validateSymbolPath });
+        if (symbols === undefined) return undefined;
+        if (symbols.trim()) params.symbolPath = symbols.trim();
+    }
+    if (spec.supportsSources) {
+        const sources = await vscode.window.showInputBox({
+            prompt: "Optional comma-separated ActivitySource filters; empty captures all sources",
+            validateInput: value => parseSources(value).error,
+        });
+        if (sources === undefined) return undefined;
+        params.sources = parseSources(sources).sources;
+    }
+    if (spec.supportsThreshold) {
+        const threshold = await vscode.window.showInputBox({
+            prompt: "Long-running request threshold in milliseconds (0-3600000)", value: "1000",
+            validateInput: value => validateInteger(value, 0, 3_600_000, "Threshold"),
+        });
+        if (threshold === undefined) return undefined;
+        params.thresholdMs = Number(threshold);
+    }
+    return params;
 }
 
 function describeThreadCaptureRisk(): string {

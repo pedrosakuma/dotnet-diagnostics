@@ -14,6 +14,10 @@ versioned independently from the CLI and the .NET packages.
 
 ### Added
 
+- One **Capture Diagnostics** picker for allocation, off-CPU, contention, thread pool, GC,
+  GC/activity correlation, requests, Kestrel, database and networking captures, with
+  structured tables, evidence quality and explicit unavailable/omitted data.
+
 - Raster Marketplace icon and a dark gallery banner.
 - README screenshots of live counters, heap drilldown, and thread snapshot panels. They are
   illustrative renders of the real webview panels using fixture data, not live captures.
