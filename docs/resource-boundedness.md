@@ -66,6 +66,26 @@ can directly modify the storage directory. It prevents ordinary diagnostic file
 operations from bypassing the managed package lifecycle. Capture implementation
 and release acceptance are tracked separately in #1001, #1007 and #1005.
 
+### VS Code sharing and JSONL CPU export
+
+CPU JSONL captures register their existing trace artifact in the shared bounded
+handle store (20-minute TTL, default 32 entries); the protocol adds no independent
+artifact dictionary. The extension retains the latest result and CPU export
+reference, plus at most 20 host-held address-navigation results per live/dump panel
+for Back/Forward sharing. A new capture clears that cache; missing/evicted results
+cannot fall back to exporting another result. The extension serializes CPU exports.
+CPU export requests time out after 60 seconds;
+an unsettled request closes its CLI connection. Raw traces retain the sampler's
+existing artifact-root storage/reaper policy.
+
+Measurement-only exports retain at most 2,000 numeric/null measurements, examine
+at most 200 entries per array, and stop descending after depth 10 or 10,000 visited
+nodes. An explicit omission count includes redactions and presentation limits.
+Names, dynamic keys, object values, paths, symbols and unsafe integer values are
+not exported. Saved comparisons use the existing 8-Mi-character/60-second CLI
+runner, validate at most 2,000 metrics and display the first 200 with an omission
+notice; arithmetic and compatibility remain Core-owned.
+
 ### EventPipe CPU code-version attribution (`code-versions`, issue #1075)
 
 `CodeVersionCensus` keeps at most `MaxPublishedVersions` (262144) compact published-range records

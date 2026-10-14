@@ -107,6 +107,40 @@ Unsupported `kind` values, an inactive/invalid `processId`, or an out-of-range `
 produce an `error` frame (`unsupported_capture_kind`, `invalid_capture`, or `capture_safety_rejected`)
 instead.
 
+#### CPU exports
+
+After protocol-v2 negotiation, a CPU `capture` accepts optional `exportTrace: true`
+(default false). Non-boolean flags and raw-trace requests on other kinds are rejected
+before collection. The capture frame retains its existing compact `result` and adds
+`exportHandle`: a CPU-sample handle in the current CLI host, with a 20-minute TTL,
+subject to the existing bounded handle-store capacity.
+
+```json
+{"type":"capture","requestId":"c1","kind":"cpu","processId":1234,"durationSeconds":10,"exportTrace":true}
+{"type":"export","requestId":"e1","handle":"<exportHandle>","format":"summary"}
+{"type":"export","requestId":"e2","handle":"<exportHandle>","format":"trace","outputPath":"/home/operator/cpu.nettrace","acknowledgeRisk":"critical"}
+```
+
+`summary` calls the existing `export-summary` handler in the same host and returns
+the portable summary document as `result` without writing a file. Its document uses
+the existing PascalCase investigation-summary schema; consumers must not assume that
+its properties use the JSONL envelope's camelCase convention.
+
+`trace` requires explicit human acknowledgement of **Critical** raw-byte exposure and
+an absolute local destination. It materializes only the stored handle's own trace via
+the artifact-root-confined byte reader; callers cannot specify the source path.
+Relative paths, parent traversal, UNC destinations, missing traces and invalid handles
+fail explicitly. Responses are `{"type":"export","requestId":...,"format":...,"result":...}`;
+failures use `code:"export_failed"` with the matching request ID.
+
+Raw traces are not redacted and can contain secrets. Clients must obtain explicit
+consent before collection/export and must not upload automatically. Portable summary
+documents can also contain secrets and sensitive application data; the VS Code sharing actions apply a
+separate, intentionally lossy allowlisted measurement projection before opening them.
+Handles do not survive CLI exit; a fresh one-shot invocation cannot export this summary.
+
+#### Additional diagnostic captures
+
 The additional diagnostic kinds (`allocation` through `networking` above) reuse the one-shot
 `collect` handlers and safety profiles. Their `topN` is 1-100 (default 25, or 20 for
 `gc-activities`). Optional kind-specific fields are `symbolPath` for `off_cpu` (non-empty,

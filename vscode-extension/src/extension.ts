@@ -4,6 +4,7 @@ import { basename } from "node:path";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import { promisify } from "node:util";
 import * as vscode from "vscode";
+import { ResultExporter, RESULT_EXPORT_BUTTONS, RESULT_EXPORT_SCRIPT, openShareable } from "./resultExport";
 import { ADDRESS_NAVIGATION_HTML, AddressNavigationController, type AddressNavigationHost } from "./addressNavigation";
 import { registerOnboarding } from "./onboarding";
 import { QUERY_VIEW_RENDERER_SCRIPT, QUERY_VIEW_STYLES } from "./queryViewRenderer";
@@ -163,6 +164,10 @@ interface StreamChild {
 }
 
 class CounterPanelController implements vscode.Disposable {
+    private readonly exporter = new ResultExporter();
+    private cpuExport?: { session: StreamChild; handle: string };
+    private readonly pendingExports = new Map<string, { session: StreamChild; deferred: Deferred<unknown> }>();
+    private exporting = false;
     private panel?: vscode.WebviewPanel;
     private panelReady?: Deferred<void>;
     private selectedTarget?: TargetProcess;
@@ -255,12 +260,15 @@ class CounterPanelController implements vscode.Disposable {
             `${selected.operatingSystem}/${selected.processArchitecture}`,
         ].join("|") : undefined;
         if (selected?.processId !== entry.processId || selectedIdentity !== entry.identity) {
+            if (this.exporting) throw new Error("Wait for the current export before selecting another process.");
             const child = this.activeChild;
             if (child && (child.pendingCaptures.size > 0 || child.pendingQueries.size > 0 || child.startInFlight))
                 throw new Error("Wait for the current capture or query before selecting another process.");
             await this.stopCounters();
             const previous = this.panel;
             this.panel = undefined;
+            this.exporter.clear();
+            this.cpuExport = undefined;
             this.panelReady?.resolve();
             this.panelReady = undefined;
             previous?.dispose();
@@ -276,7 +284,18 @@ class CounterPanelController implements vscode.Disposable {
         await this.waitForPanelReady();
     }
 
-    private async captureCpuCore(): Promise<void> {
+    public async captureCpuTrace(): Promise<void> {
+        const confirmation = await vscode.window.showWarningMessage(
+            "Collect a raw CPU trace locally? Raw traces can contain secrets and sensitive application data. "
+            + "They are not redacted and will never be uploaded automatically.",
+            { modal: true }, "Acknowledge and Capture Trace", "Cancel");
+        if (confirmation !== "Acknowledge and Capture Trace") return;
+        if (this.captureCpuTask) throw new Error("Wait for the current CPU capture to finish.");
+        this.captureCpuTask = this.captureCpuCore(true).finally(() => { this.captureCpuTask = undefined; });
+        await this.captureCpuTask;
+    }
+
+    private async captureCpuCore(exportTrace = false): Promise<void> {
         if (this.disposed) {
             return;
         }
@@ -313,6 +332,7 @@ class CounterPanelController implements vscode.Disposable {
                 processId: target.processId,
                 durationSeconds: 10,
                 topN: 10,
+                ...(exportTrace ? { exportTrace: true } : {}),
             });
             const summary = await withTimeout(pending.deferred.promise, 60_000);
             this.postMessage({ type: "capture", kind: "cpu", summary });
@@ -327,7 +347,8 @@ class CounterPanelController implements vscode.Disposable {
             this.output.appendLine(`CPU capture failed: ${errorMessage(error)}`);
         } finally {
             session.pendingCaptures.delete(requestId);
-            if (ownsSession && !session.sessionId && !session.startInFlight && session.pendingCaptures.size === 0) {
+            if (ownsSession && !session.sessionId && !session.startInFlight && session.pendingCaptures.size === 0
+                && this.cpuExport?.session !== session) {
                 // This connection exists only to serve capture requests — no live session was
                 // started on it (and no `start` request is queued/in-flight behind this capture
                 // response, which the single-threaded CLI read loop processes strictly in order).
@@ -401,7 +422,8 @@ class CounterPanelController implements vscode.Disposable {
             this.output.appendLine(`Exception capture failed: ${message}`);
         } finally {
             session.pendingCaptures.delete(requestId);
-            if (ownsSession && !session.sessionId && !session.startInFlight && session.pendingCaptures.size === 0) {
+            if (ownsSession && !session.sessionId && !session.startInFlight && session.pendingCaptures.size === 0
+                && this.cpuExport?.session !== session) {
                 session.expectedShutdown = true;
                 await this.closeChild(session);
             }
@@ -465,7 +487,8 @@ class CounterPanelController implements vscode.Disposable {
             this.output.appendLine(`${spec.label} capture failed: ${message}`);
         } finally {
             session.pendingCaptures.delete(requestId);
-            if (ownsSession && !session.sessionId && !session.startInFlight && session.pendingCaptures.size === 0) {
+            if (ownsSession && !session.sessionId && !session.startInFlight && session.pendingCaptures.size === 0
+                && this.cpuExport?.session !== session) {
                 session.expectedShutdown = true;
                 await this.closeChild(session);
             }
@@ -613,7 +636,8 @@ class CounterPanelController implements vscode.Disposable {
             this.output.appendLine(`Heap snapshot capture failed: ${errorMessage(error)}`);
         } finally {
             session.pendingCaptures.delete(requestId);
-            if (ownsSession && !keepSession && !session.sessionId && !session.startInFlight && session.pendingCaptures.size === 0) {
+            if (ownsSession && !keepSession && !session.sessionId && !session.startInFlight && session.pendingCaptures.size === 0
+                && this.cpuExport?.session !== session) {
                 // This connection exists only to serve capture requests — no live session was
                 // started on it (and no `start` request is queued/in-flight behind this capture
                 // response, which the single-threaded CLI read loop processes strictly in order).
@@ -862,7 +886,8 @@ class CounterPanelController implements vscode.Disposable {
             this.output.appendLine(`Thread snapshot capture failed: ${errorMessage(error)}`);
         } finally {
             session.pendingCaptures.delete(requestId);
-            if (ownsSession && !keepSession && !session.sessionId && !session.startInFlight && session.pendingCaptures.size === 0) {
+            if (ownsSession && !keepSession && !session.sessionId && !session.startInFlight && session.pendingCaptures.size === 0
+                && this.cpuExport?.session !== session) {
                 // Same connection-reuse bookkeeping as captureCpuCore/captureHeapCore: only close
                 // a capture-only connection once every other capture sharing it has also finished.
                 session.expectedShutdown = true;
@@ -998,6 +1023,14 @@ class CounterPanelController implements vscode.Disposable {
             }
         });
         panel.webview.onDidReceiveMessage(message => {
+            if (isRecord(message) && message.type === "exportResult") {
+                void this.exporter.handle(message);
+                return;
+            }
+            if (isRecord(message) && (message.type === "exportSummary" || message.type === "exportTrace")) {
+                void this.exportCpu(message.type === "exportTrace" ? "trace" : "summary");
+                return;
+            }
             if (!isRecord(message) || typeof message.type !== "string") {
                 return;
             }
@@ -1010,6 +1043,8 @@ class CounterPanelController implements vscode.Disposable {
                 void this.stopCounters();
             } else if (message.type === "captureCpu") {
                 void this.captureCpu();
+            } else if (message.type === "captureCpuTrace") {
+                void this.captureCpuTrace().catch(error => vscode.window.showErrorMessage(errorMessage(error)));
             } else if (message.type === "captureExceptions") {
                 void this.captureExceptions();
             } else if (message.type === "captureDiagnostics") {
@@ -1025,7 +1060,10 @@ class CounterPanelController implements vscode.Disposable {
                 } else {
                     void this.queryThreadStatics(typeFilter);
                 }
+            } else if (message.type === "navigationSelection") {
+                void this.exporter.handle(message);
             } else if (message.type === "copyAddress" || message.type === "navigateAddress") {
+                if (message.type === "navigateAddress") this.exporter.set(undefined);
                 void this.addressNavigation.handle(message);
             }
         }, undefined, []);
@@ -1033,6 +1071,7 @@ class CounterPanelController implements vscode.Disposable {
             configListener.dispose();
             if (this.panel !== panel) return;
             this.panel = undefined;
+            this.exporter.clear();
             this.selectedTarget = undefined;
             this.panelReady?.resolve();
             this.panelReady = undefined;
@@ -1211,6 +1250,10 @@ class CounterPanelController implements vscode.Disposable {
                 pending.reject(new Error("The CLI connection closed before the query completed."));
             }
             session.pendingQueries.clear();
+            for (const pending of this.pendingExports.values()) {
+                if (pending.session === session) pending.deferred.reject(new Error("The CLI connection closed before the export completed."));
+            }
+            if (this.cpuExport?.session === session) this.cpuExport = undefined;
             if (this.activeChild === session) {
                 this.activeChild = undefined;
                 this.statusBar.text = "$(pulse) .NET Counters";
@@ -1339,6 +1382,8 @@ class CounterPanelController implements vscode.Disposable {
                     && isCaptureViewResult(frame.result) && frame.result.kind === pending.captureKind) {
                     pending.deferred.resolve(frame.result);
                 } else if (pending.kind === "cpu" && isCpuSampleSummary(frame.result)) {
+                    this.cpuExport = typeof frame.exportHandle === "string" && frame.exportHandle.length <= 128
+                        ? { session, handle: frame.exportHandle } : undefined;
                     pending.deferred.resolve(frame.result);
                 } else if ((pending.kind === "exceptions" || pending.kind === "crash-guard")
                     && isExceptionCaptureResult(frame.result)) {
@@ -1355,6 +1400,12 @@ class CounterPanelController implements vscode.Disposable {
 
             // Follow-up heap/thread-snapshot drilldown response for a handle registered by a
             // prior `capture` on this same connection (issue #1116).
+            case "export": {
+                const pending = typeof frame.requestId === "string" ? this.pendingExports.get(frame.requestId) : undefined;
+                if (pending?.session === session) pending.deferred.resolve(frame.result);
+                break;
+            }
+
             case "query": {
                 const requestId = typeof frame.requestId === "string" ? frame.requestId : undefined;
                 const pending = requestId ? session.pendingQueries.get(requestId) : undefined;
@@ -1385,7 +1436,10 @@ class CounterPanelController implements vscode.Disposable {
                 const requestId = typeof frame.requestId === "string" ? frame.requestId : undefined;
                 const pendingCapture = requestId ? session.pendingCaptures.get(requestId) : undefined;
                 const pendingQuery = requestId ? session.pendingQueries.get(requestId) : undefined;
-                if (pendingCapture) {
+                const pendingExport = requestId ? this.pendingExports.get(requestId) : undefined;
+                if (pendingExport?.session === session) {
+                    pendingExport.deferred.reject(error);
+                } else if (pendingCapture) {
                     pendingCapture.deferred.reject(error);
                 } else if (pendingQuery) {
                     pendingQuery.reject(error);
@@ -1426,6 +1480,8 @@ class CounterPanelController implements vscode.Disposable {
     }
 
     private writeFrame(session: StreamChild, frame: object): void {
+        if (isRecord(frame) && ["capture", "query", "start"].includes(String(frame.type)) && this.pendingExports.size)
+            throw new Error("Wait for the current export to finish.");
         if (!session.process.stdin.writable) {
             throw new Error("CLI stdin is closed.");
         }
@@ -1433,7 +1489,65 @@ class CounterPanelController implements vscode.Disposable {
     }
 
     private postMessage(message: object): void {
+        this.exporter.observe(message);
         void this.panel?.webview.postMessage(message);
+    }
+
+    private async exportCpu(format: "summary" | "trace"): Promise<void> {
+        if (this.exporting) return;
+        this.exporting = true;
+        try {
+            const saved = this.cpuExport;
+            if (!saved || saved.session.closing || saved.session.process.exitCode !== null)
+                throw new Error("Capture CPU with an updated CLI first. Export handles live only while this panel's CLI connection remains open.");
+            if (saved.session.pendingCaptures.size || saved.session.pendingQueries.size || saved.session.startInFlight)
+                throw new Error("Wait for the current capture or query to finish.");
+            let outputPath: string | undefined;
+            if (format === "trace") {
+                const choice = await vscode.window.showWarningMessage(
+                    "Export this unredacted raw trace locally? It may contain secrets and sensitive application data. "
+                    + "Only share it after your own review. No upload will be performed.",
+                    { modal: true }, "Export Locally", "Cancel");
+                if (choice !== "Export Locally") return;
+                const destination = await vscode.window.showSaveDialog({ filters: { "EventPipe trace": ["nettrace"] } });
+                if (!destination) return;
+                if (destination.scheme !== "file") throw new Error("Raw traces can only be exported to a local file.");
+                outputPath = destination.fsPath;
+            }
+            if (this.cpuExport !== saved || saved.session.closing) throw new Error("The CPU capture connection changed. Capture again.");
+            if (saved.session.pendingCaptures.size || saved.session.pendingQueries.size || saved.session.startInFlight)
+                throw new Error("Wait for the current capture or query to finish.");
+            const requestId = randomBytes(12).toString("hex"), result = deferred<unknown>();
+            this.pendingExports.set(requestId, { session: saved.session, deferred: result });
+            try {
+                this.writeFrame(saved.session, { type: "export", requestId, handle: saved.handle, format,
+                    ...(format === "trace" ? { outputPath, acknowledgeRisk: "critical" } : {}) });
+                const value = await withTimeout(result.promise, 60_000);
+                if (format === "summary") {
+                    if (!isRecord(value) || value.Schema !== "dotnet-diagnostics-mcp/investigation-summary/v1"
+                        || !isRecord(value.Provenance) || !isRecord(value.Findings)
+                        || typeof value.Findings.TotalSamples !== "number" || !Number.isSafeInteger(value.Findings.TotalSamples)
+                        || value.Findings.TotalSamples < 0 || !Array.isArray(value.Findings.TopHotspots))
+                        throw new Error("The CLI returned an unsupported CPU investigation summary.");
+                    await openShareable(value, "json");
+                }
+                else {
+                    if (!isRecord(value) || value.kind !== "trace" || value.outputPath !== outputPath
+                        || typeof value.totalBytes !== "number" || !Number.isSafeInteger(value.totalBytes) || value.totalBytes < 0
+                        || typeof value.sha256 !== "string" || !/^[a-f0-9]{64}$/i.test(value.sha256))
+                        throw new Error("The CLI did not return a verified trace export receipt.");
+                    await vscode.window.showInformationMessage("Raw trace exported locally. It is unredacted; no upload was performed.");
+                }
+            } catch (error) {
+                if (!result.settled) {
+                    saved.session.expectedShutdown = true;
+                    await this.closeChild(saved.session);
+                }
+                throw error;
+            } finally { this.pendingExports.delete(requestId); }
+        } catch (error) {
+            await vscode.window.showErrorMessage(`CPU export failed: ${errorMessage(error)}`);
+        } finally { this.exporting = false; }
     }
 
     private async showCliError(error: unknown): Promise<void> {
@@ -1535,6 +1649,7 @@ interface DumpAnalysisChild {
  * `CounterPanelController`.
  */
 class DumpAnalysisPanelController implements vscode.Disposable {
+    private readonly exporter = new ResultExporter();
     private readonly panel: vscode.WebviewPanel;
     private disposed = false;
     /** Tracked so `dispose()` can forcibly end an in-flight capture-only connection when the panel is closed mid-analysis. */
@@ -1561,7 +1676,12 @@ class DumpAnalysisPanelController implements vscode.Disposable {
         );
         this.panel.webview.html = renderDumpAnalysisHtml(fileName, randomBytes(16).toString("hex"));
         this.panel.webview.onDidReceiveMessage(message => {
+            if (isRecord(message) && (message.type === "exportResult" || message.type === "navigationSelection")) {
+                void this.exporter.handle(message);
+                return;
+            }
             if (isRecord(message) && (message.type === "copyAddress" || message.type === "navigateAddress")) {
+                if (message.type === "navigateAddress") this.exporter.set(undefined);
                 void this.addressNavigation.handle(message);
                 return;
             }
@@ -1962,6 +2082,7 @@ class DumpAnalysisPanelController implements vscode.Disposable {
 
     private postMessage(message: object): void {
         if (!this.disposed) {
+            this.exporter.observe(message);
             void this.panel.webview.postMessage(message);
         }
     }
@@ -2198,6 +2319,9 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       <label for="metric">Counter</label><select id="metric" aria-label="Select counter"></select>
       <button id="start">Start</button><button id="stop" disabled>Stop</button>
       <button id="captureCpu">Capture CPU now</button>
+      <button id="captureCpuTrace">Capture CPU + raw trace</button>
+      <button id="exportSummary">Export redacted investigation summary</button>
+      <button id="exportTrace">Export raw trace locally</button>
       <button id="captureExceptions">Capture exceptions</button>
       <button id="captureDiagnostics">Capture diagnostics</button>
       <button id="captureHeap">Capture heap snapshot</button>
@@ -2209,6 +2333,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
   <canvas id="chart" aria-label="Selected counter time series"></canvas>
   <div id="quality"></div>
   <div id="error" role="alert"></div>
+  ${RESULT_EXPORT_BUTTONS}
 
   <section class="panel">
     <h3>GC pauses</h3>
@@ -2277,6 +2402,9 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
 
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
+    ${RESULT_EXPORT_SCRIPT}
+    for (const type of ["captureCpuTrace", "exportSummary", "exportTrace"])
+      document.getElementById(type).addEventListener("click", () => vscode.postMessage({ type }));
     const metricSelect = document.getElementById('metric');
     const startButton = document.getElementById('start');
     const stopButton = document.getElementById('stop');
@@ -2825,6 +2953,7 @@ export function renderDumpAnalysisHtml(dumpFileName: string, nonce: string): str
   <header>
     <h2>Dump analysis</h2>
     <div>${escapeHtml(dumpFileName)}</div>
+    ${RESULT_EXPORT_BUTTONS}
   </header>
   <div id="error" role="alert"></div>
 
@@ -2862,6 +2991,7 @@ export function renderDumpAnalysisHtml(dumpFileName: string, nonce: string): str
 
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
+    ${RESULT_EXPORT_SCRIPT}
     const errorElement = document.getElementById('error');
     const captureHeapStatusElement = document.getElementById('captureHeapStatus');
     const captureHeapResultElement = document.getElementById('captureHeapResult');

@@ -23,6 +23,34 @@ server as a data transport.
 
 ![Thread snapshot table and inferred deadlock candidates (illustrative fixture)](https://raw.githubusercontent.com/pedrosakuma/dotnet-diagnostics/main/vscode-extension/media/thread-snapshot.png)
 
+## Sharing results
+
+Use **Export redacted JSON** or **Export redacted CSV** in a result panel to open an editable
+document containing only allowlisted measurements from the most recent result. Save it locally
+with the editor's normal Save action. These intentionally lossy exports exclude application
+text, symbols, identifiers, paths, arbitrary object values and diagnostic interpretations.
+Unavailable values remain unavailable, not zero; explicit omission counts include excluded data
+and presentation caps. These documents are not raw evidence or re-importable capture packages.
+
+After a CPU capture, **Export redacted investigation summary** calls the CLI's `export-summary`
+in the same connection that owns the capture, then applies the same measurement-only projection
+before opening it. This needs a CLI build containing the export protocol; if the connection has
+closed or its handle has expired, capture again. It never calls a fresh CLI with an expired handle.
+
+Raw traces are a separate, unredacted, local-only option. Choose **Capture CPU + raw trace** and
+explicitly acknowledge the sensitive-data warning before collection. **Export raw trace locally**
+requires another confirmation and a native local Save dialog. The CLI materializes bytes only
+from the trace associated with that CPU handle under its artifact root; the webview cannot provide
+a source path. No automatic upload occurs. Raw traces can contain secrets and must be reviewed
+before sharing. A normal CPU capture does not retain a raw trace.
+
+In a **Saved Captures** panel, choose a candidate artifact/view and **Compare with saved baseline**.
+Select a baseline from the latest 50 sealed captures and one of its artifacts. The CLI, not the
+extension, evaluates compatibility and calculates deltas. The panel preserves measurement units,
+normalization, retained populations, unavailable reasons and qualified/incompatible status.
+Relative delta is a ratio, not percent; a zero baseline does not imply an infinite improvement.
+Comparison does not contact the original process or prove equivalent workloads or causation.
+
 ## Prerequisites
 
 - VS Code 1.96 or newer with a Node.js extension host.

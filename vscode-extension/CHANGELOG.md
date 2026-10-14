@@ -14,6 +14,10 @@ versioned independently from the CLI and the .NET packages.
 
 ### Added
 
+- Redacted measurement-only JSON/CSV exports in live, dump and saved-result panels.
+- CPU investigation-summary export and explicitly confirmed local raw-trace capture/export.
+- CLI-backed saved-capture baseline comparison with qualified deltas and unavailable-data reasons.
+
 - Address navigation in heap drilldowns (#1168): exact-hex address links between retention paths,
   object fields, GC root paths and referencing statics, a Copy action on every valid address,
   bounded Back/Forward history with a breadcrumb, for live and dump panels. Live Object and GC

@@ -74,38 +74,40 @@ export class AddressNavigationController {
             return true;
         }
 
-        const outcome = await this.guard.run(() => this.navigate(view, address));
+        const navigationId = typeof message.navigationId === "number" && Number.isSafeInteger(message.navigationId)
+            && message.navigationId > 0 ? message.navigationId : undefined;
+        const outcome = await this.guard.run(() => this.navigate(view, address, navigationId));
         if (!outcome.started) {
-            this.fail(view, address, "Another address lookup is still running.");
+            this.fail(view, address, "Another address lookup is still running.", navigationId);
         }
         return true;
     }
 
-    private async navigate(view: NavigationView, address: string): Promise<void> {
+    private async navigate(view: NavigationView, address: string, navigationId?: number): Promise<void> {
         const handle = this.host.currentHeapHandle();
         if (handle === undefined) {
-            this.fail(view, address, "No heap snapshot with a retained handle is available. Capture a heap snapshot first.");
+            this.fail(view, address, "No heap snapshot with a retained handle is available. Capture a heap snapshot first.", navigationId);
             return;
         }
         const needsAcknowledgement = READ_VIEWS.has(view);
         if (needsAcknowledgement && !await this.host.acknowledge(view as "object" | "gcroot", address)) {
-            this.fail(view, address, "Cancelled: the risk acknowledgement was declined.");
+            this.fail(view, address, "Cancelled: the risk acknowledgement was declined.", navigationId);
             return;
         }
         try {
             const result = await this.host.query(handle, view, address, needsAcknowledgement);
             if (!isQueryResult(result) || result.view !== view) {
-                this.fail(view, address, "The CLI returned an unexpected response.");
+                this.fail(view, address, "The CLI returned an unexpected response.", navigationId);
                 return;
             }
-            this.host.post({ type: "navigation", view, address, result });
+            this.host.post({ type: "navigation", view, address, result, ...(navigationId ? { navigationId } : {}) });
         } catch (error) {
-            this.fail(view, address, error instanceof Error ? error.message : String(error));
+            this.fail(view, address, error instanceof Error ? error.message : String(error), navigationId);
         }
     }
 
-    private fail(view: NavigationView, address: string, message: string): void {
-        this.host.post({ type: "navigationError", view, address, message });
+    private fail(view: NavigationView, address: string, message: string, navigationId?: number): void {
+        this.host.post({ type: "navigationError", view, address, message, ...(navigationId ? { navigationId } : {}) });
         this.host.log(`Address navigation '${view}' failed: ${message}`);
     }
 }
@@ -144,7 +146,7 @@ export const ADDRESS_NAVIGATION_SCRIPT = `
 const MAX_ADDRESS_HISTORY = ${MAX_NAVIGATION_HISTORY};
 const addressLinkContainers = new Set(['heapQueryViews', 'addressQueryViews']);
 const addressViewLabels = { 'object': 'Object', 'gcroot': 'GC root path', 'static-fields': 'Referencing statics' };
-const addressNavigationState = { entries: [], index: -1 };
+const addressNavigationState = { entries: [], index: -1, sequence: 0 };
 
 function isValidAddress(value) {
   return typeof value === 'string' && /^0x[0-9a-fA-F]{1,16}$/.test(value) && /[1-9a-fA-F]/.test(value.slice(2));
@@ -189,12 +191,14 @@ function appendAddressValue(parent, value, containerId) {
 
 function navigateToAddress(address, view) {
   if (!isValidAddress(address) || !addressViewLabels[view]) return;
+  address = address.toLowerCase();
   const state = addressNavigationState;
   state.entries.length = state.index + 1;
-  state.entries.push({ address: address, view: view, status: 'loading' });
+  const navigationId = ++state.sequence;
+  state.entries.push({ address: address, view: view, status: 'loading', navigationId });
   if (state.entries.length > MAX_ADDRESS_HISTORY) state.entries.splice(0, state.entries.length - MAX_ADDRESS_HISTORY);
   state.index = state.entries.length - 1;
-  postAddressMessage({ type: 'navigateAddress', kind: 'heap', view: view, address: address });
+  postAddressMessage({ type: 'navigateAddress', kind: 'heap', view: view, address: address, navigationId });
   renderAddressNavigation();
 }
 
@@ -216,7 +220,8 @@ function handleAddressNavigationMessage(message) {
   const entries = addressNavigationState.entries;
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i];
-    if (entry.status === 'loading' && entry.view === message.view && entry.address === message.address) {
+    if (entry.status === 'loading' && entry.view === message.view && entry.address === message.address
+        && entry.navigationId === message.navigationId) {
       if (message.type === 'navigation') {
         entry.status = 'ready';
         entry.result = message.result;
@@ -236,6 +241,9 @@ function renderAddressNavigation() {
   if (!bar) return;
   const state = addressNavigationState;
   const entry = state.entries[state.index];
+  if (entry) postAddressMessage({ type: 'navigationSelection', view: entry.view, address: entry.address, navigationId: entry.navigationId,
+    ready: entry.status === 'ready',
+    history: state.entries.map(item => ({ view: item.view, address: item.address, navigationId: item.navigationId })) });
   bar.hidden = state.entries.length === 0;
   const back = document.getElementById('addressNavBack');
   const forward = document.getElementById('addressNavForward');

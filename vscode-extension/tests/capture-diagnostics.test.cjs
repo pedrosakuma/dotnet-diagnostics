@@ -34,6 +34,7 @@ function fixture(spec = kinds.CAPTURE_KIND_SPECS[0], overrides = {}) {
     const controller = Object.create(Controller.prototype);
     controller.selectedTarget = { processId: 4242 };
     controller.output = { appendLine() {} };
+    controller.pendingExports = new Map();
     controller.acquireChild = async () => ({ session, owns: false });
     controller.postMessage = message => messages.push(message);
     controller.writeFrame = (_session, frame) => {
@@ -108,6 +109,17 @@ test("busy captures do not send queued reproduction guidance or discard previous
         assert.equal(frames.length, 0);
         assert.equal(messages.at(-1).state, "error");
         assert.ok(!messages.some(m => m.state === "running"));
+    }
+});
+test("a sibling capture cannot close the connection retaining a CPU export handle", async () => {
+    for (const retainCpu of [false, true]) {
+        const { controller, session } = fixture();
+        let closed = 0;
+        controller.acquireChild = async () => ({ session, owns: true });
+        controller.closeChild = async () => { closed++; };
+        if (retainCpu) controller.cpuExport = { session, handle: "cpu-handle" };
+        await controller.captureDiagnostics();
+        assert.equal(closed, retainCpu ? 0 : 1);
     }
 });
 test("declining high risk does not connect or issue an acknowledgement", async () => {
