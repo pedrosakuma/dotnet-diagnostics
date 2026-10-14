@@ -1,10 +1,19 @@
 {
   "name": "dotnet-diagnostics",
   "displayName": ".NET Diagnostics",
-  "description": "Live runtime counters, GC pauses, and point-in-time CPU captures for .NET processes using dotnet-diagnostics-cli.",
+  "description": "Live .NET runtime counters and GC pauses, CPU, heap and thread snapshots, and dump analysis for running .NET processes, powered by dotnet-diagnostics-cli.",
   "version": "0.1.0",
   "publisher": "pedrosakuma",
   "license": "MIT",
+  "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#512bd4",
+    "theme": "dark"
+  },
+  "homepage": "https://github.com/pedrosakuma/dotnet-diagnostics/tree/main/vscode-extension#readme",
+  "bugs": {
+    "url": "https://github.com/pedrosakuma/dotnet-diagnostics/issues"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/pedrosakuma/dotnet-diagnostics.git",
@@ -17,7 +26,22 @@
     "workspace"
   ],
   "categories": [
-    "Other"
+    "Debuggers",
+    "Visualization"
+  ],
+  "keywords": [
+    "dotnet",
+    ".net",
+    "csharp",
+    "diagnostics",
+    "profiling",
+    "performance",
+    "eventpipe",
+    "gc",
+    "counters",
+    "heap",
+    "dump",
+    "threads"
   ],
   "activationEvents": [
     "onCommand:dotnetDiagnostics.startCounters",
@@ -94,6 +118,7 @@
   },
   "scripts": {
     "compile": "tsc -p .",
+    "media": "npm run compile && node scripts/render-media.cjs",
     "check": "tsc --noEmit -p .",
     "test": "npm run compile && node --test tests/*.test.cjs",
     "vscode:prepublish": "npm run compile"

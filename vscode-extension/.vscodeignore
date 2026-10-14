@@ -6,3 +6,8 @@ node_modules/**
 tsconfig.json
 *.ts
 *.map
+scripts/**
+.media-work/**
+media/**
+!media/icon.png
+.gitignore
