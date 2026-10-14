@@ -23,6 +23,12 @@ dotnet tool install -g dotnet-diagnostics-cli --version '>=0.29.0'
 The extension requires CLI **0.29.0 or later** (JSONL protocol version 2). Older CLIs are rejected
 with a protocol mismatch error; update with `dotnet tool update -g dotnet-diagnostics-cli`.
 
+New to the extension? Open the **Get started with .NET Diagnostics** walkthrough (`.NET Diagnostics:
+Open Getting Started`). **`.NET Diagnostics: Check Environment`** runs the configured
+`dotnetDiagnostics.cliPath` for the protocol-v2 handshake and `doctor --json`, then reports a missing
+executable or .NET runtime, an outdated CLI, and ptrace/UID/permission problems with the CLI's own
+fix. It can copy the install/update command and recheck, but never runs it for you.
+
 The extension adds a **.NET Diagnostics** icon to the Activity Bar. Open its **Live Diagnostics**
 view and select **Start Live Counters**, or use the same command from the Command Palette. Choose a
 discovered process, then use the panel's Stop/Start controls. One streaming session now carries
