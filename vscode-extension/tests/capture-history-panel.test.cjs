@@ -12,6 +12,7 @@ const h = require("../out/processHistory.js");
 const p = require("../out/captureHistoryPanel.js");
 const vscode = require("./stubs/vscode-stub.js");
 vscode.EventEmitter = class { event() {} fire() {} dispose() {} };
+vscode.env = { clipboard: { async writeText() {} } };
 const { CaptureHistory } = require("../out/captureHistory.js");
 const A = "a".repeat(32), B = "b".repeat(32);
 const detail = (kind = "heap-snapshot", views = ["top-types", "roots-by-kind"]) => ({
@@ -83,6 +84,36 @@ test("capture deletion is confirmed and performed only through the CLI", async (
         assert.deepEqual(calls[0], ["captures", "delete", "--capture-id", A, "--acknowledge-risk", "high", "--json"]);
         assert.ok(calls[1].includes("list"));
     } finally { h.runHistoryCli = original; history.dispose(); }
+});
+test("saved address controls copy exact strings and report invalid or failed copies", async () => {
+    const originalRun = h.runHistoryCli, originalCreate = vscode.window.createWebviewPanel;
+    const originalWrite = vscode.env.clipboard.writeText, copies = [], errors = [];
+    let receive;
+    h.runHistoryCli = async () => JSON.stringify({ capture: detail() });
+    vscode.window.createWebviewPanel = () => ({
+        webview: { onDidReceiveMessage(callback) { receive = callback; return { dispose() {} }; }, cspSource: "csp" },
+        onDidDispose() {}, dispose() {},
+    });
+    vscode.env.clipboard.writeText = async address => copies.push(address);
+    vscode.window.showErrorMessage = async message => errors.push(message);
+    const history = new CaptureHistory(() => "cli", { appendLine() {} });
+    try {
+        await history.open({ capture: detail() });
+        await receive({ type: "copyAddress", address: "0xFEDCBA9876543210" });
+        assert.deepEqual(copies, ["0xfedcba9876543210"]);
+        for (const address of [9007199254740992, "123", "0x0", "0x12345678901234567"])
+            await receive({ type: "copyAddress", address });
+        assert.equal(copies.length, 1);
+        assert.equal(errors.length, 4);
+        vscode.env.clipboard.writeText = async () => { throw new Error("clipboard unavailable"); };
+        await receive({ type: "copyAddress", address: "0xff" });
+        assert.match(errors.at(-1), /clipboard unavailable/);
+    } finally {
+        h.runHistoryCli = originalRun;
+        vscode.window.createWebviewPanel = originalCreate;
+        vscode.env.clipboard.writeText = originalWrite;
+        history.dispose();
+    }
 });
 test("save is a new explicit snapshot, revalidates the process and reopens the returned capture", async () => {
     const original = h.runHistoryCli, calls = [], opened = [];
