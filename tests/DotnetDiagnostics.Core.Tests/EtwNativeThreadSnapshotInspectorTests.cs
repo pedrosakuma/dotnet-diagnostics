@@ -1,12 +1,21 @@
 using System.Runtime.InteropServices;
 using DotnetDiagnostics.Core.Threads;
 using FluentAssertions;
+using Microsoft.Diagnostics.Tracing.Parsers;
 using Microsoft.Diagnostics.Tracing.Session;
 
 namespace DotnetDiagnostics.Core.Tests;
 
 public sealed class EtwNativeThreadSnapshotInspectorTests
 {
+    [Fact]
+    public void StackKeywords_IncludeRunningThreadProfileStacks()
+    {
+        EtwNativeThreadSnapshotInspector.StackKeywords
+            .Should().HaveFlag(KernelTraceEventParser.Keywords.Thread)
+            .And.HaveFlag(KernelTraceEventParser.Keywords.Profile);
+    }
+
     [Fact]
     public void IsAvailable_ReturnsFalse_OnNonWindows()
     {
