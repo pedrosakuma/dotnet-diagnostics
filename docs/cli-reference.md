@@ -85,7 +85,8 @@ active session, drains it, emits its terminal frame, and exits. Closing a panel 
 
 ### Point-in-time captures (`capture`)
 
-For collectors that produce one finite, bounded result rather than a live stream — currently `cpu` —
+For collectors that produce one finite result rather than a live stream (`cpu`, `heap`,
+`thread-snapshot`, `exceptions`, and `crash-guard`),
 send a `capture` request instead of `start`. It does not open a live session, does not produce
 `observation`/`terminal` frames, and may be sent even while a live session is active:
 
@@ -104,6 +105,27 @@ bounded summary (not the full sample):
 Unsupported `kind` values, an inactive/invalid `processId`, or an out-of-range `durationSeconds`/`topN`
 produce an `error` frame (`unsupported_capture_kind`, `invalid_capture`, or `capture_safety_rejected`)
 instead.
+
+Exception captures use the same Core collectors and safety profiles as `collect --kind exceptions`
+or `collect --kind crash-guard`:
+
+```json
+{"type":"capture","requestId":"ex-1","kind":"exceptions","processId":1234,"durationSeconds":10,"maxRecent":100,"topN":25}
+```
+
+`maxRecent` defaults to 100 (range 1-500) and limits retained event detail at collection time;
+`topN` bounds the returned type ranking. The result includes `summary`, `data` (observed total,
+type counts, retained `recent` events, start time/duration and `recentCap`), and explicit `notes`
+for omitted detail/types. Message counts and first/last timestamps derived from retained events
+are **not** whole-capture counts or timestamps. Messages can contain sensitive application data.
+The `exceptions` collector does not collect stack frames. `crash-guard` returns available
+`managedStack` frames, original collector notes, final-exception/observation evidence and separate
+`processExited`/`unhandledExceptionObserved` flags; an exit alone does not establish a crash.
+Neither kind adds a live session or an exception `query` surface.
+
+Start capture **before** generating load. EventPipe startup is not instantaneous (usually
+about 0.5-1 second); a written request is not an armed-session acknowledgement. Captures on a
+connection are processed sequentially, so an earlier capture can delay this collection.
 
 Heap (`kind:"heap"`) and thread-snapshot (`kind:"thread-snapshot"`) captures also echo a `handle`
 field in their `data` payload — the same `IDiagnosticHandleStore` id the `query_snapshot` MCP tool

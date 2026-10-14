@@ -7,6 +7,7 @@ using DotnetDiagnostics.Core.Counters;
 using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Dump;
+using DotnetDiagnostics.Core.Exceptions;
 using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.Safety;
@@ -23,7 +24,7 @@ namespace DotnetDiagnostics.Cli;
 /// Supports one or more concurrently-running live signal kinds (<c>counters</c>, <c>gc</c>) composed
 /// behind a single <see cref="ComposedDiagnosticSession"/> per <c>start</c> request (#1099), plus a
 /// one-shot <c>capture</c> request/response pair for point-in-time kinds (<c>cpu</c>, <c>heap</c>,
-/// <c>thread-snapshot</c>) that does not open a live session. The single-kind counters wire shape
+/// <c>thread-snapshot</c>, <c>exceptions</c>, <c>crash-guard</c>) that does not open a live session. The single-kind counters wire shape
 /// from #1091/#1092/#1093 remains
 /// valid: a <c>start</c> message without a <c>kinds</c> array is treated as a single implicit
 /// <c>counters</c> kind using its top-level fields, so existing clients (the VS Code extension) do
@@ -60,6 +61,8 @@ internal static class CliStreamingProtocol
     {
         "cpu",
         "heap",
+        "exceptions",
+        "crash-guard",
         DiagnosticOperationCatalog.ThreadSnapshotCliKind,
     };
 
@@ -111,6 +114,107 @@ internal static class CliStreamingProtocol
         "threadpool",
         "thread-statics",
     };
+
+    private static async Task HandleExceptionCaptureAsync(
+        string requestId,
+        string kind,
+        IServiceProvider services,
+        ProtocolWriter writer,
+        int processId,
+        int durationSeconds,
+        int maxRecent,
+        int topN,
+        CancellationToken cancellationToken)
+    {
+        var resolver = services.GetRequiredService<IProcessContextResolver>();
+        var handles = services.GetRequiredService<IDiagnosticHandleStore>();
+        object payload;
+        DiagnosticError? error;
+        if (kind == "exceptions")
+        {
+            var result = await EventCollectionUseCases.CollectExceptions(
+                services.GetRequiredService<IExceptionCollector>(), resolver, handles,
+                processId, durationSeconds, maxRecent, SamplingDepth.Detail, cancellationToken).ConfigureAwait(false);
+            error = result.Error;
+            payload = result.Data is { } data
+                ? ProjectExceptionCapture(data, result.Summary, topN)
+                : result;
+        }
+        else
+        {
+            var result = await EventCollectionUseCases.CollectCrashGuard(
+                services.GetRequiredService<ICrashGuardCollector>(), resolver, handles,
+                processId, durationSeconds, maxRecent, SamplingDepth.Detail, cancellationToken).ConfigureAwait(false);
+            error = result.Error;
+            payload = result.Data is { } data
+                ? ProjectCrashGuardCapture(data, result.Summary, topN)
+                : result;
+        }
+
+        if (error is not null)
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error", requestId, code = "capture_failed", message = error.Message,
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+
+        await writer.WriteAsync(new
+        {
+            type = "capture", requestId, kind, processId, result = payload,
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal static object ProjectExceptionCapture(ExceptionSnapshot snapshot, string summary, int topN)
+    {
+        var notes = ExceptionCaptureNotes(snapshot.TotalExceptions, snapshot.Recent.Count, snapshot.RecentCap, snapshot.ByType.Count, topN);
+        notes.Add("Managed exception events do not include stack frames. Use crash-guard for available exception stacks.");
+        return new
+        {
+            summary,
+            data = new
+            {
+                snapshot.ProcessId, snapshot.StartedAt, snapshot.Duration, snapshot.TotalExceptions,
+                byType = snapshot.ByType.Take(topN).ToArray(),
+                snapshot.Recent, snapshot.RecentCap,
+            },
+            notes,
+        };
+    }
+
+    internal static object ProjectCrashGuardCapture(CrashGuardSnapshot snapshot, string summary, int topN)
+    {
+        var notes = ExceptionCaptureNotes(snapshot.TotalExceptions, snapshot.Exceptions.Count, snapshot.RecentCap, snapshot.ByType.Count, topN);
+        notes.AddRange(snapshot.Notes);
+        return new
+        {
+            summary,
+            data = new
+            {
+                snapshot.ProcessId, snapshot.StartedAt, snapshot.Duration, snapshot.TotalExceptions,
+                byType = snapshot.ByType.Take(topN).ToArray(),
+                recent = snapshot.Exceptions,
+                snapshot.RecentCap, snapshot.ProcessExited, snapshot.ExitCode,
+                snapshot.UnhandledExceptionObserved, snapshot.Observation,
+                snapshot.FinalException,
+            },
+            notes,
+        };
+    }
+
+    private static List<string> ExceptionCaptureNotes(int total, int retained, int cap, int typeCount, int topN)
+    {
+        var notes = new List<string>
+        {
+            "Messages, message counts, and first/last timestamps describe retained events only, not the entire exception stream. Exception messages can contain sensitive application data.",
+        };
+        if (total > retained)
+            notes.Add($"Retained {retained} event(s) with maxRecent={cap}; {total - retained} event(s) omitted. Type counts cover all observed events.");
+        if (typeCount > topN)
+            notes.Add($"Showing topN={topN} exception types; {typeCount - topN} lower-ranked type(s) omitted.");
+        return notes;
+    }
 
     public static async Task<int> RunAsync(
         IReadOnlyList<string> args,
@@ -574,6 +678,22 @@ internal static class CliStreamingProtocol
         }
 
         var topTypes = 20;
+        var maxRecent = 100;
+        if (kind is "exceptions" or "crash-guard"
+            && root.TryGetProperty("maxRecent", out var recentElement)
+            && (recentElement.ValueKind != JsonValueKind.Number
+                || !recentElement.TryGetInt32(out maxRecent) || maxRecent is < 1 or > 500))
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId,
+                code = "invalid_capture",
+                message = "'maxRecent' must be an integer between 1 and 500.",
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+
         if (kind == "heap")
         {
             if (root.TryGetProperty("topTypes", out var topTypesElement)
@@ -708,6 +828,14 @@ internal static class CliStreamingProtocol
 
         try
         {
+            if (kind is "exceptions" or "crash-guard")
+            {
+                await HandleExceptionCaptureAsync(
+                    requestId, kind, services, writer, processId!.Value, durationSeconds, maxRecent, topN, cancellationToken)
+                    .ConfigureAwait(false);
+                return;
+            }
+
             if (kind == "heap")
             {
                 await HandleHeapCaptureAsync(
@@ -1848,13 +1976,18 @@ Usage: dotnet-diagnostics-cli stream --protocol jsonl
 
 Runs the versioned bidirectional JSON Lines protocol over stdin/stdout.
 Stdout contains protocol frames only; diagnostics and startup messages use stderr.
-Send {"type":"hello","protocolVersion":1} before start/stop/capture commands.
+Send {"type":"hello","protocolVersion":2} before start/stop/capture commands.
 Start requires requestId and processId. Send either the legacy single-kind shape
 (optional providers/intervalSeconds/observationCapacity, implying kind "counters") or
 {"kinds":[{"kind":"counters",...},{"kind":"gc",...}]} to run several live kinds in one
 composed session. Send stop or cancel with the returned sessionId. Send
 {"type":"capture","requestId":...,"kind":"cpu","processId":...,"durationSeconds":10,"topN":25}
-for a one-shot point-in-time capture that does not open a live session. A heap snapshot capture
+for a one-shot point-in-time capture that does not open a live session. Exception captures use
+"kind":"exceptions" or "kind":"crash-guard", with optional "maxRecent" (default 100, range 1-500).
+The result includes observed type counts, retained recent events and explicit omission notes.
+Only crash-guard includes available managed stacks. Messages and stacks may contain sensitive data.
+Start capture before load; writing a request is not an EventPipe readiness acknowledgement.
+A heap snapshot capture
 uses {"type":"capture","requestId":...,"kind":"heap","processId":...,"source":"live"|"gcdump"|"dump",
 "topTypes":20,"acknowledgeRisk":"high"}: "source" is required ("live" attaches via ptrace and
 suspends the target; "gcdump" uses EventPipe and induces a blocking Gen2 GC; "dump" reads an

@@ -15,6 +15,7 @@ const queryViewLabels: Record<string, string> = {
     "wait-chains": "Wait chains",
     threadpool: "Thread pool",
     "thread-statics": "Thread statics",
+    exceptions: "Captured exceptions",
 };
 
 function renderQueryView(containerId: string, view: string, resultOrMessage: unknown, isError: boolean): void {
@@ -543,6 +544,54 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
                 ["Queue index", row => row.queueIndex],
             ], "No worker-local queue details were recorded.");
             notes("Collection notes", pool.notes);
+            break;
+        }
+        case "exceptions": {
+            const data = asRecord(result.data);
+            const recent = Array.isArray(data.recent) ? data.recent.map(asRecord) : [];
+            metrics([
+                ["Observed exceptions", data.totalExceptions],
+                ["Retained events", recent.length],
+                ["Event cap", data.recentCap],
+                ["Started", data.startedAt],
+                ["Duration", data.duration],
+                ["Process exited", data.processExited],
+                ["Unhandled exception observed", data.unhandledExceptionObserved],
+            ]);
+            appendMessage(content, formatValue(result.summary), "query-view-note");
+            table("Exception types (all observed events)", data.byType, [
+                ["Exception type", row => row.exceptionType],
+                ["Count", row => row.count],
+            ], "No managed exceptions were observed. Start capture before reproducing the problem.");
+            const messages = new Map<string, Record<string, unknown>>();
+            for (const event of recent) {
+                const key = JSON.stringify([event.exceptionType, event.exceptionMessage]);
+                const existing = messages.get(key);
+                if (existing) {
+                    existing.count = Number(existing.count) + 1;
+                    if (String(event.timestamp) < String(existing.first)) existing.first = event.timestamp;
+                    if (String(event.timestamp) > String(existing.last)) existing.last = event.timestamp;
+                } else {
+                    messages.set(key, { exceptionType: event.exceptionType, message: event.exceptionMessage,
+                        count: 1, first: event.timestamp, last: event.timestamp });
+                }
+            }
+            table("Top messages (retained events only)", [...messages.values()].sort((a, b) => Number(b.count) - Number(a.count)), [
+                ["Exception type", row => row.exceptionType],
+                ["Message (potentially sensitive)", row => row.message],
+                ["Retained count", row => row.count],
+                ["First retained", row => row.first],
+                ["Last retained", row => row.last],
+            ], "No retained exception messages.");
+            nested("Retained exception details", recent,
+                row => formatValue(row.timestamp) + " · " + formatValue(row.exceptionType) + " · thread " + formatValue(row.threadId),
+                (body, row) => {
+                    appendMessage(body, String(row.exceptionMessage || ""), "query-view-note");
+                    const stack = Array.isArray(row.managedStack) ? row.managedStack : [];
+                    appendMessage(body, stack.length ? stack.map(formatValue).join("\n") : "No managed stack was captured for this event.", "query-view-chain");
+                },
+                "No retained exception details.");
+            notes("Capture notes and retention limits", result.notes);
             break;
         }
         case "thread-statics": {

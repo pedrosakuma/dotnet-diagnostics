@@ -68,6 +68,24 @@ otherwise, and renders its own top-hotspot table (module, method, inclusive/excl
 counts) that is replaced by the next capture rather than appended to a history. A capture does not
 start or stop the live counters/GC session, and it is not compared against any baseline.
 
+Use **Capture Exceptions** (`dotnetDiagnostics.captureExceptions`, also available in the
+Activity Bar and live panel) for a 10-second exception window. Choose **Managed exceptions**
+for type counts and retained messages, or **Crash guard** for available managed stack frames
+and separate process-exit/unhandled-exception evidence. Neither option forces a crash.
+The shared drilldown renderer shows type counts, top retained messages, first/last **retained**
+timestamps, per-event details and capture notes. Messages and stacks are rendered as text,
+never markup, and may contain sensitive application data. The default cap is 100 retained
+events and 25 returned types; explicit notes report omissions. Retained-message counts and
+timestamps are not whole-capture statistics. Plain managed-exception events have no stack frames;
+crash-guard stacks may also be unavailable.
+
+Start capture **before** load: after the request, the panel says to allow EventPipe about a
+second to start and then **reproduce the problem now**. This is timing guidance, not an
+armed-session acknowledgement. A busy connection rejects exception capture with retry guidance
+instead of queueing it behind an earlier capture, query or session startup. Captures
+do not start/stop the live counters session. These capture kinds require a CLI build containing
+the #1166 JSONL extension; older protocol-v2 CLIs report the kind as unsupported with update guidance.
+
 Use **Capture Heap Snapshot** (tree-view action or Command Palette command
 `dotnetDiagnostics.captureHeap`) to take a single point-in-time heap snapshot. Unlike CPU sampling,
 this capture requires choosing a **source**: **Live** (ClrMD via `ptrace`) or **GC Dump** (EventPipe).

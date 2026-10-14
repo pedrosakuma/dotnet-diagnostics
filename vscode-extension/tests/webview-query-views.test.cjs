@@ -140,9 +140,73 @@ test("live and dump webviews include the specialized renderer and styles", () =>
         renderDumpAnalysisHtml("sample.dmp", "nonce123"),
     ]) {
         const script = extractInlineScript(html);
+        assert.doesNotThrow(() => new Function(script), "the complete emitted webview script must parse");
         assert.match(script, /function renderQueryView/);
         assert.match(html, /query-view-metrics/);
         assert.doesNotMatch(script, /JSON\.stringify\(resultOrMessage/);
+    }
+});
+
+test("exception captures render counts, retained messages and stacks as text with cap notes", () => {
+    const { renderQueryView, makeContainer } = loadRenderer();
+    const container = makeContainer("exceptionCaptureViews");
+    const message = "<img src=x onerror=alert('sensitive')>";
+    renderQueryView("exceptionCaptureViews", "exceptions", {
+        summary: "7 exceptions captured.",
+        data: {
+            totalExceptions: 7, recentCap: 2,
+            startedAt: "2026-10-14T00:00:00Z", duration: "00:00:10",
+            processExited: true, unhandledExceptionObserved: false,
+            byType: [{ exceptionType: "System.Exception", count: 7 }],
+            recent: [
+                { timestamp: "2026-10-14T00:00:01Z", exceptionType: "System.Exception",
+                    exceptionMessage: message, threadId: 1, managedStack: ["Sample.Throw()", "<script>frame</script>"] },
+                { timestamp: "2026-10-14T00:00:02Z", exceptionType: "System.Exception",
+                    exceptionMessage: message, threadId: 1 },
+            ],
+        },
+        notes: ["maxRecent=2; 5 event(s) omitted", "collector-note"],
+    }, false);
+    assert.match(container.textContent, /Observed exceptions7/);
+    assert.match(container.textContent, /Top messages \(retained events only\)/);
+    assert.match(container.textContent, /2026-10-14T00:00:01Z/);
+    assert.match(container.textContent, /2026-10-14T00:00:02Z/);
+    assert.ok(container.textContent.includes(message));
+    assert.match(container.textContent, /Sample.Throw\(\)/);
+    assert.match(container.textContent, /No managed stack was captured/);
+    assert.match(container.textContent, /5 event\(s\) omitted/);
+    assert.match(container.textContent, /collector-note/);
+    assert.match(container.textContent, /Unhandled exception observedNo/);
+    assert.equal(container.querySelector("img"), null);
+    assert.equal(container.querySelector("script"), null);
+    renderQueryView("exceptionCaptureViews", "exceptions", {
+        summary: "No exceptions", data: { totalExceptions: 0, byType: [], recent: [] }, notes: [],
+    }, false);
+    assert.match(container.textContent, /Start capture before reproducing/);
+    assert.ok(!container.textContent.includes(message), "new results replace old sensitive messages");
+});
+
+test("live webview wires exception requests and result/status handling separately from CPU", () => {
+    const html = renderHtml(target, "nonce123", 120);
+    const script = extractInlineScript(html);
+    assert.match(html, /id="captureExceptions"/);
+    assert.match(html, /id="captureExceptionsStatus" role="status"/);
+    assert.match(script, /captureExceptionsButton\.addEventListener\('click', \(\) => vscode\.postMessage\(\{ type: 'captureExceptions' \}\)\)/);
+    assert.match(script, /message\.type === 'captureStatus' && message\.kind === 'exceptions'/);
+    assert.match(script, /renderQueryView\('exceptionCaptureViews', 'exceptions', message\.result, false\)/);
+    const statusBranch = /message\.type === 'captureStatus' && message\.kind === 'exceptions'\) \{([\s\S]*?)\n      \} else/.exec(script);
+    assert.ok(statusBranch);
+    const elements = new Map([
+        ["captureExceptionsStatus", { textContent: "" }],
+        ["captureExceptionsButton", { disabled: false }],
+        ["exceptionCaptureViews", { clears: 0, replaceChildren() { this.clears++; } }],
+    ]);
+    const dispatchStatus = new Function("message", "captureExceptionsStatus", "captureExceptionsButton", "document", statusBranch[1]);
+    for (const state of ["starting", "error", "running"]) {
+        dispatchStatus({ state }, elements.get("captureExceptionsStatus"), elements.get("captureExceptionsButton"),
+            { getElementById: id => elements.get(id) });
+        assert.equal(elements.get("exceptionCaptureViews").clears, state === "running" ? 1 : 0,
+            "only an issued capture clears prior evidence");
     }
 });
 
