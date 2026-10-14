@@ -64,8 +64,58 @@ test("saved panel script parses with CSP, escaped names and correlated request h
     assert.match(html, /script-src 'nonce-nonce'/);
     assert.match(html, /m.requestId !== current.requestId/);
     assert.match(html, /artifact.disabled = view.disabled = true/);
+    assert.match(html, /type: "selectionChanged"/);
+    assert.match(html, /artifactId: artifact.value, requestId: current\?\.requestId/);
     const script = html.match(/<script nonce="nonce">([\s\S]*?)<\/script>/)[1];
     assert.doesNotThrow(() => new Function(script));
+});
+test("baseline comparison follows only the currently loaded artifact and ignores changed selections", async () => {
+    const baseline = require("../out/baselineCompare.js");
+    const originalRun = h.runHistoryCli, originalCreate = vscode.window.createWebviewPanel;
+    const originalCompare = baseline.compareSaved, errors = [], messages = [];
+    let receive, finish, entered;
+    const started = new Promise(resolve => { entered = resolve; });
+    h.runHistoryCli = async (_cli, args) => JSON.stringify(args[0] === "query"
+        ? { summary: "Loaded", data: { topTypes: [] } } : { capture: detail() });
+    vscode.window.showErrorMessage = async message => errors.push(message);
+    vscode.window.createWebviewPanel = () => ({
+        webview: {
+            onDidReceiveMessage(callback) { receive = callback; return { dispose() {} }; },
+            postMessage: async message => messages.push(message), cspSource: "csp",
+        },
+        onDidDispose() {}, dispose() {},
+    });
+    baseline.compareSaved = async () => {
+        entered();
+        return new Promise(resolve => { finish = resolve; });
+    };
+    const history = new CaptureHistory(() => "cli", { appendLine() {} });
+    try {
+        await history.open({ capture: detail() });
+        await receive({ type: "query", artifactId: B, view: "top-types", requestId: 1 });
+        await receive({ type: "compareBaseline", artifactId: "c".repeat(32), requestId: 1 });
+        await receive({ type: "selectionChanged" });
+        await receive({ type: "compareBaseline", artifactId: B, requestId: 1 });
+        assert.equal(errors.length, 2);
+        await receive({ type: "query", artifactId: B, view: "top-types", requestId: 2 });
+        const pending = receive({ type: "compareBaseline", artifactId: B, requestId: 2 });
+        await started;
+        await receive({ type: "selectionChanged" });
+        finish({ status: "qualified", metrics: [], reasons: [] });
+        await pending;
+        assert.ok(!messages.some(message => message.type === "comparison"));
+        baseline.compareSaved = async () => ({ status: "qualified", metrics: [], reasons: [] });
+        await receive({ type: "query", artifactId: B, view: "top-types", requestId: 3 });
+        await receive({ type: "compareBaseline", artifactId: B, requestId: 3 });
+        assert.equal(messages.at(-1).type, "comparison");
+        assert.equal(messages.at(-1).requestId, 3);
+        assert.equal(messages.at(-1).artifactId, B);
+    } finally {
+        h.runHistoryCli = originalRun;
+        vscode.window.createWebviewPanel = originalCreate;
+        baseline.compareSaved = originalCompare;
+        history.dispose();
+    }
 });
 test("capture deletion is confirmed and performed only through the CLI", async () => {
     const original = h.runHistoryCli, calls = [];

@@ -1474,7 +1474,14 @@ class CounterPanelController implements vscode.Disposable {
                 this.writeFrame(saved.session, { type: "export", requestId, handle: saved.handle, format,
                     ...(format === "trace" ? { outputPath, acknowledgeRisk: "critical" } : {}) });
                 const value = await withTimeout(result.promise, 60_000);
-                if (format === "summary") await openShareable(value, "json");
+                if (format === "summary") {
+                    if (!isRecord(value) || value.Schema !== "dotnet-diagnostics-mcp/investigation-summary/v1"
+                        || !isRecord(value.Provenance) || !isRecord(value.Findings)
+                        || typeof value.Findings.TotalSamples !== "number" || !Number.isSafeInteger(value.Findings.TotalSamples)
+                        || value.Findings.TotalSamples < 0 || !Array.isArray(value.Findings.TopHotspots))
+                        throw new Error("The CLI returned an unsupported CPU investigation summary.");
+                    await openShareable(value, "json");
+                }
                 else {
                     if (!isRecord(value) || value.kind !== "trace" || value.outputPath !== outputPath
                         || typeof value.totalBytes !== "number" || !Number.isSafeInteger(value.totalBytes) || value.totalBytes < 0
