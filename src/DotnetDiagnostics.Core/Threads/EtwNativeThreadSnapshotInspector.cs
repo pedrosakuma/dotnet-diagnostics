@@ -20,6 +20,9 @@ namespace DotnetDiagnostics.Core.Threads;
 /// </summary>
 public sealed class EtwNativeThreadSnapshotInspector : IThreadSnapshotInspector
 {
+    internal const KernelTraceEventParser.Keywords StackKeywords =
+        KernelTraceEventParser.Keywords.Thread | KernelTraceEventParser.Keywords.Profile;
+
     private static readonly SemaphoreSlim s_etwGate = new(1, 1);
     private static readonly TimeSpan CaptureDuration = TimeSpan.FromMilliseconds(200);
     private readonly ILogger<EtwNativeThreadSnapshotInspector> _logger;
@@ -179,7 +182,7 @@ public sealed class EtwNativeThreadSnapshotInspector : IThreadSnapshotInspector
                            KernelTraceEventParser.Keywords.ImageLoad |
                            KernelTraceEventParser.Keywords.Profile |
                            KernelTraceEventParser.Keywords.Process;
-            var stackKeywords = KernelTraceEventParser.Keywords.Thread;
+            var stackKeywords = StackKeywords;
 
             session.EnableKernelProvider(keywords, stackKeywords);
             _logger.LogDebug(
