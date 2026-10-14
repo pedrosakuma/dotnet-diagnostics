@@ -86,7 +86,8 @@ active session, drains it, emits its terminal frame, and exits. Closing a panel 
 ### Point-in-time captures (`capture`)
 
 For collectors that produce one finite result rather than a live stream (`cpu`, `heap`,
-`thread-snapshot`, `exceptions`, and `crash-guard`),
+`thread-snapshot`, `exceptions`, `crash-guard`, `allocation`, `off_cpu`, `contention`,
+`threadpool`, `gc`, `gc-activities`, `requests`, `kestrel`, `db`, and `networking`),
 send a `capture` request instead of `start`. It does not open a live session, does not produce
 `observation`/`terminal` frames, and may be sent even while a live session is active:
 
@@ -105,6 +106,27 @@ bounded summary (not the full sample):
 Unsupported `kind` values, an inactive/invalid `processId`, or an out-of-range `durationSeconds`/`topN`
 produce an `error` frame (`unsupported_capture_kind`, `invalid_capture`, or `capture_safety_rejected`)
 instead.
+
+The additional diagnostic kinds (`allocation` through `networking` above) reuse the one-shot
+`collect` handlers and safety profiles. Their `topN` is 1-100 (default 25, or 20 for
+`gc-activities`). Optional kind-specific fields are `symbolPath` for `off_cpu` (non-empty,
+up to 1024 characters), `sources` for `gc-activities` (up to 20 ActivitySource filters, each
+up to 200 characters), and `thresholdMs` for `requests` (0-3600000, default 1000).
+Off-CPU tracing requires `acknowledgeRisk:"high"` after explicit user acknowledgement;
+missing platform prerequisites, tracing permissions or `perf` return the CLI's failure reason.
+
+```json
+{"type":"capture","requestId":"diag-1","kind":"requests","processId":1234,"durationSeconds":10,"topN":25,"thresholdMs":1000}
+```
+
+These results use a structured `CaptureView`: `kind`, `title`, `summary`, `provenance`,
+`metrics`, `tables`, `notes` and `evidence`. Tables contain labelled scalar columns/cells,
+retained-row totals and omission counts. Null values mean unavailable, never zero.
+Provenance explicitly identifies `live-stream`, `durable:false`; this does not save a capture.
+Collector caps/quality remain visible. GC collection elapsed is not suspension time;
+only authoritative suspension evidence is shown as suspension. Networking latency requires
+measured correlation evidence. Notes and text cells are bounded; truncation is reported.
+Paths, symbols, request identifiers and sanitized SQL may still contain sensitive data.
 
 Exception captures use the same Core collectors and safety profiles as `collect --kind exceptions`
 or `collect --kind crash-guard`:
