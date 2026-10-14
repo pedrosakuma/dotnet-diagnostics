@@ -55,6 +55,14 @@ class ElementStub {
         return this._textContent + this.children.map(child => child.textContent).join("");
     }
 
+    setAttribute(name, value) {
+        this.attributes[name] = String(value);
+    }
+
+    addEventListener(type, listener) {
+        (this.listeners ??= {})[type] = listener;
+    }
+
     append(...children) {
         for (const child of children) this.appendChild(child);
     }
@@ -336,5 +344,5 @@ test("address values remain exact hex strings and unsafe JavaScript numbers are 
     renderQueryView("heapQueryViews", "static-fields", {
         staticFields: [{ containingTypeFullName: "Sample.Cache", fieldName: "Current", valueAddress: 0xfedcba9876543210 }],
     }, false);
-    assert.match(container.textContent, /Unavailable: imprecise JavaScript integer/);
+    assert.match(container.textContent, /Unavailable: numeric address \(imprecise JavaScript integer\)/);
 });

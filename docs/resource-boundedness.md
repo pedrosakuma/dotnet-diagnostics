@@ -190,6 +190,15 @@ vary between live runs. Both stack duplication and repeated invariant metadata
 were removed; SQLite string interning alone does not reduce logical admission
 accounting.
 
+## VS Code address navigation (issue #1168)
+
+The extension's address navigation keeps at most 20 history entries; each caches only its own
+CLI result (already bounded by the projections above), a new heap capture clears the history, and
+only the current entry is rendered, so neither memory nor DOM grows with the number of clicks.
+The CLI `query` `address` filter of `static-fields` projects the captured list (bounded by the
+capture's static-field cap) and `object`/`gcroot` use the existing bounded inspection caps; nothing
+retains additional heap data.
+
 ## Bounded LLM response projections
 
 These caps bound the **wire projection**, not collector retention. The full artifact remains

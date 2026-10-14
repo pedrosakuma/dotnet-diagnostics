@@ -199,10 +199,31 @@ export function parseTypeFilter(value: unknown): string | undefined {
  * Builds a `query` request frame. `typeFilter` is only sent when provided (the CLI requires it
  * for the `thread-statics` view and ignores it for every other view).
  */
-export function buildQueryFrame(requestId: string, handle: string, view: string, typeFilter?: string): ProtocolFrame {
-    return typeFilter === undefined
+export function buildQueryFrame(
+    requestId: string,
+    handle: string,
+    view: string,
+    typeFilter?: string,
+    navigation?: QueryNavigation,
+): ProtocolFrame {
+    const frame: ProtocolFrame = typeFilter === undefined
         ? { type: "query", requestId, handle, view }
         : { type: "query", requestId, handle, view, typeFilter };
+    if (navigation !== undefined) {
+        // `address` is an exact `0x` hex string; it is never a JSON number (64-bit precision).
+        frame.address = navigation.address;
+        if (navigation.acknowledgeRisk) {
+            frame.acknowledgeRisk = "high";
+        }
+    }
+    return frame;
+}
+
+/** Optional address-navigation parameters of a `query` request (issue #1168). */
+export interface QueryNavigation {
+    address: string;
+    /** Sent as `acknowledgeRisk: "high"` for the object/gcroot reads the CLI gates behind the safety preflight. */
+    acknowledgeRisk?: boolean;
 }
 
 /** Allows at most one task at a time; used to keep non-cancellable on-demand queries from piling up. */

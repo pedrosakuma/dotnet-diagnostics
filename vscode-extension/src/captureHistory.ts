@@ -6,6 +6,7 @@ import {
     type CaptureSummary, type ProcessEntry,
 } from "./processHistory";
 import { queryHistoryView, renderHistoryHtml } from "./captureHistoryPanel";
+import { parseHexAddress } from "./addressNavigation";
 
 export type HistoryRow = { capture: CaptureSummary } | { more: string } | { message: string };
 
@@ -77,6 +78,16 @@ export class CaptureHistory implements vscode.TreeDataProvider<HistoryRow>, vsco
         let disposed = false;
         let querying = false;
         const listener = panel.webview.onDidReceiveMessage(async message => {
+            if (message?.type === "copyAddress") {
+                const address = parseHexAddress(message.address);
+                try {
+                    if (!address) throw new Error("The selected address is not an exact nonzero hexadecimal string.");
+                    await vscode.env.clipboard.writeText(address);
+                } catch (error) {
+                    await vscode.window.showErrorMessage(`Address copy failed: ${error instanceof Error ? error.message : String(error)}`);
+                }
+                return;
+            }
             if (!message || message.type !== "query" || typeof message.artifactId !== "string"
                 || typeof message.view !== "string" || !Number.isSafeInteger(message.requestId)) return;
             if (querying) {
