@@ -6,6 +6,9 @@ import { promisify } from "node:util";
 import * as vscode from "vscode";
 import { registerOnboarding } from "./onboarding";
 import { QUERY_VIEW_RENDERER_SCRIPT, QUERY_VIEW_STYLES } from "./queryViewRenderer";
+import { ProcessTree, type ProcessAction, type ProcessRow } from "./processTree";
+import type { ProcessEntry } from "./processHistory";
+import { CaptureHistory, type HistoryRow } from "./captureHistory";
 import {
     describeStreamCompatibilityError,
     isGcCollection,
@@ -224,7 +227,32 @@ class CounterPanelController implements vscode.Disposable {
                 this.captureCpuTask = undefined;
             });
         }
+
         return this.captureCpuTask;
+    }
+
+    public async selectProcess(entry: ProcessEntry): Promise<void> {
+        if (this.disposed) throw new Error("The diagnostics panel is disposed.");
+        if (this.selectedTarget?.processId !== entry.processId) {
+            const child = this.activeChild;
+            if (child && (child.pendingCaptures.size > 0 || child.pendingQueries.size > 0 || child.startInFlight))
+                throw new Error("Wait for the current capture or query before selecting another process.");
+            await this.stopCounters();
+            const previous = this.panel;
+            this.panel = undefined;
+            this.panelReady?.resolve();
+            this.panelReady = undefined;
+            previous?.dispose();
+            await this.disposeChild();
+        }
+        const [operatingSystem, processArchitecture] = entry.platform.split("/");
+        const target: TargetProcess = {
+            processId: entry.processId, operatingSystem, processArchitecture,
+            runtimeVersion: entry.runtimeVersion, managedEntrypointAssemblyName: entry.entrypoint,
+        };
+        this.selectedTarget = target;
+        this.openPanel(target);
+        await this.waitForPanelReady();
     }
 
     private async captureCpuCore(): Promise<void> {
@@ -878,6 +906,7 @@ class CounterPanelController implements vscode.Disposable {
         }, undefined, []);
         panel.onDidDispose(() => {
             configListener.dispose();
+            if (this.panel !== panel) return;
             this.panel = undefined;
             this.selectedTarget = undefined;
             this.panelReady?.resolve();
@@ -1847,6 +1876,28 @@ export function activate(context: vscode.ExtensionContext): void {
     const output = vscode.window.createOutputChannel(".NET Diagnostics");
     const controller = new CounterPanelController(output);
     activeController = controller;
+    const history = new CaptureHistory(resolveCliPath, output);
+    const processes = new ProcessTree(context.workspaceState, resolveCliPath, async (process, action) => {
+        if (action === "save") {
+            await history.save(process);
+            return;
+        }
+        await controller.selectProcess(process);
+        if (action === "counters") await controller.startCounters();
+        else if (action === "cpu") await controller.captureCpu();
+        else if (action === "heap") await controller.captureHeap();
+        else if (action === "threads") await controller.captureThreadSnapshot();
+    }, output);
+    const guarded = async (operation: () => Promise<void>): Promise<void> => {
+        try { await operation(); }
+        catch (error) {
+            const message = errorMessage(error);
+            output.appendLine(message);
+            void vscode.window.showErrorMessage(message);
+        }
+    };
+    const processCommand = (row: ProcessRow | undefined, action: ProcessAction, fallback: () => Promise<void>): Promise<void> =>
+        row ? guarded(() => processes.invoke(row, action)) : fallback();
     const actionsView = vscode.window.createTreeView("dotnetDiagnostics.actions", {
         treeDataProvider: new DiagnosticsActionsProvider(),
         showCollapseAll: false,
@@ -1855,12 +1906,23 @@ export function activate(context: vscode.ExtensionContext): void {
         output,
         controller,
         actionsView,
-        vscode.commands.registerCommand("dotnetDiagnostics.startCounters", () => controller.startCounters()),
+        processes,
+        history,
+        vscode.window.createTreeView("dotnetDiagnostics.processes", { treeDataProvider: processes }),
+        vscode.window.createTreeView("dotnetDiagnostics.history", { treeDataProvider: history }),
+        vscode.commands.registerCommand("dotnetDiagnostics.selectProcess", (row: ProcessRow) => guarded(() => processes.invoke(row, "select"))),
+        vscode.commands.registerCommand("dotnetDiagnostics.refreshProcesses", () => guarded(() => processes.refresh())),
+        vscode.commands.registerCommand("dotnetDiagnostics.filterProcesses", () => guarded(() => processes.setFilter())),
+        vscode.commands.registerCommand("dotnetDiagnostics.refreshHistory", (row?: HistoryRow) => guarded(() => history.refresh(row && "more" in row ? row.more : undefined))),
+        vscode.commands.registerCommand("dotnetDiagnostics.openCapture", (row: HistoryRow) => guarded(() => history.open(row))),
+        vscode.commands.registerCommand("dotnetDiagnostics.deleteCapture", (row: HistoryRow) => guarded(() => history.delete(row))),
+        vscode.commands.registerCommand("dotnetDiagnostics.saveSnapshot", (row?: ProcessRow) => guarded(() => processes.invoke(row, "save"))),
+        vscode.commands.registerCommand("dotnetDiagnostics.startCounters", (row?: ProcessRow) => processCommand(row, "counters", () => controller.startCounters())),
         vscode.commands.registerCommand("dotnetDiagnostics.stopCounters", () => controller.stopCounters()),
-        vscode.commands.registerCommand("dotnetDiagnostics.captureCpu", () => controller.captureCpu()),
+        vscode.commands.registerCommand("dotnetDiagnostics.captureCpu", (row?: ProcessRow) => processCommand(row, "cpu", () => controller.captureCpu())),
         vscode.commands.registerCommand("dotnetDiagnostics.captureExceptions", () => controller.captureExceptions()),
-        vscode.commands.registerCommand("dotnetDiagnostics.captureHeap", () => controller.captureHeap()),
-        vscode.commands.registerCommand("dotnetDiagnostics.captureThreadSnapshot", () => controller.captureThreadSnapshot()),
+        vscode.commands.registerCommand("dotnetDiagnostics.captureHeap", (row?: ProcessRow) => processCommand(row, "heap", () => controller.captureHeap())),
+        vscode.commands.registerCommand("dotnetDiagnostics.captureThreadSnapshot", (row?: ProcessRow) => processCommand(row, "threads", () => controller.captureThreadSnapshot())),
         vscode.commands.registerCommand("dotnetDiagnostics.analyzeDumpFile", () => analyzeDumpFile(output, context)),
     );
     registerOnboarding(context, output);

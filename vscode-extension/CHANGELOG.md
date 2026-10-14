@@ -14,6 +14,10 @@ versioned independently from the CLI and the .NET packages.
 
 ### Added
 
+- Process tree with refresh, filter, context captures and a per-workspace remembered selection.
+- CLI-backed durable capture history with explicit new saved snapshots, offline drilldowns,
+  paginated listing and confirmed deletion.
+
 - Raster Marketplace icon and a dark gallery banner.
 - README screenshots of live counters, heap drilldown, and thread snapshot panels. They are
   illustrative renders of the real webview panels using fixture data, not live captures.
