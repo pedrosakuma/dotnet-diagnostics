@@ -21,6 +21,7 @@ export interface CliRunResult {
     /** Set when the process could not be spawned (for example `ENOENT`). */
     spawnError?: string;
     timedOut?: boolean;
+    outputLimitExceeded?: boolean;
 }
 
 export type CliRunner = (cliPath: string, args: string[], stdin?: string) => Promise<CliRunResult>;

@@ -516,7 +516,8 @@ internal static class CliStreamingProtocol
             return;
         }
 
-        if (!TryGetString(root, "kind", out var kind) || !CaptureKinds.Contains(kind))
+        if (!TryGetString(root, "kind", out var kind)
+            || !(CaptureKinds.Contains(kind) || CliStreamingCaptureViews.Kinds.Contains(kind)))
         {
             await writer.WriteAsync(new
             {
@@ -651,7 +652,8 @@ internal static class CliStreamingProtocol
 
         var durationSeconds = 10;
         if (root.TryGetProperty("durationSeconds", out var durationElement)
-            && (!durationElement.TryGetInt32(out durationSeconds) || durationSeconds < 1 || durationSeconds > 300))
+            && (durationElement.ValueKind != JsonValueKind.Number
+                || !durationElement.TryGetInt32(out durationSeconds) || durationSeconds < 1 || durationSeconds > 300))
         {
             await writer.WriteAsync(new
             {
@@ -663,9 +665,27 @@ internal static class CliStreamingProtocol
             return;
         }
 
+        CliOptions? structuredOptions = null;
+        if (CliStreamingCaptureViews.Kinds.Contains(kind))
+        {
+            try
+            {
+                structuredOptions = CliStreamingCaptureOptions.Parse(root, kind, processId!.Value, durationSeconds);
+            }
+            catch (ArgumentException ex)
+            {
+                await writer.WriteAsync(new
+                {
+                    type = "error", requestId, code = "invalid_capture", message = ex.Message,
+                }, CancellationToken.None).ConfigureAwait(false);
+                return;
+            }
+        }
+
         var topN = 25;
         if (root.TryGetProperty("topN", out var topNElement)
-            && (!topNElement.TryGetInt32(out topN) || topN is < 1 or > 500))
+            && (topNElement.ValueKind != JsonValueKind.Number
+                || !topNElement.TryGetInt32(out topN) || topN is < 1 or > 500))
         {
             await writer.WriteAsync(new
             {
@@ -798,9 +818,9 @@ internal static class CliStreamingProtocol
         // profile (see InvocationSafetyRegistry.CollectThreadSnapshot), while a dump-sourced one
         // (`dumpFile` set, `processId` absent) resolves to its Moderate/Warn `dump` profile, keyed
         // off the same `dumpFile`/`dumpFilePath` argument the one-shot CLI's `--dump-file` sets.
-        var safetyOptions = kind == "heap"
+        var safetyOptions = structuredOptions ?? (kind == "heap"
             ? new CliOptions { Command = "inspect-heap", Sources = [heapSource!], Pid = processId, DumpFile = dumpFile, AcknowledgeRisk = acknowledgeRisk }
-            : new CliOptions { Command = "collect", Kind = kind, Pid = processId, DumpFile = dumpFile, AcknowledgeRisk = acknowledgeRisk };
+            : new CliOptions { Command = "collect", Kind = kind, Pid = processId, DumpFile = dumpFile, AcknowledgeRisk = acknowledgeRisk });
         var safety = await CliSafetyPreflight.RunAsync(
             safetyOptions,
             handles: null,
@@ -849,6 +869,29 @@ internal static class CliStreamingProtocol
             {
                 await HandleThreadSnapshotCaptureAsync(requestId, services, writer, processId, dumpFile, maxFramesPerThread, cancellationToken)
                     .ConfigureAwait(false);
+                return;
+            }
+
+            if (structuredOptions is not null)
+            {
+                var capture = await CliCommands.RunAsync(services, structuredOptions, cancellationToken).ConfigureAwait(false);
+                if (capture.IsError || capture.Cancelled)
+                {
+                    var envelope = JsonSerializer.SerializeToElement(capture.Envelope, JsonOptions);
+                    var message = envelope.TryGetProperty("error", out var failure) && failure.ValueKind == JsonValueKind.Object
+                        && failure.TryGetProperty("message", out var detail)
+                            ? detail.GetString() : envelope.GetProperty("summary").GetString();
+                    await writer.WriteAsync(new
+                    {
+                        type = "error", requestId, code = "capture_failed", message,
+                    }, CancellationToken.None).ConfigureAwait(false);
+                    return;
+                }
+                await writer.WriteAsync(new
+                {
+                    type = "capture", requestId, kind, processId,
+                    result = CliStreamingCaptureViews.Project(capture, structuredOptions),
+                }, cancellationToken).ConfigureAwait(false);
                 return;
             }
 

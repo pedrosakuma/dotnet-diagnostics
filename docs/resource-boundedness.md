@@ -43,6 +43,15 @@ implications:
 
 ## Per-collector reference
 
+### JSONL structured capture views
+
+The VS Code **Capture Diagnostics** path reuses the existing bounded Core collectors and
+one-shot CLI dispatch; it adds no TypeScript event collection. Output projection keeps at
+most `topN` (1-100) rows per table, `MaxTextLength=2048` characters per text value, and
+`MaxNotes=50` notes. It reports retained-row omissions and text/note truncation counts.
+These are presentation limits, not collector limits: retained totals do not establish
+exhaustive capture coverage. Results identify themselves as unsaved live-stream evidence.
+
 ### Managed capture package lifecycle boundary
 
 The artifact-root `captures/` subtree is reserved for durable capture packages.

@@ -19,6 +19,13 @@ versioned independently from the CLI and the .NET packages.
   bounded Back/Forward history with a breadcrumb, for live and dump panels. Live Object and GC
   root reads require an explicit acknowledgement (offline dump reads do not); all numeric
   addresses are flagged as imprecise, never linked or copied.
+- Process tree with refresh, filter, context captures and a per-workspace remembered selection.
+- CLI-backed durable capture history with explicit new saved snapshots, offline drilldowns,
+  paginated listing and confirmed deletion.
+- One **Capture Diagnostics** picker for allocation, off-CPU, contention, thread pool, GC,
+  GC/activity correlation, requests, Kestrel, database and networking captures, with
+  structured tables, evidence quality and explicit unavailable/omitted data.
+
 - Raster Marketplace icon and a dark gallery banner.
 - README screenshots of live counters, heap drilldown, and thread snapshot panels. They are
   illustrative renders of the real webview panels using fixture data, not live captures.
