@@ -322,6 +322,14 @@ class CounterPanelController implements vscode.Disposable {
             return;
         }
 
+        if (session.pendingCaptures.size > 0 || session.pendingQueries.size > 0 || session.startInFlight) {
+            this.postMessage({
+                type: "captureStatus", kind: "exceptions", state: "error",
+                message: "The CLI connection is busy. Wait for the current capture, query or session startup to finish, then capture exceptions before reproducing the problem.",
+            });
+            return;
+        }
+
         const requestId = randomBytes(12).toString("hex");
         const pending: PendingCapture = { kind, deferred: deferred<ExceptionCaptureResult>() };
         session.pendingCaptures.set(requestId, pending);
@@ -332,7 +340,7 @@ class CounterPanelController implements vscode.Disposable {
             });
             this.postMessage({
                 type: "captureStatus", kind: "exceptions", state: "running",
-                message: "Exception capture requested (10 seconds after startup). Allow EventPipe ~1 second to start, then reproduce the problem now. Other captures on this connection run first.",
+                message: "Exception capture requested (10 seconds after startup). Allow EventPipe ~1 second to start, then reproduce the problem now.",
             });
             const result = await withTimeout(pending.deferred.promise, 60_000);
             this.postMessage({ type: "capture", kind: "exceptions", result });

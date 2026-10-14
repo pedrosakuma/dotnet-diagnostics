@@ -55,7 +55,8 @@ crash-guard stacks may also be unavailable.
 
 Start capture **before** load: after the request, the panel says to allow EventPipe about a
 second to start and then **reproduce the problem now**. This is timing guidance, not an
-armed-session acknowledgement; earlier captures on the same connection run first. Captures
+armed-session acknowledgement. A busy connection rejects exception capture with retry guidance
+instead of queueing it behind an earlier capture, query or session startup. Captures
 do not start/stop the live counters session. These capture kinds require a CLI build containing
 the #1166 JSONL extension; older protocol-v2 CLIs report the kind as unsupported with update guidance.
 
