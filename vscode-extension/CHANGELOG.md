@@ -18,6 +18,11 @@ versioned independently from the CLI and the .NET packages.
 - CPU investigation-summary export and explicitly confirmed local raw-trace capture/export.
 - CLI-backed saved-capture baseline comparison with qualified deltas and unavailable-data reasons.
 
+- Address navigation in heap drilldowns (#1168): exact-hex address links between retention paths,
+  object fields, GC root paths and referencing statics, a Copy action on every valid address,
+  bounded Back/Forward history with a breadcrumb, for live and dump panels. Live Object and GC
+  root reads require an explicit acknowledgement (offline dump reads do not); all numeric
+  addresses are flagged as imprecise, never linked or copied.
 - Process tree with refresh, filter, context captures and a per-workspace remembered selection.
 - CLI-backed durable capture history with explicit new saved snapshots, offline drilldowns,
   paginated listing and confirmed deletion.

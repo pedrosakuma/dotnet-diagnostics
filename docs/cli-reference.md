@@ -221,12 +221,33 @@ the optional `typeFilter` string on the `query` request (the EXACT full type nam
 returns an `invalid_query` error. `typeFilter` is ignored by every other view.
 `thread-statics` results are bounded by `topN` (default 50, max 500) threads: the `result` carries
 `threadStatics` (`typeFullName`, `threads`, optional `warnings`), plus `totalThreads`,
-`omittedThreads`, and `notes` (a truncation note when `omittedThreads > 0`). Address-targeted drilldown views (`object`, `gcroot`,
-`objsize`, `duplicate-strings`, `resolve-address`, `frame-vars`) are intentionally not exposed
-through this request — they remain MCP-only `query_snapshot` views pending a future protocol
-extension. Heap handles captured with `source:"gcdump"` support none of the 10 views above except
+`omittedThreads`, and `notes` (a truncation note when `omittedThreads > 0`). Of the address-targeted drilldown views, only `object` and `gcroot` are exposed
+through this request, for heap handles (see below); `objsize`, `duplicate-strings`, `resolve-address`
+and `frame-vars` remain MCP-only `query_snapshot` views. Heap handles captured with `source:"gcdump"` support none of the 10 views above except
 `top-types` (outside this feature's scope), since a gcdump retains only per-type node/byte totals;
 expect a `view_unavailable_for_gc_dump` error for every view queried against a gcdump-origin handle.
+
+**Address navigation (`address` / `acknowledgeRisk`).** `query` accepts an optional `address` for
+heap handles. It must be a JSON **string** holding a non-zero `0x`-prefixed hexadecimal value of at
+most 16 digits; JSON numbers (which a JavaScript client would round above 2^53), decimal strings and
+zero are rejected with `invalid_query`, and every address in a `query` result is likewise a `0x`
+hexadecimal string. Per view:
+
+- `static-fields` with `address` filters the captured static fields to those whose `valueAddress`
+  is exactly that object ("who references this object statically"). This reads only the captured
+  snapshot, so it needs no re-attach and no acknowledgement; the opt-in `includeStaticFields`
+  capture rule still applies.
+- `object` and `gcroot` require `address`. Unlike the projection views they re-open the snapshot's
+  origin with ClrMD. A live-origin handle attaches to (and briefly suspends) the target process, so
+  it follows the High risk/Acknowledge profile of `query --view object` and is rejected with
+  `query_safety_rejected` unless `acknowledgeRisk` equals the resolved risk name (currently `high`).
+  A dump-origin handle re-reads the dump file offline (no attach, no suspension), so it follows the
+  dump-source heap profile (Moderate/Warn) and needs no acknowledgement. String, field and array-element previews are
+  redacted to the metadata-only placeholder, as in the session REPL. A `gcdump`-origin handle is
+  rejected with `unsupported_query_view` (it has no ClrMD runtime), and a failed read (for example a
+  process that exited or an address that is not an object) returns `query_failed`. `objsize` stays
+  excluded.
+- Every other heap view, and every thread-snapshot view, rejects `address` with `invalid_query`.
 
 An unknown `handle`, a `view` not valid for that handle's kind, or a view the handle's origin/capture
 options don't support produce an `error` frame (`unknown_handle`, `unsupported_query_view`,

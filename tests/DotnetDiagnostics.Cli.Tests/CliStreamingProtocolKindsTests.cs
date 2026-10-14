@@ -696,6 +696,159 @@ public sealed class CliStreamingProtocolKindsTests
         }
     }
 
+    [Fact(Timeout = 180_000)]
+    public async Task Query_AddressNavigation_RetentionPathToObjectToStatics_FromDump_RoundTrip()
+    {
+        await using var target = await LiveSampleProcess.StartPublishedAsync(
+            "CoreClrSample",
+            new LiveSampleOptions
+            {
+                BindHttpPort = true,
+                HarvestListeningUrl = true,
+                DiagnosticTimeout = TimeSpan.FromSeconds(30),
+            });
+
+        var dumpRoot = Path.Combine(Path.GetTempPath(), $"dotnet-diagnostics-cli-address-nav-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dumpRoot);
+        try
+        {
+            var dumper = new DiagnosticsClientDumper(new InlineArtifactRootProvider(dumpRoot));
+            var dump = await dumper.WriteDumpAsync(
+                target.ProcessId, ProcessDumpType.WithHeap, outputDirectory: null, CancellationToken.None);
+
+            await using var session = await InteractiveCliSession.StartAsync();
+            await session.SendAsync(new { type = "hello", protocolVersion = 2 });
+            await session.ReadFrameAsync();
+
+            await session.SendAsync(new
+            {
+                type = "capture",
+                requestId = "heap",
+                kind = "heap",
+                source = "dump",
+                dumpFile = dump.FilePath,
+                topTypes = 10,
+                includeStaticFields = true,
+                includeRetentionPaths = true,
+            });
+            var handle = (await session.ReadFrameAsync()).GetProperty("result").GetProperty("data").GetProperty("handle").GetString();
+
+            await session.SendAsync(new { type = "capture", requestId = "thread", kind = "thread-snapshot", dumpFile = dump.FilePath });
+            var threadHandle = (await session.ReadFrameAsync()).GetProperty("result").GetProperty("data").GetProperty("handle").GetString();
+
+            // Retention path -> exact hexadecimal target address on the wire.
+            await session.SendAsync(new { type = "query", requestId = "paths", handle, view = "retention-paths" });
+            var paths = (await session.ReadFrameAsync()).GetProperty("result").GetProperty("retentionPaths");
+            paths.GetArrayLength().Should().BeGreaterThan(0);
+            var address = paths[0].GetProperty("targetObjectAddress");
+            address.ValueKind.Should().Be(JsonValueKind.String);
+            var hex = address.GetString()!;
+            CliStreamingQueryNavigation.TryParseHexAddress(hex, out _).Should().BeTrue();
+
+            // Strict request-boundary validation: never a number, decimal, zero, padded, or oversized.
+            foreach (var bad in new object[] { 4096, "4096", "0x0", " 0x10", "0x", "0x1ffffffffffffffff", "0xZZ", "0x10 " })
+            {
+                await session.SendAsync(new { type = "query", requestId = "bad", handle, view = "object", address = bad, acknowledgeRisk = "high" });
+                var rejected = await session.ReadFrameAsync();
+                rejected.GetProperty("type").GetString().Should().Be("error");
+                rejected.GetProperty("code").GetString().Should().Be("invalid_query");
+            }
+
+            await session.SendAsync(new { type = "query", requestId = "missing", handle, view = "object", acknowledgeRisk = "high" });
+            (await session.ReadFrameAsync()).GetProperty("code").GetString().Should().Be("invalid_query");
+
+            // A dump origin is re-read offline (Moderate/Warn): it needs no High-risk acknowledgement.
+            await session.SendAsync(new { type = "query", requestId = "noack", handle, view = "object", address = hex });
+            (await session.ReadFrameAsync()).GetProperty("type").GetString().Should().Be("query");
+
+            await session.SendAsync(new { type = "query", requestId = "object", handle, view = "object", address = hex });
+            var objectFrame = await session.ReadFrameAsync();
+            objectFrame.GetProperty("type").GetString().Should().Be("query");
+            var objectResult = objectFrame.GetProperty("result");
+            objectResult.GetProperty("address").GetString().Should().Be(hex);
+            var details = objectResult.GetProperty("objectDetails");
+            details.GetProperty("address").GetString().Should().Be(hex);
+            if (details.TryGetProperty("fields", out var fields) && fields.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var field in fields.EnumerateArray())
+                {
+                    field.GetProperty("value").GetString().Should().NotBeNull();
+                    if (field.GetProperty("objectAddress").ValueKind != JsonValueKind.Null)
+                    {
+                        field.GetProperty("objectAddress").ValueKind.Should().Be(JsonValueKind.String);
+                    }
+                }
+            }
+
+            // Referencing statics: unfiltered statics give a real exact address, the filter then keeps only it.
+            await session.SendAsync(new { type = "query", requestId = "statics", handle, view = "static-fields", topN = 500 });
+            var statics = (await session.ReadFrameAsync()).GetProperty("result").GetProperty("staticFields");
+            statics.GetArrayLength().Should().BeGreaterThan(0);
+            var staticTarget = statics[0].GetProperty("valueAddress").GetString()!;
+            await session.SendAsync(new { type = "query", requestId = "statics-filtered", handle, view = "static-fields", address = staticTarget });
+            var filtered = await session.ReadFrameAsync();
+            filtered.GetProperty("result").GetProperty("address").GetString().Should().Be(staticTarget);
+            var filteredRows = filtered.GetProperty("result").GetProperty("staticFields");
+            filteredRows.GetArrayLength().Should().BeGreaterThan(0);
+            foreach (var row in filteredRows.EnumerateArray())
+            {
+                row.GetProperty("valueAddress").GetString().Should().Be(staticTarget);
+            }
+
+            // gcroot is exact-address and either finds a chain or reports a bounded failure; at least one
+            // statically referenced object must resolve to a root path whose every frame is a hex string.
+            var resolvedRoots = 0;
+            for (var i = 0; i < statics.GetArrayLength() && resolvedRoots == 0; i++)
+            {
+                var candidate = statics[i].GetProperty("valueAddress").GetString()!;
+                await session.SendAsync(new { type = "query", requestId = "gcroot", handle, view = "gcroot", address = candidate });
+                var gcRootFrame = await session.ReadFrameAsync();
+                if (gcRootFrame.GetProperty("type").GetString() == "error")
+                {
+                    gcRootFrame.GetProperty("code").GetString().Should().Be("query_failed", gcRootFrame.ToString());
+                    continue;
+                }
+
+                gcRootFrame.GetProperty("result").GetProperty("address").GetString().Should().Be(candidate);
+                var chain = gcRootFrame.GetProperty("result").GetProperty("gcRoot").GetProperty("chain");
+                chain.GetArrayLength().Should().BeGreaterThan(0);
+                foreach (var frame in chain.EnumerateArray())
+                {
+                    frame.GetProperty("objectAddress").ValueKind.Should().Be(JsonValueKind.String);
+                }
+
+                resolvedRoots++;
+            }
+
+            resolvedRoots.Should().BeGreaterThan(0);
+
+            // An address that no static references yields an empty, exact-filtered page (not an error).
+            await session.SendAsync(new { type = "query", requestId = "statics-none", handle, view = "static-fields", address = "0x1" });
+            (await session.ReadFrameAsync()).GetProperty("result").GetProperty("staticFields").GetArrayLength().Should().Be(0);
+
+            // address is rejected on every view that does not use it, and on thread handles.
+            await session.SendAsync(new { type = "query", requestId = "roots-address", handle, view = "roots-by-kind", address = hex });
+            (await session.ReadFrameAsync()).GetProperty("code").GetString().Should().Be("invalid_query");
+            await session.SendAsync(new { type = "query", requestId = "thread-address", handle = threadHandle, view = "deadlocks", address = hex });
+            (await session.ReadFrameAsync()).GetProperty("code").GetString().Should().Be("invalid_query");
+            await session.SendAsync(new { type = "query", requestId = "objsize", handle, view = "objsize", address = hex, acknowledgeRisk = "high" });
+            (await session.ReadFrameAsync()).GetProperty("code").GetString().Should().Be("unsupported_query_view");
+
+            await session.CompleteAsync();
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(dumpRoot, recursive: true);
+            }
+            catch
+            {
+                // Best-effort cleanup of transient dump scratch.
+            }
+        }
+    }
+
     /// <summary>
     /// A fully interactive in-process CLI session: unlike <see cref="RunInProcessAsync"/> (which
     /// pre-serializes every request up front), this lets the test read a capture response — and in

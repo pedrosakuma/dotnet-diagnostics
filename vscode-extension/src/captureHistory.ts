@@ -8,6 +8,7 @@ import {
 import { queryHistoryView, renderHistoryHtml } from "./captureHistoryPanel";
 import { ResultExporter } from "./resultExport";
 import { compareSaved } from "./baselineCompare";
+import { parseHexAddress } from "./addressNavigation";
 
 export type HistoryRow = { capture: CaptureSummary } | { more: string } | { message: string };
 
@@ -106,6 +107,16 @@ export class CaptureHistory implements vscode.TreeDataProvider<HistoryRow>, vsco
                 } catch (error) {
                     await vscode.window.showErrorMessage(`Baseline comparison failed: ${error instanceof Error ? error.message : String(error)}`);
                 } finally { querying = false; }
+                return;
+            }
+            if (message?.type === "copyAddress") {
+                const address = parseHexAddress(message.address);
+                try {
+                    if (!address) throw new Error("The selected address is not an exact nonzero hexadecimal string.");
+                    await vscode.env.clipboard.writeText(address);
+                } catch (error) {
+                    await vscode.window.showErrorMessage(`Address copy failed: ${error instanceof Error ? error.message : String(error)}`);
+                }
                 return;
             }
             if (!message || message.type !== "query" || typeof message.artifactId !== "string"

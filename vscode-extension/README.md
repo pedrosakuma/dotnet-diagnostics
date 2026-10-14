@@ -205,9 +205,28 @@ than a generic JSON dump. The same renderer is used for live captures and dump a
 provenance and evidence limitations visible, labels inferred deadlocks as candidates, and treats
 retained exception messages as potentially sensitive application data. Unknown future views use a
 compact key/value fallback. Heap and thread object addresses are serialized as hexadecimal strings
-so JavaScript preserves all 64 bits for future address-based navigation. Address-targeted views
-(`object`, `gcroot`, `objsize`, `duplicate-strings`) are not exposed through the streaming protocol
-yet. These views require a CLI build from #1116 or later;
+so JavaScript preserves all 64 bits.
+
+**Address navigation.** Every valid `0x` address in the heap drilldown views is shown with a
+**Copy** button, and in heap views (and, in the dump panel, thread views such as deadlock lock
+addresses, which come from the same dump) it is also a link. Following a link opens an in-panel
+navigation area with **Back**/**Forward** buttons and a breadcrumb: *retention path → object
+(fields and array elements link onward) → GC root path / Referencing statics*. The
+**Referencing statics** view filters the already-captured static fields by that exact address, so
+it needs no extra read and only exists when you opted into static fields before capturing.
+**Object** and **GC root path** are read on demand through the CLI's `query` request with
+`address`. For a live panel that read re-attaches via ptrace and suspends the target (High risk), so
+the extension asks for an explicit modal acknowledgement every time and shows the result as read
+live, not part of the captured snapshot; Back/Forward use cached results and never read again. In a
+dump panel the read is offline (Moderate risk, nothing is attached or suspended), so no
+acknowledgement is requested.
+History holds at most 20 entries, each caching only its own result, and is cleared by a new heap
+capture; only the current result is in the page. Addresses are never converted to JavaScript
+numbers: a numeric address is flagged as imprecise and is neither linked nor copyable. The host
+accepts webview navigation only for `object`, `gcroot` and `static-fields` with a strict hex
+address and the panel's current heap handle. `gcdump` snapshots have no drilldown, `objsize`
+and `duplicate-strings` are not exposed, and the live panel keeps its CLI connection open after a
+live heap capture so the handle stays valid. These views require a CLI build from #1116 or later;
 `retained-exceptions` and `thread-statics` require a CLI build from #1126 or later, and an older CLI
 rejects the new capture option or query and surfaces it as an unavailable view.
 
