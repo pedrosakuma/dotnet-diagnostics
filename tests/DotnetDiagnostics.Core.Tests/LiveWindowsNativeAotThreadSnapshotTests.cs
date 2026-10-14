@@ -31,16 +31,8 @@ public sealed class LiveWindowsNativeAotThreadSnapshotTests : IAsyncLifetime
 
         try
         {
-            var sampleProject = Path.GetFullPath(Path.Combine(
-                AppContext.BaseDirectory,
-                "..", "..", "..", "..", "samples", "NativeAotSample", "NativeAotSample.csproj"));
-            await PublishAsync(sampleProject, publishDir, CancellationToken.None);
+            await PrePublishedNativeAotSample.PrepareAsync(publishDir, TimeSpan.FromMinutes(2));
             _publishDir = publishDir;
-        }
-        catch (InvalidOperationException ex) when (ex.Message.Contains("dotnet publish failed", StringComparison.Ordinal))
-        {
-            try { Directory.Delete(publishDir, recursive: true); } catch { /* best effort */ }
-            return;
         }
         catch
         {
@@ -81,16 +73,10 @@ public sealed class LiveWindowsNativeAotThreadSnapshotTests : IAsyncLifetime
         {
             return;
         }
-        if (string.IsNullOrWhiteSpace(_publishDir))
-        {
-            return;
-        }
+        _publishDir.Should().NotBeNullOrWhiteSpace("the NativeAOT sample must be published before this test runs");
 
-        var exePath = Path.Combine(_publishDir, "NativeAotSample.exe");
-        if (!File.Exists(exePath))
-        {
-            return;
-        }
+        var exePath = Path.Combine(_publishDir!, "NativeAotSample.exe");
+        File.Exists(exePath).Should().BeTrue("the published NativeAOT executable is required");
 
         var psi = new ProcessStartInfo
         {
@@ -149,32 +135,6 @@ public sealed class LiveWindowsNativeAotThreadSnapshotTests : IAsyncLifetime
         snapshot.Threads.Select(t => t.OSThreadId).Should().OnlyHaveUniqueItems();
         snapshot.Threads.Count.Should().BeGreaterThan(0);
         snapshot.Threads.SelectMany(t => t.Frames).Should().NotBeEmpty();
-    }
-
-    private static async Task PublishAsync(string sampleProject, string publishDir, CancellationToken cancellationToken)
-    {
-        var args = $"publish \"{sampleProject}\" -c Release -r win-x64 -p:PublishAot=true -o \"{publishDir}\" --self-contained true";
-        using var process = new Process
-        {
-            StartInfo = new ProcessStartInfo("dotnet", args)
-            {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-            },
-        };
-
-        process.Start();
-        var stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-        var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
-        await process.WaitForExitAsync(cancellationToken);
-        var stderr = await stderrTask.ConfigureAwait(false);
-        _ = await stdoutTask.ConfigureAwait(false);
-
-        if (process.ExitCode != 0)
-        {
-            throw new InvalidOperationException($"dotnet publish failed for NativeAotSample: {stderr.Trim()}");
-        }
     }
 
     private static async Task WaitForDiagnosticEndpointAsync(int pid, TimeSpan timeout)

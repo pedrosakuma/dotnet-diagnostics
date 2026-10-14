@@ -55,11 +55,7 @@ public sealed class LiveWindowsNativeAotCpuSamplingTests(ITestOutputHelper outpu
 
     private async Task StartTargetAsync(string directory)
     {
-        var sampleProject = Path.GetFullPath(Path.Combine(
-            AppContext.BaseDirectory,
-            "..", "..", "..", "..", "..", "samples", "NativeAotSample", "NativeAotSample.csproj"));
-        using var publishDeadline = new CancellationTokenSource(TimeSpan.FromMinutes(2));
-        await PublishAsync(sampleProject, directory, publishDeadline.Token);
+        await PrePublishedNativeAotSample.PrepareAsync(directory, TimeSpan.FromMinutes(2));
 
         var executablePath = Path.Combine(directory, "NativeAotSample.exe");
         var pdbPath = Path.Combine(directory, "NativeAotSample.pdb");
@@ -201,49 +197,6 @@ public sealed class LiveWindowsNativeAotCpuSamplingTests(ITestOutputHelper outpu
         }
 
         output.WriteLine($"Offline DIA controls: matching GUID={identity.Guid}, age={identity.Age} accepted; wrong GUID and wrong age rejected.");
-    }
-
-    private static async Task PublishAsync(string projectPath, string outputDirectory, CancellationToken cancellationToken)
-    {
-        var startInfo = new ProcessStartInfo("dotnet")
-        {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-        };
-        foreach (var argument in new[]
-        {
-            "publish", projectPath, "-c", "Release", "-r", "win-x64",
-            "-p:PublishAot=true", "-o", outputDirectory, "--self-contained", "true",
-        })
-        {
-            startInfo.ArgumentList.Add(argument);
-        }
-
-        using var process = Process.Start(startInfo)
-            ?? throw new InvalidOperationException("Failed to start NativeAOT publish.");
-        var stdout = DrainAsync(process.StandardOutput);
-        var stderr = DrainAsync(process.StandardError);
-        try
-        {
-            await process.WaitForExitAsync(cancellationToken);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            if (!process.HasExited)
-            {
-                process.Kill(entireProcessTree: true);
-            }
-            await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
-            throw;
-        }
-        var output = await stdout;
-        var error = await stderr;
-        if (process.ExitCode != 0)
-        {
-            throw new InvalidOperationException(
-                $"NativeAOT sample publish failed with exit code {process.ExitCode}.{Environment.NewLine}{output}{Environment.NewLine}{error}");
-        }
     }
 
     private static async Task WaitForTargetAsync(int processId, CancellationToken cancellationToken)
