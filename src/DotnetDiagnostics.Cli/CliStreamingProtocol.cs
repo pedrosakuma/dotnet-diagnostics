@@ -78,10 +78,10 @@ internal static class CliStreamingProtocol
     /// The 7 always-available + 4 opt-in heap-snapshot views (<c>static-fields</c>, <c>delegate-targets</c>,
     /// <c>retention-paths</c>, <c>retained-exceptions</c>) exposed through a <c>query</c> request
     /// against a <c>heap-snapshot</c>-kind handle (issue #1116). Deliberately excludes the
-    /// address-targeted <c>object</c>/<c>gcroot</c>/<c>objsize</c>/<c>duplicate-strings</c> views
-    /// (<see cref="HeapSnapshotQueryDispatcher"/>'s <c>ServerOnlyView</c> set) and <c>top-types</c>
-    /// (already returned inline by the <c>capture</c> response) — both deferred to a future
-    /// address-targeted drilldown feature.
+    /// <c>objsize</c>/<c>duplicate-strings</c> views and <c>top-types</c> (already returned inline by the
+    /// <c>capture</c> response). The address-targeted <c>object</c>/<c>gcroot</c> views are allowlisted
+    /// separately in <see cref="CliStreamingQueryNavigation.ObjectReadViews"/> because, unlike these
+    /// projection views, they re-open the snapshot origin with ClrMD and need a safety acknowledgement (#1168).
     /// </summary>
     private static readonly HashSet<string> HeapQueryViews = new(StringComparer.Ordinal)
     {
@@ -349,7 +349,7 @@ internal static class CliStreamingProtocol
                             break;
 
                         case "query":
-                            await HandleQueryAsync(document.RootElement, services, writer, cancellationToken)
+                            await HandleQueryAsync(document.RootElement, services, writer, stdin, stdout, stderr, cancellationToken)
                                 .ConfigureAwait(false);
                             break;
 
@@ -1215,13 +1215,17 @@ internal static class CliStreamingProtocol
     /// of which render purely from the already-captured artifact — no re-attach, no re-suspend, no
     /// new ClrMD walk. Restricted to the 10 heap views and 4 thread views enumerated in
     /// <see cref="HeapQueryViews"/>/<see cref="ThreadQueryViews"/>; the address-targeted
-    /// <c>object</c>/<c>gcroot</c>/<c>objsize</c>/<c>duplicate-strings</c>/<c>resolve-address</c>/
-    /// <c>frame-vars</c> views are explicitly out of scope for this request type.
+    /// <c>objsize</c>/<c>duplicate-strings</c>/<c>resolve-address</c>/<c>frame-vars</c> views are
+    /// explicitly out of scope for this request type; <c>object</c>/<c>gcroot</c> are served only with a
+    /// valid hexadecimal <c>address</c> and a matching <c>acknowledgeRisk</c> (#1168).
     /// </summary>
     private static async Task HandleQueryAsync(
         JsonElement root,
         IServiceProvider services,
         ProtocolWriter writer,
+        TextReader stdin,
+        TextWriter stdout,
+        TextWriter stderr,
         CancellationToken cancellationToken)
     {
         if (!TryGetString(root, "requestId", out var requestId) || string.IsNullOrWhiteSpace(requestId))
@@ -1288,6 +1292,24 @@ internal static class CliStreamingProtocol
             typeFilter = typeFilterElement.GetString();
         }
 
+        // #1168: `address` is a strict 0x-hex string (never a JSON number); validated before any handle lookup.
+        var addressStatus = CliStreamingQueryNavigation.TryReadAddress(root, out var address);
+        if (addressStatus == CliStreamingQueryNavigation.AddressStatus.Invalid)
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId,
+                code = "invalid_query",
+                message = CliStreamingQueryNavigation.AddressFormatMessage,
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+
+        var acknowledgeRisk = TryGetString(root, "acknowledgeRisk", out var acknowledgeRiskValue)
+            ? acknowledgeRiskValue
+            : null;
+
         var handles = services.GetRequiredService<IDiagnosticHandleStore>();
         var lookup = handles.LookupWithKind(handle);
         if (lookup.Status != DiagnosticHandleLookupStatus.Found || lookup.Lookup is not { } found)
@@ -1304,12 +1326,27 @@ internal static class CliStreamingProtocol
 
         if (found.Kind == HeapInspectionUseCases.HeapSnapshotKind)
         {
-            await HandleHeapQueryAsync(requestId, writer, handle, view, topN, found.Artifact, cancellationToken).ConfigureAwait(false);
+            await HandleHeapQueryAsync(
+                requestId, services, writer, stdin, stdout, stderr, handles, handle, view, topN,
+                addressStatus == CliStreamingQueryNavigation.AddressStatus.Valid ? address : null,
+                acknowledgeRisk, found.Artifact, cancellationToken).ConfigureAwait(false);
             return;
         }
 
         if (found.Kind == SamplerUseCases.ThreadSnapshotKind)
         {
+            if (addressStatus == CliStreamingQueryNavigation.AddressStatus.Valid)
+            {
+                await writer.WriteAsync(new
+                {
+                    type = "error",
+                    requestId,
+                    code = "invalid_query",
+                    message = "'address' is only accepted for heap-snapshot handles.",
+                }, CancellationToken.None).ConfigureAwait(false);
+                return;
+            }
+
             await HandleThreadQueryAsync(requestId, services, writer, handle, view, topN, typeFilter, found.Artifact, cancellationToken).ConfigureAwait(false);
             return;
         }
@@ -1330,27 +1367,60 @@ internal static class CliStreamingProtocol
     /// </summary>
     private static async Task HandleHeapQueryAsync(
         string requestId,
+        IServiceProvider services,
         ProtocolWriter writer,
+        TextReader stdin,
+        TextWriter stdout,
+        TextWriter stderr,
+        IDiagnosticHandleStore handles,
         string handle,
         string view,
         int topN,
+        ulong? address,
+        string? acknowledgeRisk,
         object artifact,
         CancellationToken cancellationToken)
     {
         var normalizedView = view.Trim().ToLowerInvariant();
-        if (!HeapQueryViews.Contains(normalizedView))
+        var isObjectRead = CliStreamingQueryNavigation.ObjectReadViews.Contains(normalizedView);
+        if (!HeapQueryViews.Contains(normalizedView) && !isObjectRead)
         {
             await writer.WriteAsync(new
             {
                 type = "error",
                 requestId,
                 code = "unsupported_query_view",
-                message = $"View '{view}' is not a supported heap query view. Supported views: {string.Join(", ", HeapQueryViews.OrderBy(static v => v, StringComparer.Ordinal))}.",
+                message = $"View '{view}' is not a supported heap query view. Supported views: {string.Join(", ", HeapQueryViews.Concat(CliStreamingQueryNavigation.ObjectReadViews).OrderBy(static v => v, StringComparer.Ordinal))}.",
             }, CancellationToken.None).ConfigureAwait(false);
             return;
         }
 
         var snapshot = (HeapSnapshotArtifact)artifact;
+        if (isObjectRead)
+        {
+            await HandleHeapObjectReadAsync(
+                requestId, services, writer, stdin, stdout, stderr, handles, handle, normalizedView, address, acknowledgeRisk, snapshot, cancellationToken)
+                .ConfigureAwait(false);
+            return;
+        }
+
+        if (address is { } filterAddress)
+        {
+            if (normalizedView != CliStreamingQueryNavigation.StaticFieldsView)
+            {
+                await writer.WriteAsync(new
+                {
+                    type = "error",
+                    requestId,
+                    code = "invalid_query",
+                    message = $"'address' is only accepted for the 'object', 'gcroot' and '{CliStreamingQueryNavigation.StaticFieldsView}' views.",
+                }, CancellationToken.None).ConfigureAwait(false);
+                return;
+            }
+
+            snapshot = CliStreamingQueryNavigation.FilterStaticFields(snapshot, filterAddress);
+        }
+
         var outcome = HeapSnapshotQueryDispatcher.Dispatch(snapshot, handle, normalizedView, topN, rankBy: null, typeFullName: null);
 
         // Defense-in-depth: HeapQueryViews never contains a ServerOnly/unknown name, so these two
@@ -1377,6 +1447,113 @@ internal static class CliStreamingProtocol
                 requestId,
                 code = QueryErrorCode(result.Error!.Kind),
                 message = result.Error.Message,
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+
+        await writer.WriteAsync(new
+        {
+            type = "query",
+            requestId,
+            handle,
+            view = normalizedView,
+            result = TrimHeapQueryResult(result.Data! with { Address = address }),
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Serves the address-targeted <c>object</c>/<c>gcroot</c> heap views (#1168) through the same
+    /// <see cref="IDumpInspector"/> and string-preview redaction the one-shot/session CLI uses. These
+    /// re-open the snapshot origin with ClrMD (a live attach suspends the target; a dump is re-read), so
+    /// a live origin clears the shared <c>query</c> safety profile (High risk/Acknowledge) first, while a dump
+    /// origin uses the offline dump-source heap profile (Moderate/Warn, no attach or suspension); a <c>gcdump</c> origin has no ClrMD runtime and is rejected.
+    /// </summary>
+    private static async Task HandleHeapObjectReadAsync(
+        string requestId,
+        IServiceProvider services,
+        ProtocolWriter writer,
+        TextReader stdin,
+        TextWriter stdout,
+        TextWriter stderr,
+        IDiagnosticHandleStore handles,
+        string handle,
+        string normalizedView,
+        ulong? address,
+        string? acknowledgeRisk,
+        HeapSnapshotArtifact snapshot,
+        CancellationToken cancellationToken)
+    {
+        if (address is not { } target)
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId,
+                code = "invalid_query",
+                message = $"A valid 'address' is required for view '{normalizedView}'. {CliStreamingQueryNavigation.AddressFormatMessage}",
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+
+        if (snapshot.Origin == HeapSnapshotOrigin.GcDump)
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId,
+                code = "unsupported_query_view",
+                message = $"View '{normalizedView}' needs a ClrMD runtime, which a gcdump snapshot does not have. Capture a live or dump heap snapshot instead.",
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+
+        var safetyOptions = CliStreamingQueryNavigation.CreateObjectReadSafetyOptions(
+            snapshot.Origin, handle, normalizedView, acknowledgeRisk);
+        var safety = await CliSafetyPreflight.RunAsync(
+            safetyOptions,
+            handles,
+            CliExecutionContext.OneShot,
+            interactive: false,
+            stdin,
+            stdout,
+            stderr,
+            artifactRoot: null,
+            cancellationToken).ConfigureAwait(false);
+        if (safety != CliSafetyPreflightDisposition.Proceed)
+        {
+            var resolvedRisk = CliInvocationSafety.Resolve(safetyOptions, handles).RiskLevel;
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId,
+                code = "query_safety_rejected",
+                message = resolvedRisk >= InvocationRiskLevel.High
+                    ? $"The '{normalizedView}' query was not run. Re-send with acknowledgeRisk=\"{EnumName(resolvedRisk)}\" after showing the risk explanation to the user."
+                    : $"The '{normalizedView}' query was not run.",
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+
+        var inspector = services.GetRequiredService<IDumpInspector>();
+        DiagnosticResult<HeapSnapshotQueryResult> result;
+        try
+        {
+            result = normalizedView == "gcroot"
+                ? CliCommands.BuildGcRootResult(snapshot, handle, await inspector.InspectGcRootAsync(snapshot, target, cancellationToken).ConfigureAwait(false))
+                : CliCommands.BuildObjectResult(snapshot, handle, await inspector.InspectObjectAsync(snapshot, target, cancellationToken).ConfigureAwait(false));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId,
+                code = "query_failed",
+                message = $"{normalizedView}: {ex.Message}",
             }, CancellationToken.None).ConfigureAwait(false);
             return;
         }
@@ -1553,13 +1730,12 @@ internal static class CliStreamingProtocol
 
     /// <summary>
     /// Projects a <see cref="HeapSnapshotQueryResult"/> for the wire, dropping MCP-only
-    /// pagination/drilldown-chaining fields that aren't meaningful to a one-shot panel: <c>Address</c>
-    /// (echoes an address-targeted query we never issue), <c>TopTypes</c>/<c>RankBy</c> (only for
+    /// pagination/drilldown-chaining fields that aren't meaningful to a one-shot panel: <c>TopTypes</c>/<c>RankBy</c> (only for
     /// <c>top-types</c>, already returned inline by the `capture` response),
     /// <c>FilterTypeFullName</c>/<c>TotalRetentionPaths</c>/<c>OmittedRetentionPaths</c>/<c>RetentionFrameLimit</c>
     /// (retention-path pagination noise — the trimmed shape just returns the bounded page),
-    /// <c>ObjectDetails</c>/<c>GcRoot</c>/<c>ObjectSize</c>/<c>DuplicateStrings</c> (address-targeted
-    /// views outside this request type's scope).
+    /// <c>ObjectSize</c>/<c>DuplicateStrings</c> (address-targeted views outside this request type's
+    /// scope). <c>Address</c>/<c>ObjectDetails</c>/<c>GcRoot</c> are projected with hexadecimal-string addresses (#1168).
     /// </summary>
     internal static object TrimHeapQueryResult(HeapSnapshotQueryResult data) => new
     {
@@ -1569,6 +1745,9 @@ internal static class CliStreamingProtocol
         processId = data.ProcessId,
         capturedAt = data.CapturedAt,
         quality = data.Quality,
+        address = data.Address is { } queryAddress ? FormatAddress(queryAddress) : null,
+        objectDetails = data.ObjectDetails is { } objectDetails ? CliStreamingQueryNavigation.ProjectObject(objectDetails) : null,
+        gcRoot = data.GcRoot is { } gcRoot ? CliStreamingQueryNavigation.ProjectGcRoot(gcRoot) : null,
         retentionPaths = data.RetentionPaths?.Select(ProjectRetentionPath),
         rootsByKind = data.RootsByKind,
         finalizableObjects = data.FinalizableObjects,
@@ -2084,6 +2263,15 @@ fragmentation, gchandles, async, timers, alc, static-fields, delegate-targets, r
 retained-exceptions; thread-snapshot views are deadlocks, unique-stacks, wait-chains, threadpool and
 thread-statics. The optional "typeFilter" string is the exact full type name that thread-statics
 requires (otherwise error code "invalid_query"); it is ignored by every other view.
+Heap handles also accept the address views object and gcroot (#1168), which require "address" and
+re-open the snapshot origin with ClrMD (a live attach suspends the target). They are High
+risk/Acknowledge like query --view object, so the request is rejected with code
+"query_safety_rejected" unless "acknowledgeRisk" equals the resolved risk name (currently "high");
+object previews are redacted and a gcdump snapshot is rejected. "address" must be a JSON string
+holding a non-zero 0x-prefixed hexadecimal value of at most 16 digits (JSON numbers and decimal
+strings are rejected with "invalid_query"); on static-fields it filters the captured fields to
+those referencing exactly that object, and every other view rejects it. All addresses in query
+results are 0x hexadecimal strings.
 """;
 
 

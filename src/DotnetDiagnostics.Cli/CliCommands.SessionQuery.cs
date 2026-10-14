@@ -443,7 +443,7 @@ internal static partial class CliCommands
         return parsed && result != 0;
     }
 
-    private static DiagnosticResult<HeapSnapshotQueryResult> BuildGcRootResult(
+    internal static DiagnosticResult<HeapSnapshotQueryResult> BuildGcRootResult(
         HeapSnapshotArtifact heap, string handle, HeapGcRootInspection inspection)
     {
         var origin = heap.Origin.ToString();
@@ -458,7 +458,7 @@ internal static partial class CliCommands
         return DiagnosticResult.Ok(result, summary);
     }
 
-    private static DiagnosticResult<HeapSnapshotQueryResult> BuildObjectResult(
+    internal static DiagnosticResult<HeapSnapshotQueryResult> BuildObjectResult(
         HeapSnapshotArtifact heap, string handle, HeapObjectInspection inspection)
     {
         var origin = heap.Origin.ToString();
