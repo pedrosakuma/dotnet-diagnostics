@@ -177,7 +177,10 @@ test("retention path → object → referencing statics, through the real webvie
     assert.ok(copies(page.heap).length >= 3, "every valid address has a copy action");
 
     targetLink.click();
-    assert.deepEqual(page.posted, [{ type: "navigateAddress", kind: "heap", view: "object", address: TARGET }]);
+    assert.deepEqual(page.posted, [
+        { type: "navigateAddress", kind: "heap", view: "object", address: TARGET },
+        { type: "navigationSelection", view: "object", address: TARGET, ready: false },
+    ]);
     assert.equal(page.nav.hidden, false);
     assert.match(page.document.getElementById("addressNavStatus").textContent, /Looking up/);
     await pump(page, controller, seen);
@@ -207,7 +210,8 @@ test("retention path → object → referencing statics, through the real webvie
     assert.equal(crumbs(page)[1].attributes["aria-current"], "step");
 
     page.back.click();
-    assert.equal(page.posted.length, 2, "back/forward re-render cached results without a new request");
+    assert.equal(page.posted.filter(m => m.type === "navigateAddress").length, 2, "back/forward re-render cached results without a new query");
+    assert.deepEqual(page.posted.at(-1), { type: "navigationSelection", view: "object", address: TARGET, ready: true });
     assert.match(results.textContent, /_inner/);
     assert.equal(page.back.disabled, true);
     assert.equal(page.forward.disabled, false);
@@ -215,7 +219,7 @@ test("retention path → object → referencing statics, through the real webvie
     assert.match(results.textContent, /Instance/);
     crumbs(page)[0].click();
     assert.match(results.textContent, /_inner/);
-    assert.equal(page.posted.length, 2);
+    assert.equal(page.posted.filter(m => m.type === "navigateAddress").length, 2);
 });
 
 test("copy requests carry the exact address and the host validates them", async () => {
@@ -275,13 +279,13 @@ test("the host rejects malformed, unauthorised and unknown-handle navigation req
 
     const declined = makeHost(page, { decline: true });
     page.navigateToAddress(FIELD, "object");
-    await declined.controller.handle(page.posted[1]);
+    await declined.controller.handle(page.posted.filter(m => m.type === "navigateAddress").at(-1));
     assert.equal(declined.calls.query.length, 0, "a declined acknowledgement never reaches the CLI");
     assert.match(page.document.getElementById("addressQueryViews").textContent, /acknowledgement was declined/);
 
     const failing = makeHost(page, { fail: true });
     page.navigateToAddress(ROOT, "gcroot");
-    await failing.controller.handle(page.posted[2]);
+    await failing.controller.handle(page.posted.filter(m => m.type === "navigateAddress").at(-1));
     assert.match(page.document.getElementById("addressQueryViews").textContent, /CLI said no/);
 });
 

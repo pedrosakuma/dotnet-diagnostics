@@ -236,6 +236,8 @@ function renderAddressNavigation() {
   if (!bar) return;
   const state = addressNavigationState;
   const entry = state.entries[state.index];
+  if (entry) postAddressMessage({ type: 'navigationSelection', view: entry.view, address: entry.address,
+    ready: entry.status === 'ready' });
   bar.hidden = state.entries.length === 0;
   const back = document.getElementById('addressNavBack');
   const forward = document.getElementById('addressNavForward');
