@@ -1060,7 +1060,10 @@ class CounterPanelController implements vscode.Disposable {
                 } else {
                     void this.queryThreadStatics(typeFilter);
                 }
+            } else if (message.type === "navigationSelection") {
+                void this.exporter.handle(message);
             } else if (message.type === "copyAddress" || message.type === "navigateAddress") {
+                if (message.type === "navigateAddress") this.exporter.set(undefined);
                 void this.addressNavigation.handle(message);
             }
         }, undefined, []);
@@ -1486,7 +1489,7 @@ class CounterPanelController implements vscode.Disposable {
     }
 
     private postMessage(message: object): void {
-        if (isRecord(message) && message.type === "capture") this.exporter.set(message.result ?? message.summary);
+        this.exporter.observe(message);
         void this.panel?.webview.postMessage(message);
     }
 
@@ -1673,11 +1676,12 @@ class DumpAnalysisPanelController implements vscode.Disposable {
         );
         this.panel.webview.html = renderDumpAnalysisHtml(fileName, randomBytes(16).toString("hex"));
         this.panel.webview.onDidReceiveMessage(message => {
-            if (isRecord(message) && message.type === "exportResult") {
+            if (isRecord(message) && (message.type === "exportResult" || message.type === "navigationSelection")) {
                 void this.exporter.handle(message);
                 return;
             }
             if (isRecord(message) && (message.type === "copyAddress" || message.type === "navigateAddress")) {
+                if (message.type === "navigateAddress") this.exporter.set(undefined);
                 void this.addressNavigation.handle(message);
                 return;
             }
@@ -2078,7 +2082,7 @@ class DumpAnalysisPanelController implements vscode.Disposable {
 
     private postMessage(message: object): void {
         if (!this.disposed) {
-            if (isRecord(message) && message.type === "capture") this.exporter.set(message.result);
+            this.exporter.observe(message);
             void this.panel.webview.postMessage(message);
         }
     }

@@ -67,9 +67,36 @@ export async function openShareable(value: unknown, format: "json" | "csv"): Pro
 
 export class ResultExporter {
     private current?: unknown;
+    private readonly navigation = new Map<string, unknown>();
+    private selectedNavigation?: string;
     public set(value: unknown): void { this.current = value; }
-    public clear(): void { this.current = undefined; }
+    public clear(): void { this.current = undefined; this.navigation.clear(); this.selectedNavigation = undefined; }
+    public observe(message: object): void {
+        if (!record(message)) return;
+        if (message.type === "capture") {
+            this.clear();
+            this.set(message.result ?? message.summary);
+        } else if (message.type === "navigation") {
+            const key = this.navigationKey(message);
+            if (!key) return;
+            this.navigation.delete(key);
+            this.navigation.set(key, message.result);
+            while (this.navigation.size > 20) this.navigation.delete(this.navigation.keys().next().value!);
+            if (this.selectedNavigation === key) this.set(message.result);
+        }
+    }
+    private navigationKey(message: Record<string, unknown>): string | undefined {
+        return typeof message.address === "string" && /^0x[0-9a-f]{1,16}$/.test(message.address)
+            && ["object", "gcroot", "static-fields"].includes(String(message.view))
+            ? `${message.view}:${message.address}` : undefined;
+    }
     public async handle(message: unknown): Promise<boolean> {
+        if (record(message) && message.type === "navigationSelection") {
+            this.selectedNavigation = this.navigationKey(message);
+            this.current = message.ready === true && this.selectedNavigation
+                ? this.navigation.get(this.selectedNavigation) : undefined;
+            return true;
+        }
         if (!record(message) || message.type !== "exportResult" || !["json", "csv"].includes(String(message.format))) return false;
         try {
             if (this.current === undefined) throw new Error("Collect a result or select a saved view before exporting.");

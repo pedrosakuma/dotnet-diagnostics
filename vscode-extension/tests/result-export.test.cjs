@@ -53,6 +53,40 @@ test("export uses only host-held evidence and opens an editable local document",
     await exporter.handle({ type: "exportResult", format: "csv" });
     assert.equal(docs.length, 1);
 });
+test("address exports follow host-held navigation history and refuse pending or failed evidence", async () => {
+    const exporter = new e.ResultExporter(), docs = [], errors = [];
+    vscode.window.showTextDocument = async document => docs.push(document);
+    vscode.window.showErrorMessage = async message => errors.push(message);
+    const selected = (address, ready) => exporter.handle({ type: "navigationSelection", view: "object", address, ready,
+        result: { totalBytes: 9999 } });
+    const exported = () => exporter.handle({ type: "exportResult", format: "json" });
+    exporter.observe({ type: "capture", result: { totalBytes: 100 } });
+    await selected("0xff", false);
+    await exported();
+    assert.equal(docs.length, 0);
+    exporter.observe({ type: "navigation", view: "object", address: "0xff", result: { totalBytes: 7 } });
+    await selected("0xff", true);
+    await exported();
+    exporter.observe({ type: "navigation", view: "object", address: "0xaa", result: { totalBytes: 8 } });
+    await selected("0xaa", true);
+    await exported();
+    await selected("0xff", true);
+    await exported();
+    assert.deepEqual(docs.map(d => JSON.parse(d.content).measurements[0].value), [7, 8, 7]);
+    await selected("0xbb", false);
+    await exported();
+    assert.equal(docs.length, 3);
+    assert.equal(errors.length, 2);
+    exporter.observe({ type: "capture", result: { totalBytes: 200 } });
+    await selected("0xff", true);
+    await exported();
+    assert.equal(docs.length, 3);
+    for (let i = 1; i <= 21; i++)
+        exporter.observe({ type: "navigation", view: "object", address: `0x${i.toString(16)}`, result: { totalBytes: i } });
+    await selected("0x1", true);
+    await exported();
+    assert.equal(docs.length, 3);
+});
 test("baseline compare builds only validated catalog IDs and refuses mutable or unrelated references", () => {
     assert.deepEqual(b.compareArgs(capture, B, capture, B), ["compare", "--baseline-capture-id", A,
         "--baseline-artifact-id", B, "--candidate-capture-id", A, "--candidate-artifact-id", B, "--json"]);
