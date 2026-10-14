@@ -178,8 +178,9 @@ test("retention path → object → referencing statics, through the real webvie
 
     targetLink.click();
     assert.deepEqual(page.posted, [
-        { type: "navigateAddress", kind: "heap", view: "object", address: TARGET },
-        { type: "navigationSelection", view: "object", address: TARGET, ready: false },
+        { type: "navigateAddress", kind: "heap", view: "object", address: TARGET, navigationId: 1 },
+        { type: "navigationSelection", view: "object", address: TARGET, ready: false, navigationId: 1,
+            history: [{ view: "object", address: TARGET, navigationId: 1 }] },
     ]);
     assert.equal(page.nav.hidden, false);
     assert.match(page.document.getElementById("addressNavStatus").textContent, /Looking up/);
@@ -211,7 +212,8 @@ test("retention path → object → referencing statics, through the real webvie
 
     page.back.click();
     assert.equal(page.posted.filter(m => m.type === "navigateAddress").length, 2, "back/forward re-render cached results without a new query");
-    assert.deepEqual(page.posted.at(-1), { type: "navigationSelection", view: "object", address: TARGET, ready: true });
+    assert.deepEqual(page.posted.at(-1), { type: "navigationSelection", view: "object", address: TARGET, ready: true, navigationId: 1,
+        history: [{ view: "object", address: TARGET, navigationId: 1 }, { view: "static-fields", address: TARGET, navigationId: 2 }] });
     assert.match(results.textContent, /_inner/);
     assert.equal(page.back.disabled, true);
     assert.equal(page.forward.disabled, false);
@@ -316,10 +318,10 @@ test("a late response for a superseded request does not overwrite the current vi
     const page = loadPage();
     page.navigateToAddress(TARGET, "object");
     page.navigateToAddress(FIELD, "object");
-    page.handleAddressNavigationMessage({ type: "navigation", view: "object", address: TARGET, result: objectResult(TARGET) });
+    page.handleAddressNavigationMessage({ type: "navigation", view: "object", address: TARGET, navigationId: 1, result: objectResult(TARGET) });
     const results = page.document.getElementById("addressQueryViews");
     assert.ok(!/Sample\.Cache/.test(results.textContent), "only the current entry is rendered");
-    page.handleAddressNavigationMessage({ type: "navigation", view: "object", address: FIELD, result: objectResult(FIELD) });
+    page.handleAddressNavigationMessage({ type: "navigation", view: "object", address: FIELD, navigationId: 2, result: objectResult(FIELD) });
     assert.match(results.textContent, /Sample\.Cache/);
 });
 

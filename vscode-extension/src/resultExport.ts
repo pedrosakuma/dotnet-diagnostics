@@ -69,8 +69,9 @@ export class ResultExporter {
     private current?: unknown;
     private readonly navigation = new Map<string, unknown>();
     private selectedNavigation?: string;
+    private activeHistory?: Set<string>;
     public set(value: unknown): void { this.current = value; }
-    public clear(): void { this.current = undefined; this.navigation.clear(); this.selectedNavigation = undefined; }
+    public clear(): void { this.current = undefined; this.navigation.clear(); this.selectedNavigation = undefined; this.activeHistory = undefined; }
     public observe(message: object): void {
         if (!record(message)) return;
         if (message.type === "capture") {
@@ -78,7 +79,7 @@ export class ResultExporter {
             this.set(message.result ?? message.summary);
         } else if (message.type === "navigation") {
             const key = this.navigationKey(message);
-            if (!key) return;
+            if (!key || this.activeHistory && !this.activeHistory.has(key)) return;
             this.navigation.delete(key);
             this.navigation.set(key, message.result);
             while (this.navigation.size > 20) this.navigation.delete(this.navigation.keys().next().value!);
@@ -88,10 +89,19 @@ export class ResultExporter {
     private navigationKey(message: Record<string, unknown>): string | undefined {
         return typeof message.address === "string" && /^0x[0-9a-f]{1,16}$/.test(message.address)
             && ["object", "gcroot", "static-fields"].includes(String(message.view))
-            ? `${message.view}:${message.address}` : undefined;
+            && (message.navigationId === undefined || typeof message.navigationId === "number"
+                && Number.isSafeInteger(message.navigationId) && message.navigationId > 0)
+            ? `${message.navigationId ?? ""}:${message.view}:${message.address}` : undefined;
     }
     public async handle(message: unknown): Promise<boolean> {
         if (record(message) && message.type === "navigationSelection") {
+            if (Array.isArray(message.history) && message.history.length <= 20) {
+                const keys = message.history.map(item => record(item) ? this.navigationKey(item) : undefined);
+                if (keys.every((key): key is string => key !== undefined)) {
+                    this.activeHistory = new Set(keys);
+                    for (const key of this.navigation.keys()) if (!this.activeHistory.has(key)) this.navigation.delete(key);
+                }
+            }
             this.selectedNavigation = this.navigationKey(message);
             this.current = message.ready === true && this.selectedNavigation
                 ? this.navigation.get(this.selectedNavigation) : undefined;
