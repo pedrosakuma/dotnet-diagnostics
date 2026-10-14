@@ -45,11 +45,13 @@ const theme = `:root{--vscode-foreground:#cccccc;--vscode-editor-background:#1f1
 body{font-size:13px}`;
 
 const target = { processId: 4242, operatingSystem: "Linux", processArchitecture: "x64", runtimeVersion: "10.0.0", managedEntrypointAssemblyName: "OrdersApi" };
+// Fixed so rendered timestamps (and therefore the PNGs) are reproducible.
+const FIXTURE_EPOCH_MS = Date.UTC(2026, 0, 15, 12, 0, 0);
 const ms = n => `00:00:00.${String(n).padStart(3, "0")}0000`;
 
 function counterMessages() {
     const out = [{ type: "status", state: "running", message: "Streaming live counters and GC pauses (illustrative fixture)" }];
-    const base = Date.now();
+    const base = FIXTURE_EPOCH_MS;
     let seq = 0;
     const series = [
         ["cpu-usage", "CPU Usage", "%", i => 18 + 14 * Math.sin(i / 4) + (i % 7)],
@@ -133,7 +135,8 @@ const chromeVersion = execFileSync(chrome, ["--version"], { encoding: "utf8" });
 if (!chromeVersion.includes(EXPECTED_CHROME)) {
     throw new Error(`Expected Chrome for Testing ${EXPECTED_CHROME}, found: ${chromeVersion.trim()}`);
 }
-const common = ["--headless=new", "--no-sandbox", "--disable-gpu", "--hide-scrollbars", "--force-device-scale-factor=1"];
+process.env.TZ = "UTC";
+const common = ["--headless=new", "--lang=en-US", "--no-sandbox", "--disable-gpu", "--hide-scrollbars", "--force-device-scale-factor=1"];
 
 for (const scenario of scenarios) {
     const page = path.join(workDir, scenario.file.replace(".png", ".html"));
