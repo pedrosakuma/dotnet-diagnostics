@@ -50,8 +50,11 @@ export class CaptureHistory implements vscode.TreeDataProvider<HistoryRow>, vsco
     private async refreshCore(after?: string): Promise<void> {
         try {
             const page = parseCaptureList(await runHistoryCli(this.cliPath(), captureListArgs(after)));
-            this.rows = page.captures.map(capture => ({ capture }));
-            if (page.nextAfterCaptureId) this.rows.push({ more: page.nextAfterCaptureId });
+            const previous = after ? this.rows.filter((row): row is { capture: CaptureSummary } => "capture" in row) : [];
+            this.rows = [...previous, ...page.captures.map(capture => ({ capture }))].slice(0, 500);
+            if (page.nextAfterCaptureId && this.rows.length < 500) this.rows.push({ more: page.nextAfterCaptureId });
+            else if (page.nextAfterCaptureId)
+                this.rows.push({ message: "Showing the first 500 saved captures. Use the CLI for older captures." });
             if (!this.rows.length) this.rows.push({ message: "No saved captures. Use Capture and Save Snapshot on a process." });
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);

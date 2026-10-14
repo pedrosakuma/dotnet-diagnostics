@@ -233,7 +233,12 @@ class CounterPanelController implements vscode.Disposable {
 
     public async selectProcess(entry: ProcessEntry): Promise<void> {
         if (this.disposed) throw new Error("The diagnostics panel is disposed.");
-        if (this.selectedTarget?.processId !== entry.processId) {
+        const selected = this.selectedTarget;
+        const selectedIdentity = selected ? [
+            selected.managedEntrypointAssemblyName ?? "", selected.runtimeVersion,
+            `${selected.operatingSystem}/${selected.processArchitecture}`,
+        ].join("|") : undefined;
+        if (selected?.processId !== entry.processId || selectedIdentity !== entry.identity) {
             const child = this.activeChild;
             if (child && (child.pendingCaptures.size > 0 || child.pendingQueries.size > 0 || child.startInFlight))
                 throw new Error("Wait for the current capture or query before selecting another process.");

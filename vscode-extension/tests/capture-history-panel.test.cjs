@@ -129,11 +129,40 @@ test("switching selected processes cannot let delayed disposal clear the new pan
     controller.disposeChild = async () => {};
     controller.waitForPanelReady = async () => {};
     try {
-        await controller.selectProcess({ processId: 1, entrypoint: "A", runtimeVersion: "10", platform: "Linux/x64" });
-        await controller.selectProcess({ processId: 2, entrypoint: "B", runtimeVersion: "10", platform: "Linux/x64" });
+        await controller.selectProcess({ processId: 1, entrypoint: "A", runtimeVersion: "10", platform: "Linux/x64", identity: "A|10|Linux/x64" });
+        await controller.selectProcess({ processId: 2, entrypoint: "B", runtimeVersion: "10", platform: "Linux/x64", identity: "B|10|Linux/x64" });
         const current = controller.panel;
         callbacks[0]();
         assert.equal(controller.selectedTarget.processId, 2);
         assert.equal(controller.panel, current);
+        const reused = { processId: 2, entrypoint: "C", runtimeVersion: "10", platform: "Linux/x64", identity: "C|10|Linux/x64" };
+        controller.activeChild = { pendingCaptures: new Map([["old", {}]]), pendingQueries: new Map() };
+        await assert.rejects(controller.selectProcess(reused), /Wait for the current capture/);
+        assert.equal(controller.selectedTarget.managedEntrypointAssemblyName, "B");
+        controller.activeChild = undefined;
+        await controller.selectProcess(reused);
+        assert.notEqual(controller.panel, current);
+        assert.equal(controller.selectedTarget.managedEntrypointAssemblyName, "C");
     } finally { vscode.window.createWebviewPanel = originalCreate; }
+});
+test("continuation pages preserve earlier captures and ordinary refresh replaces them", async () => {
+    const original = h.runHistoryCli;
+    h.runHistoryCli = async (_cli, args) => JSON.stringify({ data: args.includes("--after-capture-id")
+        ? { captures: [{ ...detail(), captureId: "c".repeat(32) }], nextAfterCaptureId: B }
+        : { captures: [detail()], nextAfterCaptureId: A } });
+    const history = new CaptureHistory(() => "cli", { appendLine() {} });
+    try {
+        await history.refresh();
+        await history.refresh(A);
+        let rows = await history.getChildren();
+        assert.deepEqual(rows.filter(r => r.capture).map(r => r.capture.captureId), [A, "c".repeat(32)]);
+        await history.refresh();
+        assert.equal((await history.getChildren()).filter(r => r.capture).length, 1);
+        history.rows = Array.from({ length: 500 }, () => ({ capture: detail() }));
+        await history.refresh(B);
+        rows = await history.getChildren();
+        assert.equal(rows.filter(r => r.capture).length, 500);
+        assert.ok(rows.some(r => /first 500/.test(r.message)));
+        assert.ok(!rows.some(r => r.more));
+    } finally { h.runHistoryCli = original; history.dispose(); }
 });

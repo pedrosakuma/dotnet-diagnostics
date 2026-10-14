@@ -68,7 +68,8 @@ first. The CLI does not expose process start time, so PID reuse with identical m
 distinguished. Process command lines are not retained in the tree or workspace state.
 The view displays at most 500 processes and explicitly reports an inventory cap.
 
-**Saved Captures** lists the CLI's durable capture catalog, 50 entries per page, with refresh,
+**Saved Captures** lists the CLI's durable capture catalog, 50 entries per page (up to 500 loaded,
+with an explicit cap notice), with refresh,
 reopen and confirmed CLI-managed deletion. It survives extension and CLI process restarts;
 ordinary panel results and ephemeral handles are not history entries. On a process, choose
 **Capture and Save Snapshot** to collect a **new** live heap, gcdump or thread snapshot, rather
