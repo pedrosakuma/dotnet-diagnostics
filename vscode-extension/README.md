@@ -60,6 +60,31 @@ frames. The CLI path can be set in the machine-scoped `dotnetDiagnostics.cliPath
 extension host must be able to execute it. Runtime, missing-tool, and protocol-version errors are
 shown with actionable guidance.
 
+The **.NET Processes** view adds refresh, a name/PID/runtime/platform filter, and context actions
+for counters and CPU/heap/thread captures. Click a process once to select it; context actions
+reuse that target without another process picker. The last selection is remembered per workspace
+as a hint, never automatically attached after restart. Actions refresh and validate the inventory
+first. The CLI does not expose process start time, so PID reuse with identical metadata cannot be
+distinguished. Process command lines are not retained in the tree or workspace state.
+The view displays at most 500 processes and explicitly reports an inventory cap.
+
+**Saved Captures** lists the CLI's durable capture catalog, 50 entries per page (up to 500 loaded,
+with an explicit cap notice), with refresh,
+reopen and confirmed CLI-managed deletion. It survives extension and CLI process restarts;
+ordinary panel results and ephemeral handles are not history entries. On a process, choose
+**Capture and Save Snapshot** to collect a **new** live heap, gcdump or thread snapshot, rather
+than converting an older panel result. Saving requires explicit high-risk acknowledgement
+(ptrace/suspension for live heap/threads, a blocking Gen2 GC for gcdump). Saved evidence can contain
+sensitive data and remains on disk until deleted.
+
+Reopened panels query only advertised offline views by capture/artifact IDs, never contact the
+original process, and reuse the shared drilldown renderer. Heap types, thread summaries and GC
+measurements also have structured saved-evidence tables. Unavailable data and omissions remain
+visible. Views needing unsupported parameters are labelled **use CLI**; interrupted captures
+must be recovered with the CLI first. CPU/exception persistence is not exposed by this UI.
+History calls inherit the CLI artifact root (including `MCP_ARTIFACT_ROOT`), have a 60-second
+deadline and a combined 8388608-character output cap; failures are explicit, not partial JSON.
+
 Use **Capture CPU Now** (tree-view action or Command Palette command
 `dotnetDiagnostics.captureCpu`) to take a single point-in-time CPU sample of the selected process.
 Unlike the counters/GC timeline, a capture is a one-shot snapshot: it reuses the panel's active

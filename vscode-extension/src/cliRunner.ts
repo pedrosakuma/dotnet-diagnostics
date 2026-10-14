@@ -8,6 +8,7 @@ export interface CliRunnerTimeouts {
     graceMs: number;
     /** Extra time after the force kill before the run is settled even without a `close` event. */
     settleMs: number;
+    maxOutputChars?: number;
 }
 
 const DEFAULT_TIMEOUTS: CliRunnerTimeouts = { timeoutMs: 20_000, graceMs: 2_000, settleMs: 2_000 };
@@ -53,8 +54,19 @@ export function createCliRunner(timeouts: CliRunnerTimeouts = DEFAULT_TIMEOUTS):
             }, timeouts.graceMs));
         }, timeouts.timeoutMs));
 
-        child.stdout.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; });
-        child.stderr.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
+        const append = (chunk: string, channel: "stdout" | "stderr"): void => {
+            if (timeouts.maxOutputChars !== undefined
+                && stdout.length + stderr.length + chunk.length > timeouts.maxOutputChars) {
+                child.kill("SIGKILL");
+                finish({ exitCode: null, stdout: "", stderr: "", outputLimitExceeded: true });
+            } else if (channel === "stdout") {
+                stdout += chunk;
+            } else {
+                stderr += chunk;
+            }
+        };
+        child.stdout.setEncoding("utf8").on("data", (chunk: string) => append(chunk, "stdout"));
+        child.stderr.setEncoding("utf8").on("data", (chunk: string) => append(chunk, "stderr"));
         child.stdin.on("error", () => undefined);
         child.on("error", error => finish({ exitCode: null, stdout, stderr, spawnError: error.message }));
         child.on("close", code => finish({ exitCode: code, stdout, stderr, timedOut }));
