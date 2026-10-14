@@ -93,6 +93,17 @@ otherwise, and renders its own top-hotspot table (module, method, inclusive/excl
 counts) that is replaced by the next capture rather than appended to a history. A capture does not
 start or stop the live counters/GC session, and it is not compared against any baseline.
 
+Use **Capture Diagnostics** (`dotnetDiagnostics.captureDiagnostics`) for allocations, off-CPU
+blocking, lock contention, thread pool, GC, GC and activities, in-flight requests, Kestrel,
+database or networking. A single picker asks for duration (1-300 seconds, default 10), rows per
+table (1-100), and applicable symbol path, ActivitySource filters or request threshold.
+Results contain structured metrics/tables, collector notes, omissions and evidence quality.
+Unknown values remain **Unavailable**, not zero; GC elapsed time is not labelled as pause time.
+Off-CPU requires explicit high-risk acknowledgement and platform tracing permissions
+(`perf`/CAP_PERFMON on Linux or ETW privileges on Windows). CLI errors remain visible.
+Results are not saved. Start the capture before reproducing the problem; startup takes time.
+Captured names, paths, request identifiers and sanitized SQL may contain sensitive data.
+
 Use **Capture Exceptions** (`dotnetDiagnostics.captureExceptions`, also available in the
 Activity Bar and live panel) for a 10-second exception window. Choose **Managed exceptions**
 for type counts and retained messages, or **Crash guard** for available managed stack frames
