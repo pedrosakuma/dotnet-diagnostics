@@ -49,7 +49,10 @@
     "onCommand:dotnetDiagnostics.captureCpu",
     "onCommand:dotnetDiagnostics.captureHeap",
     "onCommand:dotnetDiagnostics.captureThreadSnapshot",
-    "onView:dotnetDiagnostics.actions"
+    "onView:dotnetDiagnostics.actions",
+    "onCommand:dotnetDiagnostics.checkEnvironment",
+    "onCommand:dotnetDiagnostics.copyInstallCommand",
+    "onCommand:dotnetDiagnostics.openGettingStarted"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -94,6 +97,18 @@
       {
         "command": "dotnetDiagnostics.analyzeDumpFile",
         "title": ".NET Diagnostics: Analyze Dump File"
+      },
+      {
+        "command": "dotnetDiagnostics.checkEnvironment",
+        "title": ".NET Diagnostics: Check Environment"
+      },
+      {
+        "command": "dotnetDiagnostics.copyInstallCommand",
+        "title": ".NET Diagnostics: Copy CLI Install Command"
+      },
+      {
+        "command": "dotnetDiagnostics.openGettingStarted",
+        "title": ".NET Diagnostics: Open Getting Started"
       }
     ],
     "configuration": {
@@ -114,7 +129,40 @@
           "description": "How much trailing history (in seconds) the live counters chart and GC pauses table keep visible. Older points/rows are dropped as new ones arrive, matching how other real-time diagnostics panels (e.g. vscode-js-profile-flame's realtime view) bound their visible window instead of rendering an entire unbounded session."
         }
       }
-    }
+    },
+    "walkthroughs": [
+      {
+        "id": "dotnetDiagnostics.gettingStarted",
+        "title": "Get started with .NET Diagnostics",
+        "description": "Install dotnet-diagnostics-cli, verify your environment, and pick a process to diagnose.",
+        "steps": [
+          {
+            "id": "installCli",
+            "title": "Install the CLI",
+            "description": "The extension needs dotnet-diagnostics-cli 0.29.0 or later. It never installs tools for you.\n[Copy Install Command](command:dotnetDiagnostics.copyInstallCommand)",
+            "media": {
+              "markdown": "media/walkthrough/install-cli.md"
+            }
+          },
+          {
+            "id": "verifyEnvironment",
+            "title": "Verify the environment",
+            "description": "Check the CLI version, protocol compatibility, and ptrace/UID permissions.\n[Check Environment](command:dotnetDiagnostics.checkEnvironment)",
+            "media": {
+              "markdown": "media/walkthrough/verify-environment.md"
+            }
+          },
+          {
+            "id": "pickProcess",
+            "title": "Pick a process",
+            "description": "Choose a running .NET process and start live counters.\n[Start Live Counters](command:dotnetDiagnostics.startCounters)",
+            "media": {
+              "markdown": "media/walkthrough/pick-process.md"
+            }
+          }
+        ]
+      }
+    ]
   },
   "scripts": {
     "compile": "tsc -p .",

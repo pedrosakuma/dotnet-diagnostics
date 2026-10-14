@@ -4,6 +4,7 @@ import { basename } from "node:path";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import { promisify } from "node:util";
 import * as vscode from "vscode";
+import { registerOnboarding } from "./onboarding";
 import { QUERY_VIEW_RENDERER_SCRIPT, QUERY_VIEW_STYLES } from "./queryViewRenderer";
 import {
     describeStreamCompatibilityError,
@@ -1787,6 +1788,7 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.commands.registerCommand("dotnetDiagnostics.captureThreadSnapshot", () => controller.captureThreadSnapshot()),
         vscode.commands.registerCommand("dotnetDiagnostics.analyzeDumpFile", () => analyzeDumpFile(output, context)),
     );
+    registerOnboarding(context, output);
 }
 
 class DiagnosticsActionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
@@ -2735,7 +2737,7 @@ function describeThreadCaptureRisk(): string {
 
 function withRuntimeGuidance(message: string): string {
     if (/protocol mismatch|protocol version/i.test(message)) {
-        return `${message} Update dotnet-diagnostics-cli to a version compatible with this extension.`;
+        return `${message} Update dotnet-diagnostics-cli to a version compatible with this extension. Run '.NET Diagnostics: Check Environment' or '.NET Diagnostics: Open Getting Started' for the guided steps.`;
     }
     if (/unsupported_capture_kind|capture kind '(heap|thread-snapshot)' is not supported/i.test(message)) {
         return `${message} Update dotnet-diagnostics-cli to a version that supports this capture kind.`;
