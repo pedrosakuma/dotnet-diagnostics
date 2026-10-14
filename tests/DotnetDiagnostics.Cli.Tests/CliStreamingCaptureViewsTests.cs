@@ -36,11 +36,7 @@ public sealed class CliStreamingCaptureViewsTests
             [new(0, 1)], [new(Start, 0, "AllocSmall", "NonConcurrentGC", Duration)])) },
         { "requests", Result(new InFlightRequestSnapshot(42, Start, Duration, 1, 0, 1, 1, 1000, 2000,
             [new("trace", null, "GET", "/<script>", Start, 2000, true)], ["request-note"])) },
-        { "kestrel", Result(new KestrelSnapshot(42, Start, Duration,
-            1, 1, 0, 1, 1, 0, 0, 0, 0, 0,
-            Duration, Duration, Duration, TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero,
-            Duration, Duration, Duration, [], [], [new("GET", "/sample", "2", 1, Duration, Duration, Duration)],
-            [], null, ["kestrel-note"])) },
+        { "kestrel", Result(Kestrel()) },
         { "db", Result(new DbSnapshot(42, Start, Duration, 1,
             [new("hash", "SELECT sample", "SECRET-CONNECTION", [], 1, 10, 10, 10, Start, Start)],
             [], [], ["db-note"])) },
@@ -56,6 +52,23 @@ public sealed class CliStreamingCaptureViewsTests
 
     private static CliCommandResult Result<T>(T data) => new(false, false,
         DiagnosticResult.Ok(data, "Observed sample"), string.Empty);
+
+    private static KestrelSnapshot Kestrel() => new(42, Start, Duration,
+        1, 1, 0, 1, 1, 0, 0, 0, 0, 0, Duration, Duration, Duration,
+        TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero, Duration, Duration, Duration,
+        [], [], [new("GET", "/sample", "2", 1, Duration, Duration, Duration)], [], null, ["kestrel-note"]);
+
+    [Fact]
+    public void KestrelUnpairedStopsDoNotEstablishZeroLatency()
+    {
+        var snapshot = Kestrel() with { RequestsStarted = 0, RequestsStopped = 1, ByOperation = [], RequestP95 = TimeSpan.Zero };
+        var view = CliStreamingCaptureViews.Project(Result(snapshot), Options("kestrel"));
+        view.Metrics.Single(m => m.Label == "Request P95 (ms)").Value.Should().BeNull();
+        view.Notes.Should().Contain(n => n.Contains("stop events alone", StringComparison.Ordinal));
+        var pairedZero = Kestrel() with { RequestP95 = TimeSpan.Zero };
+        CliStreamingCaptureViews.Project(Result(pairedZero), Options("kestrel"))
+            .Metrics.Single(m => m.Label == "Request P95 (ms)").Value.Should().Be(0.0);
+    }
 
     [Theory]
     [MemberData(nameof(Snapshots))]

@@ -210,12 +210,12 @@ internal static class CliStreamingCaptureViews
                 b.Metric("Requests started", s.RequestsStarted);
                 b.Metric("Requests stopped", s.RequestsStopped);
                 b.Metric("Connections rejected", s.ConnectionsRejected);
-                b.Metric("Request P95 (ms)", s.RequestsStopped > 0 ? s.RequestP95.TotalMilliseconds : null);
+                b.Metric("Request P95 (ms)", s.ByOperation.Any(o => o.Count > 0) ? s.RequestP95.TotalMilliseconds : null);
                 b.Table("operations", "Request operations", ["Method", "Path", "HTTP", "Count", "Total (ms)", "P95 (ms)"],
                     s.ByOperation, top, o => [o.Method, o.Path, o.HttpVersion, o.Count, o.TotalDuration.TotalMilliseconds, o.P95Duration.TotalMilliseconds]);
                 b.Table("counters", "Kestrel counters", ["Counter", "Value", "Unit"], s.Counters, top, c => [c.DisplayName, c.Value, c.Unit]);
                 b.Notes(s.Notes);
-                b.Note("No completed requests means request latency is unavailable. Request paths may contain sensitive data.");
+                b.Note("Request latency requires correlated start/stop pairs; stop events alone do not establish latency. Request paths may contain sensitive data.");
                 break;
             case DiagnosticResult<DbSnapshot> { Data: { } s } envelope:
                 summary = envelope.Summary;
