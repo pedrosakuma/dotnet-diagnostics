@@ -8,7 +8,9 @@
 
 export const REQUIRED_PROTOCOL_VERSION = 2;
 export const MIN_CLI_VERSION = "0.29.0";
-export const INSTALL_COMMAND = `dotnet tool install -g dotnet-diagnostics-cli --version '>=${MIN_CLI_VERSION}'`;
+// `dotnet tool install` has no version-range syntax, so install the latest stable release.
+export const INSTALL_COMMAND = "dotnet tool install -g dotnet-diagnostics-cli";
+export const DEFAULT_CLI_PATH = "dotnet-diagnostics-cli";
 export const UPDATE_COMMAND = "dotnet tool update -g dotnet-diagnostics-cli";
 export const WALKTHROUGH_ID = "pedrosakuma.dotnet-diagnostics#dotnetDiagnostics.gettingStarted";
 
@@ -188,6 +190,21 @@ function classifyStartFailure(cliPath: string, run: CliRunResult): EnvironmentIs
     return undefined;
 }
 
+/**
+ * The global `dotnet tool update` only replaces the default `dotnet-diagnostics-cli` on PATH. For a
+ * custom cliPath it would update a different executable, so give path-specific guidance instead.
+ */
+function outdatedFix(cliPath: string): Pick<EnvironmentIssue, "guidance" | "command"> {
+    return cliPath === DEFAULT_CLI_PATH
+        ? {
+            guidance: "Update the CLI yourself with the command below, then recheck. The Getting Started walkthrough explains each step.",
+            command: UPDATE_COMMAND,
+        }
+        : {
+            guidance: `Update or rebuild the CLI at '${cliPath}' using whatever installed it (the global 'dotnet tool update' would not change this executable), or point dotnetDiagnostics.cliPath at a CLI ${MIN_CLI_VERSION} or later. The Getting Started walkthrough explains each step.`,
+        };
+}
+
 function doctorIssues(doctor: DoctorReport): EnvironmentIssue[] {
     const issues: EnvironmentIssue[] = [];
     for (const check of doctor.checks) {
@@ -214,7 +231,7 @@ function doctorIssues(doctor: DoctorReport): EnvironmentIssue[] {
  * because it is the authoritative compatibility contract (CLI >= 0.29.0 speaks JSONL protocol v2);
  * older CLIs either answer `protocol_version_unsupported` or do not know `stream` at all.
  */
-export async function checkEnvironment(cliPath: string, run: CliRunner): Promise<EnvironmentReport> {
+export async function checkEnvironment(cliPath: string, run: CliRunner, targetPid?: number): Promise<EnvironmentReport> {
     const hello = `${JSON.stringify({ type: "hello", protocolVersion: REQUIRED_PROTOCOL_VERSION })}\n`;
     const handshakeRun = await run(cliPath, ["stream", "--protocol", "jsonl"], hello);
 
@@ -238,8 +255,7 @@ export async function checkEnvironment(cliPath: string, run: CliRunner): Promise
                 kind: "cli-outdated",
                 severity: "error",
                 message: `Protocol mismatch: the CLI supports protocol version ${handshake.supportedVersions.join(", ") || "unknown"}, but this extension requires version ${REQUIRED_PROTOCOL_VERSION} (CLI ${MIN_CLI_VERSION} or later).`,
-                guidance: "Update the CLI yourself with the command below, then recheck. The Getting Started walkthrough explains each step.",
-                command: UPDATE_COMMAND,
+                ...outdatedFix(cliPath),
             };
         return { cliPath, ready: false, issues: [issue] };
     }
@@ -248,13 +264,12 @@ export async function checkEnvironment(cliPath: string, run: CliRunner): Promise
             kind: "cli-outdated",
             severity: "error",
             message: `Protocol mismatch: '${cliPath}' did not answer the JSONL protocol handshake. It is probably a CLI older than ${MIN_CLI_VERSION} without 'stream --protocol jsonl', or not dotnet-diagnostics-cli at all.`,
-            guidance: "Update the CLI yourself with the command below, or check that dotnetDiagnostics.cliPath points to dotnet-diagnostics-cli.",
-            command: UPDATE_COMMAND,
+            ...outdatedFix(cliPath),
         };
         return { cliPath, ready: false, issues: [handshakeRun.exitCode === null || handshakeRun.timedOut ? failedIssue("The protocol handshake", handshakeRun) : outdated] };
     }
 
-    const doctorRun = await run(cliPath, ["doctor", "--json"]);
+    const doctorRun = await run(cliPath, targetPid === undefined ? ["doctor", "--json"] : ["doctor", "--json", "--pid", String(targetPid)]);
     const doctorStartFailure = classifyStartFailure(cliPath, doctorRun);
     if (doctorStartFailure) {
         return { cliPath, ready: false, protocolVersion: handshake.protocolVersion, issues: [doctorStartFailure] };
@@ -282,9 +297,14 @@ export async function checkEnvironment(cliPath: string, run: CliRunner): Promise
 export function summarizeReport(report: EnvironmentReport): string {
     if (report.ready) {
         const warnings = report.issues.length;
+        const version = `CLI speaks protocol v${String(report.protocolVersion)}`;
+        const targetUnverified = report.doctor?.checks.some(check => check.id === "socket-uid" && check.status === "NotApplicable") ?? false;
+        const scope = targetUnverified
+            ? " Host-only check: permissions for a specific target process (socket UID) are not verified until you start a capture on it."
+            : "";
         return warnings === 0
-            ? `Environment ready: CLI speaks protocol v${String(report.protocolVersion)} and all checks passed.`
-            : `Environment ready with ${warnings} warning(s): CLI speaks protocol v${String(report.protocolVersion)}.`;
+            ? `Host environment ready: ${version} and the host checks passed.${scope}`
+            : `Host environment ready with ${warnings} warning(s): ${version}.${scope}`;
     }
     return report.issues[0]?.message ?? "Environment is not ready.";
 }
@@ -309,7 +329,7 @@ export function actionsForReport(report: EnvironmentReport): EnvironmentAction[]
     if (first?.kind === "cli-missing") {
         actions.push("Copy Install Command", "Open Settings", "Open Getting Started");
     } else if (first?.kind === "cli-outdated") {
-        actions.push("Copy Update Command", "Open Getting Started");
+        actions.push(...(first.command ? ["Copy Update Command" as const] : ["Open Settings" as const]), "Open Getting Started");
     } else if (first?.kind === "runtime-missing" || first?.kind === "cli-failed") {
         actions.push("Open Settings", "Open Getting Started");
     } else if (first?.kind === "extension-outdated") {

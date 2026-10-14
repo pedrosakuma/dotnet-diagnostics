@@ -6,7 +6,7 @@ installs or updates tools itself, so you run the command yourself.
 Install:
 
 ```
-dotnet tool install -g dotnet-diagnostics-cli --version '>=0.29.0'
+dotnet tool install -g dotnet-diagnostics-cli
 ```
 
 Update an older CLI:

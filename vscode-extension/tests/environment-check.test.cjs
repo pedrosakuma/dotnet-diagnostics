@@ -2,12 +2,13 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 const {
     INSTALL_COMMAND,
-    UPDATE_COMMAND,
     actionsForReport,
     checkEnvironment,
     parseDoctorOutput,
     parseHandshakeOutput,
     runEnvironmentCheckFlow,
+    summarizeReport,
+    UPDATE_COMMAND,
 } = require("../out/environmentCheck.js");
 
 // Shape emitted by `dotnet-diagnostics-cli doctor --json` (DiagnosticResult<PreflightReport>).
@@ -131,7 +132,7 @@ test("missing .NET runtime is distinguished from a missing CLI", async () => {
 
 test("old CLI answering protocol_version_unsupported is outdated", async () => {
     const stdout = '{"type":"error","code":"protocol_version_unsupported","message":"Protocol version 2 is not supported.","supportedVersions":[1]}\n';
-    const report = await checkEnvironment("cli", runner(result({ exitCode: 2, stdout }), result()));
+    const report = await checkEnvironment("dotnet-diagnostics-cli", runner(result({ exitCode: 2, stdout }), result()));
     assert.equal(report.ready, false);
     assert.equal(report.issues[0].kind, "cli-outdated");
     assert.match(report.issues[0].message, /Protocol mismatch/);
@@ -157,7 +158,7 @@ test("handshake timeout and malformed doctor output are reported as failures", a
     assert.match(badDoctor.issues[0].message, /boom/);
 });
 
-function host(handshakes, doctors, choices) {
+function host(handshakes, doctors, choices, cliPath = "cli") {
     const notifications = [];
     const copied = [];
     const calls = { walkthrough: 0, settings: 0 };
@@ -165,7 +166,7 @@ function host(handshakes, doctors, choices) {
         notifications,
         copied,
         calls,
-        getCliPath: () => "cli",
+        getCliPath: () => cliPath,
         run: async (cliPath, args) => (args[0] === "stream" ? handshakes : doctors).shift() ?? result(),
         notify: async (severity, message, actions) => {
             notifications.push({ severity, message, actions });
@@ -193,7 +194,7 @@ test("missing CLI flow copies the install command, never runs it, and rechecks t
 });
 
 test("protocol mismatch offers the walkthrough and opens it", async () => {
-    const h = host([result({ stdout: "Unknown command 'stream'." })], [], ["Open Getting Started"]);
+    const h = host([result({ stdout: "Unknown command 'stream'." })], [], ["Open Getting Started"], "dotnet-diagnostics-cli");
     const report = await runEnvironmentCheckFlow(h);
     assert.equal(report.issues[0].kind, "cli-outdated");
     assert.ok(h.notifications[0].actions.includes("Open Getting Started"));
@@ -204,4 +205,41 @@ test("protocol mismatch offers the walkthrough and opens it", async () => {
 
 test("actionsForReport offers no recheck when ready", () => {
     assert.deepEqual(actionsForReport({ cliPath: "c", ready: true, issues: [] }), []);
+});
+
+test("host-only success summary says target permissions are not verified", async () => {
+    const socket = { id: "socket-uid", title: "t", status: "NotApplicable", reason: "No target" };
+    const report = await checkEnvironment("cli", runner(result({ stdout: HELLO_OK }), result({ stdout: doctorJson([okCheck, socket], "Ok") })));
+    const summary = summarizeReport(report);
+    assert.match(summary, /Host environment ready/);
+    assert.match(summary, /not verified/);
+    assert.doesNotMatch(summary, /all checks passed/);
+});
+
+test("target-scoped check passes --pid to doctor and drops the unverified note", async () => {
+    const socket = { id: "socket-uid", title: "t", status: "Ok", reason: "UID matches" };
+    const run = runner(result({ stdout: HELLO_OK }), result({ stdout: doctorJson([okCheck, socket], "Ok") }));
+    const report = await checkEnvironment("cli", run, 1234);
+    assert.deepEqual(run.calls[1].args, ["doctor", "--json", "--pid", "1234"]);
+    assert.doesNotMatch(summarizeReport(report), /not verified/);
+});
+
+test("install command uses supported dotnet tool syntax", () => {
+    assert.equal(INSTALL_COMMAND, "dotnet tool install -g dotnet-diagnostics-cli");
+    assert.doesNotMatch(INSTALL_COMMAND, /--version/);
+});
+
+test("custom cliPath outdated guidance does not offer the global update", async () => {
+    const run = runner(result({ stdout: "Unknown command 'stream'." }), result());
+    const report = await checkEnvironment("/opt/tools/dd-cli", run);
+    const issue = report.issues[0];
+    assert.equal(issue.kind, "cli-outdated");
+    assert.equal(issue.command, undefined);
+    assert.match(issue.guidance, /\/opt\/tools\/dd-cli/);
+    const actions = actionsForReport(report);
+    assert.ok(!actions.includes("Copy Update Command"));
+    assert.ok(actions.includes("Open Settings"));
+    const defaultReport = await checkEnvironment("dotnet-diagnostics-cli", runner(result({ stdout: "Unknown command 'stream'." }), result()));
+    assert.equal(defaultReport.issues[0].command, UPDATE_COMMAND);
+    assert.ok(actionsForReport(defaultReport).includes("Copy Update Command"));
 });

@@ -1,42 +1,12 @@
-import { spawn } from "node:child_process";
 import * as vscode from "vscode";
+import { runCli } from "./cliRunner";
 import {
     INSTALL_COMMAND,
     UPDATE_COMMAND,
     WALKTHROUGH_ID,
     runEnvironmentCheckFlow,
-    type CliRunResult,
-    type CliRunner,
     type EnvironmentHost,
 } from "./environmentCheck";
-
-const CLI_TIMEOUT_MS = 20_000;
-
-/** Runs the CLI with a timeout, optionally writing `stdin` then closing it. Never rejects. */
-export const runCli: CliRunner = (cliPath, args, stdin) => new Promise<CliRunResult>(resolve => {
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-    let timedOut = false;
-    const finish = (result: CliRunResult): void => {
-        if (!settled) {
-            settled = true;
-            clearTimeout(timer);
-            resolve(result);
-        }
-    };
-    const child = spawn(cliPath, args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
-    const timer = setTimeout(() => {
-        timedOut = true;
-        child.kill();
-    }, CLI_TIMEOUT_MS);
-    child.stdout.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; });
-    child.stderr.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
-    child.stdin.on("error", () => undefined);
-    child.on("error", error => finish({ exitCode: null, stdout, stderr, spawnError: error.message }));
-    child.on("close", code => finish({ exitCode: code, stdout, stderr, timedOut }));
-    child.stdin.end(stdin ?? "");
-});
 
 function createHost(output: vscode.OutputChannel): EnvironmentHost {
     return {
