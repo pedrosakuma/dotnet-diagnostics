@@ -48,6 +48,8 @@ test("exception capture never queues reproduction guidance behind a busy CLI ope
         assert.deepEqual(frames, []);
         assert.equal(messages.at(-1).state, "error");
         assert.match(messages.at(-1).message, /connection is busy/);
+        assert.ok(!messages.some(message => message.state === "running"),
+            "busy rejection must not send the running status that clears previous evidence");
         assert.ok(!messages.some(message => /reproduce the problem now/.test(message.message)));
     }
 });
@@ -61,6 +63,7 @@ test("idle exception capture sends bounded JSONL request and renders independent
         durationSeconds: 10, maxRecent: 100, topN: 25,
     });
     assert.ok(messages.some(message => /reproduce the problem now/.test(message.message)));
+    assert.equal(messages[0].state, "starting");
     assert.equal(messages.find(message => message.type === "capture").kind, "exceptions");
     assert.equal(messages.at(-1).state, "done");
     assert.equal(session.pendingCaptures.size, 0);

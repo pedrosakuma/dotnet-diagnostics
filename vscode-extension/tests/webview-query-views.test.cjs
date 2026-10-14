@@ -194,6 +194,20 @@ test("live webview wires exception requests and result/status handling separatel
     assert.match(script, /captureExceptionsButton\.addEventListener\('click', \(\) => vscode\.postMessage\(\{ type: 'captureExceptions' \}\)\)/);
     assert.match(script, /message\.type === 'captureStatus' && message\.kind === 'exceptions'/);
     assert.match(script, /renderQueryView\('exceptionCaptureViews', 'exceptions', message\.result, false\)/);
+    const statusBranch = /message\.type === 'captureStatus' && message\.kind === 'exceptions'\) \{([\s\S]*?)\n      \} else/.exec(script);
+    assert.ok(statusBranch);
+    const elements = new Map([
+        ["captureExceptionsStatus", { textContent: "" }],
+        ["captureExceptionsButton", { disabled: false }],
+        ["exceptionCaptureViews", { clears: 0, replaceChildren() { this.clears++; } }],
+    ]);
+    const dispatchStatus = new Function("message", "captureExceptionsStatus", "captureExceptionsButton", "document", statusBranch[1]);
+    for (const state of ["starting", "error", "running"]) {
+        dispatchStatus({ state }, elements.get("captureExceptionsStatus"), elements.get("captureExceptionsButton"),
+            { getElementById: id => elements.get(id) });
+        assert.equal(elements.get("exceptionCaptureViews").clears, state === "running" ? 1 : 0,
+            "only an issued capture clears prior evidence");
+    }
 });
 
 test("roots-by-kind renders human-readable metrics and a category table", () => {

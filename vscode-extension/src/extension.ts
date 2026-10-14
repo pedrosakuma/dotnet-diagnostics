@@ -312,7 +312,7 @@ class CounterPanelController implements vscode.Disposable {
         ], { placeHolder: "Capture exceptions for 10 seconds; messages can contain sensitive application data" });
         if (!selection || this.disposed) return;
         const kind = selection.captureKind;
-        this.postMessage({ type: "captureStatus", kind: "exceptions", state: "running", message: "Starting exception capture…" });
+        this.postMessage({ type: "captureStatus", kind: "exceptions", state: "starting", message: "Preparing exception capture…" });
         let session: StreamChild;
         let ownsSession: boolean;
         try {
@@ -2413,7 +2413,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         }
       } else if (message.type === 'captureStatus' && message.kind === 'exceptions') {
         captureExceptionsStatus.textContent = message.message || message.state || '';
-        captureExceptionsButton.disabled = message.state === 'running';
+        captureExceptionsButton.disabled = message.state === 'running' || message.state === 'starting';
         if (message.state === 'running') document.getElementById('exceptionCaptureViews').replaceChildren();
       } else if (message.type === 'captureStatus' && message.kind === 'heap') {
         captureHeapStatusElement.textContent = message.message || message.state || '';
