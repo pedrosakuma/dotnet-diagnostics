@@ -12,6 +12,7 @@ public sealed class LiveWindowsNativeAotThreadSnapshotTests : IAsyncLifetime
 {
     private Process? _sampleProcess;
     private string? _publishDir;
+    private readonly TaskCompletionSource<Uri> _listeningUrl = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     public async Task InitializeAsync()
     {
@@ -102,8 +103,17 @@ public sealed class LiveWindowsNativeAotThreadSnapshotTests : IAsyncLifetime
         });
         _ = Task.Run(async () =>
         {
-            try { while (await _sampleProcess!.StandardOutput.ReadLineAsync() is not null) { } }
-            catch { /* best effort */ }
+            try
+            {
+                while (await _sampleProcess!.StandardOutput.ReadLineAsync() is { } line)
+                {
+                    const string marker = "Now listening on:";
+                    var index = line.IndexOf(marker, StringComparison.Ordinal);
+                    if (index >= 0) _listeningUrl.TrySetResult(new Uri(line[(index + marker.Length)..].Trim()));
+                }
+                _listeningUrl.TrySetException(new InvalidOperationException("The sample exited before reporting its listening URL."));
+            }
+            catch (Exception exception) { _listeningUrl.TrySetException(exception); }
         });
 
         await WaitForDiagnosticEndpointAsync(_sampleProcess!.Id, TimeSpan.FromSeconds(45));
@@ -123,10 +133,28 @@ public sealed class LiveWindowsNativeAotThreadSnapshotTests : IAsyncLifetime
                 new EtwNativeThreadSnapshotBackend(new EtwNativeThreadSnapshotInspector()),
             });
 
-        var snapshot = await inspector.InspectLiveAsync(
-            _sampleProcess.Id,
-            new ThreadSnapshotOptions(MaxFramesPerThread: 32),
-            CancellationToken.None);
+        using var client = new HttpClient
+        {
+            BaseAddress = await _listeningUrl.Task.WaitAsync(TimeSpan.FromSeconds(45)),
+            Timeout = TimeSpan.FromSeconds(10),
+        };
+        using var workloadCancellation = new CancellationTokenSource();
+        var workload = Task.WhenAll(
+            RunWorkloadAsync(client, workloadCancellation.Token),
+            RunWorkloadAsync(client, workloadCancellation.Token));
+        ThreadSnapshotArtifact snapshot;
+        try
+        {
+            using var ready = await client.GetAsync("cpu");
+            ready.EnsureSuccessStatusCode();
+            snapshot = await inspector.InspectLiveAsync(
+                _sampleProcess.Id, new ThreadSnapshotOptions(MaxFramesPerThread: 32), CancellationToken.None);
+        }
+        finally
+        {
+            workloadCancellation.Cancel();
+            await workload;
+        }
 
         snapshot.Origin.Should().Be(ThreadSnapshotOrigin.Live);
         snapshot.Source.Should().Be("etw-native-stack");
@@ -135,6 +163,21 @@ public sealed class LiveWindowsNativeAotThreadSnapshotTests : IAsyncLifetime
         snapshot.Threads.Select(t => t.OSThreadId).Should().OnlyHaveUniqueItems();
         snapshot.Threads.Count.Should().BeGreaterThan(0);
         snapshot.Threads.SelectMany(t => t.Frames).Should().NotBeEmpty();
+    }
+
+    private static async Task RunWorkloadAsync(HttpClient client, CancellationToken cancellationToken)
+    {
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                using var response = await client.GetAsync("cpu", cancellationToken);
+                response.EnsureSuccessStatusCode();
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
     }
 
     private static async Task WaitForDiagnosticEndpointAsync(int pid, TimeSpan timeout)
