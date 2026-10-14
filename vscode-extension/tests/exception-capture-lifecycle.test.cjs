@@ -3,6 +3,13 @@ const test = require("node:test");
 const fs = require("node:fs");
 const path = require("node:path");
 const { createRequire } = require("node:module");
+const Module = require("node:module");
+
+const originalResolveFilename = Module._resolveFilename;
+Module._resolveFilename = function (request, ...rest) {
+    if (request === "vscode") return path.join(__dirname, "stubs", "vscode-stub.js");
+    return originalResolveFilename.call(this, request, ...rest);
+};
 
 const extensionPath = path.join(__dirname, "..", "out", "extension.js");
 const extensionRequire = createRequire(extensionPath);
