@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using DotnetDiagnostics.Core.Safety;
 using DotnetDiagnostics.Core.Dump;
 
 namespace DotnetDiagnostics.Cli;
@@ -85,6 +86,17 @@ internal static class CliStreamingQueryNavigation
         snapshot.StaticFields is null
             ? snapshot
             : snapshot with { StaticFields = [.. snapshot.StaticFields.Where(field => field.ValueAddress == address)] };
+
+    /// <summary>
+    /// Safety request for an <c>object</c>/<c>gcroot</c> read. A dump origin is re-read offline (no ptrace
+    /// attach, no suspension) and carries the dump-source heap profile (Moderate/Warn); only a live origin
+    /// reopens the target and keeps the generic query profile (High/Acknowledge).
+    /// </summary>
+    internal static CliOptions CreateObjectReadSafetyOptions(
+        HeapSnapshotOrigin origin, string handle, string view, string? acknowledgeRisk) =>
+        origin == HeapSnapshotOrigin.Dump
+            ? new CliOptions { Command = "inspect-heap", Sources = [DiagnosticOperationCatalog.HeapSources.Dump], AcknowledgeRisk = acknowledgeRisk }
+            : new CliOptions { Command = "query", Handle = handle, View = view, AcknowledgeRisk = acknowledgeRisk };
 
     internal static object ProjectObject(HeapObjectInspection inspection) => new
     {

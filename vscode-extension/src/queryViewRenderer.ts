@@ -751,8 +751,8 @@ function formatPercent(value: unknown): string {
 function formatAddress(value: unknown): string {
     if (value === undefined || value === null || value === "") return "—";
     if (typeof value === "string" && /^0x[0-9a-f]+$/i.test(value)) return value;
-    if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return "0x" + value.toString(16);
-    if (typeof value === "number" && Number.isFinite(value)) return "Unavailable: imprecise JavaScript integer";
+    // Addresses are strings on the wire; any number (even a safe integer) violates that contract and is never reformatted.
+    if (typeof value === "number") return "Unavailable: numeric address (imprecise JavaScript integer)";
     return String(value);
 }
 

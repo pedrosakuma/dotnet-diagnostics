@@ -182,10 +182,11 @@ hexadecimal string. Per view:
   snapshot, so it needs no re-attach and no acknowledgement; the opt-in `includeStaticFields`
   capture rule still applies.
 - `object` and `gcroot` require `address`. Unlike the projection views they re-open the snapshot's
-  origin with ClrMD — a live-origin handle attaches to (and briefly suspends) the target process, a
-  dump-origin handle re-reads the dump file — so they follow the same High risk/Acknowledge profile
-  as `query --view object` and are rejected with `query_safety_rejected` unless `acknowledgeRisk`
-  equals the resolved risk name (currently `high`). String, field and array-element previews are
+  origin with ClrMD. A live-origin handle attaches to (and briefly suspends) the target process, so
+  it follows the High risk/Acknowledge profile of `query --view object` and is rejected with
+  `query_safety_rejected` unless `acknowledgeRisk` equals the resolved risk name (currently `high`).
+  A dump-origin handle re-reads the dump file offline (no attach, no suspension), so it follows the
+  dump-source heap profile (Moderate/Warn) and needs no acknowledgement. String, field and array-element previews are
   redacted to the metadata-only placeholder, as in the session REPL. A `gcdump`-origin handle is
   rejected with `unsupported_query_view` (it has no ClrMD runtime), and a failed read (for example a
   process that exited or an address that is not an object) returns `query_failed`. `objsize` stays

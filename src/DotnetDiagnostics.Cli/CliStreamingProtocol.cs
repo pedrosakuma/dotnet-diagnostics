@@ -1390,8 +1390,8 @@ internal static class CliStreamingProtocol
     /// Serves the address-targeted <c>object</c>/<c>gcroot</c> heap views (#1168) through the same
     /// <see cref="IDumpInspector"/> and string-preview redaction the one-shot/session CLI uses. These
     /// re-open the snapshot origin with ClrMD (a live attach suspends the target; a dump is re-read), so
-    /// they clear the shared <c>query</c> safety profile (High risk/Acknowledge) first, exactly like a
-    /// one-shot <c>query --view object</c>; a <c>gcdump</c> origin has no ClrMD runtime and is rejected.
+    /// a live origin clears the shared <c>query</c> safety profile (High risk/Acknowledge) first, while a dump
+    /// origin uses the offline dump-source heap profile (Moderate/Warn, no attach or suspension); a <c>gcdump</c> origin has no ClrMD runtime and is rejected.
     /// </summary>
     private static async Task HandleHeapObjectReadAsync(
         string requestId,
@@ -1432,7 +1432,8 @@ internal static class CliStreamingProtocol
             return;
         }
 
-        var safetyOptions = new CliOptions { Command = "query", Handle = handle, View = normalizedView, AcknowledgeRisk = acknowledgeRisk };
+        var safetyOptions = CliStreamingQueryNavigation.CreateObjectReadSafetyOptions(
+            snapshot.Origin, handle, normalizedView, acknowledgeRisk);
         var safety = await CliSafetyPreflight.RunAsync(
             safetyOptions,
             handles,

@@ -1,12 +1,36 @@
 using System.Text.Json;
 using DotnetDiagnostics.Cli;
+using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Dump;
+using DotnetDiagnostics.Core.Safety;
 using FluentAssertions;
 
 namespace DotnetDiagnostics.Cli.Tests;
 
 public sealed class CliStreamingQueryNavigationTests
 {
+    [Theory]
+    [InlineData("object")]
+    [InlineData("gcroot")]
+    public void ObjectReadSafety_DumpOriginIsOfflineWarn_LiveOriginStaysHighAcknowledge(string view)
+    {
+        var dump = CliInvocationSafety.Resolve(
+            CliStreamingQueryNavigation.CreateObjectReadSafetyOptions(HeapSnapshotOrigin.Dump, "h", view, null));
+        dump.RiskLevel.Should().Be(InvocationRiskLevel.Moderate);
+        dump.ApprovalPolicy.Should().Be(InvocationApprovalPolicy.Warn);
+        dump.TargetImpact.Should().NotContain(TargetImpact.PtraceAttach).And.NotContain(TargetImpact.ProcessSuspension);
+
+        var store = new MemoryDiagnosticHandleStore();
+        var artifact = new HeapSnapshotArtifact(HeapSnapshotOrigin.Live, Environment.ProcessId, DateTimeOffset.UnixEpoch,
+            TimeSpan.Zero, new("CoreCLR", "10.0", "x64", false, 1), new(0, 0, 0, 0, 0, 0, 0), [], []);
+        var handle = store.Register(Environment.ProcessId, "heap-snapshot", artifact, TimeSpan.FromMinutes(1));
+        var live = CliInvocationSafety.Resolve(
+            CliStreamingQueryNavigation.CreateObjectReadSafetyOptions(HeapSnapshotOrigin.Live, handle.Id, view, null), store);
+        live.RiskLevel.Should().Be(InvocationRiskLevel.High);
+        live.ApprovalPolicy.Should().Be(InvocationApprovalPolicy.Acknowledge);
+        live.TargetImpact.Should().Contain(TargetImpact.PtraceAttach).And.Contain(TargetImpact.ProcessSuspension);
+    }
+
     [Theory]
     [InlineData("0x1", 0x1UL)]
     [InlineData("0X1F", 0x1FUL)]

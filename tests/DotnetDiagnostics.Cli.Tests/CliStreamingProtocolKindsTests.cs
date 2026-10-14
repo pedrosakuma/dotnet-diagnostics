@@ -757,16 +757,11 @@ public sealed class CliStreamingProtocolKindsTests
             await session.SendAsync(new { type = "query", requestId = "missing", handle, view = "object", acknowledgeRisk = "high" });
             (await session.ReadFrameAsync()).GetProperty("code").GetString().Should().Be("invalid_query");
 
-            // The ClrMD re-open needs the High-risk acknowledgement; without it nothing runs.
+            // A dump origin is re-read offline (Moderate/Warn): it needs no High-risk acknowledgement.
             await session.SendAsync(new { type = "query", requestId = "noack", handle, view = "object", address = hex });
-            var noAck = await session.ReadFrameAsync();
-            noAck.GetProperty("code").GetString().Should().Be("query_safety_rejected");
-            noAck.GetProperty("message").GetString().Should().Contain("acknowledgeRisk");
+            (await session.ReadFrameAsync()).GetProperty("type").GetString().Should().Be("query");
 
-            await session.SendAsync(new { type = "query", requestId = "wrongack", handle, view = "object", address = hex, acknowledgeRisk = "low" });
-            (await session.ReadFrameAsync()).GetProperty("code").GetString().Should().Be("query_safety_rejected");
-
-            await session.SendAsync(new { type = "query", requestId = "object", handle, view = "object", address = hex, acknowledgeRisk = "high" });
+            await session.SendAsync(new { type = "query", requestId = "object", handle, view = "object", address = hex });
             var objectFrame = await session.ReadFrameAsync();
             objectFrame.GetProperty("type").GetString().Should().Be("query");
             var objectResult = objectFrame.GetProperty("result");
@@ -803,10 +798,10 @@ public sealed class CliStreamingProtocolKindsTests
             // gcroot is exact-address and either finds a chain or reports a bounded failure; at least one
             // statically referenced object must resolve to a root path whose every frame is a hex string.
             var resolvedRoots = 0;
-            for (var i = 0; i < Math.Min(statics.GetArrayLength(), 10) && resolvedRoots == 0; i++)
+            for (var i = 0; i < statics.GetArrayLength() && resolvedRoots == 0; i++)
             {
                 var candidate = statics[i].GetProperty("valueAddress").GetString()!;
-                await session.SendAsync(new { type = "query", requestId = "gcroot", handle, view = "gcroot", address = candidate, acknowledgeRisk = "high" });
+                await session.SendAsync(new { type = "query", requestId = "gcroot", handle, view = "gcroot", address = candidate });
                 var gcRootFrame = await session.ReadFrameAsync();
                 if (gcRootFrame.GetProperty("type").GetString() == "error")
                 {

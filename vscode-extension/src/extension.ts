@@ -1432,8 +1432,6 @@ class DumpAnalysisPanelController implements vscode.Disposable {
     private threadHandle: string | undefined;
     /** Heap snapshot handle address navigation queries; the connection stays open for it too (issue #1168). */
     private heapHandle: string | undefined;
-    /** Offline reads are acknowledged once per panel; they attach to nothing. */
-    private offlineReadAcknowledged = false;
     private readonly addressNavigation = new AddressNavigationController(this.createAddressNavigationHost());
     private readonly threadStaticsGuard = new SingleFlightGuard();
 
@@ -1636,24 +1634,15 @@ class DumpAnalysisPanelController implements vscode.Disposable {
     private createAddressNavigationHost(): AddressNavigationHost {
         return {
             currentHeapHandle: () => this.activeChild && !this.activeChild.terminated ? this.heapHandle : undefined,
-            acknowledge: async (view, address) => {
-                if (this.offlineReadAcknowledged) {
-                    return true;
-                }
-                this.offlineReadAcknowledged = await vscode.window.showWarningMessage(
-                    `Reading ${view === "gcroot" ? "the GC root path of" : "the object at"} ${address} walks the heap of the dump file offline; no process is attached or suspended. The CLI still classifies this read as High risk and large heaps can be slow. Acknowledge once for this panel?`,
-                    { modal: true },
-                    "Acknowledge and Read",
-                    "Cancel",
-                ) === "Acknowledge and Read";
-                return this.offlineReadAcknowledged;
-            },
-            query: async (handle, view, address, acknowledgeRisk) => {
+            // A dump read is offline (Moderate/Warn in the CLI): nothing is attached or suspended, so
+            // no High-risk acknowledgement is requested or sent.
+            acknowledge: async () => true,
+            query: async (handle, view, address) => {
                 const child = this.activeChild;
                 if (!child || child.terminated || handle !== this.heapHandle) {
                     throw new Error("The dump analysis connection is no longer available.");
                 }
-                return await this.sendQuery(child, handle, view, undefined, { address, acknowledgeRisk });
+                return await this.sendQuery(child, handle, view, undefined, { address });
             },
             post: message => this.postMessage(message),
             copy: async address => {

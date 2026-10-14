@@ -151,10 +151,11 @@ navigation area with **Back**/**Forward** buttons and a breadcrumb: *retention p
 **Referencing statics** view filters the already-captured static fields by that exact address, so
 it needs no extra read and only exists when you opted into static fields before capturing.
 **Object** and **GC root path** are read on demand through the CLI's `query` request with
-`address`: they are classified High risk, so the extension asks for an explicit modal
-acknowledgement first. For a live panel that read re-attaches via ptrace and suspends the target and
-is shown as read live, not part of the captured snapshot (asked every time; Back/Forward use
-cached results and never read again); for a dump it is offline and acknowledged once per panel.
+`address`. For a live panel that read re-attaches via ptrace and suspends the target (High risk), so
+the extension asks for an explicit modal acknowledgement every time and shows the result as read
+live, not part of the captured snapshot; Back/Forward use cached results and never read again. In a
+dump panel the read is offline (Moderate risk, nothing is attached or suspended), so no
+acknowledgement is requested.
 History holds at most 20 entries, each caching only its own result, and is cleared by a new heap
 capture; only the current result is in the page. Addresses are never converted to JavaScript
 numbers: a numeric address is flagged as imprecise and is neither linked nor copyable. The host

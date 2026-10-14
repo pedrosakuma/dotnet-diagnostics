@@ -234,9 +234,15 @@ test("copy requests carry the exact address and the host validates them", async 
 test("unsafe numeric JavaScript addresses stay flagged, unlinked and uncopyable", () => {
     const page = loadPage();
     page.renderQueryView("heapQueryViews", "retention-paths", retentionPaths(0xfedcba9876543211), false);
-    assert.match(page.heap.textContent, /Unavailable: imprecise JavaScript integer/);
+    assert.match(page.heap.textContent, /Unavailable: numeric address/);
     assert.ok(!links(page.heap).some(node => /^0xfedcba/.test(node.textContent)));
+    const safePage = loadPage();
+    safePage.renderQueryView("heapQueryViews", "static-fields", staticsResult(4096), false);
+    assert.equal(links(safePage.heap).length + copies(safePage.heap).length, 0);
+    assert.match(safePage.heap.textContent, /Unavailable: numeric address/);
+    assert.ok(!/0x1000\b/.test(safePage.heap.textContent));
     page.renderQueryView("heapQueryViews", "static-fields", staticsResult(4096), false);
+    assert.match(page.heap.textContent, /Unavailable: numeric address/);
     assert.deepEqual(links(page.heap).map(node => node.textContent), [ROOT], "only string addresses are links");
     page.navigateToAddress("4096", "object");
     page.navigateToAddress(0xfedcba9876543211, "object");
