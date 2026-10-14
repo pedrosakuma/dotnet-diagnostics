@@ -87,6 +87,35 @@ test("address exports follow host-held navigation history and refuse pending or 
     await exported();
     assert.equal(docs.length, 3);
 });
+test("branching history prunes discarded forward results, not retained breadcrumb evidence", async () => {
+    const exporter = new e.ResultExporter(), docs = [];
+    vscode.window.showTextDocument = async document => docs.push(document);
+    const history = Array.from({ length: 20 }, (_, i) => ({ view: "object", address: `0x${(i + 1).toString(16)}` }));
+    await exporter.handle({ type: "navigationSelection", ...history[0], ready: false, history });
+    for (let i = 0; i < history.length; i++)
+        exporter.observe({ type: "navigation", ...history[i], result: { totalBytes: i + 1 } });
+    const branch = [...history.slice(0, 2), { view: "gcroot", address: "0xff" }];
+    await exporter.handle({ type: "navigationSelection", ...branch[2], ready: false, history: branch });
+    exporter.observe({ type: "navigation", ...branch[2], result: { totalBytes: 99 } });
+    exporter.observe({ type: "navigation", ...history[19], result: { totalBytes: 999 } });
+    await exporter.handle({ type: "navigationSelection", ...history[0], ready: true, history: branch });
+    await exporter.handle({ type: "exportResult", format: "json" });
+    assert.equal(JSON.parse(docs[0].content).measurements[0].value, 1);
+    assert.equal(exporter.navigation.size, 3);
+});
+test("repeated reads of the same address preserve each entry's own host-held evidence", async () => {
+    const exporter = new e.ResultExporter(), docs = [];
+    vscode.window.showTextDocument = async document => docs.push(document);
+    const history = [1, 2].map(navigationId => ({ navigationId, view: "object", address: "0xff" }));
+    await exporter.handle({ type: "navigationSelection", ...history[0], ready: false, history });
+    exporter.observe({ type: "navigation", ...history[0], result: { totalBytes: 1 } });
+    exporter.observe({ type: "navigation", ...history[1], result: { totalBytes: 2 } });
+    for (const entry of history) {
+        await exporter.handle({ type: "navigationSelection", ...entry, ready: true, history });
+        await exporter.handle({ type: "exportResult", format: "json" });
+    }
+    assert.deepEqual(docs.map(d => JSON.parse(d.content).measurements[0].value), [1, 2]);
+});
 test("baseline compare builds only validated catalog IDs and refuses mutable or unrelated references", () => {
     assert.deepEqual(b.compareArgs(capture, B, capture, B), ["compare", "--baseline-capture-id", A,
         "--baseline-artifact-id", B, "--candidate-capture-id", A, "--candidate-artifact-id", B, "--json"]);
