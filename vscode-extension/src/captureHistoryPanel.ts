@@ -1,5 +1,7 @@
 import { captureQueryArgs, parseEnvelope, runHistoryCli, type CaptureSummary } from "./processHistory";
 import { QUERY_VIEW_RENDERER_SCRIPT, QUERY_VIEW_STYLES } from "./queryViewRenderer";
+import { RESULT_EXPORT_BUTTONS, RESULT_EXPORT_SCRIPT } from "./resultExport";
+import { COMPARISON_RENDERER_SCRIPT } from "./baselineCompare";
 
 const SHARED_VIEWS = ["roots-by-kind", "finalizer-queue", "fragmentation", "gchandles", "async", "timers", "alc",
     "deadlocks", "unique-stacks", "wait-chains", "threadpool"];
@@ -115,9 +117,13 @@ export function renderHistoryHtml(nonce: string, cspSource: string, detail: Capt
 table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:.25rem;border-bottom:1px solid var(--vscode-panel-border)}${QUERY_VIEW_STYLES}</style></head><body>
 <h2>${escapeHtml(detail.name)}</h2><p>Saved capture ${escapeHtml(detail.captureId)} - ${escapeHtml(detail.createdUtc)}. Offline, read-only evidence; the original process is not contacted.</p>
 <label>Artifact <select id="artifact">${options}</select></label><label>View <select id="view"></select></label>
+${RESULT_EXPORT_BUTTONS}<button id="compareBaseline">Compare with saved baseline</button>
 <p id="status" role="status"></p><div id="views" class="query-views"></div>
 <script nonce="${nonce}">
 const vscode = acquireVsCodeApi(), choices = ${choices};
+${RESULT_EXPORT_SCRIPT}
+${COMPARISON_RENDERER_SCRIPT}
+document.getElementById("compareBaseline").addEventListener("click", () => vscode.postMessage({ type: "compareBaseline" }));
 ${QUERY_VIEW_RENDERER_SCRIPT}
 ${SAVED_PRIMARY_RENDERER_SCRIPT}
 const artifact = document.getElementById("artifact"), view = document.getElementById("view"), status = document.getElementById("status");
@@ -143,6 +149,7 @@ function fill() {
 artifact.addEventListener("change", fill); view.addEventListener("change", ask);
 window.addEventListener("message", e => {
   const m = e.data;
+  if (m?.type === "comparison") { renderComparison("views", m.result); status.textContent = "Saved baseline comparison."; return; }
   if (!m || m.type !== "result" || !current || m.requestId !== current.requestId || m.view !== current.view) return;
   artifact.disabled = view.disabled = false;
   status.textContent = m.ok ? m.summary : m.message;

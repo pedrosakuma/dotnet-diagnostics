@@ -353,6 +353,12 @@ internal static class CliStreamingProtocol
                                 .ConfigureAwait(false);
                             break;
 
+                        case "export":
+                            await writer.WriteAsync(
+                                await CliStreamingExport.HandleAsync(document.RootElement, services, cancellationToken)
+                                    .ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
+                            break;
+
                         default:
                             await WriteErrorAsync(writer, "unknown_message_type", $"Unknown message type '{type}'.")
                                 .ConfigureAwait(false);
@@ -525,6 +531,27 @@ internal static class CliStreamingProtocol
                 requestId,
                 code = "unsupported_capture_kind",
                 message = $"Capture kind '{kind}' is not supported.",
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+
+        if (root.TryGetProperty("exportTrace", out var traceElement)
+            && traceElement.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error", requestId, code = "invalid_capture",
+                message = "'exportTrace' must be a boolean and is supported only for CPU captures.",
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+        var exportTrace = traceElement.ValueKind == JsonValueKind.True;
+        if (exportTrace && kind != "cpu")
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error", requestId, code = "invalid_capture",
+                message = "'exportTrace' is supported only for CPU captures.",
             }, CancellationToken.None).ConfigureAwait(false);
             return;
         }
@@ -820,7 +847,7 @@ internal static class CliStreamingProtocol
         // off the same `dumpFile`/`dumpFilePath` argument the one-shot CLI's `--dump-file` sets.
         var safetyOptions = structuredOptions ?? (kind == "heap"
             ? new CliOptions { Command = "inspect-heap", Sources = [heapSource!], Pid = processId, DumpFile = dumpFile, AcknowledgeRisk = acknowledgeRisk }
-            : new CliOptions { Command = "collect", Kind = kind, Pid = processId, DumpFile = dumpFile, AcknowledgeRisk = acknowledgeRisk });
+            : new CliOptions { Command = "collect", Kind = kind, Pid = processId, DumpFile = dumpFile, AcknowledgeRisk = acknowledgeRisk, ExportTrace = exportTrace });
         var safety = await CliSafetyPreflight.RunAsync(
             safetyOptions,
             handles: null,
@@ -900,7 +927,11 @@ internal static class CliStreamingProtocol
                 processId!.Value,
                 TimeSpan.FromSeconds(durationSeconds),
                 topN,
+                exportTrace: exportTrace,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
+            var exportHandle = services.GetRequiredService<IDiagnosticHandleStore>().RegisterWithMetadata(
+                processId.Value, "cpu-sample", result.Artifact, TimeSpan.FromMinutes(20),
+                evictWhenProcessExits: false, origin: HandleOrigin.Live, producingTool: "collect_sample");
             await writer.WriteAsync(new
             {
                 type = "capture",
@@ -908,6 +939,7 @@ internal static class CliStreamingProtocol
                 kind,
                 processId,
                 result = result.Summary,
+                exportHandle = exportHandle.Id,
             }, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

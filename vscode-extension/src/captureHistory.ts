@@ -6,6 +6,8 @@ import {
     type CaptureSummary, type ProcessEntry,
 } from "./processHistory";
 import { queryHistoryView, renderHistoryHtml } from "./captureHistoryPanel";
+import { ResultExporter } from "./resultExport";
+import { compareSaved } from "./baselineCompare";
 
 export type HistoryRow = { capture: CaptureSummary } | { more: string } | { message: string };
 
@@ -76,7 +78,24 @@ export class CaptureHistory implements vscode.TreeDataProvider<HistoryRow>, vsco
         this.panels.add(panel);
         let disposed = false;
         let querying = false;
+        const exporter = new ResultExporter();
+        let selectedArtifact: string | undefined;
         const listener = panel.webview.onDidReceiveMessage(async message => {
+            if (await exporter.handle(message)) return;
+            if (message?.type === "compareBaseline") {
+                if (querying || !selectedArtifact) return;
+                querying = true;
+                try {
+                    const result = await compareSaved(this.cliPath(), detail, selectedArtifact);
+                    if (result && !disposed) {
+                        exporter.set({ metrics: result.metrics });
+                        await panel.webview.postMessage({ type: "comparison", result });
+                    }
+                } catch (error) {
+                    await vscode.window.showErrorMessage(`Baseline comparison failed: ${error instanceof Error ? error.message : String(error)}`);
+                } finally { querying = false; }
+                return;
+            }
             if (!message || message.type !== "query" || typeof message.artifactId !== "string"
                 || typeof message.view !== "string" || !Number.isSafeInteger(message.requestId)) return;
             if (querying) {
@@ -85,8 +104,11 @@ export class CaptureHistory implements vscode.TreeDataProvider<HistoryRow>, vsco
                 return;
             }
             querying = true;
+            exporter.clear();
             try {
                 const result = await queryHistoryView(this.cliPath(), detail, message.artifactId, message.view);
+                if (result.ok) { selectedArtifact = message.artifactId; exporter.set(result.data); }
+                else { selectedArtifact = undefined; exporter.clear(); }
                 if (!disposed) await panel.webview.postMessage({ type: "result", requestId: message.requestId, ...result });
             } finally { querying = false; }
         });

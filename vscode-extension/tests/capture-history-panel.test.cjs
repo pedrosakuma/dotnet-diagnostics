@@ -125,6 +125,7 @@ test("switching selected processes cannot let delayed disposal clear the new pan
     });
     const controller = Object.create(Controller.prototype);
     controller.output = { appendLine() {} };
+    controller.exporter = { clear() {} };
     controller.stopCounters = async () => {};
     controller.disposeChild = async () => {};
     controller.waitForPanelReady = async () => {};

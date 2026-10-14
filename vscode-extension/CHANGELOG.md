@@ -14,6 +14,10 @@ versioned independently from the CLI and the .NET packages.
 
 ### Added
 
+- Redacted measurement-only JSON/CSV exports in live, dump and saved-result panels.
+- CPU investigation-summary export and explicitly confirmed local raw-trace capture/export.
+- CLI-backed saved-capture baseline comparison with qualified deltas and unavailable-data reasons.
+
 - Process tree with refresh, filter, context captures and a per-workspace remembered selection.
 - CLI-backed durable capture history with explicit new saved snapshots, offline drilldowns,
   paginated listing and confirmed deletion.
