@@ -12,6 +12,7 @@ public sealed class LiveWindowsNativeAotThreadSnapshotTests : IAsyncLifetime
 {
     private Process? _sampleProcess;
     private string? _publishDir;
+    private readonly TaskCompletionSource<Uri> _listeningUrl = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     public async Task InitializeAsync()
     {
@@ -31,16 +32,8 @@ public sealed class LiveWindowsNativeAotThreadSnapshotTests : IAsyncLifetime
 
         try
         {
-            var sampleProject = Path.GetFullPath(Path.Combine(
-                AppContext.BaseDirectory,
-                "..", "..", "..", "..", "samples", "NativeAotSample", "NativeAotSample.csproj"));
-            await PublishAsync(sampleProject, publishDir, CancellationToken.None);
+            await PrePublishedNativeAotSample.PrepareAsync(publishDir, TimeSpan.FromMinutes(2));
             _publishDir = publishDir;
-        }
-        catch (InvalidOperationException ex) when (ex.Message.Contains("dotnet publish failed", StringComparison.Ordinal))
-        {
-            try { Directory.Delete(publishDir, recursive: true); } catch { /* best effort */ }
-            return;
         }
         catch
         {
@@ -81,16 +74,10 @@ public sealed class LiveWindowsNativeAotThreadSnapshotTests : IAsyncLifetime
         {
             return;
         }
-        if (string.IsNullOrWhiteSpace(_publishDir))
-        {
-            return;
-        }
+        _publishDir.Should().NotBeNullOrWhiteSpace("the NativeAOT sample must be published before this test runs");
 
-        var exePath = Path.Combine(_publishDir, "NativeAotSample.exe");
-        if (!File.Exists(exePath))
-        {
-            return;
-        }
+        var exePath = Path.Combine(_publishDir!, "NativeAotSample.exe");
+        File.Exists(exePath).Should().BeTrue("the published NativeAOT executable is required");
 
         var psi = new ProcessStartInfo
         {
@@ -116,8 +103,17 @@ public sealed class LiveWindowsNativeAotThreadSnapshotTests : IAsyncLifetime
         });
         _ = Task.Run(async () =>
         {
-            try { while (await _sampleProcess!.StandardOutput.ReadLineAsync() is not null) { } }
-            catch { /* best effort */ }
+            try
+            {
+                while (await _sampleProcess!.StandardOutput.ReadLineAsync() is { } line)
+                {
+                    const string marker = "Now listening on:";
+                    var index = line.IndexOf(marker, StringComparison.Ordinal);
+                    if (index >= 0) _listeningUrl.TrySetResult(new Uri(line[(index + marker.Length)..].Trim()));
+                }
+                _listeningUrl.TrySetException(new InvalidOperationException("The sample exited before reporting its listening URL."));
+            }
+            catch (Exception exception) { _listeningUrl.TrySetException(exception); }
         });
 
         await WaitForDiagnosticEndpointAsync(_sampleProcess!.Id, TimeSpan.FromSeconds(45));
@@ -137,10 +133,28 @@ public sealed class LiveWindowsNativeAotThreadSnapshotTests : IAsyncLifetime
                 new EtwNativeThreadSnapshotBackend(new EtwNativeThreadSnapshotInspector()),
             });
 
-        var snapshot = await inspector.InspectLiveAsync(
-            _sampleProcess.Id,
-            new ThreadSnapshotOptions(MaxFramesPerThread: 32),
-            CancellationToken.None);
+        using var client = new HttpClient
+        {
+            BaseAddress = await _listeningUrl.Task.WaitAsync(TimeSpan.FromSeconds(45)),
+            Timeout = TimeSpan.FromSeconds(10),
+        };
+        using var workloadCancellation = new CancellationTokenSource();
+        var workload = Task.WhenAll(
+            RunWorkloadAsync(client, workloadCancellation.Token),
+            RunWorkloadAsync(client, workloadCancellation.Token));
+        ThreadSnapshotArtifact snapshot;
+        try
+        {
+            using var ready = await client.GetAsync("cpu");
+            ready.EnsureSuccessStatusCode();
+            snapshot = await inspector.InspectLiveAsync(
+                _sampleProcess.Id, new ThreadSnapshotOptions(MaxFramesPerThread: 32), CancellationToken.None);
+        }
+        finally
+        {
+            workloadCancellation.Cancel();
+            await workload;
+        }
 
         snapshot.Origin.Should().Be(ThreadSnapshotOrigin.Live);
         snapshot.Source.Should().Be("etw-native-stack");
@@ -151,29 +165,18 @@ public sealed class LiveWindowsNativeAotThreadSnapshotTests : IAsyncLifetime
         snapshot.Threads.SelectMany(t => t.Frames).Should().NotBeEmpty();
     }
 
-    private static async Task PublishAsync(string sampleProject, string publishDir, CancellationToken cancellationToken)
+    private static async Task RunWorkloadAsync(HttpClient client, CancellationToken cancellationToken)
     {
-        var args = $"publish \"{sampleProject}\" -c Release -r win-x64 -p:PublishAot=true -o \"{publishDir}\" --self-contained true";
-        using var process = new Process
+        try
         {
-            StartInfo = new ProcessStartInfo("dotnet", args)
+            while (!cancellationToken.IsCancellationRequested)
             {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-            },
-        };
-
-        process.Start();
-        var stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-        var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
-        await process.WaitForExitAsync(cancellationToken);
-        var stderr = await stderrTask.ConfigureAwait(false);
-        _ = await stdoutTask.ConfigureAwait(false);
-
-        if (process.ExitCode != 0)
+                using var response = await client.GetAsync("cpu", cancellationToken);
+                response.EnsureSuccessStatusCode();
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            throw new InvalidOperationException($"dotnet publish failed for NativeAotSample: {stderr.Trim()}");
         }
     }
 

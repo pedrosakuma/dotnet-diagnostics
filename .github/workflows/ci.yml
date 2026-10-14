@@ -501,6 +501,21 @@ jobs:
         if: needs.changes.outputs.code == 'true'
         run: dotnet build --no-restore --configuration Release
 
+      - name: Publish NativeAOT sample for Windows DIA/ETW tests
+        if: needs.changes.outputs.code == 'true'
+        timeout-minutes: 20
+        shell: pwsh
+        run: |
+          dotnet restore samples/NativeAotSample -r win-x64 --configfile "${{ steps.nuget.outputs.path }}"
+          if ($LASTEXITCODE -ne 0) { throw "NativeAOT restore failed with exit code $LASTEXITCODE" }
+          dotnet publish samples/NativeAotSample -c Release -r win-x64 --self-contained true --no-restore -o samples/NativeAotSample/bin/ci-publish-win-x64
+          if ($LASTEXITCODE -ne 0) { throw "NativeAOT publish failed with exit code $LASTEXITCODE" }
+          foreach ($name in 'NativeAotSample.exe', 'NativeAotSample.pdb') {
+            if (-not (Test-Path "samples/NativeAotSample/bin/ci-publish-win-x64/$name")) {
+              throw "NativeAOT publish did not produce $name"
+            }
+          }
+
       # Every downstream Windows job needs the same build output (product +
       # test assemblies + the sample apps the live tests spawn as child
       # processes). Uploading every `bin/` folder under `src|tests|samples`
@@ -633,6 +648,7 @@ jobs:
         shell: bash
         env:
           DIAG_REQUIRE_WINDOWS_DIA_ETW: "1"
+          DIAG_NATIVEAOT_PUBLISH_DIR: ${{ github.workspace }}/samples/NativeAotSample/bin/ci-publish-win-x64
         run: python scripts/ci-test.py core tests/DotnetDiagnostics.Core.Tests/DotnetDiagnostics.Core.Tests.csproj
 
       - name: Test (Multi-target runtime smoke)

@@ -95,6 +95,14 @@ failure or timeout.
 On Windows, the five-minute inactivity watchdog requests full hang dumps as
 well as crash dumps; failure uploads retain them for deadlock investigation.
 
+Windows Build publishes the NativeAOT fixture once with the private NuGet
+configuration. Core tests receive `DIAG_NATIVEAOT_PUBLISH_DIR` through the
+build artifact and copy the executable and matching PDB into isolated fixture
+directories. A configured but incomplete fixture fails explicitly; it must not
+silently trigger another restore/publish or skip DIA/ETW assertions. Local
+runs without that variable still publish the sample with a bounded deadline
+and include build output in publish-failure diagnostics.
+
 **Bearer token.** The server reads `MCP_BEARER_TOKEN` from the environment. If unset, it
 generates an ephemeral 32-byte hex token at startup and logs it as a warning — there is no
 hard-coded default. The local docker walkthroughs explicitly pass `MCP_BEARER_TOKEN=dev-token`.
