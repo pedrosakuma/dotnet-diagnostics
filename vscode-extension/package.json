@@ -118,6 +118,7 @@
   },
   "scripts": {
     "compile": "tsc -p .",
+    "media": "npm run compile && node scripts/render-media.cjs",
     "check": "tsc --noEmit -p .",
     "test": "npm run compile && node --test tests/*.test.cjs",
     "vscode:prepublish": "npm run compile"

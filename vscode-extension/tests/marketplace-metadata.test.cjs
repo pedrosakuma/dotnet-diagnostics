@@ -31,12 +31,18 @@ test("icon is a raster PNG of at least 128x128 and the banner is configured", ()
     assert.ok(["dark", "light"].includes(manifest.galleryBanner.theme));
 });
 
-test("README screenshots exist, are labelled illustrative, and CHANGELOG is present", () => {
+test("README screenshots resolve to repository raw URLs after vsce processing", async () => {
+    const { ReadmeProcessor } = require("@vscode/vsce/out/package.js");
     const readme = read("README.md");
-    const images = [...readme.matchAll(/!\[[^\]]*\]\((media\/[^)]+\.png)\)/g)].map(m => m[1]);
-    assert.deepEqual(images.sort(), ["media/heap-drilldown.png", "media/live-counters.png", "media/thread-snapshot.png"]);
-    for (const image of images) {
-        assert.ok(pngSize(image).width >= 800);
+    const processor = new ReadmeProcessor(manifest, {});
+    const processed = await processor.onFile({ path: "extension/readme.md", contents: Buffer.from(readme) });
+    const effective = processed.contents.toString();
+    const urls = [...effective.matchAll(/!\[[^\]]*\]\(([^)]+\.png)\)/g)].map(m => m[1]).sort();
+    const prefix = "https://raw.githubusercontent.com/pedrosakuma/dotnet-diagnostics/main/vscode-extension/media/";
+    assert.deepEqual(urls, ["heap-drilldown.png", "live-counters.png", "thread-snapshot.png"].map(f => prefix + f));
+    for (const url of urls) {
+        const file = "media/" + url.slice(prefix.length);
+        assert.ok(pngSize(file).width >= 800);
     }
     assert.match(readme, /illustrative/i);
     assert.match(read("CHANGELOG.md"), /## Unreleased/);

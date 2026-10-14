@@ -3,7 +3,8 @@
 // The screenshots render the extension's REAL webview HTML (renderHtml from out/extension.js) and
 // feed it the same message shapes the extension host posts, but the data is a hand-written
 // ILLUSTRATIVE fixture. They are not captures of a live .NET process. Requires `npm run compile`
-// first and a Chromium binary: set CHROME_PATH or install one via `npx playwright install chromium`.
+// first (`npm run media` does both) and Chrome for Testing EXPECTED_CHROME exactly, so output is
+// reproducible: set CHROME_PATH to that binary or use a Playwright `chromium-1243` cache.
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -21,6 +22,8 @@ Module._resolveFilename = function (request, ...rest) {
         : originalResolveFilename.call(this, request, ...rest);
 };
 const { renderHtml } = require("../out/extension.js");
+
+const EXPECTED_CHROME = "153.0.8010.12";
 
 function findChrome() {
     if (process.env.CHROME_PATH) return process.env.CHROME_PATH;
@@ -126,6 +129,10 @@ function harness(scenario) {
 fs.mkdirSync(workDir, { recursive: true });
 fs.mkdirSync(mediaDir, { recursive: true });
 const chrome = findChrome();
+const chromeVersion = execFileSync(chrome, ["--version"], { encoding: "utf8" });
+if (!chromeVersion.includes(EXPECTED_CHROME)) {
+    throw new Error(`Expected Chrome for Testing ${EXPECTED_CHROME}, found: ${chromeVersion.trim()}`);
+}
 const common = ["--headless=new", "--no-sandbox", "--disable-gpu", "--hide-scrollbars", "--force-device-scale-factor=1"];
 
 for (const scenario of scenarios) {
