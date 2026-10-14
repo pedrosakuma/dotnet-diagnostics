@@ -135,7 +135,7 @@ failures use `code:"export_failed"` with the matching request ID.
 
 Raw traces are not redacted and can contain secrets. Clients must obtain explicit
 consent before collection/export and must not upload automatically. Portable summary
-documents are also not inherently secret-free; the VS Code sharing actions apply a
+documents can also contain secrets and sensitive application data; the VS Code sharing actions apply a
 separate, intentionally lossy allowlisted measurement projection before opening them.
 Handles do not survive CLI exit; a fresh one-shot invocation cannot export this summary.
 
