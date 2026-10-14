@@ -79,17 +79,29 @@ export class CaptureHistory implements vscode.TreeDataProvider<HistoryRow>, vsco
         let disposed = false;
         let querying = false;
         const exporter = new ResultExporter();
-        let selectedArtifact: string | undefined;
+        let selectedQuery: { artifactId: string; requestId: number } | undefined;
+        let selectionRevision = 0;
         const listener = panel.webview.onDidReceiveMessage(async message => {
+            if (message?.type === "selectionChanged") {
+                selectionRevision++;
+                selectedQuery = undefined;
+                exporter.clear();
+                return;
+            }
             if (await exporter.handle(message)) return;
             if (message?.type === "compareBaseline") {
-                if (querying || !selectedArtifact) return;
+                if (querying || !selectedQuery || message.artifactId !== selectedQuery.artifactId
+                    || message.requestId !== selectedQuery.requestId) {
+                    await vscode.window.showErrorMessage("Select a successfully loaded artifact view and wait for the current operation before comparing.");
+                    return;
+                }
+                const candidate = selectedQuery;
                 querying = true;
                 try {
-                    const result = await compareSaved(this.cliPath(), detail, selectedArtifact);
-                    if (result && !disposed) {
+                    const result = await compareSaved(this.cliPath(), detail, candidate.artifactId);
+                    if (result && !disposed && selectedQuery === candidate) {
                         exporter.set({ metrics: result.metrics });
-                        await panel.webview.postMessage({ type: "comparison", result });
+                        await panel.webview.postMessage({ type: "comparison", ...candidate, result });
                     }
                 } catch (error) {
                     await vscode.window.showErrorMessage(`Baseline comparison failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -104,11 +116,13 @@ export class CaptureHistory implements vscode.TreeDataProvider<HistoryRow>, vsco
                 return;
             }
             querying = true;
+            const revision = selectionRevision;
+            selectedQuery = undefined;
             exporter.clear();
             try {
                 const result = await queryHistoryView(this.cliPath(), detail, message.artifactId, message.view);
-                if (result.ok) { selectedArtifact = message.artifactId; exporter.set(result.data); }
-                else { selectedArtifact = undefined; exporter.clear(); }
+                if (revision !== selectionRevision) return;
+                if (result.ok) { selectedQuery = { artifactId: message.artifactId, requestId: message.requestId }; exporter.set(result.data); }
                 if (!disposed) await panel.webview.postMessage({ type: "result", requestId: message.requestId, ...result });
             } finally { querying = false; }
         });

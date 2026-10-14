@@ -123,12 +123,15 @@ ${RESULT_EXPORT_BUTTONS}<button id="compareBaseline">Compare with saved baseline
 const vscode = acquireVsCodeApi(), choices = ${choices};
 ${RESULT_EXPORT_SCRIPT}
 ${COMPARISON_RENDERER_SCRIPT}
-document.getElementById("compareBaseline").addEventListener("click", () => vscode.postMessage({ type: "compareBaseline" }));
+document.getElementById("compareBaseline").addEventListener("click", () =>
+  vscode.postMessage({ type: "compareBaseline", artifactId: artifact.value, requestId: current?.requestId }));
 ${QUERY_VIEW_RENDERER_SCRIPT}
 ${SAVED_PRIMARY_RENDERER_SCRIPT}
 const artifact = document.getElementById("artifact"), view = document.getElementById("view"), status = document.getElementById("status");
 let sequence = 0, current;
 function ask() {
+  current = undefined;
+  vscode.postMessage({ type: "selectionChanged" });
   document.getElementById("views").replaceChildren();
   if (!view.value || view.selectedOptions[0]?.disabled) { status.textContent = "No displayable offline view. Use the CLI for the remaining advertised views."; return; }
   current = { requestId: ++sequence, artifactId: artifact.value, view: view.value };
@@ -149,7 +152,12 @@ function fill() {
 artifact.addEventListener("change", fill); view.addEventListener("change", ask);
 window.addEventListener("message", e => {
   const m = e.data;
-  if (m?.type === "comparison") { renderComparison("views", m.result); status.textContent = "Saved baseline comparison."; return; }
+  if (m?.type === "comparison") {
+    if (current && m.requestId === current.requestId && m.artifactId === artifact.value) {
+      renderComparison("views", m.result); status.textContent = "Saved baseline comparison.";
+    }
+    return;
+  }
   if (!m || m.type !== "result" || !current || m.requestId !== current.requestId || m.view !== current.view) return;
   artifact.disabled = view.disabled = false;
   status.textContent = m.ok ? m.summary : m.message;

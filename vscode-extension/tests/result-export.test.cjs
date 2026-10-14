@@ -76,6 +76,19 @@ test("comparison preserves CLI deltas, zero baseline, nulls and measurement sema
     const bad = comparison(); bad.metrics[0].rightValue = "4";
     assert.throws(() => b.parseComparison(JSON.stringify(bad)), /measurement/);
 });
+test("comparison accepts CLI-omitted nullable fields without inventing measured zero", () => {
+    const value = comparison();
+    delete value.metrics[0].relativeDelta;
+    delete value.metrics[0].unit;
+    value.metrics.push({ key: "retained-count", unit: "samples", aggregation: "count",
+        normalization: "none", population: "retained", leftValue: 2, rightValue: 3, absoluteDelta: 1, relativeDelta: 0.5 });
+    const result = b.parseComparison(JSON.stringify(value));
+    assert.equal(result.metrics[0].relativeDelta, null);
+    assert.equal(result.metrics[0].unit, null);
+    assert.equal(result.metrics[0].unavailableReason, "ZeroBaseline");
+    assert.equal(result.metrics[1].unavailableReason, null);
+    assert.equal(result.metrics[1].relativeDelta, 0.5);
+});
 function node(tag) {
     return { tag, textContent: "", children: [], appendChild(n) { this.children.push(n); }, replaceChildren() { this.children = []; } };
 }
@@ -105,7 +118,8 @@ test("comparison renderer is self-contained, text-only and reports qualified evi
             controller.handleFrame(session, JSON.stringify({ type: "export", requestId: frame.requestId,
                 result: frame.format === "trace"
                     ? { kind: "trace", outputPath: frame.outputPath, totalBytes: 512, sha256: "a".repeat(64) }
-                    : { findings: { totalSamples: 17 }, password: "SECRET" } }));
+                    : { Schema: "dotnet-diagnostics-mcp/investigation-summary/v1", Provenance: {},
+                        Findings: { TotalSamples: 17, TopHotspots: [] }, password: "SECRET" } }));
         };
         vscode.window.showTextDocument = async document => docs.push(document);
         vscode.window.showErrorMessage = async message => errors.push(message);
@@ -151,6 +165,17 @@ test("comparison renderer is self-contained, text-only and reports qualified evi
         await controller.exportCpu("trace");
         assert.match(errors[0], /verified trace export receipt/);
         assert.equal(successes, 0);
+    });
+    test("summary export refuses malformed responses instead of opening empty evidence", async () => {
+        for (const result of [undefined, {}, { Schema: "future-schema", Findings: {} }]) {
+            const { controller, errors, docs } = cpuFixture();
+            controller.writeFrame = (session, frame) => controller.handleFrame(session, JSON.stringify({
+                type: "export", requestId: frame.requestId, result,
+            }));
+            await controller.exportCpu("summary");
+            assert.match(errors[0], /unsupported CPU investigation summary/);
+            assert.equal(docs.length, 0);
+        }
     });
     test("CPU export refuses expired or busy connections without writing protocol frames", async () => {
         const { controller, frames, errors, session } = cpuFixture();

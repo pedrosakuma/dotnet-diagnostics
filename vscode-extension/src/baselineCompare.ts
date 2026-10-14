@@ -30,19 +30,19 @@ export function parseComparison(stdout: string): ComparisonResult {
     const metrics = value.metrics.map((row): ComparisonMetric => {
         if (!record(row) || typeof row.key !== "string") throw new Error("Invalid CLI comparison metric.");
         const number = (key: string): number | null => {
-            if (row[key] === null) return null;
+            if (row[key] === null || row[key] === undefined) return null;
             if (typeof row[key] !== "number" || !Number.isFinite(row[key])
                 || Number.isInteger(row[key]) && !Number.isSafeInteger(row[key]))
                 throw new Error("Invalid or unsafe-precision CLI comparison measurement. Use the CLI for full precision.");
             return row[key];
         };
-        if (row.unavailableReason !== null && typeof row.unavailableReason !== "string") throw new Error("Invalid comparison limitation.");
-        if (row.unit !== null && typeof row.unit !== "string") throw new Error("Invalid comparison unit.");
+        if (row.unavailableReason != null && typeof row.unavailableReason !== "string") throw new Error("Invalid comparison limitation.");
+        if (row.unit != null && typeof row.unit !== "string") throw new Error("Invalid comparison unit.");
         if (typeof row.aggregation !== "string" || typeof row.normalization !== "string" || typeof row.population !== "string")
             throw new Error("Invalid comparison metric semantics.");
         return { key: row.key, leftValue: number("leftValue"), rightValue: number("rightValue"),
-            absoluteDelta: number("absoluteDelta"), relativeDelta: number("relativeDelta"), unavailableReason: row.unavailableReason,
-            unit: row.unit, aggregation: row.aggregation, normalization: row.normalization, population: row.population };
+            absoluteDelta: number("absoluteDelta"), relativeDelta: number("relativeDelta"), unavailableReason: row.unavailableReason ?? null,
+            unit: row.unit ?? null, aggregation: row.aggregation, normalization: row.normalization, population: row.population };
     });
     const reasons = value.compatibility.reasons.map(reason => {
         if (!record(reason) || typeof reason.message !== "string") throw new Error("Invalid comparison compatibility reason.");
