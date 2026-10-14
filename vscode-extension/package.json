@@ -23,6 +23,7 @@
     "onCommand:dotnetDiagnostics.startCounters",
     "onCommand:dotnetDiagnostics.stopCounters",
     "onCommand:dotnetDiagnostics.captureCpu",
+    "onCommand:dotnetDiagnostics.captureExceptions",
     "onCommand:dotnetDiagnostics.captureHeap",
     "onCommand:dotnetDiagnostics.captureThreadSnapshot",
     "onView:dotnetDiagnostics.actions"
@@ -58,6 +59,10 @@
       {
         "command": "dotnetDiagnostics.captureCpu",
         "title": ".NET Diagnostics: Capture CPU Now"
+      },
+      {
+        "command": "dotnetDiagnostics.captureExceptions",
+        "title": ".NET Diagnostics: Capture Exceptions"
       },
       {
         "command": "dotnetDiagnostics.captureHeap",

@@ -42,6 +42,28 @@ export interface CpuSampleSummary {
     topHotspots: CpuHotspot[];
 }
 
+export interface ExceptionCaptureResult {
+    summary: string;
+    notes: string[];
+    data: {
+        processId: number;
+        startedAt: string;
+        duration: string;
+        totalExceptions: number;
+        recentCap: number;
+        byType: Array<{ exceptionType: string; count: number }>;
+        recent: Array<{
+            timestamp: string;
+            exceptionType: string;
+            exceptionMessage: string;
+            threadId: number;
+            managedStack?: string[];
+        }>;
+        processExited?: boolean;
+        unhandledExceptionObserved?: boolean;
+    };
+}
+
 /** One type's aggregate footprint from a heap snapshot's bounded top-N summary. */
 export interface HeapTypeStat {
     typeFullName: string;
@@ -269,6 +291,28 @@ export function isCpuSampleSummary(value: unknown): value is CpuSampleSummary {
         && typeof value.totalSamples === "number"
         && Array.isArray(value.topHotspots)
         && value.topHotspots.every(isCpuHotspot);
+}
+
+export function isExceptionCaptureResult(value: unknown): value is ExceptionCaptureResult {
+    if (!isRecord(value) || typeof value.summary !== "string"
+        || !Array.isArray(value.notes) || !value.notes.every(note => typeof note === "string")
+        || !isRecord(value.data)) return false;
+    const data = value.data;
+    return Number.isSafeInteger(data.processId) && Number(data.processId) > 0
+        && typeof data.startedAt === "string" && typeof data.duration === "string"
+        && Number.isSafeInteger(data.totalExceptions) && Number(data.totalExceptions) >= 0
+        && Number.isSafeInteger(data.recentCap) && Number(data.recentCap) >= 1 && Number(data.recentCap) <= 500
+        && (data.processExited === undefined || typeof data.processExited === "boolean")
+        && (data.unhandledExceptionObserved === undefined || typeof data.unhandledExceptionObserved === "boolean")
+        && Array.isArray(data.byType) && data.byType.length <= 500
+        && data.byType.every(row => isRecord(row) && typeof row.exceptionType === "string"
+            && Number.isSafeInteger(row.count) && Number(row.count) >= 0)
+        && Array.isArray(data.recent) && data.recent.length <= Number(data.recentCap)
+        && data.recent.every(row => isRecord(row) && typeof row.timestamp === "string"
+            && typeof row.exceptionType === "string" && typeof row.exceptionMessage === "string"
+            && Number.isSafeInteger(row.threadId)
+            && (row.managedStack === undefined || (Array.isArray(row.managedStack)
+                && row.managedStack.every(frame => typeof frame === "string"))));
 }
 
 function isCpuHotspot(value: unknown): value is CpuHotspot {

@@ -9,6 +9,7 @@ import {
     describeStreamCompatibilityError,
     isGcCollection,
     isCpuSampleSummary,
+    isExceptionCaptureResult,
     isDumpHeapCaptureResult,
     isHeapCaptureResult,
     isQueryResult,
@@ -20,6 +21,7 @@ import {
     parseProtocolFrame,
     type CounterValue,
     type CpuSampleSummary,
+    type ExceptionCaptureResult,
     type DumpHeapCaptureResult,
     type HeapCaptureResult,
     type QueryResult,
@@ -102,6 +104,7 @@ interface Deferred<T> {
  */
 type PendingCapture =
     | { kind: "cpu"; deferred: Deferred<CpuSampleSummary> }
+    | { kind: "exceptions" | "crash-guard"; deferred: Deferred<ExceptionCaptureResult> }
     | { kind: "heap"; deferred: Deferred<HeapCaptureResult> }
     | { kind: "thread-snapshot"; deferred: Deferred<ThreadCaptureResult> };
 
@@ -158,6 +161,7 @@ class CounterPanelController implements vscode.Disposable {
     private startCommandTask?: Promise<void>;
     private startStreamTask?: Promise<void>;
     private captureCpuTask?: Promise<void>;
+    private captureExceptionsTask?: Promise<void>;
     private captureHeapTask?: Promise<void>;
     private captureThreadSnapshotTask?: Promise<void>;
     /**
@@ -283,6 +287,63 @@ class CounterPanelController implements vscode.Disposable {
                 // still in flight. Mark the shutdown as expected so the `close` handler doesn't
                 // report it as an unexpected CLI exit over whatever status the capture itself just
                 // posted.
+                session.expectedShutdown = true;
+                await this.closeChild(session);
+            }
+        }
+    }
+
+    public captureExceptions(): Promise<void> {
+        if (!this.captureExceptionsTask) {
+            this.captureExceptionsTask = this.captureExceptionsCore().finally(() => {
+                this.captureExceptionsTask = undefined;
+            });
+        }
+        return this.captureExceptionsTask;
+    }
+
+    private async captureExceptionsCore(): Promise<void> {
+        if (this.disposed) return;
+        const target = this.selectedTarget ?? await this.ensureTargetAndPanel();
+        if (!target || this.disposed) return;
+        const selection = await vscode.window.showQuickPick([
+            { label: "Managed exceptions", description: "Types, counts and retained messages (no stack frames)", captureKind: "exceptions" as const },
+            { label: "Crash guard", description: "Exceptions and available stacks; process exit is not proof of an unhandled exception", captureKind: "crash-guard" as const },
+        ], { placeHolder: "Capture exceptions for 10 seconds; messages can contain sensitive application data" });
+        if (!selection || this.disposed) return;
+        const kind = selection.captureKind;
+        this.postMessage({ type: "captureStatus", kind: "exceptions", state: "running", message: "Starting exception capture…" });
+        let session: StreamChild;
+        let ownsSession: boolean;
+        try {
+            ({ session, owns: ownsSession } = await this.acquireChild());
+        } catch (error) {
+            this.postMessage({ type: "captureStatus", kind: "exceptions", state: "error", message: withRuntimeGuidance(errorMessage(error)) });
+            return;
+        }
+
+        const requestId = randomBytes(12).toString("hex");
+        const pending: PendingCapture = { kind, deferred: deferred<ExceptionCaptureResult>() };
+        session.pendingCaptures.set(requestId, pending);
+        try {
+            this.writeFrame(session, {
+                type: "capture", requestId, kind, processId: target.processId,
+                durationSeconds: 10, maxRecent: 100, topN: 25,
+            });
+            this.postMessage({
+                type: "captureStatus", kind: "exceptions", state: "running",
+                message: "Exception capture requested (10 seconds after startup). Allow EventPipe ~1 second to start, then reproduce the problem now. Other captures on this connection run first.",
+            });
+            const result = await withTimeout(pending.deferred.promise, 60_000);
+            this.postMessage({ type: "capture", kind: "exceptions", result });
+            this.postMessage({ type: "captureStatus", kind: "exceptions", state: "done", message: "Exception capture complete." });
+        } catch (error) {
+            const message = withRuntimeGuidance(errorMessage(error));
+            this.postMessage({ type: "captureStatus", kind: "exceptions", state: "error", message });
+            this.output.appendLine(`Exception capture failed: ${message}`);
+        } finally {
+            session.pendingCaptures.delete(requestId);
+            if (ownsSession && !session.sessionId && !session.startInFlight && session.pendingCaptures.size === 0) {
                 session.expectedShutdown = true;
                 await this.closeChild(session);
             }
@@ -791,6 +852,8 @@ class CounterPanelController implements vscode.Disposable {
                 void this.stopCounters();
             } else if (message.type === "captureCpu") {
                 void this.captureCpu();
+            } else if (message.type === "captureExceptions") {
+                void this.captureExceptions();
             } else if (message.type === "captureHeap") {
                 void this.captureHeap();
             } else if (message.type === "captureThreadSnapshot") {
@@ -1110,6 +1173,9 @@ class CounterPanelController implements vscode.Disposable {
                     break;
                 }
                 if (pending.kind === "cpu" && isCpuSampleSummary(frame.result)) {
+                    pending.deferred.resolve(frame.result);
+                } else if ((pending.kind === "exceptions" || pending.kind === "crash-guard")
+                    && isExceptionCaptureResult(frame.result)) {
                     pending.deferred.resolve(frame.result);
                 } else if (pending.kind === "heap" && isHeapCaptureResult(frame.result)) {
                     pending.deferred.resolve(frame.result);
@@ -1783,6 +1849,7 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.commands.registerCommand("dotnetDiagnostics.startCounters", () => controller.startCounters()),
         vscode.commands.registerCommand("dotnetDiagnostics.stopCounters", () => controller.stopCounters()),
         vscode.commands.registerCommand("dotnetDiagnostics.captureCpu", () => controller.captureCpu()),
+        vscode.commands.registerCommand("dotnetDiagnostics.captureExceptions", () => controller.captureExceptions()),
         vscode.commands.registerCommand("dotnetDiagnostics.captureHeap", () => controller.captureHeap()),
         vscode.commands.registerCommand("dotnetDiagnostics.captureThreadSnapshot", () => controller.captureThreadSnapshot()),
         vscode.commands.registerCommand("dotnetDiagnostics.analyzeDumpFile", () => analyzeDumpFile(output, context)),
@@ -1843,7 +1910,11 @@ class DiagnosticsActionsProvider implements vscode.TreeDataProvider<vscode.TreeI
             title: "Analyze Dump File",
         };
 
-        return [start, stop, captureCpu, captureHeap, captureThreadSnapshot, analyzeDumpFile];
+        const captureExceptions = new vscode.TreeItem("Capture Exceptions", vscode.TreeItemCollapsibleState.None);
+        captureExceptions.description = "Collect exception types, messages and available stacks";
+        captureExceptions.iconPath = new vscode.ThemeIcon("warning");
+        captureExceptions.command = { command: "dotnetDiagnostics.captureExceptions", title: "Capture Exceptions" };
+        return [start, stop, captureCpu, captureExceptions, captureHeap, captureThreadSnapshot, analyzeDumpFile];
     }
 }
 
@@ -1892,6 +1963,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       <label for="metric">Counter</label><select id="metric" aria-label="Select counter"></select>
       <button id="start">Start</button><button id="stop" disabled>Stop</button>
       <button id="captureCpu">Capture CPU now</button>
+      <button id="captureExceptions">Capture exceptions</button>
       <button id="captureHeap">Capture heap snapshot</button>
       <button id="captureThreadSnapshot">Capture thread snapshot</button>
     </div>
@@ -1909,6 +1981,12 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       <thead><tr><th>Time</th><th>Gen</th><th>Reason</th><th>Type</th><th>Pause</th></tr></thead>
       <tbody id="gcBody"></tbody>
     </table>
+  </section>
+
+  <section class="panel">
+    <h3>Exception capture</h3>
+    <div id="captureExceptionsStatus" role="status"></div>
+    <div id="exceptionCaptureViews" class="query-views"></div>
   </section>
 
   <section class="panel">
@@ -1960,6 +2038,8 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     const startButton = document.getElementById('start');
     const stopButton = document.getElementById('stop');
     const captureCpuButton = document.getElementById('captureCpu');
+    const captureExceptionsButton = document.getElementById('captureExceptions');
+    const captureExceptionsStatus = document.getElementById('captureExceptionsStatus');
     const captureHeapButton = document.getElementById('captureHeap');
     const captureThreadSnapshotButton = document.getElementById('captureThreadSnapshot');
     const statusElement = document.getElementById('status');
@@ -2323,6 +2403,10 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         } else {
           addCounter(message);
         }
+      } else if (message.type === 'captureStatus' && message.kind === 'exceptions') {
+        captureExceptionsStatus.textContent = message.message || message.state || '';
+        captureExceptionsButton.disabled = message.state === 'running';
+        if (message.state === 'running') document.getElementById('exceptionCaptureViews').replaceChildren();
       } else if (message.type === 'captureStatus' && message.kind === 'heap') {
         captureHeapStatusElement.textContent = message.message || message.state || '';
         captureHeapButton.disabled = message.state === 'running';
@@ -2340,6 +2424,9 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       } else if (message.type === 'captureStatus') {
         captureStatusElement.textContent = message.message || message.state || '';
         captureCpuButton.disabled = message.state === 'running';
+      } else if (message.type === 'capture' && message.kind === 'exceptions') {
+        renderQueryView('exceptionCaptureViews', 'exceptions', message.result, false);
+        document.getElementById('exceptionCaptureViews-exceptions').open = true;
       } else if (message.type === 'capture' && message.kind === 'heap') {
         renderHeapCapture(message.source, message.result);
       } else if (message.type === 'capture' && message.kind === 'thread-snapshot') {
@@ -2394,6 +2481,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     startButton.addEventListener('click', () => vscode.postMessage({ type: 'start' }));
     stopButton.addEventListener('click', () => vscode.postMessage({ type: 'stop' }));
     captureCpuButton.addEventListener('click', () => vscode.postMessage({ type: 'captureCpu' }));
+    captureExceptionsButton.addEventListener('click', () => vscode.postMessage({ type: 'captureExceptions' }));
     captureHeapButton.addEventListener('click', () => vscode.postMessage({ type: 'captureHeap' }));
     captureThreadSnapshotButton.addEventListener('click', () => vscode.postMessage({ type: 'captureThreadSnapshot' }));
     window.addEventListener('resize', resizeCanvas);
