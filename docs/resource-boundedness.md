@@ -70,8 +70,11 @@ and release acceptance are tracked separately in #1001, #1007 and #1005.
 
 CPU JSONL captures register their existing trace artifact in the shared bounded
 handle store (20-minute TTL, default 32 entries); the protocol adds no independent
-artifact dictionary. The extension retains only the latest result and CPU export
-reference, and serializes exports. CPU export requests time out after 60 seconds;
+artifact dictionary. The extension retains the latest result and CPU export
+reference, plus at most 20 host-held address-navigation results per live/dump panel
+for Back/Forward sharing. A new capture clears that cache; missing/evicted results
+cannot fall back to exporting another result. The extension serializes CPU exports.
+CPU export requests time out after 60 seconds;
 an unsettled request closes its CLI connection. Raw traces retain the sampler's
 existing artifact-root storage/reaper policy.
 
