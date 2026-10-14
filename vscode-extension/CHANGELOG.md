@@ -14,6 +14,10 @@ versioned independently from the CLI and the .NET packages.
 
 ### Added
 
+- Address navigation in heap drilldowns (#1168): exact-hex address links between retention paths,
+  object fields, GC root paths and referencing statics, a Copy action on every valid address,
+  bounded Back/Forward history with a breadcrumb, for live and dump panels. Object and GC root
+  reads require an explicit acknowledgement; unsafe numeric addresses are flagged, never linked.
 - Raster Marketplace icon and a dark gallery banner.
 - README screenshots of live counters, heap drilldown, and thread snapshot panels. They are
   illustrative renders of the real webview panels using fixture data, not live captures.

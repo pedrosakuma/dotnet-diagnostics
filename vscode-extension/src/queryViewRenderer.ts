@@ -1,3 +1,8 @@
+import { ADDRESS_NAVIGATION_SCRIPT, ADDRESS_NAVIGATION_STYLES } from "./addressNavigation";
+
+// Provided by the address-navigation script that is emitted next to this renderer in the webview.
+declare function appendAddressValue(parent: HTMLElement, value: unknown, containerId: string): void;
+
 const queryViewLabels: Record<string, string> = {
     "roots-by-kind": "GC roots by kind",
     "finalizer-queue": "Finalizer queue",
@@ -10,6 +15,8 @@ const queryViewLabels: Record<string, string> = {
     "delegate-targets": "Delegate targets",
     "retention-paths": "Retention paths",
     "retained-exceptions": "Retained exceptions",
+    object: "Object",
+    gcroot: "GC root path",
     deadlocks: "Deadlock candidates",
     "unique-stacks": "Unique thread stacks",
     "wait-chains": "Wait chains",
@@ -82,6 +89,15 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
         parent.appendChild(grid);
     };
 
+    // Columns named "... address" hold exact hex strings: linked/copyable, never reformatted as numbers.
+    const fillCell = (cell: HTMLElement, columnName: string, value: unknown) => {
+        if (/address$/i.test(columnName)) {
+            appendAddressValue(cell, value, containerId);
+        } else {
+            cell.textContent = formatValue(value);
+        }
+    };
+
     const table = (
         title: string,
         items: unknown,
@@ -122,9 +138,9 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
                 ? item as Record<string, unknown>
                 : {};
             const row = document.createElement("tr");
-            for (const [, getValue] of columns) {
+            for (const [columnName, getValue] of columns) {
                 const cell = document.createElement("td");
-                cell.textContent = formatValue(getValue(rowObject));
+                fillCell(cell, columnName, getValue(rowObject));
                 row.appendChild(cell);
             }
             tbody.appendChild(row);
@@ -228,9 +244,9 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
                     ? value as Record<string, unknown>
                     : {};
                 const row = document.createElement("tr");
-                for (const [, getValue] of columns) {
+                for (const [columnName, getValue] of columns) {
                     const cell = document.createElement("td");
-                    cell.textContent = formatValue(getValue(rowObject));
+                    fillCell(cell, columnName, getValue(rowObject));
                     row.appendChild(cell);
                 }
                 tbody.appendChild(row);
@@ -288,9 +304,59 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
                 ["Field", row => row.fieldName],
                 ["Referenced type", row => row.valueTypeFullName],
                 ["Direct bytes", row => formatBytes(row.directlyReferencedBytes)],
-                ["Value address", row => formatAddress(row.valueAddress)],
+                ["Value address", row => row.valueAddress],
             ], "No static reference fields were found.");
             break;
+        case "object": {
+            const object = asRecord(result.objectDetails);
+            table("Object", [object], [
+                ["Type", row => row.typeFullName],
+                ["Size", row => formatBytes(row.size)],
+                ["Generation", row => row.generation],
+                ["Segment", row => row.segmentKind],
+                ["Address", row => row.address],
+            ], "No object details were returned.");
+            if (object.isString === true) {
+                metrics([["String value", object.stringValue], ["Truncated", object.stringValueTruncated]]);
+            }
+            if (Array.isArray(object.fields)) {
+                table("Fields", object.fields, [
+                    ["Field", row => row.name],
+                    ["Field type", row => row.typeFullName],
+                    ["Value", row => row.value],
+                    ["Referenced address", row => row.objectAddress],
+                    ["Referenced type", row => row.referencedTypeFullName],
+                ], "No fields were reported.");
+            }
+            if (object.isArray === true) {
+                metrics([["Array length", object.arrayLength]]);
+                table("Array sample", object.arraySample, [
+                    ["Index", row => row.index],
+                    ["Element type", row => row.typeFullName],
+                    ["Value", row => row.value],
+                    ["Element address", row => row.objectAddress],
+                ], "No array elements were sampled.");
+            }
+            notes("Inspection warnings", object.warnings);
+            appendMessage(content, readProvenance(result.origin), "query-view-note");
+            break;
+        }
+        case "gcroot": {
+            const root = asRecord(result.gcRoot);
+            metrics([
+                ["Type", root.typeFullName],
+                ["Path length", Array.isArray(root.chain) ? root.chain.length : undefined],
+                ["Truncated", root.truncated],
+            ]);
+            table("Path from a GC root to the object", root.chain, [
+                ["Type", frame => frame.typeFullName],
+                ["Root kind", frame => frame.rootKind],
+                ["Object address", frame => frame.objectAddress],
+            ], "No path from a GC root was found.");
+            notes("Inspection warnings", root.warnings);
+            appendMessage(content, readProvenance(result.origin), "query-view-note");
+            break;
+        }
         case "delegate-targets":
             table("Delegate subscriptions", result.delegateTargets, [
                 ["Publisher / declaring type", row => row.declaringTypeFullName],
@@ -304,6 +370,15 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
                 row => formatValue(row.targetTypeFullName) + " · " + formatAddress(row.targetObjectAddress),
                 (body, row) => {
                     appendMessage(body, renderChain(row.chain), "query-view-chain");
+                    fieldTable(body, "Target object", [row], [
+                        ["Type", target => target.targetTypeFullName],
+                        ["Target address", target => target.targetObjectAddress],
+                    ], "No target object was recorded.");
+                    fieldTable(body, "Objects on the path", row.chain, [
+                        ["Type", frame => frame.typeFullName],
+                        ["Root kind", frame => frame.rootKind],
+                        ["Object address", frame => frame.objectAddress],
+                    ], "No chain was captured.");
                     if (row.truncated === true) appendMessage(body, "Path shortened for this response.", "query-view-note");
                 },
                 "No paths match the selected type filter.");
@@ -440,7 +515,7 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
                         ["Waiting thread", edge => edge.waitingThreadId],
                         ["Owner thread", edge => edge.ownerThreadId],
                         ["Lock type", edge => edge.lockObjectTypeFullName || edge.lockKind],
-                        ["Lock address", edge => formatAddress(edge.lockObjectAddress)],
+                        ["Lock address", edge => edge.lockObjectAddress],
                         ["Confidence", edge => edge.confidence],
                     ], "No lock-edge details.");
                     fieldTable(body, "Suggested next steps", row.recommendedCommands, [
@@ -624,6 +699,12 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
     notes("Evidence limitations", limitations);
 }
 
+function readProvenance(origin: unknown): string {
+    return typeof origin === "string" && origin.toLowerCase() === "live"
+        ? "Read live from the target process when requested; contents may differ from the captured snapshot."
+        : "Read from the dump file.";
+}
+
 function appendMessage(parent: HTMLElement, text: string, className: string): void {
     const element = document.createElement("p");
     element.className = className;
@@ -706,6 +787,7 @@ export const QUERY_VIEW_RENDERER_SCRIPT =
     "const queryViewLabels = " + JSON.stringify(queryViewLabels) + ";\n" +
     renderQueryView.toString() + "\n" +
     appendMessage.toString() + "\n" +
+    readProvenance.toString() + "\n" +
     asRecord.toString() + "\n" +
     formatValue.toString() + "\n" +
     numericField.toString() + "\n" +
@@ -713,7 +795,8 @@ export const QUERY_VIEW_RENDERER_SCRIPT =
     formatPercent.toString() + "\n" +
     formatAddress.toString() + "\n" +
     formatHResult.toString() + "\n" +
-    renderUnknownView.toString();
+    renderUnknownView.toString() + "\n" +
+    ADDRESS_NAVIGATION_SCRIPT;
 
 export const QUERY_VIEW_STYLES = `
     .query-views { margin-top:.8rem; }
@@ -743,4 +826,4 @@ export const QUERY_VIEW_STYLES = `
     .query-view-deadlocks > summary { color:var(--vscode-editorError-foreground); }
     .query-view-error > summary, .query-view-error-message { color:var(--vscode-errorForeground); }
     .query-view-fallback { margin:.5rem 0; }
-`;
+` + ADDRESS_NAVIGATION_STYLES;

@@ -55,6 +55,14 @@ class ElementStub {
         return this._textContent + this.children.map(child => child.textContent).join("");
     }
 
+    setAttribute(name, value) {
+        this.attributes[name] = String(value);
+    }
+
+    addEventListener(type, listener) {
+        (this.listeners ??= {})[type] = listener;
+    }
+
     append(...children) {
         for (const child of children) this.appendChild(child);
     }

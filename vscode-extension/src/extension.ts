@@ -4,6 +4,7 @@ import { basename } from "node:path";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import { promisify } from "node:util";
 import * as vscode from "vscode";
+import { ADDRESS_NAVIGATION_HTML, AddressNavigationController, type AddressNavigationHost } from "./addressNavigation";
 import { registerOnboarding } from "./onboarding";
 import { QUERY_VIEW_RENDERER_SCRIPT, QUERY_VIEW_STYLES } from "./queryViewRenderer";
 import {
@@ -16,6 +17,7 @@ import {
     isQueryResult,
     isThreadCaptureResult,
     buildQueryFrame,
+    type QueryNavigation,
     parseProcessList,
     parseTypeFilter,
     SingleFlightGuard,
@@ -172,6 +174,12 @@ class CounterPanelController implements vscode.Disposable {
      */
     private threadSnapshot?: { session: StreamChild; handle: string };
     private readonly threadStaticsGuard = new SingleFlightGuard();
+    /**
+     * The live heap snapshot whose handle address navigation queries (issue #1168). The owning
+     * connection stays open (like `threadSnapshot`) because handles live in the CLI process.
+     */
+    private heapSnapshot?: { session: StreamChild; handle: string };
+    private readonly addressNavigation = new AddressNavigationController(this.createAddressNavigationHost());
     private connectChildTask?: Promise<StreamChild>;
 
     public constructor(
@@ -452,6 +460,8 @@ class CounterPanelController implements vscode.Disposable {
         const requestId = randomBytes(12).toString("hex");
         const pending: PendingCapture = { kind: "heap", deferred: deferred<HeapCaptureResult>() };
         session.pendingCaptures.set(requestId, pending);
+        this.heapSnapshot = undefined;
+        let keepSession = false;
         try {
             this.writeFrame(session, {
                 type: "capture",
@@ -484,6 +494,8 @@ class CounterPanelController implements vscode.Disposable {
             // views apply to a gcdump-origin snapshot.
             const handle = result.data?.handle;
             if (handle && sourcePick.source !== "gcdump") {
+                this.heapSnapshot = { session, handle };
+                keepSession = true;
                 await this.runHeapQueries(session, handle, queryOptIns);
             }
         } catch (error) {
@@ -496,7 +508,7 @@ class CounterPanelController implements vscode.Disposable {
             this.output.appendLine(`Heap snapshot capture failed: ${errorMessage(error)}`);
         } finally {
             session.pendingCaptures.delete(requestId);
-            if (ownsSession && !session.sessionId && !session.startInFlight && session.pendingCaptures.size === 0) {
+            if (ownsSession && !keepSession && !session.sessionId && !session.startInFlight && session.pendingCaptures.size === 0) {
                 // This connection exists only to serve capture requests — no live session was
                 // started on it (and no `start` request is queued/in-flight behind this capture
                 // response, which the single-threaded CLI read loop processes strictly in order).
@@ -519,16 +531,48 @@ class CounterPanelController implements vscode.Disposable {
      * another in-flight capture/query can sit queued behind it for a while; 60s gives that a
      * reasonable margin without being as generous as a capture's own ceiling.
      */
-    private async sendQuery(session: StreamChild, handle: string, view: string, typeFilter?: string): Promise<QueryResult> {
+    private async sendQuery(session: StreamChild, handle: string, view: string, typeFilter?: string, navigation?: QueryNavigation): Promise<QueryResult> {
         const requestId = randomBytes(12).toString("hex");
         const pending = deferred<QueryResult>();
         session.pendingQueries.set(requestId, pending);
         try {
-            this.writeFrame(session, buildQueryFrame(requestId, handle, view, typeFilter));
+            this.writeFrame(session, buildQueryFrame(requestId, handle, view, typeFilter, navigation));
             return await withTimeout(pending.promise, 60_000);
         } finally {
             session.pendingQueries.delete(requestId);
         }
+    }
+
+    private createAddressNavigationHost(): AddressNavigationHost {
+        return {
+            currentHeapHandle: () => {
+                const snapshot = this.heapSnapshot;
+                return snapshot && !snapshot.session.closing && snapshot.session.process.exitCode === null && snapshot.session.process.signalCode === null
+                    ? snapshot.handle
+                    : undefined;
+            },
+            // A live read re-attaches via ptrace and suspends the target, so every request is
+            // acknowledged explicitly (the CLI enforces the same High-risk tier).
+            acknowledge: async (view, address) => await vscode.window.showWarningMessage(
+                `Reading ${view === "gcroot" ? "the GC root path of" : "the object at"} ${address} from the LIVE process re-attaches via ptrace and suspends the target while ClrMD walks the heap. This is a High-risk read and is not part of the captured snapshot.`,
+                { modal: true },
+                "Acknowledge and Read",
+                "Cancel",
+            ) === "Acknowledge and Read",
+            query: async (handle, view, address, acknowledgeRisk) => {
+                const snapshot = this.heapSnapshot;
+                if (!snapshot || snapshot.handle !== handle) {
+                    throw new Error("The heap snapshot changed; capture again to navigate it.");
+                }
+                return await this.sendQuery(snapshot.session, handle, view, undefined, { address, acknowledgeRisk });
+            },
+            post: message => this.postMessage(message),
+            copy: async address => {
+                await vscode.env.clipboard.writeText(address);
+                vscode.window.setStatusBarMessage(`Copied ${address}`, 2000);
+            },
+            log: text => this.output.appendLine(text),
+        };
     }
 
     /**
@@ -874,6 +918,8 @@ class CounterPanelController implements vscode.Disposable {
                 } else {
                     void this.queryThreadStatics(typeFilter);
                 }
+            } else if (message.type === "copyAddress" || message.type === "navigateAddress") {
+                void this.addressNavigation.handle(message);
             }
         }, undefined, []);
         panel.onDidDispose(() => {
@@ -1384,6 +1430,11 @@ class DumpAnalysisPanelController implements vscode.Disposable {
     private activeChild: DumpAnalysisChild | undefined;
     /** Handle of the thread snapshot; the connection stays open (until `dispose`) so `thread-statics` can be queried on demand. */
     private threadHandle: string | undefined;
+    /** Heap snapshot handle address navigation queries; the connection stays open for it too (issue #1168). */
+    private heapHandle: string | undefined;
+    /** Offline reads are acknowledged once per panel; they attach to nothing. */
+    private offlineReadAcknowledged = false;
+    private readonly addressNavigation = new AddressNavigationController(this.createAddressNavigationHost());
     private readonly threadStaticsGuard = new SingleFlightGuard();
 
     public constructor(
@@ -1401,6 +1452,10 @@ class DumpAnalysisPanelController implements vscode.Disposable {
         );
         this.panel.webview.html = renderDumpAnalysisHtml(fileName, randomBytes(16).toString("hex"));
         this.panel.webview.onDidReceiveMessage(message => {
+            if (isRecord(message) && (message.type === "copyAddress" || message.type === "navigateAddress")) {
+                void this.addressNavigation.handle(message);
+                return;
+            }
             if (!isRecord(message) || message.type !== "queryThreadStatics") {
                 return;
             }
@@ -1458,7 +1513,7 @@ class DumpAnalysisPanelController implements vscode.Disposable {
             await this.captureHeapFromDump(child);
             await this.captureThreadSnapshotFromDump(child);
         } finally {
-            if (!this.threadHandle) {
+            if (!this.threadHandle && !this.heapHandle) {
                 await this.close(child);
             }
         }
@@ -1524,6 +1579,7 @@ class DumpAnalysisPanelController implements vscode.Disposable {
             // requests.
             const handle = result.data?.handle;
             if (handle) {
+                this.heapHandle = handle;
                 await this.runHeapQueries(child, handle);
             }
         } catch (error) {
@@ -1565,16 +1621,47 @@ class DumpAnalysisPanelController implements vscode.Disposable {
     }
 
     /** See `CounterPanelController.sendQuery`'s doc comment — identical reasoning, different connection type. */
-    private async sendQuery(child: DumpAnalysisChild, handle: string, view: string, typeFilter?: string): Promise<QueryResult> {
+    private async sendQuery(child: DumpAnalysisChild, handle: string, view: string, typeFilter?: string, navigation?: QueryNavigation): Promise<QueryResult> {
         const requestId = randomBytes(12).toString("hex");
         const pending = deferred<QueryResult>();
         child.pendingQueries.set(requestId, pending);
         try {
-            this.writeFrame(child, buildQueryFrame(requestId, handle, view, typeFilter));
+            this.writeFrame(child, buildQueryFrame(requestId, handle, view, typeFilter, navigation));
             return await withTimeout(pending.promise, 60_000);
         } finally {
             child.pendingQueries.delete(requestId);
         }
+    }
+
+    private createAddressNavigationHost(): AddressNavigationHost {
+        return {
+            currentHeapHandle: () => this.activeChild && !this.activeChild.terminated ? this.heapHandle : undefined,
+            acknowledge: async (view, address) => {
+                if (this.offlineReadAcknowledged) {
+                    return true;
+                }
+                this.offlineReadAcknowledged = await vscode.window.showWarningMessage(
+                    `Reading ${view === "gcroot" ? "the GC root path of" : "the object at"} ${address} walks the heap of the dump file offline; no process is attached or suspended. The CLI still classifies this read as High risk and large heaps can be slow. Acknowledge once for this panel?`,
+                    { modal: true },
+                    "Acknowledge and Read",
+                    "Cancel",
+                ) === "Acknowledge and Read";
+                return this.offlineReadAcknowledged;
+            },
+            query: async (handle, view, address, acknowledgeRisk) => {
+                const child = this.activeChild;
+                if (!child || child.terminated || handle !== this.heapHandle) {
+                    throw new Error("The dump analysis connection is no longer available.");
+                }
+                return await this.sendQuery(child, handle, view, undefined, { address, acknowledgeRisk });
+            },
+            post: message => this.postMessage(message),
+            copy: async address => {
+                await vscode.env.clipboard.writeText(address);
+                vscode.window.setStatusBarMessage(`Copied ${address}`, 2000);
+            },
+            log: text => this.output.appendLine(text),
+        };
     }
 
     /** See `CounterPanelController.runHeapQueries`'s doc comment. */
@@ -2021,6 +2108,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         <tbody id="captureHeapBody"></tbody>
       </table>
       <div id="heapQueryViews" class="query-views"></div>
+      ${ADDRESS_NAVIGATION_HTML}
     </div>
   </section>
 
@@ -2400,6 +2488,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     window.addEventListener('message', event => {
       const message = event.data;
       if (!message || typeof message.type !== 'string') return;
+      if (handleAddressNavigationMessage(message)) return;
       if (message.type === 'threadStaticsState') {
         setThreadStaticsBusy(message.state === 'running');
       } else if (message.type === 'status') {
@@ -2424,6 +2513,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           // Clear any query-view sections left over from a previous capture so a stale
           // opt-in/gcdump-origin section can't be mistaken for data from the capture in flight.
           document.getElementById('heapQueryViews').innerHTML = '';
+          resetAddressNavigation();
         }
       } else if (message.type === 'captureStatus' && message.kind === 'thread-snapshot') {
         captureThreadStatusElement.textContent = message.message || message.state || '';
@@ -2593,6 +2683,7 @@ export function renderDumpAnalysisHtml(dumpFileName: string, nonce: string): str
         <tbody id="captureHeapBody"></tbody>
       </table>
       <div id="heapQueryViews" class="query-views"></div>
+      ${ADDRESS_NAVIGATION_HTML}
     </div>
   </section>
 
@@ -2629,6 +2720,8 @@ export function renderDumpAnalysisHtml(dumpFileName: string, nonce: string): str
     const captureThreadHeadline = document.getElementById('captureThreadHeadline');
     const captureThreadBody = document.getElementById('captureThreadBody');
     ${QUERY_VIEW_RENDERER_SCRIPT}
+    // Both views come from the same dump, so thread-view addresses can navigate the heap too.
+    addressLinkContainers.add('threadQueryViews');
 
     // 'result' is the trimmed DiagnosticResult<DumpInspection> projection the CLI streaming
     // protocol emits for a "heap" capture with source "dump" - see
@@ -2724,12 +2817,14 @@ export function renderDumpAnalysisHtml(dumpFileName: string, nonce: string): str
     window.addEventListener('message', event => {
       const message = event.data;
       if (!message || typeof message.type !== 'string') return;
+      if (handleAddressNavigationMessage(message)) return;
       if (message.type === 'threadStaticsState') {
         setThreadStaticsBusy(message.state === 'running');
       } else if (message.type === 'captureStatus' && message.kind === 'heap') {
         captureHeapStatusElement.textContent = message.message || message.state || '';
         if (message.state === 'running') {
           document.getElementById('heapQueryViews').innerHTML = '';
+          resetAddressNavigation();
         }
       } else if (message.type === 'captureStatus' && message.kind === 'thread-snapshot') {
         captureThreadStatusElement.textContent = message.message || message.state || '';
