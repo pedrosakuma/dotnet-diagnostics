@@ -14,15 +14,15 @@ pauses, find CPU hotspots, inspect heap and thread snapshots, and analyze existi
 ## Get started
 
 Requires VS Code **1.96+** and the **.NET 10 runtime**, or a self-contained CLI. Install
-`dotnet-diagnostics-cli` **0.29.0+** in the environment where VS Code runs your workspace:
+`dotnet-diagnostics-cli` **0.30.0+** in the environment where VS Code runs your workspace:
 
 ```sh
 dotnet tool install -g dotnet-diagnostics-cli
 ```
 
 Already installed? Run `dotnet tool update -g dotnet-diagnostics-cli`. The extension never
-installs or updates the CLI automatically. Newer capture and export features may require a
-more recent CLI build; unsupported features show update guidance.
+installs or updates the CLI automatically. CLI 0.29.0 supports the base protocol-v2 workflows;
+the new capture, navigation and export features require 0.30.0 or later.
 
 1. Open **.NET Diagnostics** in the Activity Bar.
 2. Run **Check Environment**, then select your app in **.NET Processes**.
