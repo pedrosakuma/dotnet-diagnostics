@@ -70,8 +70,12 @@ dotnet tool install -g dotnet-diagnostics-cli
 ```
 
 This installs the latest stable release (`dotnet tool install` has no version-range syntax).
-The extension requires CLI **0.29.0 or later** (JSONL protocol version 2). Older CLIs are rejected
-with a protocol mismatch error; update with `dotnet tool update -g dotnet-diagnostics-cli`.
+Use CLI **0.30.0 or later** for every feature in extension **0.2.0**. CLI 0.29.0 supports the
+base JSONL protocol-v2 workflows, but lacks the new capture, address-navigation and CPU-export
+requests. The handshake checks protocol compatibility, not per-feature availability; older
+protocol-v2 CLIs can pass Check Environment while newer actions still require an update.
+CLIs without protocol v2 are rejected with a protocol mismatch error.
+Update explicitly with `dotnet tool update -g dotnet-diagnostics-cli`.
 
 New to the extension? Open the **Get started with .NET Diagnostics** walkthrough (`.NET Diagnostics:
 Open Getting Started`). **`.NET Diagnostics: Check Environment`** runs the configured

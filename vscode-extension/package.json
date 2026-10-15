@@ -2,7 +2,7 @@
   "name": "dotnet-diagnostics",
   "displayName": ".NET Diagnostics",
   "description": "Live .NET runtime counters and GC pauses, CPU, heap and thread snapshots, and dump analysis for running .NET processes, powered by dotnet-diagnostics-cli.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "pedrosakuma",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -86,13 +86,38 @@
       ]
     },
     "commands": [
-      { "command": "dotnetDiagnostics.selectProcess", "title": ".NET Diagnostics: Select Process" },
-      { "command": "dotnetDiagnostics.refreshProcesses", "title": ".NET Diagnostics: Refresh Processes", "icon": "$(refresh)" },
-      { "command": "dotnetDiagnostics.filterProcesses", "title": ".NET Diagnostics: Filter Processes", "icon": "$(filter)" },
-      { "command": "dotnetDiagnostics.refreshHistory", "title": ".NET Diagnostics: Refresh Saved Captures", "icon": "$(refresh)" },
-      { "command": "dotnetDiagnostics.openCapture", "title": ".NET Diagnostics: Open Saved Capture" },
-      { "command": "dotnetDiagnostics.deleteCapture", "title": ".NET Diagnostics: Delete Saved Capture", "icon": "$(trash)" },
-      { "command": "dotnetDiagnostics.saveSnapshot", "title": ".NET Diagnostics: Capture and Save Snapshot" },
+      {
+        "command": "dotnetDiagnostics.selectProcess",
+        "title": ".NET Diagnostics: Select Process"
+      },
+      {
+        "command": "dotnetDiagnostics.refreshProcesses",
+        "title": ".NET Diagnostics: Refresh Processes",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "dotnetDiagnostics.filterProcesses",
+        "title": ".NET Diagnostics: Filter Processes",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "dotnetDiagnostics.refreshHistory",
+        "title": ".NET Diagnostics: Refresh Saved Captures",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "dotnetDiagnostics.openCapture",
+        "title": ".NET Diagnostics: Open Saved Capture"
+      },
+      {
+        "command": "dotnetDiagnostics.deleteCapture",
+        "title": ".NET Diagnostics: Delete Saved Capture",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "dotnetDiagnostics.saveSnapshot",
+        "title": ".NET Diagnostics: Capture and Save Snapshot"
+      },
       {
         "command": "dotnetDiagnostics.startCounters",
         "title": ".NET Diagnostics: Start Live Counters"
@@ -140,22 +165,67 @@
     ],
     "menus": {
       "view/title": [
-        { "command": "dotnetDiagnostics.refreshProcesses", "when": "view == dotnetDiagnostics.processes", "group": "navigation" },
-        { "command": "dotnetDiagnostics.filterProcesses", "when": "view == dotnetDiagnostics.processes", "group": "navigation" },
-        { "command": "dotnetDiagnostics.refreshHistory", "when": "view == dotnetDiagnostics.history", "group": "navigation" }
+        {
+          "command": "dotnetDiagnostics.refreshProcesses",
+          "when": "view == dotnetDiagnostics.processes",
+          "group": "navigation"
+        },
+        {
+          "command": "dotnetDiagnostics.filterProcesses",
+          "when": "view == dotnetDiagnostics.processes",
+          "group": "navigation"
+        },
+        {
+          "command": "dotnetDiagnostics.refreshHistory",
+          "when": "view == dotnetDiagnostics.history",
+          "group": "navigation"
+        }
       ],
       "view/item/context": [
-        { "command": "dotnetDiagnostics.startCounters", "when": "view == dotnetDiagnostics.processes && viewItem == dotnetDiagnostics.process", "group": "diagnostics" },
-        { "command": "dotnetDiagnostics.captureCpu", "when": "view == dotnetDiagnostics.processes && viewItem == dotnetDiagnostics.process", "group": "diagnostics" },
-        { "command": "dotnetDiagnostics.captureHeap", "when": "view == dotnetDiagnostics.processes && viewItem == dotnetDiagnostics.process", "group": "diagnostics" },
-        { "command": "dotnetDiagnostics.captureThreadSnapshot", "when": "view == dotnetDiagnostics.processes && viewItem == dotnetDiagnostics.process", "group": "diagnostics" },
-        { "command": "dotnetDiagnostics.saveSnapshot", "when": "view == dotnetDiagnostics.processes && viewItem == dotnetDiagnostics.process", "group": "save" },
-        { "command": "dotnetDiagnostics.deleteCapture", "when": "view == dotnetDiagnostics.history && viewItem == dotnetDiagnostics.savedCapture", "group": "inline" }
+        {
+          "command": "dotnetDiagnostics.startCounters",
+          "when": "view == dotnetDiagnostics.processes && viewItem == dotnetDiagnostics.process",
+          "group": "diagnostics"
+        },
+        {
+          "command": "dotnetDiagnostics.captureCpu",
+          "when": "view == dotnetDiagnostics.processes && viewItem == dotnetDiagnostics.process",
+          "group": "diagnostics"
+        },
+        {
+          "command": "dotnetDiagnostics.captureHeap",
+          "when": "view == dotnetDiagnostics.processes && viewItem == dotnetDiagnostics.process",
+          "group": "diagnostics"
+        },
+        {
+          "command": "dotnetDiagnostics.captureThreadSnapshot",
+          "when": "view == dotnetDiagnostics.processes && viewItem == dotnetDiagnostics.process",
+          "group": "diagnostics"
+        },
+        {
+          "command": "dotnetDiagnostics.saveSnapshot",
+          "when": "view == dotnetDiagnostics.processes && viewItem == dotnetDiagnostics.process",
+          "group": "save"
+        },
+        {
+          "command": "dotnetDiagnostics.deleteCapture",
+          "when": "view == dotnetDiagnostics.history && viewItem == dotnetDiagnostics.savedCapture",
+          "group": "inline"
+        }
       ],
       "commandPalette": [
-        { "command": "dotnetDiagnostics.selectProcess", "when": "false" },
-        { "command": "dotnetDiagnostics.openCapture", "when": "false" },
-        { "command": "dotnetDiagnostics.deleteCapture", "when": "false" }
+        {
+          "command": "dotnetDiagnostics.selectProcess",
+          "when": "false"
+        },
+        {
+          "command": "dotnetDiagnostics.openCapture",
+          "when": "false"
+        },
+        {
+          "command": "dotnetDiagnostics.deleteCapture",
+          "when": "false"
+        }
       ]
     },
     "configuration": {
@@ -186,7 +256,7 @@
           {
             "id": "installCli",
             "title": "Install the CLI",
-            "description": "The extension needs dotnet-diagnostics-cli 0.29.0 or later. It never installs tools for you.\n[Copy Install Command](command:dotnetDiagnostics.copyInstallCommand)",
+            "description": "Install dotnet-diagnostics-cli 0.30.0 or later for all features. The extension never installs tools for you.\n[Copy Install Command](command:dotnetDiagnostics.copyInstallCommand)",
             "media": {
               "markdown": "media/walkthrough/install-cli.md"
             }
@@ -194,7 +264,7 @@
           {
             "id": "verifyEnvironment",
             "title": "Verify the environment",
-            "description": "Check the CLI version, protocol compatibility, and ptrace/UID permissions.\n[Check Environment](command:dotnetDiagnostics.checkEnvironment)",
+            "description": "Check protocol compatibility and host permissions. This does not verify that every 0.2.0 feature is available; use CLI 0.30.0 or later.\n[Check Environment](command:dotnetDiagnostics.checkEnvironment)",
             "media": {
               "markdown": "media/walkthrough/verify-environment.md"
             }

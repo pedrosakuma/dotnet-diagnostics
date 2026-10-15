@@ -5,12 +5,19 @@ versioned independently from the CLI and the .NET packages.
 
 ## Unreleased
 
+## 0.2.0
+
+Use CLI **0.30.0 or later** for all features in this release. CLI 0.29.0 still supports
+the base protocol-v2 workflows; newer capture, navigation and export requests need the update.
+The extension never installs or updates the CLI automatically.
+
 ### Changed
 
 - Marketplace metadata: categories are now `Debuggers` and `Visualization` (previously `Other`),
   and keywords, homepage, and bug-tracker links were added to improve discoverability.
 - Clearer extension description covering live counters, GC pauses, CPU/heap/thread snapshots, and
   dump analysis.
+- Shorter Marketplace Overview focused on first use, with technical detail in the linked reference.
 
 ### Added
 
@@ -29,6 +36,9 @@ versioned independently from the CLI and the .NET packages.
 - One **Capture Diagnostics** picker for allocation, off-CPU, contention, thread pool, GC,
   GC/activity correlation, requests, Kestrel, database and networking captures, with
   structured tables, evidence quality and explicit unavailable/omitted data.
+- Guided Getting Started walkthrough and explicit environment checks with actionable CLI guidance.
+- Managed-exception capture with type/message evidence, and crash-guard capture with
+  stack and process-exit evidence.
 
 - Raster Marketplace icon and a dark gallery banner.
 - README screenshots of live counters, heap drilldown, and thread snapshot panels. They are
