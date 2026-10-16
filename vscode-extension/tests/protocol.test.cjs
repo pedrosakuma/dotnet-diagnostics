@@ -4,6 +4,7 @@ const {
     describeStreamCompatibilityError,
     parseProcessList,
     parseProtocolFrame,
+    buildQueryFrame,
     isGcCollection,
     isCpuSampleSummary,
     isHeapCaptureResult,
@@ -46,6 +47,22 @@ test("protocol frame parser requires a typed JSON object", () => {
     assert.deepEqual(parseProtocolFrame('{"type":"hello","protocolVersion":2}'), {
         type: "hello",
         protocolVersion: 2,
+    });
+
+    test("CPU query frames carry a bounded method filter without changing other query shapes", () => {
+        assert.deepEqual(buildQueryFrame("query1", "handle1", "caller-callee", undefined, undefined, "Sample.Work()"), {
+            type: "query",
+            requestId: "query1",
+            handle: "handle1",
+            view: "caller-callee",
+            rootMethodFilter: "Sample.Work()",
+        });
+        assert.deepEqual(buildQueryFrame("query2", "handle2", "deadlocks"), {
+            type: "query",
+            requestId: "query2",
+            handle: "handle2",
+            view: "deadlocks",
+        });
     });
     assert.throws(() => parseProtocolFrame("[]"), /string type/);
 });

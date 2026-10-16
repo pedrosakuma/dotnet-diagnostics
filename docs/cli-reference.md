@@ -32,7 +32,14 @@ not require a version bump. Send a handshake before any other request:
 {"type":"hello","protocolVersion":2}
 ```
 
-The CLI replies with the negotiated version.
+The CLI replies with the negotiated protocol and its informational CLI version:
+
+```json
+{"type":"hello","protocolVersion":2,"cliVersion":"0.30.0"}
+```
+
+Clients may use `cliVersion` for feature-compatibility guidance; the field is additive and does not
+change protocol negotiation.
 
 ### Live sessions (`start`/`stop`)
 
@@ -162,6 +169,25 @@ only authoritative suspension evidence is shown as suspension. Networking latenc
 measured correlation evidence. Notes and text cells are bounded; truncation is reported.
 Paths, symbols, request identifiers and sanitized SQL may still contain sensitive data.
 
+Allocation capture results additionally include `result.handle`, identifying that capture's
+in-memory `allocation-sample` artifact on the same connection (20-minute TTL). Query it with
+`call-tree`, `top-methods`, `hot-path`, `by-module`, `by-namespace` or `caller-callee`;
+`rootMethodFilter` selects a method-name match for subtrees or callers/callees.
+No new collection occurs. CPU-only views such as `triage` and `inlining` are rejected.
+Successful allocation query results confirm `weightUnit:"allocation-tick-estimated-bytes"`.
+The reused `totalSamples` / `inclusiveSamples` / `exclusiveSamples` fields then contain estimated
+allocation **bytes**, not CPU observations, tick counts or object counts. Totals include ticks
+without attributed stacks. Tree projections retain the 64-node/depth-8 limit.
+Historical artifacts without the separate byte-weighted trace are rejected by this JSONL path;
+existing text-REPL/MCP allocation queries preserve their historical tick-count semantics.
+Capture/aggregation costs and explicit failure limits are documented under
+[allocation profiling](./resource-boundedness.md#allocation-profiling).
+
+```json
+{"type":"capture","requestId":"alloc-1","kind":"allocation","processId":1234,"durationSeconds":5,"topN":25}
+{"type":"query","requestId":"alloc-2","handle":"<result.handle>","view":"call-tree"}
+```
+
 Exception captures use the same Core collectors and safety profiles as `collect --kind exceptions`
 or `collect --kind crash-guard`:
 
@@ -243,11 +269,43 @@ hexadecimal string. Per view:
   `query_safety_rejected` unless `acknowledgeRisk` equals the resolved risk name (currently `high`).
   A dump-origin handle re-reads the dump file offline (no attach, no suspension), so it follows the
   dump-source heap profile (Moderate/Warn) and needs no acknowledgement. String, field and array-element previews are
-  redacted to the metadata-only placeholder, as in the session REPL. A `gcdump`-origin handle is
+  redacted to the metadata-only placeholder by default, as in the session REPL. Only the JSONL
+  `object` request supports `includeSensitiveValues:true` together with the separate
+  `acknowledgeSensitiveValues:true`, after explicit consent for this single object's values.
+  Missing or non-boolean consent returns `sensitive_values_rejected`; non-boolean opt-in or
+  opt-in on another view returns `invalid_query`. Neither flag is remembered, and operational
+  `acknowledgeRisk` never authorizes sensitive disclosure. The result's `sensitiveValuesIncluded`
+  confirms whether disclosure was enabled. Previews retain Core limits: strings up to 256
+  characters, arrays up to 8 elements, fields up to 256 entries and nested value-type depth 3.
+  `stringValueTruncated` marks a string preview that reached its limit; field/element string
+  previews can also be shortened. Clients must not log, persist, export or cache raw values
+  automatically. The text session REPL remains metadata-only.
+  A `gcdump`-origin handle is
   rejected with `unsupported_query_view` (it has no ClrMD runtime), and a failed read (for example a
   process that exited or an address that is not an object) returns `query_failed`. `objsize` stays
   excluded.
 - Every other heap view, and every thread-snapshot view, rejects `address` with `invalid_query`.
+
+The JSONL `object` view also accepts `arrayStartIndex` (Int32, non-negative, default 0)
+and `arrayCount` (integer 1-8, default 8). They are valid only on heap-snapshot object queries.
+Invalid types/ranges at the request boundary return `invalid_query`; a start index outside the
+current array length (except zero for an empty array) or a range on a non-array object returns
+`query_failed`. Explicit ranges require inspector support; they are never silently ignored.
+For example:
+
+```json
+{"type":"query","requestId":"a2","handle":"<heap-handle>","view":"object","address":"0x1234","arrayStartIndex":8,"arrayCount":8,"acknowledgeRisk":"high"}
+```
+
+The result's `objectDetails.arrayStartIndex` and `arrayRequestedCount` confirm the requested
+range; `arraySample[].index` keeps its absolute zero-based linear storage index, not a page-local
+index. Multidimensional arrays use row-major storage order and respect dimension lower bounds.
+Value-type elements expose bounded `fields` with dotted nested field paths and exact hex-string
+`objectAddress` references. Struct interiors are never represented as independent object addresses.
+One shared 256-field budget covers the entire range, with depth limit 3; warnings report omitted
+fields and elements outside the requested range. These are storage slots, not a filtered view of
+active dictionary/collection entries. Field previews follow the same sensitive-value gate as
+ordinary object fields, and changing the range never remembers disclosure consent.
 
 An unknown `handle`, a `view` not valid for that handle's kind, or a view the handle's origin/capture
 options don't support produce an `error` frame (`unknown_handle`, `unsupported_query_view`,

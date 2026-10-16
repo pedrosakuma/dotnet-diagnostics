@@ -71,6 +71,13 @@ public sealed record AllocationSample(
 /// summary returned to the LLM, and a heavier <see cref="CpuSampleTraceArtifact"/> retained
 /// under a handle for drill-down queries via <c>query_snapshot(view="call-tree")</c>.
 /// </summary>
-public sealed record AllocationSampleResult(AllocationSample Summary, CpuSampleTraceArtifact Artifact);
+public sealed record AllocationSampleResult(AllocationSample Summary, CpuSampleTraceArtifact Artifact)
+{
+    public CpuSampleTraceArtifact? EstimatedBytesArtifact { get; init; }
+}
 
-public sealed record AllocationSampleArtifact(AllocationSample Summary, CpuSampleTraceArtifact TraceArtifact);
+public sealed record AllocationSampleArtifact(AllocationSample Summary, CpuSampleTraceArtifact TraceArtifact)
+{
+    /// <summary>Byte-weighted allocation-tick tree; absent in historical artifacts that only retained tick counts.</summary>
+    public CpuSampleTraceArtifact? EstimatedBytesTrace { get; init; }
+}

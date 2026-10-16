@@ -103,6 +103,19 @@ test("branching history prunes discarded forward results, not retained breadcrum
     assert.equal(JSON.parse(docs[0].content).measurements[0].value, 1);
     assert.equal(exporter.navigation.size, 3);
 });
+test("sensitive object responses are never retained by the exporter, even if the page claims they are ready", async () => {
+    const exporter = new e.ResultExporter(), docs = [], errors = [];
+    vscode.window.showTextDocument = async document => docs.push(document);
+    vscode.window.showErrorMessage = async message => errors.push(message);
+    const entry = { view: "object", address: "0xff", navigationId: 1 };
+    exporter.observe({ type: "navigation", ...entry, sensitiveValues: true,
+        result: { stringValue: "SECRET", totalBytes: 42 } });
+    await exporter.handle({ type: "navigationSelection", ...entry, ready: true });
+    await exporter.handle({ type: "exportResult", format: "json" });
+    assert.equal(exporter.navigation.size, 0);
+    assert.equal(docs.length, 0);
+    assert.equal(errors.length, 1);
+});
 test("repeated reads of the same address preserve each entry's own host-held evidence", async () => {
     const exporter = new e.ResultExporter(), docs = [];
     vscode.window.showTextDocument = async document => docs.push(document);

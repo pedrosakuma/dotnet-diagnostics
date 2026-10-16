@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using DotnetDiagnostics.Core;
@@ -33,6 +34,10 @@ namespace DotnetDiagnostics.Cli;
 internal static class CliStreamingProtocol
 {
     private const int ProtocolVersion = 2;
+    private static readonly string CliVersion =
+        typeof(CliStreamingProtocol).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+        ?? typeof(CliStreamingProtocol).Assembly.GetName().Version?.ToString(3)
+        ?? "unknown";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
@@ -311,6 +316,7 @@ internal static class CliStreamingProtocol
                         {
                             type = "hello",
                             protocolVersion = ProtocolVersion,
+                            cliVersion = CliVersion,
                         }, cancellationToken).ConfigureAwait(false);
                         continue;
                     }
@@ -1205,15 +1211,16 @@ internal static class CliStreamingProtocol
     }
 
     /// <summary>
-    /// Dispatches a <c>query</c> request against a handle already registered by a prior <c>heap</c>
-    /// or <c>thread-snapshot</c> <c>capture</c> on this same connection (issue #1116). The handle
+    /// Dispatches a <c>query</c> request against a handle already registered by a prior <c>cpu</c>,
+    /// <c>heap</c> or <c>thread-snapshot</c> <c>capture</c> on this same connection (issue #1116). The handle
     /// store is in-process memory, so this only ever sees handles produced earlier in this same
     /// <c>stream</c> child process — a fresh CLI process (or one started after this one exits) would
     /// not see them. Mirrors the MCP <c>query_snapshot</c> tool's dispatch-by-handle-kind precedent
     /// (<c>QuerySnapshotTool</c> in <c>DotnetDiagnostics.Mcp</c>): the handle's recorded kind selects
-    /// <see cref="HeapSnapshotQueryDispatcher"/> or <see cref="ThreadSnapshotQueryDispatcher"/>, both
-    /// of which render purely from the already-captured artifact — no re-attach, no re-suspend, no
-    /// new ClrMD walk. Restricted to the 10 heap views and 4 thread views enumerated in
+    /// <see cref="CpuSampleQueryDispatcher"/>, <see cref="HeapSnapshotQueryDispatcher"/> or
+    /// <see cref="ThreadSnapshotQueryDispatcher"/>, which render purely from the already-captured
+    /// artifact — no re-sampling, re-attach, re-suspend, or new ClrMD walk. Restricted to the CPU,
+    /// 10 heap and 4 thread views enumerated by their dispatchers and
     /// <see cref="HeapQueryViews"/>/<see cref="ThreadQueryViews"/>; the address-targeted
     /// <c>objsize</c>/<c>duplicate-strings</c>/<c>resolve-address</c>/<c>frame-vars</c> views are
     /// explicitly out of scope for this request type; <c>object</c>/<c>gcroot</c> are served only with a
@@ -1292,6 +1299,27 @@ internal static class CliStreamingProtocol
             typeFilter = typeFilterElement.GetString();
         }
 
+        string? rootMethodFilter = null;
+        if (root.TryGetProperty("rootMethodFilter", out var rootMethodFilterElement)
+            && rootMethodFilterElement.ValueKind != JsonValueKind.Null)
+        {
+            if (rootMethodFilterElement.ValueKind != JsonValueKind.String
+                || rootMethodFilterElement.GetString() is not { Length: <= 512 } filter
+                || filter.Any(char.IsControl))
+            {
+                await writer.WriteAsync(new
+                {
+                    type = "error",
+                    requestId,
+                    code = "invalid_query",
+                    message = "'rootMethodFilter' must be a string of at most 512 characters without control characters.",
+                }, CancellationToken.None).ConfigureAwait(false);
+                return;
+            }
+
+            rootMethodFilter = filter;
+        }
+
         // #1168: `address` is a strict 0x-hex string (never a JSON number); validated before any handle lookup.
         var addressStatus = CliStreamingQueryNavigation.TryReadAddress(root, out var address);
         if (addressStatus == CliStreamingQueryNavigation.AddressStatus.Invalid)
@@ -1309,6 +1337,35 @@ internal static class CliStreamingProtocol
         var acknowledgeRisk = TryGetString(root, "acknowledgeRisk", out var acknowledgeRiskValue)
             ? acknowledgeRiskValue
             : null;
+
+        if (!CliStreamingQueryNavigation.TryReadArrayRange(root, view, out var objectOptions))
+        {
+            await writer.WriteAsync(new { type = "error", requestId, code = "invalid_query",
+                message = "Array ranges are supported only for view 'object': arrayStartIndex must be a non-negative Int32 and arrayCount an integer from 1 to 8." },
+                CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+        var includeSensitiveValues = false;
+        if (root.TryGetProperty("includeSensitiveValues", out var sensitive))
+        {
+            if (sensitive.ValueKind is not (JsonValueKind.True or JsonValueKind.False)
+                || !string.Equals(view.Trim(), "object", StringComparison.OrdinalIgnoreCase))
+            {
+                await writer.WriteAsync(new { type = "error", requestId, code = "invalid_query",
+                    message = "'includeSensitiveValues' must be a boolean and is supported only for view 'object'." },
+                    CancellationToken.None).ConfigureAwait(false);
+                return;
+            }
+            includeSensitiveValues = sensitive.GetBoolean();
+            if (includeSensitiveValues && (!root.TryGetProperty("acknowledgeSensitiveValues", out var consent)
+                || consent.ValueKind != JsonValueKind.True))
+            {
+                await writer.WriteAsync(new { type = "error", requestId, code = "sensitive_values_rejected",
+                    message = "Revealing object values requires acknowledgeSensitiveValues=true for this request after explicit user consent. Values can contain secrets or personal data." },
+                    CancellationToken.None).ConfigureAwait(false);
+                return;
+            }
+        }
 
         var handles = services.GetRequiredService<IDiagnosticHandleStore>();
         var lookup = handles.LookupWithKind(handle);
@@ -1329,7 +1386,15 @@ internal static class CliStreamingProtocol
             await HandleHeapQueryAsync(
                 requestId, services, writer, stdin, stdout, stderr, handles, handle, view, topN,
                 addressStatus == CliStreamingQueryNavigation.AddressStatus.Valid ? address : null,
-                acknowledgeRisk, found.Artifact, cancellationToken).ConfigureAwait(false);
+                acknowledgeRisk, includeSensitiveValues, objectOptions, found.Artifact, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        if (includeSensitiveValues || objectOptions is not null)
+        {
+            await writer.WriteAsync(new { type = "error", requestId, code = "invalid_query",
+                message = "Object-value and array-range reads require a heap-snapshot handle." },
+                CancellationToken.None).ConfigureAwait(false);
             return;
         }
 
@@ -1351,6 +1416,39 @@ internal static class CliStreamingProtocol
             return;
         }
 
+        if (found.Kind is "cpu-sample" or "allocation-sample")
+        {
+            if (addressStatus == CliStreamingQueryNavigation.AddressStatus.Valid)
+            {
+                await writer.WriteAsync(new
+                {
+                    type = "error",
+                    requestId,
+                    code = "invalid_query",
+                    message = "'address' is only accepted for heap-snapshot handles.",
+                }, CancellationToken.None).ConfigureAwait(false);
+                return;
+            }
+
+            if (found.Kind == "allocation-sample")
+            {
+                if (found.Artifact is not AllocationSampleArtifact { EstimatedBytesTrace: { } byteTrace }
+                    || view.Trim().ToLowerInvariant() is not ("call-tree" or "top-methods" or "hot-path" or "by-module" or "by-namespace" or "caller-callee"))
+                {
+                    await writer.WriteAsync(new { type = "error", requestId, code = "unsupported_query_view",
+                        message = "Allocation explorer requires a byte-weighted artifact and supports call-tree, top-methods, hot-path, by-module, by-namespace and caller-callee." },
+                        CancellationToken.None).ConfigureAwait(false);
+                    return;
+                }
+                await HandleCpuQueryAsync(requestId, writer, handle, view, topN, rootMethodFilter, byteTrace, cancellationToken,
+                    "allocation-tick-estimated-bytes").ConfigureAwait(false);
+                return;
+            }
+            await HandleCpuQueryAsync(requestId, writer, handle, view, topN, rootMethodFilter, found.Artifact, cancellationToken)
+                .ConfigureAwait(false);
+            return;
+        }
+
         await writer.WriteAsync(new
         {
             type = "error",
@@ -1358,6 +1456,133 @@ internal static class CliStreamingProtocol
             code = "unsupported_handle_kind",
             message = $"Handle '{handle}' was captured as '{found.Kind}', which has no `query` views defined.",
         }, CancellationToken.None).ConfigureAwait(false);
+    }
+
+    private static async Task HandleCpuQueryAsync(
+        string requestId,
+        ProtocolWriter writer,
+        string handle,
+        string view,
+        int topN,
+        string? rootMethodFilter,
+        object artifact,
+        CancellationToken cancellationToken,
+        string weightUnit = "samples")
+    {
+        var normalizedView = view.Trim().ToLowerInvariant();
+        if (!CpuSampleQueryDispatcher.IsKnownView(normalizedView))
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId,
+                code = "unsupported_query_view",
+                message = $"View '{view}' is not a supported CPU query view. Supported views: {string.Join(", ", CpuSampleQueryDispatcher.SessionViews)}.",
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+
+        var trace = CpuSampleQueryDispatcher.ResolveTrace(artifact);
+        if (trace is null)
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId,
+                code = "query_failed",
+                message = $"Handle '{handle}' could not be rendered as a CPU sample.",
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+
+        switch (normalizedView)
+        {
+            case CpuSampleQueryDispatcher.CallTreeView:
+                await WriteCpuQueryResultAsync(requestId, writer, handle, normalizedView,
+                    CpuSampleQueryDispatcher.RenderCallTree(
+                        trace, handle, rootMethodFilter, CpuSampleQueryDispatcher.MaxProjectedCallTreeDepth,
+                        CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes),
+                    cancellationToken, weightUnit).ConfigureAwait(false);
+                break;
+            case CpuSampleQueryDispatcher.TopMethodsView:
+                await WriteCpuQueryResultAsync(requestId, writer, handle, normalizedView,
+                    CpuSampleQueryDispatcher.RenderTopMethods(trace, handle, sortBy: null, topN),
+                    cancellationToken, weightUnit).ConfigureAwait(false);
+                break;
+            case CpuSampleQueryDispatcher.ByModuleView:
+                await WriteCpuQueryResultAsync(requestId, writer, handle, normalizedView,
+                    CpuSampleQueryDispatcher.RenderByModule(trace, handle, topN), cancellationToken, weightUnit).ConfigureAwait(false);
+                break;
+            case CpuSampleQueryDispatcher.ByNamespaceView:
+                await WriteCpuQueryResultAsync(requestId, writer, handle, normalizedView,
+                    CpuSampleQueryDispatcher.RenderByNamespace(trace, handle, topN), cancellationToken, weightUnit).ConfigureAwait(false);
+                break;
+            case CpuSampleQueryDispatcher.HotPathView:
+                await WriteCpuQueryResultAsync(requestId, writer, handle, normalizedView,
+                    CpuSampleQueryDispatcher.RenderHotPath(trace, handle, CpuSampleQueryDispatcher.DefaultHotPathThresholdPercent),
+                    cancellationToken, weightUnit).ConfigureAwait(false);
+                break;
+            case CpuSampleQueryDispatcher.CallerCalleeView:
+                await WriteCpuQueryResultAsync(requestId, writer, handle, normalizedView,
+                    CpuSampleQueryDispatcher.RenderCallerCallee(trace, handle, rootMethodFilter, topN),
+                    cancellationToken, weightUnit).ConfigureAwait(false);
+                break;
+            case CpuSampleQueryDispatcher.TriageView:
+                await WriteCpuQueryResultAsync(requestId, writer, handle, normalizedView,
+                    CpuSampleQueryDispatcher.RenderTriage(
+                        trace, handle, CpuSampleQueryDispatcher.CompactTopN,
+                        CpuSampleQueryDispatcher.DefaultHotPathThresholdPercent),
+                    cancellationToken, weightUnit).ConfigureAwait(false);
+                break;
+            case CpuSampleQueryDispatcher.CodeVersionsView:
+                await WriteCpuQueryResultAsync(requestId, writer, handle, normalizedView,
+                    CpuSampleQueryDispatcher.RenderCodeVersions(trace, handle, rootMethodFilter, topN),
+                    cancellationToken, weightUnit).ConfigureAwait(false);
+                break;
+            case CpuSampleQueryDispatcher.InliningView:
+                await WriteCpuQueryResultAsync(requestId, writer, handle, normalizedView,
+                    CpuSampleQueryDispatcher.RenderInlining(trace, handle, rootMethodFilter, topN),
+                    cancellationToken, weightUnit).ConfigureAwait(false);
+                break;
+        }
+    }
+
+    private static async Task WriteCpuQueryResultAsync<T>(
+        string requestId,
+        ProtocolWriter writer,
+        string handle,
+        string view,
+        DiagnosticResult<T> result,
+        CancellationToken cancellationToken,
+        string weightUnit = "samples")
+    {
+        if (result.IsError)
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId,
+                code = QueryErrorCode(result.Error!.Kind),
+                message = result.Error.Message,
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+
+        await writer.WriteAsync(new
+        {
+            type = "query",
+            requestId,
+            handle,
+            view,
+            result = new
+            {
+                handle,
+                view,
+                weightUnit,
+                summary = weightUnit == "samples" ? result.Summary : "Estimated allocation bytes attributed to sampled stacks. Allocation ticks are not object counts; no retained-heap or CPU-time meaning.",
+                data = JsonSerializer.SerializeToElement(result.Data, JsonOptions),
+            },
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -1378,6 +1603,8 @@ internal static class CliStreamingProtocol
         int topN,
         ulong? address,
         string? acknowledgeRisk,
+        bool includeSensitiveValues,
+        HeapObjectInspectionOptions? objectOptions,
         object artifact,
         CancellationToken cancellationToken)
     {
@@ -1399,7 +1626,7 @@ internal static class CliStreamingProtocol
         if (isObjectRead)
         {
             await HandleHeapObjectReadAsync(
-                requestId, services, writer, stdin, stdout, stderr, handles, handle, normalizedView, address, acknowledgeRisk, snapshot, cancellationToken)
+                requestId, services, writer, stdin, stdout, stderr, handles, handle, normalizedView, address, acknowledgeRisk, includeSensitiveValues, objectOptions, snapshot, cancellationToken)
                 .ConfigureAwait(false);
             return;
         }
@@ -1463,7 +1690,8 @@ internal static class CliStreamingProtocol
 
     /// <summary>
     /// Serves the address-targeted <c>object</c>/<c>gcroot</c> heap views (#1168) through the same
-    /// <see cref="IDumpInspector"/> and string-preview redaction the one-shot/session CLI uses. These
+    /// <see cref="IDumpInspector"/> and default preview redaction the one-shot/session CLI uses. Sensitive
+    /// previews require separate, explicit per-request consent, independent of live attach risk. These
     /// re-open the snapshot origin with ClrMD (a live attach suspends the target; a dump is re-read), so
     /// a live origin clears the shared <c>query</c> safety profile (High risk/Acknowledge) first, while a dump
     /// origin uses the offline dump-source heap profile (Moderate/Warn, no attach or suspension); a <c>gcdump</c> origin has no ClrMD runtime and is rejected.
@@ -1480,6 +1708,8 @@ internal static class CliStreamingProtocol
         string normalizedView,
         ulong? address,
         string? acknowledgeRisk,
+        bool includeSensitiveValues,
+        HeapObjectInspectionOptions? objectOptions,
         HeapSnapshotArtifact snapshot,
         CancellationToken cancellationToken)
     {
@@ -1540,7 +1770,10 @@ internal static class CliStreamingProtocol
         {
             result = normalizedView == "gcroot"
                 ? CliCommands.BuildGcRootResult(snapshot, handle, await inspector.InspectGcRootAsync(snapshot, target, cancellationToken).ConfigureAwait(false))
-                : CliCommands.BuildObjectResult(snapshot, handle, await inspector.InspectObjectAsync(snapshot, target, cancellationToken).ConfigureAwait(false));
+                : CliCommands.BuildObjectResult(snapshot, handle, await (objectOptions is null
+                    ? inspector.InspectObjectAsync(snapshot, target, cancellationToken)
+                    : inspector.InspectObjectAsync(snapshot, target, objectOptions, cancellationToken)).ConfigureAwait(false),
+                    includeSensitiveValues, services.GetService<SensitiveDataRedactor>());
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -1564,7 +1797,7 @@ internal static class CliStreamingProtocol
             requestId,
             handle,
             view = normalizedView,
-            result = TrimHeapQueryResult(result.Data!),
+            result = TrimHeapQueryResult(result.Data!, includeSensitiveValues),
         }, cancellationToken).ConfigureAwait(false);
     }
 
@@ -1737,7 +1970,7 @@ internal static class CliStreamingProtocol
     /// <c>ObjectSize</c>/<c>DuplicateStrings</c> (address-targeted views outside this request type's
     /// scope). <c>Address</c>/<c>ObjectDetails</c>/<c>GcRoot</c> are projected with hexadecimal-string addresses (#1168).
     /// </summary>
-    internal static object TrimHeapQueryResult(HeapSnapshotQueryResult data) => new
+    internal static object TrimHeapQueryResult(HeapSnapshotQueryResult data, bool includeSensitiveValues = false) => new
     {
         handle = data.Handle,
         view = data.View,
@@ -1747,6 +1980,7 @@ internal static class CliStreamingProtocol
         quality = data.Quality,
         address = data.Address is { } queryAddress ? FormatAddress(queryAddress) : null,
         objectDetails = data.ObjectDetails is { } objectDetails ? CliStreamingQueryNavigation.ProjectObject(objectDetails) : null,
+        sensitiveValuesIncluded = data.ObjectDetails is not null && includeSensitiveValues,
         gcRoot = data.GcRoot is { } gcRoot ? CliStreamingQueryNavigation.ProjectGcRoot(gcRoot) : null,
         retentionPaths = data.RetentionPaths?.Select(ProjectRetentionPath),
         rootsByKind = data.RootsByKind,
@@ -2230,7 +2464,8 @@ Usage: dotnet-diagnostics-cli stream --protocol jsonl
 
 Runs the versioned bidirectional JSON Lines protocol over stdin/stdout.
 Stdout contains protocol frames only; diagnostics and startup messages use stderr.
-Send {"type":"hello","protocolVersion":2} before start/stop/capture commands.
+Send {"type":"hello","protocolVersion":2} before start/stop/capture commands. The hello response
+includes the protocol version and CLI informational version.
 Start requires requestId and processId. Send either the legacy single-kind shape
 (optional providers/intervalSeconds/observationCapacity, implying kind "counters") or
 {"kinds":[{"kind":"counters",...},{"kind":"gc",...}]} to run several live kinds in one
@@ -2264,10 +2499,22 @@ retained-exceptions; thread-snapshot views are deadlocks, unique-stacks, wait-ch
 thread-statics. The optional "typeFilter" string is the exact full type name that thread-statics
 requires (otherwise error code "invalid_query"); it is ignored by every other view.
 Heap handles also accept the address views object and gcroot (#1168), which require "address" and
-re-open the snapshot origin with ClrMD (a live attach suspends the target). They are High
-risk/Acknowledge like query --view object, so the request is rejected with code
+re-open the snapshot origin with ClrMD (a live attach suspends the target). Live reads are High
+risk/Acknowledge like query --view object, so a live request is rejected with code
 "query_safety_rejected" unless "acknowledgeRisk" equals the resolved risk name (currently "high");
-object previews are redacted and a gcdump snapshot is rejected. "address" must be a JSON string
+dump reads are offline Moderate/Warn and need no operational acknowledgement.
+Object previews are metadata-only by default. Only view="object" supports
+"includeSensitiveValues":true with separate "acknowledgeSensitiveValues":true after explicit
+consent for that single request; operational risk consent never authorizes raw values. Missing
+sensitive consent returns "sensitive_values_rejected". The result's "sensitiveValuesIncluded"
+confirms disclosure. Strings are bounded to 256 characters, arrays to 8 elements, fields to 256
+entries and value-type depth 3. Do not automatically persist/log/export the revealed previews.
+Object array reads accept "arrayStartIndex" (non-negative Int32, default 0) and "arrayCount"
+(integer 1-8, default 8). Results confirm arrayStartIndex/arrayRequestedCount and include flattened
+fields for value-type elements; one 256-field budget covers the entire range. Indices are
+zero-based linear row-major positions, not collection-specific active entries. Each range
+requires a fresh request; live risk and sensitive-value acknowledgement remain independent.
+A gcdump snapshot is rejected. "address" must be a JSON string
 holding a non-zero 0x-prefixed hexadecimal value of at most 16 digits (JSON numbers and decimal
 strings are rejected with "invalid_query"); on static-fields it filters the captured fields to
 those referencing exactly that object, and every other view rejects it. All addresses in query

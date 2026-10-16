@@ -133,13 +133,22 @@ public sealed class GcProgressEvidenceTests
         }
     }
 
-    [Fact]
-    public async Task MissingArmCanBeCancelledWithoutClaimingReadiness()
+    [Theory]
+    [InlineData("arm")]
+    [InlineData("collection")]
+    [InlineData("completion")]
+    public async Task MissingLifecycleEvidenceUsesTheOwnerDeadlineWithoutClaimingReadiness(string stage)
     {
         var evidence = new GcProgressEvidence();
+        evidence.Marker(2, 0, 10, 11);
         using var cancelled = new CancellationTokenSource();
         await cancelled.CancelAsync();
-        var action = () => evidence.AcknowledgeArmAsync(0, cancelled.Token);
+        Func<Task> action = stage switch
+        {
+            "collection" => () => evidence.WaitForCollectionAsync(0, cancelled.Token),
+            "completion" => () => evidence.WaitForCompletionAsync(0, cancelled.Token),
+            _ => () => evidence.AcknowledgeArmAsync(0, cancelled.Token),
+        };
         await action.Should().ThrowAsync<OperationCanceledException>();
     }
 }

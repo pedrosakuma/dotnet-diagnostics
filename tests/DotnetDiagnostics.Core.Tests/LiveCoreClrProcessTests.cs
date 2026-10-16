@@ -1683,6 +1683,11 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         objectView.ArraySample!.Should().NotBeEmpty();
         objectView.ArraySample.Should().OnlyContain(e => e.Value == "0",
             "freshly-allocated byte[] entries are zero-initialized");
+        var lastPage = await inspector.InspectObjectAsync(snapshot, leakedBufferAddress,
+            new HeapObjectInspectionOptions(1_048_574, 8), CancellationToken.None);
+        lastPage.ArraySample!.Select(e => e.Index).Should().Equal(1_048_574, 1_048_575);
+        lastPage.ArrayStartIndex.Should().Be(1_048_574);
+        lastPage.ArrayRequestedCount.Should().Be(8);
 
         var gcrootView = await inspector.InspectGcRootAsync(snapshot, leakedBufferAddress, CancellationToken.None);
         gcrootView.Chain.Should().NotBeEmpty();
@@ -1693,6 +1698,77 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         var objectSize = await inspector.InspectObjectSizeAsync(snapshot, leakedBufferAddress, CancellationToken.None);
         objectSize.ObjectCount.Should().Be(1, "a byte[] retains only itself in the object graph walk");
         objectSize.RetainedBytes.Should().Be(objectView.Size);
+    }
+
+    [Fact(Timeout = 90_000)]
+    public async Task DumpInspector_ExploresGenericStructArraysAndBoundedRanges()
+    {
+        EnsureSampleRunning();
+        var baseUrl = await EnsureListeningUrlAsync(TimeSpan.FromSeconds(30));
+        using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
+        (await http.GetAsync("/heap-array-fixture")).EnsureSuccessStatusCode();
+        var dumpRoot = Path.Combine(Path.GetTempPath(), $"diagnosticsmcp-array-ranges-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dumpRoot);
+        try
+        {
+            var dumper = new DiagnosticsClientDumper(new TestArtifactRootProvider(dumpRoot));
+            var dump = await dumper.WriteDumpAsync(Pid, ProcessDumpType.WithHeap, null, CancellationToken.None);
+            IDumpInspector inspector = new ClrMdDumpInspector();
+            var snapshot = await inspector.InspectAsync(dump.FilePath,
+                new DumpInspectionOptions(TopTypes: 25, IncludeStaticFields: true, SnapshotStaticFieldTopN: 5000), CancellationToken.None);
+            ulong Address(string field) => snapshot.StaticFields!.Single(f =>
+                f.ContainingTypeFullName == "ArrayInspectionFixture" && f.FieldName == field).ValueAddress;
+            Task<HeapObjectInspection> Read(string field, int start = 0, int count = 8) =>
+                inspector.InspectObjectAsync(snapshot, Address(field), new HeapObjectInspectionOptions(start, count), CancellationToken.None);
+
+            var rows = await Read("Rows");
+            rows.ArrayLength.Should().Be(11);
+            rows.ArraySample!.Count.Should().Be(8);
+            rows.ArraySample.Should().OnlyContain(e => e.ObjectAddress == null, "struct interiors are not managed object references");
+            var row = rows.ArraySample[0];
+            row.Fields!.Single(f => f.Name == "Number").Value.Should().Be("0");
+            row.Fields.Single(f => f.Name == "Nested.Code").Value.Should().Be("100");
+            var text = row.Fields.Single(f => f.Name == "Nested.Text");
+            text.ObjectAddress.Should().NotBeNull();
+            (await inspector.InspectObjectAsync(snapshot, text.ObjectAddress!.Value)).StringValue.Should().Be("array-value-0");
+            var tail = await Read("Rows", 8);
+            tail.ArraySample!.Select(e => e.Index).Should().Equal(8, 9, 10);
+            tail.ArraySample[2].Fields!.Single(f => f.Name == "Number").Value.Should().Be("10");
+            tail.Warnings.Should().Contain(w => w.Contains("8 elements outside", StringComparison.Ordinal));
+            var numbers = await Read("Numbers", 7, 3);
+            numbers.ArraySample!.Select(e => e.Value).Should().Equal("7", "8", "9");
+            var references = await Read("References", 8);
+            references.ArraySample!.Last().Value.Should().Be("null");
+            references.ArraySample[0].ObjectAddress.Should().NotBeNull();
+            (await inspector.InspectObjectAsync(snapshot, references.ArraySample[0].ObjectAddress!.Value)).StringValue.Should().Be("reference-8");
+            (await Read("Empty")).ArraySample.Should().BeEmpty();
+            (await Read("Matrix", 2, 4)).ArraySample!.Select(e => e.Value).Should().Equal("2", "3", "4", "5");
+            (await Read("LowerBounds", 1)).ArraySample!.Select(e => e.Value).Should().Equal("8", "9");
+            (await Read("Jagged")).ArraySample.Should().OnlyContain(e => e.ObjectAddress != null);
+
+            var map = await inspector.InspectObjectAsync(snapshot, Address("Map"));
+            var entriesAddress = map.Fields!.Single(f => f.Name == "_entries").ObjectAddress!.Value;
+            var entries = await inspector.InspectObjectAsync(snapshot, entriesAddress, new HeapObjectInspectionOptions(8));
+            var entry = entries.ArraySample![0];
+            entry.Fields!.Single(f => f.Name == "key").ObjectAddress.Should().NotBeNull();
+            var valueAddress = entry.Fields.Single(f => f.Name == "value").ObjectAddress!.Value;
+            (await inspector.InspectObjectAsync(snapshot, valueAddress)).StringValue.Should().Be("value-8");
+
+            var wide = await Read("Wide");
+            wide.ArraySample!.Sum(e => e.Fields?.Count ?? 0).Should().Be(256, "one field budget covers the entire range, not each element");
+            wide.Warnings.Should().Contain(w => w.Contains("MaxFieldCount=256", StringComparison.Ordinal));
+            (await Read("Deep")).Warnings.Should().Contain(w => w.Contains("MaxFieldDepth=3", StringComparison.Ordinal));
+            await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => Read("Rows", 11));
+            await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => Read("Rows", int.MaxValue));
+            await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => Read("Rows", -1));
+            await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => Read("Rows", 0, 9));
+            await Assert.ThrowsAsync<ArgumentException>(() => inspector.InspectObjectAsync(snapshot, Address("Map"), new HeapObjectInspectionOptions(1)));
+            await Assert.ThrowsAsync<ArgumentException>(() => inspector.InspectObjectAsync(snapshot, Address("Map"), new HeapObjectInspectionOptions()));
+        }
+        finally
+        {
+            Directory.Delete(dumpRoot, recursive: true);
+        }
     }
 
     [Fact(Timeout = 90_000)]
@@ -2553,13 +2629,17 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
 
-        // Drive the /render endpoint in a tight loop: each request does O(n²) string concat,
-        // producing a heavy stream of System.String allocations visible to GCAllocationTick.
+        // Pace O(n²) string concatenation so the assertion fixture stays below capture limits
+        // independently of host throughput while producing GCAllocationTick events.
         var driver = Task.Run(async () =>
         {
             while (!cts.IsCancellationRequested)
             {
-                try { _ = await http.GetAsync("/render?count=1000", cts.Token); }
+                try
+                {
+                    _ = await http.GetAsync("/render?count=1000", cts.Token);
+                    await Task.Delay(50, cts.Token);
+                }
                 catch (OperationCanceledException) { break; }
                 catch { /* tolerate transient races */ }
             }
@@ -2590,6 +2670,12 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
             // Call-tree artifact should have captured call stacks from GCAllocationTick events.
             result.Artifact.Root.Children.Should().NotBeEmpty(
                 "the allocation call-tree artifact must capture at least one stack when events were observed");
+            result.EstimatedBytesArtifact.Should().NotBeNull();
+            result.EstimatedBytesArtifact!.TotalSamples.Should().Be(result.Summary.TotalBytes);
+            result.EstimatedBytesArtifact.Root.InclusiveSamples.Should().BeInRange(1, result.Summary.TotalBytes);
+            result.EstimatedBytesArtifact.Root.InclusiveSamples.Should().BeGreaterThan(result.Artifact.Root.InclusiveSamples);
+            result.Artifact.TotalSamples.Should().Be(result.Summary.TotalEvents,
+                "historical tick-weighted consumers must keep their original semantics");
 
             // Per-call-site (origin) attribution: the leaf-frame byte rollup must be populated and
             // at least one site must carry a MethodIdentity for the assembly-mcp handoff.
@@ -2738,7 +2824,11 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         {
             while (!cts.IsCancellationRequested)
             {
-                try { _ = await http.GetAsync("/render?count=1000", cts.Token); }
+                try
+                {
+                    _ = await http.GetAsync("/render?count=1000", cts.Token);
+                    await Task.Delay(50, cts.Token);
+                }
                 catch (OperationCanceledException) { break; }
                 catch { /* tolerate transient races */ }
             }

@@ -26,7 +26,10 @@ internal sealed record CaptureViewEvidence(string Source, IReadOnlyList<Evidence
     CaptureViewConclusions? Conclusions = null, string? Schema = null);
 internal sealed record CaptureView(string Kind, string Title, string Summary, CaptureViewProvenance Provenance,
     IReadOnlyList<CaptureViewMetric> Metrics, IReadOnlyList<CaptureViewTable> Tables, IReadOnlyList<string> Notes,
-    CaptureViewEvidence Evidence);
+    CaptureViewEvidence Evidence)
+{
+    public string? Handle { get; init; }
+}
 
 internal sealed class CaptureViewBuilder
 {
@@ -132,6 +135,7 @@ internal static class CliStreamingCaptureViews
                 b.Table("sites", "Allocation sites", ["Method", "Module", "Sampled bytes", "Sampled events"], s.TopBySite, top,
                     t => [t.Frame.Method, t.Frame.Module, t.TotalBytes, t.EventCount]);
                 b.Note("GCAllocationTick is sampled; bytes and event counts are not exact allocation totals. No samples do not prove no allocation.");
+                b.Note("Profiling can be expensive. Limits: 64 MiB raw trace, 100,000 ticks, 4,096 types, 16,384 distinct frames/tree nodes and 128 frames per stack. Limit hits and lost-event traces fail explicitly; no partial profile is returned. Trace conversion has additional memory/disk cost; these limits are not a hard process-RSS budget.");
                 break;
             case DiagnosticResult<OffCpuSnapshot> { Data: { } s } envelope:
                 summary = envelope.Summary;
@@ -276,6 +280,9 @@ internal static class CliStreamingCaptureViews
             default:
                 throw new InvalidOperationException("The collector returned no supported structured capture payload.");
         }
-        return b.Build(options.Kind!, summary, options, start, duration, evidence);
+        return b.Build(options.Kind!, summary, options, start, duration, evidence) with
+        {
+            Handle = result.Envelope is DiagnosticResult<AllocationSample> allocation ? allocation.Handle : null,
+        };
     }
 }

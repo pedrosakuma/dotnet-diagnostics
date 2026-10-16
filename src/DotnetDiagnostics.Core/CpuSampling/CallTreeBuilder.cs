@@ -15,35 +15,52 @@ namespace DotnetDiagnostics.Core.CpuSampling;
 internal sealed class CallTreeBuilder
 {
     private readonly Node _root = new(new SampledFrame(string.Empty, "<root>"));
+    private readonly int _maxNodes;
+    private int _nodeCount = 1;
+
+    public CallTreeBuilder(int maxNodes = int.MaxValue)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxNodes, 1);
+        _maxNodes = maxNodes;
+    }
 
     public void AddStack(
         List<(string Key, string Module, string Display)> rootToLeaf,
         string leafKey,
-        SelfSampleBreakdown? leafSelfSamples = null)
+        SelfSampleBreakdown? leafSelfSamples = null,
+        long weight = 1)
         => AddStack(
             rootToLeaf.Select(frame => (frame.Key, frame.Module, frame.Display, Identity: (MethodIdentity?)null)).ToList(),
             leafKey,
-            leafSelfSamples);
+            leafSelfSamples, weight);
 
     public void AddStack(
         List<(string Key, string Module, string Display, MethodIdentity? Identity)> rootToLeaf,
         string leafKey,
-        SelfSampleBreakdown? leafSelfSamples = null)
+        SelfSampleBreakdown? leafSelfSamples = null,
+        long weight = 1)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(weight);
+        if (weight != 1 && leafSelfSamples is not null)
+            throw new ArgumentException("Weighted stacks cannot carry CPU sample-state counts.", nameof(leafSelfSamples));
         var current = _root;
-        current.Inclusive++;
+        current.Inclusive = checked(current.Inclusive + weight);
         for (var i = 0; i < rootToLeaf.Count; i++)
         {
             var (key, module, display, identity) = rootToLeaf[i];
             if (!current.Children.TryGetValue(key, out var child))
             {
+                if (_nodeCount >= _maxNodes)
+                    throw new SampleLimitExceededException($"Call tree reached MaxNodes={_maxNodes}; shorten the capture or narrow the workload. No partial profile is returned.");
                 child = new Node(new SampledFrame(module, display), identity);
                 current.Children[key] = child;
+                _nodeCount++;
             }
-            child.Inclusive++;
+
+            child.Inclusive = checked(child.Inclusive + weight);
             if (key == leafKey && i == rootToLeaf.Count - 1)
             {
-                child.Exclusive++;
+                child.Exclusive = checked(child.Exclusive + weight);
                 if (leafSelfSamples is not null)
                 {
                     child.RunningSelf += leafSelfSamples.RunningSamples;
@@ -90,3 +107,5 @@ internal sealed class CallTreeBuilder
         public Dictionary<string, Node> Children { get; } = new(StringComparer.Ordinal);
     }
 }
+
+internal sealed class SampleLimitExceededException(string message) : InvalidOperationException(message);

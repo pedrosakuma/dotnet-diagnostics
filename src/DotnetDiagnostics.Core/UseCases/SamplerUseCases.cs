@@ -234,6 +234,14 @@ public static class SamplerUseCases
         {
             result = await sampler.SampleAsync(pid, TimeSpan.FromSeconds(durationSeconds), topN, cancellationToken).ConfigureAwait(false);
         }
+        catch (SampleLimitExceededException ex)
+        {
+            return DiagnosticResult.Fail<AllocationSample>(
+                ex.Message,
+                new DiagnosticError("ResourceLimitExceeded", ex.Message, ex.GetType().FullName),
+                new NextActionHint("collect_sample", "Retry explicitly with a shorter allocation window or a narrower workload.",
+                    new Dictionary<string, object?> { ["kind"] = "allocation", ["processId"] = pid, ["durationSeconds"] = 1 }));
+        }
         catch (InvalidOperationException ex)
         {
             return DiagnosticResult.Fail<AllocationSample>(
@@ -247,7 +255,7 @@ public static class SamplerUseCases
         var handle = handles.Register(
             pid,
             "allocation-sample",
-            new AllocationSampleArtifact(sample, result.Artifact),
+            new AllocationSampleArtifact(sample, result.Artifact) { EstimatedBytesTrace = result.EstimatedBytesArtifact },
             SampleHandleTtl,
             evictWhenProcessExits: false,
             origin: HandleOrigin.Live);

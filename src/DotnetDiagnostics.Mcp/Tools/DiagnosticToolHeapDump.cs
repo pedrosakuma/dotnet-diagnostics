@@ -307,7 +307,7 @@ internal static class DiagnosticToolHeapDump
         bool emitSensitive)
     {
         var origin = snapshot.Origin.ToString();
-        var sanitized = SanitizeObjectInspection(inspection, redactor, emitSensitive);
+        var sanitized = HeapObjectValueSanitizer.Sanitize(inspection, redactor, emitSensitive);
         var summary = $"Returning object 0x{sanitized.Address:x} from snapshot '{handle}' ({origin}, pid {snapshot.ProcessId}) — `{sanitized.TypeFullName}` ({sanitized.Size:N0} bytes, {sanitized.Generation}/{sanitized.SegmentKind}).";
         if (!emitSensitive && (inspection.IsString || (inspection.Fields is { Count: > 0 })))
         {
@@ -325,59 +325,6 @@ internal static class DiagnosticToolHeapDump
             Quality = GcDumpEvidence.GetApplicableQuality(snapshot),
         };
         return DiagnosticResult.Ok(result, summary);
-    }
-
-    private static HeapObjectInspection SanitizeObjectInspection(HeapObjectInspection inspection, SensitiveDataRedactor redactor, bool emitSensitive)
-    {
-        IReadOnlyList<HeapObjectField>? fields = inspection.Fields;
-        if (fields is { Count: > 0 })
-        {
-            var sanitizedFields = new List<HeapObjectField>(fields.Count);
-            foreach (var f in fields)
-            {
-                var value = emitSensitive ? (redactor.Redact(f.Value) ?? f.Value) : SensitiveDataRedactor.MetadataOnlyPlaceholder;
-                sanitizedFields.Add(new HeapObjectField(f.Name, f.TypeFullName, value)
-                {
-                    ObjectAddress = f.ObjectAddress,
-                    ReferencedTypeFullName = f.ReferencedTypeFullName,
-                });
-            }
-            fields = sanitizedFields;
-        }
-
-        IReadOnlyList<HeapArrayElement>? array = inspection.ArraySample;
-        if (array is { Count: > 0 })
-        {
-            var sanitizedArray = new List<HeapArrayElement>(array.Count);
-            foreach (var a in array)
-            {
-                var value = emitSensitive ? (redactor.Redact(a.Value) ?? a.Value) : SensitiveDataRedactor.MetadataOnlyPlaceholder;
-                sanitizedArray.Add(new HeapArrayElement(a.Index, a.TypeFullName, value)
-                {
-                    ObjectAddress = a.ObjectAddress,
-                    ReferencedTypeFullName = a.ReferencedTypeFullName,
-                });
-            }
-            array = sanitizedArray;
-        }
-
-        string? stringValue = inspection.StringValue;
-        if (inspection.IsString)
-        {
-            stringValue = emitSensitive ? redactor.Redact(stringValue) : SensitiveDataRedactor.MetadataOnlyPlaceholder;
-        }
-
-        return new HeapObjectInspection(inspection.Address, inspection.TypeFullName, inspection.Size, inspection.SegmentKind, inspection.Generation)
-        {
-            IsArray = inspection.IsArray,
-            ArrayLength = inspection.ArrayLength,
-            ArraySample = array,
-            IsString = inspection.IsString,
-            StringValue = stringValue,
-            StringValueTruncated = inspection.StringValueTruncated,
-            Fields = fields,
-            Warnings = inspection.Warnings,
-        };
     }
 
     private static DiagnosticResult<HeapSnapshotQueryResult> QueryGcRoot(

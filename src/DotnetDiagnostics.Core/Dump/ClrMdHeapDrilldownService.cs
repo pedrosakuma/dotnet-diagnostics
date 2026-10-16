@@ -5,16 +5,20 @@ namespace DotnetDiagnostics.Core.Dump;
 
 internal static class ClrMdHeapDrilldownService
 {
-    private const int MaxArraySampleCount = 8;
     private const int MaxStringPreviewLength = 256;
     private const int MaxFieldDepth = 3;
     private const int MaxFieldCount = 256;
     private const int GcRootDepthLimit = 64;
     private const int MaxRetainedGraphObjects = 250_000;
 
-    public static HeapObjectInspection InspectObject(ClrRuntime runtime, ulong address)
+    public static HeapObjectInspection InspectObject(ClrRuntime runtime, ulong address, HeapObjectInspectionOptions? options = null)
     {
+        var rangeRequested = options is not null;
+        options ??= new HeapObjectInspectionOptions();
+        options.Validate();
         var obj = GetRequiredObject(runtime, address);
+        if (!obj.IsArray && rangeRequested)
+            throw new ArgumentException("Array ranges require an array object.", nameof(options));
         var segment = runtime.Heap.GetSegmentByAddress(address)
             ?? throw new InvalidOperationException($"No GC segment contains object 0x{address:x}.");
         var warnings = new List<string>();
@@ -43,7 +47,9 @@ internal static class ClrMdHeapDrilldownService
             {
                 IsArray = true,
                 ArrayLength = obj.AsArray().Length,
-                ArraySample = SampleArray(obj, warnings),
+                ArrayStartIndex = options.ArrayStartIndex,
+                ArrayRequestedCount = options.ArrayCount,
+                ArraySample = SampleArray(obj, options, warnings),
             };
         }
         else
@@ -161,15 +167,16 @@ internal static class ClrMdHeapDrilldownService
         string? prefix,
         int depth,
         List<HeapObjectField> fields,
-        List<string> warnings)
+        List<string> warnings,
+        int fieldLimit = MaxFieldCount)
     {
-        if (depth > MaxFieldDepth || fields.Count >= MaxFieldCount) return;
+        if (depth > MaxFieldDepth || fields.Count >= fieldLimit) return;
 
         foreach (var field in type.Fields)
         {
-            if (fields.Count >= MaxFieldCount)
+            if (fields.Count >= fieldLimit)
             {
-                warnings.Add($"Field expansion hit its cap of {MaxFieldCount} rows; nested fields are truncated.");
+                warnings.Add($"Field expansion hit MaxFieldCount={MaxFieldCount} (remaining range budget {fieldLimit}); additional fields are omitted.");
                 return;
             }
 
@@ -202,11 +209,13 @@ internal static class ClrMdHeapDrilldownService
 
                     if (depth >= MaxFieldDepth || structValue.Type.Fields.Length == 0)
                     {
+                        if (depth >= MaxFieldDepth && structValue.Type.Fields.Length > 0)
+                            warnings.Add($"Field '{fieldName}' reached MaxFieldDepth={MaxFieldDepth}; nested fields are omitted.");
                         fields.Add(new HeapObjectField(fieldName, structValue.Type.Name ?? "<value-type>", $"<value-type size={structValue.Size}>"));
                         continue;
                     }
 
-                    AppendFields(structValue.Address, interior: true, structValue.Type, fieldName, depth + 1, fields, warnings);
+                    AppendFields(structValue.Address, interior: true, structValue.Type, fieldName, depth + 1, fields, warnings, fieldLimit);
                     continue;
                 }
 
@@ -244,18 +253,24 @@ internal static class ClrMdHeapDrilldownService
         };
     }
 
-    private static List<HeapArrayElement> SampleArray(ClrObject obj, List<string> warnings)
+    private static List<HeapArrayElement> SampleArray(ClrObject obj, HeapObjectInspectionOptions options, List<string> warnings)
     {
         var array = obj.AsArray();
-        var count = Math.Min(array.Length, MaxArraySampleCount);
+        if (options.ArrayStartIndex >= array.Length && (options.ArrayStartIndex != 0 || array.Length != 0))
+            throw new ArgumentOutOfRangeException(nameof(options), "ArrayStartIndex must be below the current array length (or zero for an empty array).");
+        var count = Math.Min(array.Length - options.ArrayStartIndex, options.ArrayCount);
         var elementType = array.Type.ComponentType;
+        if (array.Rank is < 1 or > 32)
+            throw new InvalidOperationException("Array rank must be between 1 and 32.");
         var elements = new List<HeapArrayElement>(count);
+        var remainingFields = MaxFieldCount;
 
-        for (var i = 0; i < count; i++)
+        for (var offset = 0; offset < count; offset++)
         {
+            var i = options.ArrayStartIndex + offset;
             try
             {
-                elements.Add(ReadArrayElement(array, elementType, i));
+                elements.Add(ReadArrayElement(array, elementType, i, warnings, ref remainingFields));
             }
             catch (Exception ex)
             {
@@ -263,15 +278,18 @@ internal static class ClrMdHeapDrilldownService
             }
         }
 
+        if (array.Length > count)
+            warnings.Add($"Array range [{options.ArrayStartIndex}, {options.ArrayStartIndex + count}) inspected with MaxArrayCount={HeapObjectInspectionOptions.MaxArrayCount}; {array.Length - count} elements outside this range are not inspected.");
         return elements;
     }
 
-    private static HeapArrayElement ReadArrayElement(ClrArray array, ClrType? elementType, int index)
+    private static HeapArrayElement ReadArrayElement(ClrArray array, ClrType? elementType, int index, List<string> warnings, ref int remainingFields)
     {
         var typeName = elementType?.Name ?? "<unknown>";
+        var indices = GetArrayIndices(array, index);
         if (elementType?.IsObjectReference == true || elementType?.IsString == true || elementType?.IsArray == true)
         {
-            var value = array.GetObjectValue(index);
+            var value = array.GetObjectValue(indices);
             if (value.IsNull || !value.IsValid || value.Type is null)
             {
                 return new HeapArrayElement(index, typeName, "null");
@@ -296,14 +314,44 @@ internal static class ClrMdHeapDrilldownService
 
         if (elementType?.IsValueType == true && !elementType.IsPrimitive)
         {
-            var structValue = array.GetStructValue(index);
-            return new HeapArrayElement(index, typeName, structValue.IsValid ? $"<value-type size={structValue.Size}>" : "<invalid value-type>");
+            var structValue = array.GetStructValue(indices);
+            var fields = new List<HeapObjectField>();
+            if (structValue.IsValid && structValue.Type is not null)
+            {
+                if (remainingFields > 0)
+                {
+                    AppendFields(structValue.Address, interior: true, structValue.Type, prefix: null, depth: 0,
+                        fields, warnings, remainingFields);
+                    remainingFields -= fields.Count;
+                }
+                else
+                    warnings.Add($"Array element [{index}] fields omitted: MaxFieldCount={MaxFieldCount} shared across this array range.");
+            }
+            else
+                warnings.Add($"Array element [{index}] has no valid value-type layout; its fields could not be inspected.");
+            return new HeapArrayElement(index, typeName, structValue.IsValid ? $"<value-type size={structValue.Size}>" : "<invalid value-type>")
+            {
+                Fields = fields,
+            };
         }
 
-        return new HeapArrayElement(index, typeName, ReadPrimitiveArrayValue(array, elementType, index));
+        return new HeapArrayElement(index, typeName, ReadPrimitiveArrayValue(array, elementType, indices));
     }
 
-    private static string ReadPrimitiveArrayValue(ClrArray array, ClrType? elementType, int index) => elementType?.ElementType switch
+    private static int[] GetArrayIndices(ClrArray array, int linearIndex)
+    {
+        var indices = new int[array.Rank];
+        for (var dimension = indices.Length - 1; dimension >= 0; dimension--)
+        {
+            var length = array.GetLength(dimension);
+            if (length <= 0) throw new InvalidOperationException("An array element cannot have an empty dimension.");
+            indices[dimension] = checked(array.GetLowerBound(dimension) + linearIndex % length);
+            linearIndex /= length;
+        }
+        return indices;
+    }
+
+    private static string ReadPrimitiveArrayValue(ClrArray array, ClrType? elementType, int[] index) => elementType?.ElementType switch
     {
         ClrElementType.Boolean => array.GetValue<bool>(index) ? "true" : "false",
         ClrElementType.Char => $"'{array.GetValue<char>(index)}'",

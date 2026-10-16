@@ -205,6 +205,7 @@ export function buildQueryFrame(
     view: string,
     typeFilter?: string,
     navigation?: QueryNavigation,
+    rootMethodFilter?: string,
 ): ProtocolFrame {
     const frame: ProtocolFrame = typeFilter === undefined
         ? { type: "query", requestId, handle, view }
@@ -215,7 +216,14 @@ export function buildQueryFrame(
         if (navigation.acknowledgeRisk) {
             frame.acknowledgeRisk = "high";
         }
+        if (navigation.includeSensitiveValues) {
+            frame.includeSensitiveValues = true;
+            frame.acknowledgeSensitiveValues = true;
+        }
+        if (navigation.arrayStartIndex !== undefined) frame.arrayStartIndex = navigation.arrayStartIndex;
+        if (navigation.arrayCount !== undefined) frame.arrayCount = navigation.arrayCount;
     }
+    if (rootMethodFilter !== undefined) frame.rootMethodFilter = rootMethodFilter;
     return frame;
 }
 
@@ -224,6 +232,9 @@ export interface QueryNavigation {
     address: string;
     /** Sent as `acknowledgeRisk: "high"` for the object/gcroot reads the CLI gates behind the safety preflight. */
     acknowledgeRisk?: boolean;
+    includeSensitiveValues?: boolean;
+    arrayStartIndex?: number;
+    arrayCount?: number;
 }
 
 /** Allows at most one task at a time; used to keep non-cancellable on-demand queries from piling up. */

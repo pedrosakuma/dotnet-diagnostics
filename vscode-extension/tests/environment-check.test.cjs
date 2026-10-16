@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 const {
     INSTALL_COMMAND,
+    MIN_FULL_FEATURES_CLI_VERSION,
     actionsForReport,
     checkEnvironment,
     parseDoctorOutput,
@@ -46,7 +47,7 @@ const perfDegraded = {
     affectedTools: ["collect_sample(kind=\"off_cpu\")"],
 };
 
-const HELLO_OK = '{"type":"hello","protocolVersion":2}\n';
+const HELLO_OK = '{"type":"hello","protocolVersion":2,"cliVersion":"0.31.0"}\n';
 const result = (o = {}) => ({ exitCode: 0, stdout: "", stderr: "", ...o });
 
 function runner(handshake, doctor) {
@@ -76,7 +77,7 @@ test("parseDoctorOutput rejects malformed output", () => {
 });
 
 test("parseHandshakeOutput distinguishes ok, unsupported and invalid", () => {
-    assert.deepEqual(parseHandshakeOutput(HELLO_OK), { kind: "ok", protocolVersion: 2 });
+    assert.deepEqual(parseHandshakeOutput(HELLO_OK), { kind: "ok", protocolVersion: 2, cliVersion: "0.31.0" });
     assert.deepEqual(
         parseHandshakeOutput('{"type":"error","code":"protocol_version_unsupported","message":"m","supportedVersions":[1]}\n'),
         { kind: "unsupported", supportedVersions: [1] },
@@ -91,6 +92,7 @@ test("healthy environment is ready and sends only hello then doctor", async () =
     assert.equal(report.ready, true);
     assert.equal(report.protocolVersion, 2);
     assert.deepEqual(report.issues, []);
+    assert.match(summarizeReport(report), /full extension feature set/);
     assert.deepEqual(run.calls.map(c => c.args), [["stream", "--protocol", "jsonl"], ["doctor", "--json"]]);
     assert.equal(run.calls[0].cliPath, "my-cli");
     assert.equal(JSON.parse(run.calls[0].stdin).protocolVersion, 2);
@@ -103,6 +105,45 @@ test("degraded checks stay ready but carry warnings with remediation", async () 
     assert.equal(report.issues[0].kind, "environment-degraded");
     assert.equal(report.issues[0].severity, "warning");
     assert.match(report.issues[0].guidance, /perf_event_paranoid/);
+});
+
+for (const cliVersion of ["0.29.0", "0.30.0"]) {
+test(`older protocol-v2 CLI ${cliVersion} reports available and unavailable extension features`, async () => {
+    const hello = result({ stdout: JSON.stringify({ type: "hello", protocolVersion: 2, cliVersion }) + "\n" });
+    const run = runner(hello, result({ stdout: doctorJson([okCheck], "Ok") }));
+    const report = await checkEnvironment("dotnet-diagnostics-cli", run);
+    assert.equal(report.ready, true);
+    assert.equal(report.cliVersion, cliVersion);
+    assert.equal(report.issues[0].kind, "feature-compatibility");
+    assert.equal(report.issues[0].severity, "warning");
+    assert.match(report.issues[0].message, /live counters\/GC pauses/);
+    assert.match(report.issues[0].message, /address navigation/);
+    assert.match(report.issues[0].guidance, /Update/);
+    assert.equal(report.issues[0].command, UPDATE_COMMAND);
+    assert.equal(MIN_FULL_FEATURES_CLI_VERSION, "0.31.0");
+    assert.deepEqual(actionsForReport(report), ["Copy Update Command", "Open Getting Started", "Recheck"]);
+});
+}
+
+test("feature support stays unverified when a protocol-v2 CLI does not report a version", async () => {
+    const run = runner(result({ stdout: '{"type":"hello","protocolVersion":2}\n' }),
+        result({ stdout: doctorJson([okCheck], "Ok") }));
+    const report = await checkEnvironment("/opt/tools/dd-cli", run);
+    assert.equal(report.ready, true);
+    assert.equal(report.issues[0].kind, "feature-compatibility");
+    assert.match(report.issues[0].message, /could not be verified/);
+    assert.match(report.issues[0].guidance, /0\.31\.0 or later/);
+    assert.equal(report.issues[0].command, undefined);
+});
+
+test("CLI prereleases below the stable feature minimum are not treated as fully compatible", async () => {
+    const run = runner(
+        result({ stdout: '{"type":"hello","protocolVersion":2,"cliVersion":"0.31.0-preview.1"}\n' }),
+        result({ stdout: doctorJson([okCheck], "Ok") }),
+    );
+    const report = await checkEnvironment("cli", run);
+    assert.equal(report.ready, true);
+    assert.equal(report.issues.at(-1).kind, "feature-compatibility");
 });
 
 test("blocked ptrace and UID checks parse despite doctor exiting 1", async () => {

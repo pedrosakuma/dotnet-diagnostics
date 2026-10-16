@@ -1,7 +1,18 @@
 import { ADDRESS_NAVIGATION_SCRIPT, ADDRESS_NAVIGATION_STYLES } from "./addressNavigation";
+import { EVIDENCE_NAVIGATION_SCRIPT, EVIDENCE_NAVIGATION_STYLES } from "./evidenceNavigation";
+import { SNAPSHOT_NAVIGATION_SCRIPT } from "./snapshotNavigation";
+import { EVIDENCE_VIEW_SWITCHER_SCRIPT, EVIDENCE_VIEW_SWITCHER_STYLES } from "./evidenceViewSwitcher";
+
+declare function enhanceEvidenceTables(parent: HTMLElement): void;
+declare function renderExceptionNavigation(parent: HTMLElement, events: Array<Record<string, unknown>>): void;
+declare function applyHeapTypeFocus(): void;
+declare function updateThreadNavigation(view: string, result: Record<string, unknown>): void;
+declare function navigateThreadFromGroup(id: number): void;
+declare function updateEvidenceViewSwitcher(container: HTMLElement): void;
 
 // Provided by the address-navigation script that is emitted next to this renderer in the webview.
 declare function appendAddressValue(parent: HTMLElement, value: unknown, containerId: string): void;
+declare function navigateToAddress(address: string, view: string, includeSensitiveValues?: boolean, arrayStartIndex?: number, arrayCount?: number): void;
 
 const queryViewLabels: Record<string, string> = {
     "roots-by-kind": "GC roots by kind",
@@ -18,7 +29,7 @@ const queryViewLabels: Record<string, string> = {
     object: "Object",
     gcroot: "GC root path",
     deadlocks: "Deadlock candidates",
-    "unique-stacks": "Unique thread stacks",
+    "unique-stacks": "Grouped stacks",
     "wait-chains": "Wait chains",
     threadpool: "Thread pool",
     "thread-statics": "Thread statics",
@@ -40,10 +51,6 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
         details = document.createElement("details");
         details.id = elementId;
         details.className = "query-view";
-        if (view === "deadlocks") {
-            details.open = true;
-            details.classList.add("query-view-deadlocks");
-        }
         const summary = document.createElement("summary");
         summary.textContent = label;
         const content = document.createElement("div");
@@ -57,10 +64,16 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
     if (!summary || !content) return;
 
     details.classList.toggle("query-view-error", isError);
+    const hasCandidates = view === "deadlocks" && !isError && Array.isArray(result.deadlocks) && result.deadlocks.length > 0;
+    details.classList.toggle("query-view-deadlocks", hasCandidates);
+    if (hasCandidates) details.open = true;
     summary.textContent = isError ? label + " (unavailable)" : label;
     content.replaceChildren();
     if (isError) {
         appendMessage(content, String(resultOrMessage), "query-view-error-message");
+        if (containerId === "threadQueryViews") updateThreadNavigation(view, {});
+        if (containerId === "heapQueryViews" && view === "retention-paths") applyHeapTypeFocus();
+        if (containerId === "heapQueryViews" || containerId === "threadQueryViews") updateEvidenceViewSwitcher(container);
         return;
     }
 
@@ -87,6 +100,7 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
             grid.appendChild(card);
         }
         parent.appendChild(grid);
+        return grid;
     };
 
     // Columns named "... address" hold exact hex strings: linked/copyable, never reformatted as numbers.
@@ -103,6 +117,7 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
         items: unknown,
         columns: Array<[string, (row: Record<string, unknown>) => unknown]>,
         emptyText: string,
+        parent: HTMLElement = content,
     ) => {
         const section = document.createElement("section");
         section.className = "query-view-section";
@@ -115,7 +130,7 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
             empty.className = "query-view-empty";
             empty.textContent = emptyText;
             section.appendChild(empty);
-            content.appendChild(section);
+            parent.appendChild(section);
             return;
         }
         const wrapper = document.createElement("div");
@@ -148,7 +163,7 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
         tableNode.appendChild(tbody);
         wrapper.appendChild(tableNode);
         section.appendChild(wrapper);
-        content.appendChild(section);
+        parent.appendChild(section);
     };
 
     const nested = (
@@ -265,6 +280,31 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
             return formatValue(item.typeFullName) + kind;
         }).join("  →  ")
         : "No chain was captured.";
+    const referencePath = (parent: HTMLElement, chain: unknown) => {
+        if (!Array.isArray(chain) || chain.length === 0) return;
+        const heading = document.createElement("h4");
+        heading.textContent = "Explore root → object";
+        parent.appendChild(heading);
+        let branch = parent;
+        for (const frame of chain.slice(0, 64)) {
+            const item = asRecord(frame);
+            const list = document.createElement("ul");
+            list.className = "reference-path";
+            const row = document.createElement("li");
+            const disclosure = document.createElement("details");
+            disclosure.open = true;
+            const label = document.createElement("summary");
+            label.textContent = formatValue(item.typeFullName) + (item.rootKind ? " [" + formatValue(item.rootKind) + "]" : "");
+            const address = document.createElement("div");
+            appendAddressValue(address, item.objectAddress, containerId);
+            disclosure.append(label, address);
+            row.appendChild(disclosure);
+            list.appendChild(row);
+            branch.appendChild(list);
+            branch = disclosure;
+        }
+        if (chain.length > 64) appendMessage(parent, "Path display capped at 64 frames; remaining frames omitted.", "query-view-note");
+    };
 
     switch (view) {
         case "roots-by-kind": {
@@ -309,6 +349,9 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
             break;
         case "object": {
             const object = asRecord(result.objectDetails);
+            if (result.sensitiveValuesIncluded === false) {
+                appendMessage(content, "Metadata-only: string, field and array values are intentionally redacted. Reveal values of this object requires separate sensitive-data consent.", "query-view-note");
+            }
             table("Object", [object], [
                 ["Type", row => row.typeFullName],
                 ["Size", row => formatBytes(row.size)],
@@ -317,7 +360,14 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
                 ["Address", row => row.address],
             ], "No object details were returned.");
             if (object.isString === true) {
-                metrics([["String value", object.stringValue], ["Truncated", object.stringValueTruncated]]);
+                const preview = metrics([["String preview", object.stringValue ?? "Unavailable"], ["Preview truncated", object.stringValueTruncated]]);
+                const actions = document.createElement("div");
+                actions.className = "object-value-actions";
+                preview?.querySelector(".query-view-metric")?.appendChild(actions);
+            } else {
+                const actions = document.createElement("div");
+                actions.className = "object-value-actions";
+                content.appendChild(actions);
             }
             if (Array.isArray(object.fields)) {
                 table("Fields", object.fields, [
@@ -330,12 +380,87 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
             }
             if (object.isArray === true) {
                 metrics([["Array length", object.arrayLength]]);
-                table("Array sample", object.arraySample, [
-                    ["Index", row => row.index],
-                    ["Element type", row => row.typeFullName],
-                    ["Value", row => row.value],
-                    ["Element address", row => row.objectAddress],
-                ], "No array elements were sampled.");
+                const start = typeof object.arrayStartIndex === "number" ? object.arrayStartIndex : undefined;
+                const count = typeof object.arrayRequestedCount === "number" ? object.arrayRequestedCount : undefined;
+                const length = typeof object.arrayLength === "number" ? object.arrayLength : undefined;
+                if (start !== undefined && count !== undefined && length !== undefined) {
+                    const end = Math.min(start + count, length);
+                    appendMessage(content, `Array range [${start}, ${end}) of ${length} elements (zero-based, end exclusive). `
+                        + `${length - (end - start)} elements outside this range are not inspected. Missing rows inside the range are read failures, not empty entries.`, "query-view-note");
+                    if (containerId === "addressQueryViews" && typeof object.address === "string" && length > 0) {
+                        const address = object.address;
+                        const controls = document.createElement("div");
+                        controls.className = "controls";
+                        const read = (index: number) => navigateToAddress(address, "object", false, index, count);
+                        for (const [label, index, disabled] of [
+                            ["Previous array range", Math.max(0, start - count), start === 0],
+                            ["Next array range", end, end >= length],
+                        ] as Array<[string, number, boolean]>) {
+                            const button = document.createElement("button");
+                            button.type = "button";
+                            button.textContent = label;
+                            button.disabled = disabled;
+                            button.addEventListener("click", () => read(index));
+                            controls.appendChild(button);
+                        }
+                        const label = document.createElement("label");
+                        label.textContent = "Start index ";
+                        const indexInput = document.createElement("input");
+                        indexInput.type = "number";
+                        indexInput.min = "0";
+                        indexInput.max = String(length - 1);
+                        indexInput.step = "1";
+                        indexInput.value = String(start);
+                        label.appendChild(indexInput);
+                        controls.appendChild(label);
+                        const go = document.createElement("button");
+                        go.type = "button";
+                        go.textContent = "Read array range";
+                        const readIndex = () => {
+                            const value = indexInput.value.trim();
+                            const index = Number(value);
+                            if (!value || !Number.isInteger(index) || index < 0 || index >= length) {
+                                indexInput.setCustomValidity(`Enter an integer from 0 to ${length - 1}.`);
+                                indexInput.reportValidity();
+                                return;
+                            }
+                            indexInput.setCustomValidity("");
+                            read(index);
+                        };
+                        go.addEventListener("click", readIndex);
+                        indexInput.addEventListener("input", () => indexInput.setCustomValidity(""));
+                        indexInput.addEventListener("keydown", event => {
+                            if (event.key === "Enter") { event.preventDefault(); readIndex(); }
+                        });
+                        controls.appendChild(go);
+                        content.appendChild(controls);
+                        appendMessage(content, "Reading another range is a new read, metadata-only by default. Live-read permission and sensitive-value consent remain separate.", "query-view-note");
+                    }
+                }
+                const structs = Array.isArray(object.arraySample) ? object.arraySample.filter(item => {
+                    const element = asRecord(item);
+                    return Array.isArray(element.fields);
+                }) : [];
+                if (structs.length) {
+                    nested("Array elements", object.arraySample, element =>
+                        `[${element.index}] ${element.typeFullName} — ${formatValue(element.value)}`, (body, element) => {
+                            table("Fields", element.fields, [
+                                ["Field path", row => row.name],
+                                ["Field type", row => row.typeFullName],
+                                ["Value", row => row.value],
+                                ["Referenced address", row => row.objectAddress],
+                                ["Referenced type", row => row.referencedTypeFullName],
+                            ], "No fields were returned; check inspection warnings for invalid elements or expansion limits.", body);
+                        }, "No value-type element fields were returned.");
+                    appendMessage(content, "Structs live inline inside the array, so they have no independent object address. Dotted field paths expand nested structs; only actual managed references are navigable. Array slots are storage, not necessarily active collection entries.", "query-view-note");
+                } else {
+                    table("Array sample", object.arraySample, [
+                        ["Index", row => row.index],
+                        ["Element type", row => row.typeFullName],
+                        ["Value", row => row.value],
+                        ["Element address", row => row.objectAddress],
+                    ], "No array elements were sampled.");
+                }
             }
             notes("Inspection warnings", object.warnings);
             appendMessage(content, readProvenance(result.origin), "query-view-note");
@@ -348,11 +473,9 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
                 ["Path length", Array.isArray(root.chain) ? root.chain.length : undefined],
                 ["Truncated", root.truncated],
             ]);
-            table("Path from a GC root to the object", root.chain, [
-                ["Type", frame => frame.typeFullName],
-                ["Root kind", frame => frame.rootKind],
-                ["Object address", frame => frame.objectAddress],
-            ], "No path from a GC root was found.");
+            if (!Array.isArray(root.chain) || root.chain.length === 0)
+                appendMessage(content, "No path from a GC root was found.", "query-view-empty");
+            referencePath(content, root.chain);
             notes("Inspection warnings", root.warnings);
             appendMessage(content, readProvenance(result.origin), "query-view-note");
             break;
@@ -374,11 +497,7 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
                         ["Type", target => target.targetTypeFullName],
                         ["Target address", target => target.targetObjectAddress],
                     ], "No target object was recorded.");
-                    fieldTable(body, "Objects on the path", row.chain, [
-                        ["Type", frame => frame.typeFullName],
-                        ["Root kind", frame => frame.rootKind],
-                        ["Object address", frame => frame.objectAddress],
-                    ], "No chain was captured.");
+                    referencePath(body, row.chain);
                     if (row.truncated === true) appendMessage(body, "Path shortened for this response.", "query-view-note");
                 },
                 "No paths match the selected type filter.");
@@ -528,7 +647,8 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
             break;
         case "unique-stacks":
             nested("Stack groups", result.uniqueStacks,
-                row => formatValue(row.threadCount) + " thread(s) · " + formatPercent(typeof row.threadPercentage === "number" ? row.threadPercentage * 100 : row.threadPercentage),
+                row => formatValue(row.threadCount) + " thread(s) · " + formatPercent(typeof row.threadPercentage === "number" ? row.threadPercentage * 100 : row.threadPercentage)
+                    + (!Array.isArray(row.canonicalFrames) || row.canonicalFrames.length === 0 ? " · Stack unavailable" : ""),
                 (body, row) => {
                     metrics([
                         ["Threads", row.threadCount],
@@ -539,7 +659,27 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
                         ["Managed thread", thread => thread.managedThreadId],
                         ["OS thread", thread => thread.osThreadId],
                     ], "No representative thread IDs.");
+                    appendMessage(body, "Only representative thread IDs are returned; this is not the full group membership. "
+                        + "Select a managed thread to inspect its captured details without a new read.", "query-view-note");
+                    const table = body.querySelector("tbody");
+                    const members = Array.isArray(row.sampleThreads) ? row.sampleThreads : [];
+                    Array.from(table?.children ?? []).forEach((threadRow, index) => {
+                        const member = asRecord(members[index]);
+                        const id = member.managedThreadId;
+                        const cell = threadRow.querySelector("td");
+                        if (!cell || typeof id !== "number" || !Number.isSafeInteger(id) || id < 0) return;
+                        const button = document.createElement("button");
+                        button.type = "button";
+                        button.className = "heap-type-link";
+                        button.textContent = "Thread " + id;
+                        button.addEventListener("click", () => navigateThreadFromGroup(id));
+                        cell.replaceChildren(button);
+                    });
                     const frames = Array.isArray(row.canonicalFrames) ? row.canonicalFrames : [];
+                    if (!frames.length) {
+                        appendMessage(body, "No managed stack frames were returned for this group. The capture does not specify why; "
+                            + "this does not mean these threads have no stack or share the same execution path.", "query-view-note");
+                    }
                     appendMessage(body, frames.map(frame => {
                         const item = frame && typeof frame === "object" ? frame as Record<string, unknown> : {};
                         return typeof item.displayName === "string" && item.displayName ? item.displayName : formatValue(item);
@@ -658,15 +798,15 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
                 ["First retained", row => row.first],
                 ["Last retained", row => row.last],
             ], "No retained exception messages.");
-            nested("Retained exception details", recent,
-                row => formatValue(row.timestamp) + " · " + formatValue(row.exceptionType) + " · thread " + formatValue(row.threadId),
-                (body, row) => {
-                    appendMessage(body, String(row.exceptionMessage || ""), "query-view-note");
-                    const stack = Array.isArray(row.managedStack) ? row.managedStack : [];
-                    appendMessage(body, stack.length ? stack.map(formatValue).join("\n") : "No managed stack was captured for this event.", "query-view-chain");
-                },
-                "No retained exception details.");
+            const aggregates = document.createElement("details");
+            const aggregateLabel = document.createElement("summary");
+            aggregateLabel.textContent = "Type counts and retained-message aggregates";
+            aggregates.appendChild(aggregateLabel);
+            for (const child of Array.from(content.children))
+                if (child.classList.contains("query-view-section")) aggregates.appendChild(child);
+            content.appendChild(aggregates);
             notes("Capture notes and retention limits", result.notes);
+            renderExceptionNavigation(content, recent);
             break;
         }
         case "thread-statics": {
@@ -697,6 +837,11 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
         })
         : [];
     notes("Evidence limitations", limitations);
+    enhanceEvidenceTables(content);
+    if (containerId === "heapQueryViews" && view === "retention-paths") applyHeapTypeFocus();
+    if (containerId === "threadQueryViews" && ["unique-stacks", "wait-chains", "deadlocks"].includes(view))
+        updateThreadNavigation(view, result);
+    if (containerId === "heapQueryViews" || containerId === "threadQueryViews") updateEvidenceViewSwitcher(container);
 }
 
 function readProvenance(origin: unknown): string {
@@ -784,6 +929,9 @@ function renderUnknownView(parent: HTMLElement, result: Record<string, unknown>)
 }
 
 export const QUERY_VIEW_RENDERER_SCRIPT =
+    EVIDENCE_NAVIGATION_SCRIPT + "\n" +
+    SNAPSHOT_NAVIGATION_SCRIPT + "\n" +
+    EVIDENCE_VIEW_SWITCHER_SCRIPT + "\n" +
     "const queryViewLabels = " + JSON.stringify(queryViewLabels) + ";\n" +
     renderQueryView.toString() + "\n" +
     appendMessage.toString() + "\n" +
@@ -799,6 +947,21 @@ export const QUERY_VIEW_RENDERER_SCRIPT =
     ADDRESS_NAVIGATION_SCRIPT;
 
 export const QUERY_VIEW_STYLES = `
+    #captureHeapResult { container-type:inline-size; }
+    .heap-workspace { display:grid; grid-template-columns:minmax(16rem, 2fr) minmax(24rem, 3fr); gap:1rem; align-items:start; margin-top:.6rem; }
+    .heap-type-list, .heap-detail-pane { min-width:0; max-height:70vh; overflow:auto; scrollbar-gutter:stable; }
+    .heap-detail-pane { border:1px solid var(--vscode-panel-border); padding:.6rem; }
+    .heap-type-list td:first-child { overflow-wrap:anywhere; }
+    .heap-type-list button[aria-current="true"] { font-weight:700; text-decoration:underline; }
+    #openHeapDetails { margin-bottom:.5rem; }
+    #backToHeapTypes { display:none; }
+    @container (max-width: 850px) {
+        .heap-workspace { display:block; }
+        .heap-type-list, .heap-detail-pane { max-height:none; overflow:visible; }
+        .heap-workspace[data-focused="true"] .heap-type-list { display:none; }
+        .heap-workspace[data-focused="false"] .heap-detail-pane { display:none; }
+        #backToHeapTypes { display:inline-block; }
+    }
     .query-views { margin-top:.8rem; }
     details.query-view { border:1px solid var(--vscode-panel-border); border-radius:3px; margin-bottom:.6rem; background:var(--vscode-sideBar-background); }
     details.query-view > summary { cursor:pointer; padding:.55rem .7rem; font-weight:600; }
@@ -820,10 +983,12 @@ export const QUERY_VIEW_STYLES = `
     details.query-view-nested > summary { cursor:pointer; font-weight:500; }
     .query-view-nested-body { padding:.35rem 0 .2rem .7rem; }
     .query-view-chain { font-family:var(--vscode-editor-font-family); overflow-wrap:anywhere; }
+    .reference-path { list-style:none; padding-left:.8rem; border-left:1px solid var(--vscode-panel-border); }
+    .reference-path summary { cursor:pointer; overflow-wrap:anywhere; }
     .query-view-notes { border-left:3px solid var(--vscode-editorWarning-foreground); padding:.25rem .65rem; margin:.6rem 0; }
     .query-view-notes ul { margin:.25rem 0; padding-left:1.2rem; }
-    .query-view-deadlocks { border-color:var(--vscode-editorError-foreground)!important; border-width:2px!important; }
-    .query-view-deadlocks > summary { color:var(--vscode-editorError-foreground); }
+    .query-view-deadlocks { border-color:var(--vscode-editorWarning-foreground)!important; border-width:2px!important; }
+    .query-view-deadlocks > summary { color:var(--vscode-editorWarning-foreground); }
     .query-view-error > summary, .query-view-error-message { color:var(--vscode-errorForeground); }
     .query-view-fallback { margin:.5rem 0; }
-` + ADDRESS_NAVIGATION_STYLES;
+` + ADDRESS_NAVIGATION_STYLES + EVIDENCE_NAVIGATION_STYLES + EVIDENCE_VIEW_SWITCHER_STYLES;

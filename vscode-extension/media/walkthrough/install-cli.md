@@ -1,7 +1,8 @@
 # Install the CLI
 
-Install `dotnet-diagnostics-cli` **0.30.0 or later** for all extension features. CLI 0.29.0
-supports the base JSONL protocol-v2 workflows, but lacks the new capture/navigation/export requests. The extension never
+Install `dotnet-diagnostics-cli` **0.31.0 or later** for all extension features. CLI 0.29.0
+supports the base JSONL protocol-v2 workflows; 0.30.0 adds capture/navigation/export requests,
+while 0.31.0 adds allocation exploration and sensitive-value/array-range reads. The extension never
 installs or updates tools itself, so you run the command yourself.
 
 Install:

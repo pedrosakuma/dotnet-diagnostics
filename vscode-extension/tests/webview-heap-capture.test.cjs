@@ -56,6 +56,7 @@ function loadRenderHeapCapture(script) {
     const captureHeapBody = makeElementStub();
 
     const documentStub = {
+        getElementById() { return null; },
         createElement(tagName) {
             if (tagName === "tr") {
                 const cells = [];
@@ -70,7 +71,9 @@ function loadRenderHeapCapture(script) {
     // webview-gc-pause.test.cjs.
     const renderHeapCapture = new Function(
         "document", "captureHeapResultElement", "captureHeapHeadline", "captureHeapBody",
-        `${parseTimeSpanToMsMatch[0]}
+        `${require("../out/evidenceNavigation.js").EVIDENCE_NAVIGATION_SCRIPT}
+         ${require("../out/snapshotNavigation.js").SNAPSHOT_NAVIGATION_SCRIPT}
+         ${parseTimeSpanToMsMatch[0]}
          ${renderHeapCaptureMatch[0]}
          return renderHeapCapture;`,
     )(documentStub, captureHeapResultElement, captureHeapHeadline, captureHeapBody);

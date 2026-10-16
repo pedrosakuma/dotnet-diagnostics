@@ -389,9 +389,8 @@ internal static partial class CliCommands
     /// Serves the address-addressed <c>gcroot</c>/<c>object</c> heap views for a <b>dump-origin</b>
     /// snapshot inside the session (#464). The injected <see cref="IDumpInspector"/> re-opens the dump
     /// file recorded on the artifact (no live attach) and walks the GC-root chain or reads the managed
-    /// object. The <c>object</c> view never emits raw string/field/array values — the Core-only CLI has
-    /// no sensitive-value gate, so previews are replaced with the metadata-only placeholder, matching
-    /// the MCP server's redacted default.
+    /// object. The text REPL has no sensitive-value opt-in, so previews are replaced with the
+    /// metadata-only placeholder, matching the MCP server's redacted default.
     /// </summary>
     private static async Task<CliCommandResult> QueryHeapDumpDrilldown(
         IServiceProvider services, CliOptions options, HeapSnapshotArtifact heap, string view, CancellationToken cancellationToken)
@@ -459,12 +458,17 @@ internal static partial class CliCommands
     }
 
     internal static DiagnosticResult<HeapSnapshotQueryResult> BuildObjectResult(
-        HeapSnapshotArtifact heap, string handle, HeapObjectInspection inspection)
+        HeapSnapshotArtifact heap, string handle, HeapObjectInspection inspection, bool includeSensitiveValues = false,
+        SensitiveDataRedactor? redactor = null)
     {
         var origin = heap.Origin.ToString();
-        var redacted = RedactObjectPreviews(inspection);
+        var redacted = HeapObjectValueSanitizer.Sanitize(
+            inspection, redactor ?? new SensitiveDataRedactor(), includeSensitiveValues);
+        var valuePolicy = includeSensitiveValues
+            ? "bounded pattern-redacted previews explicitly requested for this object"
+            : "string/field previews redacted";
         var summary = string.Create(CultureInfo.InvariantCulture,
-            $"query: object view origin={origin} pid={heap.ProcessId} address=0x{redacted.Address:x} type={redacted.TypeFullName} size={redacted.Size} (string/field previews redacted — no session sensitive-value gate)");
+            $"query: object view origin={origin} pid={heap.ProcessId} address=0x{redacted.Address:x} type={redacted.TypeFullName} size={redacted.Size} ({valuePolicy})");
         var result = new HeapSnapshotQueryResult(handle, "object", origin, heap.ProcessId, heap.CapturedAt)
         {
             Address = redacted.Address,
@@ -472,58 +476,6 @@ internal static partial class CliCommands
             Quality = GcDumpEvidence.GetApplicableQuality(heap),
         };
         return DiagnosticResult.Ok(result, summary);
-    }
-
-    /// <summary>
-    /// Replaces every string / field / array-element preview with the metadata-only placeholder so the
-    /// Core-only session never surfaces raw heap content (it holds no sensitive-value gate). Object
-    /// shape — type, size, generation, segment, array length, field names/types — is preserved.
-    /// </summary>
-    private static HeapObjectInspection RedactObjectPreviews(HeapObjectInspection inspection)
-    {
-        IReadOnlyList<HeapObjectField>? fields = inspection.Fields;
-        if (fields is { Count: > 0 })
-        {
-            var redacted = new List<HeapObjectField>(fields.Count);
-            foreach (var f in fields)
-            {
-                redacted.Add(new HeapObjectField(f.Name, f.TypeFullName, SensitiveDataRedactor.MetadataOnlyPlaceholder)
-                {
-                    ObjectAddress = f.ObjectAddress,
-                    ReferencedTypeFullName = f.ReferencedTypeFullName,
-                });
-            }
-
-            fields = redacted;
-        }
-
-        IReadOnlyList<HeapArrayElement>? array = inspection.ArraySample;
-        if (array is { Count: > 0 })
-        {
-            var redacted = new List<HeapArrayElement>(array.Count);
-            foreach (var a in array)
-            {
-                redacted.Add(new HeapArrayElement(a.Index, a.TypeFullName, SensitiveDataRedactor.MetadataOnlyPlaceholder)
-                {
-                    ObjectAddress = a.ObjectAddress,
-                    ReferencedTypeFullName = a.ReferencedTypeFullName,
-                });
-            }
-
-            array = redacted;
-        }
-
-        return new HeapObjectInspection(inspection.Address, inspection.TypeFullName, inspection.Size, inspection.SegmentKind, inspection.Generation)
-        {
-            IsArray = inspection.IsArray,
-            ArrayLength = inspection.ArrayLength,
-            ArraySample = array,
-            IsString = inspection.IsString,
-            StringValue = inspection.IsString ? SensitiveDataRedactor.MetadataOnlyPlaceholder : inspection.StringValue,
-            StringValueTruncated = inspection.StringValueTruncated,
-            Fields = fields,
-            Warnings = inspection.Warnings,
-        };
     }
 
     /// <summary>

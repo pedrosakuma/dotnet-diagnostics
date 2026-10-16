@@ -42,7 +42,9 @@ export interface AddressNavigationHost {
     currentHeapHandle(): string | undefined;
     /** Asks the user to acknowledge a High-risk read; resolves `false` when declined. */
     acknowledge(view: "object" | "gcroot", address: string): Promise<boolean>;
-    query(handle: string, view: NavigationView, address: string, acknowledgeRisk: boolean): Promise<QueryResult>;
+    acknowledgeSensitiveValues(address: string): Promise<boolean>;
+    query(handle: string, view: NavigationView, address: string, acknowledgeRisk: boolean, includeSensitiveValues?: boolean,
+        arrayStartIndex?: number, arrayCount?: number): Promise<QueryResult>;
     post(message: Record<string, unknown>): void;
     copy(address: string): Promise<void>;
     log(text: string): void;
@@ -69,38 +71,67 @@ export class AddressNavigationController {
 
         const address = parseHexAddress(message.address);
         const view = message.view;
-        if (message.kind !== "heap" || address === undefined || !isNavigationView(view)) {
+        const hasRange = message.arrayStartIndex !== undefined || message.arrayCount !== undefined;
+        const start = message.arrayStartIndex === undefined ? 0 : message.arrayStartIndex;
+        const count = message.arrayCount === undefined ? 8 : message.arrayCount;
+        if (message.kind !== "heap" || address === undefined || !isNavigationView(view)
+            || (message.includeSensitiveValues !== undefined && typeof message.includeSensitiveValues !== "boolean")
+            || (message.includeSensitiveValues === true && view !== "object")
+            || (hasRange && (view !== "object" || typeof start !== "number" || !Number.isInteger(start)
+                || start < 0 || start > 2147483647 || typeof count !== "number" || !Number.isInteger(count) || count < 1 || count > 8))) {
             this.host.log("Ignored an invalid address navigation request from the webview.");
             return true;
         }
 
         const navigationId = typeof message.navigationId === "number" && Number.isSafeInteger(message.navigationId)
             && message.navigationId > 0 ? message.navigationId : undefined;
-        const outcome = await this.guard.run(() => this.navigate(view, address, navigationId));
+        const outcome = await this.guard.run(() => this.navigate(view, address, navigationId, message.includeSensitiveValues === true,
+            hasRange && typeof start === "number" ? start : undefined, hasRange && typeof count === "number" ? count : undefined));
         if (!outcome.started) {
             this.fail(view, address, "Another address lookup is still running.", navigationId);
         }
         return true;
     }
 
-    private async navigate(view: NavigationView, address: string, navigationId?: number): Promise<void> {
+    private async navigate(view: NavigationView, address: string, navigationId?: number, includeSensitiveValues = false,
+        arrayStartIndex?: number, arrayCount?: number): Promise<void> {
         const handle = this.host.currentHeapHandle();
         if (handle === undefined) {
             this.fail(view, address, "No heap snapshot with a retained handle is available. Capture a heap snapshot first.", navigationId);
             return;
         }
         const needsAcknowledgement = READ_VIEWS.has(view);
+        if (includeSensitiveValues && !await this.host.acknowledgeSensitiveValues(address)) {
+            this.fail(view, address, "Cancelled: revealing sensitive values was declined.", navigationId);
+            return;
+        }
         if (needsAcknowledgement && !await this.host.acknowledge(view as "object" | "gcroot", address)) {
             this.fail(view, address, "Cancelled: the risk acknowledgement was declined.", navigationId);
             return;
         }
+        if (this.host.currentHeapHandle() !== handle) {
+            this.fail(view, address, "The heap context changed during acknowledgement; retry on the current snapshot.", navigationId);
+            return;
+        }
         try {
-            const result = await this.host.query(handle, view, address, needsAcknowledgement);
+            const result = await this.host.query(handle, view, address, needsAcknowledgement, includeSensitiveValues, arrayStartIndex, arrayCount);
             if (!isQueryResult(result) || result.view !== view) {
                 this.fail(view, address, "The CLI returned an unexpected response.", navigationId);
                 return;
             }
-            this.host.post({ type: "navigation", view, address, result, ...(navigationId ? { navigationId } : {}) });
+            if (includeSensitiveValues && result.sensitiveValuesIncluded !== true) {
+                this.fail(view, address, "This CLI did not confirm sensitive-value disclosure. Use a CLI build supporting per-object value reveal.", navigationId);
+                return;
+            }
+            if (arrayStartIndex !== undefined) {
+                const object = result.objectDetails as Record<string, unknown> | undefined;
+                if (object?.isArray !== true || object.arrayStartIndex !== arrayStartIndex || object.arrayRequestedCount !== arrayCount) {
+                    this.fail(view, address, "The CLI did not confirm the requested array range. Use a CLI build supporting array ranges.", navigationId);
+                    return;
+                }
+            }
+            this.host.post({ type: "navigation", view, address, result,
+                ...(includeSensitiveValues ? { sensitiveValues: true } : {}), ...(navigationId ? { navigationId } : {}) });
         } catch (error) {
             this.fail(view, address, error instanceof Error ? error.message : String(error), navigationId);
         }
@@ -115,22 +146,29 @@ export class AddressNavigationController {
 /** Static markup for the breadcrumb/back/forward bar and its single result container. */
 export const ADDRESS_NAVIGATION_HTML = `<section id="addressNavigation" class="address-navigation" aria-label="Address navigation" hidden>
         <div class="address-nav-bar">
+          <strong>Object inspector</strong>
+          <button id="addressNavClose" type="button" aria-label="Close object inspector">Close</button>
           <button id="addressNavBack" type="button" aria-label="Back" title="Back" disabled>&larr;</button>
           <button id="addressNavForward" type="button" aria-label="Forward" title="Forward" disabled>&rarr;</button>
           <nav aria-label="Address history"><ol id="addressBreadcrumb" class="address-breadcrumb"></ol></nav>
         </div>
         <div id="addressNavActions" class="address-nav-actions"></div>
+        <p>Live Object / GC root lookups read the process again and may suspend it. Addresses can change after GC.
+        Dump lookups read the dump; history reuses cached results.</p>
         <div id="addressNavStatus" class="address-nav-status" role="status"></div>
         <div id="addressQueryViews" class="query-views"></div>
       </section>`;
 
 export const ADDRESS_NAVIGATION_STYLES = `
-    .address-navigation { margin-top:.8rem; border:1px solid var(--vscode-focusBorder); border-radius:3px; padding:.5rem .7rem; }
+    .address-navigation { position:fixed; top:0; right:0; bottom:0; width:min(36rem, calc(100vw - 2rem)); overflow:auto; z-index:20; background:var(--vscode-editor-background); border:1px solid var(--vscode-focusBorder); padding:.5rem .7rem; box-shadow:0 0 1rem var(--vscode-widget-shadow); }
+    .address-navigation[hidden] { display:none; }
     .address-nav-bar { display:flex; align-items:center; gap:.4rem; flex-wrap:wrap; }
     .address-breadcrumb { display:flex; flex-wrap:wrap; gap:.25rem; list-style:none; margin:0; padding:0; }
     .address-breadcrumb button[aria-current="step"] { font-weight:700; }
     .address-nav-actions { display:flex; gap:.4rem; margin:.4rem 0; }
     .address-nav-status { color:var(--vscode-descriptionForeground); font-size:.85rem; }
+    .object-value-actions { margin:.4rem 0; }
+    .object-value-actions button { white-space:normal; text-align:left; }
     .address-value { display:inline-flex; align-items:center; gap:.35rem; flex-wrap:wrap; }
     button.address-link { background:none; border:none; padding:0; color:var(--vscode-textLink-foreground); cursor:pointer; font-family:var(--vscode-editor-font-family); text-decoration:underline; }
     button.address-copy { padding:0 .35rem; font-size:.75rem; }
@@ -147,6 +185,9 @@ const MAX_ADDRESS_HISTORY = ${MAX_NAVIGATION_HISTORY};
 const addressLinkContainers = new Set(['heapQueryViews', 'addressQueryViews']);
 const addressViewLabels = { 'object': 'Object', 'gcroot': 'GC root path', 'static-fields': 'Referencing statics' };
 const addressNavigationState = { entries: [], index: -1, sequence: 0 };
+let addressInspectorClosed = false;
+let addressInspectorOpener;
+let revealedObject;
 
 function isValidAddress(value) {
   return typeof value === 'string' && /^0x[0-9a-fA-F]{1,16}$/.test(value) && /[1-9a-fA-F]/.test(value.slice(2));
@@ -189,27 +230,36 @@ function appendAddressValue(parent, value, containerId) {
   parent.appendChild(wrapper);
 }
 
-function navigateToAddress(address, view) {
+function navigateToAddress(address, view, includeSensitiveValues = false, arrayStartIndex, arrayCount) {
   if (!isValidAddress(address) || !addressViewLabels[view]) return;
   address = address.toLowerCase();
   const state = addressNavigationState;
+  revealedObject = undefined;
+  const inspector = document.getElementById('addressNavigation');
+  if (!inspector || inspector.hidden) addressInspectorOpener = document.activeElement;
+  addressInspectorClosed = false;
   state.entries.length = state.index + 1;
   const navigationId = ++state.sequence;
-  state.entries.push({ address: address, view: view, status: 'loading', navigationId });
+  state.entries.push({ address: address, view: view, status: 'loading', navigationId, includeSensitiveValues, arrayStartIndex, arrayCount });
   if (state.entries.length > MAX_ADDRESS_HISTORY) state.entries.splice(0, state.entries.length - MAX_ADDRESS_HISTORY);
   state.index = state.entries.length - 1;
-  postAddressMessage({ type: 'navigateAddress', kind: 'heap', view: view, address: address, navigationId });
+  postAddressMessage({ type: 'navigateAddress', kind: 'heap', view: view, address: address, navigationId,
+    ...(includeSensitiveValues ? { includeSensitiveValues: true } : {}),
+    ...(arrayStartIndex !== undefined ? { arrayStartIndex, arrayCount: arrayCount ?? 8 } : {}) });
   renderAddressNavigation();
+  document.getElementById('addressNavClose')?.focus();
 }
 
 function moveAddressHistory(index) {
   const state = addressNavigationState;
   if (index < 0 || index >= state.entries.length || index === state.index) return;
+  revealedObject = undefined;
   state.index = index;
   renderAddressNavigation();
 }
 
 function resetAddressNavigation() {
+  revealedObject = undefined;
   addressNavigationState.entries.length = 0;
   addressNavigationState.index = -1;
   renderAddressNavigation();
@@ -223,8 +273,14 @@ function handleAddressNavigationMessage(message) {
     if (entry.status === 'loading' && entry.view === message.view && entry.address === message.address
         && entry.navigationId === message.navigationId) {
       if (message.type === 'navigation') {
-        entry.status = 'ready';
-        entry.result = message.result;
+        if (message.sensitiveValues === true || entry.includeSensitiveValues) {
+          entry.status = 'hidden';
+          if (i === addressNavigationState.index && !addressInspectorClosed)
+            revealedObject = { navigationId: entry.navigationId, result: message.result };
+        } else {
+          entry.status = 'ready';
+          entry.result = message.result;
+        }
       } else {
         entry.status = 'error';
         entry.error = String(message.message || 'The lookup failed.');
@@ -244,7 +300,7 @@ function renderAddressNavigation() {
   if (entry) postAddressMessage({ type: 'navigationSelection', view: entry.view, address: entry.address, navigationId: entry.navigationId,
     ready: entry.status === 'ready',
     history: state.entries.map(item => ({ view: item.view, address: item.address, navigationId: item.navigationId })) });
-  bar.hidden = state.entries.length === 0;
+  bar.hidden = state.entries.length === 0 || addressInspectorClosed;
   const back = document.getElementById('addressNavBack');
   const forward = document.getElementById('addressNavForward');
   if (back) back.disabled = state.index <= 0;
@@ -257,7 +313,8 @@ function renderAddressNavigation() {
       const crumb = document.createElement('li');
       const button = document.createElement('button');
       button.type = 'button';
-      button.textContent = addressViewLabels[item.view] + ' ' + item.address;
+      button.textContent = addressViewLabels[item.view] + ' ' + item.address
+        + (item.arrayStartIndex !== undefined ? ' [from ' + item.arrayStartIndex + ']' : '');
       if (index === state.index) button.setAttribute('aria-current', 'step');
       button.addEventListener('click', () => moveAddressHistory(index));
       crumb.appendChild(button);
@@ -290,7 +347,18 @@ function renderAddressNavigation() {
   const results = document.getElementById('addressQueryViews');
   if (results) {
     results.replaceChildren();
-    if (entry && entry.status === 'ready') {
+    if (entry && revealedObject?.navigationId === entry.navigationId) {
+      const warning = document.createElement('p');
+      warning.textContent = 'Sensitive previews revealed for this object only (strings up to 256 characters; arrays up to 8 elements; fields up to 256 entries and value-type depth 3). Field and element string previews may be shortened at 256 characters. Not cached in navigation history. Closing or navigating away hides them. This read may differ from the original snapshot.';
+      results.appendChild(warning);
+      renderQueryView('addressQueryViews', 'object', revealedObject.result, false);
+      const details = document.getElementById('addressQueryViews-object');
+      if (details) details.open = true;
+    } else if (entry && entry.status === 'hidden') {
+      const note = document.createElement('p');
+      note.textContent = 'Sensitive previews are not cached in history. Reveal again to read this object.';
+      results.appendChild(note);
+    } else if (entry && entry.status === 'ready') {
       renderQueryView('addressQueryViews', entry.view, entry.result, false);
       const details = document.getElementById('addressQueryViews-' + entry.view);
       if (details) details.open = true;
@@ -299,10 +367,37 @@ function renderAddressNavigation() {
       const details = document.getElementById('addressQueryViews-' + entry.view);
       if (details) details.open = true;
     }
+    if (entry?.view === 'object') {
+      const target = results.querySelector('.object-value-actions') || results;
+      const reveal = document.createElement('button');
+      reveal.type = 'button';
+      const revealed = revealedObject?.navigationId === entry.navigationId;
+      reveal.textContent = revealed ? 'Hide values' : 'Reveal values of this object';
+      reveal.title = 'Applies to string, field and array previews of this object, within read limits. Requires separate sensitive-data consent.';
+      reveal.disabled = entry.status === 'loading';
+      reveal.addEventListener('click', () => {
+        if (revealed) { revealedObject = undefined; renderAddressNavigation(); }
+        else navigateToAddress(entry.address, 'object', true, entry.arrayStartIndex, entry.arrayCount);
+      });
+      target.appendChild(reveal);
+    }
   }
 }
 
 function initAddressNavigation() {
+  const close = document.getElementById('addressNavClose');
+  const dismiss = () => {
+    revealedObject = undefined;
+    document.getElementById('addressQueryViews')?.replaceChildren();
+    addressInspectorClosed = true;
+    const bar = document.getElementById('addressNavigation');
+    if (bar) bar.hidden = true;
+    addressInspectorOpener?.focus();
+  };
+  if (close) close.addEventListener('click', dismiss);
+  document.getElementById('addressNavigation')?.addEventListener('keydown', event => {
+    if (event.key === 'Escape') { event.preventDefault(); dismiss(); }
+  });
   const back = document.getElementById('addressNavBack');
   const forward = document.getElementById('addressNavForward');
   if (back) back.addEventListener('click', () => moveAddressHistory(addressNavigationState.index - 1));

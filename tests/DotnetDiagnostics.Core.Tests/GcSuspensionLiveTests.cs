@@ -24,7 +24,7 @@ public sealed class GcSuspensionLiveTests(ITestOutputHelper output)
         var task = collector.CollectAsync(sample.ProcessId, TimeSpan.FromSeconds(30), cancellationToken: cancellation.Token);
         try
         {
-            await progress.Ready.Task.WaitAsync(TimeSpan.FromSeconds(4), cancellation.Token);
+            await progress.Ready.Task.WaitAsync(cancellation.Token);
             await sample.RequestGcAsync("arm");
             await progress.AcknowledgeArmAsync(0, cancellation.Token);
             await cancellation.CancelAsync();
@@ -60,8 +60,9 @@ public sealed class GcSuspensionLiveTests(ITestOutputHelper output)
     [InlineData("net9.0")]
     [InlineData("net10.0")]
     [InlineData("net10.0", 2200)]
+    [InlineData("net10.0", 0, 4500)]
     public async Task BlockingAndObservedBackground_HaveIndependentSuspensionEvidence(
-        string framework, int armDelayMilliseconds = 0)
+        string framework, int armDelayMilliseconds = 0, int deliveryDelayMilliseconds = 0)
     {
         await using var sample = await MultiVersionSampleProcess.StartAsync(framework, gcPauseWorkload: true);
         var progress = new GcProgressEvidence();
@@ -69,15 +70,29 @@ public sealed class GcSuspensionLiveTests(ITestOutputHelper output)
         {
             ReadinessProvider = new Microsoft.Diagnostics.NETCore.Client.EventPipeProvider(
                 "DotnetDiagnostics.GcReadiness", System.Diagnostics.Tracing.EventLevel.Informational),
-            ConfigureReadiness = progress.Attach,
+            ConfigureReadiness = source =>
+            {
+                progress.Attach(source);
+                var delayed = false;
+                source.Dynamic.All += e =>
+                {
+                    if (deliveryDelayMilliseconds > 0 && !delayed &&
+                        e.ProviderName == "DotnetDiagnostics.GcReadiness" && (int)e.ID == 1)
+                    {
+                        delayed = true;
+                        // Model buffered delivery after readiness without delaying the target's witness.
+                        Thread.Sleep(deliveryDelayMilliseconds);
+                    }
+                };
+            },
         };
-        var duration = TimeSpan.FromSeconds(armDelayMilliseconds == 0 ? 8 : 12);
+        var duration = TimeSpan.FromSeconds(armDelayMilliseconds == 0 && deliveryDelayMilliseconds == 0 ? 8 : 12);
         using var deadline = new CancellationTokenSource(duration + TimeSpan.FromSeconds(12));
         var capture = collector.CollectAsync(sample.ProcessId, duration, cancellationToken: deadline.Token);
         GcSummary summary;
         try
         {
-            await progress.Ready.Task.WaitAsync(TimeSpan.FromSeconds(4), deadline.Token);
+            await progress.Ready.Task.WaitAsync(deadline.Token);
             await RequestAsync(0, "blocking");
             // A runtime's first BackgroundGC can execute wholly suspended. Use the fixed existing
             // three-request budget, independent of labels or favorable samples; never retry a result.

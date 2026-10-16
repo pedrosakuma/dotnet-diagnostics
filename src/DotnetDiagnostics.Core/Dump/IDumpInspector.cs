@@ -46,6 +46,18 @@ public interface IDumpInspector
         ulong address,
         CancellationToken cancellationToken = default);
 
+    /// <summary>Inspects an array object with a bounded range. Implementations must not silently ignore the requested range.</summary>
+    Task<HeapObjectInspection> InspectObjectAsync(
+        HeapSnapshotArtifact snapshot,
+        ulong address,
+        HeapObjectInspectionOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        options.Validate();
+        throw new NotSupportedException("This inspector does not support array-range reads.");
+    }
+
     /// <summary>
     /// Resolves the shortest GC-root chain currently found for the managed object at
     /// <paramref name="address"/> against the process or dump behind <paramref name="snapshot"/>.

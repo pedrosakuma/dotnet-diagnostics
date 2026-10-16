@@ -52,6 +52,7 @@ class ElementStub {
     setAttribute(name, value) { this.attributes[name] = String(value); }
     addEventListener(type, listener) { this.listeners[type] = listener; }
     click() { assert.ok(!this.disabled, "disabled controls cannot be clicked"); this.listeners.click(); }
+    focus() { this.focused = true; }
     append(...children) { for (const child of children) this.appendChild(child); }
     appendChild(child) { this.children.push(child); return child; }
     replaceChildren(...children) { this.children = []; this._text = ""; this.append(...children); }
@@ -67,6 +68,8 @@ class ElementStub {
         return this.findAll(matches)[0] ?? null;
     }
 }
+
+require("./stubs/navigation-dom.cjs").extendDom(ElementStub);
 
 /** A tiny page: the heap container plus the real navigation bar ids, wired to the real emitted script. */
 function loadPage() {
@@ -94,6 +97,7 @@ function loadPage() {
     const nav = element("section", "addressNavigation");
     nav.hidden = true;
     const back = element("button", "addressNavBack", nav);
+    const close = element("button", "addressNavClose", nav);
     const forward = element("button", "addressNavForward", nav);
     back.disabled = forward.disabled = true;
     element("ol", "addressBreadcrumb", nav);
@@ -105,7 +109,7 @@ function loadPage() {
     const api = new Function("document", "vscode", `${QUERY_VIEW_RENDERER_SCRIPT}
         return { renderQueryView, navigateToAddress, handleAddressNavigationMessage, resetAddressNavigation,
                  moveAddressHistory, addressNavigationState, addressLinkContainers };`)(document, vscode);
-    return { ...api, document, heap, threads, nav, back, forward, posted };
+    return { ...api, document, heap, threads, nav, back, forward, close, posted };
 }
 
 const retentionPaths = address => ({
@@ -137,14 +141,39 @@ const staticsResult = address => ({
 
 /** Host double: records calls and answers with CLI-shaped results, building the real wire frame. */
 function makeHost(page, options = {}) {
-    const calls = { acknowledge: [], query: [], copy: [], frames: [], log: [] };
+    const calls = { acknowledge: [], sensitive: [], query: [], copy: [], frames: [], log: [] };
     const host = {
         currentHeapHandle: () => options.noHandle ? undefined : "h1",
         acknowledge: async (view, address) => { calls.acknowledge.push({ view, address }); return options.decline !== true; },
-        query: async (handle, view, address, acknowledgeRisk) => {
+        acknowledgeSensitiveValues: async address => {
+            calls.sensitive.push(address);
+            return options.declineSensitive !== true;
+        },
+        query: async (handle, view, address, acknowledgeRisk, includeSensitiveValues, arrayStartIndex, arrayCount) => {
             calls.query.push({ handle, view, address, acknowledgeRisk });
-            calls.frames.push(buildQueryFrame("r1", handle, view, undefined, { address, acknowledgeRisk }));
+            calls.frames.push(buildQueryFrame("r1", handle, view, undefined, { address, acknowledgeRisk, includeSensitiveValues, arrayStartIndex, arrayCount }));
             if (options.fail) throw new Error("CLI said no");
+            if (options.array && address === TARGET && view === "object") {
+                const start = options.oldRangeCli ? 0 : arrayStartIndex ?? 0;
+                const count = arrayCount ?? 8;
+                return { ...objectResult(address), sensitiveValuesIncluded: includeSensitiveValues === true,
+                    objectDetails: {
+                        address, typeFullName: "Sample.Entry[]", isArray: true, arrayLength: 11,
+                        arrayStartIndex: start, arrayRequestedCount: count,
+                        arraySample: Array.from({ length: Math.min(count, 11 - start) }, (_, i) => ({
+                            index: start + i, typeFullName: "Sample.Entry", value: "<value-type size=40>",
+                            fields: [{ name: "Nested.Value", typeFullName: "System.String",
+                                value: includeSensitiveValues ? "<script>array-secret</script>" : "<redacted:metadata-only>",
+                                objectAddress: FIELD }],
+                        })),
+                    },
+                };
+            }
+            if (includeSensitiveValues) return {
+                ...objectResult(address), sensitiveValuesIncluded: options.oldCli !== true,
+                objectDetails: { ...objectResult(address).objectDetails, isString: true,
+                    stringValue: "<script>secret-preview</script>", stringValueTruncated: true },
+            };
             return view === "object" ? objectResult(address) : view === "static-fields" ? staticsResult(address)
                 : { handle, view, origin: "Dump", address, gcRoot: { address, typeFullName: "Sample.Cache", chain: [{ typeFullName: "Sample.Holder", objectAddress: ROOT, rootKind: "Strong" }], truncated: false, warnings: [] } };
         },
@@ -165,6 +194,157 @@ async function pump(page, controller, seen = { count: 0 }) {
 const links = container => container.findAll(node => node.classes.has("address-link"));
 const copies = container => container.findAll(node => node.classes.has("address-copy"));
 const crumbs = page => page.document.getElementById("addressBreadcrumb").findAll(node => node.tagName === "button");
+
+test("struct array fields expand in place, follow actual references and page without carrying sensitive consent", async () => {
+    const page = loadPage();
+    const { controller, calls } = makeHost(page, { array: true });
+    const seen = { count: 0 };
+    const results = page.document.getElementById("addressQueryViews");
+    const button = text => {
+        const found = results.findAll(node => node.tagName === "button").find(node => node.textContent === text);
+        assert.ok(found, `missing ${text}`);
+        return found;
+    };
+    const reveal = () => page.document.getElementById("addressQueryViews").findAll(node => node.tagName === "button")
+        .find(node => node.textContent === "Reveal values of this object").click();
+    page.navigateToAddress(TARGET, "object");
+    await pump(page, controller, seen);
+    assert.match(results.textContent, /Array range \[0, 8\) of 11/);
+    assert.equal(button("Previous array range").disabled, true);
+    const structs = results.findAll(node => node.classes.has("query-view-nested"));
+    assert.equal(structs.length, 8);
+    assert.match(structs[0].textContent, /Nested.Value/);
+    assert.ok(links(structs[0]).some(node => node.textContent === FIELD));
+    assert.ok(!links(structs[0]).some(node => node.textContent === TARGET), "no synthetic struct-interior link");
+    reveal();
+    await pump(page, controller, seen);
+    assert.match(results.textContent, /array-secret/);
+    button("Next array range").click();
+    await pump(page, controller, seen);
+    assert.match(results.textContent, /Array range \[8, 11\) of 11/);
+    assert.equal(calls.frames.at(-1).arrayStartIndex, 8);
+    assert.equal(calls.frames.at(-1).arrayCount, 8);
+    assert.ok(!("includeSensitiveValues" in calls.frames.at(-1)));
+    assert.ok(!results.textContent.includes("array-secret"));
+    assert.equal(button("Next array range").disabled, true);
+    assert.equal(results.findAll(node => node.classes.has("query-view-nested")).length, 3);
+    reveal();
+    await pump(page, controller, seen);
+    assert.equal(calls.frames.at(-1).arrayStartIndex, 8, "revealing keeps the selected array range");
+    assert.equal(calls.frames.at(-1).includeSensitiveValues, true);
+    assert.equal(calls.sensitive.length, 2);
+    button("Previous array range").click();
+    await pump(page, controller, seen);
+    assert.equal(calls.frames.at(-1).arrayStartIndex, 0);
+    assert.ok(!("includeSensitiveValues" in calls.frames.at(-1)));
+    links(results).find(node => node.textContent === FIELD).click();
+    await pump(page, controller, seen);
+    assert.equal(calls.frames.at(-1).address, FIELD);
+    assert.ok(!("arrayStartIndex" in calls.frames.at(-1)), "referenced object does not inherit the array range");
+    assert.ok(!("includeSensitiveValues" in calls.frames.at(-1)));
+    page.back.click();
+    assert.match(results.textContent, /Array range \[0, 8\) of 11/);
+});
+
+test("invalid range requests never dispatch and old CLI range fallback is reported explicitly", async () => {
+    const page = loadPage();
+    const { controller, calls } = makeHost(page, { array: true, oldRangeCli: true });
+    for (const arrayStartIndex of [-1, "8", 1.5, 2147483648, null]) {
+        await controller.handle({ type: "navigateAddress", kind: "heap", view: "object", address: TARGET, arrayStartIndex });
+    }
+    for (const arrayCount of [0, 9, "8", 1.5, null]) {
+        await controller.handle({ type: "navigateAddress", kind: "heap", view: "object", address: TARGET, arrayCount });
+    }
+    assert.equal(calls.query.length, 0);
+    page.navigateToAddress(TARGET, "object", false, 8, 8);
+    await pump(page, controller);
+    assert.match(page.document.getElementById("addressQueryViews").textContent, /did not confirm the requested array range/);
+});
+
+test("revealing object values requires fresh separate consent and never caches the raw result in history", async () => {
+    const page = loadPage();
+    const { controller, calls } = makeHost(page);
+    const seen = { count: 0 };
+    const reveal = () => page.document.getElementById("addressQueryViews")
+        .findAll(node => node.tagName === "button").find(node => node.textContent === "Reveal values of this object").click();
+    page.navigateToAddress(TARGET, "object");
+    await pump(page, controller, seen);
+    assert.equal(calls.sensitive.length, 0);
+    assert.ok(!page.document.getElementById("addressNavActions").textContent.includes("Reveal values"));
+    assert.ok(page.document.getElementById("addressQueryViews").querySelector(".object-value-actions")
+        .textContent.includes("Reveal values of this object"), "non-string objects expose reveal near their fields");
+    assert.ok(!("includeSensitiveValues" in calls.frames[0]));
+    reveal();
+    await pump(page, controller, seen);
+    assert.deepEqual(calls.sensitive, [TARGET]);
+    assert.equal(calls.frames[1].includeSensitiveValues, true);
+    assert.equal(calls.frames[1].acknowledgeSensitiveValues, true);
+    assert.equal(calls.frames[1].acknowledgeRisk, "high", "operational acknowledgement is still required");
+    const results = page.document.getElementById("addressQueryViews");
+    const previewActions = results.querySelector(".object-value-actions");
+    assert.ok(previewActions.parentElement.classList.contains("query-view-metric"));
+    assert.match(previewActions.parentElement.textContent, /String preview/);
+    assert.match(previewActions.textContent, /Hide values/);
+    assert.match(results.textContent, /<script>secret-preview<\/script>/);
+    assert.match(results.textContent, /256 characters/);
+    assert.ok(!results.findAll(node => node.tagName === "script").length, "values are text, never markup");
+    assert.ok(!JSON.stringify(page.addressNavigationState.entries).includes("secret-preview"));
+    page.document.getElementById("addressQueryViews").findAll(node => node.tagName === "button")
+        .find(node => node.textContent === "Hide values").click();
+    assert.ok(!results.textContent.includes("secret-preview"));
+    reveal();
+    await pump(page, controller, seen);
+    assert.equal(calls.sensitive.length, 2);
+    page.back.click();
+    assert.ok(!results.textContent.includes("secret-preview"));
+    page.forward.click();
+    assert.ok(!results.textContent.includes("secret-preview"), "forward cannot restore sensitive values");
+    assert.match(results.textContent, /not cached/);
+    assert.equal(calls.query.length, 3, "history navigation never re-reads");
+    reveal();
+    await pump(page, controller, seen);
+    assert.equal(calls.sensitive.length, 3, "no remembered sensitive grant");
+    assert.match(results.textContent, /secret-preview/);
+    page.close.click();
+    assert.ok(!results.textContent.includes("secret-preview"));
+    page.navigateToAddress(TARGET, "object", true);
+    page.close.click();
+    await pump(page, controller, seen);
+    assert.equal(page.nav.hidden, true, "a late sensitive response cannot reopen the inspector");
+    assert.ok(!results.textContent.includes("secret-preview"));
+    assert.ok(!JSON.stringify(page.addressNavigationState).includes("secret-preview"));
+});
+
+test("declined sensitive consent and an older CLI cannot masquerade as successful disclosure", async () => {
+    for (const options of [{ declineSensitive: true }, { oldCli: true }]) {
+        const page = loadPage();
+        const { controller, calls } = makeHost(page, options);
+        page.navigateToAddress(TARGET, "object", true);
+        await pump(page, controller);
+        assert.ok(!page.document.getElementById("addressQueryViews").textContent.includes("secret-preview"));
+        assert.match(page.document.getElementById("addressQueryViews").textContent,
+            options.oldCli ? /CLI did not confirm/ : /revealing sensitive values was declined/);
+        assert.equal(calls.query.length, options.oldCli ? 1 : 0);
+    }
+});
+
+test("heap context changes during sensitive consent prevent dispatch and non-object reveal requests are rejected", async () => {
+    const posted = [];
+    let handle = "h1";
+    let reads = 0;
+    const controller = new AddressNavigationController({
+        currentHeapHandle: () => handle,
+        acknowledgeSensitiveValues: async () => { handle = "h2"; return true; },
+        acknowledge: async () => true,
+        query: async () => { reads++; return objectResult(TARGET); },
+        post: message => posted.push(message), log() {},
+    });
+    await controller.handle({ type: "navigateAddress", kind: "heap", view: "object", address: TARGET, includeSensitiveValues: true });
+    assert.equal(reads, 0);
+    assert.match(posted[0].message, /context changed/);
+    await controller.handle({ type: "navigateAddress", kind: "heap", view: "gcroot", address: TARGET, includeSensitiveValues: true });
+    assert.equal(reads, 0);
+});
 
 test("retention path → object → referencing statics, through the real webview script and host controller", async () => {
     const page = loadPage();
@@ -350,4 +530,23 @@ test("address helpers never accept numbers and the navigable views are exactly t
     assert.deepEqual([...NAVIGATION_VIEWS], ["object", "gcroot", "static-fields"]);
     assert.equal(isNavigationView("objsize"), false);
     assert.deepEqual(buildQueryFrame("r", "h", "timers"), { type: "query", requestId: "r", handle: "h", view: "timers" });
+});
+
+test("contextual inspector opens in place, restores focus on close and does not reopen for a late response", () => {
+    const page = loadPage();
+    let restored = false;
+    page.document.activeElement = { focus() { restored = true; } };
+    page.navigateToAddress(TARGET, "object");
+    assert.equal(page.nav.hidden, false);
+    assert.equal(page.close.focused, true);
+    page.close.click();
+    assert.equal(page.nav.hidden, true);
+    assert.equal(restored, true);
+    page.handleAddressNavigationMessage({ type: "navigation", view: "object", address: TARGET,
+        navigationId: 1, result: objectResult(TARGET) });
+    assert.equal(page.nav.hidden, true);
+    page.navigateToAddress(FIELD, "object");
+    assert.equal(page.nav.hidden, false);
+    page.nav.listeners.keydown({ key: "Escape", preventDefault() {} });
+    assert.equal(page.nav.hidden, true);
 });

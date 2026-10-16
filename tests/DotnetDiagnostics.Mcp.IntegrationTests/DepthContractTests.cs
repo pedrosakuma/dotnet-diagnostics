@@ -275,9 +275,9 @@ public sealed class DepthContractTests : IClassFixture<McpToolsTests.AuthedFacto
     {
         await using var client = await ConnectAsync();
 
-        // Allocate one dominant, byte-heavy type continuously across the whole collection window.
+        // Pace the dominant allocation type so fast hosts do not exhaust the bounded collector.
         using var stop = new CancellationTokenSource();
-        var workload = Task.Run(() =>
+        var workload = Task.Run(async () =>
         {
             var sink = new List<byte[]>();
             while (!stop.IsCancellationRequested)
@@ -287,22 +287,29 @@ public sealed class DepthContractTests : IClassFixture<McpToolsTests.AuthedFacto
                 {
                     sink.Clear();
                 }
+                await Task.Delay(2);
             }
         });
 
-        var envelope = DeserializeEnvelope<CollectSampleEnvelope>(await client.CallToolAsync(
-            "collect_sample",
-            new Dictionary<string, object?>
-            {
-                ["kind"] = "allocation",
-                ["processId"] = Environment.ProcessId,
-                ["durationSeconds"] = 4,
-                ["depth"] = "Summary",
-            },
-            cancellationToken: CancellationToken.None));
-
-        await stop.CancelAsync();
-        try { await workload; } catch { /* expected */ }
+        DiagnosticResult<CollectSampleEnvelope>? envelope;
+        try
+        {
+            envelope = DeserializeEnvelope<CollectSampleEnvelope>(await client.CallToolAsync(
+                "collect_sample",
+                new Dictionary<string, object?>
+                {
+                    ["kind"] = "allocation",
+                    ["processId"] = Environment.ProcessId,
+                    ["durationSeconds"] = 4,
+                    ["depth"] = "Summary",
+                },
+                cancellationToken: CancellationToken.None));
+        }
+        finally
+        {
+            await stop.CancelAsync();
+            await workload;
+        }
 
         envelope.Should().NotBeNull();
         // The diagnosis-agnostic by-type concentration signal must lead the envelope (#525).

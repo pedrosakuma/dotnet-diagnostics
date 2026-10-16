@@ -23,6 +23,24 @@ internal static class CliStreamingQueryNavigation
     internal const string AddressFormatMessage =
         "'address' must be a JSON string holding a non-zero 0x-prefixed hexadecimal value of at most 16 digits (never a JSON number).";
 
+    internal static bool TryReadArrayRange(JsonElement root, string view, out HeapObjectInspectionOptions? options)
+    {
+        options = null;
+        var hasStart = root.TryGetProperty("arrayStartIndex", out var start);
+        var hasCount = root.TryGetProperty("arrayCount", out var count);
+        if (!hasStart && !hasCount) return true;
+        if (!string.Equals(view.Trim(), "object", StringComparison.OrdinalIgnoreCase)) return false;
+        var startIndex = 0;
+        var requestedCount = HeapObjectInspectionOptions.MaxArrayCount;
+        if (hasStart && (start.ValueKind != JsonValueKind.Number || !start.TryGetInt32(out startIndex) || startIndex < 0))
+            return false;
+        if (hasCount && (count.ValueKind != JsonValueKind.Number || !count.TryGetInt32(out requestedCount)
+            || requestedCount < 1 || requestedCount > HeapObjectInspectionOptions.MaxArrayCount))
+            return false;
+        options = new HeapObjectInspectionOptions(startIndex, requestedCount);
+        return true;
+    }
+
     internal enum AddressStatus
     {
         Absent,
@@ -114,19 +132,24 @@ internal static class CliStreamingQueryNavigation
             value = element.Value,
             objectAddress = element.ObjectAddress is { } address ? FormatAddress(address) : null,
             referencedTypeFullName = element.ReferencedTypeFullName,
+            fields = element.Fields?.Select(ProjectField),
         }),
+        arrayStartIndex = inspection.ArrayStartIndex,
+        arrayRequestedCount = inspection.ArrayRequestedCount,
         isString = inspection.IsString,
         stringValue = inspection.StringValue,
         stringValueTruncated = inspection.StringValueTruncated,
-        fields = inspection.Fields?.Select(static field => new
-        {
-            name = field.Name,
-            typeFullName = field.TypeFullName,
-            value = field.Value,
-            objectAddress = field.ObjectAddress is { } address ? FormatAddress(address) : null,
-            referencedTypeFullName = field.ReferencedTypeFullName,
-        }),
+        fields = inspection.Fields?.Select(ProjectField),
         warnings = inspection.Warnings,
+    };
+
+    private static object ProjectField(HeapObjectField field) => new
+    {
+        name = field.Name,
+        typeFullName = field.TypeFullName,
+        value = field.Value,
+        objectAddress = field.ObjectAddress is { } address ? FormatAddress(address) : null,
+        referencedTypeFullName = field.ReferencedTypeFullName,
     };
 
     internal static object ProjectGcRoot(HeapGcRootInspection inspection) => new

@@ -70,18 +70,19 @@ dotnet tool install -g dotnet-diagnostics-cli
 ```
 
 This installs the latest stable release (`dotnet tool install` has no version-range syntax).
-Use CLI **0.30.0 or later** for every feature in extension **0.2.0**. CLI 0.29.0 supports the
-base JSONL protocol-v2 workflows, but lacks the new capture, address-navigation and CPU-export
-requests. The handshake checks protocol compatibility, not per-feature availability; older
-protocol-v2 CLIs can pass Check Environment while newer actions still require an update.
+Use CLI **0.31.0 or later** for every feature in extension **0.3.0**. CLI 0.29.0 supports the
+base JSONL protocol-v2 workflows; 0.30.0 adds capture, address-navigation and export requests.
+Allocation exploration and sensitive-value/array-range reads require 0.31.0.
+The handshake reports the CLI version, so Check Environment can distinguish those base
+workflows from the full extension feature set and offer an explicit update action.
 CLIs without protocol v2 are rejected with a protocol mismatch error.
 Update explicitly with `dotnet tool update -g dotnet-diagnostics-cli`.
 
 New to the extension? Open the **Get started with .NET Diagnostics** walkthrough (`.NET Diagnostics:
 Open Getting Started`). **`.NET Diagnostics: Check Environment`** runs the configured
 `dotnetDiagnostics.cliPath` for the protocol-v2 handshake and `doctor --json`, then reports a missing
-executable or .NET runtime, an outdated CLI, and ptrace/UID/permission problems with the CLI's own
-fix. The check is host-only, so target-specific permissions (socket UID) are reported as not verified.
+executable or .NET runtime, outdated protocol or feature support, and ptrace/UID/permission problems
+with the CLI's own fix. The check is host-only, so target-specific permissions (socket UID) are reported as not verified.
 For a custom `cliPath` it gives path-specific update guidance instead of the global update command. It can copy the install/update command and recheck, but never runs it for you.
 
 The extension adds a **.NET Diagnostics** icon to the Activity Bar. Open its **Live Diagnostics**
@@ -89,6 +90,13 @@ view and select **Start Live Counters**, or use the same command from the Comman
 discovered process, then use the panel's Stop/Start controls. One streaming session now carries
 both the live counters chart and a **GC pauses** table (timestamp, generation, reason, type, pause
 duration, plus a running pause count and total paused time) — both signals start and stop together.
+The Live view provides start/end range controls for a fixed selection within **retained receipt
+time**, plus **Follow live / reset zoom**. The chart and GC rows respect that selection without
+changing collection or retention; selected data may expire and an empty range is never shown as
+zero. Counter points are spaced by receipt time, not sample index. Click the chart or use
+Left/Right/Home/End to inspect a nearest retained observation (no interpolation); select a GC row
+with click or Enter/Space for event details. Target timestamps remain visible in details but are
+not assumed to share a clock with the webview. Capture-wide GC totals remain capture-wide.
 The extension runs `dotnet-diagnostics-cli processes --json` for discovery and starts
 `dotnet-diagnostics-cli stream --protocol jsonl` for live samples. Stdout is parsed only as protocol
 frames. The CLI path can be set in the machine-scoped `dotnetDiagnostics.cliPath` setting; the
@@ -120,14 +128,93 @@ must be recovered with the CLI first. CPU/exception persistence is not exposed b
 History calls inherit the CLI artifact root (including `MCP_ARTIFACT_ROOT`), have a 60-second
 deadline and a combined 8388608-character output cap; failures are explicit, not partial JSON.
 
-Use **Capture CPU Now** (tree-view action or Command Palette command
-`dotnetDiagnostics.captureCpu`) to take a single point-in-time CPU sample of the selected process.
+Open the **CPU** tab and choose **Capture CPU sample** (also available as the tree-view action or
+Command Palette command `dotnetDiagnostics.captureCpu`) to take a single point-in-time CPU sample
+of the selected process.
 Unlike the counters/GC timeline, a capture is a one-shot snapshot: it reuses the panel's active
 streaming connection if one is open, or opens a capture-only CLI connection otherwise.
-The connection is retained while the panel owns a CPU export handle and closes with the panel.
+The connection is retained while the panel owns a CPU export or allocation-explorer handle and closes with the panel.
 The capture renders its own top-hotspot table (module, method, inclusive/exclusive sample
 counts) that is replaced by the next capture rather than appended to a history. A capture does not
 start or stop the live counters/GC session, and it is not compared against any baseline.
+The live panel groups both actions and results into **Live**, **CPU**, **Allocations**, **Exceptions**, **Diagnostics**,
+**Heap** and **Threads** tabs, so capture controls stay beside the evidence they produce; starting
+or completing a capture selects its corresponding tab. CPU
+captures automatically show a triage overview and can be queried on the captured artifact for a
+call tree, top methods, hot path, module/namespace aggregates, and callers/callees of a selected
+method. These are in-memory views of the same sample, not additional captures; the owning CLI
+connection must remain open. The result panel keeps the capture summary and drilldown together.
+The initial hotspot table remains available under **Capture hotspot summary**, collapsed by
+default so it does not duplicate the selected drilldown.
+
+The single **Grouped stacks** tab shows group counts, shares, wait reasons, canonical frames
+and representative thread IDs. Select a managed-thread link to inspect its captured details in
+**Thread explorer**; **Back to grouped stacks** restores the same groups, filter and expanded
+sections without another read. A representative absent from the inline thread snapshot is
+explicitly identified as unavailable, not silently read from the live process.
+Groups with no returned managed frames display **Stack unavailable**. The empty group does not establish that
+its threads have no stack or share an execution path; the UI does not invent a missing-stack cause.
+Thread evidence views and the explorer's three modes (returned threads, waits and inferred cycles) use tabs rather than filled action buttons
+or a dropdown. Arrow keys and Home/End switch tabs; filters and selected threads survive switching
+and late evidence updates without another diagnostic read.
+
+Object-value reveal/hide is located in the **String preview** card for strings, or above the
+fields for other objects. It applies to all bounded value previews of that object, not just
+the string; the separate one-request sensitive-data consent remains required.
+
+Heap type exploration uses an adjacent details pane in wide panels, with independent scrolling
+for the returned type list and details. Selecting a type no longer opens its details below the
+whole table. At widths of 850 px or less, the same pane replaces the list; **Back to types**
+restores the existing list, filters, sort and page scroll position. **Explore heap details**
+opens captured query views without choosing a type. This layout is shared by live heap and dump
+analysis and starts no additional diagnostic reads.
+
+The **Call tree** view has linked expandable-tree and **Flame graph (icicle)** modes.
+Select a method in the tree for inclusive/self counts and available on-CPU, heuristic-wait
+and unknown evidence. **Focus** (or clicking a flame block) zooms into that exact loaded
+branch; breadcrumbs and **Reset focus** navigate back. Repeated method names remain separate
+call paths. Keyboard users can use native tree disclosures/buttons, or Tab and Enter/Space
+on flame blocks (Escape moves to the parent). **Find method or module** highlights matches
+in the loaded focus without hiding nodes or changing sample totals.
+
+Both modes share the same bounded projection (at most 64 nodes / depth 8), not the whole
+profile. Flame widths are proportional to inclusive sample counts, not duration or CPU
+utilization; self and omitted/unattributed descendants keep their own labelled gray space,
+so omitted branches are not redistributed to visible children. Percentages explicitly name
+the capture or focused-branch denominator. Flame blocks display short type/method names and
+their share of the current focus; hover reveals the complete signature and metrics, and focusing
+a block shows its details. Stable pastel colors distinguish methods, not severity; yellow marks
+search matches. Dark text has at least 7:1 contrast against block fills in light/dark themes;
+high-contrast themes use editor/system colors. Narrow panels scroll horizontally instead of
+shrinking the labels. **Query subtree by method** requests another
+bounded projection from the retained artifact. This backend query chooses the highest-ranked
+occurrence containing the method name, not necessarily the selected call path.
+**Full capture tree** queries the original root, still bounded. **Callers / callees**
+uses the same method-name lookup; **Back to CPU profile** restores the cached projection,
+mode, search and local focus without a new request. A new CPU capture clears the old profile.
+
+The **Allocations** tab provides **Capture allocations** and a sampled Allocation Explorer.
+The allocation option in **Capture Diagnostics** opens this same tab. It reuses the tree/flame,
+search, exact loaded-path focus, breadcrumbs, bounded subtree queries and callers/callees navigation,
+but weights every stack by its allocation tick's **estimated bytes**, not tick count or CPU time.
+Top methods, hot path, modules and namespaces use the same byte weighting.
+The capture's type/site tables remain under **Allocation types, sites and capture quality**.
+Types and stacks are independent aggregates: choosing a type does not filter the merged tree.
+Capture totals include ticks without stacks; the profile reports its attributed share rather than
+redistributing missing bytes. Subtree queries still use the highest-ranked method-name match.
+Allocation profiles have separate state from CPU profiles, retain their owning CLI connection and
+never recollect on navigation. A new allocation capture replaces the displayed profile.
+
+This is not exact object instrumentation or per-object lifetime tracking: `GCAllocationTick` fires
+roughly per 100 KB allocated and names the most recent object. Counts are ticks, not objects;
+bytes describe allocation traffic, not retained heap size. Start with a short capture.
+Collection, runtime rundown and ETLX conversion can be expensive even with sampling.
+The collector rejects lost-event traces and explicit resource-limit hits rather than returning a
+plausible partial profile. Limits are 64 MiB raw trace, 100,000 ticks, 4,096 types, 16,384 distinct
+frames and nodes per tree, and 128 frames per stack. Conversion has additional memory/disk cost:
+these bounds are **not a hard RSS budget**. See [resource boundedness](./resource-boundedness.md#allocation-profiling).
+Older CLIs can still return the allocation tables, but a missing handle or missing explicit
+byte-weight confirmation displays an update message instead of mislabelling a tick tree as bytes.
 
 Use **Capture Diagnostics** (`dotnetDiagnostics.captureDiagnostics`) for allocations, off-CPU
 blocking, lock contention, thread pool, GC, GC and activities, in-flight requests, Kestrel,
@@ -140,6 +227,15 @@ Off-CPU requires explicit high-risk acknowledgement and platform tracing permiss
 Results are not saved. Start the capture before reproducing the problem; startup takes time.
 Captured names, paths, request identifiers and sanitized SQL may contain sensitive data.
 
+Diagnostic tables support **Filter returned rows** and sortable column headings.
+Rows do not offer a generic expansion that merely repeats their visible cells. Meaningful
+disclosures, such as inline struct fields and retention chains, and object/address navigation
+remain available. These controls explore only returned evidence: they do not reconstruct omitted events,
+stack trees, a request waterfall or parent/child trace relationships from aggregates.
+Metrics and evidence-quality notes remain visible; an **Evidence table** selector shows one
+specialized table at a time, listing returned/omitted counts for each choice. Switching keeps
+that table's filter and sort without another request.
+
 Use **Capture Exceptions** (`dotnetDiagnostics.captureExceptions`, also available in the
 Activity Bar and live panel) for a 10-second exception window. Choose **Managed exceptions**
 for type counts and retained messages, or **Crash guard** for available managed stack frames
@@ -150,6 +246,14 @@ never markup, and may contain sensitive application data. The default cap is 100
 events and 25 returned types; explicit notes report omissions. Retained-message counts and
 timestamps are not whole-capture statistics. Plain managed-exception events have no stack frames;
 crash-guard stacks may also be unavailable.
+
+**Explore retained occurrences** connects type and message selectors to occurrence buttons and
+the selected event's message/available stack. Changing type resets the message selection; **Reset
+exception filters** restores all retained events. The all-observed type counts stay separate and
+do not change with these retained-event filters. An empty message is selectable independently
+from **All retained messages**.
+Type/message aggregate tables are retained under **Type counts and retained-message aggregates**
+rather than always stacked above the occurrence explorer.
 
 Start capture **before** load: after the request, the panel says to allow EventPipe about a
 second to start and then **reproduce the problem now**. This is timing guidance, not an
@@ -174,6 +278,12 @@ AGENTS.md's "🪪 `CAP_SYS_PTRACE` for live memory readers" section) and fails w
 permission-denied message when that access is unavailable. A GC dump instead goes through the
 diagnostic IPC channel but induces a blocking Gen2 GC pause on the target while it runs.
 
+The top-types table supports search and sorting over the **returned top types**, not the entire
+heap. Selecting a type shows its instance count and direct bytes, and focuses matching **captured**
+retention paths by type-name substring. Paths arriving later respect the selection; **Clear type
+focus** restores them. This does not enumerate instances, compute dominator-retained size or read
+the live process again. Root-to-object paths are expandable reference chains with address links.
+
 Use **Capture Thread Snapshot** (tree-view action or Command Palette command
 `dotnetDiagnostics.captureThreadSnapshot`) to take a single point-in-time snapshot of the selected
 process's managed threads. Unlike heap capture, there is only one source: a live ClrMD attach (the
@@ -189,10 +299,24 @@ snapshot needs the same `ptrace`/`CAP_SYS_PTRACE` access as the heap capture's `
 AGENTS.md's "🪪 `CAP_SYS_PTRACE` for live memory readers" section) and fails with an actionable
 permission-denied message when that access is unavailable.
 
+The **Thread explorer** connects searchable returned threads, expandable stack groups,
+representative group member IDs, inferred cycle participants and wait-chain owners. Selecting
+a thread shows all its returned inline frames and related wait edges; selecting an owner moves
+to that participant. A participant omitted from the inline list is explicitly unavailable, not
+invented from another thread's stack. Group counts may exceed the representative IDs returned.
+All of this is snapshot navigation, not a scheduler timeline; a new snapshot resets selections.
+Its mode selector switches between **Returned threads**, **Grouped stacks**, **Wait chains**
+and **Inferred cycle candidates**, preserving the selected thread. The original inline table
+remains available under **Inline thread summary**.
+
 **Follow-up drilldown views.** After a heap or thread capture succeeds, the extension issues
 follow-up `query` requests against the capture's handle (sequentially, over the same streaming
-connection) and renders each result as its own collapsible section below the summary table; one
-failing view shows an inline error without blocking the others.
+connection). Heap and thread results have an **Evidence views** switcher instead of stacking
+all sections vertically. Switching displays one result at a time and preserves its controls and
+selection, without querying again; new results do not steal the selected view. Unavailable views
+are labelled in the switcher, whose always-visible status also reports failures and inferred
+deadlock warnings. Thread explorer is the default thread view; the detailed query responses remain
+available as alternatives, including their metadata, limitations and errors.
 
 - **Heap** (7 always queried): `roots-by-kind`, `finalizer-queue`, `fragmentation`, `gchandles`,
   `async`, `timers`, `alc`. Four more are opt-in via a multi-select QuickPick shown before a
@@ -200,8 +324,8 @@ failing view shows an inline error without blocking the others.
   targets** (`delegate-targets`), **Retention paths** (`retention-paths`) and **Retained
   exceptions** (`retained-exceptions`). The `gcdump` source
   skips the picker and the follow-up views, since the CLI rejects every drilldown view for it.
-- **Thread snapshot** (4): `deadlocks` (open by default and highlighted — an inferred wait-for
-  cycle), `unique-stacks`, `wait-chains`, `threadpool`. `thread-statics` needs an exact type name,
+- **Thread snapshot** (4): `deadlocks` (automatically expanded with a warning only when inferred
+  cycle candidates exist; empty results are neutral), `unique-stacks`, `wait-chains`, `threadpool`. `thread-statics` needs an exact type name,
   so it is never queried automatically: after a thread snapshot, type the exact type name into the
   **Query thread statics** box and press the button (an empty name is rejected in the panel; one
   query runs at a time, and the result is capped server-side with explicit omitted counts).
@@ -217,18 +341,65 @@ so JavaScript preserves all 64 bits.
 
 **Address navigation.** Every valid `0x` address in the heap drilldown views is shown with a
 **Copy** button, and in heap views (and, in the dump panel, thread views such as deadlock lock
-addresses, which come from the same dump) it is also a link. Following a link opens an in-panel
-navigation area with **Back**/**Forward** buttons and a breadcrumb: *retention path -> object
+addresses, which come from the same dump) it is also a link. Following a link opens a fixed
+right-side **Object inspector**, keeping the source view in place, with **Close** / Escape,
+**Back**/**Forward** buttons and a breadcrumb: *retention path -> object
 (fields and array elements link onward) -> GC root path / Referencing statics*. The
 **Referencing statics** view filters the already-captured static fields by that exact address, so
 it needs no extra read and only exists when you opted into static fields before capturing.
+
+**Arrays and value-type entries.** The inspector reads a bounded range of at most 8 array
+elements. **Previous array range**, **Next array range**, and **Start index / Read array range**
+let you inspect other ranges without loading the full array. Indices are zero-based linear
+storage positions; multidimensional arrays use row-major order, including arrays with non-zero
+dimension lower bounds. Jagged-array references open the inner array as a separate object.
+The displayed interval is end-exclusive and reports how many slots are outside the range;
+per-element read failures remain explicit in inspection warnings.
+
+Value-type elements (including `Dictionary<TKey,TValue>.Entry`, nullable values and user-defined
+structs) expand in place to a field table. Nested struct fields use dotted paths. Only managed
+reference fields have clickable object addresses; an inline struct is not a standalone object.
+Field expansion has a shared 256-row budget per array range and depth limit 3, with explicit
+warnings when fields are omitted. No collection-specific active-entry filtering is inferred:
+dictionary backing arrays can contain free/unused slots. Strings and primitive field values stay
+redacted unless explicitly revealed. Moving to a different range always starts metadata-only;
+**Reveal values of this object** preserves the selected range but asks for fresh sensitive-value
+consent. Each range read still obeys the live-read or offline-dump policy.
+
+**Live-read permissions.** In the live Heap tab, expand this section to inspect active grants
+and the last 30 decisions/uses, or **Revoke remembered live reads**. Native prompts offer
+**Acknowledge and Read** (once), **Allow for This Snapshot Session**, or cancellation. Object
+and GC root permissions are separate; remembering one never authorizes the other. Grants are
+in-memory, limited to the current heap snapshot and its CLI connection, and cleared on a new
+heap capture, connection closure, observed target exit or panel closure. Revoking while a prompt
+is open cancels that pending acknowledgement; it cannot interrupt a read already dispatched.
+Captures, raw traces and exports keep their separate acknowledgements. Dump reads do not acquire
+live-read grants. The bounded history records operation/decision/time, not addresses or values.
 **Object** and **GC root path** are read on demand through the CLI's `query` request with
 `address`. For a live panel that read re-attaches via ptrace and suspends the target (High risk), so
-the extension asks for an explicit modal acknowledgement every time and shows the result as read
+the extension asks for an explicit modal acknowledgement unless that operation has an active
+snapshot-session grant, and shows the result as read
 live, not part of the captured snapshot; Back/Forward use cached results and never read again. In a
 dump panel the read is offline (Moderate risk, nothing is attached or suspended), so no
 acknowledgement is requested.
-History holds at most 20 entries, each caching only its own result, and is cleared by a new heap
+**Reveal values of this object** requests bounded string, field and array-element previews after
+a separate native **Reveal Values Once** confirmation about secrets and personal data. It never
+disables pattern-based credential redaction: recognized tokens, password assignments and key
+patterns remain replaced with `<redacted:sensitive>`, including nested struct fields. This is
+not a complete data-loss-prevention filter; other sensitive application values may still appear. It never
+uses or creates a session-wide sensitive-value grant, and live reads still need their independent
+operational permission. Metadata-only remains the default, including ordinary navigation to
+referenced objects. Requires a CLI build supporting `includeSensitiveValues` and
+`acknowledgeSensitiveValues`; an older CLI is reported explicitly rather than treated as having
+revealed values. Strings are limited to 256 characters, array samples to 8 elements and fields to
+256 entries (nested value types to depth 3); string truncation is shown, and field/element string
+previews can also be shortened. A live reread may observe a different object/value after GC.
+Sensitive responses are held only while displayed, not in navigation history or the exporter;
+**Hide values**, closing the inspector or navigating to another address/history entry discards them. Back/Forward
+requires a fresh reveal to read sensitive previews again. This is UI lifetime control, not secure
+erasure of process memory, and it does not remove data already present in a source dump.
+
+History holds at most 20 entries, caching only metadata-only results, and is cleared by a new heap
 capture; only the current result is in the page. Addresses are never converted to JavaScript
 numbers: a numeric address is flagged as imprecise and is neither linked nor copyable. The host
 accepts webview navigation only for `object`, `gcroot` and `static-fields` with a strict hex
@@ -292,6 +463,10 @@ cd vscode-extension
 npm ci
 npm test
 ```
+
+The Windows CI run sets `DOTNET_DIAGNOSTICS_CLI_DLL` to the built CLI assembly, enabling an
+additional real-process smoke test of the JSONL handshake and reported CLI version. Without that
+variable, the smoke test is skipped and the extension's unit tests still run normally.
 
 The Marketplace icon and README screenshots live in `media/` and are generated by
 `scripts/render-media.cjs` (`npm run media`; requires Chrome for Testing 153.0.8010.12 — set `CHROME_PATH` to that binary, or an auto-detected Playwright `chromium-1243` cache). Only

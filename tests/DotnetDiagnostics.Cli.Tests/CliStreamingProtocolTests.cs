@@ -33,6 +33,7 @@ public sealed class CliStreamingProtocolTests
             {
                 hello.RootElement.GetProperty("type").GetString().Should().Be("hello");
                 hello.RootElement.GetProperty("protocolVersion").GetInt32().Should().Be(2);
+                hello.RootElement.GetProperty("cliVersion").GetString().Should().NotBeNullOrWhiteSpace();
             }
 
             await WriteRequestAsync(cli, new
