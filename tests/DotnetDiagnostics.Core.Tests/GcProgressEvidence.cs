@@ -5,6 +5,7 @@ using Microsoft.Diagnostics.Tracing;
 namespace DotnetDiagnostics.Core.Tests;
 
 // Test-side evidence only. Never compares a target wall-clock heartbeat with EventPipe UTC.
+// Buffered callbacks share the capture owner's deadline, not independent per-marker timeouts.
 internal sealed class GcProgressEvidence
 {
     internal const int MaxRequests = 8;
@@ -53,7 +54,7 @@ internal sealed class GcProgressEvidence
     {
         Task armed;
         lock (_gate) armed = Request(id)?.ArmedSignal.Task ?? throw new ArgumentOutOfRangeException(nameof(id));
-        await armed.WaitAsync(TimeSpan.FromSeconds(4), token);
+        await armed.WaitAsync(token);
         lock (_gate)
         {
             var request = _requests[id]!;
@@ -64,12 +65,12 @@ internal sealed class GcProgressEvidence
 
     internal Task WaitForCollectionAsync(int id, CancellationToken token)
     {
-        lock (_gate) return _requests[id]!.CollectionSignal.Task.WaitAsync(TimeSpan.FromSeconds(4), token);
+        lock (_gate) return _requests[id]!.CollectionSignal.Task.WaitAsync(token);
     }
 
     internal Task WaitForCompletionAsync(int id, CancellationToken token)
     {
-        lock (_gate) return _requests[id]!.CompletedSignal.Task.WaitAsync(TimeSpan.FromSeconds(4), token);
+        lock (_gate) return _requests[id]!.CompletedSignal.Task.WaitAsync(token);
     }
 
     internal void Marker(int kind, int id, long qpc, int thread, int value = 0, int status = 0)
