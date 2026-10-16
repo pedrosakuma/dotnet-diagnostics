@@ -5,6 +5,11 @@ versioned independently from the CLI and the .NET packages.
 
 ## Unreleased
 
+## 0.3.1
+
+- Fix the Live counter chart staying blank when the panel was laid out hidden or at zero size; the chart now
+  re-measures whenever the canvas gets a real size.
+
 ## 0.3.0
 
 Use CLI **0.31.0 or later** for allocation exploration, sensitive-value reveal and array-range

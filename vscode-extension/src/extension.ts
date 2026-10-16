@@ -3359,6 +3359,8 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     captureHeapButton.addEventListener('click', () => vscode.postMessage({ type: 'captureHeap' }));
     captureThreadSnapshotButton.addEventListener('click', () => vscode.postMessage({ type: 'captureThreadSnapshot' }));
     window.addEventListener('resize', resizeCanvas);
+    // The webview can be laid out while hidden (zero size); re-measure whenever the canvas gets a real size.
+    if (typeof ResizeObserver === 'function') new ResizeObserver(() => resizeCanvas()).observe(canvas);
     resizeCanvas();
     updateButtons(false);
     // Keeps the rolling history window sliding forward in wall-clock time even if the stream goes
