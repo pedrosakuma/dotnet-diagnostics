@@ -15,6 +15,7 @@ using DotnetDiagnostics.Core.Logs;
 using DotnetDiagnostics.Core.OffCpu;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.Safety;
+using DotnetDiagnostics.Core.Security;
 using DotnetDiagnostics.Core.Threads;
 using DotnetDiagnostics.Core.UseCases;
 using FluentAssertions;
@@ -437,18 +438,53 @@ public sealed class SessionReplTests
         var revealed = frames["reveal"].GetProperty("result");
         revealed.GetProperty("sensitiveValuesIncluded").GetBoolean().Should().BeTrue();
         var details = revealed.GetProperty("objectDetails");
-        details.GetProperty("stringValue").GetString().Should().Be(secret);
+        const string expectedPreview = "<redacted:sensitive> markup</script>";
+        details.GetProperty("stringValue").GetString().Should().Be(expectedPreview);
         details.GetProperty("stringValueTruncated").GetBoolean().Should().BeTrue();
-        details.GetProperty("fields")[0].GetProperty("value").GetString().Should().Be(secret);
+        details.GetProperty("fields")[0].GetProperty("value").GetString().Should().Be(expectedPreview);
         details.GetProperty("fields")[0].GetProperty("objectAddress").GetString().Should().Be("0x4567");
-        details.GetProperty("arraySample")[0].GetProperty("value").GetString().Should().Be(secret);
-        details.GetProperty("arraySample")[0].GetProperty("fields")[0].GetProperty("value").GetString().Should().Be(secret);
+        details.GetProperty("arraySample")[0].GetProperty("value").GetString().Should().Be(expectedPreview);
+        details.GetProperty("arraySample")[0].GetProperty("fields")[0].GetProperty("value").GetString().Should().Be(expectedPreview);
         details.GetProperty("arraySample")[0].GetProperty("fields")[0].GetProperty("objectAddress").GetString().Should().Be("0x9876");
         if (live)
             frames["no-risk"].GetProperty("code").GetString().Should().Be("query_safety_rejected");
         else
             frames["no-risk"].GetProperty("result").GetProperty("sensitiveValuesIncluded").GetBoolean().Should().BeTrue();
         errors.ToString().Should().NotContain(secret);
+    }
+
+    [Theory]
+    [InlineData("Bearer not-a-real-token-1234")]
+    [InlineData("Password=synthetic-test-value")]
+    [InlineData("api_key=synthetic-test-value")]
+    [InlineData("-----BEGIN PRIVATE KEY-----")]
+    public void ObjectReveal_StillRedactsCredentialPatternsAcrossEveryPreview(string value)
+    {
+        var inspection = new HeapObjectInspection(0x1234, "System.String", 64, "Small", "Generation0")
+        {
+            IsString = true,
+            StringValue = value,
+            Fields = [new HeapObjectField("Value", "System.String", value) { ObjectAddress = 0x4567 }],
+            IsArray = true,
+            ArrayLength = 16,
+            ArrayStartIndex = 8,
+            ArrayRequestedCount = 1,
+            ArraySample = [new HeapArrayElement(8, "Entry", value)
+            {
+                Fields = [new HeapObjectField("Nested.Value", "System.String", value) { ObjectAddress = 0x9876 }],
+            }],
+        };
+        var result = CliCommands.BuildObjectResult(DumpHeapSnapshot(), "heap", inspection, includeSensitiveValues: true);
+        var details = result.Data!.ObjectDetails!;
+        details.StringValue.Should().Be(SensitiveDataRedactor.RedactedPlaceholder);
+        details.Fields![0].Value.Should().Be(SensitiveDataRedactor.RedactedPlaceholder);
+        details.Fields[0].ObjectAddress.Should().Be(0x4567);
+        details.ArraySample![0].Value.Should().Be(SensitiveDataRedactor.RedactedPlaceholder);
+        details.ArraySample[0].Fields![0].Value.Should().Be(SensitiveDataRedactor.RedactedPlaceholder);
+        details.ArraySample[0].Fields![0].ObjectAddress.Should().Be(0x9876);
+        details.ArrayStartIndex.Should().Be(8);
+        details.ArrayRequestedCount.Should().Be(1);
+        inspection.StringValue.Should().Be(value, "sanitization must not mutate the captured inspection");
     }
 
     [Fact]

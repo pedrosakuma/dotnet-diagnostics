@@ -384,6 +384,9 @@ dump panel the read is offline (Moderate risk, nothing is attached or suspended)
 acknowledgement is requested.
 **Reveal values of this object** requests bounded string, field and array-element previews after
 a separate native **Reveal Values Once** confirmation about secrets and personal data. It never
+disables pattern-based credential redaction: recognized tokens, password assignments and key
+patterns remain replaced with `<redacted:sensitive>`, including nested struct fields. This is
+not a complete data-loss-prevention filter; other sensitive application values may still appear. It never
 uses or creates a session-wide sensitive-value grant, and live reads still need their independent
 operational permission. Metadata-only remains the default, including ordinary navigation to
 referenced objects. Requires a CLI build supporting `includeSensitiveValues` and

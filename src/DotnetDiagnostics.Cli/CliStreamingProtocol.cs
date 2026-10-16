@@ -1772,7 +1772,8 @@ internal static class CliStreamingProtocol
                 ? CliCommands.BuildGcRootResult(snapshot, handle, await inspector.InspectGcRootAsync(snapshot, target, cancellationToken).ConfigureAwait(false))
                 : CliCommands.BuildObjectResult(snapshot, handle, await (objectOptions is null
                     ? inspector.InspectObjectAsync(snapshot, target, cancellationToken)
-                    : inspector.InspectObjectAsync(snapshot, target, objectOptions, cancellationToken)).ConfigureAwait(false), includeSensitiveValues);
+                    : inspector.InspectObjectAsync(snapshot, target, objectOptions, cancellationToken)).ConfigureAwait(false),
+                    includeSensitiveValues, services.GetService<SensitiveDataRedactor>());
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
