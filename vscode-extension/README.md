@@ -7,6 +7,8 @@ pauses, find CPU hotspots, inspect heap and thread snapshots, and analyze existi
 
 - **Watch a running app:** live counters and GC pauses in one panel.
 - **Capture a problem:** CPU, heap, threads, exceptions, allocations, contention and more.
+- **Explore allocation pressure:** sampled, estimated-byte call trees and flame graphs with
+  method/module navigation, plus allocation type/site tables. Not exact object/lifetime tracking.
 - **Keep useful evidence:** save supported snapshots and reopen them after the app has stopped.
 - **Share and compare:** export redacted measurements, save raw CPU traces locally, and compare
   compatible saved captures against a baseline.
@@ -14,7 +16,7 @@ pauses, find CPU hotspots, inspect heap and thread snapshots, and analyze existi
 ## Get started
 
 Requires VS Code **1.96+** and the **.NET 10 runtime**, or a self-contained CLI. Install
-`dotnet-diagnostics-cli` **0.30.0+** in the environment where VS Code runs your workspace:
+`dotnet-diagnostics-cli` **0.31.0+** in the environment where VS Code runs your workspace:
 
 ```sh
 dotnet tool install -g dotnet-diagnostics-cli
@@ -22,10 +24,12 @@ dotnet tool install -g dotnet-diagnostics-cli
 
 Already installed? Run `dotnet tool update -g dotnet-diagnostics-cli`. The extension never
 installs or updates the CLI automatically. CLI 0.29.0 supports the base protocol-v2 workflows;
-the new capture, navigation and export features require 0.30.0 or later.
+the environment check identifies older versions and warns that allocation exploration, sensitive-value
+reveal and array-range navigation require 0.31.0 or later. CLI 0.30.0 supports the prior capture/navigation/export features.
 
 1. Open **.NET Diagnostics** in the Activity Bar.
-2. Run **Check Environment**, then select your app in **.NET Processes**.
+2. Run **Check Environment** to verify host permissions and CLI feature compatibility, then select
+   your app in **.NET Processes**.
 3. Choose **Start Live Counters**, or capture a snapshot while reproducing the problem.
 
 For a guided introduction, run **.NET Diagnostics: Open Getting Started** from the Command Palette.

@@ -1150,6 +1150,38 @@ public sealed class CliStreamingProtocolKindsTests
             capture.RootElement.GetProperty("requestId").GetString().Should().Be("cap1");
             capture.RootElement.GetProperty("kind").GetString().Should().Be("cpu");
             capture.RootElement.GetProperty("result").ValueKind.Should().Be(JsonValueKind.Object);
+            var handle = capture.RootElement.GetProperty("exportHandle").GetString();
+            handle.Should().NotBeNullOrWhiteSpace();
+
+            await CliStreamingProtocolTests.WriteRequestAsync(cli, new
+            {
+                type = "query",
+                requestId = "triage1",
+                handle,
+                view = "triage",
+            });
+            using (var triage = await CliStreamingProtocolTests.ReadFrameAsync(cli))
+            {
+                triage.RootElement.GetProperty("type").GetString().Should().Be("query", triage.RootElement.GetRawText());
+                triage.RootElement.GetProperty("view").GetString().Should().Be("triage");
+                triage.RootElement.GetProperty("result").GetProperty("data").GetProperty("verdict").ValueKind
+                    .Should().Be(JsonValueKind.String);
+            }
+
+            await CliStreamingProtocolTests.WriteRequestAsync(cli, new
+            {
+                type = "query",
+                requestId = "tree1",
+                handle,
+                view = "call-tree",
+            });
+            using (var tree = await CliStreamingProtocolTests.ReadFrameAsync(cli))
+            {
+                tree.RootElement.GetProperty("type").GetString().Should().Be("query", tree.RootElement.GetRawText());
+                tree.RootElement.GetProperty("view").GetString().Should().Be("call-tree");
+                tree.RootElement.GetProperty("result").GetProperty("data").GetProperty("root").ValueKind
+                    .Should().Be(JsonValueKind.Object);
+            }
 
             await cli.StandardInput.DisposeAsync();
             await cli.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(15));

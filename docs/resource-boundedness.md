@@ -52,6 +52,42 @@ most `topN` (1-100) rows per table, `MaxTextLength=2048` characters per text val
 These are presentation limits, not collector limits: retained totals do not establish
 exhaustive capture coverage. Results identify themselves as unsaved live-stream evidence.
 
+### Managed object and array drilldown
+
+ClrMD object reads retain at most 256 expanded fields with nested value-type depth 3.
+Array reads inspect one requested zero-based linear range of at most 8 elements, never the whole
+array. Struct-element fields share a single 256-row budget across that range, rather than
+allocating 256 rows for each element. Object references are returned as addresses and are not
+recursively traversed; nested inline structs are flattened to dotted field paths. String previews
+remain capped at 256 characters. Array-rank handling is limited to the CLR maximum of 32.
+Warnings report field/depth budget hits, individual read failures and the count of array slots
+outside the inspected interval. Changing ranges is a separate read; no aggregate array cache is
+built. The extension's bounded history retains metadata-only pages, not sensitive previews.
+
+### Allocation profiling
+
+The EventPipe allocation sampler uses `GCAllocationTick`, not per-object instrumentation.
+It retains separate merged tick-count and estimated-byte trees; existing MCP/text queries keep
+tick semantics, while the VS Code/JSONL explorer explicitly confirms estimated-byte weighting.
+Navigation reuses the artifact and projects at most 64 nodes/depth 8.
+
+Collection writes at most `MaxTraceBytes=67108864` (64 MiB) before conversion to ETLX.
+The copy task is watched during collection, so a writer failure starts stop/drain immediately,
+not after the requested duration. Copy failures during rundown/drain also propagate.
+Aggregation checks `MaxAllocationEvents=100000`, `MaxAllocationTypes=4096`,
+`MaxAllocationFrames=16384` (distinct frame keys and, independently, nodes in each tree),
+and `MaxAllocationStackDepth=128` before the next insertion. Site/identity dictionaries are
+bounded by retained frame keys. At most one current stack is materialized.
+Limit hits name the cap, fail explicitly (`ResourceLimitExceeded` through the sampling use case),
+and return no partial profile or handle. Lost-event traces also fail explicitly.
+Temporary raw traces and ETLX files are cleaned up through the normal capture lifecycle.
+
+These limits bound retained application aggregation and raw input size, **not peak process RSS,
+ETLX output size, conversion time or target overhead**. TraceEvent conversion still constructs
+indexes before aggregation; runtime rundown, the 256 MiB EventPipe circular buffer and capture
+duration (maximum 5 minutes) have separate costs. Sampling can remain expensive under heavy
+allocation or large runtime inventories. Prefer short, deliberately scoped captures.
+
 ### Managed capture package lifecycle boundary
 
 The artifact-root `captures/` subtree is reserved for durable capture packages.

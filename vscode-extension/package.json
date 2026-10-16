@@ -2,7 +2,7 @@
   "name": "dotnet-diagnostics",
   "displayName": ".NET Diagnostics",
   "description": "Live .NET runtime counters and GC pauses, CPU, heap and thread snapshots, and dump analysis for running .NET processes, powered by dotnet-diagnostics-cli.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "pedrosakuma",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -256,7 +256,7 @@
           {
             "id": "installCli",
             "title": "Install the CLI",
-            "description": "Install dotnet-diagnostics-cli 0.30.0 or later for all features. The extension never installs tools for you.\n[Copy Install Command](command:dotnetDiagnostics.copyInstallCommand)",
+            "description": "Install dotnet-diagnostics-cli 0.31.0 or later for all features. The extension never installs tools for you.\n[Copy Install Command](command:dotnetDiagnostics.copyInstallCommand)",
             "media": {
               "markdown": "media/walkthrough/install-cli.md"
             }
@@ -264,7 +264,7 @@
           {
             "id": "verifyEnvironment",
             "title": "Verify the environment",
-            "description": "Check protocol compatibility and host permissions. This does not verify that every 0.2.0 feature is available; use CLI 0.30.0 or later.\n[Check Environment](command:dotnetDiagnostics.checkEnvironment)",
+            "description": "Check protocol and feature compatibility, host permissions, and target access guidance.\n[Check Environment](command:dotnetDiagnostics.checkEnvironment)",
             "media": {
               "markdown": "media/walkthrough/verify-environment.md"
             }

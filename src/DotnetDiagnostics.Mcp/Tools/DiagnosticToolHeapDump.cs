@@ -356,6 +356,10 @@ internal static class DiagnosticToolHeapDump
                 {
                     ObjectAddress = a.ObjectAddress,
                     ReferencedTypeFullName = a.ReferencedTypeFullName,
+                    Fields = a.Fields?.Select(field => field with
+                    {
+                        Value = emitSensitive ? (redactor.Redact(field.Value) ?? field.Value) : SensitiveDataRedactor.MetadataOnlyPlaceholder,
+                    }).ToArray(),
                 });
             }
             array = sanitizedArray;
@@ -371,6 +375,8 @@ internal static class DiagnosticToolHeapDump
         {
             IsArray = inspection.IsArray,
             ArrayLength = inspection.ArrayLength,
+            ArrayStartIndex = inspection.ArrayStartIndex,
+            ArrayRequestedCount = inspection.ArrayRequestedCount,
             ArraySample = array,
             IsString = inspection.IsString,
             StringValue = stringValue,

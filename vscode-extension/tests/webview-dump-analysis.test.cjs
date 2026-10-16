@@ -57,13 +57,16 @@ function loadRenderDumpHeapCapture(script) {
     const captureHeapHeadline = makeElementStub();
     const captureHeapBody = makeElementStub();
     const documentStub = makeDocumentStub();
+    documentStub.getElementById = () => null;
 
     // eslint-disable-next-line no-new-func -- intentionally evaluating the real, extracted webview
     // source rather than a hand-copied stand-in; see the matching comment in
     // webview-heap-capture.test.cjs.
     const renderDumpHeapCapture = new Function(
         "document", "captureHeapResultElement", "captureHeapHeadline", "captureHeapBody",
-        `${renderDumpHeapCaptureMatch[0]}
+        `${require("../out/evidenceNavigation.js").EVIDENCE_NAVIGATION_SCRIPT}
+         ${require("../out/snapshotNavigation.js").SNAPSHOT_NAVIGATION_SCRIPT}
+         ${renderDumpHeapCaptureMatch[0]}
          return renderDumpHeapCapture;`,
     )(documentStub, captureHeapResultElement, captureHeapHeadline, captureHeapBody);
 
@@ -81,13 +84,15 @@ function loadRenderDumpThreadCapture(script) {
     const captureThreadHeadline = makeElementStub();
     const captureThreadBody = makeElementStub();
     const documentStub = makeDocumentStub();
+    documentStub.getElementById = () => null;
 
     // eslint-disable-next-line no-new-func -- intentionally evaluating the real, extracted webview
     // source rather than a hand-copied stand-in; see the matching comment in
     // webview-heap-capture.test.cjs.
     const renderDumpThreadCapture = new Function(
         "document", "captureThreadResultElement", "captureThreadHeadline", "captureThreadBody",
-        `${maxThreadRowsMatch[0]}
+        `${require("../out/snapshotNavigation.js").SNAPSHOT_NAVIGATION_SCRIPT}
+         ${maxThreadRowsMatch[0]}
          ${renderDumpThreadCaptureMatch[0]}
          return renderDumpThreadCapture;`,
     )(documentStub, captureThreadResultElement, captureThreadHeadline, captureThreadBody);

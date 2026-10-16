@@ -609,7 +609,8 @@ stream options:
       --protocol jsonl          Required. Uses protocol version 2 over stdin/stdout.
 
   Send a hello frame with protocolVersion 2 before start/stop/cancel requests.
-  stdout contains protocol frames only; diagnostics are written to stderr.
+  The hello response includes protocolVersion and cliVersion. stdout contains protocol frames only;
+  diagnostics are written to stderr.
 """,
             "",
             ["--protocol"]),

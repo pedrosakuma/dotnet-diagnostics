@@ -56,6 +56,7 @@ function loadRenderThreadCapture(script) {
     const captureThreadBody = makeElementStub();
 
     const documentStub = {
+        getElementById() { return null; },
         createElement(tagName) {
             if (tagName === "tr") {
                 const cells = [];
@@ -70,7 +71,8 @@ function loadRenderThreadCapture(script) {
     // webview-heap-capture.test.cjs.
     const renderThreadCapture = new Function(
         "document", "captureThreadResultElement", "captureThreadHeadline", "captureThreadBody",
-        `${maxThreadRowsMatch[0]}
+        `${require("../out/snapshotNavigation.js").SNAPSHOT_NAVIGATION_SCRIPT}
+         ${maxThreadRowsMatch[0]}
          ${renderThreadCaptureMatch[0]}
          return renderThreadCapture;`,
     )(documentStub, captureThreadResultElement, captureThreadHeadline, captureThreadBody);

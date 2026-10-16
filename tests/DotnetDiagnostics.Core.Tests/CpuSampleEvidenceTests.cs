@@ -8,6 +8,82 @@ namespace DotnetDiagnostics.Core.Tests;
 
 public sealed class CpuSampleEvidenceTests
 {
+    [Fact]
+    public void WeightedAllocationTree_PreservesByteWeightsSeparatelyFromTicks()
+    {
+        var bytes = new CallTreeBuilder(3);
+        var ticks = new CallTreeBuilder(3);
+        List<(string Key, string Module, string Display)> first = [("App!A", "App", "A")];
+        List<(string Key, string Module, string Display)> second = [("App!B", "App", "B")];
+        bytes.AddStack(first, "App!A", weight: 100);
+        bytes.AddStack(second, "App!B", weight: 900);
+        ticks.AddStack(first, "App!A");
+        ticks.AddStack(second, "App!B");
+        var tree = bytes.Build();
+        tree.InclusiveSamples.Should().Be(1000);
+        tree.Children[0].Frame.Method.Should().Be("B");
+        tree.Children[0].ExclusiveSamples.Should().Be(900);
+        tree.Children[0].SelfSamples.Should().BeNull();
+        ticks.Build().InclusiveSamples.Should().Be(2);
+        var overflow = () => bytes.AddStack([("App!C", "App", "C")], "App!C", weight: 1);
+        overflow.Should().Throw<SampleLimitExceededException>().WithMessage("*MaxNodes=3*No partial profile*");
+        var negative = () => bytes.AddStack(first, "App!A", weight: -1);
+        negative.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
+    [Fact]
+    public async Task AllocationTraceLimit_RejectsBeforeWritingPastCap()
+    {
+        using var input = new ZeroStream(EventPipeAllocationSampler.MaxTraceBytes + 1);
+        using var output = new CountingStream();
+        var capture = () => EventPipeAllocationSampler.CopyBoundedTraceAsync(input, output, CancellationToken.None);
+        await capture.Should().ThrowAsync<SampleLimitExceededException>().WithMessage("*MaxTraceBytes=*No partial profile*");
+        output.Written.Should().Be(EventPipeAllocationSampler.MaxTraceBytes);
+        using var exact = new ZeroStream(EventPipeAllocationSampler.MaxTraceBytes);
+        await EventPipeAllocationSampler.CopyBoundedTraceAsync(exact, Stream.Null, CancellationToken.None);
+    }
+
+    private sealed class ZeroStream(long remaining) : Stream
+    {
+        public override bool CanRead => true;
+        public override bool CanWrite => false;
+        public override bool CanSeek => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var read = (int)Math.Min(remaining, buffer.Length);
+            remaining -= read;
+            return ValueTask.FromResult(read);
+        }
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override void Flush() => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    private sealed class CountingStream : Stream
+    {
+        public long Written { get; private set; }
+        public override bool CanRead => false;
+        public override bool CanWrite => true;
+        public override bool CanSeek => false;
+        public override long Length => Written;
+        public override long Position { get => Written; set => throw new NotSupportedException(); }
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            Written += buffer.Length;
+            return ValueTask.CompletedTask;
+        }
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
     [Theory]
     [InlineData("MyApp.PrivateWaitWrapper()", 0, 0, 1)]
     [InlineData("[unknown]", 0, 0, 1)]

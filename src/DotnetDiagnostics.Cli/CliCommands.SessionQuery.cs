@@ -389,9 +389,8 @@ internal static partial class CliCommands
     /// Serves the address-addressed <c>gcroot</c>/<c>object</c> heap views for a <b>dump-origin</b>
     /// snapshot inside the session (#464). The injected <see cref="IDumpInspector"/> re-opens the dump
     /// file recorded on the artifact (no live attach) and walks the GC-root chain or reads the managed
-    /// object. The <c>object</c> view never emits raw string/field/array values — the Core-only CLI has
-    /// no sensitive-value gate, so previews are replaced with the metadata-only placeholder, matching
-    /// the MCP server's redacted default.
+    /// object. The text REPL has no sensitive-value opt-in, so previews are replaced with the
+    /// metadata-only placeholder, matching the MCP server's redacted default.
     /// </summary>
     private static async Task<CliCommandResult> QueryHeapDumpDrilldown(
         IServiceProvider services, CliOptions options, HeapSnapshotArtifact heap, string view, CancellationToken cancellationToken)
@@ -459,12 +458,15 @@ internal static partial class CliCommands
     }
 
     internal static DiagnosticResult<HeapSnapshotQueryResult> BuildObjectResult(
-        HeapSnapshotArtifact heap, string handle, HeapObjectInspection inspection)
+        HeapSnapshotArtifact heap, string handle, HeapObjectInspection inspection, bool includeSensitiveValues = false)
     {
         var origin = heap.Origin.ToString();
-        var redacted = RedactObjectPreviews(inspection);
+        var redacted = includeSensitiveValues ? inspection : RedactObjectPreviews(inspection);
+        var valuePolicy = includeSensitiveValues
+            ? "bounded sensitive previews explicitly requested for this object"
+            : "string/field previews redacted";
         var summary = string.Create(CultureInfo.InvariantCulture,
-            $"query: object view origin={origin} pid={heap.ProcessId} address=0x{redacted.Address:x} type={redacted.TypeFullName} size={redacted.Size} (string/field previews redacted — no session sensitive-value gate)");
+            $"query: object view origin={origin} pid={heap.ProcessId} address=0x{redacted.Address:x} type={redacted.TypeFullName} size={redacted.Size} ({valuePolicy})");
         var result = new HeapSnapshotQueryResult(handle, "object", origin, heap.ProcessId, heap.CapturedAt)
         {
             Address = redacted.Address,
@@ -476,7 +478,7 @@ internal static partial class CliCommands
 
     /// <summary>
     /// Replaces every string / field / array-element preview with the metadata-only placeholder so the
-    /// Core-only session never surfaces raw heap content (it holds no sensitive-value gate). Object
+    /// default query never surfaces raw heap content without the streaming request's separate consent. Object
     /// shape — type, size, generation, segment, array length, field names/types — is preserved.
     /// </summary>
     private static HeapObjectInspection RedactObjectPreviews(HeapObjectInspection inspection)
@@ -507,6 +509,7 @@ internal static partial class CliCommands
                 {
                     ObjectAddress = a.ObjectAddress,
                     ReferencedTypeFullName = a.ReferencedTypeFullName,
+                    Fields = a.Fields?.Select(static field => field with { Value = SensitiveDataRedactor.MetadataOnlyPlaceholder }).ToArray(),
                 });
             }
 
@@ -517,6 +520,8 @@ internal static partial class CliCommands
         {
             IsArray = inspection.IsArray,
             ArrayLength = inspection.ArrayLength,
+            ArrayStartIndex = inspection.ArrayStartIndex,
+            ArrayRequestedCount = inspection.ArrayRequestedCount,
             ArraySample = array,
             IsString = inspection.IsString,
             StringValue = inspection.IsString ? SensitiveDataRedactor.MetadataOnlyPlaceholder : inspection.StringValue,

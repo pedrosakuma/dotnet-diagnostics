@@ -59,6 +59,19 @@ public sealed class CliStreamingCaptureViewsTests
         [], [], [new("GET", "/sample", "2", 1, Duration, Duration, Duration)], [], null, ["kestrel-note"]);
 
     [Fact]
+    public void AllocationView_ExposesTheExactCaptureHandleAndResourceLimitCaveats()
+    {
+        var sample = new AllocationSample(42, Start, Duration, 2, 200, [], []);
+        var envelope = DiagnosticResult.OkWithHandle(sample, "Sampled allocations", "allocation-one",
+            Start + TimeSpan.FromMinutes(20));
+        var result = new CliCommandResult(false, false, envelope, string.Empty);
+        var view = CliStreamingCaptureViews.Project(result, Options("allocation"));
+        view.Handle.Should().Be("allocation-one");
+        view.Notes.Should().Contain(note => note.Contains("not a hard process-RSS budget", StringComparison.Ordinal));
+        view.Notes.Should().Contain(note => note.Contains("64 MiB", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void KestrelUnpairedStopsDoNotEstablishZeroLatency()
     {
         var snapshot = Kestrel() with { RequestsStarted = 0, RequestsStopped = 1, ByOperation = [], RequestP95 = TimeSpan.Zero };

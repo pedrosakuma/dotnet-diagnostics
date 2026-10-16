@@ -38,6 +38,11 @@ namespace DotnetDiagnostics.Core.CpuSampling;
 /// </remarks>
 public sealed class EventPipeAllocationSampler
 {
+    internal const long MaxTraceBytes = 64L * 1024 * 1024;
+    internal const int MaxAllocationEvents = 100_000;
+    internal const int MaxAllocationTypes = 4096;
+    internal const int MaxAllocationFrames = 16_384;
+    internal const int MaxAllocationStackDepth = 128;
     private const string RuntimeProvider = "Microsoft-Windows-DotNETRuntime";
 
     /// <summary>
@@ -83,8 +88,7 @@ public sealed class EventPipeAllocationSampler
         try
         {
             await CollectTraceAsync(processId, tracePath, duration, cancellationToken).ConfigureAwait(false);
-            var (summary, artifact) = Aggregate(tracePath, processId, startedAt, duration, topN, observationSink);
-            return new AllocationSampleResult(summary, artifact);
+            return Aggregate(tracePath, processId, startedAt, duration, topN, observationSink, cancellationToken);
         }
         finally
         {
@@ -125,41 +129,65 @@ public sealed class EventPipeAllocationSampler
         var copyTask = Task.Run(async () =>
         {
             await using var output = File.Create(outputPath);
-            await session.EventStream.CopyToAsync(output, ct).ConfigureAwait(false);
+            await CopyBoundedTraceAsync(session.EventStream, output, ct).ConfigureAwait(false);
         }, ct);
 
         try
         {
-            await Task.Delay(duration, ct).ConfigureAwait(false);
+            var delay = Task.Delay(duration, ct);
+            await Task.WhenAny(delay, copyTask).ConfigureAwait(false);
+            if (copyTask.IsCompleted) await copyTask.ConfigureAwait(false);
+            else await delay.ConfigureAwait(false);
         }
         finally
         {
             await EventPipeSessionShutdown.StopAndDrainAsync(
                 session,
                 copyTask,
-                ex => _logger.LogDebug(ex, "Stopping allocation-sampling EventPipe session for pid {Pid} failed.", pid))
+                ex => _logger.LogDebug(ex, "Stopping allocation-sampling EventPipe session for pid {Pid} failed.", pid),
+                propagateProcessingErrors: true)
                 .ConfigureAwait(false);
         }
     }
 
-    private (AllocationSample Summary, CpuSampleTraceArtifact Artifact) Aggregate(
+    internal static async Task CopyBoundedTraceAsync(Stream input, Stream output, CancellationToken ct)
+    {
+        var buffer = new byte[64 * 1024];
+        long written = 0;
+        int read;
+        while ((read = await input.ReadAsync(buffer, ct).ConfigureAwait(false)) > 0)
+        {
+            if (read > MaxTraceBytes - written)
+                throw new SampleLimitExceededException($"Allocation capture reached MaxTraceBytes={MaxTraceBytes}; shorten the capture. No partial profile is returned.");
+            await output.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
+            written += read;
+        }
+    }
+
+    private AllocationSampleResult Aggregate(
         string tracePath,
         int pid,
         DateTimeOffset startedAt,
         TimeSpan duration,
         int topN,
-        ICaptureObservationSink? observationSink)
+        ICaptureObservationSink? observationSink,
+        CancellationToken cancellationToken)
     {
         var etlxPath = TraceLog.CreateFromEventPipeDataFile(tracePath);
         try
         {
             using var traceLog = new TraceLog(etlxPath);
             observationSink?.ReportSourceLoss("sample.allocation.eventpipe", traceLog.EventsLost);
+            if (traceLog.EventsLost > 0)
+                throw new InvalidDataException($"Allocation trace reports {traceLog.EventsLost} lost events; no incomplete profile is returned. Shorten the capture or reduce concurrent diagnostic load.");
             var process = traceLog.Processes.LastProcessWithID(pid);
             if (process is null)
             {
                 _logger.LogDebug("Process {Pid} not found in trace.", pid);
-                return (EmptySummary(pid, startedAt, duration), EmptyArtifact(pid, startedAt, duration));
+                return new(EmptySummary(pid, startedAt, duration), EmptyArtifact(pid, startedAt, duration))
+                {
+                    EstimatedBytesArtifact = EmptyArtifact(pid, startedAt, duration),
+                };
             }
 
             // Per-type byte/event accumulators.
@@ -168,8 +196,9 @@ public sealed class EventPipeAllocationSampler
             // Per-call-site (leaf frame) byte/event accumulators — the allocation "origin".
             var bySite = new Dictionary<string, SiteAccumulator>(StringComparer.Ordinal);
 
-            // Merged allocation call tree (all types combined, weighted by byte amount).
-            var rootBuilder = new CallTreeBuilder();
+            // Preserve the historical tick-count tree; the explorer uses a separate estimated-byte tree.
+            var rootBuilder = new CallTreeBuilder(MaxAllocationFrames);
+            var byteRootBuilder = new CallTreeBuilder(MaxAllocationFrames);
             var modules = new Dictionary<string, string>(StringComparer.Ordinal);
             // Maps composite frame key (module!methodDisplay) → TraceCodeAddress for MethodIdentity extraction.
             var traceCodeAddressByFrameKey = new Dictionary<string, TraceCodeAddress>(StringComparer.Ordinal);
@@ -179,6 +208,7 @@ public sealed class EventPipeAllocationSampler
 
             foreach (var traceEvent in process.EventsInProcess)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 if (traceEvent.EventName != "GC/AllocationTick")
                 {
                     continue;
@@ -210,11 +240,17 @@ public sealed class EventPipeAllocationSampler
                     _ => HeapKind.Small,
                 };
 
+                if (totalEvents >= MaxAllocationEvents)
+                    throw new SampleLimitExceededException($"Allocation aggregation reached MaxAllocationEvents={MaxAllocationEvents}; shorten the capture. No partial profile is returned.");
+                if (bytes < 0)
+                    throw new InvalidDataException("Allocation tick has an invalid negative byte weight.");
                 totalEvents++;
-                totalBytes += bytes;
+                totalBytes = checked(totalBytes + bytes);
 
                 if (!byType.TryGetValue(typeName, out var acc))
                 {
+                    if (byType.Count >= MaxAllocationTypes)
+                        throw new SampleLimitExceededException($"Allocation aggregation reached MaxAllocationTypes={MaxAllocationTypes}; shorten the capture.");
                     acc = new TypeAccumulator(typeName);
                     byType[typeName] = acc;
                 }
@@ -224,14 +260,18 @@ public sealed class EventPipeAllocationSampler
                 var callStack = traceEvent.CallStack();
                 if (callStack is not null)
                 {
-                    var stackFrames = new List<(string Key, string Module, string Display)>();
+                    var stackFrames = new List<(string Key, string Module, string Display, MethodIdentity? Identity)>();
                     var frame = callStack;
                     while (frame is not null)
                     {
+                        if (stackFrames.Count >= MaxAllocationStackDepth)
+                            throw new SampleLimitExceededException($"Allocation stack reached MaxAllocationStackDepth={MaxAllocationStackDepth}; no truncated profile is returned.");
                         var display = FormatFrame(frame);
                         var module = frame.CodeAddress?.ModuleFile?.Name ?? string.Empty;
                         var key = string.IsNullOrEmpty(module) ? display : module + "!" + display;
-                        stackFrames.Add((key, module, display));
+                        stackFrames.Add((key, module, display, null));
+                        if (!modules.ContainsKey(key) && modules.Count >= MaxAllocationFrames)
+                            throw new SampleLimitExceededException($"Allocation aggregation reached MaxAllocationFrames={MaxAllocationFrames}; shorten the capture.");
                         modules.TryAdd(key, module);
                         if (frame.CodeAddress is not null)
                         {
@@ -243,11 +283,12 @@ public sealed class EventPipeAllocationSampler
                     // stack is leaf→root; reverse to root→leaf for tree traversal.
                     if (observationSink is not null)
                         EmitAllocationObservation(observationSink, traceEvent.ThreadID, traceEvent.TimeStampRelativeMSec,
-                            typeName, bytes, kind, stackFrames);
+                            typeName, bytes, kind, stackFrames.Select(item => (item.Key, item.Module, item.Display)).ToArray());
                     stackFrames.Reverse();
                     if (stackFrames.Count > 0)
                     {
                         rootBuilder.AddStack(stackFrames, stackFrames[^1].Key);
+                        byteRootBuilder.AddStack(stackFrames, stackFrames[^1].Key, weight: bytes);
 
                         // Attribute the bytes to the leaf (innermost) frame — the allocation origin.
                         var leaf = stackFrames[^1];
@@ -306,7 +347,10 @@ public sealed class EventPipeAllocationSampler
                 rootBuilder.Build(),
                 ResolvedSources: null,
                 MethodIdentities: identities);
-            return (summary, artifact);
+            return new AllocationSampleResult(summary, artifact)
+            {
+                EstimatedBytesArtifact = artifact with { TotalSamples = totalBytes, Root = byteRootBuilder.Build() },
+            };
         }
         finally
         {

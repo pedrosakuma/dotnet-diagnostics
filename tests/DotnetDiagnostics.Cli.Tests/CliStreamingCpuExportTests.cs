@@ -61,6 +61,57 @@ public sealed class CliStreamingCpuExportTests : IDisposable
         _sampler.LastExportTrace.Should().BeFalse();
     }
 
+    [Theory]
+    [InlineData("call-tree")]
+    [InlineData("top-methods")]
+    [InlineData("by-module")]
+    [InlineData("by-namespace")]
+    [InlineData("hot-path")]
+    [InlineData("caller-callee")]
+    public async Task AllocationQueries_ConfirmEstimatedByteUnits_WithoutRecapture(string view)
+    {
+        var tickTrace = Artifact(null);
+        var byteTrace = tickTrace with
+        {
+            TotalSamples = 1000,
+            Root = new CallTreeNode(new SampledFrame("App.dll", "Main"), 1000, 1000, []),
+        };
+        var artifact = new AllocationSampleArtifact(
+            new(Environment.ProcessId, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(1), 10, 1000, [], []), tickTrace)
+        { EstimatedBytesTrace = byteTrace };
+        var handle = _store.Register(Environment.ProcessId, "allocation-sample", artifact, TimeSpan.FromMinutes(1), evictWhenProcessExits: false).Id;
+        var frames = await RunAsync(JsonSerializer.Serialize(new
+        {
+            type = "query", requestId = "a", handle, view, rootMethodFilter = view == "caller-callee" ? "Main" : null,
+        }));
+        var result = frames[0].GetProperty("result");
+        result.GetProperty("weightUnit").GetString().Should().Be("allocation-tick-estimated-bytes");
+        result.GetProperty("summary").GetString().Should().Contain("not object counts");
+        if (view == "call-tree")
+        {
+            result.GetProperty("data").GetProperty("totalSamples").GetInt64().Should().Be(1000);
+            result.GetProperty("data").GetProperty("root").GetProperty("inclusiveSamples").GetInt64().Should().Be(1000);
+        }
+        _sampler.Calls.Should().Be(0);
+        artifact.TraceArtifact.TotalSamples.Should().Be(10);
+    }
+
+    [Theory]
+    [InlineData("triage", true)]
+    [InlineData("inlining", true)]
+    [InlineData("call-tree", false)]
+    public async Task AllocationQueries_RejectCpuInterpretationsAndHistoricalTickOnlyArtifacts(string view, bool byteWeighted)
+    {
+        var trace = Artifact(null);
+        var artifact = new AllocationSampleArtifact(
+            new(Environment.ProcessId, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(1), 10, 1000, [], []), trace)
+        { EstimatedBytesTrace = byteWeighted ? trace : null };
+        var handle = _store.Register(Environment.ProcessId, "allocation-sample", artifact, TimeSpan.FromMinutes(1), evictWhenProcessExits: false).Id;
+        var frames = await RunAsync(JsonSerializer.Serialize(new { type = "query", requestId = "a", handle, view }));
+        frames[0].GetProperty("code").GetString().Should().Be("unsupported_query_view");
+        _sampler.Calls.Should().Be(0);
+    }
+
     [Fact]
     public async Task Trace_MaterializesOnlyStoredArtifactPath_AfterAcknowledgement()
     {

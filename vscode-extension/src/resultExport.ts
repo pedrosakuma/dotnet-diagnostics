@@ -78,6 +78,10 @@ export class ResultExporter {
             this.clear();
             this.set(message.result ?? message.summary);
         } else if (message.type === "navigation") {
+            if (message.sensitiveValues === true) {
+                if (this.selectedNavigation === this.navigationKey(message)) this.current = undefined;
+                return;
+            }
             const key = this.navigationKey(message);
             if (!key || this.activeHistory && !this.activeHistory.has(key)) return;
             this.navigation.delete(key);

@@ -5,6 +5,7 @@ const path = require("node:path");
 const { createRequire } = require("node:module");
 const Module = require("node:module");
 const kinds = require("../out/captureKinds.js");
+const { SingleFlightGuard } = require("../out/protocol.js");
 const { CAPTURE_VIEW_RENDERER_SCRIPT } = require("../out/captureViewRenderer.js");
 const originalResolveFilename = Module._resolveFilename;
 Module._resolveFilename = function (request, ...rest) {
@@ -35,6 +36,7 @@ function fixture(spec = kinds.CAPTURE_KIND_SPECS[0], overrides = {}) {
     controller.selectedTarget = { processId: 4242 };
     controller.output = { appendLine() {} };
     controller.pendingExports = new Map();
+    controller.cpuQueryGuard = new SingleFlightGuard();
     controller.acquireChild = async () => ({ session, owns: false });
     controller.postMessage = message => messages.push(message);
     controller.writeFrame = (_session, frame) => {
@@ -82,6 +84,9 @@ test("result guard rejects ragged rows, unknown quality, mismatched totals and i
         v => v.provenance.startedAt = {},
         v => v.notes = Array(51).fill("n"),
         v => v.metrics[0].value = {},
+        v => v.handle = 42,
+        v => v.handle = "",
+        v => v.handle = "invalid\nhandle",
     ]) {
         const result = view(); change(result);
         assert.equal(kinds.isCaptureViewResult(result), false);
@@ -112,15 +117,54 @@ test("busy captures do not send queued reproduction guidance or discard previous
     }
 });
 test("a sibling capture cannot close the connection retaining a CPU export handle", async () => {
-    for (const retainCpu of [false, true]) {
-        const { controller, session } = fixture();
+    for (const retained of ["none", "cpu", "allocation"]) {
+        const { controller, session } = fixture(kinds.CAPTURE_KIND_SPECS[2]);
         let closed = 0;
         controller.acquireChild = async () => ({ session, owns: true });
         controller.closeChild = async () => { closed++; };
-        if (retainCpu) controller.cpuExport = { session, handle: "cpu-handle" };
+        if (retained === "cpu") controller.cpuExport = { session, handle: "cpu-handle" };
+        if (retained === "allocation") controller.allocationProfile = { session, handle: "allocation-handle" };
         await controller.captureDiagnostics();
-        assert.equal(closed, retainCpu ? 0 : 1);
+        assert.equal(closed, retained === "none" ? 1 : 0);
     }
+});
+test("allocation capture retains its exact connection and byte-weighted handle, then drills down without recapture", async () => {
+    const { controller, messages, frames, session } = fixture();
+    session.process = { exitCode: null, signalCode: null };
+    let closed = 0;
+    const queries = [];
+    controller.acquireChild = async () => ({ session, owns: true });
+    controller.closeChild = async () => { closed++; };
+    controller.writeFrame = (_session, frame) => {
+        frames.push(frame);
+        controller.handleFrame(session, JSON.stringify({ type: "capture", requestId: frame.requestId,
+            kind: "allocation", result: { ...view("allocation"), handle: "this-allocation" } }));
+    };
+    controller.sendQuery = async (connection, handle, queryView) => {
+        assert.equal(connection, session);
+        queries.push({ handle, view: queryView });
+        return { weightUnit: "allocation-tick-estimated-bytes", data: {} };
+    };
+    vscode.window.showQuickPick = () => { throw new Error("dedicated action does not need a kind picker"); };
+    await controller.captureAllocations();
+    await controller.queryCpu("top-methods", undefined, "allocation");
+    assert.equal(frames.length, 1);
+    assert.equal(frames[0].kind, "allocation");
+    assert.deepEqual(queries, [{ handle: "this-allocation", view: "call-tree" }, { handle: "this-allocation", view: "top-methods" }]);
+    assert.equal(closed, 0);
+    assert.equal(messages.filter(message => message.type === "query" && message.kind === "allocation").length, 2);
+    controller.sendQuery = async () => ({ data: {} });
+    await controller.queryCpu("call-tree", undefined, "allocation");
+    assert.match(messages.findLast(message => message.type === "queryError").message, /did not confirm allocation-byte weighting/);
+});
+test("allocation capture preserves existing evidence when a profile query is busy", async () => {
+    const { controller, frames } = fixture();
+    controller.allocationProfile = { handle: "previous" };
+    await controller.cpuQueryGuard.run(async () => {
+        await controller.captureAllocations();
+        assert.equal(controller.allocationProfile.handle, "previous");
+        assert.equal(frames.length, 0);
+    });
 });
 test("declining high risk does not connect or issue an acknowledgement", async () => {
     const { controller, frames, messages } = fixture(kinds.CAPTURE_KIND_SPECS[1]);
@@ -142,7 +186,8 @@ test("CLI platform errors remain visible and are not treated as successful captu
 });
 function node(tag) {
     return { tag, children: [], textContent: "", appendChild(child) { this.children.push(child); },
-        replaceChildren() { this.children = []; } };
+        replaceChildren() { this.children = []; }, querySelectorAll() { return []; },
+        setAttribute() {}, addEventListener() {} };
 }
 const text = n => [n.textContent, ...n.children.map(text)].join("\n");
 test("every kind uses structured text-only tables, quality and explicit unavailable cells", () => {

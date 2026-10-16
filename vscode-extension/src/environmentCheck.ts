@@ -8,6 +8,7 @@
 
 export const REQUIRED_PROTOCOL_VERSION = 2;
 export const MIN_CLI_VERSION = "0.29.0";
+export const MIN_FULL_FEATURES_CLI_VERSION = "0.31.0";
 // `dotnet tool install` has no version-range syntax, so install the latest stable release.
 export const INSTALL_COMMAND = "dotnet tool install -g dotnet-diagnostics-cli";
 export const DEFAULT_CLI_PATH = "dotnet-diagnostics-cli";
@@ -49,6 +50,7 @@ export type EnvironmentIssueKind =
     | "runtime-missing"
     | "cli-outdated"
     | "extension-outdated"
+    | "feature-compatibility"
     | "cli-failed"
     | "environment-blocked"
     | "environment-degraded";
@@ -66,6 +68,7 @@ export interface EnvironmentReport {
     cliPath: string;
     ready: boolean;
     protocolVersion?: number;
+    cliVersion?: string;
     doctor?: DoctorReport;
     issues: EnvironmentIssue[];
 }
@@ -113,7 +116,7 @@ export function parseDoctorOutput(stdout: string): DoctorReport {
 }
 
 export type HandshakeOutcome =
-    | { kind: "ok"; protocolVersion: number }
+    | { kind: "ok"; protocolVersion: number; cliVersion?: string }
     | { kind: "unsupported"; supportedVersions: number[] }
     | { kind: "invalid" };
 
@@ -133,8 +136,15 @@ export function parseHandshakeOutput(stdout: string): HandshakeOutcome {
         return { kind: "invalid" };
     }
     if (frame.type === "hello" && typeof frame.protocolVersion === "number") {
+        const reportedVersion = typeof frame.cliVersion === "string" && frame.cliVersion.length <= 100
+            ? frame.cliVersion.trim()
+            : undefined;
         return frame.protocolVersion === REQUIRED_PROTOCOL_VERSION
-            ? { kind: "ok", protocolVersion: frame.protocolVersion }
+            ? {
+                kind: "ok",
+                protocolVersion: frame.protocolVersion,
+                cliVersion: reportedVersion && parseVersion(reportedVersion) ? reportedVersion : undefined,
+            }
             : { kind: "unsupported", supportedVersions: [frame.protocolVersion] };
     }
     if (frame.type === "error" && frame.code === "protocol_version_unsupported") {
@@ -154,7 +164,7 @@ function missingCliIssue(cliPath: string, detail: string): EnvironmentIssue {
         kind: "cli-missing",
         severity: "error",
         message: `dotnet-diagnostics-cli was not found at '${cliPath}' (${detail}).`,
-        guidance: `Install the CLI yourself (the extension never installs tools), or set the machine-scoped dotnetDiagnostics.cliPath to an existing executable. The CLI must be version ${MIN_CLI_VERSION} or later.`,
+        guidance: `Install the CLI yourself (the extension never installs tools), or set the machine-scoped dotnetDiagnostics.cliPath to an existing executable. CLI ${MIN_CLI_VERSION} or later supports protocol v2; use ${MIN_FULL_FEATURES_CLI_VERSION} or later for the full extension feature set.`,
         command: INSTALL_COMMAND,
     };
 }
@@ -195,15 +205,61 @@ function classifyStartFailure(cliPath: string, run: CliRunResult): EnvironmentIs
  * The global `dotnet tool update` only replaces the default `dotnet-diagnostics-cli` on PATH. For a
  * custom cliPath it would update a different executable, so give path-specific guidance instead.
  */
-function outdatedFix(cliPath: string): Pick<EnvironmentIssue, "guidance" | "command"> {
+function outdatedFix(cliPath: string, minimumVersion = MIN_CLI_VERSION): Pick<EnvironmentIssue, "guidance" | "command"> {
     return cliPath === DEFAULT_CLI_PATH
         ? {
             guidance: "Update the CLI yourself with the command below, then recheck. The Getting Started walkthrough explains each step.",
             command: UPDATE_COMMAND,
         }
         : {
-            guidance: `Update or rebuild the CLI at '${cliPath}' using whatever installed it (the global 'dotnet tool update' would not change this executable), or point dotnetDiagnostics.cliPath at a CLI ${MIN_CLI_VERSION} or later. The Getting Started walkthrough explains each step.`,
+            guidance: `Update or rebuild the CLI at '${cliPath}' using whatever installed it (the global 'dotnet tool update' would not change this executable), or point dotnetDiagnostics.cliPath at a CLI ${minimumVersion} or later. The Getting Started walkthrough explains each step.`,
         };
+}
+
+interface ParsedVersion {
+    major: number;
+    minor: number;
+    patch: number;
+    prerelease: string | undefined;
+}
+
+function parseVersion(value: string | undefined): ParsedVersion | undefined {
+    const match = value?.match(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/);
+    if (!match) {
+        return undefined;
+    }
+    const [major, minor, patch] = match.slice(1, 4).map(Number);
+    if (![major, minor, patch].every(Number.isSafeInteger)) {
+        return undefined;
+    }
+    return { major, minor, patch, prerelease: match[4] };
+}
+
+function isVersionAtLeast(version: ParsedVersion, minimum: ParsedVersion): boolean {
+    for (const part of ["major", "minor", "patch"] as const) {
+        if (version[part] !== minimum[part]) {
+            return version[part] > minimum[part];
+        }
+    }
+    return version.prerelease === undefined || minimum.prerelease !== undefined;
+}
+
+function featureCompatibilityIssue(cliPath: string, cliVersion: string | undefined): EnvironmentIssue | undefined {
+    const version = parseVersion(cliVersion);
+    const minimum = parseVersion(MIN_FULL_FEATURES_CLI_VERSION)!;
+    if (version && isVersionAtLeast(version, minimum)) {
+        return undefined;
+    }
+
+    const knownVersion = version
+        ? `CLI ${cliVersion} supports protocol v2 and live counters/GC pauses. Earlier capture, address navigation and export features depend on its version; allocation explorer, sensitive-value reveal and array-range navigation require CLI ${MIN_FULL_FEATURES_CLI_VERSION} or later.`
+        : `CLI supports protocol v2, but its version is unavailable or unrecognized; support for diagnostic captures, heap/thread drilldowns, address navigation, exports, allocation explorer and value/range reads could not be verified. Use CLI ${MIN_FULL_FEATURES_CLI_VERSION} or later for the full extension feature set.`;
+    return {
+        kind: "feature-compatibility",
+        severity: "warning",
+        message: knownVersion,
+        ...outdatedFix(cliPath, MIN_FULL_FEATURES_CLI_VERSION),
+    };
 }
 
 function doctorIssues(doctor: DoctorReport): EnvironmentIssue[] {
@@ -284,11 +340,14 @@ export async function checkEnvironment(cliPath: string, run: CliRunner, targetPi
         return { cliPath, ready: false, protocolVersion: handshake.protocolVersion, issues: [failedIssue("'doctor --json'", doctorRun)] };
     }
 
-    const issues = doctorIssues(doctor);
+    const cliVersion = handshake.cliVersion;
+    const compatibilityIssue = featureCompatibilityIssue(cliPath, cliVersion);
+    const issues = [...doctorIssues(doctor), ...(compatibilityIssue ? [compatibilityIssue] : [])];
     return {
         cliPath,
         ready: !doctor.hasBlocker,
         protocolVersion: handshake.protocolVersion,
+        cliVersion,
         doctor,
         issues,
     };
@@ -298,7 +357,9 @@ export async function checkEnvironment(cliPath: string, run: CliRunner, targetPi
 export function summarizeReport(report: EnvironmentReport): string {
     if (report.ready) {
         const warnings = report.issues.length;
-        const version = `CLI speaks protocol v${String(report.protocolVersion)}`;
+        const version = report.cliVersion
+            ? `CLI ${report.cliVersion}${report.issues.some(issue => issue.kind === "feature-compatibility") ? "" : " supports the full extension feature set"} (protocol v${String(report.protocolVersion)})`
+            : `CLI speaks protocol v${String(report.protocolVersion)}`;
         const targetUnverified = report.doctor?.checks.some(check => check.id === "socket-uid" && check.status === "NotApplicable") ?? false;
         const scope = targetUnverified
             ? " Host-only check: permissions for a specific target process (socket UID) are not verified until you start a capture on it."
@@ -307,7 +368,9 @@ export function summarizeReport(report: EnvironmentReport): string {
             ? `Host environment ready: ${version} and the host checks passed.${scope}`
             : `Host environment ready with ${warnings} warning(s): ${version}.${scope}`;
     }
-    return report.issues[0]?.message ?? "Environment is not ready.";
+    return report.issues.find(issue => issue.severity === "error")?.message
+        ?? report.issues[0]?.message
+        ?? "Environment is not ready.";
 }
 
 export type EnvironmentAction = "Copy Install Command" | "Copy Update Command" | "Open Getting Started" | "Open Settings" | "Recheck";
@@ -326,7 +389,9 @@ export interface EnvironmentHost {
 /** Actions offered for a report; install/update commands are only ever copied, never run. */
 export function actionsForReport(report: EnvironmentReport): EnvironmentAction[] {
     const actions: EnvironmentAction[] = [];
-    const first = report.issues.find(issue => issue.severity === "error") ?? report.issues[0];
+    const first = report.issues.find(issue => issue.severity === "error")
+        ?? report.issues.find(issue => issue.kind === "feature-compatibility")
+        ?? report.issues[0];
     if (first?.kind === "cli-missing") {
         actions.push("Copy Install Command", "Open Settings", "Open Getting Started");
     } else if (first?.kind === "cli-outdated") {
@@ -335,8 +400,10 @@ export function actionsForReport(report: EnvironmentReport): EnvironmentAction[]
         actions.push("Open Settings", "Open Getting Started");
     } else if (first?.kind === "extension-outdated") {
         actions.push("Open Getting Started");
+    } else if (first?.kind === "feature-compatibility") {
+        actions.push(...(first.command ? ["Copy Update Command" as const] : ["Open Settings" as const]), "Open Getting Started");
     }
-    if (!report.ready) {
+    if (!report.ready || report.issues.some(issue => issue.kind === "feature-compatibility")) {
         actions.push("Recheck");
     }
     return actions;

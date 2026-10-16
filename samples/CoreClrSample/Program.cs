@@ -178,6 +178,8 @@ app.MapGet("/leak", (int? mb) =>
 })
 .WithName("LeakBytes");
 
+app.MapGet("/heap-array-fixture", () => Results.Ok(ArrayInspectionFixture.Rows.Length));
+
 // Exception-storm: control flow via int.Parse on bad input inside a hot loop.
 app.MapGet("/parse", () =>
 {
@@ -401,6 +403,49 @@ sealed class Box<T>
 }
 
 // Fixture for the thread-snapshot 'thread-statics' view (issue #1120).
+static class ArrayInspectionFixture
+{
+    public static readonly ArrayInspectionRow[] Rows = Enumerable.Range(0, 11)
+        .Select(i => new ArrayInspectionRow { Number = i, Nested = new ArrayInspectionLeaf { Text = $"array-value-{i}", Code = i + 100 } }).ToArray();
+    public static readonly int[] Numbers = Enumerable.Range(0, 11).ToArray();
+    public static readonly object?[] References = [.. Enumerable.Range(0, 10).Select(i => (object)$"reference-{i}"), null];
+    public static readonly int[] Empty = [];
+    public static readonly int[,] Matrix = { { 0, 1, 2 }, { 3, 4, 5 } };
+    public static readonly Array LowerBounds = CreateLowerBoundsArray();
+    public static readonly int[][] Jagged = [[1, 2], [3, 4]];
+    public static readonly Dictionary<string, object> Map = Enumerable.Range(0, 11).ToDictionary(i => $"key-{i}", i => (object)$"value-{i}");
+    public static readonly ArrayInspectionQuad<ArrayInspectionQuad<ArrayInspectionQuad<ArrayInspectionLeaf>>>[] Wide = new ArrayInspectionQuad<ArrayInspectionQuad<ArrayInspectionQuad<ArrayInspectionLeaf>>>[8];
+    public static readonly ArrayInspectionQuad<ArrayInspectionQuad<ArrayInspectionQuad<ArrayInspectionQuad<ArrayInspectionLeaf>>>>[] Deep = new ArrayInspectionQuad<ArrayInspectionQuad<ArrayInspectionQuad<ArrayInspectionQuad<ArrayInspectionLeaf>>>>[1];
+
+    private static Array CreateLowerBoundsArray()
+    {
+        var array = Array.CreateInstance(typeof(int), [3], [-2]);
+        for (var i = -2; i <= 0; i++) array.SetValue(i + 9, i);
+        return array;
+    }
+}
+
+struct ArrayInspectionRow
+{
+    public int Number;
+    public ArrayInspectionLeaf Nested;
+}
+
+struct ArrayInspectionLeaf
+{
+    public string? Text;
+    public int Code;
+}
+
+struct ArrayInspectionQuad<T> where T : struct
+{
+    public ArrayInspectionQuad(T value) => A = B = C = D = value;
+    public T A;
+    public T B;
+    public T C;
+    public T D;
+}
+
 static class ThreadStaticFixture
 {
     [ThreadStatic]

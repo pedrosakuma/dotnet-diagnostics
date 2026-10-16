@@ -8,6 +8,37 @@ namespace DotnetDiagnostics.Mcp.IntegrationTests;
 
 public sealed class HeapSnapshotSecurityGateTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task QueryStructArray_FieldsRespectSensitivePolicy(bool emit)
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var handle = store.Register(123, "heap-snapshot", SnapshotWithStrings() with { Origin = HeapSnapshotOrigin.Dump }, TimeSpan.FromMinutes(10));
+        var inspector = new StubInspector
+        {
+            ObjectInspection = new HeapObjectInspection(0x1234, "Row[]", 64, "Small", "Gen0")
+            {
+                IsArray = true, ArrayLength = 11, ArrayStartIndex = 0, ArrayRequestedCount = 8,
+                ArraySample = [new HeapArrayElement(0, "Row", "<value-type size=40>")
+                {
+                    Fields = [new HeapObjectField("Nested.Value", "System.String", "hello, world") { ObjectAddress = 0x5678 }],
+                }],
+            },
+        };
+        var options = new SecurityOptions { AllowSensitiveHeapValues = emit };
+        var result = await DiagnosticTools.QueryHeapSnapshot(store, inspector, new SensitiveDataRedactor(options),
+            new SensitiveValueGate(options), TestPrincipalAccessors.Root, handle.Id,
+            view: "object", address: "0x1234", includeSensitiveValues: emit);
+        result.Error.Should().BeNull();
+        var inspection = result.Data!.ObjectDetails!;
+        inspection.ArrayStartIndex.Should().Be(0);
+        inspection.ArrayRequestedCount.Should().Be(8);
+        var field = inspection.ArraySample![0].Fields![0];
+        field.Value.Should().Be(emit ? "hello, world" : SensitiveDataRedactor.MetadataOnlyPlaceholder);
+        field.ObjectAddress.Should().Be(0x5678);
+    }
+
     [Fact]
     public async Task QueryDuplicateStrings_Default_RedactsToMetadataOnly()
     {
@@ -66,12 +97,13 @@ public sealed class HeapSnapshotSecurityGateTests
 
     private sealed class StubInspector : IDumpInspector
     {
+        public HeapObjectInspection? ObjectInspection { get; init; }
         public Task<HeapSnapshotArtifact> InspectAsync(string dumpFilePath, DumpInspectionOptions? options = null, CancellationToken cancellationToken = default)
             => throw new NotSupportedException();
         public Task<HeapSnapshotArtifact> InspectLiveAsync(int processId, DumpInspectionOptions? options = null, CancellationToken cancellationToken = default)
             => throw new NotSupportedException();
         public Task<HeapObjectInspection> InspectObjectAsync(HeapSnapshotArtifact snapshot, ulong address, CancellationToken cancellationToken = default)
-            => throw new NotSupportedException();
+            => Task.FromResult(ObjectInspection ?? throw new NotSupportedException());
         public Task<HeapGcRootInspection> InspectGcRootAsync(HeapSnapshotArtifact snapshot, ulong address, CancellationToken cancellationToken = default)
             => throw new NotSupportedException();
         public Task<HeapObjectSizeInspection> InspectObjectSizeAsync(HeapSnapshotArtifact snapshot, ulong address, CancellationToken cancellationToken = default)

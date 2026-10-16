@@ -69,6 +69,17 @@ public sealed class ClrMdDumpInspector : IDumpInspector
         CancellationToken cancellationToken = default)
         => InspectSnapshotAsync(snapshot, runtime => ClrMdHeapDrilldownService.InspectObject(runtime, address), cancellationToken);
 
+    public Task<HeapObjectInspection> InspectObjectAsync(
+        HeapSnapshotArtifact snapshot,
+        ulong address,
+        HeapObjectInspectionOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        options.Validate();
+        return InspectSnapshotAsync(snapshot, runtime => ClrMdHeapDrilldownService.InspectObject(runtime, address, options), cancellationToken);
+    }
+
     public Task<HeapGcRootInspection> InspectGcRootAsync(
         HeapSnapshotArtifact snapshot,
         ulong address,

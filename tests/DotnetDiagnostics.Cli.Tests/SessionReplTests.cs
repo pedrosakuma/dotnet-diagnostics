@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using DotnetDiagnostics.Cli;
 using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Activities;
@@ -18,6 +19,7 @@ using DotnetDiagnostics.Core.Threads;
 using DotnetDiagnostics.Core.UseCases;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 
 namespace DotnetDiagnostics.Cli.Tests;
 
@@ -358,6 +360,140 @@ public sealed class SessionReplTests
         stdout.Should().Contain("redacted:metadata-only");
         stdout.Should().NotContain("super-secret-connection-string",
             "the Core-only session holds no sensitive-value gate, so raw heap content must never be surfaced");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Streaming_ObjectValues_RequireSeparatePerRequestConsent(bool live)
+    {
+        const string secret = "password=<script>not markup</script>";
+        var inspector = new StubDumpInspector
+        {
+            ObjectInspection = new HeapObjectInspection(0x1234, "System.String", 64, "Small", "Generation0")
+            {
+                IsString = true,
+                StringValue = secret,
+                StringValueTruncated = true,
+                Fields = [new HeapObjectField("_value", "System.String", secret) { ObjectAddress = 0x4567 }],
+                ArraySample = [new HeapArrayElement(0, "System.String", secret)
+                {
+                    Fields = [new HeapObjectField("Nested.Value", "System.String", secret) { ObjectAddress = 0x9876 }],
+                }],
+            },
+        };
+        var store = new MemoryDiagnosticHandleStore();
+        var snapshot = live ? HeapSnapshot() : DumpHeapSnapshot();
+        var handle = store.Register(Environment.ProcessId, HeapInspectionUseCases.HeapSnapshotKind, snapshot, TimeSpan.FromMinutes(10));
+        object Request(string id, object? include = null, object? consent = null, string view = "object", bool risk = true)
+        {
+            var request = new Dictionary<string, object?>
+            {
+                ["type"] = "query", ["requestId"] = id, ["handle"] = handle.Id,
+                ["view"] = view, ["address"] = "0x1234", ["acknowledgeRisk"] = "high",
+            };
+            if (include is not null) request["includeSensitiveValues"] = include;
+            if (consent is not null) request["acknowledgeSensitiveValues"] = consent;
+            if (!risk) request.Remove("acknowledgeRisk");
+            return request;
+        }
+        object[] requests =
+        [
+            new { type = "hello", protocolVersion = 2 },
+            Request("default"),
+            Request("no-consent", true),
+            Request("wrong-consent", true, "true"),
+            Request("wrong-type", "true", true),
+            Request("wrong-view", true, true, "gcroot"),
+            Request("reveal", true, true),
+            Request("next"),
+            Request("consent-only", consent: true),
+            Request("disabled", false, true),
+            Request("no-risk", true, true, risk: false),
+        ];
+        using var input = new StringReader(string.Join('\n', requests.Select(request => JsonSerializer.Serialize(request))) + "\n");
+        using var output = new StringWriter();
+        using var errors = new StringWriter();
+        var exit = await CliStreamingProtocol.RunAsync(
+            ["stream", "--protocol", "jsonl"], input, output, errors,
+            () => new HostBuilder().ConfigureServices(services => services
+                .AddSingleton<IDiagnosticHandleStore>(store).AddSingleton<IDumpInspector>(inspector)).Build(),
+            CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
+        exit.Should().Be(0);
+        var frames = output.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(line => JsonSerializer.Deserialize<JsonElement>(line)).Skip(1)
+            .ToDictionary(frame => frame.GetProperty("requestId").GetString()!);
+        foreach (var id in new[] { "default", "next", "consent-only", "disabled" })
+        {
+            var result = frames[id].GetProperty("result");
+            result.GetProperty("sensitiveValuesIncluded").GetBoolean().Should().BeFalse();
+            result.GetRawText().Should().NotContain("password");
+            result.GetProperty("objectDetails").GetProperty("stringValue").GetString().Should().Be("<redacted:metadata-only>");
+        }
+        foreach (var id in new[] { "no-consent", "wrong-consent" })
+            frames[id].GetProperty("code").GetString().Should().Be("sensitive_values_rejected");
+        foreach (var id in new[] { "wrong-type", "wrong-view" })
+            frames[id].GetProperty("code").GetString().Should().Be("invalid_query");
+        var revealed = frames["reveal"].GetProperty("result");
+        revealed.GetProperty("sensitiveValuesIncluded").GetBoolean().Should().BeTrue();
+        var details = revealed.GetProperty("objectDetails");
+        details.GetProperty("stringValue").GetString().Should().Be(secret);
+        details.GetProperty("stringValueTruncated").GetBoolean().Should().BeTrue();
+        details.GetProperty("fields")[0].GetProperty("value").GetString().Should().Be(secret);
+        details.GetProperty("fields")[0].GetProperty("objectAddress").GetString().Should().Be("0x4567");
+        details.GetProperty("arraySample")[0].GetProperty("value").GetString().Should().Be(secret);
+        details.GetProperty("arraySample")[0].GetProperty("fields")[0].GetProperty("value").GetString().Should().Be(secret);
+        details.GetProperty("arraySample")[0].GetProperty("fields")[0].GetProperty("objectAddress").GetString().Should().Be("0x9876");
+        if (live)
+            frames["no-risk"].GetProperty("code").GetString().Should().Be("query_safety_rejected");
+        else
+            frames["no-risk"].GetProperty("result").GetProperty("sensitiveValuesIncluded").GetBoolean().Should().BeTrue();
+        errors.ToString().Should().NotContain(secret);
+    }
+
+    [Fact]
+    public async Task Streaming_ArrayRanges_ValidateForwardAndPreserveMetadataWithoutSensitiveValues()
+    {
+        var inspector = new StubDumpInspector
+        {
+            ObjectInspection = new HeapObjectInspection(0x1234, "Row[]", 1024, "Small", "Generation0")
+            {
+                IsArray = true, ArrayLength = 11,
+                ArraySample = Enumerable.Range(0, 11).Select(i => new HeapArrayElement(i, "Row", "<value-type>")
+                {
+                    Fields = [new HeapObjectField("Nested.Value", "System.String", "secret") { ObjectAddress = 0x9876 }],
+                }).ToArray(),
+            },
+        };
+        var store = new MemoryDiagnosticHandleStore();
+        var handle = store.Register(Environment.ProcessId, HeapInspectionUseCases.HeapSnapshotKind, DumpHeapSnapshot(), TimeSpan.FromMinutes(10));
+        var requests = new List<object> { new { type = "hello", protocolVersion = 2 } };
+        foreach (var (start, count, view) in new (object?, object, string)[]
+        {
+            (-1, 8, "object"), (0, 0, "object"), (0, 9, "object"), ("8", 8, "object"),
+            (0, "8", "object"), (1.5, 8, "object"), (2147483648L, 8, "object"),
+            (0, 8, "gcroot"), (null, 8, "object"),
+        })
+            requests.Add(new { type = "query", requestId = $"bad{requests.Count}", handle = handle.Id, view, address = "0x1234", arrayStartIndex = start, arrayCount = count });
+        requests.Add(new { type = "query", requestId = "range", handle = handle.Id, view = "object", address = "0x1234", arrayStartIndex = 8, arrayCount = 8 });
+        using var input = new StringReader(string.Join('\n', requests.Select(r => JsonSerializer.Serialize(r))) + "\n");
+        using var output = new StringWriter();
+        using var errors = new StringWriter();
+        await CliStreamingProtocol.RunAsync(["stream", "--protocol", "jsonl"], input, output, errors,
+            () => new HostBuilder().ConfigureServices(services => services
+                .AddSingleton<IDiagnosticHandleStore>(store).AddSingleton<IDumpInspector>(inspector)).Build(),
+            CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
+        var frames = output.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(line => JsonSerializer.Deserialize<JsonElement>(line)).Skip(1).ToArray();
+        frames.SkipLast(1).Should().OnlyContain(frame => frame.GetProperty("code").GetString() == "invalid_query");
+        var result = frames[^1].GetProperty("result");
+        result.GetRawText().Should().NotContain("secret");
+        var details = result.GetProperty("objectDetails");
+        details.GetProperty("arrayStartIndex").GetInt32().Should().Be(8);
+        details.GetProperty("arrayRequestedCount").GetInt32().Should().Be(8);
+        details.GetProperty("arraySample").GetArrayLength().Should().Be(3);
+        details.GetProperty("arraySample")[0].GetProperty("index").GetInt32().Should().Be(8);
+        details.GetProperty("arraySample")[0].GetProperty("fields")[0].GetProperty("objectAddress").GetString().Should().Be("0x9876");
     }
 
     [Fact]
@@ -1835,6 +1971,18 @@ public sealed class SessionReplTests
         {
             LastAddress = address;
             return Task.FromResult(ObjectInspection ?? throw new InvalidOperationException("ObjectInspection not configured."));
+        }
+
+        public Task<HeapObjectInspection> InspectObjectAsync(HeapSnapshotArtifact snapshot, ulong address, HeapObjectInspectionOptions options, CancellationToken cancellationToken = default)
+        {
+            options.Validate();
+            LastAddress = address;
+            return Task.FromResult((ObjectInspection ?? throw new InvalidOperationException("ObjectInspection not configured.")) with
+            {
+                ArrayStartIndex = options.ArrayStartIndex,
+                ArrayRequestedCount = options.ArrayCount,
+                ArraySample = ObjectInspection.ArraySample?.Skip(options.ArrayStartIndex).Take(options.ArrayCount).ToArray(),
+            });
         }
 
         public Task<HeapGcRootInspection> InspectGcRootAsync(HeapSnapshotArtifact snapshot, ulong address, CancellationToken cancellationToken = default)

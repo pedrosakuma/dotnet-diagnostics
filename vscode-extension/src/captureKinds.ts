@@ -36,6 +36,7 @@ export interface CaptureParams {
 
 type Scalar = string | number | boolean | null;
 export interface CaptureViewResult {
+    handle?: string | null;
     kind: CaptureViewKind;
     title: string;
     summary: string;
@@ -110,6 +111,9 @@ function nullableString(value: unknown): boolean { return value === null || type
 export function isCaptureViewResult(value: unknown): value is CaptureViewResult {
     if (!record(value) || typeof value.kind !== "string" || !isCaptureViewKind(value.kind)
         || typeof value.title !== "string" || typeof value.summary !== "string") return false;
+    if (value.handle !== undefined && value.handle !== null
+        && (typeof value.handle !== "string" || value.handle.length < 1 || value.handle.length > 128
+            || /[\u0000-\u0020\u007f]/.test(value.handle))) return false;
     const p = value.provenance;
     if (!record(p) || p.origin !== "live-stream" || p.durable !== false || !count(p.processId) || p.processId === 0
         || !count(p.requestedDurationSeconds) || !nullableString(p.startedAt) || !nullableString(p.runtime)

@@ -757,6 +757,25 @@ jobs:
         timeout-minutes: 5
         run: dotnet pack src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj --no-build --no-restore --configuration Release -o artifacts/nupkg-smoke
 
+      - name: Setup Node.js for VS Code extension tests
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: vscode-extension/package-lock.json
+
+      - name: Install VS Code extension dependencies
+        timeout-minutes: 5
+        working-directory: vscode-extension
+        run: npm ci --ignore-scripts
+
+      - name: Test VS Code extension and built CLI handshake
+        timeout-minutes: 10
+        working-directory: vscode-extension
+        env:
+          DOTNET_DIAGNOSTICS_CLI_DLL: ${{ github.workspace }}\src\DotnetDiagnostics.Cli\bin\Release\net10.0\dotnet-diagnostics.dll
+        run: npm test
+
       - name: Verify expected test results
         if: ${{ always() }}
         shell: bash
