@@ -63,6 +63,13 @@ public static class ComparablePairwiseSampleDiff
             return diff with { Verdict = "inconclusive", Notes = notes };
         }
 
+        // Share-of-samples deltas move for reasons unrelated to cost (a removed bottleneck raises every other row's share).
+        if (diff.Verdict is not ("no_overlap" or "incomparable"))
+        {
+            notes.Add("Per-method sample shares are reported as objective deltas; no improvement/regression was judged because a share change does not establish a change in CPU time or work done.");
+            return diff with { Verdict = "not_assessed", Notes = notes };
+        }
+
         return diff;
     }
 
@@ -270,21 +277,22 @@ public static class ComparablePairwiseSampleDiff
             .ThenByDescending(row => Math.Abs(row.DeltaAbs))
             .ToArray();
 
-        if (overlapCount == 0)
+        var disjoint = overlapCount == 0 && baseline.Count > 0 && current.Count > 0;
+        if (disjoint)
         {
-            notes.Add("No overlapping symbols/types between baseline and current handles; verdict forced to no_change.");
+            notes.Add("No overlapping symbols/types between baseline and current handles; verdict is no_overlap.");
         }
 
-        var regressionSignal = overlapCount > 0 && (
+        var regressionSignal = !disjoint && (
             changedAll.Any(row => row.Direction == "up") ||
             addedAll.Any(row => MetricForSort(row.Current, primaryMetric) > baselineMedian));
 
-        var improvementSignal = overlapCount > 0 && (
+        var improvementSignal = !disjoint && (
             changedAll.Any(row => row.Direction == "down") ||
             removedAll.Any(row => MetricForSort(row.Baseline, primaryMetric) > baselineMedian));
 
-        var verdict = overlapCount == 0
-            ? "no_change"
+        var verdict = disjoint
+            ? "no_overlap"
             : regressionSignal && improvementSignal ? "mixed"
             : regressionSignal ? "regression"
             : improvementSignal ? "improvement"

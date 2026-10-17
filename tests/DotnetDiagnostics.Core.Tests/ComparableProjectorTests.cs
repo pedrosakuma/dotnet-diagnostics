@@ -361,7 +361,7 @@ public sealed class ComparableProjectorTests
     }
 
     [Fact]
-    public void CpuProjector_UsesExclusivePercentAsLowerBetterPrimary_AndMethodKeys()
+    public void CpuProjector_UsesExclusivePercentAsNeutralPrimary_AndMethodKeys()
     {
         var mvid = Guid.Parse("22222222-2222-2222-2222-222222222222");
         var identity = new MethodIdentity("DoWork", 0, "MyApp.dll", ModuleVersionId: mvid, MetadataToken: 0x06000042, TypeFullName: "MyApp.Worker");
@@ -375,15 +375,15 @@ public sealed class ComparableProjectorTests
         primary.Definition.Name.Should().Be("exclusivePercent");
         primary.Definition.Aggregation.Should().Be(MetricAggregation.Percent);
         primary.Definition.NormalizedBy.Should().Be(MetricNormalization.SampleCount);
-        primary.Definition.BetterDirection.Should().Be(BetterDirection.Lower);
+        primary.Definition.BetterDirection.Should().Be(BetterDirection.Neutral);
         primary.Value.Should().Be(10);
 
-        SnapshotDiffer.Compare(new[] { baseline, current }).Verdict.Should().Be("regression");
-        SnapshotDiffer.Compare(new[] { current, baseline }).Verdict.Should().Be("improvement");
+        SnapshotDiffer.Compare(new[] { baseline, current }).Verdict.Should().Be("not_assessed");
+        SnapshotDiffer.Compare(new[] { current, baseline }).Verdict.Should().Be("not_assessed");
     }
 
     [Fact]
-    public void CpuProjector_WaitingCollapseDrivesImprovementDespiteNewRunningLeader()
+    public void CpuProjector_WaitingCollapseWithNewRunningLeader_IsReportedAsSignalsOnly()
     {
         var projector = new CpuSampleComparableProjector();
         var baseline = projector.Project(
@@ -409,7 +409,7 @@ public sealed class ComparableProjectorTests
 
         diff.Verdict.Should().Be("no_overlap");
         diff.MetricSeries.Single(series => series.Definition.Name == "onCpuSelfPercent")
-            .Direction.Should().Be("regressed");
+            .Direction.Should().Be("n/a");
         baseline.Rows.Single().Metrics.Should().Contain(metric =>
             metric.Definition.Name == "heuristicWaitExclusiveSamples" && metric.Value == 60);
         current.Rows.Single().Metrics.Should().Contain(metric =>
@@ -417,7 +417,7 @@ public sealed class ComparableProjectorTests
     }
 
     [Fact]
-    public void CpuProjector_UnrelatedAllRunningHotspotReplacement_IsRegression()
+    public void CpuProjector_UnrelatedAllRunningHotspotReplacement_IsSignalsOnly()
     {
         var projector = new CpuSampleComparableProjector();
         var baseline = projector.Project(
@@ -443,11 +443,11 @@ public sealed class ComparableProjectorTests
 
         diff.Verdict.Should().Be("no_overlap");
         diff.MetricSeries.Single(series => series.Definition.Name == "onCpuSelfPercent")
-            .Direction.Should().Be("improved");
+            .Direction.Should().Be("n/a");
     }
 
     [Fact]
-    public void NativeAllocProjector_UsesExclusivePercentAsLowerBetterPrimary_WithNativeKind()
+    public void NativeAllocProjector_UsesExclusivePercentAsNeutralPrimary_WithNativeKind()
     {
         var baseline = new NativeAllocSampleComparableProjector().Project(CpuTraceForProjector("libnative.so", "malloc", identity: null, exclusiveSamples: 5, totalSamples: 100), "baseline");
         var current = new NativeAllocSampleComparableProjector().Project(CpuTraceForProjector("libnative.so", "malloc", identity: null, exclusiveSamples: 20, totalSamples: 100), "current");
@@ -458,15 +458,15 @@ public sealed class ComparableProjectorTests
         row.Key.StableId.Should().Be("libnative.so!malloc");
         var primary = row.Metrics.Single(m => m.Definition.Role == MetricRole.Primary);
         primary.Definition.Name.Should().Be("exclusivePercent");
-        primary.Definition.BetterDirection.Should().Be(BetterDirection.Lower);
+        primary.Definition.BetterDirection.Should().Be(BetterDirection.Neutral);
         primary.Value.Should().Be(5);
 
-        SnapshotDiffer.Compare(new[] { baseline, current }).Verdict.Should().Be("regression");
-        SnapshotDiffer.Compare(new[] { current, baseline }).Verdict.Should().Be("improvement");
+        SnapshotDiffer.Compare(new[] { baseline, current }).Verdict.Should().Be("not_assessed");
+        SnapshotDiffer.Compare(new[] { current, baseline }).Verdict.Should().Be("not_assessed");
     }
 
     [Fact]
-    public void NativeLockContentionProjector_UsesExclusivePercentAsLowerBetterPrimary_WithNativeKind()
+    public void NativeLockContentionProjector_UsesExclusivePercentAsNeutralPrimary_WithNativeKind()
     {
         var baseline = new NativeLockContentionSampleComparableProjector().Project(CpuTraceForProjector("libc.so.6", "pthread_mutex_lock", identity: null, exclusiveSamples: 5, totalSamples: 100), "baseline");
         var current = new NativeLockContentionSampleComparableProjector().Project(CpuTraceForProjector("libc.so.6", "pthread_mutex_lock", identity: null, exclusiveSamples: 20, totalSamples: 100), "current");
@@ -477,11 +477,11 @@ public sealed class ComparableProjectorTests
         row.Key.StableId.Should().Be("libc.so.6!pthread_mutex_lock");
         var primary = row.Metrics.Single(m => m.Definition.Role == MetricRole.Primary);
         primary.Definition.Name.Should().Be("exclusivePercent");
-        primary.Definition.BetterDirection.Should().Be(BetterDirection.Lower);
+        primary.Definition.BetterDirection.Should().Be(BetterDirection.Neutral);
         primary.Value.Should().Be(5);
 
-        SnapshotDiffer.Compare(new[] { baseline, current }).Verdict.Should().Be("regression");
-        SnapshotDiffer.Compare(new[] { current, baseline }).Verdict.Should().Be("improvement");
+        SnapshotDiffer.Compare(new[] { baseline, current }).Verdict.Should().Be("not_assessed");
+        SnapshotDiffer.Compare(new[] { current, baseline }).Verdict.Should().Be("not_assessed");
     }
 
     [Fact]

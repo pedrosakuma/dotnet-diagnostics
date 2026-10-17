@@ -92,7 +92,7 @@ public sealed record PairwiseJourney(
 /// Result of comparing 2..N <see cref="ComparableSnapshot"/>s of the same kind. Carries the metric
 /// series (scalar kinds), the key matrix (key-set kinds), the pairwise breakdown and an overall
 /// verdict. For <see cref="JourneyMode.Trend"/> the verdict is one of
-/// <c>improvement|regression|mixed|no_change|no_overlap|incomparable</c>; for
+/// <c>improvement|regression|mixed|no_change|not_assessed|no_overlap|incomparable</c>; for
 /// <see cref="JourneyMode.Dispersion"/> it is <c>uniform|dispersed|no_overlap|incomparable</c>.
 /// </summary>
 public sealed record SnapshotJourneyDiff(
