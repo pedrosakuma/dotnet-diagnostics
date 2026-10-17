@@ -88,7 +88,7 @@ public sealed class QuerySnapshotDiffToolTests
         result.Error.Should().BeNull();
         var diff = result.Data.Should().BeOfType<SampleDiff<MethodDiffKey, CpuDiffMetric>>().Subject;
         diff.Kind.Should().Be("cpu-sample");
-        diff.Verdict.Should().Be("regression");
+        diff.Verdict.Should().Be("not_assessed");
         diff.Changed.Should().ContainSingle(row => row.Direction == "up" && row.Key.Symbol.MethodFullName.Contains("DoWork", StringComparison.Ordinal));
     }
 

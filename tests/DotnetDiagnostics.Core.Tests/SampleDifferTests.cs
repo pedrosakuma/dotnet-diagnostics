@@ -134,8 +134,8 @@ public sealed class SampleDifferTests
 
         var diff = ComparablePairwiseSampleDiff.Compare(baseline, "b", current, "c", minDeltaPct: 5, topN: 10);
 
-        diff.Verdict.Should().Be("regression");
-        diff.Notes.Should().BeNull();
+        diff.Verdict.Should().Be("not_assessed");
+        diff.Notes.Should().ContainSingle(n => n.Contains("no improvement/regression was judged"));
         diff.Changed.Should().ContainSingle();
     }
 
@@ -143,7 +143,7 @@ public sealed class SampleDifferTests
     [InlineData(100, "no_change")]
     [InlineData(200, "regression")]
     [InlineData(50, "improvement")]
-    public void CpuDiff_UsesSampleShareRatherThanAbsoluteWork(long currentExclusive, string verdict)
+    public void CpuDiff_UsesSampleShareRatherThanAbsoluteWork(long currentExclusive, string rowShift)
     {
         var symbol = new SymbolRef("CoreClrSample.dll", "GenericFixture.Echo(!!0)");
         var identity = new MethodIdentity(
@@ -158,10 +158,11 @@ public sealed class SampleDifferTests
 
         var diff = ComparablePairwiseSampleDiff.Compare(baseline, "b", current, "c", minDeltaPct: 1, topN: 25);
 
-        diff.Verdict.Should().Be(verdict);
+        diff.Verdict.Should().Be("not_assessed");
+        diff.Notes.Should().Contain(n => n.Contains("no improvement/regression was judged"));
         diff.Added.Should().BeEmpty();
         diff.Removed.Should().BeEmpty();
-        if (verdict == "no_change")
+        if (rowShift == "no_change")
         {
             diff.Changed.Should().BeEmpty("ten times as many samples at the same share is not a CPU regression");
         }
@@ -171,7 +172,7 @@ public sealed class SampleDifferTests
             row.Key.Identity.Should().Be(identity);
             row.Baseline!.ExclusivePercent.Should().Be(10);
             row.Current!.ExclusivePercent.Should().Be(currentExclusive / 10.0);
-            row.Direction.Should().Be(verdict == "regression" ? "up" : "down");
+            row.Direction.Should().Be(rowShift == "regression" ? "up" : "down");
         }
     }
 

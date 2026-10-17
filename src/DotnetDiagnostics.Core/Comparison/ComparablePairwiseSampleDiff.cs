@@ -63,6 +63,13 @@ public static class ComparablePairwiseSampleDiff
             return diff with { Verdict = "inconclusive", Notes = notes };
         }
 
+        // Share-of-samples deltas move for reasons unrelated to cost (a removed bottleneck raises every other row's share).
+        if (diff.Verdict is not ("no_overlap" or "incomparable"))
+        {
+            notes.Add("Per-method sample shares are reported as objective deltas; no improvement/regression was judged because a share change does not establish a change in CPU time or work done.");
+            return diff with { Verdict = "not_assessed", Notes = notes };
+        }
+
         return diff;
     }
 
