@@ -462,7 +462,8 @@ public static class SnapshotDiffer
         var fromMap = KeyLookup(from, notesSink);
         var toMap = KeyLookup(to, notesSink);
 
-        if ((fromMap.Count > 0 || toMap.Count > 0) && !fromMap.Keys.Intersect(toMap.Keys, StringComparer.Ordinal).Any())
+        // One side fully empty is added/removed rows, not "no overlap"; that falls through to absence logic.
+        if (fromMap.Count > 0 && toMap.Count > 0 && !fromMap.Keys.Intersect(toMap.Keys, StringComparer.Ordinal).Any())
         {
             return NoOverlap;
         }

@@ -55,14 +55,14 @@ public sealed class SampleDifferTests
     }
 
     [Fact]
-    public void HeapDiff_NoOverlap_ForcesNoChange()
+    public void HeapDiff_NoOverlap_ReportsNoOverlap()
     {
         var baseline = HeapSnapshot(("System.Byte[]", 100, 1));
         var current = HeapSnapshot(("System.String", 500, 3));
 
         var diff = ComparablePairwiseSampleDiff.Compare(baseline, "b", current, "c", minDeltaPct: 5, topN: 10);
 
-        diff.Verdict.Should().Be("no_change");
+        diff.Verdict.Should().Be("no_overlap");
         diff.Notes.Should().Contain(note => note.Contains("No overlapping symbols/types", StringComparison.Ordinal));
     }
 

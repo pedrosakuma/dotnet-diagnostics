@@ -264,6 +264,18 @@ public sealed class SnapshotDifferTests
     }
 
     [Fact]
+    public void KeySet_AllRowsRemoved_IsImprovement_NotNoOverlap()
+    {
+        var diff = SnapshotDiffer.Compare(new[]
+        {
+            KeySnap("base", ("A", 10)),
+            KeySnap("after"),
+        });
+
+        diff.Verdict.Should().Be("improvement");
+    }
+
+    [Fact]
     public void KeySet_TruncatesToTopN_WithNote()
     {
         var baseRows = Enumerable.Range(0, 30).Select(i => ($"K{i}", 100.0 - i)).ToArray();

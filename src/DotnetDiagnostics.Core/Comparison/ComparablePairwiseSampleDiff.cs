@@ -272,7 +272,7 @@ public static class ComparablePairwiseSampleDiff
 
         if (overlapCount == 0)
         {
-            notes.Add("No overlapping symbols/types between baseline and current handles; verdict forced to no_change.");
+            notes.Add("No overlapping symbols/types between baseline and current handles; verdict is no_overlap.");
         }
 
         var regressionSignal = overlapCount > 0 && (
@@ -284,7 +284,7 @@ public static class ComparablePairwiseSampleDiff
             removedAll.Any(row => MetricForSort(row.Baseline, primaryMetric) > baselineMedian));
 
         var verdict = overlapCount == 0
-            ? "no_change"
+            ? "no_overlap"
             : regressionSignal && improvementSignal ? "mixed"
             : regressionSignal ? "regression"
             : improvementSignal ? "improvement"
