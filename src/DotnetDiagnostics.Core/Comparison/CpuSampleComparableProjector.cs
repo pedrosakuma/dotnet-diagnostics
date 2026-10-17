@@ -85,7 +85,8 @@ public static class CpuSampleComparableProjection
         var metrics = new List<MetricValue>();
         if (artifact.Evidence?.Kind == CpuSampleEvidenceKind.OsOnCpuSamples)
         {
-            metrics.Add(Metric("onCpuSelfPercent", MetricRole.Primary, BetterDirection.Lower,
+            // Share of samples, not CPU time or work done: its better direction depends on the workload.
+            metrics.Add(Metric("onCpuSelfPercent", MetricRole.Primary, BetterDirection.Neutral,
                 MetricAggregation.Percent, MetricNormalization.SampleCount, "%",
                 100.0 * selfSamples.RunningSamples / totalSamples));
             metrics.Add(Metric("onCpuSelfSamples", MetricRole.Context, BetterDirection.Neutral,
@@ -122,7 +123,7 @@ public static class CpuSampleComparableProjection
                 {
                     Metric("exclusivePercent",
                         artifact.Evidence?.Kind == CpuSampleEvidenceKind.OsOnCpuSamples ? MetricRole.Primary : MetricRole.Context,
-                        artifact.Evidence?.Kind == CpuSampleEvidenceKind.OsOnCpuSamples ? BetterDirection.Lower : BetterDirection.Neutral,
+                        BetterDirection.Neutral,
                         MetricAggregation.Percent, MetricNormalization.SampleCount, "%", exclusivePercent),
                     Metric("exclusiveSamples", MetricRole.Context, BetterDirection.Neutral, MetricAggregation.Total, MetricNormalization.None, "samples", row.ExclusiveSamples),
                     Metric("inclusiveSamples", MetricRole.Context, BetterDirection.Neutral, MetricAggregation.Total, MetricNormalization.None, "samples", row.InclusiveSamples),
