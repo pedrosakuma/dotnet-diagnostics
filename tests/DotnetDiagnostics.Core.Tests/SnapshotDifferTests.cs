@@ -104,6 +104,18 @@ public sealed class SnapshotDifferTests
     }
 
     [Fact]
+    public void AllNeutralMetrics_AreNotAssessed_WithNote()
+    {
+        var diff = SnapshotDiffer.Compare(new[]
+        {
+            MetricSnap("base", "counters", Metric("cpu", 35, BetterDirection.Neutral)),
+            MetricSnap("after", "counters", Metric("cpu", 78, BetterDirection.Neutral)),
+        });
+        diff.Verdict.Should().Be("not_assessed");
+        diff.Notes.Should().Contain(n => n.Contains("no improvement/regression was judged"));
+    }
+
+    [Fact]
     public void MetricAbsentInEndpoint_IsNotApplicable_WithNote()
     {
         var diff = SnapshotDiffer.Compare(new[]

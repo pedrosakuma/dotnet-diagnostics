@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Comparison verdict `not_assessed` now replaces a misleading `no_change` when no shared
+  metric or row has a better-direction; a note explains that deltas are objective signals (#1189).
+
 ### Added
 
 - Added a native Linux ARM64 producer, architecture-specific seccomp policy,

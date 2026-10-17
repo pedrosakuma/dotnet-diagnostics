@@ -262,6 +262,8 @@ are identical regardless of which "door" you use; only the transport differs.
    - `regression` — the primary metric(s) moved the wrong way.
    - `mixed` — some primaries improved, others regressed; read the per-metric `Direction`.
    - `no_change` — primaries within `minDeltaPct`.
+   - `not_assessed` — shared metrics carry no better-direction (e.g. neutral counters), so nothing
+     was judged; read the raw deltas and interpret with workload context.
    - `no_overlap` — the two captures share no comparable metric/key (e.g. different kinds of
      work); re-capture comparable windows.
    - `incomparable` — fewer than two captures or mixed kinds.

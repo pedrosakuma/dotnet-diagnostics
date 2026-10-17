@@ -12,6 +12,7 @@ public static class SnapshotDiffer
     private const string Regression = "regression";
     private const string Mixed = "mixed";
     private const string NoChange = "no_change";
+    private const string NotAssessed = "not_assessed";
     private const string NoOverlap = "no_overlap";
     private const string Incomparable = "incomparable";
     private const string Inconclusive = "inconclusive";
@@ -109,6 +110,11 @@ public static class SnapshotDiffer
                 pairwise.Adjacent.Select(static comparison => comparison with { Verdict = Inconclusive }).ToArray());
         }
         var verdict = pairwise.Headline.Verdict;
+        if (verdict == NotAssessed)
+        {
+            notes.Add("No shared metric or row has a better-direction, so no improvement/regression was judged. Deltas and trends are reported as objective signals; interpret them with workload context.");
+        }
+
         return WithQuality(new SnapshotJourneyDiff(kind, mode, labels, verdict, metricSeries, keyMatrix, pairwise, notes), snapshots);
     }
 
@@ -425,6 +431,7 @@ public static class SnapshotDiffer
 
         var improved = false;
         var regressed = false;
+        var assessed = false;
         foreach (var name in fromMap.Keys.Intersect(toMap.Keys, StringComparer.Ordinal))
         {
             var def = fromMap[name].Definition;
@@ -435,7 +442,9 @@ public static class SnapshotDiffer
 
             var f = fromMap[name].Value;
             var t = toMap[name].Value;
-            switch (Direction(def.BetterDirection, f, t, PercentDelta(f, t), minDeltaPct))
+            var direction = Direction(def.BetterDirection, f, t, PercentDelta(f, t), minDeltaPct);
+            assessed |= direction != NotApplicable;
+            switch (direction)
             {
                 case Improved: improved = true; break;
                 case Regressed: regressed = true; break;
@@ -443,7 +452,7 @@ public static class SnapshotDiffer
             }
         }
 
-        return Collapse(improved, regressed);
+        return Collapse(improved, regressed, assessed);
     }
 
     private static string KeySetVerdict(
@@ -460,6 +469,7 @@ public static class SnapshotDiffer
 
         var improved = false;
         var regressed = false;
+        var assessed = dir != BetterDirection.Neutral;
         foreach (var id in fromMap.Keys.Intersect(toMap.Keys, StringComparer.Ordinal))
         {
             var f = fromMap[id].Value;
@@ -487,14 +497,17 @@ public static class SnapshotDiffer
             regressed |= removed;
         }
 
-        return Collapse(improved, regressed);
+        return Collapse(improved, regressed, assessed);
     }
 
-    private static string Collapse(bool improved, bool regressed)
+    // not_assessed: no shared metric/row carried a better-direction, so nothing was judged. This is
+    // different from no_change, which asserts that directional metrics stayed within the threshold.
+    private static string Collapse(bool improved, bool regressed, bool assessed)
         => improved && regressed ? Mixed
             : regressed ? Regression
             : improved ? Improvement
-            : NoChange;
+            : assessed ? NoChange
+            : NotAssessed;
 
     private static bool SupportsAbsence(ComparableSnapshot snapshot)
     {
