@@ -270,20 +270,21 @@ public static class ComparablePairwiseSampleDiff
             .ThenByDescending(row => Math.Abs(row.DeltaAbs))
             .ToArray();
 
-        if (overlapCount == 0)
+        var disjoint = overlapCount == 0 && baseline.Count > 0 && current.Count > 0;
+        if (disjoint)
         {
             notes.Add("No overlapping symbols/types between baseline and current handles; verdict is no_overlap.");
         }
 
-        var regressionSignal = overlapCount > 0 && (
+        var regressionSignal = !disjoint && (
             changedAll.Any(row => row.Direction == "up") ||
             addedAll.Any(row => MetricForSort(row.Current, primaryMetric) > baselineMedian));
 
-        var improvementSignal = overlapCount > 0 && (
+        var improvementSignal = !disjoint && (
             changedAll.Any(row => row.Direction == "down") ||
             removedAll.Any(row => MetricForSort(row.Baseline, primaryMetric) > baselineMedian));
 
-        var verdict = overlapCount == 0
+        var verdict = disjoint
             ? "no_overlap"
             : regressionSignal && improvementSignal ? "mixed"
             : regressionSignal ? "regression"

@@ -25,6 +25,18 @@ public sealed class SampleDifferTests
     }
 
     [Fact]
+    public void HeapDiff_EmptyCurrent_IsRemovedRows_NotNoOverlap()
+    {
+        var baseline = HeapSnapshot(("System.Byte[]", 100, 1));
+        var current = HeapSnapshot();
+
+        var diff = ComparablePairwiseSampleDiff.Compare(baseline, "b", current, "c", minDeltaPct: 5, topN: 10);
+
+        diff.Verdict.Should().NotBe("no_overlap");
+        diff.TotalRemoved.Should().Be(1);
+    }
+
+    [Fact]
     public void HeapDiff_DownwardDeltaAtThreshold_FlagsImprovement()
     {
         var baseline = HeapSnapshot(("System.Byte[]", 100, 1));
