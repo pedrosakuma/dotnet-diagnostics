@@ -70,6 +70,13 @@ internal static class ClrMdHeapDrilldownService
         var obj = GetRequiredObject(runtime, address);
         var target = new HashSet<ulong> { address };
         var warnings = new List<string>();
+        var skippedStackRoots = ClrMdRootEnumerator.SkipsStackRoots(runtime);
+        if (skippedStackRoots)
+        {
+            warnings.Add(ClrMdRootEnumerator.CreateSkippedStackRootsWarning(
+                "This GC-root chain excludes stack roots; a returned chain is limited to the remaining handle, static, and finalizer roots."));
+        }
+
         var rootByObject = ClrMdRetentionAnalyzer.BuildRootByObjectMap(runtime, target, GcRootDepthLimit, MaxRetainedGraphObjects, out var bfsCapHit, CancellationToken.None);
         if (bfsCapHit)
         {
@@ -80,7 +87,10 @@ internal static class ClrMdHeapDrilldownService
         var chain = ClrMdRetentionAnalyzer.BuildTypedRootChain(runtime, address, rootByObject, GcRootDepthLimit, out var truncated);
         if (!reachedByBfs || chain.Count == 0 || chain[0].RootKind is null)
         {
-            throw new InvalidOperationException($"No GC root path could be found for object 0x{address:x}. If this came from a live snapshot, the object may have moved or been collected since capture.");
+            var omission = skippedStackRoots
+                ? " Stack roots were not enumerated, so a live GC-root path may have been omitted."
+                : string.Empty;
+            throw new InvalidOperationException($"No GC root path could be found for object 0x{address:x}.{omission} If this came from a live snapshot, the object may have moved or been collected since capture.");
         }
 
         return new HeapGcRootInspection(

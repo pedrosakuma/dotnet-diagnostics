@@ -79,6 +79,7 @@ public sealed class ClrMdThreadSnapshotInspector : IThreadSnapshotInspector
         var clrInfo = target.ClrVersions.FirstOrDefault()
             ?? throw new InvalidOperationException($"Process {processId} does not expose a CLR runtime (NativeAOT or non-managed).");
         using var runtime = clrInfo.CreateRuntime();
+        ClrMdRootEnumerator.MarkLive(runtime);
         var (threads, locks, threadPool) = Capture(runtime, opts, warnings, isLiveCapture: true, ct);
         sw.Stop();
         return new ThreadSnapshotArtifact(
@@ -149,6 +150,12 @@ public sealed class ClrMdThreadSnapshotInspector : IThreadSnapshotInspector
     private (IReadOnlyList<ManagedThread> Threads, IReadOnlyList<MonitorLockState> Locks, ThreadPoolSnapshot? ThreadPool) Capture(
         ClrRuntime runtime, ThreadSnapshotOptions opts, List<string> warnings, bool isLiveCapture, CancellationToken ct)
     {
+        if (isLiveCapture && ClrMdRootEnumerator.SkipsStackRoots(runtime))
+        {
+            warnings.Add(ClrMdRootEnumerator.CreateSkippedStackRootsWarning(
+                "Stack-root-based waiter-to-lock attribution is unavailable; managed stacks and SyncBlock owner/waiter counts remain available."));
+        }
+
         var threads = new List<ManagedThread>(runtime.Threads.Length);
         var clrThreads = new List<ClrThread>(runtime.Threads.Length);
         var threadByAddress = new Dictionary<ulong, ClrThread>();
@@ -431,7 +438,18 @@ public sealed class ClrMdThreadSnapshotInspector : IThreadSnapshotInspector
             warnings.Add($"SyncBlock enumeration aborted partway through: {ex.GetType().Name} ({ex.Message}).");
         }
 
-        var waitersByObjectAddress = InferWaitingThreads(clrThreads, managedThreadsById, locks, warnings, ct);
+        var contendedLocks = locks.Any(lockState =>
+            lockState.IsContended && lockState.ObjectAddress != 0 && lockState.OwnerManagedThreadId > 0);
+        Dictionary<ulong, IReadOnlyList<int>> waitersByObjectAddress;
+        if (contendedLocks && ClrMdRootEnumerator.SkipsStackRoots(runtime))
+        {
+            waitersByObjectAddress = new Dictionary<ulong, IReadOnlyList<int>>();
+        }
+        else
+        {
+            waitersByObjectAddress = InferWaitingThreads(clrThreads, managedThreadsById, locks, warnings, ct);
+        }
+
         return locks
             .Select(lockState => lockState with
             {

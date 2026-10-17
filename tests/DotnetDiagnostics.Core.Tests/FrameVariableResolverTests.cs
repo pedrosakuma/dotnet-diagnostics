@@ -1,3 +1,4 @@
+using DotnetDiagnostics.Core.Dump;
 using DotnetDiagnostics.Core.Threads;
 using FluentAssertions;
 
@@ -5,6 +6,16 @@ namespace DotnetDiagnostics.Core.Tests;
 
 public sealed class FrameVariableResolverTests
 {
+    [Theory]
+    [InlineData(false, null, false)]
+    [InlineData(true, null, true)]
+    [InlineData(true, "0", true)]
+    [InlineData(true, "1", false)]
+    public void LiveStackRootPolicy_IsExplicit(bool isLive, string? setting, bool expected)
+    {
+        ClrMdRootEnumerator.ShouldSkipStackRoots(isLive, setting).Should().Be(expected);
+    }
+
     private static ThreadSnapshotArtifact DumpArtifact(string? dumpPath) => new(
         ThreadSnapshotOrigin.Dump, 2718, DateTimeOffset.UtcNow, TimeSpan.FromMilliseconds(10),
         "Core", "10.0.0", Array.Empty<ManagedThread>(), Array.Empty<MonitorLockState>())

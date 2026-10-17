@@ -338,6 +338,10 @@ internal static class DiagnosticToolHeapDump
         {
             summary += " Chain is truncated by the BFS/depth safety caps.";
         }
+        if (inspection.Warnings is { Count: > 0 })
+        {
+            summary += " " + string.Join(" ", inspection.Warnings);
+        }
 
         var result = new HeapSnapshotQueryResult(handle, "gcroot", origin, snapshot.ProcessId, snapshot.CapturedAt)
         {
