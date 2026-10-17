@@ -181,11 +181,14 @@ def git(args):
     return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout
 
 
-def changed_paths(base, head):
+def changed_paths(base, head, merge_base=True):
     for sha in (base, head):
         if not sha or set(sha) <= {"0"}:
             raise ValueError("base/head SHA missing or all-zero")
-    out = subprocess.run(["git", "diff", "--name-only", "--no-renames", "-z", f"{base}...{head}"],
+    # PRs compare against the merge base; pushes compare the exact tree transition so a
+    # force-push cannot hide files that existed only on the old side.
+    spec = f"{base}...{head}" if merge_base else f"{base}..{head}"
+    out = subprocess.run(["git", "diff", "--name-only", "--no-renames", "-z", spec],
                          check=True, capture_output=True, text=True).stdout
     paths = [p for p in out.split("\0") if p]
     if not paths:
@@ -219,7 +222,8 @@ def build_report(env, needs, timings):
     except (OSError, subprocess.CalledProcessError) as error:
         notes.append(f"checked-out SHA unavailable: {error}")
     try:
-        recommendation, savings = recommend(changed_paths(base, head), timings)
+        recommendation, savings = recommend(
+            changed_paths(base, head, merge_base=event == "pull_request"), timings)
         status = "assessed"
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
         recommendation, savings = unavailable(str(error).splitlines()[0] or "git diff failed", timings)

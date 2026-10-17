@@ -145,6 +145,14 @@ class ReportTests(unittest.TestCase):
                 self.assertEqual(OBS.changed_paths(base, head), ["src file.cs"])
                 with self.assertRaises(ValueError):
                     OBS.changed_paths(head, head)
+                # Divergent history: a file only on the old side must show up for pushes.
+                run("checkout", "-q", "-b", "old", base)
+                (Path(directory) / "Directory.Packages.props").write_text("x")
+                run("add", ".")
+                run("commit", "-q", "-m", "old")
+                old = run("rev-parse", "HEAD")
+                self.assertNotIn("Directory.Packages.props", OBS.changed_paths(old, head))
+                self.assertIn("Directory.Packages.props", OBS.changed_paths(old, head, merge_base=False))
             finally:
                 os.chdir(previous)
 
