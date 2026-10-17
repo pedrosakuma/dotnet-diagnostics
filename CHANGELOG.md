@@ -4,6 +4,7 @@
 
 ### Changed
 
+- `EvidenceQuality` gains an optional fixed-key `observed` block (backend, duration, samples, detected loss, unresolved-symbol share, gaps) for CPU captures; CPU `regressionOrHealthyControl` is now `NotEstablished` and CPU diff adequacy depends on OS on-CPU evidence kind. CLI evidence line prints `directional-verdict=` and the observed facts (#1192).
 - CPU diff `Summary` no longer names `[unknown]`/raw-address rows as the top hotspot mover; it reports the unresolved-symbol share on each side as a data-quality fact, and docs define `null` and `n/a` (#1192).
 - Comparison verdict `not_assessed` now replaces a misleading `no_change` when no shared
   metric or row has a better-direction; a note explains that deltas are objective signals (#1189).

@@ -162,8 +162,14 @@ public static class SnapshotDiffer
             return SupportsRegression(snapshot.Quality);
         }
 
-        if (string.Equals(snapshot.Kind, "cpu-sample", StringComparison.Ordinal) ||
-            string.Equals(snapshot.Kind, Collection.CollectionHandleKinds.GcEvents, StringComparison.Ordinal))
+        if (string.Equals(snapshot.Kind, "cpu-sample", StringComparison.Ordinal))
+        {
+            // Eligibility rests on structural facts (compatible measured on-CPU evidence), not on a
+            // regression conclusion: CPU sample shares never establish one by themselves.
+            return snapshot.CpuEvidence?.Kind == CpuSampling.CpuSampleEvidenceKind.OsOnCpuSamples;
+        }
+
+        if (string.Equals(snapshot.Kind, Collection.CollectionHandleKinds.GcEvents, StringComparison.Ordinal))
         {
             return SupportsRegression(snapshot.Quality);
         }

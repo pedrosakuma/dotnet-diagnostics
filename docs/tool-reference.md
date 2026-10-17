@@ -575,6 +575,14 @@ narrative is emitted only for compatible OS-backed on-CPU evidence. EventPipe fr
 comparisons are inconclusive, mixed/legacy evidence is incomparable, and heuristic wait shares
 never drive a performance verdict or tuning narrative.
 
+`captureQuality[].conclusions` is the machine eligibility gate (it states which conclusion
+classes the evidence supports; for CPU samples `regressionOrHealthyControl` is always
+`NotEstablished` because sample shares are not work done). The optional `captureQuality[].observed`
+block carries measured facts for the model to interpret: `backend`, `durationSeconds`,
+`sampleCount`, `detectedLossCount`, `unresolvedSymbolShare` (percent of samples) and `gaps[]`
+(signals absent from the capture, e.g. no work-rate signal). A `null` value means not measured,
+never zero.
+
 `heap-snapshot` `view="growth"` is the retention-aware **live heap leak hunt** (issue #463).
 Capture two live heap snapshots N seconds apart — `inspect_heap(source="live", includeRetentionPaths=true)` —
 then call `query_snapshot(handle=<later>, view="growth", baselineHandle=<earlier>)`. It ranks the

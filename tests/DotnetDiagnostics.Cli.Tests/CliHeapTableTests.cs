@@ -94,7 +94,7 @@ public sealed class CliHeapTableTests
         var rendered = sb.ToString();
         rendered.Should().Contain("positive=Supported");
         rendered.Should().Contain("absence=Inconclusive");
-        rendered.Should().Contain("regression=Inconclusive");
+        rendered.Should().Contain("directional-verdict=Inconclusive");
         rendered.Should().Contain("MechanismUnobservable/eventpipe-loss");
     }
 }

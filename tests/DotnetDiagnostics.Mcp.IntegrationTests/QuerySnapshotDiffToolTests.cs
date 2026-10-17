@@ -495,6 +495,26 @@ public sealed class QuerySnapshotDiffToolTests
     }
 
     [Fact]
+    public async Task Diff_CpuComparisonHandles_ExposeObservedFactsAndStayNotAssessed()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var first = store.Register(123, "cpu-sample", CpuArtifact(("MyApp.A", 400), ("[unknown]", 100)), TimeSpan.FromMinutes(10));
+        var current = store.Register(123, "cpu-sample", CpuArtifact(("MyApp.A", 600), ("[unknown]", 100)), TimeSpan.FromMinutes(10));
+
+        var result = await QuerySnapshot(store, current.Id, comparisonHandles: [first.Id]);
+
+        result.Error.Should().BeNull();
+        var diff = result.Data.Should().BeOfType<SnapshotJourneyDiff>().Subject;
+        diff.Verdict.Should().Be("not_assessed");
+        diff.CaptureQuality.Should().OnlyContain(quality =>
+            quality!.Conclusions.RegressionOrHealthyControl == EvidenceConclusionSupport.NotEstablished
+            && quality.Observed != null
+            && quality.Observed.SampleCount == 1000
+            && quality.Observed.UnresolvedSymbolShare > 0
+            && quality.Observed.Gaps.Count > 0);
+    }
+
+    [Fact]
     public async Task Diff_ThreadPoolComparisonHandles_AdequatePositiveWindowsReturnRegression()
     {
         var store = new MemoryDiagnosticHandleStore();
