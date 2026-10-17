@@ -6,6 +6,7 @@
 
 - Comparison verdict `not_assessed` now replaces a misleading `no_change` when no shared
   metric or row has a better-direction; a note explains that deltas are objective signals (#1189).
+- CPU `onCpuSelfPercent`/`exclusivePercent` (OS on-CPU backend) are now direction-neutral: they are shares of samples, not CPU time or work done, so a rising share is no longer labelled `regressed` (#1189).
 
 ### Added
 
