@@ -1078,3 +1078,39 @@ jobs:
       - name: helm render smoke (legacy + scoped + both)
         if: needs.changes.outputs.code == 'true'
         run: tests/helm/render-smoke.sh
+
+  # Observation only (phase 1 of change-risk-based selection). Records what a
+  # *hypothetical* selector would recommend plus the actual job results. It is
+  # not a required check, nothing depends on it, it uses no secrets, and it
+  # cannot skip or alter any other job. Failure of the observer never fails CI.
+  selection-observer:
+    name: CI selection observer (observation only)
+    needs: [changes, build-test, ubuntu-fast-tests, ubuntu-gate, windows-build, windows-core-test, windows-fast-test, windows-mcp-test, windows-gate, docker-smoke, helm-render-smoke]
+    if: ${{ always() }}
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Classify change risk and record evidence
+        shell: bash
+        env:
+          CI_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          CI_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          CI_TRUSTED_SOURCE: ${{ needs.changes.outputs.trusted_source }}
+          CI_NEEDS_JSON: ${{ toJSON(needs) }}
+        run: python scripts/ci_selection_observer.py --output ci-selection-report
+
+      - name: Upload selection observation
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-selection-observation
+          path: ci-selection-report/
+          if-no-files-found: warn

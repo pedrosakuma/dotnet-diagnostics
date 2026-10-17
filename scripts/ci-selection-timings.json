@@ -1,0 +1,12 @@
+{
+  "sourceRuns": [38979654533, 38968326547, 38670256329],
+  "note": "Observed min/max wall-clock minutes of each suite step (or job for windows-build) across three executed main runs. Suites absent here were not measured and are never counted as zero.",
+  "suites": {
+    "ubuntu-fast": {"minMinutes": 3.3, "maxMinutes": 3.5},
+    "ubuntu-core": {"minMinutes": 17.0, "maxMinutes": 17.6},
+    "ubuntu-mcp": {"minMinutes": 5.2, "maxMinutes": 6.0},
+    "windows-build": {"minMinutes": 6.1, "maxMinutes": 6.3},
+    "windows-core": {"minMinutes": 17.8, "maxMinutes": 19.6},
+    "windows-mcp": {"minMinutes": 5.2, "maxMinutes": 6.0}
+  }
+}
