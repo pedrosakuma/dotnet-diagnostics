@@ -565,7 +565,12 @@ inline and accepted pairs are `cpu-sample × cpu-sample`, `heap-snapshot × heap
 For `cpu-sample × cpu-sample` diffs (both the `baselineHandle` pairwise path and the
 `comparisonHandles` journey path), the `Summary` line adds an explicit narrative on top of the
 raw added/removed/changed counts (issue #812): a "Top hotspot share grew/shrank: `Method` X% →
-Y% (±Z pp)" call-out for whichever method moved the most in absolute percentage points. This
+Y% (±Z pp)" call-out for whichever resolved method moved the most in absolute percentage points,
+followed by the unresolved-symbol (`[unknown]` / raw address) share on each side as a data-quality
+signal (those rows are never named as the top mover). Shares are fractions of each capture's
+samples, not CPU time or work done, so the verdict for these diffs is `not_assessed`. A `null`
+delta means the value was absent from a side or its baseline was zero; it is never zero, and
+Direction `n/a` means the metric carries no better-direction, not that nothing changed. This
 narrative is emitted only for compatible OS-backed on-CPU evidence. EventPipe frequency
 comparisons are inconclusive, mixed/legacy evidence is incomparable, and heuristic wait shares
 never drive a performance verdict or tuning narrative.

@@ -1227,7 +1227,7 @@ public sealed partial class QuerySnapshotTool
         var baselineRows = CpuSampleComparableProjection.ProjectTyped(baseline, "cpu-sample");
         var currentRows = CpuSampleComparableProjection.ProjectTyped(current, "cpu-sample");
         var topMover = baselineRows
-            .Where(kv => currentRows.ContainsKey(kv.Key))
+            .Where(kv => currentRows.ContainsKey(kv.Key) && !IsUnresolvedSymbol(kv.Key.Symbol.MethodFullName))
             .Select(kv => (Key: kv.Key, Baseline: kv.Value, Current: currentRows[kv.Key]))
             .OrderByDescending(row => Math.Abs(row.Current.ExclusivePercent - row.Baseline.ExclusivePercent))
             .FirstOrDefault();
@@ -1240,8 +1240,25 @@ public sealed partial class QuerySnapshotTool
                 $"Top hotspot share {direction}: {topMover.Key.Symbol.MethodFullName} {topMover.Baseline.ExclusivePercent:F1}% ({topMover.Baseline.ExclusiveSamples} of {topMover.Baseline.TotalSamples} samples) \u2192 {topMover.Current.ExclusivePercent:F1}% ({topMover.Current.ExclusiveSamples} of {topMover.Current.TotalSamples} samples) ({(deltaAbs >= 0 ? "+" : string.Empty)}{deltaAbs:F1}pp)."));
         }
 
+        var unresolvedBaseline = UnresolvedShare(baselineRows);
+        var unresolvedCurrent = UnresolvedShare(currentRows);
+        if (unresolvedBaseline > 0 || unresolvedCurrent > 0)
+        {
+            parts.Add(string.Create(
+                CultureInfo.InvariantCulture,
+                $"Unresolved-symbol share (excluded from the top mover above): {unresolvedBaseline:F1}% \u2192 {unresolvedCurrent:F1}%."));
+        }
+
         return parts.Count == 0 ? null : string.Join(" ", parts);
     }
+
+    private static bool IsUnresolvedSymbol(string? symbol)
+        => string.IsNullOrEmpty(symbol)
+            || string.Equals(symbol, "[unknown]", StringComparison.Ordinal)
+            || symbol.StartsWith("0x", StringComparison.OrdinalIgnoreCase);
+
+    private static double UnresolvedShare(IReadOnlyDictionary<MethodDiffKey, CpuDiffMetric> rows)
+        => rows.Where(kv => IsUnresolvedSymbol(kv.Key.Symbol.MethodFullName)).Sum(kv => kv.Value.ExclusivePercent);
 
     private static string BuildJourneyDiffSummary(SnapshotJourneyDiff diff, string currentHandle, string[] comparisonHandles, IReadOnlyList<ComparableSnapshot> snapshots)
     {
@@ -1269,7 +1286,8 @@ public sealed partial class QuerySnapshotTool
         var parts = new List<string>(2);
 
         var topRow = diff.KeyMatrix
-            .Where(row => row.DeltaAbs is not null && row.Values.Count > 0 && row.Values[0] is not null && row.Values[^1] is not null)
+            .Where(row => row.DeltaAbs is not null && row.Values.Count > 0 && row.Values[0] is not null && row.Values[^1] is not null
+                && !IsUnresolvedSymbol(row.DisplayName))
             .OrderByDescending(row => Math.Abs(row.DeltaAbs!.Value))
             .FirstOrDefault();
         if (topRow is not null)

@@ -4,6 +4,7 @@
 
 ### Changed
 
+- CPU diff `Summary` no longer names `[unknown]`/raw-address rows as the top hotspot mover; it reports the unresolved-symbol share on each side as a data-quality fact, and docs define `null` and `n/a` (#1192).
 - Comparison verdict `not_assessed` now replaces a misleading `no_change` when no shared
   metric or row has a better-direction; a note explains that deltas are objective signals (#1189).
 - CPU `onCpuSelfPercent`/`exclusivePercent` (OS on-CPU backend) are now direction-neutral: they are shares of samples, not CPU time or work done, so a rising share is no longer labelled `regressed` (#1189).
