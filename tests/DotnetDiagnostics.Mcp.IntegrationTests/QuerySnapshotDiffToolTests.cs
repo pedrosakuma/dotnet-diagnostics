@@ -126,6 +126,22 @@ public sealed class QuerySnapshotDiffToolTests
     }
 
     [Fact]
+    public async Task Diff_CpuHandle_HotspotNarrative_ExcludesUnresolvedSymbols_AndReportsTheirShare()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var baselineHandle = store.Register(
+            123, "cpu-sample", CpuArtifact(("[unknown]", 100), ("MyApp.Worker.MethodA", 500)), TimeSpan.FromMinutes(10));
+        var currentHandle = store.Register(
+            123, "cpu-sample", CpuArtifact(("[unknown]", 400), ("MyApp.Worker.MethodA", 510)), TimeSpan.FromMinutes(10));
+
+        var result = await QuerySnapshot(store, currentHandle.Id, baselineHandle.Id);
+
+        result.Error.Should().BeNull();
+        result.Summary.Should().Contain("Top hotspot share grew: MyApp.Worker.MethodA");
+        result.Summary.Should().Contain("Unresolved-symbol share (excluded from the top mover above): 10.0% \u2192 40.0%.");
+    }
+
+    [Fact]
     public async Task Diff_CpuHandle_HotspotNarrative_PicksLargestAbsolutePercentagePointMover_NotLargestRelativeMover()
     {
         // Regression test: MethodB moves 1% -> 2% (+1pp but +100% relative) while MethodA moves
