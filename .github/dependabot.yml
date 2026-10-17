@@ -4,6 +4,9 @@
 # images current. Updates land as PRs against `main`; CI's existing required
 # checks (build/test/kind-integration) gate the merge. Grouped to minimize PR
 # noise — minor and patch bumps for each ecosystem are bundled into a single PR.
+# Secret-dependent CI intentionally blocks Dependabot PRs. A maintainer must
+# review and reapply updates on a maintainer-owned branch without weakening the
+# private-feed gates, then close the original PRs only after replacement CI passes.
 version: 2
 updates:
   - package-ecosystem: github-actions
