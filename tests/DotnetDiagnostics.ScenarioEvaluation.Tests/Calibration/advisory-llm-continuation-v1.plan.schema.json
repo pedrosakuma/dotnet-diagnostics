@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/pedrosakuma/dotnet-diagnostics/advisory-llm-continuation-v1.plan.schema.json",
+  "title": "Advisory LLM retained-response continuation plan v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "planId",
+    "planFingerprint",
+    "protocolFingerprint",
+    "sourceRunRoot",
+    "sourceRunSummarySha256",
+    "maximumNewPhaseBCalls",
+    "cases"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "planId": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "planFingerprint": {
+      "oneOf": [
+        { "const": "" },
+        { "$ref": "#/$defs/sha256" }
+      ]
+    },
+    "protocolFingerprint": { "$ref": "#/$defs/sha256" },
+    "sourceRunRoot": { "type": "string", "minLength": 1 },
+    "sourceRunSummarySha256": { "$ref": "#/$defs/sha256" },
+    "maximumNewPhaseBCalls": { "const": 6 },
+    "cases": {
+      "type": "array",
+      "minItems": 8,
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "slotId",
+          "sourceCaseResultSha256",
+          "disposition",
+          "sourcePhaseASealSha256"
+        ],
+        "properties": {
+          "slotId": { "type": "string", "minLength": 1 },
+          "sourceCaseResultSha256": { "$ref": "#/$defs/sha256" },
+          "disposition": {
+            "enum": [
+              "recoverRetainedPhaseA",
+              "reuseCompleted",
+              "unavailable"
+            ]
+          },
+          "sourcePhaseASealSha256": {
+            "type": ["string", "null"],
+            "pattern": "^[0-9a-fA-F]{64}$"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{64}$"
+    }
+  }
+}

@@ -21,19 +21,34 @@ internal interface IBlindedDiagnosticToolGateway
         CancellationToken cancellationToken);
 }
 
-internal sealed class BlindedDiagnosticToolGateway(
-    int processId,
-    AgentHarnessBudget budget) : IBlindedDiagnosticToolGateway
+internal enum CounterEvidenceContractVersion
+{
+    LegacyV1,
+    ProspectiveV2,
+}
+
+internal sealed class BlindedDiagnosticToolGateway : IBlindedDiagnosticToolGateway
 {
     private const int MaximumReturnedCounters = 60;
     private const int MaximumReturnedHotspots = 20;
     private const int MaximumReturnedThreads = 30;
     private const int MaximumFramesPerThread = 12;
     private const int MaximumReturnedLocks = 20;
-    private readonly int _processId = processId;
-    private readonly AgentHarnessBudget _budget = budget;
+    private readonly int _processId;
+    private readonly AgentHarnessBudget _budget;
+    private readonly CounterEvidenceContractVersion _counterEvidenceContract;
     private int _captureSeconds;
     private int _artifactBytes;
+
+    internal BlindedDiagnosticToolGateway(
+        int processId,
+        AgentHarnessBudget budget,
+        CounterEvidenceContractVersion counterEvidenceContract = CounterEvidenceContractVersion.LegacyV1)
+    {
+        _processId = processId;
+        _budget = budget;
+        _counterEvidenceContract = counterEvidenceContract;
+    }
 
     public static IReadOnlyList<AgentToolDefinition> ToolDefinitions { get; } =
     [
@@ -167,31 +182,12 @@ internal sealed class BlindedDiagnosticToolGateway(
                 TimeSpan.FromSeconds(duration),
                 intervalSeconds: 1,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
-            var counters = snapshot.Counters
-                .Where(counter => string.Equals(counter.Provider, "System.Runtime", StringComparison.Ordinal))
-                .OrderBy(counter => counter.Name, StringComparer.Ordinal)
-                .Take(MaximumReturnedCounters)
-                .Select(counter => new JsonObject
-                {
-                    ["name"] = counter.Name,
-                    ["displayName"] = counter.DisplayName,
-                    ["value"] = counter.Value,
-                    ["unit"] = counter.Unit,
-                    ["kind"] = counter.Kind.ToString(),
-                    ["maximumObserved"] = snapshot.MaxCounters?
-                        .FirstOrDefault(candidate => candidate.Provider == counter.Provider && candidate.Name == counter.Name)?.Value,
-                })
-                .ToArray();
+            var projection = ProjectCounterEvidence(snapshot, _counterEvidenceContract);
             return EvidenceEnvelope(
                 "collect_events/counters",
                 duration,
-                new JsonObject
-                {
-                    ["counters"] = new JsonArray(counters),
-                    ["notes"] = JsonSerializer.SerializeToNode(snapshot.Notes),
-                    ["omittedCounterCount"] = Math.Max(0, snapshot.Counters.Count - counters.Length),
-                },
-                counters.Length < snapshot.Counters.Count);
+                projection.Evidence,
+                projection.Truncated);
         }
 
         if (!string.Equals(kind, "gc", StringComparison.Ordinal))
@@ -222,6 +218,139 @@ internal sealed class BlindedDiagnosticToolGateway(
             },
             gc.DroppedEvents > 0 || gc.DroppedHeapStats > 0);
     }
+
+    internal static (JsonObject Evidence, bool Truncated) ProjectCounterEvidence(
+        CounterSnapshot snapshot,
+        CounterEvidenceContractVersion contractVersion)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        var selected = snapshot.Counters
+            .Where(counter => string.Equals(counter.Provider, "System.Runtime", StringComparison.Ordinal))
+            .OrderBy(counter => counter.Name, StringComparer.Ordinal)
+            .Take(MaximumReturnedCounters)
+            .ToArray();
+        var truncated = selected.Length < snapshot.Counters.Count;
+
+        if (contractVersion == CounterEvidenceContractVersion.LegacyV1)
+        {
+            var legacyCounters = selected.Select(counter => new JsonObject
+            {
+                ["name"] = counter.Name,
+                ["displayName"] = counter.DisplayName,
+                ["value"] = counter.Value,
+                ["unit"] = counter.Unit,
+                ["kind"] = counter.Kind.ToString(),
+                ["maximumObserved"] = FindMatchingCounter(snapshot.MaxCounters, counter)?.Value,
+            }).ToArray();
+            return (
+                new JsonObject
+                {
+                    ["counters"] = new JsonArray(legacyCounters),
+                    ["notes"] = JsonSerializer.SerializeToNode(snapshot.Notes),
+                    ["omittedCounterCount"] = Math.Max(0, snapshot.Counters.Count - legacyCounters.Length),
+                },
+                truncated);
+        }
+
+        if (contractVersion != CounterEvidenceContractVersion.ProspectiveV2)
+        {
+            throw new ArgumentOutOfRangeException(nameof(contractVersion), contractVersion, "Unknown counter evidence contract.");
+        }
+
+        var counters = selected.Select(counter => new JsonObject
+        {
+            ["name"] = counter.Name,
+            ["displayName"] = counter.DisplayName,
+            ["unit"] = counter.Unit,
+            ["kind"] = counter.Kind.ToString(),
+            ["lastSample"] = CounterSampleNode(counter),
+            ["maximumRawSample"] = CounterSampleNode(FindMatchingCounter(snapshot.MaxCounters, counter)),
+        }).ToArray();
+        return (
+            new JsonObject
+            {
+                ["counterEvidenceContract"] = "prospective-v2",
+                ["counterSemantics"] = new JsonObject
+                {
+                    ["lastSample"] = "The final retained raw sample for each counter key.",
+                    ["maximumRawSample"] = "The maximum retained raw sample across observed ticks for the same counter key.",
+                    ["timeSeriesAvailable"] = false,
+                    ["sampleAlignmentAvailable"] = false,
+                    ["ratesDerivedByHarness"] = false,
+                },
+                ["counters"] = new JsonArray(counters),
+                ["notes"] = JsonSerializer.SerializeToNode(snapshot.Notes),
+                ["omittedCounterCount"] = Math.Max(0, snapshot.Counters.Count - counters.Length),
+            },
+            truncated);
+    }
+
+    private static CounterValue? FindMatchingCounter(
+        IReadOnlyList<CounterValue>? candidates,
+        CounterValue counter)
+        => candidates?.FirstOrDefault(candidate =>
+            string.Equals(candidate.Provider, counter.Provider, StringComparison.Ordinal)
+            && string.Equals(candidate.Name, counter.Name, StringComparison.Ordinal));
+
+    private static JsonObject CounterSampleNode(CounterValue? counter)
+    {
+        var issues = new JsonArray();
+        if (counter is null)
+        {
+            return new JsonObject
+            {
+                ["available"] = false,
+                ["value"] = null,
+                ["actualIntervalSec"] = null,
+                ["displayRateTimeScaleSeconds"] = null,
+                ["metadataIssues"] = issues,
+            };
+        }
+
+        var value = FiniteNumberOrNull(counter.Value);
+        if (value is null)
+        {
+            issues.Add("value-non-finite");
+        }
+
+        JsonNode? interval = null;
+        if (counter.IntervalSec is double intervalSec)
+        {
+            if (double.IsFinite(intervalSec) && intervalSec > 0)
+            {
+                interval = JsonValue.Create(intervalSec);
+            }
+            else
+            {
+                issues.Add("actualIntervalSec-invalid");
+            }
+        }
+
+        JsonNode? displayScale = null;
+        if (counter.DisplayRateTimeScale is TimeSpan scale)
+        {
+            if (scale > TimeSpan.Zero && double.IsFinite(scale.TotalSeconds))
+            {
+                displayScale = JsonValue.Create(scale.TotalSeconds);
+            }
+            else
+            {
+                issues.Add("displayRateTimeScale-invalid");
+            }
+        }
+
+        return new JsonObject
+        {
+            ["available"] = true,
+            ["value"] = value,
+            ["actualIntervalSec"] = interval,
+            ["displayRateTimeScaleSeconds"] = displayScale,
+            ["metadataIssues"] = issues,
+        };
+    }
+
+    private static JsonValue? FiniteNumberOrNull(double value)
+        => double.IsFinite(value) ? JsonValue.Create(value) : null;
 
     private async Task<JsonObject> CollectCpuAsync(JsonElement arguments, CancellationToken cancellationToken)
     {
