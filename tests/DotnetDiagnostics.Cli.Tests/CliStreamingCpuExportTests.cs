@@ -201,8 +201,29 @@ public sealed class CliStreamingCpuExportTests : IDisposable
     private sealed class ScriptedReader(IReadOnlyList<Func<string>> lines) : TextReader
     {
         private int _next;
-        public override ValueTask<string?> ReadLineAsync(CancellationToken cancellationToken)
-            => ValueTask.FromResult(_next < lines.Count ? lines[_next++]() : null);
+        private string? _currentLine;
+        private int _position;
+
+        public override ValueTask<int> ReadAsync(Memory<char> buffer, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (buffer.IsEmpty || (_currentLine is null && _next >= lines.Count))
+            {
+                return ValueTask.FromResult(0);
+            }
+
+            _currentLine ??= lines[_next++]() + "\n";
+            var count = Math.Min(buffer.Length, _currentLine.Length - _position);
+            _currentLine.AsSpan(_position, count).CopyTo(buffer.Span);
+            _position += count;
+            if (_position == _currentLine.Length)
+            {
+                _currentLine = null;
+                _position = 0;
+            }
+
+            return ValueTask.FromResult(count);
+        }
     }
 
     private sealed class FakeSampler : ICpuSampler

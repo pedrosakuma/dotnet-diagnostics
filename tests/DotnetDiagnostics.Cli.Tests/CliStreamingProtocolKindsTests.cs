@@ -993,10 +993,51 @@ public sealed class CliStreamingProtocolKindsTests
         private sealed class ChannelTextReader : TextReader
         {
             private readonly Channel<string?> _channel = Channel.CreateUnbounded<string?>();
+            private string? _currentLine;
+            private int _position;
 
             public Task WriteLineAsync(string line) => _channel.Writer.WriteAsync(line).AsTask();
 
             public void Complete() => _channel.Writer.TryComplete();
+
+            public override async ValueTask<int> ReadAsync(Memory<char> buffer, CancellationToken cancellationToken = default)
+            {
+                if (buffer.IsEmpty)
+                {
+                    return 0;
+                }
+
+                if (_currentLine is null)
+                {
+                    string? line;
+                    try
+                    {
+                        line = await _channel.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (ChannelClosedException)
+                    {
+                        return 0;
+                    }
+
+                    if (line is null)
+                    {
+                        return 0;
+                    }
+
+                    _currentLine = line + "\n";
+                }
+
+                var count = Math.Min(buffer.Length, _currentLine.Length - _position);
+                _currentLine.AsMemory(_position, count).CopyTo(buffer);
+                _position += count;
+                if (_position == _currentLine.Length)
+                {
+                    _currentLine = null;
+                    _position = 0;
+                }
+
+                return count;
+            }
 
             public override async ValueTask<string?> ReadLineAsync(CancellationToken cancellationToken)
             {
