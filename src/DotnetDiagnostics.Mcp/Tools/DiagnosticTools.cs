@@ -74,7 +74,7 @@ public sealed class DiagnosticTools
     public static Task<DiagnosticResult<DotnetProcess>> GetProcessInfo(
         IProcessDiscovery discovery,
         IProcessContextResolver resolver,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         CancellationToken cancellationToken = default)
         => DiagnosticToolProcessInspection.GetProcessInfo(discovery, resolver, processId, cancellationToken);
 
@@ -89,7 +89,7 @@ public sealed class DiagnosticTools
     public static Task<DiagnosticResult<DiagnosticCapabilities>> GetDiagnosticCapabilities(
         ICapabilityDetector detector,
         IProcessContextResolver resolver,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         CancellationToken cancellationToken = default)
         => DiagnosticToolProcessInspection.GetDiagnosticCapabilities(detector, resolver, processId, cancellationToken);
 
@@ -116,7 +116,7 @@ public sealed class DiagnosticTools
     public static Task<DiagnosticResult<ContainerSignals>> GetContainerSignals(
         IContainerSignalsCollector collector,
         IProcessContextResolver resolver,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         [Description("Verbosity (summary|detail|raw). Default 'summary' drops the verbose Notes (caveats about cgroup v1, missing PSI, etc.) and keeps only the actionable signals. 'detail' / 'raw' include all Notes.")]
         SamplingDepth depth = SamplingDepth.Summary,
         CancellationToken cancellationToken = default)
@@ -153,7 +153,7 @@ public sealed class DiagnosticTools
     public static Task<DiagnosticResult<RuntimeConfigView>> GetRuntimeConfig(
         IRuntimeConfigInspector inspector,
         IProcessContextResolver resolver,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         CancellationToken cancellationToken = default)
         => DiagnosticToolProcessInspection.GetRuntimeConfig(inspector, resolver, processId, cancellationToken);
 
@@ -166,7 +166,7 @@ public sealed class DiagnosticTools
     public static Task<DiagnosticResult<TriageResult>> PerformTriage(
         ICounterCollector collector,
         IProcessContextResolver resolver,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         [Description("Duration of the counter collection window in seconds. Must be >= 1. Defaults to 5.")] int durationSeconds = 5,
         CancellationToken cancellationToken = default)
         => DiagnosticToolProcessInspection.PerformTriage(collector, resolver, processId, durationSeconds, cancellationToken);
@@ -204,7 +204,7 @@ public sealed class DiagnosticTools
         ICounterCollector collector,
         IProcessContextResolver resolver,
         IDiagnosticHandleStore handles,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         [Description("Duration of the collection window in seconds. Must be >= 1. Defaults to 5.")] int durationSeconds = 5,
         [Description("Optional list of EventCounter provider names to subscribe to. If null, defaults to System.Runtime, Microsoft.AspNetCore.Hosting and Microsoft-AspNetCore-Server-Kestrel. Pass an empty list to skip legacy EventCounters.")]
         string[]? providers = null,
@@ -238,7 +238,7 @@ public sealed class DiagnosticTools
         IProcessContextResolver resolver,
         SymbolServerAllowlist symbolServerAllowlist,
         IPrincipalAccessor principalAccessor,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         [Description("Duration of the sampling window in seconds. Must be >= 1. Defaults to 10.")] int durationSeconds = 10,
         [Description("Maximum number of hotspots to return. Must be >= 1. Defaults to 25.")] int topN = 25,
         [Description("If true, attempts to resolve top hotspots to file:line via PDB / SourceLink and stamps the resolved SourceLocation onto each MethodIdentity payload (issue #28 — makes dotnet-assembly-mcp.get_method_source optional when PDBs are reachable). Defaults to true; set to false to skip PDB I/O when symbols are known to be unreachable.")] bool resolveSourceLines = true,
@@ -294,7 +294,7 @@ public sealed class DiagnosticTools
         EventPipeAllocationSampler sampler,
         IDiagnosticHandleStore handles,
         IProcessContextResolver resolver,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         [Description("Duration of the sampling window in seconds. Must be >= 1. Defaults to 10.")] int durationSeconds = 10,
         [Description("Maximum number of types to return in each top-N list (TopByBytes and TopByCount). Must be >= 1. Defaults to 25.")] int topN = 25,
         CancellationToken cancellationToken = default)
@@ -327,7 +327,7 @@ public sealed class DiagnosticTools
         DotnetDiagnostics.Core.CpuEfficiency.ICpuEfficiencySampler sampler,
         IDiagnosticHandleStore handles,
         IProcessContextResolver resolver,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         [Description("Counting window in seconds. Must be >= 1. Defaults to 10.")] int durationSeconds = 10,
         CancellationToken cancellationToken = default)
         => await DiagnosticToolSampling.CollectCpuEfficiencySample(
@@ -369,7 +369,7 @@ public sealed class DiagnosticTools
         IProcessContextResolver resolver,
         SymbolServerAllowlist symbolServerAllowlist,
         IPrincipalAccessor principalAccessor,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         [Description("Sampling window in seconds. Must be >= 1. Defaults to 10.")] int durationSeconds = 10,
         [Description("Maximum number of blocking stacks returned inline (the full set lives behind the handle). Defaults to 25.")] int topN = 25,
         [Description("Optional NT_SYMBOL_PATH-style search path forwarded to symbol-resolving backends. Precedence: symbolPath > MCP_SYMBOL_PATH > _NT_SYMBOL_PATH > target MainModule directory. **Remote symbol servers are OFF by default (issue #165 / M3)** — any `srv*http(s)://…` segment must point at a host on `Diagnostics:SymbolServerAllowlist`.")] string? symbolPath = null,
@@ -421,7 +421,7 @@ public sealed class DiagnosticTools
         INativeAllocSampler sampler,
         IDiagnosticHandleStore handles,
         IProcessContextResolver resolver,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         [Description("Sampling window in seconds. Must be >= 1. Defaults to 10. Keep short on allocator-hot workloads — uprobe overhead is per-call.")] int durationSeconds = 10,
         [Description("Maximum number of allocator hotspots returned inline (the full call tree lives behind the handle). Defaults to 25.")] int topN = 25,
         [Description("perf sample period — record one callchain per this many allocator hits. Must be >= 1. Defaults to 1000. Higher reduces overhead and resolution; it throttles recorded samples but not the per-call trap cost.")] long samplePeriod = 1000,
@@ -461,7 +461,7 @@ public sealed class DiagnosticTools
         INativeLockContentionSampler sampler,
         IDiagnosticHandleStore handles,
         IProcessContextResolver resolver,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         [Description("Sampling window in seconds. Must be >= 1. Defaults to 10. Keep short on mutex-hot workloads — uprobe overhead is per-call.")] int durationSeconds = 10,
         [Description("Maximum number of contended call sites returned inline (the full call tree lives behind the handle). Defaults to 25.")] int topN = 25,
         [Description("perf sample period — record one callchain per this many mutex-call hits. Must be >= 1. Defaults to 5000 (higher than native-alloc's 1000: mutex fast-path calls are typically far more frequent than allocator calls). Linux only.")] long samplePeriod = 5000,
@@ -675,7 +675,7 @@ public sealed class DiagnosticTools
         IExceptionCollector collector,
         IProcessContextResolver resolver,
         IDiagnosticHandleStore handles,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         [Description("Duration of the collection window in seconds. Must be >= 1. Defaults to 10.")] int durationSeconds = 10,
         [Description("Maximum number of individual exception details to return. Must be >= 1. Defaults to 100.")] int maxRecent = 100,
         [Description("Verbosity (summary|detail|raw). Default 'summary' drops the Recent[] list inline (keeps Total + ByType, which is what most diagnoses need). 'detail' includes Recent up to maxRecent. 'raw' is equivalent to detail. The full snapshot is always retained behind the issued handle — drill in with query_snapshot(handle, view='recent').")]
@@ -696,7 +696,7 @@ public sealed class DiagnosticTools
         ICrashGuardCollector collector,
         IProcessContextResolver resolver,
         IDiagnosticHandleStore handles,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         [Description("Guard window in seconds. Must be >= 1. Defaults to 10. The collector returns earlier when the process exits.")] int durationSeconds = 10,
         [Description("Maximum number of exception events to retain. Must be >= 1. Defaults to 100.")] int maxRecent = 100,
         [Description("Verbosity (summary|detail|raw). Default 'summary' keeps headline/final-exception data inline and retains the exception stream behind the handle.")]
@@ -719,7 +719,7 @@ public sealed class DiagnosticTools
         IGcCollector collector,
         IProcessContextResolver resolver,
         IDiagnosticHandleStore handles,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         [Description("Duration of the collection window in seconds. Must be >= 1. Defaults to 10.")] int durationSeconds = 10,
         [Description("Maximum number of GC events to return. Must be >= 1. Defaults to 200.")] int maxEvents = 200,
         [Description("Verbosity (summary|detail|raw). Default 'summary' drops the Events[] list inline (keeps totals, max pause, per-gen counts). 'detail' includes Events up to maxEvents. 'raw' is equivalent to detail. The full GC summary is always retained behind the issued handle — drill in with query_snapshot(handle, view='events'|'pauseHistogram').")]
@@ -741,7 +741,7 @@ public sealed class DiagnosticTools
         IGcDatasCollector collector,
         IProcessContextResolver resolver,
         IDiagnosticHandleStore handles,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         [Description("Duration of the collection window in seconds. Must be >= 1. Defaults to 15. DATAS decisions accrue over time, so give it a sustained window.")] int durationSeconds = 15,
         [Description("Maximum number of events to retain per kind (samples/tuning/gen2). Must be >= 1. Defaults to 1000.")] int maxEvents = 1000,
         CancellationToken cancellationToken = default)
@@ -763,7 +763,7 @@ public sealed class DiagnosticTools
         IStartupCollector collector,
         IProcessContextResolver resolver,
         IDiagnosticHandleStore handles,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         [Description("Duration of the collection window in seconds. Must be >= 1. Defaults to 10.")] int durationSeconds = 10,
         [Description("Verbosity (summary|detail|raw). Default 'summary' keeps headline aggregates and short loader/DI slices inline; the handle retains the full startup timeline.")]
         SamplingDepth depth = SamplingDepth.Summary,
@@ -783,7 +783,7 @@ public sealed class DiagnosticTools
         IEventCatalogCollector collector,
         IProcessContextResolver resolver,
         IDiagnosticHandleStore handles,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         [Description("Duration of the collection window in seconds. Must be >= 1. Defaults to 10.")] int durationSeconds = 10,
         [Description("Optional provider names. When omitted, enables a broad curated default set; custom EventSources must be named explicitly because EventPipe has no wildcard.")] IReadOnlyList<string>? providers = null,
         [Description("Maximum number of metadata-only occurrence samples to retain. Must be >= 1. Defaults to 200.")] int maxEvents = 200,
@@ -805,7 +805,7 @@ public sealed class DiagnosticTools
         ILogCollector collector,
         IProcessContextResolver resolver,
         IDiagnosticHandleStore handles,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         [Description("Duration of the collection window in seconds. Must be >= 1. Defaults to 10.")] int durationSeconds = 10,
         [Description("Optional case-insensitive glob filters for ILogger categories. Null/empty captures all categories.")] IReadOnlyList<string>? categories = null,
         [Description("Minimum log level to retain (Trace|Debug|Information|Warning|Error|Critical). Defaults to Information.")] string minLevel = "Information",
@@ -829,7 +829,7 @@ public sealed class DiagnosticTools
         IJitCollector collector,
         IProcessContextResolver resolver,
         IDiagnosticHandleStore handles,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         [Description("Duration of the collection window in seconds. Must be >= 1. Defaults to 10.")] int durationSeconds = 10,
         [Description("Verbosity (summary|detail|raw). Default 'summary' trims the inline method list to the hottest 10 entries; the handle retains every observed method.")]
         SamplingDepth depth = SamplingDepth.Summary,
@@ -848,7 +848,7 @@ public sealed class DiagnosticTools
         IThreadPoolCollector collector,
         IProcessContextResolver resolver,
         IDiagnosticHandleStore handles,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         [Description("Duration of the collection window in seconds. Must be >= 1. Defaults to 10.")] int durationSeconds = 10,
         [Description("Verbosity (summary|detail|raw). Default 'summary' keeps the headline counts + top origins inline and relies on query_snapshot(handle, view=timeline|hillClimbing|workItemOrigins) for the full drilldown.")]
         SamplingDepth depth = SamplingDepth.Summary,
@@ -869,7 +869,7 @@ public sealed class DiagnosticTools
         IContentionCollector collector,
         IProcessContextResolver resolver,
         IDiagnosticHandleStore handles,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         [Description("Duration of the collection window in seconds. Must be >= 1. Defaults to 10.")] int durationSeconds = 10,
         [Description("Verbosity (summary|detail|raw). Default 'summary' keeps the headline aggregates inline and relies on query_snapshot(handle, view=byCallSite|byOwner) for grouped drilldown.")]
         SamplingDepth depth = SamplingDepth.Summary,
@@ -891,7 +891,7 @@ public sealed class DiagnosticTools
         IDbCollector collector,
         IProcessContextResolver resolver,
         IDiagnosticHandleStore handles,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         [Description("Duration of the collection window in seconds. Must be >= 1. Defaults to 10.")] int durationSeconds = 10,
         [Description("Refresh interval (in seconds) requested from SqlClient EventCounters. Defaults to 1.")] int intervalSeconds = 1,
         [Description("Verbosity (summary|detail|raw). Default 'summary' keeps only the top command slice inline; 'detail' and 'raw' return the full by-command and N+1 lists captured in the window.")]
@@ -915,7 +915,7 @@ public sealed class DiagnosticTools
         IKestrelCollector collector,
         IProcessContextResolver resolver,
         IDiagnosticHandleStore handles,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         [Description("Duration of the collection window in seconds. Must be >= 1. Defaults to 10.")] int durationSeconds = 10,
         [Description("Refresh interval (in seconds) requested from Kestrel EventCounters. Defaults to 1.")] int intervalSeconds = 1,
         [Description("Verbosity (summary|detail|raw). Default 'summary' trims the by-operation list and drops the queue timeline + config JSON inline; 'detail' and 'raw' return the full window.")]
@@ -937,7 +937,7 @@ public sealed class DiagnosticTools
         IInFlightRequestCollector collector,
         IProcessContextResolver resolver,
         IDiagnosticHandleStore handles,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         [Description("Duration of the collection window in seconds. Must be >= 1. Defaults to 10.")] int durationSeconds = 10,
         [Description("Elapsed-time threshold (in milliseconds) above which an in-flight request is flagged as long-running. Defaults to 1000.")] double longRunningThresholdMs = 1000,
         [Description("Maximum number of in-flight requests to return inline (oldest-first). Must be >= 1. Defaults to 100; the full set stays behind the handle.")] int maxRequests = 100,
@@ -962,7 +962,7 @@ public sealed class DiagnosticTools
         INetworkingCollector collector,
         IProcessContextResolver resolver,
         IDiagnosticHandleStore handles,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         [Description("Duration of the collection window in seconds. Must be >= 1. Defaults to 10.")] int durationSeconds = 10,
         [Description("Refresh interval (in seconds) requested from the networking EventCounters. Defaults to 1.")] int intervalSeconds = 1,
         [Description("Verbosity (summary|detail|raw). Default 'summary' keeps only the top by-operation slice inline; 'detail' and 'raw' return the full by-operation list captured in the window.")]
@@ -984,7 +984,7 @@ public sealed class DiagnosticTools
         IActivityCollector collector,
         IProcessContextResolver resolver,
         IDiagnosticHandleStore handles,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         [Description("Optional ActivitySource name filters. Supports '*' and '?' wildcards. Null/empty captures all sources.")]
         IReadOnlyList<string>? sources = null,
         [Description("Duration of the capture window in seconds. Must be >= 1. Defaults to 10.")] int durationSeconds = 10,
@@ -1033,7 +1033,7 @@ public sealed class DiagnosticTools
         SensitiveValueGate sensitiveGate,
         IPrincipalAccessor principalAccessor,
         [Description("EventSource provider name, e.g. 'System.Net.Http' or 'Microsoft.AspNetCore.Hosting'. Must be on the curated allowlist (see `Diagnostics:EventSourceAllowlist`) unless the bearer principal holds the 'eventsource-any' scope (docs/authorization.md#modifier-scopes) — or, on legacy deployments, `unsafeProvider=true` AND the server has `Diagnostics:AllowSensitiveHeapValues=true` (issue #165 / M2).")] string providerName,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         [Description("Duration of the capture window in seconds. Must be >= 1. Defaults to 10.")] int durationSeconds = 10,
         [Description("EventSource keyword mask. -1 (default) means all keywords. For non-allowlisted providers (when opted in via unsafeProvider=true) this is clamped to a safer default when left at -1; pass an explicit positive mask to override.")] long keywords = -1,
         [Description("Event verbosity level (0=LogAlways, 1=Critical, 2=Error, 3=Warning, 4=Informational, 5=Verbose). Defaults to 5. For non-allowlisted providers (when opted in via unsafeProvider=true) this is clamped to Informational unless explicitly set lower.")] int eventLevel = 5,
@@ -1077,11 +1077,11 @@ public sealed class DiagnosticTools
         IProcessContextResolver resolver,
         IPrincipalAccessor principalAccessor,
         ILoggerFactory? loggerFactory = null,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         [Description("Dump type: 'Mini', 'Triage', 'WithHeap' or 'Full'. Defaults to Mini.")] ProcessDumpType dumpType = ProcessDumpType.Mini,
         [Description("Optional sub-path under the artifact root (MCP_ARTIFACT_ROOT, default <temp>/dotnet-diagnostics-mcp). MUST be relative — absolute paths and '..' traversal are rejected (InvalidArtifactPath). Dump files are written with POSIX mode 0600.")] string? outputDirectory = null,
         [Description("Defense-in-depth confirmation flag — fallback for clients WITHOUT the MCP elicitation capability. Must be true to write a dump file when elicitation is unavailable; without it the tool returns a `confirmation_required` envelope describing what would have been written. Elicitation-capable clients are ALWAYS prompted natively and this flag is ignored for them (a human decline cannot be bypassed with confirm=true). See docs/authorization.md#per-call-confirmation")] bool confirm = false,
-        [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
+        [Description("Optional attach_to_pod investigation handle; routes this call through the attached target (Kubernetes Pod or external MCP profile) instead of the current MCP session binding.")]
         string? investigationHandleId = null,
         RequestContext<CallToolRequestParams>? requestContext = null,
         CancellationToken cancellationToken = default)
@@ -1161,7 +1161,7 @@ public sealed class DiagnosticTools
         IProcessContextResolver resolver,
         SymbolServerAllowlist symbolServerAllowlist,
         IPrincipalAccessor principalAccessor,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         [Description("Number of types to return in each top-N list (bytes / instances). Defaults to 20.")] int topTypes = 20,
         [Description("When true, walks a short GC retention chain for the top retained types. Off by default — slower and lengthens the suspend window.")] bool includeRetentionPaths = false,
         [Description("Cap on retention-chain depth when retention paths are enabled. Defaults to 8.")] int retentionPathLimit = 8,
@@ -1294,7 +1294,7 @@ public sealed class DiagnosticTools
         [Description("Optional NT_SYMBOL_PATH-style search path forwarded to symbol-resolving backends. Precedence: symbolPath > MCP_SYMBOL_PATH > _NT_SYMBOL_PATH > target MainModule directory. **Remote symbol servers are OFF by default (issue #165 / M3)** — any `srv*http(s)://…` segment must point at a host on `Diagnostics:SymbolServerAllowlist`.")] string? symbolPath = null,
         [Description("Verbosity (summary|detail|raw). Default 'summary' returns at most 6 decisive threads with 6 frames each and no locks. 'detail'/'raw' return at most 8 decisive threads with 7 frames each plus 12 locks with at most 8 waiter ids per lock. Owner-and-waiter deadlock candidates rank first; query_snapshot(view=\"deadlocks\") evaluates inferred wait-for cycle candidates. Continue through the retained capture with query_snapshot thread/lock cursors or exact lock-address waiter paging.")]
         SamplingDepth depth = SamplingDepth.Summary,
-        [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
+        [Description("Optional attach_to_pod investigation handle; routes this call through the attached target (Kubernetes Pod or external MCP profile) instead of the current MCP session binding.")]
         string? investigationHandleId = null,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
         [Description("Persist private SQLite evidence; default false. Historical views never reattach.")]
@@ -1354,7 +1354,7 @@ public sealed class DiagnosticTools
         [Description("Optional fast-path: a code address already observed for this method (e.g. MethodCodeStart from MethodLoad_V2). Hex (with or without 0x prefix) or decimal. Mismatches with (moduleVersionId, metadataToken) surface as a warning, not a hard error.")] string? codeAddress = null,
         [Description("Optional tier label echoed back on the result (e.g. 'Tier0', 'Tier1', 'Tier1OSR'). ClrMD does not expose the JIT OptimizationTier directly; this field is informational. The authoritative MethodCompilationType (None/Jit/Ngen) is always returned.")] string? tier = null,
         [Description("Optional sub-path under the artifact root (MCP_ARTIFACT_ROOT, default <temp>/dotnet-diagnostics-mcp). Defaults to 'method-bytes/{pid}'. MUST be relative — absolute paths and '..' traversal are rejected (InvalidArtifactPath). .bin files are written with POSIX mode 0600.")] string? outputDirectory = null,
-        [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
+        [Description("Optional attach_to_pod investigation handle; routes this call through the attached target (Kubernetes Pod or external MCP profile) instead of the current MCP session binding.")]
         string? investigationHandleId = null,
         CancellationToken cancellationToken = default)
         => DiagnosticToolThreadingAndJit.CaptureMethodBytes(
@@ -1437,7 +1437,7 @@ public sealed class DiagnosticTools
         [Description("Artifact to stream: 'pe' (default) or 'pdb'.")] string asset = "pe",
         [Description("Byte offset where this chunk starts. Defaults to 0.")] long offset = 0,
         [Description("Maximum bytes to return in this response. Defaults to 4 MiB and is capped at 16 MiB.")] int maxBytes = FileChunkReader.DefaultChunkBytes,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         ILoggerFactory? loggerFactory = null,
         CancellationToken cancellationToken = default)
         => DiagnosticToolByteStreaming.GetModuleBytes(
@@ -1516,13 +1516,13 @@ public sealed class DiagnosticTools
     public static Task<DiagnosticResult<InvestigationPlan>> StartInvestigation(
         IInvestigationPlanner planner,
         IProcessContextResolver resolver,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         [Description("Plain-language symptom, e.g. 'high latency on /checkout since v2025.10'. Required for cold mode; optional for warm/hypothesis.")] string? symptom = null,
         [Description("Specific hypothesis to test, e.g. 'lock contention on Cart.Checkout'. Triggers hypothesis mode.")] string? hypothesis = null,
         [Description("Baseline snapshot from a prior investigation (JSON of BaselineHandle). Triggers warm mode.")] BaselineHandle? baseline = null,
         [Description("Optional hard limit on tool calls before forcing summarization. Defaults to 8.")] int maxToolCalls = 8,
         [Description("If true, collect_process_dump steps are marked approval-gated. Defaults to true.")] bool dumpRequiresApproval = true,
-        [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
+        [Description("Optional attach_to_pod investigation handle; routes this call through the attached target (Kubernetes Pod or external MCP profile) instead of the current MCP session binding.")]
         string? investigationHandleId = null,
         CancellationToken cancellationToken = default)
         => DiagnosticToolInvestigationPlanning.StartInvestigation(
@@ -1570,7 +1570,7 @@ public sealed class DiagnosticTools
         [Description("Optional PR URL being proposed as the fix.")] string? fixPullRequestUrl = null,
         [Description("Optional short description of the proposed fix.")] string? fixDescription = null,
         [Description("Optional free-form notes appended to the summary.")] string? notes = null,
-        [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
+        [Description("Optional attach_to_pod investigation handle; routes this call through the attached target (Kubernetes Pod or external MCP profile) instead of the current MCP session binding.")]
         string? investigationHandleId = null,
         DurableCaptureTools? durableCaptures = null,
         CancellationToken cancellationToken = default)
@@ -1626,7 +1626,7 @@ public sealed class DiagnosticTools
         [Description("ComparableSnapshot journey only: maximum metric series / key rows returned in compact inline payloads and used to bound key-matrix construction. Must be >= 1. Defaults to 25.")] int topN = 25,
         [Description("ComparableSnapshot journey only: inline verbosity. `full` returns the full matrix; local large results may use a journey://diff/{handle} Resource link, while proxied results stay inline because dynamic pod Resources are not forwarded. `compact` returns verdict/headline/counts/notes plus top-N deltas. Defaults to `full`.")] string depth = "full",
         [Description("ComparableSnapshot journey only: `trend` (default) compares ordered captures over time; `dispersion` compares unordered replicas for outliers.")] string? mode = null,
-        [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
+        [Description("Optional attach_to_pod investigation handle; routes this call through the attached target (Kubernetes Pod or external MCP profile) instead of the current MCP session binding.")]
         string? investigationHandleId = null,
         [Description("Exclusive durable input: {baseline:{captureId,artifactId},candidate:{captureId,artifactId}}. Whole retained snapshots; no filters or remote stores.")]
         JsonElement? captureComparison = null,

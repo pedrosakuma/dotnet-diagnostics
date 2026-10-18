@@ -179,6 +179,20 @@ test("comparison renderer is self-contained, text-only and reports qualified evi
     assert.match(allText(root), /Unavailable/);
     assert.match(allText(root), /sum \/ none \/ retained/);
 });
+test("comparison summary counts objective deltas, including zero and unavailable, without consuming verdict labels", () => {
+    const value = comparison();
+    value.verdict = "not_assessed";
+    const base = value.metrics[0];
+    value.metrics = [base, { ...base, absoluteDelta: -2 }, { ...base, absoluteDelta: 0 },
+        { ...base, leftValue: null, rightValue: 4, absoluteDelta: null }];
+    const root = node("div"), render = new Function("document", b.COMPARISON_RENDERER_SCRIPT + ";return renderComparison;")({
+        getElementById: () => root, createElement: node,
+    });
+    render("views", b.parseComparison(JSON.stringify(value)));
+    assert.match(allText(root), /1 up, 1 down, 1 flat, 1 unavailable/);
+    assert.match(allText(root), /not a performance verdict/);
+    assert.ok(!allText(root).includes("not_assessed"));
+});
     const extensionPath = path.join(__dirname, "../out/extension.js");
     const Controller = new Function("require", "exports", fs.readFileSync(extensionPath, "utf8")
         + "\nreturn CounterPanelController;")(Module.createRequire(extensionPath), {});

@@ -32,7 +32,7 @@ internal static class DiagnosticToolThreadingAndJit
         [Description("Optional NT_SYMBOL_PATH-style search path forwarded to symbol-resolving backends. Precedence: symbolPath > MCP_SYMBOL_PATH > _NT_SYMBOL_PATH > target MainModule directory. **Remote symbol servers are OFF by default (issue #165 / M3)** — any `srv*http(s)://…` segment must point at a host on `Diagnostics:SymbolServerAllowlist`.")] string? symbolPath = null,
         [Description("Verbosity (summary|detail|raw). Default 'summary' returns at most 6 decisive threads with 6 frames each and no lock graph. 'detail'/'raw' return at most 8 decisive threads with 7 frames each plus 12 locks with at most 8 waiter ids per lock. Owner-and-waiter deadlock candidates, contended-lock owners, exceptions, and running application frames rank before generic waits; query_snapshot(view=\"deadlocks\") evaluates inferred wait-for cycle candidates. Continue through the retained capture with query_snapshot cursors and exact lock-address waiter paging.")]
         SamplingDepth depth = SamplingDepth.Summary,
-        [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
+        [Description("Optional attach_to_pod investigation handle; routes this call through the attached target (Kubernetes Pod or external MCP profile) instead of the current MCP session binding.")]
         string? investigationHandleId = null,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
         CancellationToken cancellationToken = default)
@@ -203,7 +203,7 @@ internal static class DiagnosticToolThreadingAndJit
         [Description("Optional fast-path: a code address already observed for this method (e.g. MethodCodeStart from MethodLoad_V2). Hex (with or without 0x prefix) or decimal. Mismatches with (moduleVersionId, metadataToken) surface as a warning, not a hard error.")] string? codeAddress = null,
         [Description("Optional tier label echoed back on the result (e.g. 'Tier0', 'Tier1', 'Tier1OSR'). ClrMD does not expose the JIT OptimizationTier directly; this field is informational. The authoritative MethodCompilationType (None/Jit/Ngen) is always returned.")] string? tier = null,
         [Description("Optional sub-path under the artifact root (MCP_ARTIFACT_ROOT, default <temp>/dotnet-diagnostics-mcp). Defaults to 'method-bytes/{pid}'. MUST be relative — absolute paths and '..' traversal are rejected (InvalidArtifactPath). .bin files are written with POSIX mode 0600.")] string? outputDirectory = null,
-        [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
+        [Description("Optional attach_to_pod investigation handle; routes this call through the attached target (Kubernetes Pod or external MCP profile) instead of the current MCP session binding.")]
         string? investigationHandleId = null,
         CancellationToken cancellationToken = default)
     {

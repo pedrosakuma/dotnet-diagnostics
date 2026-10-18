@@ -353,8 +353,12 @@ public sealed class ByteFetchToolsTests : IAsyncLifetime
     {
         _sample = await LiveSampleProcess.StartPublishedAsync(
             "CoreClrSample",
-            new LiveSampleOptions { DiagnosticTimeout = TimeSpan.FromSeconds(30) });
-        await WaitForModuleVisibilityAsync(_sample.ProcessId, _sample.SampleDll, TimeSpan.FromSeconds(30));
+            new LiveSampleOptions
+            {
+                DiagnosticTimeout = TimeSpan.FromSeconds(30),
+                WaitForHttpReady = true,
+                ReadinessPath = "/weatherforecast",
+            });
     }
 
     public async Task DisposeAsync()
@@ -465,27 +469,6 @@ public sealed class ByteFetchToolsTests : IAsyncLifetime
         }
 
         return JsonSerializer.Deserialize<DiagnosticResult<JsonElement>>(json, DeserializeOptions);
-    }
-
-    private static async Task WaitForModuleVisibilityAsync(int processId, string sampleDll, TimeSpan timeout)
-    {
-        var deadline = DateTime.UtcNow + timeout;
-        var mvid = new MvidReader().TryRead(sampleDll) ?? throw new InvalidOperationException("Sample DLL MVID not readable.");
-        var source = new ClrMdModuleByteSource();
-        while (DateTime.UtcNow < deadline)
-        {
-            try
-            {
-                await source.FetchAsync(processId, mvid, asset: "pe", offset: 0, maxBytes: 2);
-                return;
-            }
-            catch (InvalidOperationException)
-            {
-                await Task.Delay(250).ConfigureAwait(false);
-            }
-        }
-
-        throw new TimeoutException($"CoreClrSample mvid {mvid:D} was not visible in pid {processId} within {timeout}.");
     }
 
     private static TestDirectory CreateArtifactRoot()

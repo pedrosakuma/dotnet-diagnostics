@@ -562,6 +562,26 @@ Pairwise sample diffs remain
 inline and accepted pairs are `cpu-sample × cpu-sample`, `heap-snapshot × heap-snapshot` and
 `allocation-sample × allocation-sample`. Allocation diffs normalize totals to per-second rates.
 
+Counters, contention and ThreadPool journey comparisons report objective deltas,
+not workload-independent improvement/regression. Their metrics are direction-neutral:
+compatible, quality-eligible overlapping captures return `not_assessed`, including
+when values are unchanged. Structural `no_overlap` and evidence-quality
+`inconclusive` remain distinct; ThreadPool quality gates are not weakened.
+Contention counts/durations and starvation/cooperative-blocking adjustment counts
+do not establish equivalent work or performance by themselves. A missing retained
+row remains unavailable, not zero. Notes explicitly state the missing work-rate,
+latency and workload-equivalence evidence.
+
+The same policy applies when comparing saved v1 projections: old better-directions
+for CPU, counters, contention and ThreadPool are neutralized during comparison,
+without rewriting the saved files. JSON `direction="n/a"` still means no
+better-direction; numeric up/down/flat can be read from the absolute delta.
+Journey relative deltas are unavailable for a zero baseline, including zero to
+zero; absolute deltas and raw values remain available. Compact trend views
+prioritize nonzero changes from a zero baseline before percentage-ranked rows,
+so an undefined percentage does not hide a measured change at `topN`.
+`minDeltaPct` applies only to defined relative percentages.
+
 For `cpu-sample × cpu-sample` diffs (both the `baselineHandle` pairwise path and the
 `comparisonHandles` journey path), the `Summary` line adds an explicit narrative on top of the
 raw added/removed/changed counts (issue #812): a "Top hotspot share grew/shrank: `Method` X% →

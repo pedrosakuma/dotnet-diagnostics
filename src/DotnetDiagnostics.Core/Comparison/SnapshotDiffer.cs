@@ -71,6 +71,19 @@ public static class SnapshotDiffer
         }
 
         var notes = new List<string>();
+        if (kind is "cpu-sample" or "counters" or "contention-snapshot" or "threadpool-snapshot")
+        {
+            // Saved v1 projections may still carry the old workload-dependent better-directions.
+            snapshots = snapshots.Select(static snapshot => snapshot with
+            {
+                Metrics = snapshot.Metrics.Select(NeutralMetric).ToArray(),
+                Rows = snapshot.Rows.Select(static row => row with
+                {
+                    Metrics = row.Metrics.Select(NeutralMetric).ToArray(),
+                }).ToArray(),
+            }).ToArray();
+            notes.Add("Evidence gap: matched work rate, latency and workload equivalence are not established by this comparison. Counts, durations and sample shares are observations, not performance verdicts.");
+        }
         if (snapshots.Select(s => s.ProcessId).Distinct().Count() > 1)
         {
             notes.Add("Comparison spans different process ids; treat as cross-run.");
@@ -117,6 +130,11 @@ public static class SnapshotDiffer
 
         return WithQuality(new SnapshotJourneyDiff(kind, mode, labels, verdict, metricSeries, keyMatrix, pairwise, notes), snapshots);
     }
+
+    private static MetricValue NeutralMetric(MetricValue metric)
+        => metric.Definition.BetterDirection == BetterDirection.Neutral
+            ? metric
+            : metric with { Definition = metric.Definition with { BetterDirection = BetterDirection.Neutral } };
 
     private static SnapshotJourneyDiff Empty(
         string kind, JourneyMode mode, IReadOnlyList<string> labels, string verdict, string note)
@@ -238,7 +256,7 @@ public static class SnapshotDiffer
             {
                 deltaAbs = Math.Round(t - f, 4);
                 deltaPct = PercentDelta(f, t);
-                direction = Direction(def.BetterDirection, f, t, deltaPct.Value, minDeltaPct);
+                direction = Direction(def.BetterDirection, f, t, deltaPct, minDeltaPct);
             }
             else if (values.Any(v => v is null))
             {
@@ -312,7 +330,7 @@ public static class SnapshotDiffer
             {
                 deltaAbs = Math.Round(tv - fv, 4);
                 deltaPct = PercentDelta(fv, tv);
-                direction = Direction(primaryDir ?? BetterDirection.Lower, fv, tv, deltaPct.Value, minDeltaPct);
+                direction = Direction(primaryDir ?? BetterDirection.Lower, fv, tv, deltaPct, minDeltaPct);
             }
 
             var (key, name) = display[id];
@@ -584,14 +602,14 @@ public static class SnapshotDiffer
 
     // ---- Numeric helpers --------------------------------------------------------------------
 
-    private static string Direction(BetterDirection better, double from, double to, double deltaPct, double minDeltaPct)
+    private static string Direction(BetterDirection better, double from, double to, double? deltaPct, double minDeltaPct)
     {
         if (better == BetterDirection.Neutral)
         {
             return NotApplicable;
         }
 
-        if (Math.Abs(deltaPct) < minDeltaPct)
+        if (deltaPct is { } percent && Math.Abs(percent) < minDeltaPct)
         {
             return Flat;
         }
@@ -607,11 +625,11 @@ public static class SnapshotDiffer
         return wentDown == lowerIsBetter ? Improved : Regressed;
     }
 
-    private static double PercentDelta(double baseline, double current)
+    private static double? PercentDelta(double baseline, double current)
     {
         if (baseline == 0)
         {
-            return current == 0 ? 0 : 100;
+            return null;
         }
 
         return Math.Round(((current - baseline) / Math.Abs(baseline)) * 100, 2);

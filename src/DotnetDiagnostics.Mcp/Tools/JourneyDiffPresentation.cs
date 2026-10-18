@@ -190,7 +190,8 @@ internal static class JourneyDiffPresentation
         }
 
         return series
-            .OrderByDescending(s => AbsOrMinusOne(s.DeltaPct))
+            .OrderByDescending(s => s.DeltaPct is null && s.DeltaAbs is > 0 or < 0)
+            .ThenByDescending(s => AbsOrMinusOne(s.DeltaPct))
             .ThenByDescending(s => AbsOrMinusOne(s.DeltaAbs))
             .ThenBy(s => s.Definition.Name, StringComparer.Ordinal)
             .Take(topN)
@@ -209,7 +210,8 @@ internal static class JourneyDiffPresentation
         }
 
         return rows
-            .OrderByDescending(r => AbsOrMinusOne(r.DeltaPct))
+            .OrderByDescending(r => r.DeltaPct is null && r.DeltaAbs is > 0 or < 0)
+            .ThenByDescending(r => AbsOrMinusOne(r.DeltaPct))
             .ThenByDescending(r => AbsOrMinusOne(r.DeltaAbs))
             .ThenBy(r => r.DisplayName, StringComparer.Ordinal)
             .Take(topN)

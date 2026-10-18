@@ -23,11 +23,11 @@ internal static class DiagnosticToolHeapDump
         IProcessContextResolver resolver,
         IPrincipalAccessor principalAccessor,
         ILoggerFactory? loggerFactory = null,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         [Description("Dump type: 'Mini', 'Triage', 'WithHeap' or 'Full'. Defaults to Mini.")] ProcessDumpType dumpType = ProcessDumpType.Mini,
         [Description("Optional sub-path under the artifact root (MCP_ARTIFACT_ROOT, default <temp>/dotnet-diagnostics-mcp). MUST be relative — absolute paths and '..' traversal are rejected (InvalidArtifactPath). Dump files are written with POSIX mode 0600.")] string? outputDirectory = null,
         [Description("Defense-in-depth confirmation flag — fallback for clients WITHOUT the MCP elicitation capability. Must be true to write a dump file when elicitation is unavailable; without it the tool returns a `confirmation_required` envelope describing what would have been written. Elicitation-capable clients are ALWAYS prompted natively and this flag is ignored for them (a human decline cannot be bypassed with confirm=true). See docs/authorization.md#per-call-confirmation")] bool confirm = false,
-        [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
+        [Description("Optional attach_to_pod investigation handle; routes this call through the attached target (Kubernetes Pod or external MCP profile) instead of the current MCP session binding.")]
         string? investigationHandleId = null,
         RequestContext<CallToolRequestParams>? requestContext = null,
         CancellationToken cancellationToken = default)
@@ -121,7 +121,7 @@ internal static class DiagnosticToolHeapDump
         IProcessContextResolver resolver,
         SymbolServerAllowlist symbolServerAllowlist,
         IPrincipalAccessor principalAccessor,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         [Description("Number of types to return in each top-N list (bytes / instances). Defaults to 20.")] int topTypes = 20,
         [Description("When true, walks a short GC retention chain for the top retained types. Off by default — slower and lengthens the suspend window.")] bool includeRetentionPaths = false,
         [Description("Cap on retention-chain depth when retention paths are enabled. Defaults to 8.")] int retentionPathLimit = 8,

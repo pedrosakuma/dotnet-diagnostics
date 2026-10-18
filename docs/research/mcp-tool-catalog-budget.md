@@ -34,6 +34,52 @@ part of both surfaces.
 
 ## Reproduce
 
+### Comparison follow-up and catalog reduction (2026-10-18, #1192)
+
+The real HTTP budget test measures **283,807 bytes** for the maximal 17-tool
+catalog and **250,639 bytes** for the default 13 tools on Linux. Compared with
+PR #1199, both shrink by **585 bytes** (maximal reduction **0.206%**).
+The approved **285,000-byte ceiling stays unchanged**, with **1,193 bytes**
+of headroom. No tool, field, output schema or safety annotation was removed.
+
+Only repeated ordinary PID and investigation-routing descriptions were shortened.
+PID auto-selection and exceptional live/dump restrictions remain; the routing
+description now explicitly covers Kubernetes Pods **and external MCP profiles**.
+Most legacy aliases are not registered, so counting changed source strings would
+overestimate the saving. The numbers below measure the actual shipping surface.
+
+| Tool | Total bytes | Input schema* | Output schema* | Prose |
+|---|---:|---:|---:|---:|
+| `collect_events` | 79,233 | 8,336 | 67,746 | 7,260 |
+| `collect_sample` | 32,612 | 8,452 | 21,203 | 7,790 |
+| `inspect_process` | 23,227 | 3,664 | 17,596 | 4,190 |
+| `collect_thread_snapshot` | 21,993 | 2,816 | 17,012 | 3,521 |
+| `collect_batch` | 15,126 | 1,926 | 11,201 | 2,821 |
+| `export_investigation_summary` | 14,318 | 1,876 | 10,300 | 2,696 |
+| `query_snapshot` | 11,943 | 7,025 | 2,873 | 5,875 |
+| `start_investigation` | 10,649 | 1,744 | 6,896 | 2,640 |
+| `list_orchestrator` | 10,003 | 2,406 | 5,584 | 3,290 |
+| `inspect_heap` | 9,970 | 4,292 | 2,873 | 4,854 |
+| `capture_method_bytes` | 9,595 | 2,559 | 4,527 | 3,951 |
+| `attach_to_pod` | 9,107 | 3,038 | 3,634 | 4,159 |
+| `discover_azure` | 8,058 | 1,203 | 5,173 | 1,839 |
+| `get_bytes` | 8,026 | 2,848 | 2,873 | 3,174 |
+| `collect_process_dump` | 7,355 | 1,531 | 3,362 | 2,911 |
+| `compare_to_baseline` | 6,568 | 1,969 | 2,730 | 2,489 |
+| `detach_from_pod` | 5,409 | 256 | 3,227 | 1,756 |
+
+*Schema columns include prose and overlap the prose column. The disjoint
+partition is **197,389 bytes of schema structure**, **65,216 bytes of prose**,
+**20,587 bytes of other tool metadata**, plus **615 bytes of catalog framing**.
+Schema structure alone accounts for approximately **69.6%** of the catalog.
+Output schemas (including their prose) contribute **188,810 bytes**.
+
+Further material reduction should investigate SDK/client support for reusable
+`$defs`/`$ref` output schemas, especially repeated records within `collect_events`.
+That requires compatibility measurements, not hand-removing generated fields or
+replacing typed evidence with opaque objects. Prose trimming is a modest saving,
+not a solution to structural duplication.
+
 ### Issue #1192 validation (2026-10-18)
 
 PR #1199 measures **284,392 bytes** for the maximal 17-tool catalog and
@@ -258,7 +304,8 @@ Potential future reductions should be evidence-driven:
   protocol/SDK offers a portable composition or deferred-schema mechanism.
   Hand-written preview-specific schema tricks would create migration debt.
 
-No descriptions were shortened as part of this issue.
+No descriptions were shortened in the original #791 measurement. The later
+#1192 reduction above shortens repeated parameter prose.
 
 ## Guardrails
 

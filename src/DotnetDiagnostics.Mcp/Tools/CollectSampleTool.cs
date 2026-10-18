@@ -85,7 +85,7 @@ public sealed class CollectSampleTool
             "Long-running collections expose MCP-native progress/cancellation or can be promoted to an MCP Task.")]
         string kind = KindCpu,
         // Shared options.
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")]
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")]
         int? processId = null,
         [Description("Duration of the sampling window in seconds. Must be >= 1. Defaults to 10.")]
         int durationSeconds = 10,
@@ -125,7 +125,7 @@ public sealed class CollectSampleTool
         long nativeAllocSamplePeriod = 1000,
         [Description("kind='native-lock-contention' on Linux only (there is no Windows backend). perf sample period — record one callchain per this many pthread_mutex_lock/unlock hits. Must be >= 1. Defaults to 5000 — higher than nativeAllocSamplePeriod's default because mutex fast-path calls are typically far more frequent than allocator calls on lock-heavy workloads.")]
         long nativeLockContentionSamplePeriod = 5000,
-        [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
+        [Description("Optional attach_to_pod investigation handle; routes this call through the attached target (Kubernetes Pod or external MCP profile) instead of the current MCP session binding.")]
         string? investigationHandleId = null,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
         RequestContext<CallToolRequestParams>? requestContext = null,

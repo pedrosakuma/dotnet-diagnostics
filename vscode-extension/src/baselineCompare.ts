@@ -72,6 +72,12 @@ function renderComparison(containerId: string, result: ComparisonResult): void {
         const el = document.createElement(tag); el.textContent = value == null ? "Unavailable" : String(value); return el;
     };
     root.appendChild(text("h3", `Baseline comparison: ${result.status}`));
+    const changes = { up: 0, down: 0, flat: 0, unavailable: 0 };
+    for (const row of result.metrics) {
+        const delta = row.absoluteDelta;
+        changes[delta === null ? "unavailable" : delta > 0 ? "up" : delta < 0 ? "down" : "flat"]++;
+    }
+    root.appendChild(text("p", `Observed deltas: ${changes.up} up, ${changes.down} down, ${changes.flat} flat, ${changes.unavailable} unavailable. Numeric direction is not a performance verdict.`));
     root.appendChild(text("p", "Left = baseline; right = candidate. Relative delta is a ratio, not percent. Unavailable values are not zero. Retained observations do not establish workload equivalence, causation or performance gains."));
     for (const reason of result.reasons) root.appendChild(text("p", reason));
     const table = document.createElement("table"), heading = document.createElement("tr");

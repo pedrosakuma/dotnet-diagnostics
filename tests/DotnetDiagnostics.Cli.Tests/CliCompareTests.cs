@@ -95,6 +95,56 @@ public sealed class CliCompareTests : IDisposable
         stdout.Should().Contain("heapCountChanges");
     }
 
+    [Theory]
+    [InlineData(10, 20, "up")]
+    [InlineData(20, 10, "down")]
+    [InlineData(10, 10, "flat")]
+    public void RenderJourneyDiff_NotAssessed_ShowsNumericDirectionAndSemantics(double before, double after, string direction)
+    {
+        ComparableSnapshot Snapshot(string label, double value) => new(
+            ComparableSnapshot.SchemaV1, CollectionHandleKinds.Counters, label,
+            DateTimeOffset.UnixEpoch, Environment.ProcessId,
+            [new MetricValue(new MetricDefinition("cpu", MetricRole.Context, BetterDirection.Neutral,
+                MetricAggregation.Point, Unit: "%"), value)], []);
+        var diff = SnapshotDiffer.Compare([Snapshot("before", before), Snapshot("after", after)]);
+
+        var text = CliCommands.RenderJourneyDiff(diff);
+
+        text.Should().Contain("verdict=not_assessed");
+        text.Should().Contain("signals only:");
+        text.Should().Contain($", {direction}, trend");
+        text.Should().Contain("%, Point, normalization=None");
+        text.Should().Contain("unavailable values are not zero");
+        diff.MetricSeries.Single().Direction.Should().Be("n/a");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void RenderJourneyDiff_KeepsZeroBaselineChangeAheadOfFiveMinorChanges(bool keyRows)
+    {
+        ComparableSnapshot Snapshot(string label, double current, double minor)
+        {
+            var metrics = Enumerable.Range(0, 5).Select(i => new MetricValue(
+                new MetricDefinition($"minor-{i}", MetricRole.Primary, BetterDirection.Neutral, MetricAggregation.Total),
+                minor)).Append(new MetricValue(
+                    new MetricDefinition("newly-active", MetricRole.Primary, BetterDirection.Neutral, MetricAggregation.Total),
+                    current)).ToArray();
+            return new(ComparableSnapshot.SchemaV1, CollectionHandleKinds.Counters, label, DateTimeOffset.UnixEpoch,
+                Environment.ProcessId, keyRows ? [] : metrics,
+                keyRows ? metrics.Select(metric => new ComparableRow(
+                    new ComparableKey("counter", metric.Definition.Name), metric.Definition.Name, [metric])).ToArray() : []);
+        }
+        var diff = SnapshotDiffer.Compare([Snapshot("before", 0, 100), Snapshot("after", 1000, 101)]);
+
+        var text = CliCommands.RenderJourneyDiff(diff);
+
+        text.Should().Contain("newly-active: 0 → 1000");
+        text.Should().Contain("Δ +1000, n/a, up");
+        text.IndexOf("newly-active:", StringComparison.Ordinal)
+            .Should().BeLessThan(text.IndexOf("minor-", StringComparison.Ordinal));
+    }
+
     [Fact]
     public async Task Compare_ThreeSnapshots_RendersTrendAndCanSaveFullDiff()
     {
@@ -172,7 +222,8 @@ public sealed class CliCompareTests : IDisposable
         doc.RootElement.GetProperty("verdict").GetString().Should().Be("inconclusive");
         doc.RootElement.GetProperty("metricSeries")[0].GetProperty("direction").GetString().Should().Be("n/a");
         doc.RootElement.GetProperty("captureQuality")[0].ValueKind.Should().Be(JsonValueKind.Null);
-        doc.RootElement.GetProperty("notes")[0].GetString().Should().Contain("LegacyUnknown");
+        doc.RootElement.GetProperty("notes").EnumerateArray()
+            .Should().Contain(note => note.GetString()!.Contains("LegacyUnknown", StringComparison.Ordinal));
     }
 
     [Fact]

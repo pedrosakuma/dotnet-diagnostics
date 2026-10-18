@@ -19,7 +19,7 @@ internal static class DiagnosticToolByteStreaming
         [Description("Artifact to stream: 'pe' (default) or 'pdb'.")] string asset = "pe",
         [Description("Byte offset where this chunk starts. Defaults to 0.")] long offset = 0,
         [Description("Maximum bytes to return in this response. Defaults to 4 MiB and is capped at 16 MiB.")] int maxBytes = FileChunkReader.DefaultChunkBytes,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         ILoggerFactory? loggerFactory = null,
         CancellationToken cancellationToken = default)
     {

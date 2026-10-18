@@ -506,7 +506,7 @@ public sealed class ComparableProjectorTests
     }
 
     [Fact]
-    public void ContentionProjector_GroupsRowsByCallSite_AndDrivesKeySetVerdicts()
+    public void ContentionProjector_GroupsRowsByCallSite_WithoutJudgingWorkload()
     {
         var projector = new ContentionComparableProjector();
         var baseline = projector.Project(ContentionSnapshot(("MyApp.dll", "MyApp.Locking.Slow", 10, 2)), "baseline");
@@ -521,11 +521,31 @@ public sealed class ComparableProjectorTests
         row.Key.MethodName.Should().Be("MyApp.Locking.Slow");
         row.Metrics[0].Definition.Name.Should().Be("totalContentionDurationMs");
         row.Metrics[0].Definition.Role.Should().Be(MetricRole.Primary);
-        row.Metrics[0].Definition.BetterDirection.Should().Be(BetterDirection.Lower);
+        row.Metrics[0].Definition.BetterDirection.Should().Be(BetterDirection.Neutral);
         row.Metrics[0].Value.Should().Be(10);
 
-        SnapshotDiffer.Compare(new[] { baseline, regression }).Verdict.Should().Be("regression");
-        SnapshotDiffer.Compare(new[] { baseline, improvement }).Verdict.Should().Be("improvement");
+        SnapshotDiffer.Compare(new[] { baseline, regression }).Verdict.Should().Be("not_assessed");
+        SnapshotDiffer.Compare(new[] { baseline, improvement }).Verdict.Should().Be("not_assessed");
+        baseline.Metrics.Concat(row.Metrics).Should().OnlyContain(metric =>
+            metric.Definition.BetterDirection == BetterDirection.Neutral);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ContentionProjector_EmptySide_IsNotAssessedAndMissingRowsStayUnavailable(bool emptyBaseline)
+    {
+        var projector = new ContentionComparableProjector();
+        var empty = projector.Project(ContentionSnapshot(), "empty");
+        var populated = projector.Project(ContentionSnapshot(("MyApp.dll", "MyApp.Locking.Slow", 10, 1)), "populated");
+
+        var diff = SnapshotDiffer.Compare(emptyBaseline ? [empty, populated] : [populated, empty]);
+
+        diff.Verdict.Should().Be("not_assessed");
+        var row = diff.KeyMatrix.Single();
+        row.Values[emptyBaseline ? 0 : 1].Should().BeNull();
+        row.DeltaAbs.Should().BeNull();
+        row.Direction.Should().Be("n/a");
     }
 
     [Fact]
@@ -560,7 +580,7 @@ public sealed class ComparableProjectorTests
         var byName = snap.Metrics.ToDictionary(m => m.Definition.Name);
         byName["starvationAdjustments"].Value.Should().Be(1);
         byName["starvationAdjustments"].Definition.Role.Should().Be(MetricRole.Primary);
-        byName["starvationAdjustments"].Definition.BetterDirection.Should().Be(BetterDirection.Lower);
+        byName["starvationAdjustments"].Definition.BetterDirection.Should().Be(BetterDirection.Neutral);
         byName["windowEnqueueDequeueDifference"].Value.Should().Be(7);
         byName["windowEnqueueDequeueDifference"].Definition.Role.Should().Be(MetricRole.Context);
         byName["windowEnqueueDequeueDifference"].Definition.BetterDirection.Should().Be(BetterDirection.Neutral);
@@ -657,15 +677,18 @@ public sealed class ComparableProjectorTests
     }
 
     [Fact]
-    public void ThreadPoolComparison_AdequateQuality_AllowsRegressionConclusion()
+    public void ThreadPoolComparison_AdequateQuality_PreservesDeltasWithoutJudgment()
     {
         var baseline = ThreadPoolComparable(1, "before", AdequateQuality());
         var current = ThreadPoolComparable(3, "after", AdequateQuality());
 
         var diff = SnapshotDiffer.Compare([baseline, current]);
 
-        diff.Verdict.Should().Be("regression");
-        diff.MetricSeries.Single(s => s.Definition.Name == "starvationAdjustments").Direction.Should().Be("regressed");
+        diff.Verdict.Should().Be("not_assessed");
+        var series = diff.MetricSeries.Single(s => s.Definition.Name == "starvationAdjustments");
+        series.Direction.Should().Be("n/a");
+        series.DeltaAbs.Should().Be(2);
+        series.Trend.Should().Be(MetricTrend.MonotonicUp);
     }
 
     private static ComparableSnapshot ThreadPoolComparable(double starvation, string label, EvidenceQuality? quality)
@@ -835,7 +858,7 @@ public sealed class ComparableProjectorTests
             TotalContentionDuration: TimeSpan.FromMilliseconds(events.Sum(static item => item.durationMs)),
             P50ContentionDuration: TimeSpan.Zero,
             P95ContentionDuration: TimeSpan.Zero,
-            MaxContentionDuration: TimeSpan.FromMilliseconds(events.Max(static item => item.durationMs)),
+            MaxContentionDuration: TimeSpan.FromMilliseconds(events.Select(static item => item.durationMs).DefaultIfEmpty(0).Max()),
             Events: events.Select(static item => new ContentionEventSample(
                 DateTimeOffset.UtcNow,
                 DateTimeOffset.UtcNow.AddMilliseconds(item.durationMs),

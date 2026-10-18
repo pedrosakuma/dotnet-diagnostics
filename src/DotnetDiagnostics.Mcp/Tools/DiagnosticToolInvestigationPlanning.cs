@@ -20,13 +20,13 @@ internal static class DiagnosticToolInvestigationPlanning
     public static async Task<DiagnosticResult<InvestigationPlan>> StartInvestigation(
         IInvestigationPlanner planner,
         IProcessContextResolver resolver,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         [Description("Plain-language symptom, e.g. 'high latency on /checkout since v2025.10'. Required for cold mode; optional for warm/hypothesis.")] string? symptom = null,
         [Description("Specific hypothesis to test, e.g. 'lock contention on Cart.Checkout'. Triggers hypothesis mode.")] string? hypothesis = null,
         [Description("Baseline snapshot from a prior investigation (JSON of BaselineHandle). Triggers warm mode.")] BaselineHandle? baseline = null,
         [Description("Optional hard limit on tool calls before forcing summarization. Defaults to 8.")] int maxToolCalls = 8,
         [Description("If true, collect_process_dump steps are marked approval-gated. Defaults to true.")] bool dumpRequiresApproval = true,
-        [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
+        [Description("Optional attach_to_pod investigation handle; routes this call through the attached target (Kubernetes Pod or external MCP profile) instead of the current MCP session binding.")]
         string? investigationHandleId = null,
         CancellationToken cancellationToken = default)
     {
@@ -73,7 +73,7 @@ internal static class DiagnosticToolInvestigationPlanning
         [Description("Optional PR URL being proposed as the fix.")] string? fixPullRequestUrl = null,
         [Description("Optional short description of the proposed fix.")] string? fixDescription = null,
         [Description("Optional free-form notes appended to the summary.")] string? notes = null,
-        [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
+        [Description("Optional attach_to_pod investigation handle; routes this call through the attached target (Kubernetes Pod or external MCP profile) instead of the current MCP session binding.")]
         string? investigationHandleId = null)
     {
         if (string.IsNullOrWhiteSpace(handle)) return InvalidArg<ExportedInvestigationSummary>(nameof(handle), "is required");

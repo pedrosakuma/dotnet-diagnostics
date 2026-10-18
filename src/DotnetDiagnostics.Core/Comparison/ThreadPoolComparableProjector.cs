@@ -5,7 +5,7 @@ namespace DotnetDiagnostics.Core.Comparison;
 
 /// <summary>
 /// Projects EventPipe ThreadPool snapshots into scalar signals only; rows are intentionally empty
-/// so worker/starvation metrics drive the generic journey verdict.
+/// so changes in worker/starvation activity remain workload-dependent observations.
 /// </summary>
 public sealed class ThreadPoolComparableProjector : IComparableProjector
 {
@@ -26,8 +26,8 @@ public sealed class ThreadPoolComparableProjector : IComparableProjector
 
         if (evidence is not null)
         {
-            AddOptional(metrics, "starvationAdjustments", MetricRole.Primary, BetterDirection.Lower, MetricAggregation.Total, "count", evidence.ConfirmedStarvationAdjustments);
-            AddOptional(metrics, "cooperativeBlockingAdjustments", MetricRole.Primary, BetterDirection.Lower, MetricAggregation.Total, "count", evidence.ConfirmedCooperativeBlockingAdjustments);
+            AddOptional(metrics, "starvationAdjustments", MetricRole.Primary, BetterDirection.Neutral, MetricAggregation.Total, "count", evidence.ConfirmedStarvationAdjustments);
+            AddOptional(metrics, "cooperativeBlockingAdjustments", MetricRole.Primary, BetterDirection.Neutral, MetricAggregation.Total, "count", evidence.ConfirmedCooperativeBlockingAdjustments);
             AddOptional(metrics, "hillClimbingEvents", MetricRole.Context, BetterDirection.Neutral, MetricAggregation.Total, "count", evidence.HillClimbingEvents);
         }
 

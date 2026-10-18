@@ -27,14 +27,14 @@ internal static class DiagnosticToolProcessInspection
     public static Task<DiagnosticResult<DotnetProcess>> GetProcessInfo(
         IProcessDiscovery discovery,
         IProcessContextResolver resolver,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         CancellationToken cancellationToken = default)
         => ProcessInspectionUseCases.GetProcessInfoAsync(discovery, resolver, processId, cancellationToken);
 
     public static Task<DiagnosticResult<DiagnosticCapabilities>> GetDiagnosticCapabilities(
         ICapabilityDetector detector,
         IProcessContextResolver resolver,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         CancellationToken cancellationToken = default)
         => ProcessInspectionUseCases.GetCapabilitiesAsync(detector, resolver, processId, cancellationToken);
 
@@ -46,7 +46,7 @@ internal static class DiagnosticToolProcessInspection
     public static async Task<DiagnosticResult<ContainerSignals>> GetContainerSignals(
         IContainerSignalsCollector collector,
         IProcessContextResolver resolver,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         [Description("Verbosity (summary|detail|raw). Default 'summary' drops the verbose Notes (caveats about cgroup v1, missing PSI, etc.) and keeps only the actionable signals. 'detail' / 'raw' include all Notes.")]
         SamplingDepth depth = SamplingDepth.Summary,
         CancellationToken cancellationToken = default)
@@ -144,7 +144,7 @@ internal static class DiagnosticToolProcessInspection
     public static async Task<DiagnosticResult<RuntimeConfigView>> GetRuntimeConfig(
         IRuntimeConfigInspector inspector,
         IProcessContextResolver resolver,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         CancellationToken cancellationToken = default)
     {
         if (processId is < 0)
@@ -167,7 +167,7 @@ internal static class DiagnosticToolProcessInspection
     public static async Task<DiagnosticResult<TriageResult>> PerformTriage(
         ICounterCollector collector,
         IProcessContextResolver resolver,
-        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Target .NET process OS PID; omitted auto-selects the only visible .NET process.")] int? processId = null,
         [Description("Duration of the counter collection window in seconds. Must be >= 1. Defaults to 5.")] int durationSeconds = 5,
         CancellationToken cancellationToken = default)
     {

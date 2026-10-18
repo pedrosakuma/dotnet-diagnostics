@@ -13,6 +13,12 @@ pauses, find CPU hotspots, inspect heap and thread snapshots, and analyze existi
 - **Share and compare:** export redacted measurements, save raw CPU traces locally, and compare
   compatible saved captures against a baseline.
 
+Saved comparisons summarize numeric deltas as up/down/flat/unavailable, not
+performance verdicts. The extension uses the CLI's historical comparison contract
+(compatibility and measurement semantics), not journey verdict labels such as
+`not_assessed`. Missing values remain unavailable; workload equivalence,
+throughput and latency must be established separately.
+
 ## Get started
 
 Requires VS Code **1.96+** and the **.NET 10 runtime**, or a self-contained CLI. Install
