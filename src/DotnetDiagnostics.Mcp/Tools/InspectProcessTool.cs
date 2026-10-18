@@ -131,7 +131,7 @@ public sealed class InspectProcessTool
         int sampleEverySeconds = 2,
         [Description("view=container only — controls the container-signals projection. Summary (default) drops the Notes[] caveats; Detail / Raw keep them.")]
         SamplingDepth depth = SamplingDepth.Summary,
-        [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
+        [Description("Optional attach_to_pod investigation handle; routes this call through the attached target (Kubernetes Pod or external MCP profile) instead of the current MCP session binding.")]
         string? investigationHandleId = null,
         CancellationToken cancellationToken = default)
     {

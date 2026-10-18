@@ -262,7 +262,8 @@ are identical regardless of which "door" you use; only the transport differs.
    - `regression` — the primary metric(s) moved the wrong way.
    - `mixed` — some primaries improved, others regressed; read the per-metric `Direction`.
    - `no_change` — primaries within `minDeltaPct`.
-   - `not_assessed` — shared metrics carry no better-direction (e.g. neutral counters), so nothing
+   - `not_assessed` — shared metrics carry no better-direction (CPU sample shares,
+     counters, contention activity and ThreadPool adjustment counts), so nothing
      was judged; read the raw deltas and interpret with workload context.
    - `no_overlap` — both captures have entries but share no comparable metric/key (e.g. different kinds of
      work); re-capture comparable windows.
@@ -271,13 +272,43 @@ are identical regardless of which "door" you use; only the transport differs.
    carry the per-metric / per-row deltas. `Notes[]` flags caveats (cross-process, unit
    mismatch, top-N truncation).
 
-For CPU captures with running/waiting self-sample classification, `waitingSelfPercent` is the
-primary symptom and the per-frame matrix preserves `runningExclusiveSamples` separately from
-`waitingExclusiveSamples`. Do not interpret a new running leader as a regression when the old
-blocking leader disappeared and waiting meaningfully collapsed; unrelated all-running hotspot
-replacement remains regression evidence. Legacy investigation summaries that lack
-comparable symptom metrics or running/waiting classification report hotspot rank turnover as
-`incomparable`; conflicting queue/throughput evidence reports `mixed`.
+For CPU snapshot diffs, OS-backed sample shares and counts are objective observations,
+not CPU time or completed work; compatible overlapping captures return `not_assessed`.
+EventPipe stack frequency and heuristic wait classification do not establish measured
+scheduler state, so same-semantics comparisons remain `inconclusive`; mixed or
+legacy-unknown evidence is `incomparable`. A replaced hotspot is not by itself a
+performance regression. The legacy `InvestigationSummary` comparison path is separate
+from these snapshot diffs and retains its existing indicative verdict contract.
+
+### Local ambiguity smoke observations (2026-10-18, #1192)
+
+Serial OS-backed CPU captures compared baseline/candidate and a true baseline/baseline
+control in four local scenarios. All eight diffs returned `not_assessed`, with sample
+counts and unresolved-symbol shares retained in the summary.
+
+| Scenario | Baseline work | Candidate work | Second unchanged baseline |
+|---|---:|---:|---:|
+| Serialized lock | 57.9 requests/s | 252.6 requests/s | 56.6 requests/s |
+| Deterministic CPU work | 190.6 requests/s | 1,612.8 requests/s | 83.7 requests/s |
+| Repeated page rendering | 182.0 requests/s | 1,533.0 requests/s | 135.3 requests/s |
+| Finite batch | 36,483 ms | 23,631 ms | 33,553 ms |
+
+Request scenarios used eight clients, a three-second warm-up and a 16-second
+closed-loop load containing an eight-second capture; no HTTP errors were observed.
+Batch captures sampled part of the job, while completion time was read separately.
+Two captures of unchanged CPU work differed by about **56%** in request rate.
+The optimized CPU/page captures had about **85%** unresolved-symbol share, limiting
+method attribution. These are shared-host smoke observations, not benchmark or
+statistical acceptance thresholds; no unfavorable run was discarded or retried.
+
+Two independent model-driven page-rendering exercises also made, measured and
+checked their own bounded-cache changes, one with only source and one with an
+explicit popular-ID/memory-budget narrative. Both used independent work/CPU
+measurements rather than treating the counter comparison's `not_assessed` as a
+performance conclusion. Both preserved response bytes and hit accounting and
+reported cold/high-cardinality limitations. This is one exercise per prompt
+condition, not a measured frequency of model anchoring or a general claim that
+the narrative is unnecessary.
 
 ### N-way trend recipe (N≥3)
 

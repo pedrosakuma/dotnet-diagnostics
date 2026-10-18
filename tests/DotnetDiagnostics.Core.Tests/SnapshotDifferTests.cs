@@ -15,10 +15,10 @@ public sealed class SnapshotDifferTests
 
     private static ComparableSnapshot KeySnap(string label, params (string id, double value)[] rows)
         => new(
-            ComparableSnapshot.SchemaV1, "cpu-sample", label, DateTimeOffset.UnixEpoch, 1,
+            ComparableSnapshot.SchemaV1, "heap-snapshot", label, DateTimeOffset.UnixEpoch, 1,
             Array.Empty<MetricValue>(),
             rows.Select(r => new ComparableRow(
-                new ComparableKey("cpu-sample", r.id),
+                new ComparableKey("heap-snapshot", r.id),
                 r.id,
                 new[] { Metric("exclusivePercent", r.value) })).ToArray(),
             Quality: SupportedQuality())
@@ -115,6 +115,37 @@ public sealed class SnapshotDifferTests
         diff.Notes.Should().Contain(n => n.Contains("no improvement/regression was judged"));
     }
 
+    [Theory]
+    [InlineData("cpu-sample")]
+    [InlineData("counters")]
+    [InlineData("contention-snapshot")]
+    [InlineData("threadpool-snapshot")]
+    public void LegacyWorkloadDirections_AreNeutralizedWithoutMutatingSnapshots(string kind)
+    {
+        ComparableSnapshot Snapshot(string label, double value) =>
+            new(ComparableSnapshot.SchemaV1, kind, label, DateTimeOffset.UnixEpoch, 1,
+                [Metric("activityCount", value)],
+                [new ComparableRow(new ComparableKey(kind, "A"), "A", [Metric("rowCount", value)])],
+                Quality: SupportedQuality())
+            {
+                CpuEvidence = CpuSampleEvidence.LinuxPerfOnCpu,
+            };
+        var baseline = Snapshot("before", 10);
+        var current = Snapshot("after", 20);
+
+        var diff = SnapshotDiffer.Compare([baseline, current]);
+
+        diff.Verdict.Should().Be("not_assessed");
+        diff.MetricSeries.Single().Definition.BetterDirection.Should().Be(BetterDirection.Neutral);
+        diff.MetricSeries.Single().DeltaAbs.Should().Be(10);
+        diff.KeyMatrix.Single().Direction.Should().Be("n/a");
+        diff.KeyMatrix.Single().DeltaAbs.Should().Be(10);
+        diff.Pairwise!.Adjacent.Should().OnlyContain(pair => pair.Verdict == "not_assessed");
+        diff.Notes.Should().Contain(note => note.Contains("workload equivalence", StringComparison.Ordinal));
+        baseline.Metrics.Single().Definition.BetterDirection.Should().Be(BetterDirection.Lower);
+        baseline.Rows.Single().Metrics.Single().Definition.BetterDirection.Should().Be(BetterDirection.Lower);
+    }
+
     [Fact]
     public void MetricAbsentInEndpoint_IsNotApplicable_WithNote()
     {
@@ -126,6 +157,22 @@ public sealed class SnapshotDifferTests
         diff.MetricSeries.Should().OnlyContain(s => s.Direction == "n/a");
         diff.Notes.Should().Contain(n => n.Contains("absent"));
         diff.Verdict.Should().Be("no_overlap");
+    }
+
+    [Theory]
+    [InlineData(0, "no_change")]
+    [InlineData(10, "regression")]
+    [InlineData(-10, "improvement")]
+    public void ZeroBaseline_HasNoRelativeDelta_ButRetainsAbsoluteChange(double current, string verdict)
+    {
+        var diff = SnapshotDiffer.Compare([
+            MetricSnap("before", "gc-datas", Metric("m", 0)),
+            MetricSnap("after", "gc-datas", Metric("m", current)),
+        ]);
+
+        diff.MetricSeries.Single().DeltaAbs.Should().Be(current);
+        diff.MetricSeries.Single().DeltaPct.Should().BeNull();
+        diff.Verdict.Should().Be(verdict);
     }
 
     // ---- Trend classification (N>=3) --------------------------------------------------------
@@ -347,12 +394,12 @@ public sealed class SnapshotDifferTests
     public void KeySet_DuplicateKeyInCapture_IsNoted()
     {
         var snapshot = new ComparableSnapshot(
-            ComparableSnapshot.SchemaV1, "cpu-sample", "base", DateTimeOffset.UnixEpoch, 1,
+            ComparableSnapshot.SchemaV1, "heap-snapshot", "base", DateTimeOffset.UnixEpoch, 1,
             Array.Empty<MetricValue>(),
             new[]
             {
-                new ComparableRow(new ComparableKey("cpu-sample", "A"), "A", new[] { Metric("p", 10) }),
-                new ComparableRow(new ComparableKey("cpu-sample", "A"), "A", new[] { Metric("p", 99) }),
+                new ComparableRow(new ComparableKey("heap-snapshot", "A"), "A", new[] { Metric("p", 10) }),
+                new ComparableRow(new ComparableKey("heap-snapshot", "A"), "A", new[] { Metric("p", 99) }),
             },
             Quality: SupportedQuality())
         {

@@ -33,6 +33,11 @@ internal static partial class CliCommands
         {
             sb.AppendLine(CultureInfo.InvariantCulture, $"  headline: {headline.Relation} {headline.Verdict}");
         }
+        if (diff.Verdict == "not_assessed")
+        {
+            sb.AppendLine("  signals only: up/down/flat describe numeric changes, not improvement or regression.");
+        }
+        sb.AppendLine("  unavailable values are not zero; an unavailable relative delta can have a measured absolute delta.");
 
         AppendMetricDeltas(sb, diff.MetricSeries, diff.Mode, diff.Labels);
         AppendKeyDeltas(sb, diff.KeyMatrix, diff.Mode, diff.Labels);
@@ -60,7 +65,9 @@ internal static partial class CliCommands
                 .ToArray()
             : series
                 .Where(s => s.DeltaAbs.HasValue || s.DeltaPct.HasValue)
-                .OrderByDescending(s => Math.Abs(s.DeltaPct ?? 0))
+                .OrderByDescending(s => s.DeltaPct is null && s.DeltaAbs is > 0 or < 0)
+                .ThenByDescending(s => Math.Abs(s.DeltaPct ?? 0))
+                .ThenByDescending(s => Math.Abs(s.DeltaAbs ?? 0))
                 .ThenBy(s => s.Definition.Name, StringComparer.Ordinal)
                 .Take(5)
                 .ToArray();
@@ -82,7 +89,7 @@ internal static partial class CliCommands
             var first = FirstValue(row.Values);
             var last = LastValue(row.Values);
             sb.AppendLine(CultureInfo.InvariantCulture,
-                $"    - {row.Definition.Name}: {FormatNumber(first)} → {FormatNumber(last)} (Δ {FormatSigned(row.DeltaAbs)}, {FormatSignedPercent(row.DeltaPct)}, {row.Direction}, trend {row.Trend})");
+                $"    - {row.Definition.Name}: {FormatNumber(first)} → {FormatNumber(last)} (Δ {FormatSigned(row.DeltaAbs)}, {FormatSignedPercent(row.DeltaPct)}, {DisplayDirection(row.Direction, row.DeltaAbs)}, trend {row.Trend}; {row.Definition.Unit ?? "unitless"}, {row.Definition.Aggregation}, normalization={row.Definition.NormalizedBy})");
         }
     }
 
@@ -98,7 +105,9 @@ internal static partial class CliCommands
                 .ToArray()
             : rows
                 .Where(r => r.DeltaAbs.HasValue || r.DeltaPct.HasValue)
-                .OrderByDescending(r => Math.Abs(r.DeltaPct ?? 0))
+                .OrderByDescending(r => r.DeltaPct is null && r.DeltaAbs is > 0 or < 0)
+                .ThenByDescending(r => Math.Abs(r.DeltaPct ?? 0))
+                .ThenByDescending(r => Math.Abs(r.DeltaAbs ?? 0))
                 .ThenBy(r => r.DisplayName, StringComparer.Ordinal)
                 .Take(5)
                 .Select(r => (Row: r, Stats: (Cv: -1.0, OutlierIndex: -1)))
@@ -120,9 +129,18 @@ internal static partial class CliCommands
             }
 
             sb.AppendLine(CultureInfo.InvariantCulture,
-                $"    - {row.DisplayName}: {FormatNumber(FirstValue(row.Values))} → {FormatNumber(LastValue(row.Values))} (Δ {FormatSigned(row.DeltaAbs)}, {FormatSignedPercent(row.DeltaPct)}, {row.Direction})");
+                $"    - {row.DisplayName}: {FormatNumber(FirstValue(row.Values))} → {FormatNumber(LastValue(row.Values))} (Δ {FormatSigned(row.DeltaAbs)}, {FormatSignedPercent(row.DeltaPct)}, {DisplayDirection(row.Direction, row.DeltaAbs)})");
         }
     }
+
+    private static string DisplayDirection(string direction, double? delta)
+        => direction != "n/a" ? direction : delta switch
+        {
+            > 0 => "up",
+            < 0 => "down",
+            0 => "flat",
+            _ => "unavailable",
+        };
 
     private static string FormatValues(IReadOnlyList<double?> values)
         => string.Join(", ", values.Select(FormatNumber));

@@ -13,7 +13,6 @@ public sealed class LiveCounterSessionFailureTests
             "CoreClrSample",
             new LiveSampleOptions
             {
-                BindHttpPort = false,
                 DiagnosticTimeout = TimeSpan.FromSeconds(30),
             });
         await using var session = new EventPipeCounterCollector().CreateSession(

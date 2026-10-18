@@ -1042,6 +1042,23 @@ The existing file-based behavior below is unchanged.
 
 Compare two or more saved comparable snapshots from `collect --save`. Human output keeps the compact verdict, first→last headline, and top metric/key deltas in the terminal; `--json` emits the full `SnapshotJourneyDiff`, and `--save` writes that full matrix to a file. Local MCP `compare_to_baseline` / `query_snapshot(view="diff")` calls use a `journey://diff/{handle}` Resource link when the matrix is large. Proxied pod calls return full results inline because dynamic pod Resources are not forwarded.
 
+For counters, contention and ThreadPool, `not_assessed` means no workload-dependent
+improvement/regression was judged. Human output shows numeric `up`/`down`/`flat`
+instead of a misleading directional `n/a`, and scalar rows include unit,
+aggregation and normalization. The JSON contract retains `direction="n/a"` for
+neutral metrics. Older saved better-directions for these kinds and CPU are
+neutralized in memory; source files are not rewritten. Quality-ineligible
+ThreadPool captures still return `inconclusive`.
+
+Unavailable values are not zero. Relative percentage deltas are unavailable when
+the baseline is zero, even when an absolute delta is measured. A missing retained
+row is not proof of absence. A nonzero change from a zero baseline is ranked
+ahead of percentage-ranked rows, rather than disappearing below the top-five
+display limit; zero to zero does not receive that priority. `minDeltaPct`
+applies only when a relative percentage is defined.
+Compare workload-equivalent throughput, latency or
+job time independently before drawing a performance conclusion.
+
 For ThreadPool snapshots, only provenance-backed runtime `Starvation` and
 `CooperativeBlocking` adjustments are regression-driving metrics. Worker counts,
 generic hill-climbing, and the window-local enqueue/dequeue difference are neutral

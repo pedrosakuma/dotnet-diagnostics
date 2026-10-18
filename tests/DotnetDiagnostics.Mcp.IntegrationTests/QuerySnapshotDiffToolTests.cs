@@ -458,7 +458,7 @@ public sealed class QuerySnapshotDiffToolTests
     }
 
     [Fact]
-    public async Task Diff_ContentionComparisonHandles_ReturnsJourneyDiffWithKeySetVerdict()
+    public async Task Diff_ContentionComparisonHandles_ReturnsObjectiveKeySetDeltas()
     {
         var store = new MemoryDiagnosticHandleStore();
         var first = store.Register(123, CollectionHandleKinds.ContentionSnapshot, ContentionSnapshot(("MyApp.dll", "MyApp.Locking.Slow", 5, 1)), TimeSpan.FromMinutes(10));
@@ -470,11 +470,12 @@ public sealed class QuerySnapshotDiffToolTests
         result.Error.Should().BeNull();
         var diff = result.Data.Should().BeOfType<SnapshotJourneyDiff>().Subject;
         diff.Kind.Should().Be(CollectionHandleKinds.ContentionSnapshot);
-        diff.Verdict.Should().Be("regression");
+        diff.Verdict.Should().Be("not_assessed");
         diff.Labels.Should().Equal("comparison-1", "comparison-2", "current");
         diff.KeyMatrix.Should().ContainSingle(row => row.Key.Module == "MyApp.dll" && row.Key.MethodName == "MyApp.Locking.Slow");
         diff.Pairwise.Should().NotBeNull();
-        diff.Pairwise!.Headline.Verdict.Should().Be("regression");
+        diff.Pairwise!.Headline.Verdict.Should().Be("not_assessed");
+        diff.KeyMatrix.Single().DeltaAbs.Should().Be(15);
     }
 
     [Fact]
@@ -515,7 +516,7 @@ public sealed class QuerySnapshotDiffToolTests
     }
 
     [Fact]
-    public async Task Diff_ThreadPoolComparisonHandles_AdequatePositiveWindowsReturnRegression()
+    public async Task Diff_ThreadPoolComparisonHandles_AdequatePositiveWindowsReturnSignals()
     {
         var store = new MemoryDiagnosticHandleStore();
         var first = store.Register(123, CollectionHandleKinds.ThreadPoolSnapshot, ThreadPoolSnapshot(starvationAdjustments: 1, pendingWorkItems: 0), TimeSpan.FromMinutes(10));
@@ -526,16 +527,44 @@ public sealed class QuerySnapshotDiffToolTests
 
         result.Error.Should().BeNull();
         var diff = result.Data.Should().BeOfType<SnapshotJourneyDiff>().Subject;
-        diff.Verdict.Should().Be("regression");
+        diff.Verdict.Should().Be("not_assessed");
         diff.CaptureQuality.Should().OnlyContain(quality =>
             quality!.Conclusions.RegressionOrHealthyControl == EvidenceConclusionSupport.Supported);
-        diff.MetricSeries.Should().Contain(series => series.Definition.Name == "starvationAdjustments" && series.Direction == "regressed");
+        diff.MetricSeries.Should().Contain(series => series.Definition.Name == "starvationAdjustments"
+            && series.Direction == "n/a" && series.DeltaAbs == 3);
         diff.MetricSeries.Should().Contain(series =>
             series.Definition.Name == "windowEnqueueDequeueDifference"
             && series.Definition.Role == MetricRole.Context
             && series.Definition.BetterDirection == BetterDirection.Neutral);
         diff.Pairwise.Should().NotBeNull();
-        diff.Pairwise!.Headline.Verdict.Should().Be("regression");
+        diff.Pairwise!.Headline.Verdict.Should().Be("not_assessed");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CompactTrendSummary_KeepsMeasuredZeroBaselineChangesAtTopN(bool keyRows)
+    {
+        ComparableSnapshot Snapshot(string label, double current, double minor) => keyRows
+            ? KeySnapshot(label, ("newly-active", current), ("minor", minor), ("flat-zero", 0))
+            : MetricSnapshot(label, ("newly-active", current), ("minor", minor), ("flat-zero", 0));
+        var diff = SnapshotDiffer.Compare([Snapshot("before", 0, 100), Snapshot("after", 1000, 101)]);
+
+        var result = JourneyDiffPresentation.BuildResult(
+            diff, new MemoryDiagnosticHandleStore(), 123, 1, JourneyDiffDepth.Compact,
+            "summary", evictWhenProcessExits: false, HandleOrigin.Imported);
+
+        var summary = result.Data.Should().BeOfType<JourneyDiffCompactSummary>().Subject;
+        if (keyRows)
+        {
+            summary.KeyMatrix.Should().ContainSingle(row =>
+                row.DisplayName == "newly-active" && row.DeltaAbs == 1000 && row.DeltaPct == null);
+        }
+        else
+        {
+            summary.MetricSeries.Should().ContainSingle(series =>
+                series.Definition.Name == "newly-active" && series.DeltaAbs == 1000 && series.DeltaPct == null);
+        }
     }
 
     [Fact]

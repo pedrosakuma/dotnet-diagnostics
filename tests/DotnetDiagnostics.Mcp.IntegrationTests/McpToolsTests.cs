@@ -2619,10 +2619,12 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         envelope!.Handle.Should().BeNull();
         var diff = envelope.Data.Deserialize<SnapshotJourneyDiff>(DeserializeOptions);
         diff.Should().NotBeNull();
-        diff!.Verdict.Should().Be("regression");
+        diff!.Verdict.Should().Be("not_assessed");
         diff.Pairwise.Should().NotBeNull();
-        diff.Pairwise!.Headline.Verdict.Should().Be("regression");
+        diff.Pairwise!.Headline.Verdict.Should().Be("not_assessed");
         diff.MetricSeries.Should().ContainSingle();
+        diff.MetricSeries.Single().DeltaAbs.Should().Be(10);
+        diff.MetricSeries.Single().Direction.Should().Be("n/a");
     }
 
     [Fact]

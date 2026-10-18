@@ -38,10 +38,10 @@ public sealed class ContentionComparableProjector : IComparableProjector
                     displayName,
                     new[]
                     {
-                        Metric("totalContentionDurationMs", MetricRole.Primary, BetterDirection.Lower, MetricAggregation.Duration, "ms", totalDuration.TotalMilliseconds),
-                        Metric("eventCount", MetricRole.Secondary, BetterDirection.Lower, MetricAggregation.Total, "count", group.Count()),
-                        Metric("maxContentionDurationMs", MetricRole.Secondary, BetterDirection.Lower, MetricAggregation.Duration, "ms", maxDuration.TotalMilliseconds),
-                        Metric("distinctMonitors", MetricRole.Secondary, BetterDirection.Lower, MetricAggregation.Total, "count", distinctMonitors),
+                        Metric("totalContentionDurationMs", MetricRole.Primary, BetterDirection.Neutral, MetricAggregation.Duration, "ms", totalDuration.TotalMilliseconds),
+                        Metric("eventCount", MetricRole.Secondary, BetterDirection.Neutral, MetricAggregation.Total, "count", group.Count()),
+                        Metric("maxContentionDurationMs", MetricRole.Secondary, BetterDirection.Neutral, MetricAggregation.Duration, "ms", maxDuration.TotalMilliseconds),
+                        Metric("distinctMonitors", MetricRole.Secondary, BetterDirection.Neutral, MetricAggregation.Total, "count", distinctMonitors),
                     });
             })
             .OrderByDescending(static row => row.Metrics[0].Value)
@@ -50,10 +50,10 @@ public sealed class ContentionComparableProjector : IComparableProjector
 
         var metrics = new[]
         {
-            Metric("totalContentionDurationMs", MetricRole.Context, BetterDirection.Lower, MetricAggregation.Duration, "ms", snapshot.TotalContentionDuration.TotalMilliseconds),
-            Metric("totalEvents", MetricRole.Context, BetterDirection.Lower, MetricAggregation.Total, "count", snapshot.TotalEvents),
-            Metric("distinctMonitors", MetricRole.Context, BetterDirection.Lower, MetricAggregation.Total, "count", snapshot.DistinctMonitors),
-            Metric("maxContentionDurationMs", MetricRole.Context, BetterDirection.Lower, MetricAggregation.Duration, "ms", snapshot.MaxContentionDuration.TotalMilliseconds),
+            Metric("totalContentionDurationMs", MetricRole.Context, BetterDirection.Neutral, MetricAggregation.Duration, "ms", snapshot.TotalContentionDuration.TotalMilliseconds),
+            Metric("totalEvents", MetricRole.Context, BetterDirection.Neutral, MetricAggregation.Total, "count", snapshot.TotalEvents),
+            Metric("distinctMonitors", MetricRole.Context, BetterDirection.Neutral, MetricAggregation.Total, "count", snapshot.DistinctMonitors),
+            Metric("maxContentionDurationMs", MetricRole.Context, BetterDirection.Neutral, MetricAggregation.Duration, "ms", snapshot.MaxContentionDuration.TotalMilliseconds),
             Metric("durationSeconds", MetricRole.Context, BetterDirection.Neutral, MetricAggregation.Duration, "s", snapshot.Duration.TotalSeconds),
         };
 

@@ -4,6 +4,16 @@
 
 ### Changed
 
+- Counters, contention and ThreadPool journey diffs now retain objective deltas
+  without workload-dependent performance verdicts; legacy saved better-directions
+  for these kinds and CPU are neutralized in memory. Quality gates remain intact.
+  CLI rows show numeric direction and metric semantics; saved comparisons in the
+  extension summarize numeric deltas without consuming journey verdict labels (#1192).
+- Journey relative deltas are unavailable for zero baselines rather than reporting
+  an invented 100%; absolute deltas and values remain available (#1192).
+- Shorter repeated MCP PID/routing descriptions reduce the maximal catalog from
+  284,392 to 283,807 bytes without removing fields or safety guidance. The measured
+  per-tool cost and structural-reuse opportunities are documented (#1192).
 - `EvidenceQuality` gains an optional fixed-key `observed` block (backend, duration, samples, detected loss, unresolved-symbol share, gaps) for CPU captures; CPU `regressionOrHealthyControl` is now `NotEstablished` and CPU diff adequacy depends on OS on-CPU evidence kind. CLI evidence line prints `directional-verdict=` and the observed facts (#1192).
 - CPU diff `Summary` no longer names `[unknown]`/raw-address rows as the top hotspot mover; it reports the unresolved-symbol share on each side as a data-quality fact, and docs define `null` and `n/a` (#1192).
 - Comparison verdict `not_assessed` now replaces a misleading `no_change` when no shared

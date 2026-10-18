@@ -79,7 +79,7 @@ public sealed class InspectHeapTool
         [Description("Optional NT_SYMBOL_PATH-style search path reserved for symbol-resolving heap drilldowns. Precedence: symbolPath > MCP_SYMBOL_PATH > _NT_SYMBOL_PATH > target MainModule directory. **Remote symbol servers are OFF by default (issue #165 / M3)** — any `srv*http(s)://…` segment must point at a host on `Diagnostics:SymbolServerAllowlist`.")] string? symbolPath = null,
         [Description("Dump-only; see view='heap-integrity'.")] bool verifyHeap = false,
         [Description("`source=\"gcdump\"` only. If true, persists the raw GC heap-dump .nettrace under the artifact root and returns its relative path so it can be fetched with get_bytes(kind='trace') for offline analysis. Defaults to false; ignored by `live` and `dump`.")] bool exportTrace = false,
-        [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
+        [Description("Optional attach_to_pod investigation handle; routes this call through the attached target (Kubernetes Pod or external MCP profile) instead of the current MCP session binding.")]
         string? investigationHandleId = null,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
         RequestContext<CallToolRequestParams>? requestContext = null,
