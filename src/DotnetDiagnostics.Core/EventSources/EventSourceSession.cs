@@ -38,14 +38,14 @@ public sealed class EventSourceSession : EventPipeDiagnosticSessionBase
         // Use TraceEvent's CLR decoder for the verified v1 identity, once only.
         source.Clr.ExceptionStart += traceEvent =>
         {
-            if (UsesClrExceptionDecoder(traceEvent.ProviderGuid, (int)traceEvent.ID, traceEvent.Version))
+            if (ShouldPublishEvent(traceEvent.ProviderGuid, (int)traceEvent.ID, traceEvent.Version, clrDecoder: true))
             {
                 Publish(traceEvent);
             }
         };
         source.Dynamic.All += traceEvent =>
         {
-            if (UsesClrExceptionDecoder(traceEvent.ProviderGuid, (int)traceEvent.ID, traceEvent.Version))
+            if (!ShouldPublishEvent(traceEvent.ProviderGuid, (int)traceEvent.ID, traceEvent.Version, clrDecoder: false))
             {
                 return;
             }
@@ -63,6 +63,9 @@ public sealed class EventSourceSession : EventPipeDiagnosticSessionBase
 
     internal static bool UsesClrExceptionDecoder(Guid providerGuid, int eventId, int version) =>
         providerGuid == ClrTraceEventParser.ProviderGuid && eventId == 80 && version == 1;
+
+    internal static bool ShouldPublishEvent(Guid providerGuid, int eventId, int version, bool clrDecoder) =>
+        clrDecoder == UsesClrExceptionDecoder(providerGuid, eventId, version);
 
     private EventSourceLiveObservation ProjectEvent(TraceEvent traceEvent)
     {

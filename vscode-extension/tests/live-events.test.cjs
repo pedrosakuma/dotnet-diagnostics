@@ -6,6 +6,8 @@ const {
     LIVE_EVENT_BATCH_MAX_BYTES,
     LIVE_EVENT_FRAME_MAX_BYTES,
     LIVE_EVENT_HOST_MAX_COUNT,
+    LIVE_EVENT_HOST_DEFAULT_COUNT,
+    LIVE_EVENT_OBSERVATION_CAPACITY,
     LIVE_EVENT_HOST_MAX_RETAINED_BYTES,
     LiveEventDeliveryQueue,
     isLiveEventObservation,
@@ -36,7 +38,7 @@ function observation(sequence, overrides = {}) {
 }
 
 test("host event queue stays count/byte bounded under 100,000 observations", () => {
-    const queue = new LiveEventDeliveryQueue();
+    const queue = new LiveEventDeliveryQueue(LIVE_EVENT_HOST_MAX_COUNT);
     for (let index = 1; index <= 100_000; index++) queue.enqueue(observation(index));
 
     assert.equal(queue.retainedEventCount, LIVE_EVENT_HOST_MAX_COUNT);
@@ -55,7 +57,7 @@ test("host event queue stays count/byte bounded under 100,000 observations", () 
 });
 
 test("host event queue enforces its byte limit before the count limit", () => {
-    const queue = new LiveEventDeliveryQueue();
+    const queue = new LiveEventDeliveryQueue(LIVE_EVENT_HOST_MAX_COUNT);
     const large = observation(1, {
         payload: { first: "a".repeat(1000), second: "b".repeat(1000) },
     });
@@ -79,8 +81,45 @@ test("host event queue reuses the validated UTF-8 frame byte count", () => {
 test("host queue reports when a limit has been reached", () => {
     const queue = new LiveEventDeliveryQueue();
     assert.equal(queue.isAtCapacity, false);
-    for (let index = 1; index <= LIVE_EVENT_HOST_MAX_COUNT; index++) queue.enqueue(observation(index));
+    for (let index = 1; index <= LIVE_EVENT_HOST_DEFAULT_COUNT; index++) queue.enqueue(observation(index));
     assert.equal(queue.isAtCapacity, true);
+});
+
+test("default host window includes the held batch and accounts rejected synthetic offers exactly", () => {
+    assert.equal(LIVE_EVENT_HOST_DEFAULT_COUNT, 64);
+    assert.equal(LIVE_EVENT_OBSERVATION_CAPACITY, 32);
+    const queue = new LiveEventDeliveryQueue();
+    for (let sequence = 1; sequence <= 64; sequence++) assert.equal(queue.enqueue(observation(sequence)), true);
+    const bytes = queue.retainedByteCount;
+    const batch = queue.takeBatch();
+    assert.deepEqual(batch.events.map(event => event.sequence), Array.from({ length: 64 }, (_, index) => index + 1));
+    assert.equal(queue.retainedEventCount, 64);
+    assert.equal(queue.retainedByteCount, bytes);
+    for (let sequence = 65; sequence <= 100_000; sequence++) assert.equal(queue.enqueue(observation(sequence)), false);
+    assert.equal(queue.dropped, 100_000 - 64, "rejected offers, not a claim about reader-backpressured traffic");
+    assert.equal(queue.takeBatch(), undefined);
+    assert.equal(queue.acknowledge(batch.batchId + 1), false);
+    assert.equal(queue.isAtCapacity, true);
+    assert.equal(queue.acknowledge(batch.batchId), true);
+    assert.equal(queue.retainedEventCount, 0);
+    assert.equal(queue.retainedByteCount, 0);
+    assert.equal(queue.isAtCapacity, false);
+    assert.equal(queue.enqueue(observation(100_001)), true);
+    assert.deepEqual(queue.takeBatch().events.map(event => event.sequence), [100_001]);
+    assert.equal(queue.dropped, 99_936);
+});
+
+test("configured host capacities enforce their exact bound including an unacknowledged batch", () => {
+    for (const capacity of [1, 32, 64, 256]) {
+        const queue = new LiveEventDeliveryQueue(capacity);
+        for (let sequence = 1; sequence <= capacity; sequence++) assert.equal(queue.enqueue(observation(sequence)), true);
+        queue.takeBatch();
+        assert.equal(queue.retainedEventCount, capacity);
+        assert.equal(queue.isAtCapacity, true);
+        assert.equal(queue.enqueue(observation(capacity + 1)), false);
+        assert.equal(queue.dropped, 1);
+    }
+    for (const capacity of [0, -1, 257, 1.5, NaN]) assert.throws(() => new LiveEventDeliveryQueue(capacity));
 });
 
 test("event validation enforces payload schema bounds and truncation accounting", () => {

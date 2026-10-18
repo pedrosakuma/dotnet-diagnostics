@@ -536,7 +536,9 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         var exceptionObservation = new TaskCompletionSource<EventSourceLiveObservation>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var sessionReceiving = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var workloadObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var exceptionCount = 0;
+        var expectedExceptions = int.MaxValue;
 
         await using var session = new EventPipeEventSourceSessionFactory().CreateSession(
             Pid,
@@ -552,7 +554,10 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
                 && observation.Payload.TryGetValue("ExceptionType", out var exceptionType)
                 && exceptionType.Contains("FormatException", StringComparison.Ordinal))
             {
-                exceptionCount++;
+                if (Interlocked.Increment(ref exceptionCount) >= Volatile.Read(ref expectedExceptions))
+                {
+                    workloadObserved.TrySetResult();
+                }
                 exceptionObservation.TrySetResult(observation);
             }
 
@@ -565,8 +570,30 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         response.EnsureSuccessStatusCode();
         using var responseDocument = System.Text.Json.JsonDocument.Parse(await response.Content.ReadAsStringAsync());
         var generatedExceptions = responseDocument.RootElement.GetProperty("ko").GetInt32();
-        var observed = await exceptionObservation.Task.WaitAsync(TimeSpan.FromSeconds(20));
+        generatedExceptions.Should().BePositive();
+        Volatile.Write(ref expectedExceptions, generatedExceptions);
+        if (Volatile.Read(ref exceptionCount) >= generatedExceptions)
+        {
+            workloadObserved.TrySetResult();
+        }
+
+        var workloadDeadlineExpired = false;
+        try
+        {
+            await workloadObserved.Task.WaitAsync(TimeSpan.FromSeconds(20));
+        }
+        catch (TimeoutException)
+        {
+            workloadDeadlineExpired = true;
+        }
         var completion = await session.StopAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        var counts = $"generated={generatedExceptions}, observed={Volatile.Read(ref exceptionCount)}, "
+            + $"Core queue drops={session.DroppedObservations}, completion drops={completion.DroppedObservations}, "
+            + $"EventPipe source loss={completion.EventPipeEventsLost?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "unknown"}, "
+            + $"status={completion.Status}, error={completion.Error?.Message ?? "none"}";
+        workloadDeadlineExpired.Should().BeFalse(
+            $"the workload must reach this session's observation handler within 20 seconds before stop; {counts}");
+        var observed = await exceptionObservation.Task;
 
         observed.Provider.Should().Be("Microsoft-Windows-DotNETRuntime");
         observed.Version.Should().Be(1);
@@ -581,7 +608,8 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         observed.Payload["ExceptionMessage"].Should().NotBeNullOrEmpty();
         observed.PayloadTruncated.Should().BeFalse();
         observed.PayloadFieldsUnavailable.Should().BeFalse();
-        exceptionCount.Should().Be(generatedExceptions, "each source exception must be emitted once, not by both decoders");
+        Volatile.Read(ref exceptionCount).Should().Be(generatedExceptions,
+            $"each source exception must be emitted once, not by both decoders; {counts}");
 
         completion.Status.Should().Be(DiagnosticSessionStatus.Stopped);
         completion.Error.Should().BeNull();

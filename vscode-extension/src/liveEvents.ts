@@ -3,6 +3,8 @@ import type { Readable } from "node:stream";
 export const LIVE_EVENT_FRAME_MAX_BYTES = 16 * 1024;
 export const LIVE_EVENT_CONTROL_LINE_MAX_BYTES = 64 * 1024;
 export const LIVE_EVENT_HOST_MAX_COUNT = 256;
+export const LIVE_EVENT_HOST_DEFAULT_COUNT = 64;
+export const LIVE_EVENT_OBSERVATION_CAPACITY = 32;
 export const LIVE_EVENT_HOST_MAX_RETAINED_BYTES = 1024 * 1024;
 export const LIVE_EVENT_BATCH_MAX_COUNT = 64;
 export const LIVE_EVENT_BATCH_MAX_BYTES = 64 * 1024;
@@ -54,6 +56,12 @@ export class LiveEventDeliveryQueue {
     private nextBatchId = 1;
     private droppedEvents = 0;
 
+    public constructor(private readonly capacity = LIVE_EVENT_HOST_DEFAULT_COUNT) {
+        if (!Number.isSafeInteger(capacity) || capacity < 1 || capacity > LIVE_EVENT_HOST_MAX_COUNT) {
+            throw new Error(`Live Events host capacity must be between 1 and ${LIVE_EVENT_HOST_MAX_COUNT}.`);
+        }
+    }
+
     public get dropped(): number {
         return this.droppedEvents;
     }
@@ -67,7 +75,7 @@ export class LiveEventDeliveryQueue {
     }
 
     public get isAtCapacity(): boolean {
-        return this.retainedCount >= LIVE_EVENT_HOST_MAX_COUNT
+        return this.retainedCount >= this.capacity
             || this.retainedBytes >= LIVE_EVENT_HOST_MAX_RETAINED_BYTES;
     }
 
@@ -86,7 +94,7 @@ export class LiveEventDeliveryQueue {
         }
 
         const retainedBytes = (accountedSerializedBytes * 2) + 1024;
-        if (this.retainedCount >= LIVE_EVENT_HOST_MAX_COUNT
+        if (this.retainedCount >= this.capacity
             || this.retainedBytes + retainedBytes > LIVE_EVENT_HOST_MAX_RETAINED_BYTES) {
             this.droppedEvents++;
             return false;

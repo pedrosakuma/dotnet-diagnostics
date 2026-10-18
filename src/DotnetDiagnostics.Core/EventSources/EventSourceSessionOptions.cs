@@ -15,6 +15,9 @@ public sealed record EventSourceSessionOptions
     /// <summary>Maximum observation queue capacity.</summary>
     public const int MaxObservationCapacity = 256;
 
+    /// <summary>Default pending observation count, favoring freshness under slow consumption.</summary>
+    public const int DefaultObservationCapacity = 32;
+
     /// <summary>Maximum conservative retained-byte budget for the pending observation queue.</summary>
     public const long MaxPendingRetainedBytes = 4 * 1024 * 1024;
 
@@ -37,5 +40,5 @@ public sealed record EventSourceSessionOptions
     public IReadOnlyList<EventSourceProviderSubscription> Providers { get; init; } = [];
 
     /// <summary>Maximum number of observations queued for dispatch.</summary>
-    public int ObservationCapacity { get; init; } = MaxObservationCapacity;
+    public int ObservationCapacity { get; init; } = DefaultObservationCapacity;
 }

@@ -67,13 +67,22 @@ only for supported primitive-like types; unsupported types get an explicit marke
 at 16 KiB UTF-8. `metadataTruncated`, `payloadTruncated`, `omittedPayloadFields`,
 `omittedPayloadCharacters`, and `unsupportedPayloadValues` make projection omissions explicit.
 
-The Core event queue is capped at 256 observations and 4 MiB conservative retained bytes, enforced
-at insertion. Accounted size estimates use four bytes per retained string character plus per-event
+The Core event queue defaults to 32 pending observations, with an explicit
+capacity range of 1-256 and a separate 4 MiB conservative retained-byte cap, enforced
+at insertion. Core and composed queues retain drop-newest overflow behavior.
+The smaller Events default trades more explicitly counted rejections for less
+FIFO residence under slow consumption; it is not a latency guarantee.
+Accounted size estimates use four bytes per retained string character plus per-event
 overhead and 128 bytes per payload field; this is an implementation budget, not a measurement of
 managed heap size or RSS. When `event_source` is composed with other live kinds, the shared
-dispatch queue has its own 4 MiB byte cap and a count cap of 256 observations. Their cumulative
-`coreQueueDropped` and `cliDispatchQueueDropped` counters are separate. The extension host holds at
-most 256 events / 1 MiB (accounted per event as twice serialized UTF-8 bytes plus 1 KiB object
+dispatch queue has its own 4 MiB byte cap and uses the maximum requested kind
+capacity, capped at 256. Events-only default requests use 32; other live kinds
+can raise the shared capacity, without changing their existing defaults or
+the Events child capacity. Their cumulative
+`coreQueueDropped` and `cliDispatchQueueDropped` counters are separate. VS Code
+explicitly requests 32 Events observations. The extension host's operational
+window is 64 events, including its single in-flight batch, within unchanged hard
+limits of 256 events / 1 MiB (accounted per event as twice serialized UTF-8 bytes plus 1 KiB object
 overhead), sends one acknowledged webview batch at a time (at most 64 events / 64 KiB), and limits
 bridge updates to 10 per second. A stalled webview therefore applies bounded backpressure and
 eventually causes counted host-queue drops rather than unbounded buffering. When the host queue

@@ -20,9 +20,8 @@ import {
     LIVE_EVENT_BATCH_MAX_BYTES,
     LIVE_EVENT_CONTROL_LINE_MAX_BYTES,
     LIVE_EVENT_FRAME_MAX_BYTES,
-    LIVE_EVENT_HOST_MAX_COUNT,
-    LIVE_EVENT_HOST_MAX_RETAINED_BYTES,
     LIVE_EVENT_MAX_UPDATES_PER_SECOND,
+    LIVE_EVENT_OBSERVATION_CAPACITY,
     LIVE_EVENT_SEARCH_MAX_CHARS,
     LIVE_EVENT_UI_MAX_COUNT,
     LIVE_EVENT_UI_MAX_MOUNTED_ROWS,
@@ -384,7 +383,7 @@ class CounterPanelController implements vscode.Disposable {
                 kinds: [{
                     kind: "event_source",
                     providers: providers.map(name => ({ name, eventLevel, keywords })),
-                    observationCapacity: 256,
+                    observationCapacity: LIVE_EVENT_OBSERVATION_CAPACITY,
                     acknowledgeRisk: "high",
                 }],
             });
@@ -2162,8 +2161,7 @@ class CounterPanelController implements vscode.Disposable {
         }
         const child = this.eventsChild;
         if (child?.sessionId === sessionId && !child.eventsReaderBackpressureDisabled
-            && this.eventsQueue.retainedEventCount < LIVE_EVENT_HOST_MAX_COUNT
-            && this.eventsQueue.retainedByteCount < LIVE_EVENT_HOST_MAX_RETAINED_BYTES
+            && !this.eventsQueue.isAtCapacity
             && child.lines instanceof BoundedProtocolLineReader) {
             child.lines.resume();
         }

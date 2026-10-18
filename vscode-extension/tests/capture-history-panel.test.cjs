@@ -308,6 +308,60 @@ test("Events shutdown disables backpressure and resumes the protocol reader", ()
     lines.close();
     input.destroy();
 });
+
+test("Events reader pauses at configured host capacity and resumes only after a current ACK", () => {
+    const extensionPath = path.join(__dirname, "../out/extension.js");
+    const Controller = new Function("require", "exports", fs.readFileSync(extensionPath, "utf8")
+        + "\nreturn CounterPanelController;")(createRequire(extensionPath), {});
+    const { BoundedProtocolLineReader, LiveEventDeliveryQueue } = require("../out/liveEvents.js");
+    const { PassThrough } = require("node:stream");
+    for (const capacity of [32, 64]) {
+        const controller = Object.create(Controller.prototype);
+        const input = new PassThrough();
+        const lines = new BoundedProtocolLineReader(input, 65_536);
+        const child = { sessionId: "current", eventsConnection: true, lines, eventsReaderBackpressureDisabled: false };
+        controller.eventsQueue = new LiveEventDeliveryQueue(capacity);
+        controller.eventsChild = child;
+        controller.eventsStreamSessionId = "current";
+        controller.eventsQualityRevision = 0;
+        controller.scheduleEventsBatch = () => {};
+        lines.on("line", (line, bytes) => controller.handleFrame(child, line, bytes));
+        const frames = Array.from({ length: capacity + 1 }, (_, index) => JSON.stringify({
+            type: "observation", kind: "event_source", sessionId: "current", sequence: index + 1,
+            timestamp: "2026-01-01T00:00:00Z", receivedAt: "2026-01-01T00:00:00Z",
+            provider: "System.Runtime", eventName: "Event", eventId: 1, version: 0,
+            level: "Informational", threadId: null, activityId: null, relatedActivityId: null,
+            payload: {}, metadataTruncated: false, payloadTruncated: false,
+            omittedPayloadFields: 0, omittedPayloadCharacters: 0, unsupportedPayloadValues: 0,
+        }));
+        try {
+            input.write(frames.join("\n") + "\n");
+            assert.equal(input.isPaused(), true);
+            assert.equal(controller.eventsQueue.retainedEventCount, capacity);
+            assert.equal(controller.eventsQueue.dropped, 0, "paused unread frames are not rejected queue offers");
+            const batch = controller.eventsQueue.takeBatch();
+            controller.acknowledgeEventBatch("stale-session", batch.batchId);
+            controller.acknowledgeEventBatch("current", batch.batchId + 1);
+            assert.equal(input.isPaused(), true);
+            assert.equal(controller.eventsQueue.retainedEventCount, capacity);
+            controller.acknowledgeEventBatch("current", batch.batchId);
+            assert.equal(input.isPaused(), false);
+            assert.equal(controller.eventsQueue.retainedEventCount, 1);
+            assert.equal(controller.eventsQueue.dropped, 0);
+            assert.equal(controller.eventsQueue.takeBatch().events[0].sequence, capacity + 1);
+        } finally {
+            lines.close();
+            input.destroy();
+        }
+    }
+});
+
+test("Events request uses32 while independent counters and GC retain256 defaults", () => {
+    const source = fs.readFileSync(path.join(__dirname, "../src/extension.ts"), "utf8");
+    assert.match(source, /observationCapacity: LIVE_EVENT_OBSERVATION_CAPACITY/);
+    assert.match(source, /kind: "counters", providers: \["System.Runtime"\], intervalSeconds: 1, observationCapacity: 256/);
+    assert.match(source, /kind: "gc", observationCapacity: 256/);
+});
 test("continuation pages preserve earlier captures and ordinary refresh replaces them", async () => {
     const original = h.runHistoryCli;
     h.runHistoryCli = async (_cli, args) => JSON.stringify({ data: args.includes("--after-capture-id")

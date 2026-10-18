@@ -102,7 +102,7 @@ subscriptions are filtered to those explicit names. EventPipe does not provide w
 Windows ETW collection. Non-allowlisted providers require `"acknowledgeRisk":"high"`; they are
 rejected before any requested kind starts if acknowledgement is missing.
 
-Each event observation contains `sessionId`, `sequence`, source `timestamp`, callback `receivedAt`,
+Each event observation contains `sessionId`, `sequence`, source `timestamp`, Core callback `receivedAt`,
 `provider`, `eventName`, `eventId`, `version`, `level`, optional `threadId`, `activityId` and
 `relatedActivityId`, a `payload` object, `metadataTruncated`, `payloadTruncated`,
 `omittedPayloadFields`, `omittedPayloadCharacters`, `unsupportedPayloadValues`, and
@@ -124,13 +124,29 @@ not also published through the dynamic decoder. Other identities and versions
 retain the generic dynamic payload projection; the viewer specializes details
 only when the observed identity, version and payload field set match.
 
-The collector's pending queue is capped at 256 observations and 4 MiB of conservative accounted
-retained bytes. When `event_source` is in the composition, the shared composed-dispatch queue is
-independently capped at 4 MiB as well as the requested count capacity. Accounted bytes estimate
+The collector's pending queue defaults to 32 observations, with an explicit
+`observationCapacity` range of 1-256 and a separate 4 MiB conservative retained-byte cap.
+The smaller default favors fresher admitted events under slow consumption, at the
+cost of more explicitly counted drop-newest rejections. When `event_source` is in
+the composition, the shared composed-dispatch queue is independently capped at
+4 MiB and uses the maximum requested kind capacity, limited to 256. Events-only
+default requests therefore use 32; a counters/GC sibling requesting 256 raises
+shared dispatch to 256 without changing the Events child queue. Counters/GC
+defaults remain unchanged. Accounted bytes estimate
 managed retention; they are not an RSS measurement. The EventPipe circular buffer is 64 MiB.
 TraceEvent exposes already-decoded payload values to the callback; the collector reads only the
 bounded field set and immediately truncates values, but cannot cap allocation internal to TraceEvent
 while decoding one provider event.
+
+The VS Code Events connection explicitly requests 32 observations and uses a
+64-event / 1 MiB accounted host window, including its single acknowledged batch
+in flight. The host hard count limit remains 256; it is not the operational
+default. Batch limits remain 64 events / 64 KiB and at most 10 updates per
+second; UI history remains 2,000 events / 8 MiB with at most 100 mounted rows.
+Smaller upstream windows are not a latency guarantee: pipe buffering, scheduling,
+IPC and downstream processing still contribute. Rejected synthetic queue offers
+are not the same as drops during reader-backpressured live traffic; report the
+observed counters rather than inferring drops from generated volume.
 
 CLI quality frames are emitted about once per second
 and once at termination, with distinct fields for `coreQueueDropped` and
@@ -150,7 +166,12 @@ The Windows-only acceptance runner in `scripts/live-events-acceptance.cjs` uses 
 (30 seconds of warm-up followed by five measured minutes). It streams and counts JSONL frames rather
 than saving event payloads. The runner also checks a quiet interval, a 20,000-character value's
 truncation, per-minute received counts, separate loss counters, maximum frame size, CLI working-set
-RSS, and sampled CLI receipt-to-host-read latency. Its optional blocked-output scenario pauses CLI
+RSS, and sampled Core callback-to-host-read latency. `receivedAt` is assigned in the
+Core EventPipe callback, not when the extension host parses a frame. Core
+callback-to-display, host parse-to-display, and webview message-to-display are
+different boundaries; a passing downstream-only measurement does not establish
+end-to-end acceptance. Cross-process timing also requires explicit clock-domain
+and alignment qualifications. Its optional blocked-output scenario pauses CLI
 stdout and sends `stop` before resuming it:
 
 ```powershell

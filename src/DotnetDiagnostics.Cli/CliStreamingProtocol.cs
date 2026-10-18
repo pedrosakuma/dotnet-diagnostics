@@ -480,11 +480,9 @@ internal static class CliStreamingProtocol
 
         // Preserve the existing larger-capacity behavior for older live kinds. EventSource's
         // shared dispatch queue has a separate hard count budget regardless of other kinds.
-        var eventCapacity = request.Kinds.Max(k => GetObservationCapacity(k.Options!));
-        if (request.Kinds.Any(kind => kind.Kind == "event_source"))
-        {
-            eventCapacity = Math.Min(eventCapacity, EventSourceSessionOptions.MaxObservationCapacity);
-        }
+        var eventCapacity = GetComposedEventCapacity(
+            request.Kinds.Max(k => GetObservationCapacity(k.Options!)),
+            request.Kinds.Any(kind => kind.Kind == "event_source"));
         var dispatchByteCapacity = request.Kinds.Any(kind => kind.Kind == "event_source")
             ? EventSourceSessionOptions.MaxPendingRetainedBytes
             : long.MaxValue;
@@ -2477,7 +2475,7 @@ internal static class CliStreamingProtocol
         return true;
     }
 
-    private static bool TryParseEventSourceOptions(JsonElement root, out object? options, out string? error)
+    internal static bool TryParseEventSourceOptions(JsonElement root, out object? options, out string? error)
     {
         options = null;
         error = null;
@@ -2526,7 +2524,7 @@ internal static class CliStreamingProtocol
             providers.Add(new EventSourceProviderSubscription(name, eventLevel, keywords));
         }
 
-        var observationCapacity = EventSourceSessionOptions.MaxObservationCapacity;
+        var observationCapacity = EventSourceSessionOptions.DefaultObservationCapacity;
         if (root.TryGetProperty("observationCapacity", out var capacityElement)
             && (!capacityElement.TryGetInt32(out observationCapacity)
                 || observationCapacity is < 1 or > EventSourceSessionOptions.MaxObservationCapacity))
@@ -2744,6 +2742,11 @@ results are 0x hexadecimal strings.
         Func<IServiceProvider, int, object, IDiagnosticSession> CreateChildSession,
         Func<ComposedDiagnosticSession, ProtocolWriter, string, EventGate, IDisposable> AttachForwarding);
 
+    internal static int GetComposedEventCapacity(int maximumRequestedCapacity, bool includesEventSource) =>
+        includesEventSource
+            ? Math.Min(maximumRequestedCapacity, EventSourceSessionOptions.MaxObservationCapacity)
+            : maximumRequestedCapacity;
+
     private static int GetObservationCapacity(object options) => options switch
     {
         CounterSessionOptions counters => counters.ObservationCapacity,
@@ -2752,7 +2755,7 @@ results are 0x hexadecimal strings.
         _ => 256,
     };
 
-    private sealed record EventSourceStartOptions(
+    internal sealed record EventSourceStartOptions(
         EventSourceSessionOptions SessionOptions,
         string? AcknowledgeRisk);
 
