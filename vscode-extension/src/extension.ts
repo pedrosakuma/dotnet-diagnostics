@@ -3265,10 +3265,10 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       timing.textContent = 'Source: ' + event.timestamp + ' · Received: ' + event.receivedAt
         + (event.threadId === null ? '' : ' · Thread ' + event.threadId);
       eventDetails.appendChild(timing);
-      const exceptionFields = ['ExceptionType', 'ExceptionMessage', 'ExceptionEIP', 'ExceptionHRESULT', 'ExceptionFlags'];
+      const exceptionFields = ['ExceptionType', 'ExceptionMessage', 'ExceptionEIP', 'ExceptionHRESULT', 'ExceptionFlags', 'ClrInstanceID'];
       const payloadNames = Object.keys(event.payload).sort();
       const isManagedException = event.provider === 'Microsoft-Windows-DotNETRuntime'
-        && event.eventId === 80 && event.eventName === 'ExceptionThrown_V1' && event.version === 0
+        && event.eventId === 80 && event.version === 1
         && payloadNames.length === exceptionFields.length
         && payloadNames.every((name, index) => name === exceptionFields.slice().sort()[index]);
       if (isManagedException) {

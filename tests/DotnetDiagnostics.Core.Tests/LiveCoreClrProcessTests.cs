@@ -528,6 +528,56 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
     }
 
     [Fact(Timeout = 60_000)]
+    public async Task LiveEventSourceSession_ManagedExceptionPayloadMatchesRendererSchema()
+    {
+        EnsureSampleRunning();
+        var baseUrl = await EnsureListeningUrlAsync(TimeSpan.FromSeconds(30));
+        using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
+        var exceptionObservation = new TaskCompletionSource<EventSourceLiveObservation>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        await using var session = new EventPipeEventSourceSessionFactory().CreateSession(
+            Pid,
+            new EventSourceSessionOptions
+            {
+                Providers = [new("Microsoft-Windows-DotNETRuntime", 5, -1)],
+                ObservationCapacity = 64,
+            });
+        using var subscription = session.Attach<EventSourceLiveObservation>((observation, _) =>
+        {
+            if (observation.EventId == 80)
+            {
+                exceptionObservation.TrySetResult(observation);
+            }
+
+            return ValueTask.CompletedTask;
+        });
+
+        await session.StartAsync();
+        await Task.Delay(TimeSpan.FromSeconds(1));
+        using var response = await http.GetAsync("/parse");
+        response.EnsureSuccessStatusCode();
+        var observed = await exceptionObservation.Task.WaitAsync(TimeSpan.FromSeconds(20));
+        var completion = await session.StopAsync().WaitAsync(TimeSpan.FromSeconds(10));
+
+        observed.Provider.Should().Be("Microsoft-Windows-DotNETRuntime");
+        observed.Version.Should().Be(1);
+        observed.Payload.Keys.Should().BeEquivalentTo(
+            "ExceptionType",
+            "ExceptionMessage",
+            "ExceptionEIP",
+            "ExceptionHRESULT",
+            "ExceptionFlags",
+            "ClrInstanceID");
+        observed.Payload["ExceptionType"].Should().Contain("FormatException");
+        observed.Payload["ExceptionMessage"].Should().NotBeNullOrEmpty();
+        observed.PayloadTruncated.Should().BeFalse();
+
+        completion.Status.Should().Be(DiagnosticSessionStatus.Stopped);
+        completion.Error.Should().BeNull();
+    }
+
+    [Fact(Timeout = 60_000)]
     public async Task LiveGcSession_StreamsSequencedPauseObservations_AndStopsCleanly()
     {
         EnsureSampleRunning();

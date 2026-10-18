@@ -111,7 +111,12 @@ providers, the MCP server, or persistent storage. Pause following freezes the vi
 collection and bounded retention continue; Clear removes the retained UI events without stopping
 the stream. The table supports bounded search, paging and one selected event detail view. Managed
 exception details are labeled only for the runtime provider's schema-verified
-`ExceptionThrown_V1` event (ID 80, version 0, exact payload fields); other events remain generic.
+runtime exception event (provider `Microsoft-Windows-DotNETRuntime`, ID 80, version 1, exact
+`ExceptionType`, `ExceptionMessage`, `ExceptionEIP`, `ExceptionHRESULT`, `ExceptionFlags`, and
+`ClrInstanceID` payload fields). TraceEvent may expose a task label rather than
+`ExceptionThrown_V1` in its event-name field for this runtime event, so specialization uses the
+provider, numeric identity, version and exact payload schema; the original event name remains visible.
+Other events and incompatible schemas remain generic.
 Source-loss availability, Core queue drops, CLI dispatch drops, host-delivery drops, UI evictions,
 and payload/metadata truncation are shown separately, never combined into an apparent total. The
 exact frame schema and limits are in the [CLI stream reference](cli-reference.md#eventsourcelivekind).

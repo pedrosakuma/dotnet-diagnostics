@@ -33,11 +33,12 @@ test("Live Events panel exposes bounded controls and clear sensitive-data framin
     assert.match(html, /const eventsBatchMaxBytes = 65536;/);
 });
 
-test("managed exception specialization requires the known provider, ID, name, version and exact payload fields", () => {
+test("managed exception specialization requires the known provider, ID, version and exact payload fields", () => {
     const script = /<script nonce="[^"]*">([\s\S]*?)<\/script>/.exec(html)?.[1];
     assert.ok(script);
     assert.match(script, /event\.provider === 'Microsoft-Windows-DotNETRuntime'/);
-    assert.match(script, /event\.eventId === 80 && event\.eventName === 'ExceptionThrown_V1' && event\.version === 0/);
+    assert.match(script, /event\.eventId === 80 && event\.version === 1/);
+    assert.match(script, /'ExceptionFlags', 'ClrInstanceID'/);
     assert.match(script, /payloadNames\.length === exceptionFields\.length/);
     assert.match(script, /payloadNames\.every\(\(name, index\) => name === exceptionFields\.slice\(\)\.sort\(\)\[index\]\)/);
     assert.match(script, /eventDetails\.appendChild\(payload\)/);
