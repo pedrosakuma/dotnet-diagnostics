@@ -54,6 +54,19 @@ test("host event queue stays count/byte bounded under 100,000 observations", () 
     assert.equal(queue.retainedEventCount, LIVE_EVENT_HOST_MAX_COUNT - first.events.length);
 });
 
+test("host event queue enforces its byte limit before the count limit", () => {
+    const queue = new LiveEventDeliveryQueue();
+    const large = observation(1, {
+        payload: { first: "a".repeat(1000), second: "b".repeat(1000) },
+    });
+    for (let index = 1; index <= 256; index++) queue.enqueue({ ...large, sequence: index });
+
+    assert.ok(queue.retainedEventCount < LIVE_EVENT_HOST_MAX_COUNT);
+    assert.ok(queue.retainedByteCount <= LIVE_EVENT_HOST_MAX_RETAINED_BYTES);
+    assert.ok(queue.retainedByteCount > LIVE_EVENT_HOST_MAX_RETAINED_BYTES - (2 * 8_000));
+    assert.equal(queue.dropped, 256 - queue.retainedEventCount);
+});
+
 test("event validation enforces payload schema bounds and truncation accounting", () => {
     assert.equal(isLiveEventObservation(observation(1)), true);
     assert.equal(isLiveEventObservation(observation(1, { payloadTruncated: true })), false);

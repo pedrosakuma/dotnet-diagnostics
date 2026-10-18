@@ -132,6 +132,34 @@ Provider payloads are application-controlled and may contain secrets or personal
 exception messages. Consumers should warn before collection, keep events in bounded memory by
 default, and avoid automatic persistence or logging of payload values.
 
+#### Manual live-event load acceptance
+
+The Windows-only acceptance runner in `scripts/live-events-acceptance.cjs` uses the sample's
+`CoreClrSample.LiveEventStress` EventSource to generate 11,000 events per second for 330 seconds
+(30 seconds of warm-up followed by five measured minutes). It streams and counts JSONL frames rather
+than saving event payloads. The runner also checks a quiet interval, a 20,000-character value's
+truncation, per-minute received counts, separate loss counters, maximum frame size, CLI working-set
+RSS, and sampled CLI receipt-to-host-read latency. Its optional blocked-output scenario pauses CLI
+stdout and sends `stop` before resuming it:
+
+```powershell
+dotnet build samples\CoreClrSample\CoreClrSample.csproj -c Release
+dotnet build src\DotnetDiagnostics.Cli\DotnetDiagnostics.Cli.csproj -c Release
+node scripts\live-events-acceptance.cjs
+
+$env:LIVE_EVENTS_DURATION_SECONDS = "12"
+$env:LIVE_EVENTS_RATE = "11000"
+$env:LIVE_EVENTS_BLOCK_STDOUT_SECONDS = "14"
+node scripts\live-events-acceptance.cjs
+```
+
+The sustained run takes more than five minutes and is an opt-in manual check, not a CI job. Run it
+serially rather than alongside other load-heavy tests.
+
+The run measures the CLI process and target sample only; it does not measure the VS Code extension
+host, webview renderer RSS, visible-panel interaction latency, or receipt-to-render latency. Those
+values require a live VS Code UI and must not be inferred from the CLI harness.
+
 ### Point-in-time captures (`capture`)
 
 For collectors that produce one finite result rather than a live stream (`cpu`, `heap`,
