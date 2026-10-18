@@ -4,6 +4,9 @@
 
 ### Changed
 
+- CPU capture summaries no longer repeat drilldown commands already present in
+  structured hints. Shorter ranking hints preserve navigation arguments and
+  distinguish exclusive stack samples from measured CPU time (#1202).
 - Counters, contention and ThreadPool journey diffs now retain objective deltas
   without workload-dependent performance verdicts; legacy saved better-directions
   for these kinds and CPU are neutralized in memory. Quality gates remain intact.
