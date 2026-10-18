@@ -45,7 +45,10 @@ public sealed class ToolCatalogBudgetTests : IClassFixture<ToolCatalogBudgetTest
     // (no prose), measuring 283,702 bytes. All other sample counts/denominators
     // were added to summaries and handle-store query results, which are not in
     // tools/list. 284,000 keeps ~300 bytes of headroom.
-    private const int MaximumCatalogBytes = 284_000;
+    // Issue #1192: the fixed-key EvidenceQuality.Observed output contract reaches
+    // 284,392 bytes on Linux and Windows. The approved 285,000 ceiling preserves
+    // these typed facts with 608 bytes of headroom; tool counts remain 17/13.
+    private const int MaximumCatalogBytes = 285_000;
 
     private readonly FullCatalogFactory _factory;
     private readonly ITestOutputHelper _output;
