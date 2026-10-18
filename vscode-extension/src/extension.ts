@@ -1664,11 +1664,19 @@ class CounterPanelController implements vscode.Disposable {
             const compatibilityError = describeStreamCompatibilityError(line);
             this.failPending(session, new Error(compatibilityError));
             session.startupErrorReported = true;
-            this.postMessage({
-                type: "status",
-                state: "error",
-                message: compatibilityError,
-            });
+            if (session.eventsConnection) {
+                this.postEventsMessage({
+                    type: "eventsStatus",
+                    state: "error",
+                    message: compatibilityError,
+                });
+            } else {
+                this.postMessage({
+                    type: "status",
+                    state: "error",
+                    message: compatibilityError,
+                });
+            }
             session.process.kill();
             return;
         }
@@ -3226,6 +3234,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     let eventsFollowing = true;
     let eventsQuality = null;
     let lastEventsQualityRenderAt = 0;
+    let eventsQualityRenderTimer;
     function setEventsStatus(state, text, sessionId) {
       eventsStatusElement.textContent = text || state || '';
       if (state === 'starting') {
@@ -3335,8 +3344,23 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       renderEventsQuality();
     }
     function renderEventsQuality() {
-      if (!eventsQuality || Date.now() - lastEventsQualityRenderAt < 1000) return;
-      lastEventsQualityRenderAt = Date.now();
+      if (!eventsQuality) return;
+      const now = Date.now();
+      const waitMs = 1000 - (now - lastEventsQualityRenderAt);
+      if (waitMs > 0) {
+        if (eventsQualityRenderTimer === undefined) {
+          eventsQualityRenderTimer = setTimeout(() => {
+            eventsQualityRenderTimer = undefined;
+            renderEventsQuality();
+          }, waitMs);
+        }
+        return;
+      }
+      if (eventsQualityRenderTimer !== undefined) {
+        clearTimeout(eventsQualityRenderTimer);
+        eventsQualityRenderTimer = undefined;
+      }
+      lastEventsQualityRenderAt = now;
         eventsQualityElement.textContent = [
           eventsQuality.eventPipeLossAvailable
             ? eventsQuality.eventPipeEventsLost + ' EventPipe source events lost'

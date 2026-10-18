@@ -43,3 +43,9 @@ test("managed exception specialization requires the known provider, ID, version 
     assert.match(script, /payloadNames\.every\(\(name, index\) => name === exceptionFields\.slice\(\)\.sort\(\)\[index\]\)/);
     assert.match(script, /eventDetails\.appendChild\(payload\)/);
 });
+
+test("throttled quality rendering schedules a trailing update", () => {
+    const script = /<script nonce="[^"]*">([\s\S]*?)<\/script>/.exec(html)?.[1];
+    assert.ok(script);
+    assert.match(script, /eventsQualityRenderTimer = setTimeout\(\(\) => \{\s*eventsQualityRenderTimer = undefined;\s*renderEventsQuality\(\);/);
+});
