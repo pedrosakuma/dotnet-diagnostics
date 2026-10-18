@@ -93,6 +93,9 @@ events but does not stop the source. The CLI reports EventPipe source loss as un
 while unknown and supplies the final count if TraceEvent reports one. Source loss, Core queue drops,
 CLI dispatch drops, and extension-host delivery drops are distinct layers, not additive estimates.
 Payload omissions are separate per-event projection facts.
+When event-data bytes are present but TraceEvent exposes no decoded payload fields,
+`payloadFieldsUnavailable` reports that observed condition without inventing fields,
+an unsupported-value count, or an explanation for the decoder's behavior.
 
 These are retention/protocol limits, not evidence that a specific machine can sustain a particular
 event rate, RSS, or interactive latency. TraceEvent allocation, the EventPipe circular buffer,

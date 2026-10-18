@@ -5,6 +5,7 @@ using DotnetDiagnostics.Core.Counters;
 using DotnetDiagnostics.Core.Internal;
 using Microsoft.Diagnostics.NETCore.Client;
 using Microsoft.Diagnostics.Tracing;
+using Microsoft.Diagnostics.Tracing.Parsers;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -33,17 +34,35 @@ public sealed class EventSourceSession : EventPipeDiagnosticSessionBase
 
     private protected override void ConfigureSource(EventPipeEventSource source, DiagnosticSessionEventBuffer observations)
     {
+        // Dynamic runtime exception callbacks can expose no payload fields on Linux.
+        // Use TraceEvent's CLR decoder for the verified v1 identity, once only.
+        source.Clr.ExceptionStart += traceEvent =>
+        {
+            if (UsesClrExceptionDecoder(traceEvent.ProviderGuid, (int)traceEvent.ID, traceEvent.Version))
+            {
+                Publish(traceEvent);
+            }
+        };
         source.Dynamic.All += traceEvent =>
         {
-            if (!_providerNames.Contains(traceEvent.ProviderName))
+            if (UsesClrExceptionDecoder(traceEvent.ProviderGuid, (int)traceEvent.ID, traceEvent.Version))
             {
                 return;
             }
 
+            Publish(traceEvent);
+        };
+
+        void Publish(TraceEvent traceEvent)
+        {
+            if (!_providerNames.Contains(traceEvent.ProviderName)) return;
             var observation = ProjectEvent(traceEvent);
             observations.TryPublish(sequence => observation.WithSequence(sequence));
-        };
+        }
     }
+
+    internal static bool UsesClrExceptionDecoder(Guid providerGuid, int eventId, int version) =>
+        providerGuid == ClrTraceEventParser.ProviderGuid && eventId == 80 && version == 1;
 
     private EventSourceLiveObservation ProjectEvent(TraceEvent traceEvent)
     {
@@ -125,7 +144,8 @@ public sealed class EventSourceSession : EventPipeDiagnosticSessionBase
             metadataTruncated,
             omittedFields,
             omittedCharacters,
-            unsupportedValues);
+            unsupportedValues,
+            payloadFieldsUnavailable: names.Length == 0 && traceEvent.EventDataLength > 0);
 
         if (JsonSerializer.SerializeToUtf8Bytes(observation).Length > ProjectionFrameBudget)
         {

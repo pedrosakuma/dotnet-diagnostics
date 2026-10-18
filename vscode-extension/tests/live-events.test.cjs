@@ -94,6 +94,14 @@ test("event validation enforces payload schema bounds and truncation accounting"
     })), false);
 });
 
+test("unavailable decoded fields remain explicit without fabricated payloads or truncation counts", () => {
+    assert.equal(isLiveEventObservation(observation(1, {
+        payload: {}, payloadFieldsUnavailable: true,
+    })), true);
+    assert.equal(isLiveEventObservation(observation(1, { payloadFieldsUnavailable: true })), false);
+    assert.equal(isLiveEventObservation(observation(1, { payloadFieldsUnavailable: "yes" })), false);
+});
+
 test("queue rejects a frame larger than the event frame contract", () => {
     const queue = new LiveEventDeliveryQueue();
     assert.equal(queue.enqueue(observation(1, { provider: "x".repeat(LIVE_EVENT_FRAME_MAX_BYTES) })), false);

@@ -23,7 +23,8 @@ public sealed record EventSourceLiveObservation : DiagnosticSessionEvent
         bool metadataTruncated,
         int omittedPayloadFields,
         int omittedPayloadCharacters,
-        int unsupportedPayloadValues)
+        int unsupportedPayloadValues,
+        bool payloadFieldsUnavailable = false)
         : base(sequence, timestamp)
     {
         ReceivedAt = receivedAt;
@@ -41,6 +42,7 @@ public sealed record EventSourceLiveObservation : DiagnosticSessionEvent
         OmittedPayloadFields = omittedPayloadFields;
         OmittedPayloadCharacters = omittedPayloadCharacters;
         UnsupportedPayloadValues = unsupportedPayloadValues;
+        PayloadFieldsUnavailable = payloadFieldsUnavailable;
     }
 
     /// <summary>UTC time when this process received the event callback.</summary>
@@ -85,6 +87,9 @@ public sealed record EventSourceLiveObservation : DiagnosticSessionEvent
     /// <summary>Number of payload values represented by an unsupported-type marker.</summary>
     public int UnsupportedPayloadValues { get; init; }
 
+    /// <summary>Whether event-data bytes were present but TraceEvent exposed no decoded payload fields.</summary>
+    public bool PayloadFieldsUnavailable { get; init; }
+
     /// <summary>Whether any payload was omitted, shortened, or could not be formatted.</summary>
     public bool PayloadTruncated =>
         OmittedPayloadFields > 0 || OmittedPayloadCharacters > 0 || UnsupportedPayloadValues > 0;
@@ -118,5 +123,6 @@ public sealed record EventSourceLiveObservation : DiagnosticSessionEvent
             MetadataTruncated,
             OmittedPayloadFields,
             OmittedPayloadCharacters,
-            UnsupportedPayloadValues);
+            UnsupportedPayloadValues,
+            PayloadFieldsUnavailable);
 }

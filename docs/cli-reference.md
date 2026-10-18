@@ -105,13 +105,24 @@ rejected before any requested kind starts if acknowledgement is missing.
 Each event observation contains `sessionId`, `sequence`, source `timestamp`, callback `receivedAt`,
 `provider`, `eventName`, `eventId`, `version`, `level`, optional `threadId`, `activityId` and
 `relatedActivityId`, a `payload` object, `metadataTruncated`, `payloadTruncated`,
-`omittedPayloadFields`, `omittedPayloadCharacters`, and `unsupportedPayloadValues`. Payload values
+`omittedPayloadFields`, `omittedPayloadCharacters`, `unsupportedPayloadValues`, and
+`payloadFieldsUnavailable`. The latter is true when TraceEvent reports nonzero event-data bytes
+but exposes no decoded payload fields: `payload` stays empty and completeness is unknown.
+It does not establish why fields are unavailable or invent fields or unsupported-value counts.
+False does not guarantee payload completeness; older frames may omit this additive flag,
+in which case this condition was not reported. Payload values
 are inert strings for null, strings, characters, booleans, numeric primitives, enums, GUIDs and date
 values. Other runtime object types are represented by an explicit unsupported-type marker; arbitrary
 `ToString()` and recursive object formatting are not used. Per observation, payload retention is
 limited to 32 fields, 128 characters per field name, 1,024 characters per value, and 2,048 aggregate
 payload name/value characters. Metadata strings are limited to 256 characters. The serialized event
 frame is limited to 16 KiB UTF-8.
+
+The runtime provider's managed-exception event (ID 80, version 1) uses TraceEvent's
+CLR decoder, since dynamic callbacks on Linux can expose no decoded fields. It is
+not also published through the dynamic decoder. Other identities and versions
+retain the generic dynamic payload projection; the viewer specializes details
+only when the observed identity, version and payload field set match.
 
 The collector's pending queue is capped at 256 observations and 4 MiB of conservative accounted
 retained bytes. When `event_source` is in the composition, the shared composed-dispatch queue is

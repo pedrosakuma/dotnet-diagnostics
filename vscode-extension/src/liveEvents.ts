@@ -28,6 +28,7 @@ export interface LiveEventObservation {
     payload: Record<string, string>;
     metadataTruncated: boolean;
     payloadTruncated: boolean;
+    payloadFieldsUnavailable?: boolean;
     omittedPayloadFields: number;
     omittedPayloadCharacters: number;
     unsupportedPayloadValues: number;
@@ -150,6 +151,7 @@ export function isLiveEventObservation(value: unknown): value is LiveEventObserv
         || !isRecord(value.payload)
         || typeof value.metadataTruncated !== "boolean"
         || typeof value.payloadTruncated !== "boolean"
+        || !(value.payloadFieldsUnavailable === undefined || typeof value.payloadFieldsUnavailable === "boolean")
         || !nonNegativeInteger(value.omittedPayloadFields)
         || !nonNegativeInteger(value.omittedPayloadCharacters)
         || !nonNegativeInteger(value.unsupportedPayloadValues)) {
@@ -167,7 +169,8 @@ export function isLiveEventObservation(value: unknown): value is LiveEventObserv
         payloadCharacters += name.length + fieldValue.length;
     }
 
-    return payloadCharacters <= 2048
+    return !(value.payloadFieldsUnavailable === true && payloadFields > 0)
+        && payloadCharacters <= 2048
         && value.payloadTruncated === (
             value.omittedPayloadFields > 0
             || value.omittedPayloadCharacters > 0

@@ -535,6 +535,8 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
         var exceptionObservation = new TaskCompletionSource<EventSourceLiveObservation>(
             TaskCreationOptions.RunContinuationsAsynchronously);
+        var sessionReceiving = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var exceptionCount = 0;
 
         await using var session = new EventPipeEventSourceSessionFactory().CreateSession(
             Pid,
@@ -545,8 +547,12 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
             });
         using var subscription = session.Attach<EventSourceLiveObservation>((observation, _) =>
         {
-            if (observation.EventId == 80)
+            sessionReceiving.TrySetResult();
+            if (observation.EventId == 80
+                && observation.Payload.TryGetValue("ExceptionType", out var exceptionType)
+                && exceptionType.Contains("FormatException", StringComparison.Ordinal))
             {
+                exceptionCount++;
                 exceptionObservation.TrySetResult(observation);
             }
 
@@ -554,9 +560,11 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         });
 
         await session.StartAsync();
-        await Task.Delay(TimeSpan.FromSeconds(1));
+        await sessionReceiving.Task.WaitAsync(TimeSpan.FromSeconds(20));
         using var response = await http.GetAsync("/parse");
         response.EnsureSuccessStatusCode();
+        using var responseDocument = System.Text.Json.JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var generatedExceptions = responseDocument.RootElement.GetProperty("ko").GetInt32();
         var observed = await exceptionObservation.Task.WaitAsync(TimeSpan.FromSeconds(20));
         var completion = await session.StopAsync().WaitAsync(TimeSpan.FromSeconds(10));
 
@@ -572,6 +580,8 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         observed.Payload["ExceptionType"].Should().Contain("FormatException");
         observed.Payload["ExceptionMessage"].Should().NotBeNullOrEmpty();
         observed.PayloadTruncated.Should().BeFalse();
+        observed.PayloadFieldsUnavailable.Should().BeFalse();
+        exceptionCount.Should().Be(generatedExceptions, "each source exception must be emitted once, not by both decoders");
 
         completion.Status.Should().Be(DiagnosticSessionStatus.Stopped);
         completion.Error.Should().BeNull();

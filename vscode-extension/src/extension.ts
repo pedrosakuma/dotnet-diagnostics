@@ -3307,10 +3307,13 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       const payload = document.createElement('pre');
       payload.textContent = payloadNames.length
         ? payloadNames.map(name => name + ': ' + event.payload[name]).join('\\n')
-        : '(no supported payload fields)';
+        : event.payloadFieldsUnavailable
+          ? '(payload bytes were present, but decoded fields are unavailable)'
+          : '(no supported payload fields)';
       eventDetails.appendChild(payload);
       const quality = document.createElement('p');
       quality.textContent = [
+        event.payloadFieldsUnavailable ? 'Decoded payload fields unavailable; payload completeness is unknown' : '',
         event.metadataTruncated ? 'Event metadata truncated' : '',
         event.payloadTruncated ? 'Payload truncated or contained unsupported values' : '',
         event.omittedPayloadFields ? event.omittedPayloadFields + ' payload fields omitted' : '',

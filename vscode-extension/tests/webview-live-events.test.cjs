@@ -42,6 +42,8 @@ test("managed exception specialization requires the known provider, ID, version 
     assert.match(script, /payloadNames\.length === exceptionFields\.length/);
     assert.match(script, /payloadNames\.every\(\(name, index\) => name === exceptionFields\.slice\(\)\.sort\(\)\[index\]\)/);
     assert.match(script, /eventDetails\.appendChild\(payload\)/);
+    assert.match(script, /payload bytes were present, but decoded fields are unavailable/);
+    assert.match(script, /Decoded payload fields unavailable; payload completeness is unknown/);
 });
 
 test("throttled quality rendering schedules a trailing update", () => {

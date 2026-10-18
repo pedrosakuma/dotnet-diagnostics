@@ -2625,6 +2625,7 @@ internal static class CliStreamingProtocol
                 payload = observation.Payload,
                 metadataTruncated = observation.MetadataTruncated,
                 payloadTruncated = observation.PayloadTruncated,
+                payloadFieldsUnavailable = observation.PayloadFieldsUnavailable,
                 omittedPayloadFields = observation.OmittedPayloadFields,
                 omittedPayloadCharacters = observation.OmittedPayloadCharacters,
                 unsupportedPayloadValues = observation.UnsupportedPayloadValues,

@@ -1,11 +1,39 @@
 using DotnetDiagnostics.Core.Counters;
 using DotnetDiagnostics.Core.EventSources;
 using FluentAssertions;
+using Microsoft.Diagnostics.Tracing.Parsers;
 
 namespace DotnetDiagnostics.Core.Tests;
 
 public sealed class EventSourceSessionTests
 {
+    [Theory]
+    [InlineData(80, 1, true)]
+    [InlineData(80, 0, false)]
+    [InlineData(80, 2, false)]
+    [InlineData(81, 1, false)]
+    public void ClrDecoder_RequiresTheVerifiedExceptionIdentity(int eventId, int version, bool expected)
+    {
+        EventSourceSession.UsesClrExceptionDecoder(ClrTraceEventParser.ProviderGuid, eventId, version)
+            .Should().Be(expected);
+        EventSourceSession.UsesClrExceptionDecoder(Guid.Empty, eventId, version).Should().BeFalse();
+    }
+
+    [Fact]
+    public void Observation_PreservesUnavailableFieldsWithoutInventingPayloadOrTruncationCounts()
+    {
+        var observation = new EventSourceLiveObservation(
+            1, DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch, "provider", "event", 80, 2,
+            "Error", null, null, null, new Dictionary<string, string>(), false, 0, 0, 0,
+            payloadFieldsUnavailable: true);
+
+        var resequenced = observation.WithSequence(2).Should().BeOfType<EventSourceLiveObservation>().Subject;
+        resequenced.PayloadFieldsUnavailable.Should().BeTrue();
+        resequenced.Payload.Should().BeEmpty();
+        resequenced.PayloadTruncated.Should().BeFalse();
+        resequenced.UnsupportedPayloadValues.Should().Be(0);
+    }
+
     [Fact]
     public void Factory_RejectsInvalidProviderCountAndDuplicateNames()
     {
