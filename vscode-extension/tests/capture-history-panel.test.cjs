@@ -289,6 +289,25 @@ test("disposing the Events panel clears batches that can no longer be acknowledg
     assert.equal(controller.eventsStreamSessionId, undefined);
     assert.equal(controller.eventsQuality, undefined);
 });
+test("Events shutdown disables backpressure and resumes the protocol reader", () => {
+    const extensionPath = path.join(__dirname, "../out/extension.js");
+    const Controller = new Function("require", "exports", fs.readFileSync(extensionPath, "utf8")
+        + "\nreturn CounterPanelController;")(createRequire(extensionPath), {});
+    const { BoundedProtocolLineReader } = require("../out/liveEvents.js");
+    const { PassThrough } = require("node:stream");
+    const controller = Object.create(Controller.prototype);
+    const input = new PassThrough();
+    const lines = new BoundedProtocolLineReader(input, 65_536);
+    lines.pause();
+    const child = { lines, eventsReaderBackpressureDisabled: false };
+
+    controller.resumeEventsReaderForShutdown(child);
+
+    assert.equal(child.eventsReaderBackpressureDisabled, true);
+    assert.equal(input.isPaused(), false);
+    lines.close();
+    input.destroy();
+});
 test("continuation pages preserve earlier captures and ordinary refresh replaces them", async () => {
     const original = h.runHistoryCli;
     h.runHistoryCli = async (_cli, args) => JSON.stringify({ data: args.includes("--after-capture-id")

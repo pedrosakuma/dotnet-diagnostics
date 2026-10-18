@@ -76,7 +76,13 @@ dispatch queue has its own 4 MiB byte cap and a count cap of 256 observations. T
 most 256 events / 1 MiB (accounted per event as twice serialized UTF-8 bytes plus 1 KiB object
 overhead), sends one acknowledged webview batch at a time (at most 64 events / 64 KiB), and limits
 bridge updates to 10 per second. A stalled webview therefore applies bounded backpressure and
-eventually causes counted host-queue drops rather than unbounded buffering.
+eventually causes counted host-queue drops rather than unbounded buffering. When the host queue
+reaches either cap or rejects an observation because the next event would exceed the byte cap, the
+Events connection pauses its bounded JSONL reader at a frame boundary; webview acknowledgement
+resumes it when the queue has room. This lets the CLI/Core bounded queues absorb or report overload
+before the extension host parses more observations. A frame already present in the current bounded
+pipe chunk can still be rejected and is counted by the host queue. Stop disables this read
+backpressure and resumes the reader before cancellation so shutdown frames can be consumed.
 
 The webview retains at most 2,000 events / 8 MiB, mounts at most 100 table rows per page, searches
 at most 256 characters, and keeps at most one selected event. UI accounted event bytes use twice

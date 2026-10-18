@@ -65,6 +65,11 @@ export class LiveEventDeliveryQueue {
         return this.retainedBytes;
     }
 
+    public get isAtCapacity(): boolean {
+        return this.retainedCount >= LIVE_EVENT_HOST_MAX_COUNT
+            || this.retainedBytes >= LIVE_EVENT_HOST_MAX_RETAINED_BYTES;
+    }
+
     public get hasInFlightBatch(): boolean {
         return this.inFlight !== undefined;
     }
@@ -185,6 +190,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export interface ProtocolLineReader {
     on(event: "line", listener: (line: string, byteLength: number) => void): this;
     on(event: "oversized", listener: () => void): this;
+    pause(): void;
+    resume(): void;
     close(): void;
 }
 
@@ -193,6 +200,9 @@ export class BoundedProtocolLineReader implements ProtocolLineReader {
     private pending = "";
     private pendingBytes = 0;
     private oversized = false;
+    private paused = false;
+    private endPending = false;
+    private deferredText = "";
     private readonly lineListeners: Array<(line: string, byteLength: number) => void> = [];
     private readonly oversizedListeners: Array<() => void> = [];
 
@@ -214,13 +224,35 @@ export class BoundedProtocolLineReader implements ProtocolLineReader {
     public close(): void {
         this.input.removeListener("data", this.onData);
         this.input.removeListener("end", this.onEnd);
+        this.paused = false;
+        this.endPending = false;
+        this.deferredText = "";
         this.input.resume();
         this.lineListeners.length = 0;
         this.oversizedListeners.length = 0;
     }
 
+    public pause(): void {
+        if (this.paused) return;
+        this.paused = true;
+        this.input.pause();
+    }
+
+    public resume(): void {
+        if (!this.paused) return;
+        this.paused = false;
+        const deferredText = this.deferredText;
+        this.deferredText = "";
+        if (deferredText.length > 0) this.processText(deferredText);
+        if (!this.paused && this.endPending) this.finishEnd();
+        if (!this.paused) this.input.resume();
+    }
+
     private readonly onData = (chunk: string | Buffer): void => {
-        const text = chunk.toString();
+        this.processText(chunk.toString());
+    };
+
+    private processText(text: string): void {
         let offset = 0;
         while (offset < text.length) {
             const newline = text.indexOf("\n", offset);
@@ -239,15 +271,26 @@ export class BoundedProtocolLineReader implements ProtocolLineReader {
             if (newline >= 0) {
                 this.finishLine();
                 offset = newline + 1;
+                if (this.paused) {
+                    this.deferredText = text.slice(offset);
+                    return;
+                }
             } else {
                 offset = text.length;
             }
         }
-    };
+    }
 
     private readonly onEnd = (): void => {
-        if (this.pending.length > 0 || this.oversized) this.finishLine();
+        this.endPending = true;
+        if (this.paused) return;
+        this.finishEnd();
     };
+
+    private finishEnd(): void {
+        this.endPending = false;
+        if (this.pending.length > 0 || this.oversized) this.finishLine();
+    }
 
     private finishLine(): void {
         if (this.oversized) {

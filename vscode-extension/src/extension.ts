@@ -20,6 +20,8 @@ import {
     LIVE_EVENT_BATCH_MAX_BYTES,
     LIVE_EVENT_CONTROL_LINE_MAX_BYTES,
     LIVE_EVENT_FRAME_MAX_BYTES,
+    LIVE_EVENT_HOST_MAX_COUNT,
+    LIVE_EVENT_HOST_MAX_RETAINED_BYTES,
     LIVE_EVENT_MAX_UPDATES_PER_SECOND,
     LIVE_EVENT_SEARCH_MAX_CHARS,
     LIVE_EVENT_UI_MAX_COUNT,
@@ -181,6 +183,7 @@ interface StreamChild {
      */
     closing: boolean;
     eventsConnection: boolean;
+    eventsReaderBackpressureDisabled: boolean;
     supportedLiveKinds?: string[];
 }
 
@@ -419,6 +422,7 @@ class CounterPanelController implements vscode.Disposable {
         }
 
         this.postEventsMessage({ type: "eventsStatus", state: "stopping", message: "Stopping EventPipe EventSource stream…" });
+        this.resumeEventsReaderForShutdown(child);
         try {
             this.writeFrame(child, { type: "cancel", sessionId: child.sessionId });
             await withTimeout(child.terminal.promise, 10_000);
@@ -1568,6 +1572,7 @@ class CounterPanelController implements vscode.Disposable {
             startInFlight: false,
             closing: false,
             eventsConnection,
+            eventsReaderBackpressureDisabled: false,
         };
         if (!eventsConnection) {
             this.activeChild = session;
@@ -1752,8 +1757,13 @@ class CounterPanelController implements vscode.Disposable {
                         this.failEventsProtocol(session, "The CLI emitted a Live Events observation with an unsupported or unbounded schema.");
                         break;
                     }
-                    if (!this.eventsQueue.enqueue(frame, serializedBytes)) {
+                    const accepted = this.eventsQueue.enqueue(frame, serializedBytes);
+                    if (!accepted) {
                         this.eventsQualityRevision++;
+                    }
+                    if ((!accepted || this.eventsQueue.isAtCapacity) && !session.eventsReaderBackpressureDisabled
+                        && session.lines instanceof BoundedProtocolLineReader) {
+                        session.lines.pause();
                     }
                     this.scheduleEventsBatch();
                 } else if (kind === "counters" && isCounterValue(frame.counter)) {
@@ -2043,6 +2053,7 @@ class CounterPanelController implements vscode.Disposable {
         if (!child) return;
         if (this.eventsBatchTimer) clearTimeout(this.eventsBatchTimer);
         this.eventsBatchTimer = undefined;
+        this.resumeEventsReaderForShutdown(child);
         if (child.sessionId) {
             try {
                 this.writeFrame(child, { type: "cancel", sessionId: child.sessionId });
@@ -2054,6 +2065,11 @@ class CounterPanelController implements vscode.Disposable {
         }
         await this.closeChild(child);
         if (this.eventsChild === child) this.eventsChild = undefined;
+    }
+
+    private resumeEventsReaderForShutdown(child: StreamChild): void {
+        child.eventsReaderBackpressureDisabled = true;
+        if (child.lines instanceof BoundedProtocolLineReader) child.lines.resume();
     }
 
     private async disposeChildCore(): Promise<void> {
@@ -2143,6 +2159,13 @@ class CounterPanelController implements vscode.Disposable {
                 this.eventsInFlightQualityRevision,
             );
             this.eventsInFlightQualityRevision = undefined;
+        }
+        const child = this.eventsChild;
+        if (child?.sessionId === sessionId && !child.eventsReaderBackpressureDisabled
+            && this.eventsQueue.retainedEventCount < LIVE_EVENT_HOST_MAX_COUNT
+            && this.eventsQueue.retainedByteCount < LIVE_EVENT_HOST_MAX_RETAINED_BYTES
+            && child.lines instanceof BoundedProtocolLineReader) {
+            child.lines.resume();
         }
         this.scheduleEventsBatch();
     }

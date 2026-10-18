@@ -76,6 +76,13 @@ test("host event queue reuses the validated UTF-8 frame byte count", () => {
     assert.equal(queue.retainedByteCount, (frameBytes * 2) + 1024);
 });
 
+test("host queue reports when a limit has been reached", () => {
+    const queue = new LiveEventDeliveryQueue();
+    assert.equal(queue.isAtCapacity, false);
+    for (let index = 1; index <= LIVE_EVENT_HOST_MAX_COUNT; index++) queue.enqueue(observation(index));
+    assert.equal(queue.isAtCapacity, true);
+});
+
 test("event validation enforces payload schema bounds and truncation accounting", () => {
     assert.equal(isLiveEventObservation(observation(1)), true);
     assert.equal(isLiveEventObservation(observation(1, { payloadTruncated: true })), false);
@@ -114,5 +121,27 @@ test("bounded JSONL reader handles multibyte UTF-8 and flags oversized lines", a
         { line: '{"ok":true}', byteLength: Buffer.byteLength('{"ok":true}', "utf8") },
     ]);
     assert.equal(oversized, 1);
+    reader.close();
+});
+
+test("bounded JSONL reader pauses at a frame boundary and resumes buffered text", async () => {
+    const input = Readable.from([
+        Buffer.from('{"one":1}\n{"two":2}\n'),
+        Buffer.from('{"three":3}\n'),
+    ]);
+    const ended = new Promise(resolve => input.once("end", resolve));
+    const reader = new BoundedProtocolLineReader(input, 65_536);
+    const lines = [];
+    reader.on("line", line => {
+        lines.push(line);
+        if (lines.length === 1) reader.pause();
+    });
+
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(lines, ['{"one":1}']);
+    reader.resume();
+    await ended;
+
+    assert.deepEqual(lines, ['{"one":1}', '{"two":2}', '{"three":3}']);
     reader.close();
 });
