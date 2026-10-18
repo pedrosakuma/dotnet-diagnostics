@@ -134,6 +134,11 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             tool.ReturnJsonSchema.Should().NotBeNull(
                 $"tool {tool.Name} must declare an outputSchema (UseStructuredContent = true)");
             tool.ReturnJsonSchema!.Value.ValueKind.Should().Be(JsonValueKind.Object);
+            foreach (var property in tool.ReturnJsonSchema.Value.GetProperty("properties").EnumerateObject())
+            {
+                property.Value.ValueKind.Should().Be(JsonValueKind.Object,
+                    $"default catalog output property {tool.Name}.{property.Name} must support object-only client schema decoders");
+            }
             var authMeta = tool.ProtocolTool.Meta?["dotnetDiagnostics"]?["auth"]?.AsObject();
             authMeta.Should().NotBeNull($"tool {tool.Name} must advertise authorization metadata in tools/list _meta");
             authMeta!["authorized"]!.GetValue<bool>().Should().Be(

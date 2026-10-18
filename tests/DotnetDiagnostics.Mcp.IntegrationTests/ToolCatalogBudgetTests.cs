@@ -77,6 +77,32 @@ public sealed class ToolCatalogBudgetTests : IClassFixture<ToolCatalogBudgetTest
     }
 
     [Fact]
+    public async Task FullCatalog_OutputPropertiesUseClientCompatibleObjectSchemas()
+    {
+        await using var client = await ConnectAsync();
+        var tools = await client.ListToolsAsync(cancellationToken: CancellationToken.None);
+
+        tools.Should().HaveCount(17);
+        foreach (var tool in tools)
+        {
+            var schema = tool.ReturnJsonSchema!.Value;
+            foreach (var property in schema.GetProperty("properties").EnumerateObject())
+            {
+                property.Value.ValueKind.Should().Be(JsonValueKind.Object,
+                    $"the TypeScript SDK 1.32.1 protocol decoder requires an object for {tool.Name}.{property.Name}");
+            }
+        }
+
+        foreach (var name in new[] { "query_snapshot", "get_bytes", "inspect_heap", "compare_to_baseline" })
+        {
+            var data = tools.Single(tool => tool.Name == name)
+                .ReturnJsonSchema!.Value.GetProperty("properties").GetProperty("data");
+            data.EnumerateObject().Should().BeEmpty(
+                $"{name}.data must still accept any JSON value, including null and non-object values");
+        }
+    }
+
+    [Fact]
     public async Task AttachTool_ToolsListAdvertisesExternalDockerProfileFlow()
     {
         await using var client = await ConnectAsync();
