@@ -34,6 +34,24 @@ part of both surfaces.
 
 ## Reproduce
 
+### Issue #1192 validation (2026-10-18)
+
+PR #1199 measures **284,392 bytes** for the maximal 17-tool catalog and
+**251,224 bytes** for the default 13-tool subset using the real HTTP
+`ToolCatalogBudgetTests` locally on Linux. CI independently reports the same
+maximal measurement on Linux and Windows.
+
+The optional fixed-key `EvidenceQuality.Observed` contract is exposed through
+shared tool output schemas, not only result payloads. Its typed backend,
+duration, sample count, detected loss, unresolved-symbol share and missing-signal
+fields therefore consume catalog space even when a particular capture does not
+populate them. No tool is added, and no safety metadata is removed.
+
+The explicitly approved ceiling change is **284,000 → 285,000 bytes**
+(**+1,000 bytes / +0.352%**), leaving **608 bytes** of headroom. This preserves
+the agreed observation contract rather than replacing its typed facts with an
+opaque object or removing fields to satisfy the previous limit.
+
 ### Durable capture integration validation (2026-09-25)
 
 The SQLite capture integration, including shared persistence/lifecycle safety

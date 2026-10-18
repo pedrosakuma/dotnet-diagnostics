@@ -44,14 +44,30 @@ public sealed record EvidenceConclusionPolicy(
     EvidenceConclusionSupport RegressionOrHealthyControl);
 
 /// <summary>
+/// Fixed-key facts a producer actually measured for a capture. A null member means "not measured",
+/// never zero. <see cref="Gaps"/> names signals that are absent from the capture; it does not speculate about causes.
+/// </summary>
+public sealed record EvidenceObserved(
+    string? Backend,
+    double? DurationSeconds,
+    long? SampleCount,
+    long? DetectedLossCount,
+    double? UnresolvedSymbolShare,
+    IReadOnlyList<string> Gaps);
+
+/// <summary>
 /// Bounded evidence-quality metadata shared by collector artifacts and portable comparisons.
 /// A null value on an older serialized artifact means legacy-unknown, never clean.
+/// <see cref="Conclusions"/> is the eligibility gate for a directional verdict (it is not itself a
+/// conclusion about the workload); <see cref="Observed"/> carries the measured facts.
 /// </summary>
 public sealed record EvidenceQuality(
     string Schema,
     IReadOnlyList<EvidenceLimitation> Limitations,
     EvidenceConclusionPolicy Conclusions)
 {
+    public EvidenceObserved? Observed { get; init; }
+
     public const string SchemaV1 = "dotnet-diagnostics/evidence-quality/v1";
 
     public static EvidenceQuality LegacyUnknown { get; } = new(

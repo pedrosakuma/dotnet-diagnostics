@@ -190,7 +190,17 @@ internal static partial class CliCommands
         var effective = quality ?? EvidenceQuality.LegacyUnknown;
         sb.AppendLine();
         sb.AppendLine(CultureInfo.InvariantCulture,
-            $"  evidence : positive={effective.Conclusions.RetainedExplicitPositiveEvidence}, absence={effective.Conclusions.AbsenceOrExhaustiveCounts}, regression={effective.Conclusions.RegressionOrHealthyControl}");
+            $"  evidence : positive={effective.Conclusions.RetainedExplicitPositiveEvidence}, absence={effective.Conclusions.AbsenceOrExhaustiveCounts}, directional-verdict={effective.Conclusions.RegressionOrHealthyControl}");
+        if (effective.Observed is { } observed)
+        {
+            string Fact<T>(string name, T? value) where T : struct => value is { } v ? string.Create(CultureInfo.InvariantCulture, $"{name}={v}") : $"{name}=not-measured";
+            sb.AppendLine(CultureInfo.InvariantCulture,
+                $"  observed : backend={observed.Backend ?? "not-measured"}, {Fact("duration_s", observed.DurationSeconds)}, {Fact("samples", observed.SampleCount)}, {Fact("lost", observed.DetectedLossCount)}, {Fact("unresolved_share_pct", observed.UnresolvedSymbolShare)}");
+            foreach (var gap in observed.Gaps)
+            {
+                sb.AppendLine(CultureInfo.InvariantCulture, $"    - gap: {gap}");
+            }
+        }
         foreach (var limitation in effective.Limitations)
         {
             var count = limitation.AffectedCount is { } affected ? $" ({affected:N0})" : string.Empty;

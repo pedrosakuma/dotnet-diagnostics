@@ -68,7 +68,7 @@ public static class CpuSampleComparableProjection
             ProcessId: snapshot.ProcessId,
             Metrics: metrics,
             Rows: rows,
-            Quality: CpuEvidenceQuality(snapshot.Evidence))
+            Quality: CpuEvidenceQuality(snapshot, rows))
         {
             CpuEvidence = snapshot.Evidence,
         };
@@ -269,11 +269,9 @@ public static class CpuSampleComparableProjection
         long UnknownExclusiveSamples,
         bool HasSelfSampleClassification);
 
-    private static Evidence.EvidenceQuality CpuEvidenceQuality(CpuSampleEvidence? evidence)
+    private static Evidence.EvidenceQuality CpuEvidenceQuality(CpuSampleTraceArtifact artifact, IReadOnlyList<ComparableRow> rows)
     {
-        var support = evidence?.Kind == CpuSampleEvidenceKind.OsOnCpuSamples
-            ? Evidence.EvidenceConclusionSupport.Supported
-            : Evidence.EvidenceConclusionSupport.NotEstablished;
+        var evidence = artifact.Evidence;
         var limitations = evidence is null
             ? Evidence.EvidenceQuality.LegacyUnknown.Limitations
             : evidence.Limitations.Select(detail => new Evidence.EvidenceLimitation(
@@ -281,6 +279,10 @@ public static class CpuSampleComparableProjection
                 "cpu-scheduler-state",
                 null,
                 detail)).ToArray();
+        var unresolvedShare = rows
+            .Where(static row => IsUnresolved(row.DisplayName))
+            .Sum(static row => row.Metrics.FirstOrDefault(static m => m.Definition.Name == "exclusivePercent")?.Value ?? 0);
+        // Sample share is not CPU time or work done, so no CPU evidence establishes a regression or healthy control.
         return new Evidence.EvidenceQuality(
             Evidence.EvidenceQuality.SchemaV1,
             limitations,
@@ -289,6 +291,20 @@ public static class CpuSampleComparableProjection
                     ? Evidence.EvidenceConclusionSupport.Supported
                     : Evidence.EvidenceConclusionSupport.NotEstablished,
                 Evidence.EvidenceConclusionSupport.Inconclusive,
-                support));
+                Evidence.EvidenceConclusionSupport.NotEstablished))
+        {
+            Observed = new Evidence.EvidenceObserved(
+                evidence?.Backend.ToString(),
+                Math.Round(artifact.Duration.TotalSeconds, 2),
+                artifact.TotalSamples,
+                DetectedLossCount: null,
+                Math.Round(unresolvedShare, 2),
+                ["No work-rate (requests, throughput or latency) signal is part of this capture."]),
+        };
     }
+
+    private static bool IsUnresolved(string? name)
+        => string.IsNullOrEmpty(name)
+            || string.Equals(name, "[unknown]", StringComparison.Ordinal)
+            || name.StartsWith("0x", StringComparison.OrdinalIgnoreCase);
 }
