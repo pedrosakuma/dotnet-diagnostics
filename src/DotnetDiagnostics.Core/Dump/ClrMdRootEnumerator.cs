@@ -29,10 +29,17 @@ internal static class ClrMdRootEnumerator
     internal static void MarkLive(ClrRuntime runtime) => LiveRuntimes.TryAdd(runtime, new object());
 
     internal static bool SkipsStackRoots(ClrRuntime runtime) =>
-        LiveRuntimes.TryGetValue(runtime, out _) && !IsLiveStackRootOptIn();
+        LiveRuntimes.TryGetValue(runtime, out _) &&
+        ShouldSkipStackRoots(isLive: true, Environment.GetEnvironmentVariable(LiveStackRootsEnvironmentVariable));
 
-    private static bool IsLiveStackRootOptIn() =>
-        string.Equals(Environment.GetEnvironmentVariable(LiveStackRootsEnvironmentVariable), "1", StringComparison.Ordinal);
+    internal static bool ShouldSkipStackRoots(bool isLive, string? liveStackRootsSetting) =>
+        isLive && !string.Equals(liveStackRootsSetting, "1", StringComparison.Ordinal);
+
+    internal static string CreateSkippedStackRootsWarning(string omittedEvidence) =>
+        "Live stack-root enumeration was skipped because the CLR DAC can fault natively (SIGSEGV) while walking " +
+        "a thread caught mid-transition, which would terminate this host (issue #1160). " +
+        omittedEvidence + " Use a dump-origin inspection for complete stack-root evidence, or set " +
+        LiveStackRootsEnvironmentVariable + "=1 to accept the risk.";
 
     internal static IEnumerable<IClrRoot> Enumerate(ClrRuntime runtime)
     {

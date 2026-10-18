@@ -63,7 +63,10 @@ public sealed class HeapSnapshotQueryToolTests
             GcRootInspection = new HeapGcRootInspection(4660, "System.Byte[]", [
                 new RetentionFrame("<root>", 0) { RootKind = "StaticVar" },
                 new RetentionFrame("System.Byte[]", 4660),
-            ], Truncated: false),
+            ], Truncated: false)
+            {
+                Warnings = ["Live stack roots were omitted."],
+            },
         };
 
         var result = await DiagnosticTools.QueryHeapSnapshot(store, inspector, new SensitiveDataRedactor(null), new SensitiveValueGate(null), TestPrincipalAccessors.Root, handle.Id, view: "gcroot", address: "4660");
@@ -73,6 +76,7 @@ public sealed class HeapSnapshotQueryToolTests
         result.Data!.Address.Should().Be(4660);
         result.Data.GcRoot!.Chain.Should().HaveCount(2);
         result.Data.GcRoot.Chain[0].RootKind.Should().Be("StaticVar");
+        result.Summary.Should().Contain("Live stack roots were omitted.");
         inspector.LastAddress.Should().Be(4660UL);
     }
 

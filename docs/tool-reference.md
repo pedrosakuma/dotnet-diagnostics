@@ -672,6 +672,10 @@ answer "what roots this object" without re-attaching to the (possibly gone) proc
 same kind-wide `heap-read` scope for either origin. The standalone Core CLI `session` REPL serves
 `gcroot`/`object` for dump-origin handles too (it has no live-attach guard), with `object` previews
 redacted to metadata-only.
+For live-origin `gcroot`, DAC stack roots are skipped by default to avoid the native crash risk
+described above; any returned chain carries a `Warnings` entry and is incomplete without stack
+roots. A failed search also explains this omission. Dump-origin results are unchanged. Set
+`DOTNET_DBG_MCP_LIVE_STACK_ROOTS=1` to opt live inspection back in and accept the risk.
 
 `compare_to_baseline(snapshotsJson=[...])` accepts the same comparable journey knobs:
 `topN`, `depth`, and `mode="trend"|"dispersion"`. Legacy `InvestigationSummary` JSON
@@ -896,7 +900,10 @@ optimized-away locals are not enumerable. Frames are matched to roots by stack p
 `includeSensitiveValues` AND `Diagnostics:AllowSensitiveHeapValues` or the `sensitive-heap-read`
 scope. For **live-origin** thread snapshots, this view still requires the original process; after
 it exits the handle survives, but `query_snapshot` returns a structured `ProcessExited` error for
-`frame-vars`.
+`frame-vars`. By default, live-origin queries do not enumerate stack roots: they return the managed
+frames and current exception metadata with empty `Variables` and a `Warnings` entry explaining the
+omission. Dump-origin queries retain full stack-root enumeration. Setting
+`DOTNET_DBG_MCP_LIVE_STACK_ROOTS=1` opts live queries back in and accepts the native-crash risk.
 
 `view="thread-statics"` (thread-snapshot, issue #1120) reads every `[ThreadStatic]` field of one
 caller-named type across every thread in the snapshot. It requires `typeFullName` (the EXACT full
@@ -3288,6 +3295,14 @@ live process. The inline ranking places owner-and-waiter deadlock candidates,
 contended-lock owners, threads with active exceptions, and running application
 frames before generic wait/park noise. Candidate ranking does not prove a cycle;
 evaluate inferred wait-for cycle candidates with `query_snapshot(view="deadlocks")`.
+
+Live ClrMD snapshots skip DAC stack-root enumeration by default because certain
+live thread frames can make the DAC fault natively and terminate the host
+(issue #1160). Managed stacks and SyncBlock lock owners/waiter counts remain
+available, but stack-root-based waiter-to-lock attribution is omitted and the
+snapshot includes a `Warnings` entry. Dump snapshots are unchanged. Setting
+`DOTNET_DBG_MCP_LIVE_STACK_ROOTS=1` opts live inspections back in and accepts
+the native-crash risk.
 
 **Parameters:**
 

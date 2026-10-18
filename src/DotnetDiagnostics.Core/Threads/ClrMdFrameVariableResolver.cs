@@ -35,23 +35,36 @@ public sealed class ClrMdFrameVariableResolver : IFrameVariableResolver
         var clrInfo = target.ClrVersions.FirstOrDefault()
             ?? throw new InvalidOperationException("No CLR runtime present in the origin; frame locals require a managed runtime.");
         using var runtime = clrInfo.CreateRuntime();
+        if (artifact.Origin == ThreadSnapshotOrigin.Live)
+        {
+            ClrMdRootEnumerator.MarkLive(runtime);
+        }
 
         var thread = runtime.Threads.FirstOrDefault(t => t.ManagedThreadId == managedThreadId)
             ?? throw new InvalidOperationException($"Managed thread {managedThreadId} not present in the origin.");
 
         var warnings = new List<string>();
+        var skipStackRoots = ClrMdRootEnumerator.SkipsStackRoots(runtime);
 
         var orphanRoots = new List<ClrStackRoot>();
         var identifiedRoots = new List<(FrameIdentity Frame, ClrStackRoot Root)>();
-        foreach (var root in thread.EnumerateStackRoots())
+        if (skipStackRoots)
         {
-            ct.ThrowIfCancellationRequested();
-            if (root.StackFrame is not { StackPointer: not 0 } rf)
+            warnings.Add(ClrMdRootEnumerator.CreateSkippedStackRootsWarning(
+                "Frame variables are unavailable for this live-origin query; managed frames and current exception metadata remain available."));
+        }
+        else
+        {
+            foreach (var root in thread.EnumerateStackRoots())
             {
-                orphanRoots.Add(root);
-                continue;
+                ct.ThrowIfCancellationRequested();
+                if (root.StackFrame is not { StackPointer: not 0 } rf)
+                {
+                    orphanRoots.Add(root);
+                    continue;
+                }
+                identifiedRoots.Add((IdentityOf(rf), root));
             }
-            identifiedRoots.Add((IdentityOf(rf), root));
         }
 
         var emitted = new List<ClrStackFrame>();
@@ -100,7 +113,7 @@ public sealed class ClrMdFrameVariableResolver : IFrameVariableResolver
         {
             warnings.Add($"{orphanRoots.Count} stack root(s) could not be attributed to a specific frame.");
         }
-        if (frames.All(fr => fr.Variables.Count == 0))
+        if (!skipStackRoots && frames.All(fr => fr.Variables.Count == 0))
         {
             warnings.Add("No object-typed locals/parameters were recoverable; value-type (struct/primitive) slots and optimized-away locals are not enumerable via ClrMD.");
         }

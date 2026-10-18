@@ -1694,6 +1694,8 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         gcrootView.Chain[0].RootKind.Should().NotBeNullOrWhiteSpace(
             "the leaked byte[] must remain reachable from some GC root through the endpoint's retained list");
         gcrootView.Chain[^1].ObjectAddress.Should().Be(leakedBufferAddress);
+        gcrootView.Warnings.Should().Contain(warning => warning.Contains(
+            "This GC-root chain excludes stack roots", StringComparison.Ordinal));
 
         var objectSize = await inspector.InspectObjectSizeAsync(snapshot, leakedBufferAddress, CancellationToken.None);
         objectSize.ObjectCount.Should().Be(1, "a byte[] retains only itself in the object graph walk");
@@ -1825,6 +1827,7 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
             gcrootView.Chain[0].RootKind.Should().NotBeNullOrWhiteSpace(
                 "the leaked byte[] must remain reachable from some GC root captured in the dump");
             gcrootView.Chain[^1].ObjectAddress.Should().Be(leakedBufferAddress);
+            gcrootView.Warnings.Should().BeNullOrEmpty("dump-origin root enumeration remains unchanged");
         }
         finally
         {
@@ -2064,6 +2067,8 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         snapshot.Threads.Where(t => t.Frames.Count > 0).Should().NotBeEmpty(
             "at least one thread should have a captured managed stack");
         snapshot.Locks.Should().NotBeNull();
+        snapshot.Warnings.Should().Contain(warning => warning.Contains(
+            "Stack-root-based waiter-to-lock attribution is unavailable", StringComparison.Ordinal));
     }
 
     [Fact(Timeout = 60_000)]
@@ -2085,6 +2090,9 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         result.ManagedThreadId.Should().Be(threadWithFrames.ManagedThreadId);
         result.Frames.Should().NotBeEmpty("the chosen thread had managed frames in the snapshot");
         result.Frames.Should().OnlyContain(f => f.InstructionPointer.StartsWith("0x", StringComparison.Ordinal));
+        result.Warnings.Should().Contain(warning => warning.Contains(
+            "Frame variables are unavailable for this live-origin query", StringComparison.Ordinal));
+        result.Frames.SelectMany(frame => frame.Variables).Should().BeEmpty();
     }
 
     [Fact(Timeout = 60_000)]
