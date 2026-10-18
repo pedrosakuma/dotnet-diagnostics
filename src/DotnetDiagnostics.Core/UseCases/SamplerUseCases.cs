@@ -179,10 +179,10 @@ public static class SamplerUseCases
 
         var hints = new List<NextActionHint>
         {
-            new("query_snapshot", "Rank methods by self-time (exclusive) — where CPU is actually spent, past the inclusive threadpool/dispatch roots.",
+            new("query_snapshot", "Rank exclusive stack samples; interpret using the capture's evidence semantics.",
                 new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "top-methods", ["rankBy"] = "exclusive" })
             { Priority = NextActionHintPriority.High },
-            new("query_snapshot", "Walk the merged caller→callee tree built from the same samples.",
+            new("query_snapshot", "Explore caller/callee paths from this capture.",
                 new Dictionary<string, object?> { ["handle"] = handle.Id, ["maxDepth"] = 8, ["maxNodes"] = 200 })
             { Priority = NextActionHintPriority.High },
             new("collect_events", "Confirm hot path isn't driven by exception-heavy control flow.",
@@ -812,8 +812,7 @@ public static class SamplerUseCases
                 ? $" Self evidence: {self.RunningSamples} on-CPU / {self.WaitingSamples} heuristic-wait / {self.UnknownSamples} unknown."
                 : string.Empty;
             leadPhrase =
-                $"Most frequent exclusive stack leaf: {topSelfTime.Frame.Method} ({topSelfTime.ExclusiveSamples} of {sample.TotalSamples} observations, {selfPercent:0.#}% of stack samples).{splitSuffix} " +
-                $"Rank self-time with query_snapshot(handle=\"{handleId}\", view=\"top-methods\") or walk the call path with view=\"call-tree\".";
+                $"Most frequent exclusive stack leaf: {topSelfTime.Frame.Method} ({topSelfTime.ExclusiveSamples} of {sample.TotalSamples} observations, {selfPercent:0.#}% of stack samples).{splitSuffix}";
         }
         else if (top is not null)
         {
@@ -823,8 +822,7 @@ public static class SamplerUseCases
             leadPhrase =
                 $"Top inclusive method: {top.Frame.Method} ({top.InclusiveSamples} inclusive / {top.ExclusiveSamples} exclusive).{splitSuffix} " +
                 "That top entry may reflect a wait/blocking primitive on CoreCLR EventPipe captures — " +
-                $"no dominant self-time frame (the workload looks blocked/wait-bound or symbols are unresolved). " +
-                $"Walk the call path with query_snapshot(handle=\"{handleId}\", view=\"call-tree\").";
+                $"no dominant self-time frame (the workload looks blocked/wait-bound or symbols are unresolved).";
         }
         else
         {

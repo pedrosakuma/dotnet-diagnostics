@@ -2171,7 +2171,9 @@ and also includes `http.server.request.duration` p95 when available.
 ## `collect_sample(kind="cpu")`
 
 Captures a CPU sample and aggregates the top-N hotspots by inclusive and exclusive
-sample counts. The backend is runtime-specific:
+sample counts. The summary retains measured counts and evidence semantics;
+drilldown commands and arguments are provided in structured `hints`, rather than
+repeated in the summary. The backend is runtime-specific:
 
 - **CoreCLR (Linux + Windows, default)** — EventPipe
   `Microsoft-DotNETCore-SampleProfiler`.

@@ -154,10 +154,10 @@ internal static class DiagnosticToolSampling
         var signals = CpuSampleSignals.Detect(result.Summary, handle.Id);
         var hints = new List<NextActionHint>();
 
-        hints.Add(new NextActionHint("query_snapshot", "Rank methods by self-time (exclusive) — where CPU is actually spent, past the inclusive threadpool/dispatch roots.",
+        hints.Add(new NextActionHint("query_snapshot", "Rank exclusive stack samples; interpret using the capture's evidence semantics.",
             new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "top-methods", ["rankBy"] = "exclusive" })
         { Priority = NextActionHintPriority.High });
-        hints.Add(new NextActionHint("query_snapshot", "Walk the merged caller→callee tree built from the same samples.",
+        hints.Add(new NextActionHint("query_snapshot", "Explore caller/callee paths from this capture.",
             new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "call-tree", ["maxDepth"] = CpuSampleQueryDispatcher.MaxProjectedCallTreeDepth, ["maxNodes"] = CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes })
         { Priority = NextActionHintPriority.High });
         hints.Add(new NextActionHint("collect_events", "Confirm hot path isn't driven by exception-heavy control flow.",
@@ -759,8 +759,7 @@ internal static class DiagnosticToolSampling
                 ? $" Self evidence: {self.RunningSamples} on-CPU / {self.WaitingSamples} heuristic-wait / {self.UnknownSamples} unknown."
                 : string.Empty;
             leadPhrase =
-                $"Most frequent exclusive stack leaf: {topSelfTime.Frame.Method} ({topSelfTime.ExclusiveSamples} of {sample.TotalSamples} observations, {selfPercent:0.#}% of stack samples).{splitSuffix} " +
-                $"Rank self-time with query_snapshot(handle=\"{handleId}\", view=\"top-methods\") or walk the call path with view=\"call-tree\".";
+                $"Most frequent exclusive stack leaf: {topSelfTime.Frame.Method} ({topSelfTime.ExclusiveSamples} of {sample.TotalSamples} observations, {selfPercent:0.#}% of stack samples).{splitSuffix}";
         }
         else if (top is not null)
         {
@@ -770,8 +769,7 @@ internal static class DiagnosticToolSampling
             leadPhrase =
                 $"Top inclusive method: {top.Frame.Method} ({top.InclusiveSamples} inclusive / {top.ExclusiveSamples} exclusive).{splitSuffix} " +
                 "That top entry may reflect a wait/blocking primitive on CoreCLR EventPipe captures — " +
-                $"no dominant self-time frame (the workload looks blocked/wait-bound or symbols are unresolved). " +
-                $"Walk the call path with query_snapshot(handle=\"{handleId}\", view=\"call-tree\").";
+                $"no dominant self-time frame (the workload looks blocked/wait-bound or symbols are unresolved).";
         }
         else
         {
