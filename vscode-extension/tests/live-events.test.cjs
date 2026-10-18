@@ -67,6 +67,15 @@ test("host event queue enforces its byte limit before the count limit", () => {
     assert.equal(queue.dropped, 256 - queue.retainedEventCount);
 });
 
+test("host event queue reuses the validated UTF-8 frame byte count", () => {
+    const queue = new LiveEventDeliveryQueue();
+    const event = observation(1);
+    const frameBytes = Buffer.byteLength(JSON.stringify(event), "utf8") + 128;
+
+    assert.equal(queue.enqueue(event, frameBytes), true);
+    assert.equal(queue.retainedByteCount, (frameBytes * 2) + 1024);
+});
+
 test("event validation enforces payload schema bounds and truncation accounting", () => {
     assert.equal(isLiveEventObservation(observation(1)), true);
     assert.equal(isLiveEventObservation(observation(1, { payloadTruncated: true })), false);
@@ -96,11 +105,14 @@ test("bounded JSONL reader handles multibyte UTF-8 and flags oversized lines", a
     const reader = new BoundedProtocolLineReader(input, 65_536);
     const lines = [];
     let oversized = 0;
-    reader.on("line", line => lines.push(line));
+    reader.on("line", (line, byteLength) => lines.push({ line, byteLength }));
     reader.on("oversized", () => { oversized++; });
     await new Promise(resolve => input.once("end", resolve));
 
-    assert.deepEqual(lines, ['{"message":"😀"}', '{"ok":true}']);
+    assert.deepEqual(lines, [
+        { line: '{"message":"😀"}', byteLength: Buffer.byteLength('{"message":"😀"}', "utf8") },
+        { line: '{"ok":true}', byteLength: Buffer.byteLength('{"ok":true}', "utf8") },
+    ]);
     assert.equal(oversized, 1);
     reader.close();
 });

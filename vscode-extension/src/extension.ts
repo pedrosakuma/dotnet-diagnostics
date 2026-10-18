@@ -1574,8 +1574,8 @@ class CounterPanelController implements vscode.Disposable {
             this.statusBar.text = "$(sync~spin) .NET Counters";
         }
 
-        session.lines.on("line", line => this.handleFrame(session, line));
         if (session.lines instanceof BoundedProtocolLineReader) {
+            session.lines.on("line", (line: string, byteLength: number) => this.handleFrame(session, line, byteLength));
             session.lines.on("oversized", () => {
                 const error = new Error(`The CLI emitted a control frame larger than ${LIVE_EVENT_CONTROL_LINE_MAX_BYTES} UTF-8 bytes.`);
                 this.failPending(session, error);
@@ -1583,6 +1583,8 @@ class CounterPanelController implements vscode.Disposable {
                 this.postEventsMessage({ type: "eventsStatus", state: "error", message: error.message });
                 session.process.kill();
             });
+        } else {
+            session.lines.on("line", line => this.handleFrame(session, line));
         }
         child.stdin.on("error", error => this.failPending(session, error));
         child.stderr.on("data", (chunk: Buffer | string) => {
@@ -1656,7 +1658,7 @@ class CounterPanelController implements vscode.Disposable {
         return spawnStreamingCli(this.getCliPath());
     }
 
-    private handleFrame(session: StreamChild, line: string): void {
+    private handleFrame(session: StreamChild, line: string, byteLength?: number): void {
         let frame: ProtocolFrame;
         try {
             frame = parseProtocolFrame(line);
@@ -1741,22 +1743,16 @@ class CounterPanelController implements vscode.Disposable {
                 // absent kind as the legacy implicit counters session for forward compatibility.
                 const kind = typeof frame.kind === "string" ? frame.kind : "counters";
                 if (session.eventsConnection && kind === "event_source") {
-                    if (Buffer.byteLength(line, "utf8") > LIVE_EVENT_FRAME_MAX_BYTES) {
+                    const serializedBytes = byteLength ?? Buffer.byteLength(line, "utf8");
+                    if (serializedBytes > LIVE_EVENT_FRAME_MAX_BYTES) {
                         this.failEventsProtocol(session, `The CLI emitted a Live Events observation larger than ${LIVE_EVENT_FRAME_MAX_BYTES} UTF-8 bytes.`);
                         break;
                     }
-                    const observation = {
-                        ...frame,
-                        sessionId: frame.sessionId,
-                        sequence: frame.sequence,
-                        timestamp: frame.timestamp,
-                        receivedAt: frame.receivedAt,
-                    };
-                    if (!isLiveEventObservation(observation)) {
+                    if (!isLiveEventObservation(frame)) {
                         this.failEventsProtocol(session, "The CLI emitted a Live Events observation with an unsupported or unbounded schema.");
                         break;
                     }
-                    if (!this.eventsQueue.enqueue(observation)) {
+                    if (!this.eventsQueue.enqueue(frame, serializedBytes)) {
                         this.eventsQualityRevision++;
                     }
                     this.scheduleEventsBatch();

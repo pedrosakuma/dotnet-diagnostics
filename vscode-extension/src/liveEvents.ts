@@ -69,21 +69,24 @@ export class LiveEventDeliveryQueue {
         return this.inFlight !== undefined;
     }
 
-    public enqueue(event: LiveEventObservation): boolean {
-        const serializedBytes = Buffer.byteLength(JSON.stringify(event), "utf8");
-        if (serializedBytes > LIVE_EVENT_FRAME_MAX_BYTES) {
+    public enqueue(event: LiveEventObservation, serializedBytes?: number): boolean {
+        const accountedSerializedBytes = serializedBytes ?? Buffer.byteLength(JSON.stringify(event), "utf8");
+        if (!Number.isSafeInteger(accountedSerializedBytes) || accountedSerializedBytes < 0) {
+            throw new Error("Serialized event byte size must be a non-negative safe integer.");
+        }
+        if (accountedSerializedBytes > LIVE_EVENT_FRAME_MAX_BYTES) {
             this.droppedEvents++;
             return false;
         }
 
-        const retainedBytes = (serializedBytes * 2) + 1024;
+        const retainedBytes = (accountedSerializedBytes * 2) + 1024;
         if (this.retainedCount >= LIVE_EVENT_HOST_MAX_COUNT
             || this.retainedBytes + retainedBytes > LIVE_EVENT_HOST_MAX_RETAINED_BYTES) {
             this.droppedEvents++;
             return false;
         }
 
-        this.pending.push({ event, serializedBytes, retainedBytes });
+        this.pending.push({ event, serializedBytes: accountedSerializedBytes, retainedBytes });
         this.retainedCount++;
         this.retainedBytes += retainedBytes;
         return true;
@@ -148,10 +151,13 @@ export function isLiveEventObservation(value: unknown): value is LiveEventObserv
         return false;
     }
 
-    const entries = Object.entries(value.payload);
-    if (entries.length > 32) return false;
     let payloadCharacters = 0;
-    for (const [name, fieldValue] of entries) {
+    let payloadFields = 0;
+    for (const name in value.payload) {
+        if (!Object.prototype.hasOwnProperty.call(value.payload, name)) continue;
+        payloadFields++;
+        if (payloadFields > 32) return false;
+        const fieldValue = value.payload[name];
         if (name.length > 128 || typeof fieldValue !== "string" || fieldValue.length > 1024) return false;
         payloadCharacters += name.length + fieldValue.length;
     }
@@ -177,7 +183,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export interface ProtocolLineReader {
-    on(event: "line", listener: (line: string) => void): this;
+    on(event: "line", listener: (line: string, byteLength: number) => void): this;
     on(event: "oversized", listener: () => void): this;
     close(): void;
 }
@@ -187,7 +193,7 @@ export class BoundedProtocolLineReader implements ProtocolLineReader {
     private pending = "";
     private pendingBytes = 0;
     private oversized = false;
-    private readonly lineListeners: Array<(line: string) => void> = [];
+    private readonly lineListeners: Array<(line: string, byteLength: number) => void> = [];
     private readonly oversizedListeners: Array<() => void> = [];
 
     public constructor(private readonly input: Readable, private readonly maxLineBytes: number) {
@@ -197,9 +203,10 @@ export class BoundedProtocolLineReader implements ProtocolLineReader {
     }
 
     public on(event: "line", listener: (line: string) => void): this;
+    public on(event: "line", listener: (line: string, byteLength: number) => void): this;
     public on(event: "oversized", listener: () => void): this;
-    public on(event: "line" | "oversized", listener: ((line: string) => void) | (() => void)): this {
-        if (event === "line") this.lineListeners.push(listener as (line: string) => void);
+    public on(event: "line" | "oversized", listener: ((line: string, byteLength: number) => void) | (() => void)): this {
+        if (event === "line") this.lineListeners.push(listener as (line: string, byteLength: number) => void);
         else this.oversizedListeners.push(listener as () => void);
         return this;
     }
@@ -246,8 +253,10 @@ export class BoundedProtocolLineReader implements ProtocolLineReader {
         if (this.oversized) {
             for (const listener of this.oversizedListeners) listener();
         } else {
-            const line = this.pending.endsWith("\r") ? this.pending.slice(0, -1) : this.pending;
-            for (const listener of this.lineListeners) listener(line);
+            const hasTrailingCarriageReturn = this.pending.endsWith("\r");
+            const line = hasTrailingCarriageReturn ? this.pending.slice(0, -1) : this.pending;
+            const byteLength = this.pendingBytes - (hasTrailingCarriageReturn ? 1 : 0);
+            for (const listener of this.lineListeners) listener(line, byteLength);
         }
         this.pending = "";
         this.pendingBytes = 0;
