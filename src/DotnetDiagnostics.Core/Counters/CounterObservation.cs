@@ -16,6 +16,16 @@ public abstract record DiagnosticSessionEvent
     /// <summary>Timestamp reported by the source event.</summary>
     public DateTimeOffset Timestamp { get; }
 
+    /// <summary>Conservative number of bytes retained by this event and its bounded contents.</summary>
+    public virtual int RetainedSizeBytes => 256;
+
+    /// <summary>Estimates retained memory from bounded string data and per-event object overhead.</summary>
+    protected static int EstimateRetainedSizeBytes(long stringCharacters, long objectOverheadBytes = 1024)
+    {
+        var estimatedBytes = Math.Max(0, stringCharacters) * 4 + objectOverheadBytes;
+        return (int)Math.Min(int.MaxValue, estimatedBytes);
+    }
+
     /// <summary>Creates an equivalent event with the composed-session sequence.</summary>
     public abstract DiagnosticSessionEvent WithSequence(long sequence);
 }
@@ -32,6 +42,10 @@ public sealed record CounterObservation : DiagnosticSessionEvent
 
     /// <summary>The observed counter value.</summary>
     public CounterValue Counter { get; }
+
+    /// <inheritdoc />
+    public override int RetainedSizeBytes => EstimateRetainedSizeBytes(
+        (long)Counter.Provider.Length + Counter.Name.Length + Counter.DisplayName.Length + (Counter.Unit?.Length ?? 0));
 
     /// <inheritdoc />
     public override DiagnosticSessionEvent WithSequence(long sequence) =>

@@ -41,12 +41,13 @@ public abstract class EventPipeDiagnosticSessionBase : IDiagnosticSession
         int processId,
         int observationCapacity,
         Func<CancellationToken, Task<EventPipeSession>> startEventPipeSession,
-        Action<Exception> onShutdownError)
+        Action<Exception> onShutdownError,
+        long observationRetainedBytesCapacity = long.MaxValue)
     {
         ProcessId = processId;
         _startEventPipeSession = startEventPipeSession;
         _onShutdownError = onShutdownError;
-        _observations = new DiagnosticSessionEventBuffer(observationCapacity);
+        _observations = new DiagnosticSessionEventBuffer(observationCapacity, observationRetainedBytesCapacity);
     }
 
     /// <summary>Process ID attached to the session.</summary>

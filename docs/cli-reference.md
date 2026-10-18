@@ -32,14 +32,15 @@ not require a version bump. Send a handshake before any other request:
 {"type":"hello","protocolVersion":2}
 ```
 
-The CLI replies with the negotiated protocol and its informational CLI version:
+The CLI replies with the negotiated protocol, its informational CLI version, and the supported live
+kind names:
 
 ```json
-{"type":"hello","protocolVersion":2,"cliVersion":"0.30.0"}
+{"type":"hello","protocolVersion":2,"cliVersion":"0.31.0","supportedLiveKinds":["counters","event_source","gc"]}
 ```
 
-Clients may use `cliVersion` for feature-compatibility guidance; the field is additive and does not
-change protocol negotiation.
+Clients may use `cliVersion` for feature-compatibility guidance and `supportedLiveKinds` to gate
+optional live-stream features; both fields are additive and do not change protocol negotiation.
 
 ### Live sessions (`start`/`stop`)
 
@@ -55,11 +56,11 @@ request shapes are accepted:
   ```
 
 - **Multi-kind shape**: send a non-empty `kinds` array to run several live kinds concurrently in one
-  composed session. Supported kinds are `counters` (same options as above, nested) and `gc` (only
-  `observationCapacity`):
+  composed session. Supported kinds are `counters` (same options as above, nested), `gc` (only
+  `observationCapacity`), and `event_source`:
 
   ```json
-  {"type":"start","requestId":"capture-2","processId":1234,"kinds":[{"kind":"counters","providers":["System.Runtime"]},{"kind":"gc"}]}
+  {"type":"start","requestId":"capture-2","processId":1234,"kinds":[{"kind":"counters","providers":["System.Runtime"]},{"kind":"gc"},{"kind":"event_source","providers":[{"name":"Microsoft-Windows-DotNETRuntime","eventLevel":5,"keywords":"-1"}],"observationCapacity":256,"acknowledgeRisk":"high"}]}
   ```
 
 Each kind in `kinds` must be unique and recognized; every requested kind clears the Core safety
@@ -71,11 +72,11 @@ echoing the active live kinds:
 {"type":"started","requestId":"capture-2","sessionId":"<session-id>","processId":1234,"kinds":["counters","gc"]}
 ```
 
-As samples arrive, the CLI emits `observation` frames tagged with the originating `kind`
-(`"counters"` or `"gc"`), a monotonically increasing sequence, and a timestamp. Counters observations
-carry a `counter` payload; GC observations carry a `collection` payload. Sequence gaps and the
-terminal `droppedObservations` count make bounded-queue loss visible. Stop or cancel the session with
-its ID:
+As samples arrive, the CLI emits `observation` frames tagged with the originating `kind`, a
+monotonically increasing sequence, and a timestamp. Counters observations carry a `counter` payload;
+GC observations carry a `collection` payload. EventSource observations use the schema below.
+Sequence gaps and the terminal `droppedObservations` count make bounded-queue loss visible. Stop or
+cancel the session with its ID:
 
 ```json
 {"type":"stop","sessionId":"<session-id>"}
@@ -89,6 +90,47 @@ The Core session APIs apply these provider and queue bounds themselves as well; 
 protocol-side validation. Malformed or unsupported requests receive an `error` frame. EOF stops an
 active session, drains it, emits its terminal frame, and exits. Closing a panel should send `cancel`
 (or close stdin) before disposing the child process.
+
+#### EventSource live kind
+
+`event_source` opens a Core-owned continuous EventPipe session. JSONL may compose it with `counters`
+or `gc`; the VS Code Events tab uses a separate CLI connection so that stream has independent
+controls and lifecycle. Its `providers` field contains 1–8 explicit provider objects. Each name is
+unique case-insensitively and at most 256 characters; `eventLevel` is an integer from 0 through 5
+(default 4); `keywords` is a signed 64-bit decimal **string** (no JSON-number coercion). Provider
+subscriptions are filtered to those explicit names. EventPipe does not provide wildcard or native
+Windows ETW collection. Non-allowlisted providers require `"acknowledgeRisk":"high"`; they are
+rejected before any requested kind starts if acknowledgement is missing.
+
+Each event observation contains `sessionId`, `sequence`, source `timestamp`, callback `receivedAt`,
+`provider`, `eventName`, `eventId`, `version`, `level`, optional `threadId`, `activityId` and
+`relatedActivityId`, a `payload` object, `metadataTruncated`, `payloadTruncated`,
+`omittedPayloadFields`, `omittedPayloadCharacters`, and `unsupportedPayloadValues`. Payload values
+are inert strings for null, strings, characters, booleans, numeric primitives, enums, GUIDs and date
+values. Other runtime object types are represented by an explicit unsupported-type marker; arbitrary
+`ToString()` and recursive object formatting are not used. Per observation, payload retention is
+limited to 32 fields, 128 characters per field name, 1,024 characters per value, and 2,048 aggregate
+payload name/value characters. Metadata strings are limited to 256 characters. The serialized event
+frame is limited to 16 KiB UTF-8.
+
+The collector's pending queue is capped at 256 observations and 4 MiB of conservative accounted
+retained bytes. When `event_source` is in the composition, the shared composed-dispatch queue is
+independently capped at 4 MiB as well as the requested count capacity. Accounted bytes estimate
+managed retention; they are not an RSS measurement. The EventPipe circular buffer is 64 MiB.
+TraceEvent exposes already-decoded payload values to the callback; the collector reads only the
+bounded field set and immediately truncates values, but cannot cap allocation internal to TraceEvent
+while decoding one provider event.
+
+CLI quality frames are emitted about once per second
+and once at termination, with distinct fields for `coreQueueDropped` and
+`cliDispatchQueueDropped`. `eventPipeEventsLost` is `null` and `eventPipeLossAvailable` is `false`
+while the source loss count is unknown; the final quality frame reports it when TraceEvent provides
+one. These are separate layer-specific counts and must not be summed as a single total. Payload
+truncation and unsupported-value counts are per event, not transport-loss estimates.
+
+Provider payloads are application-controlled and may contain secrets or personal data, especially
+exception messages. Consumers should warn before collection, keep events in bounded memory by
+default, and avoid automatic persistence or logging of payload values.
 
 ### Point-in-time captures (`capture`)
 

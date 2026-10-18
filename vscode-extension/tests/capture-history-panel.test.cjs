@@ -201,7 +201,7 @@ test("switching selected processes cannot let delayed disposal clear the new pan
     const Controller = new Function("require", "exports", fs.readFileSync(extensionPath, "utf8")
         + "\nreturn CounterPanelController;")(createRequire(extensionPath), {});
     vscode.window.createWebviewPanel = () => ({
-        webview: { onDidReceiveMessage() {}, html: "" }, reveal() {},
+        webview: { onDidReceiveMessage() {}, postMessage: async () => true, html: "" }, reveal() {},
         dispose() {}, onDidDispose(cb) { callbacks.push(cb); },
     });
     const controller = Object.create(Controller.prototype);
@@ -226,6 +226,68 @@ test("switching selected processes cannot let delayed disposal clear the new pan
         assert.notEqual(controller.panel, current);
         assert.equal(controller.selectedTarget.managedEntrypointAssemblyName, "C");
     } finally { vscode.window.createWebviewPanel = originalCreate; }
+});
+test("Live Events startup is cancelled when its target changes during provider setup", async () => {
+    const extensionPath = path.join(__dirname, "../out/extension.js");
+    const Controller = new Function("require", "exports", fs.readFileSync(extensionPath, "utf8")
+        + "\nreturn CounterPanelController;")(createRequire(extensionPath), {});
+    const originalInput = vscode.window.showInputBox;
+    const originalWarning = vscode.window.showWarningMessage;
+    const controller = Object.create(Controller.prototype);
+    const originalTarget = { processId: 1 };
+    controller.disposed = false;
+    controller.eventsGeneration = 0;
+    controller.selectedTarget = originalTarget;
+    const messages = [];
+    controller.postEventsMessage = message => messages.push(message);
+    let connectCalls = 0;
+    controller.connectEventsChild = async () => { connectCalls++; throw new Error("must not connect"); };
+    let promptCount = 0;
+    vscode.window.showInputBox = async () => {
+        promptCount++;
+        if (promptCount === 2) {
+            controller.selectedTarget = { processId: 2 };
+            await controller.stopEvents();
+        }
+        return ["System.Runtime", "4", "0"][promptCount - 1];
+    };
+    vscode.window.showWarningMessage = async () => "Acknowledge and Start";
+    try {
+        await controller.startEventsCore();
+        assert.equal(promptCount, 2);
+        assert.equal(connectCalls, 0);
+        assert.equal(controller.eventsGeneration, 1);
+        assert.ok(messages.some(message => message.state === "stopped"));
+    } finally {
+        vscode.window.showInputBox = originalInput;
+        vscode.window.showWarningMessage = originalWarning;
+    }
+});
+test("disposing the Events panel clears batches that can no longer be acknowledged", () => {
+    const extensionPath = path.join(__dirname, "../out/extension.js");
+    const Controller = new Function("require", "exports", fs.readFileSync(extensionPath, "utf8")
+        + "\nreturn CounterPanelController;")(createRequire(extensionPath), {});
+    const { LiveEventDeliveryQueue } = require("../out/liveEvents.js");
+    const controller = Object.create(Controller.prototype);
+    const queue = new LiveEventDeliveryQueue();
+    queue.enqueue({
+        sessionId: "session-1", sequence: 1, timestamp: "2026-01-01T00:00:00Z",
+        receivedAt: "2026-01-01T00:00:00Z", provider: "System.Runtime", eventName: "Event",
+        eventId: 1, version: 0, level: "Informational", threadId: null, activityId: null,
+        relatedActivityId: null, payload: {}, metadataTruncated: false, payloadTruncated: false,
+        omittedPayloadFields: 0, omittedPayloadCharacters: 0, unsupportedPayloadValues: 0,
+    });
+    queue.takeBatch();
+    controller.eventsBatchTimer = setTimeout(() => {}, 60_000);
+    controller.eventsQueue = queue;
+    controller.eventsStreamSessionId = "session-1";
+    controller.eventsQuality = { coreQueueDropped: 0 };
+    controller.resetEventsDeliveryState();
+
+    assert.equal(controller.eventsQueue.retainedEventCount, 0);
+    assert.equal(controller.eventsQueue.hasInFlightBatch, false);
+    assert.equal(controller.eventsStreamSessionId, undefined);
+    assert.equal(controller.eventsQuality, undefined);
 });
 test("continuation pages preserve earlier captures and ordinary refresh replaces them", async () => {
     const original = h.runHistoryCli;

@@ -72,6 +72,88 @@ public sealed class CliStreamingProtocolKindsTests
     }
 
     [Fact]
+    public async Task Hello_AdvertisesEventSourceLiveKind()
+    {
+        var (frames, _) = await RunInProcessAsync(new { type = "hello", protocolVersion = 2 });
+
+        frames.Should().ContainSingle();
+        frames[0].RootElement.GetProperty("supportedLiveKinds").EnumerateArray()
+            .Select(item => item.GetString()).Should().Contain("event_source");
+    }
+
+    [Fact]
+    public async Task Start_EventSourceRejectsNonStringKeywordsAndCaseInsensitiveDuplicateProviders()
+    {
+        var (invalidKeywords, _) = await RunInProcessAsync(
+            new { type = "hello", protocolVersion = 2 },
+            new
+            {
+                type = "start",
+                requestId = "r1",
+                processId = 999_999,
+                kinds = new object[]
+                {
+                    new
+                    {
+                        kind = "event_source",
+                        providers = new[] { new { name = "Example.Provider", eventLevel = 5, keywords = -1 } },
+                    },
+                },
+            });
+
+        invalidKeywords[1].RootElement.GetProperty("code").GetString().Should().Be("invalid_start");
+        invalidKeywords[1].RootElement.GetProperty("message").GetString().Should().Contain("signed 64-bit integer");
+
+        var (duplicateProviders, _) = await RunInProcessAsync(
+            new { type = "hello", protocolVersion = 2 },
+            new
+            {
+                type = "start",
+                requestId = "r1",
+                processId = 999_999,
+                kinds = new object[]
+                {
+                    new
+                    {
+                        kind = "event_source",
+                        providers = new[]
+                        {
+                            new { name = "Example.Provider", eventLevel = 5, keywords = "-1" },
+                            new { name = "example.provider", eventLevel = 5, keywords = "0" },
+                        },
+                    },
+                },
+            });
+
+        duplicateProviders[1].RootElement.GetProperty("code").GetString().Should().Be("invalid_start");
+        duplicateProviders[1].RootElement.GetProperty("message").GetString().Should().Contain("unique");
+    }
+
+    [Fact]
+    public async Task Start_EventSourceRequiresAcknowledgementForNonAllowlistedProviders()
+    {
+        var (frames, _) = await RunInProcessAsync(
+            new { type = "hello", protocolVersion = 2 },
+            new
+            {
+                type = "start",
+                requestId = "r1",
+                processId = 999_999,
+                kinds = new object[]
+                {
+                    new
+                    {
+                        kind = "event_source",
+                        providers = new[] { new { name = "Example.PrivateProvider", eventLevel = 5, keywords = "-1" } },
+                    },
+                },
+            });
+
+        frames[1].RootElement.GetProperty("code").GetString().Should().Be("safety_rejected");
+        frames[1].RootElement.GetProperty("message").GetString().Should().Contain("event_source");
+    }
+
+    [Fact]
     public async Task Capture_WithUnsupportedKind_ReturnsUnsupportedCaptureKindError()
     {
         var (frames, _) = await RunInProcessAsync(

@@ -13,6 +13,7 @@ using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Db;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Dump;
+using DotnetDiagnostics.Core.EventSources;
 using DotnetDiagnostics.Core.Evidence;
 using DotnetDiagnostics.Core.Exceptions;
 using DotnetDiagnostics.Core.GatedCapture;
@@ -459,6 +460,71 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         completion.Status.Should().Be(DiagnosticSessionStatus.Stopped);
         completion.EndedAt.Should().BeOnOrAfter(completion.StartedAt);
         completion.Error.Should().BeNull();
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task LiveEventSourceSession_StreamsBoundedEventsBeforeStop()
+    {
+        EnsureSampleRunning();
+        var baseUrl = await EnsureListeningUrlAsync(TimeSpan.FromSeconds(30));
+
+        using var driverCancellation = new CancellationTokenSource();
+        using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
+        var driver = Task.CompletedTask;
+
+        try
+        {
+            await using var session = new EventPipeEventSourceSessionFactory().CreateSession(
+                Pid,
+                new EventSourceSessionOptions
+                {
+                    Providers = [new("Microsoft-Windows-DotNETRuntime", 5, -1)],
+                    ObservationCapacity = 64,
+                });
+            var observations = new List<EventSourceLiveObservation>();
+            var received = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var subscription = session.Attach<EventSourceLiveObservation>((observation, _) =>
+            {
+                observations.Add(observation);
+                received.TrySetResult();
+                return ValueTask.CompletedTask;
+            });
+
+            await session.StartAsync();
+            driver = Task.Run(async () =>
+            {
+                while (!driverCancellation.IsCancellationRequested)
+                {
+                    try { _ = await http.GetAsync("/render?count=2000", driverCancellation.Token); }
+                    catch (OperationCanceledException) { break; }
+                    catch (HttpRequestException) { }
+                }
+            }, driverCancellation.Token);
+            await received.Task.WaitAsync(TimeSpan.FromSeconds(20));
+            driverCancellation.Cancel();
+            await driver.WaitAsync(TimeSpan.FromSeconds(5));
+            var completion = await session.StopAsync().WaitAsync(TimeSpan.FromSeconds(10));
+
+            observations.Should().NotBeEmpty();
+            observations.Should().OnlyContain(observation =>
+                observation.Provider == "Microsoft-Windows-DotNETRuntime"
+                && observation.Provider.Length <= EventSourceSessionOptions.MaxProviderNameLength
+                && observation.EventName.Length <= 256
+                && observation.Payload.Count <= EventSourceSessionOptions.MaxPayloadFields
+                && observation.Payload.All(field => field.Key.Length <= EventSourceSessionOptions.MaxPayloadFieldNameLength
+                    && field.Value.Length <= EventSourceSessionOptions.MaxPayloadValueLength)
+                && observation.Payload.Sum(field => field.Key.Length + field.Value.Length)
+                    <= EventSourceSessionOptions.MaxPayloadCharacters);
+            observations.Select(observation => observation.Sequence)
+                .Should().BeInAscendingOrder();
+            completion.Status.Should().Be(DiagnosticSessionStatus.Stopped);
+            completion.Error.Should().BeNull();
+        }
+        finally
+        {
+            driverCancellation.Cancel();
+            await driver;
+        }
     }
 
     [Fact(Timeout = 60_000)]

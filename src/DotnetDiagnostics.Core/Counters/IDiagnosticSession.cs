@@ -9,6 +9,9 @@ public interface IDiagnosticSession : IAsyncDisposable
     /// <summary>Completes after the session stops and its queued events have been dispatched.</summary>
     Task<DiagnosticSessionCompletion> Completion { get; }
 
+    /// <summary>Total observations dropped by this session's bounded queue.</summary>
+    long DroppedObservations { get; }
+
     /// <summary>
     /// Attaches an asynchronous handler for one event type. Handlers must be attached before
     /// <see cref="StartAsync"/>. Matching handlers are invoked serially in attachment order.

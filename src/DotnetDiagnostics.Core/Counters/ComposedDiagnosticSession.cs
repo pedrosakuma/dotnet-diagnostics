@@ -16,6 +16,7 @@ public sealed class ComposedDiagnosticSession : IDiagnosticSession
     private readonly object _lifecycleLock = new();
     private readonly List<HandlerRegistration> _handlers = [];
     private readonly List<Func<CancellationToken, Action, Task<DiagnosticSessionCompletion?>>> _sources = [];
+    private readonly List<IDiagnosticSession> _childSessions = [];
     private readonly List<DiagnosticSessionCompletion> _sourceCompletions = [];
     private readonly TaskCompletionSource<DiagnosticSessionCompletion> _completion =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -30,7 +31,10 @@ public sealed class ComposedDiagnosticSession : IDiagnosticSession
     private bool _finished;
 
     /// <summary>Creates an empty session for captures targeting one process.</summary>
-    public ComposedDiagnosticSession(int processId, int eventCapacity = 256)
+    public ComposedDiagnosticSession(
+        int processId,
+        int eventCapacity = 256,
+        long eventRetainedBytesCapacity = long.MaxValue)
     {
         if (processId <= 0)
         {
@@ -44,8 +48,9 @@ public sealed class ComposedDiagnosticSession : IDiagnosticSession
                 $"Event capacity must be between 1 and {CounterSessionOptions.MaxAllowedObservationCapacity}.");
         }
 
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(eventRetainedBytesCapacity);
         ProcessId = processId;
-        _events = new DiagnosticSessionEventBuffer(eventCapacity);
+        _events = new DiagnosticSessionEventBuffer(eventCapacity, eventRetainedBytesCapacity);
     }
 
     /// <inheritdoc />
@@ -56,6 +61,9 @@ public sealed class ComposedDiagnosticSession : IDiagnosticSession
 
     /// <summary>Total events dropped because the bounded dispatch queue was full.</summary>
     public long DroppedEvents => _events.DroppedObservations;
+
+    /// <inheritdoc />
+    public long DroppedObservations => _events.DroppedObservations + _childSessions.Sum(session => session.DroppedObservations);
 
     /// <summary>
     /// Attaches an asynchronous handler for one event type. Handlers are invoked serially in
@@ -88,6 +96,7 @@ public sealed class ComposedDiagnosticSession : IDiagnosticSession
         lock (_lifecycleLock)
         {
             EnsureConfigurable();
+            _childSessions.Add(session);
             _sources.Add((cancellationToken, markStarted) =>
                 RunChildSessionAsync(session, markStarted, cancellationToken));
         }

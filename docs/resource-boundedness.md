@@ -52,6 +52,48 @@ most `topN` (1-100) rows per table, `MaxTextLength=2048` characters per text val
 These are presentation limits, not collector limits: retained totals do not establish
 exhaustive capture coverage. Results identify themselves as unsaved live-stream evidence.
 
+### EventPipe EventSource live events (#1201)
+
+The CLI `event_source` live kind is a continuous Core-owned EventPipe session over explicitly
+selected providers; it is separate from counters/GC sessions. Provider count is 1–8, provider names
+are at most 256 characters, the event level is 0–5, and keyword bitmasks travel as signed-64-bit
+decimal strings. The EventPipe circular buffer is 64 MiB.
+
+Projection is performed inside the EventPipe callback before enqueueing. One event retains at most
+32 payload fields, 128 characters per field name, 1,024 characters per value, 2,048 aggregate
+payload name/value characters, and 256 characters for each metadata string. Values are formatted
+only for supported primitive-like types; unsupported types get an explicit marker, and arbitrary
+`ToString()` or recursive formatting is never invoked. The serialized observation frame is capped
+at 16 KiB UTF-8. `metadataTruncated`, `payloadTruncated`, `omittedPayloadFields`,
+`omittedPayloadCharacters`, and `unsupportedPayloadValues` make projection omissions explicit.
+
+The Core event queue is capped at 256 observations and 4 MiB conservative retained bytes, enforced
+at insertion. Accounted size estimates use four bytes per retained string character plus per-event
+overhead and 128 bytes per payload field; this is an implementation budget, not a measurement of
+managed heap size or RSS. When `event_source` is composed with other live kinds, the shared
+dispatch queue has its own 4 MiB byte cap and a count cap of 256 observations. Their cumulative
+`coreQueueDropped` and `cliDispatchQueueDropped` counters are separate. The extension host holds at
+most 256 events / 1 MiB (accounted per event as twice serialized UTF-8 bytes plus 1 KiB object
+overhead), sends one acknowledged webview batch at a time (at most 64 events / 64 KiB), and limits
+bridge updates to 10 per second. A stalled webview therefore applies bounded backpressure and
+eventually causes counted host-queue drops rather than unbounded buffering.
+
+The webview retains at most 2,000 events / 8 MiB, mounts at most 100 table rows per page, searches
+at most 256 characters, and keeps at most one selected event. UI accounted event bytes use twice
+serialized UTF-8 bytes plus 1 KiB object overhead and bound the selected event together with the
+retained window; selection does not keep an evicted duplicate. Oldest entries are evicted first.
+Pause-following stops page jumps, not collection or bounded retention; Clear removes retained UI
+events but does not stop the source. The CLI reports EventPipe source loss as unavailable (`null`)
+while unknown and supplies the final count if TraceEvent reports one. Source loss, Core queue drops,
+CLI dispatch drops, and extension-host delivery drops are distinct layers, not additive estimates.
+Payload omissions are separate per-event projection facts.
+
+These are retention/protocol limits, not evidence that a specific machine can sustain a particular
+event rate, RSS, or interactive latency. TraceEvent allocation, the EventPipe circular buffer,
+runtime/provider CPU work, and VS Code rendering still have workload-dependent costs.
+TraceEvent decodes provider payload values before the callback can inspect them. Projection reads
+only the bounded field set but cannot cap that upstream per-event decoding allocation.
+
 ### Managed object and array drilldown
 
 ClrMD object reads retain at most 256 expanded fields with nested value-type depth 3.

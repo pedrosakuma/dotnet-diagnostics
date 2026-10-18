@@ -120,6 +120,8 @@ public static class DiagnosticCoreServiceRegistration
             serviceProvider.GetRequiredService<EventPipeGcCollector>());
         services.AddSingleton<IGcDatasCollector, EventPipeGcDatasCollector>();
         services.AddSingleton<EventPipeEventSourceCollector>();
+        services.AddSingleton<DotnetDiagnostics.Core.EventSources.IEventSourceSessionFactory,
+            DotnetDiagnostics.Core.EventSources.EventPipeEventSourceSessionFactory>();
         services.AddSingleton<IEventSourceCollector>(serviceProvider =>
             serviceProvider.GetRequiredService<EventPipeEventSourceCollector>());
         services.AddSingleton<IStreamingEventSourceCollector>(serviceProvider =>

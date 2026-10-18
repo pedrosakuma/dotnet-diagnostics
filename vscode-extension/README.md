@@ -1,11 +1,12 @@
 # .NET Diagnostics for VS Code
 
-Investigate .NET performance problems without leaving VS Code: watch runtime counters and GC
-pauses, find CPU hotspots, inspect heap and thread snapshots, and analyze existing dumps.
+Investigate .NET performance problems without leaving VS Code: watch runtime counters, GC pauses and
+EventPipe events, find CPU hotspots, inspect heap and thread snapshots, and analyze existing dumps.
 
 ## What you can do
 
-- **Watch a running app:** live counters and GC pauses in one panel.
+- **Watch a running app:** live counters and GC pauses in one panel, or start a separate
+  EventPipe/EventSource stream with bounded search and event details.
 - **Capture a problem:** CPU, heap, threads, exceptions, allocations, contention and more.
 - **Explore allocation pressure:** sampled, estimated-byte call trees and flame graphs with
   method/module navigation, plus allocation type/site tables. Not exact object/lifetime tracking.
