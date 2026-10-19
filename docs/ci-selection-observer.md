@@ -7,6 +7,10 @@ docs-only fast path is unchanged, and required check contexts, triggers, trust g
 NuGet handling are untouched. The goal is to gather data before a later, separately approved policy.
 This does not claim any CI acceleration.
 
+The [ten-run follow-up assessment](./ci-selection-assessment.md) retains
+observation-only mode: transitive test dependencies, shared-manifest precedence
+and activation-time evidence handling are not yet safe enough to enable skipping.
+
 ## Safety properties
 
 - Not a required check; no other job `needs` it; `continue-on-error: true`, so it can never fail CI.
