@@ -340,11 +340,11 @@ public class InvestigationMemoryTests
             .Which.Handle.Should().Be("counters-after");
 
         var diff = new SummaryComparer().Compare(before.Summary, after.Summary);
-        diff.Verdict.Should().Be("improvement");
+        diff.Verdict.Should().Be("incomparable", "thread metrics are absent from the counters-only side");
         diff.KeyMetricDeltas.Should().Contain(delta =>
-            delta.Name == QueueMetric && delta.Outcome == "improved");
+            delta.Name == QueueMetric && delta.Outcome == "down");
         diff.KeyMetricDeltas.Should().Contain(delta =>
-            delta.Name == ThroughputMetric && delta.Outcome == "improved");
+            delta.Name == ThroughputMetric && delta.Outcome == "up");
     }
 
     [Fact]
@@ -733,7 +733,7 @@ public class InvestigationMemoryTests
     }
 
     [Fact]
-    public void Compare_CumulativeMeterTotalRisesWhileRateFalls_UsesRateForVerdict()
+    public void Compare_CumulativeMeterTotalRisesWhileRateFalls_ReportsOnlyRateDelta()
     {
         CounterSnapshot Snapshot(double total, double rate) => MeterSnapshot(
         [
@@ -754,7 +754,7 @@ public class InvestigationMemoryTests
 
         var diff = new SummaryComparer().Compare(baseline, current);
 
-        diff.Verdict.Should().Be("regression_metrics");
+        diff.Verdict.Should().Be("not_assessed");
         diff.KeyMetricDeltas.Should().ContainSingle(delta =>
             delta.Name.EndsWith("|stat=last", StringComparison.Ordinal)
             && delta.BaselineValue == 100
@@ -765,8 +765,8 @@ public class InvestigationMemoryTests
             delta.Name.EndsWith("|stat=rate", StringComparison.Ordinal)
             && delta.BaselineValue == 20
             && delta.CurrentValue == 10
-            && delta.BetterDirection == "higher"
-            && delta.Outcome == "regressed");
+            && delta.BetterDirection == "neutral"
+            && delta.Outcome == "down");
         diff.Notes.Should().Contain(note =>
             note.Contains("retained in untrusted delta fields", StringComparison.Ordinal)
             && note.Contains("rate series", StringComparison.Ordinal));
@@ -774,8 +774,8 @@ public class InvestigationMemoryTests
         var unchangedRate = NewExporter().Export(new ExportRequest(
             Evidence: [new InvestigationEvidenceInput("same-rate", "counters", Snapshot(300, 20))])).Summary;
         var unchangedRateDiff = new SummaryComparer().Compare(baseline, unchangedRate);
-        unchangedRateDiff.Verdict.Should().Be("no_regression",
-            "the cumulative last value is evidence-only and must not drive the verdict");
+        unchangedRateDiff.Verdict.Should().Be("not_assessed",
+            "the cumulative last value is evidence-only and must not become a numeric delta");
         unchangedRateDiff.KeyMetricDeltas.Should().ContainSingle(delta =>
             delta.Name.EndsWith("|stat=last", StringComparison.Ordinal)
             && delta.Outcome == "incomparable");
@@ -805,12 +805,12 @@ public class InvestigationMemoryTests
 
         var diff = new SummaryComparer().Compare(baseline, current);
 
-        diff.Verdict.Should().Be("no_regression");
+        diff.Verdict.Should().Be("not_assessed");
         diff.KeyMetricDeltas.Should().ContainSingle(delta =>
             delta.Name.EndsWith("|stat=rate", StringComparison.Ordinal)
             && delta.BaselineValue == 100
             && delta.CurrentValue == 100
-            && delta.Outcome == "unchanged");
+            && delta.Outcome == "flat");
         diff.KeyMetricDeltas.Should().ContainSingle(delta =>
             delta.Name.EndsWith("|stat=increment", StringComparison.Ordinal)
             && delta.BaselineValue == 100
@@ -819,7 +819,7 @@ public class InvestigationMemoryTests
     }
 
     [Fact]
-    public void Compare_SumEventCounterTrueRateDrop_IsRegression()
+    public void Compare_SumEventCounterTrueRateDrop_ReportsDown()
     {
         CounterSnapshot Snapshot(double increment, double intervalSeconds) => CounterSnapshot(
         [
@@ -842,13 +842,13 @@ public class InvestigationMemoryTests
 
         var diff = new SummaryComparer().Compare(baseline, current);
 
-        diff.Verdict.Should().Be("regression_metrics");
+        diff.Verdict.Should().Be("not_assessed");
         diff.KeyMetricDeltas.Should().ContainSingle(delta =>
             delta.Name.EndsWith("|stat=rate", StringComparison.Ordinal)
             && delta.BaselineValue == 100
             && delta.CurrentValue == 50
-            && delta.BetterDirection == "higher"
-            && delta.Outcome == "regressed");
+            && delta.BetterDirection == "neutral"
+            && delta.Outcome == "down");
     }
 
     [Fact]
@@ -887,18 +887,18 @@ public class InvestigationMemoryTests
 
         var diff = new SummaryComparer().Compare(perSecond, perMinute);
 
-        diff.Verdict.Should().Be("no_regression");
+        diff.Verdict.Should().Be("not_assessed");
         var rate = diff.KeyMetricDeltas.Should().ContainSingle(delta =>
             delta.Name.EndsWith("|stat=rate", StringComparison.Ordinal)).Which;
         rate.BaselineValue.Should().Be(100);
         rate.CurrentValue.Should().Be(100);
-        rate.Outcome.Should().Be("unchanged");
+        rate.Outcome.Should().Be("flat");
         perSecond.Findings.KeyMetricUnits![rate.Name].Should().Be("requests/s");
         perMinute.Findings.KeyMetricUnits![rate.Name].Should().Be("requests/s");
     }
 
     [Fact]
-    public void Compare_SumEventCounterPerMinuteScaleTrueRateDrop_IsRegression()
+    public void Compare_SumEventCounterPerMinuteScaleTrueRateDrop_ReportsDown()
     {
         CounterSnapshot Snapshot(double displayRate, TimeSpan displayScale) => CounterSnapshot(
         [
@@ -933,12 +933,12 @@ public class InvestigationMemoryTests
 
         var diff = new SummaryComparer().Compare(baseline, current);
 
-        diff.Verdict.Should().Be("regression_metrics");
+        diff.Verdict.Should().Be("not_assessed");
         diff.KeyMetricDeltas.Should().ContainSingle(delta =>
             delta.Name.EndsWith("|stat=rate", StringComparison.Ordinal)
             && delta.BaselineValue == 100
             && delta.CurrentValue == 50
-            && delta.Outcome == "regressed");
+            && delta.Outcome == "down");
     }
 
     [Fact]
@@ -974,7 +974,7 @@ public class InvestigationMemoryTests
     }
 
     [Fact]
-    public void Compare_EquivalentRateUnits_NormalizesBeforeVerdict()
+    public void Compare_EquivalentRateUnits_NormalizesBeforeDelta()
     {
         var artifact = ArtifactFor(("App.dll", "App.Work", 10, 10));
         var baseline = NewExporter().Export(new ExportRequest("before", artifact)).Summary with
@@ -1004,9 +1004,9 @@ public class InvestigationMemoryTests
 
         var diff = new SummaryComparer().Compare(baseline, current);
 
-        diff.Verdict.Should().Be("no_regression");
+        diff.Verdict.Should().Be("not_assessed");
         diff.KeyMetricDeltas.Should().ContainSingle()
-            .Which.Outcome.Should().Be("unchanged");
+            .Which.Outcome.Should().Be("flat");
         diff.Notes.Should().Contain(note =>
             note.Contains("normalized to a per-second basis", StringComparison.Ordinal)
             && !note.Contains("requests", StringComparison.Ordinal));
@@ -1053,7 +1053,7 @@ public class InvestigationMemoryTests
     }
 
     [Fact]
-    public void Compare_HttpServerRequestDurationP95_DrivesRegressionAndImprovement()
+    public void Compare_HttpServerRequestDurationP95_ReportsNumericDirectionOnly()
     {
         CounterSnapshot Snapshot(double p95, string unit) => MeterSnapshot(
         [
@@ -1075,19 +1075,19 @@ public class InvestigationMemoryTests
         var regression = new SummaryComparer().Compare(fast, slow);
         var improvement = new SummaryComparer().Compare(slow, fast);
 
-        regression.Verdict.Should().Be("regression_metrics");
+        regression.Verdict.Should().Be("not_assessed");
         regression.KeyMetricDeltas.Should().ContainSingle(delta =>
             delta.Name.Contains("instrument=http.server.request.duration", StringComparison.Ordinal)
             && delta.Name.EndsWith("|stat=p95", StringComparison.Ordinal)
-            && delta.BetterDirection == "lower"
-            && delta.Outcome == "regressed");
+            && delta.BetterDirection == "neutral"
+            && delta.Outcome == "up");
         regression.Notes.Should().Contain(note =>
             note.Contains("normalized to seconds", StringComparison.Ordinal)
             && !note.Contains("ms", StringComparison.Ordinal));
-        improvement.Verdict.Should().Be("improvement");
+        improvement.Verdict.Should().Be("not_assessed");
         improvement.KeyMetricDeltas.Should().ContainSingle(delta =>
-            delta.BetterDirection == "lower"
-            && delta.Outcome == "improved");
+            delta.BetterDirection == "neutral"
+            && delta.Outcome == "down");
     }
 
     [Fact]
@@ -1139,7 +1139,7 @@ public class InvestigationMemoryTests
     }
 
     [Fact]
-    public void Compare_NoChange_ReturnsNoRegressionVerdict()
+    public void Compare_NoChange_DoesNotAssessPerformance()
     {
         var artifact = MeasuredArtifactFor(("M.dll", "M.A", 100, 80));
         var exporter = NewExporter();
@@ -1148,14 +1148,14 @@ public class InvestigationMemoryTests
 
         var diff = new SummaryComparer().Compare(s1, s2);
 
-        diff.Verdict.Should().Be("no_regression");
+        diff.Verdict.Should().Be("not_assessed");
         diff.NewHotspots.Should().BeEmpty();
         diff.RemovedHotspots.Should().BeEmpty();
         diff.ChangedHotspots.Should().BeEmpty();
     }
 
     [Fact]
-    public void Compare_NewHotspot_FlagsRegression()
+    public void Compare_NewHotspot_DoesNotAssessPerformance()
     {
         var exporter = NewExporter();
         var baseline = exporter.Export(new ExportRequest("h", MeasuredArtifactFor(("M.dll", "M.A", 100, 80)))).Summary;
@@ -1165,13 +1165,13 @@ public class InvestigationMemoryTests
 
         var diff = new SummaryComparer().Compare(baseline, current);
 
-        diff.Verdict.Should().Be("regression_new_hotspot");
+        diff.Verdict.Should().Be("not_assessed");
         diff.NewHotspots.Should().ContainSingle()
             .Which.Symbol.MethodFullName.Should().Be("M.NewlyHot");
     }
 
     [Fact]
-    public void Compare_RemovedHotspotOnly_IsImprovement()
+    public void Compare_RemovedHotspotOnly_DoesNotAssessPerformance()
     {
         var exporter = NewExporter();
         var baseline = exporter.Export(new ExportRequest("h", MeasuredArtifactFor(
@@ -1181,7 +1181,7 @@ public class InvestigationMemoryTests
 
         var diff = new SummaryComparer().Compare(baseline, current);
 
-        diff.Verdict.Should().Be("improvement");
+        diff.Verdict.Should().Be("not_assessed");
         diff.RemovedHotspots.Should().ContainSingle()
             .Which.Symbol.MethodFullName.Should().Be("M.GoneSoon");
     }
@@ -1231,7 +1231,7 @@ public class InvestigationMemoryTests
     }
 
     [Fact]
-    public void Compare_RemovedBlockingHotspotAndImprovedSymptoms_DoesNotRegressForNewRunningLeader()
+    public void Compare_LegacyBlockingHotspots_RetainsMetricObservationsWithoutCpuJudgment()
     {
         var exporter = NewExporter();
         var baseline = exporter.Export(new ExportRequest("before", ClassifiedArtifactFor(
@@ -1271,15 +1271,22 @@ public class InvestigationMemoryTests
 
         var diff = new SummaryComparer().Compare(baseline, current);
 
-        diff.Verdict.Should().Be("improvement");
-        diff.Verdict.Should().NotBe("regression_new_hotspot");
+        diff.Verdict.Should().Be("incomparable", "scheduler splits do not establish the missing CPU evidence kind");
         diff.RemovedHotspots.Should().Contain(h =>
             h.Symbol.MethodFullName.EndsWith(".Wait", StringComparison.Ordinal)
             && h.BaselineSelfSamples == new SelfSampleBreakdown(0, 515));
         diff.NewHotspots.Should().Contain(h =>
             h.Symbol.MethodFullName.EndsWith(".EventLoop", StringComparison.Ordinal)
             && h.CurrentSelfSamples == new SelfSampleBreakdown(300, 0));
-        diff.KeyMetricDeltas.Should().OnlyContain(delta => delta.Outcome == "improved");
+        diff.KeyMetricDeltas.Should().Contain(delta =>
+            delta.Name == "threadpool-queue-length" && delta.Outcome == "down" && delta.DeltaAbs == -236);
+        diff.KeyMetricDeltas.Should().Contain(delta =>
+            delta.Name == "threadpool-thread-count" && delta.Outcome == "down" && delta.DeltaAbs == -119);
+        diff.KeyMetricDeltas.Should().Contain(delta =>
+            delta.Name == "requests-completed" && delta.Outcome == "up" && delta.DeltaAbs == 50);
+        diff.KeyMetricDeltas.Should().Contain(delta =>
+            delta.Name == "request-throughput" && delta.Outcome == "up" && delta.DeltaAbs == 16.45);
+        diff.KeyMetricDeltas.Should().OnlyContain(delta => delta.BetterDirection == "neutral");
     }
 
     [Fact]
@@ -1295,7 +1302,7 @@ public class InvestigationMemoryTests
     }
 
     [Fact]
-    public void Compare_ConflictingComparableSymptoms_IsMixed()
+    public void Compare_MultipleActivityDrops_DoesNotJudgeBenefit()
     {
         var exporter = NewExporter();
         var artifact = ClassifiedArtifactFor(100, ("M.dll", "M.Run", 50, 50, 50, 0));
@@ -1326,9 +1333,8 @@ public class InvestigationMemoryTests
 
         var diff = new SummaryComparer().Compare(baseline, current);
 
-        diff.Verdict.Should().Be("mixed");
-        diff.KeyMetricDeltas.Should().Contain(delta => delta.Outcome == "improved");
-        diff.KeyMetricDeltas.Should().Contain(delta => delta.Outcome == "regressed");
+        diff.Verdict.Should().Be("incomparable", "legacy CPU semantics remain unknown despite comparable metrics");
+        diff.KeyMetricDeltas.Should().OnlyContain(delta => delta.Outcome == "down");
     }
 
     [Fact]
@@ -1397,13 +1403,13 @@ public class InvestigationMemoryTests
 
         var diff = new SummaryComparer().Compare(baseline, current);
 
-        diff.Verdict.Should().Be("improvement");
+        diff.Verdict.Should().Be("incomparable", "legacy CPU semantics remain unknown despite comparable metrics");
         diff.KeyMetricDeltas.Should().ContainSingle()
             .Which.Should().Match<KeyMetricDelta>(delta =>
                 delta.Name == "ThreadPool Queue Length"
                 && delta.BaselineValue == 236
                 && delta.CurrentValue == 0
-                && delta.Outcome == "improved");
+                && delta.Outcome == "down");
         diff.Notes.Should().NotContain(note => note.Contains("absent", StringComparison.Ordinal));
     }
 
@@ -1438,9 +1444,11 @@ public class InvestigationMemoryTests
 
         var diff = new SummaryComparer().Compare(baseline, current);
 
-        diff.Verdict.Should().Be("improvement");
+        diff.Verdict.Should().Be("incomparable", "legacy CPU semantics remain unknown despite comparable metrics");
         diff.KeyMetricDeltas.Should().ContainSingle()
             .Which.BaselineValue.Should().Be(100);
+        diff.KeyMetricDeltas.Single().Outcome.Should().Be("down");
+        diff.KeyMetricDeltas.Single().DeltaAbs.Should().Be(-50);
         diff.Notes.Should().ContainSingle(note =>
             note.Contains("ordinal-first untrusted label", StringComparison.Ordinal)
             && !note.Contains("ThreadPool Queue Length", StringComparison.Ordinal));
@@ -1457,7 +1465,7 @@ public class InvestigationMemoryTests
 
         var diff = new SummaryComparer().Compare(baseline, current);
 
-        diff.Verdict.Should().Be("no_regression_after_deploy");
+        diff.Verdict.Should().Be("not_assessed");
         diff.Provenance.ImageChanged.Should().BeTrue();
         diff.Provenance.Summary.Should().NotContain("v1").And.NotContain("v2");
         diff.Provenance.BaselineImage.Should().Be("ghcr.io/me/app:v1");

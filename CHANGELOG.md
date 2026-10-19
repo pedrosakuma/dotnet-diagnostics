@@ -4,6 +4,13 @@
 
 ### Changed
 
+- **Behavior change:** `InvestigationSummary` comparison now reports objective deltas
+  by default, with no legacy option. Comparable results use `not_assessed` rather
+  than performance verdicts; key metrics use `up`/`down`/`flat` and neutral direction,
+  with additive signed `DeltaAbs`/`DeltaUnit` fields. Existing v1 summaries remain
+  readable, but consumers of old verdict/outcome values must migrate. Structural
+  incompatibility and EventPipe limitations remain explicit. Unmatched hotspot
+  deltas are null because retained top-list absence does not establish zero (#1192).
 - Scenario ICU coverage recognizes captured Windows image paths independently of
   the replay host OS, preserving the captured identity and exact denominators (#1203).
 - Batch GC evidence coverage now checks exact parity with the observed GC artifact

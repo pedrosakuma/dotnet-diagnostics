@@ -34,6 +34,20 @@ part of both surfaces.
 
 ## Reproduce
 
+### Objective summary comparison (2026-10-19, #1192)
+
+The real HTTP budget test measures **283,845 bytes** for the maximal 17-tool
+catalog and **250,677 bytes** for the default 13-tool subset on Linux
+(SDK 10.0.401, runtime 10.0.12). Both are **38 bytes** above the October 18
+comparison follow-up below, from the revised `compare_to_baseline` description.
+The **285,000-byte ceiling is unchanged**, leaving **1,155 bytes** of headroom.
+
+The nullable `KeyMetricDelta.DeltaAbs`/`DeltaUnit` result properties do not expand
+this particular catalog: `compare_to_baseline` returns an unconstrained `data`
+schema. This is an observed result for this path, not a general rule about result
+properties or shared typed output models. No fields, safety metadata or tool
+registrations were removed. These are wire bytes, not measured model tokens.
+
 ### Comparison follow-up and catalog reduction (2026-10-18, #1192)
 
 The real HTTP budget test measures **283,807 bytes** for the maximal 17-tool
