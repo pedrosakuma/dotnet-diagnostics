@@ -67,19 +67,43 @@ export async function openShareable(value: unknown, format: "json" | "csv"): Pro
 
 export class ResultExporter {
     private current?: unknown;
+    private currentCaptureKind?: string;
+    private cpuCapture?: unknown;
     private readonly navigation = new Map<string, unknown>();
     private selectedNavigation?: string;
     private activeHistory?: Set<string>;
-    public set(value: unknown): void { this.current = value; }
-    public clear(): void { this.current = undefined; this.navigation.clear(); this.selectedNavigation = undefined; this.activeHistory = undefined; }
+    public set(value: unknown): void { this.current = value; this.currentCaptureKind = undefined; }
+    public clear(): void {
+        this.set(undefined);
+        this.cpuCapture = undefined;
+        this.navigation.clear();
+        this.selectedNavigation = undefined;
+        this.activeHistory = undefined;
+    }
     public observe(message: object): void {
         if (!record(message)) return;
         if (message.type === "capture") {
-            this.clear();
-            this.set(message.result ?? message.summary);
+            this.navigation.clear();
+            this.selectedNavigation = undefined;
+            this.activeHistory = undefined;
+            const value = message.result ?? message.summary;
+            const kind = typeof message.kind === "string" ? message.kind : undefined;
+            if (kind === "cpu") this.cpuCapture = value;
+            this.current = value;
+            this.currentCaptureKind = kind;
+        } else if (message.type === "captureStatus" && message.kind === "cpu"
+            && ["starting", "running"].includes(String(message.state))) {
+            this.cpuCapture = undefined;
+            if (this.currentCaptureKind === "cpu") {
+                this.current = undefined;
+                this.currentCaptureKind = undefined;
+            }
         } else if (message.type === "navigation") {
             if (message.sensitiveValues === true) {
-                if (this.selectedNavigation === this.navigationKey(message)) this.current = undefined;
+                if (this.selectedNavigation === this.navigationKey(message)) {
+                    this.current = undefined;
+                    this.currentCaptureKind = undefined;
+                }
                 return;
             }
             const key = this.navigationKey(message);
@@ -109,12 +133,21 @@ export class ResultExporter {
             this.selectedNavigation = this.navigationKey(message);
             this.current = message.ready === true && this.selectedNavigation
                 ? this.navigation.get(this.selectedNavigation) : undefined;
+            this.currentCaptureKind = undefined;
             return true;
         }
         if (!record(message) || message.type !== "exportResult" || !["json", "csv"].includes(String(message.format))) return false;
         try {
-            if (this.current === undefined) throw new Error("Collect a result or select a saved view before exporting.");
-            await openShareable(this.current, message.format === "json" ? "json" : "csv");
+            const scoped = Object.prototype.hasOwnProperty.call(message, "captureKind");
+            const value = scoped
+                ? message.captureKind === "cpu" ? this.cpuCapture : undefined
+                : this.current;
+            if (value === undefined) {
+                throw new Error(scoped
+                    ? "The displayed capture is no longer available for export. Capture it again."
+                    : "Collect a result or select a saved view before exporting.");
+            }
+            await openShareable(value, message.format === "json" ? "json" : "csv");
         } catch (error) {
             await vscode.window.showErrorMessage(`Result export failed: ${error instanceof Error ? error.message : String(error)}`);
         }
@@ -126,6 +159,9 @@ export const RESULT_EXPORT_BUTTONS = `<div class="controls"><button id="exportJs
 <button id="exportCsv">Export redacted CSV</button></div>
 <p>Exports contain measurements only; application text and diagnostic interpretations are excluded. Save the opened document locally.</p>`;
 export const RESULT_EXPORT_SCRIPT = `for (const format of ["json", "csv"]) {
-  document.getElementById(format === "json" ? "exportJson" : "exportCsv").addEventListener("click",
-    () => vscode.postMessage({ type: "exportResult", format }));
+  const button = document.getElementById(format === "json" ? "exportJson" : "exportCsv");
+  button.addEventListener("click", () => {
+    const captureKind = button.closest("[data-export-kind]")?.dataset.exportKind;
+    vscode.postMessage({ type: "exportResult", format, ...(captureKind ? { captureKind } : {}) });
+  });
 }`;

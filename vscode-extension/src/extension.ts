@@ -242,6 +242,7 @@ class CounterPanelController implements vscode.Disposable {
     private readonly liveReadConsent = new LiveReadConsent(state => this.postMessage(state));
     private readonly addressNavigation = new AddressNavigationController(this.createAddressNavigationHost());
     private connectChildTask?: Promise<StreamChild>;
+    private lastRecoveryNotice?: { message: string; at: number };
 
     public constructor(
         private readonly output: vscode.OutputChannel,
@@ -395,7 +396,6 @@ class CounterPanelController implements vscode.Disposable {
             this.postEventsMessage({ type: "eventsStatus", state: "error", message });
             if (this.eventsChild) await this.closeChild(this.eventsChild);
             this.eventsChild = undefined;
-            void vscode.window.showErrorMessage(message);
         } finally {
             if (this.eventsChild) this.eventsChild.startInFlight = false;
         }
@@ -1469,9 +1469,18 @@ class CounterPanelController implements vscode.Disposable {
             this.postMessage({ type: "status", state: "running", message: "Live counters and GC pauses are streaming." });
         } catch (error) {
             if (!session.startupErrorReported) {
-                this.postMessage({ type: "status", state: "error", message: withRuntimeGuidance(errorMessage(error)) });
+                const message = errorMessage(error);
+                const cancelled = isCancellationMessage(message);
+                this.postMessage({
+                    type: "status",
+                    state: cancelled ? "stopped" : "error",
+                    message: cancelled ? "Live counters start cancelled." : withRuntimeGuidance(message),
+                });
             }
-            this.output.appendLine(`Live counter startup failed: ${errorMessage(error)}`);
+            const message = errorMessage(error);
+            this.output.appendLine(isCancellationMessage(message)
+                ? "Live counter startup was cancelled."
+                : `Live counter startup failed: ${message}`);
             await this.closeChild(session);
         } finally {
             session.startInFlight = false;
@@ -1947,8 +1956,15 @@ class CounterPanelController implements vscode.Disposable {
     }
 
     private postMessage(message: object): void {
+        if (isRecord(message) && message.state === "error" && typeof message.message === "string"
+            && isCancellationMessage(message.message)) {
+            message = { ...message, state: "stopped" };
+        }
         this.exporter.observe(message);
         void this.panel?.webview.postMessage(message);
+        if (isRecord(message) && message.state === "error" && typeof message.message === "string") {
+            this.offerRecoveryActions(message.message, message.type === "captureStatus");
+        }
     }
 
     private async exportCpu(format: "summary" | "trace"): Promise<void> {
@@ -2105,7 +2121,36 @@ class CounterPanelController implements vscode.Disposable {
     }
 
     private postEventsMessage(message: object): void {
+        if (isRecord(message) && message.state === "error" && typeof message.message === "string"
+            && isCancellationMessage(message.message)) {
+            message = { ...message, state: "stopped" };
+        }
         void this.panel?.webview.postMessage(message);
+        if (isRecord(message) && message.state === "error" && typeof message.message === "string") {
+            this.offerRecoveryActions(message.message, true);
+        }
+    }
+
+    private offerRecoveryActions(message: string, captureFailure: boolean): void {
+        if (isCancellationMessage(message)) return;
+        const checkEnvironment = /protocol|permission|denied|ptrace|access denied|diagnostic (?:ipc|socket)/i.test(message)
+            || /ENOENT|hostfxr|framework.*not found|runtime.*not found|dotnet-diagnostics-cli.*not found/i.test(message);
+        const actions = [
+            ...(checkEnvironment ? ["Check Environment"] : []),
+            ...((captureFailure || checkEnvironment) && !/wait for the current/i.test(message)
+                ? ["Show Output"] : []),
+        ];
+        if (actions.length === 0) return;
+        const now = Date.now();
+        if (this.lastRecoveryNotice?.message === message && now - this.lastRecoveryNotice.at < 2_000) return;
+        this.lastRecoveryNotice = { message, at: now };
+        void vscode.window.showErrorMessage(message, ...actions).then(action => {
+            if (action === "Check Environment") {
+                void vscode.commands.executeCommand("dotnetDiagnostics.checkEnvironment");
+            } else if (action === "Show Output") {
+                this.output.show(true);
+            }
+        });
     }
 
     private isEventsStartCurrent(generation: number): boolean {
@@ -2973,7 +3018,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     <h2>.NET Diagnostics</h2>
     <div>${escapeHtml(label)}</div>
   </header>
-  <div id="status" role="status">Connecting to CLI…</div>
+  <div id="status" role="status">Live counters are ready. Select Start to begin collection; other captures run only when requested.</div>
   <nav class="result-tabs" role="tablist" aria-label="Diagnostic results">
     <button id="resultTabLive" role="tab" aria-selected="true" aria-controls="resultLive">Live</button>
     <button id="resultTabCpu" role="tab" aria-selected="false" aria-controls="resultCpu">CPU</button>
@@ -3002,7 +3047,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       </table>
     </section>
   </section>
-  <section id="resultCpu" class="result-tab-panel" role="tabpanel" aria-labelledby="resultTabCpu" hidden>
+  <section id="resultCpu" class="result-tab-panel" role="tabpanel" aria-labelledby="resultTabCpu" data-export-kind="cpu" hidden>
     <div class="panel-actions">
       <button id="captureCpu" type="button">Capture CPU sample</button>
       <details class="cpu-export-actions">
@@ -3179,33 +3224,33 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     const cpuProfileState = { mode: 'tree', search: '', focus: [], selected: [] };
     let allocationProfileResult;
     const allocationProfileState = { mode: 'tree', search: '', focus: [], selected: [] };
-    const resultTabNames = ['live', 'events', 'cpu', 'allocation', 'exceptions', 'diagnostics', 'heap', 'threads'];
-    function selectResultTab(name) {
-      for (const tabName of resultTabNames) {
-        const panel = document.getElementById('result' + tabName[0].toUpperCase() + tabName.slice(1));
-        const button = document.getElementById('resultTab' + tabName[0].toUpperCase() + tabName.slice(1));
-        if (!panel || !button) continue;
-        const active = tabName === name;
+    const resultTabs = Array.from(document.querySelectorAll('.result-tabs [role="tab"]'));
+    function selectResultTab(selected) {
+      const selectedTab = typeof selected === 'string'
+        ? resultTabs.find(button => button.id === 'resultTab' + selected[0].toUpperCase() + selected.slice(1))
+        : selected;
+      for (const button of resultTabs) {
+        const panel = document.getElementById(button.getAttribute('aria-controls'));
+        if (!panel) continue;
+        const active = button === selectedTab;
         panel.hidden = !active;
         button.setAttribute('aria-selected', String(active));
         button.tabIndex = active ? 0 : -1;
       }
     }
-    selectResultTab('live');
-    for (const tabName of resultTabNames) {
-      const tab = document.getElementById('resultTab' + tabName[0].toUpperCase() + tabName.slice(1));
-      tab.addEventListener('click', () => selectResultTab(tabName));
+    selectResultTab(resultTabs[0]);
+    for (const [index, tab] of resultTabs.entries()) {
+      tab.addEventListener('click', () => selectResultTab(tab));
       tab.addEventListener('keydown', event => {
-        const current = resultTabNames.indexOf(tabName);
-        const next = event.key === 'ArrowRight' ? (current + 1) % resultTabNames.length
-          : event.key === 'ArrowLeft' ? (current + resultTabNames.length - 1) % resultTabNames.length
+        const next = event.key === 'ArrowRight' ? (index + 1) % resultTabs.length
+          : event.key === 'ArrowLeft' ? (index + resultTabs.length - 1) % resultTabs.length
           : event.key === 'Home' ? 0
-          : event.key === 'End' ? resultTabNames.length - 1 : -1;
+          : event.key === 'End' ? resultTabs.length - 1 : -1;
         if (next < 0) return;
         event.preventDefault();
-        const nextName = resultTabNames[next];
-        selectResultTab(nextName);
-        document.getElementById('resultTab' + nextName[0].toUpperCase() + nextName.slice(1)).focus();
+        const nextTab = resultTabs[next];
+        selectResultTab(nextTab);
+        nextTab.focus();
       });
     }
     const eventsStatusElement = document.getElementById('eventsStatus');
@@ -3994,7 +4039,8 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           cpuQueryStatus.textContent = '';
         }
       } else if (message.type === 'status') {
-        statusElement.textContent = message.message || message.state;
+        const liveStatus = message.message || message.state;
+        statusElement.textContent = liveStatus.startsWith('Live counters') ? liveStatus : 'Live counters: ' + liveStatus;
         errorElement.textContent = message.state === 'error' ? (message.message || '') : '';
         updateButtons(message.state === 'running' || message.state === 'starting' || message.state === 'stopping');
       } else if (message.type === 'observation') {
@@ -4113,8 +4159,8 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           seriesLimitReached ? 'additional counter series omitted by chart limit' : '',
         ].filter(Boolean).join(' · ');
         statusElement.textContent = message.status === 'targetExited'
-          ? 'Target process exited.'
-          : message.status === 'failed' ? 'Capture failed.' : 'Capture stopped.';
+          ? 'Live counters stopped: target process exited.'
+          : message.status === 'failed' ? 'Live counters failed.' : 'Live counters stopped.';
         if (typeof message.error === 'string' && message.error.length > 0) errorElement.textContent = message.error;
       }
     });
@@ -4477,6 +4523,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function errorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
+}
+
+function isCancellationMessage(message: string): boolean {
+    return /\bcancell?(?:ed|ation)\b/i.test(message);
 }
 
 /**

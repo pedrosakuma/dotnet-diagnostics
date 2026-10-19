@@ -179,9 +179,9 @@ test("live panel groups results by capture tab and wires CPU drilldown", () => {
         assert.match(html, new RegExp(`role="tab"[^>]*>${label}<`));
         assert.match(html, new RegExp(`role="tabpanel" aria-labelledby="resultTab${id}"`));
     }
-    assert.match(html, /<section id="resultCpu"[\s\S]*?<button id="captureCpu" type="button">/);
+    assert.match(html, /<section id="resultCpu"[^>]*data-export-kind="cpu"[\s\S]*?<button id="captureCpu" type="button">/);
     assert.match(html, /<section id="resultHeap"[\s\S]*?<button id="captureHeap" type="button">/);
-    assert.match(script, /function selectResultTab\(name\)/);
+    assert.match(script, /function selectResultTab\(selected\)/);
     assert.match(script, /event\.key === 'ArrowRight'/);
     assert.match(script, /type: 'queryCpu', view: button\.getAttribute\('data-cpu-view'\)/);
     assert.match(script, /type: queryType, view: 'caller-callee', rootMethodFilter: action\(item\)/);
@@ -1017,9 +1017,15 @@ test("live time selection filters only retained observations and GC receipt time
     let redraws = 0;
     const nav = install(canvas, () => points, gcRows, () => redraws++);
     const [start, end] = root.querySelectorAll("input");
+    assert.match(root.textContent, /Start of selected receipt time/);
+    assert.match(root.textContent, /End of selected receipt time/);
+    assert.match(start.attributes["aria-valuetext"], /0% of retained receipt time/);
+    assert.match(end.attributes["aria-valuetext"], /100% of retained receipt time/);
     start.value = "25"; end.value = "75"; start.listeners.input();
     assert.deepEqual(nav.filter(points).map(point => point.receivedAtMs), [100, 200]);
     assert.ok(gcRows.every(row => row.element.hidden));
+    assert.match(root.textContent, /Selected receipt-time bounds: 1970-01-01T00:00:00\.075Z to 1970-01-01T00:00:00\.225Z/);
+    assert.match(start.attributes["aria-valuetext"], /selected start 1970-01-01T00:00:00\.075Z/);
     canvas.listeners.keydown({ key: "Home", preventDefault() {} });
     assert.match(root.textContent, /Observed value: 10 \| target timestamp: target-100/);
     points = [{ receivedAtMs: 1000, timestamp: "later", value: 123 }];
@@ -1028,6 +1034,7 @@ test("live time selection filters only retained observations and GC receipt time
     assert.equal(nav.filter(points).length, 0, "fixed selections must not silently follow incoming data");
     click(root, "Follow live / reset zoom");
     assert.equal(nav.filter(points).length, 1);
+    assert.match(root.textContent, /Following live.*Selected receipt-time bounds: 1970-01-01T00:00:01\.000Z to 1970-01-01T00:00:01\.000Z/);
     assert.ok(gcRows.every(row => !row.element.hidden));
     assert.equal(redraws, 2);
 });
