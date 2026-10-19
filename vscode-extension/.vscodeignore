@@ -10,4 +10,5 @@ scripts/**
 .media-work/**
 media/**
 !media/icon.png
+!media/walkthrough/*.md
 .gitignore

@@ -5,6 +5,8 @@ versioned independently from the CLI and the .NET packages.
 
 ## Unreleased
 
+- Include the Getting Started walkthrough Markdown in the VSIX so installed extensions can render all three steps.
+
 ## 0.3.1
 
 - Fix the Live counter chart staying blank when the panel was laid out hidden or at zero size; the chart now
