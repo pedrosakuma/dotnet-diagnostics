@@ -154,22 +154,62 @@ public sealed class EventSourceSessionTests
 
         var buffer = new DiagnosticSessionEventBuffer(capacity, EventSourceSessionOptions.MaxPendingRetainedBytes);
         var template = CreateBoundedObservation();
+        var projected = 0;
         for (var index = 1; index <= 100_000; index++)
         {
-            buffer.TryPublish(sequence => template.WithSequence(sequence)).Should().Be(index <= capacity);
+            buffer.TryPublish(sequence =>
+            {
+                projected++;
+                return template.WithSequence(sequence);
+            }).Should().Be(index <= capacity);
         }
+        projected.Should().Be(capacity, "a full queue must reject before projecting another observation");
         buffer.DroppedObservations.Should().Be(100_000 - capacity);
 
         await using var reader = buffer.ReadAllAsync(CancellationToken.None).GetAsyncEnumerator();
         (await reader.MoveNextAsync()).Should().BeTrue();
         reader.Current.Sequence.Should().Be(1);
-        buffer.TryPublish(sequence => template.WithSequence(sequence)).Should().BeTrue();
+        buffer.TryPublish(sequence =>
+        {
+            projected++;
+            return template.WithSequence(sequence);
+        }).Should().BeTrue();
+        projected.Should().Be(capacity + 1);
         buffer.Complete();
 
         var accepted = new List<long> { 1 };
         while (await reader.MoveNextAsync()) accepted.Add(reader.Current.Sequence);
         accepted.Should().Equal(Enumerable.Range(1, capacity).Select(index => (long)index).Append(100_001));
         buffer.DroppedObservations.Should().Be(100_000 - capacity);
+    }
+
+    [Fact]
+    public async Task EventBuffer_LazyProjectionStillEnforcesByteBudgetIncludingInFlightObservation()
+    {
+        var template = CreateBoundedObservation();
+        var buffer = new DiagnosticSessionEventBuffer(capacity: 2, retainedBytesCapacity: template.RetainedSizeBytes);
+        var projected = 0;
+        DiagnosticSessionEvent Project(long sequence)
+        {
+            projected++;
+            return template.WithSequence(sequence);
+        }
+
+        buffer.TryPublish(Project).Should().BeTrue();
+        buffer.TryPublish(Project).Should().BeFalse("the pending-count check does not replace the byte cap");
+        await using var reader = buffer.ReadAllAsync(CancellationToken.None).GetAsyncEnumerator();
+        (await reader.MoveNextAsync()).Should().BeTrue();
+        reader.Current.Sequence.Should().Be(1);
+        buffer.TryPublish(Project).Should().BeFalse("the in-flight observation still consumes retained bytes");
+
+        var next = reader.MoveNextAsync().AsTask();
+        buffer.TryPublish(Project).Should().BeTrue("advancing the reader releases the previous observation's bytes");
+        (await next.WaitAsync(TimeSpan.FromSeconds(5))).Should().BeTrue();
+        reader.Current.Sequence.Should().Be(4);
+        projected.Should().Be(4, "byte-budget admission still requires the projected size");
+        buffer.DroppedObservations.Should().Be(2);
+        buffer.Complete();
+        (await reader.MoveNextAsync()).Should().BeFalse();
     }
 
     [Fact(Timeout = 15_000)]
