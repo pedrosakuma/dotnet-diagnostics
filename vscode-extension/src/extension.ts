@@ -16,6 +16,20 @@ import { CPU_PROFILE_SCRIPT, CPU_PROFILE_STYLES } from "./cpuProfileViewer";
 import { LIVE_TIME_NAVIGATION_SCRIPT } from "./liveTimeNavigation";
 import { LiveReadConsent, LIVE_READ_CONSENT_HTML, LIVE_READ_CONSENT_SCRIPT } from "./liveReadConsent";
 import {
+    BoundedProtocolLineReader,
+    LIVE_EVENT_BATCH_MAX_BYTES,
+    LIVE_EVENT_CONTROL_LINE_MAX_BYTES,
+    LIVE_EVENT_FRAME_MAX_BYTES,
+    LIVE_EVENT_MAX_UPDATES_PER_SECOND,
+    LIVE_EVENT_OBSERVATION_CAPACITY,
+    LIVE_EVENT_SEARCH_MAX_CHARS,
+    LIVE_EVENT_UI_MAX_COUNT,
+    LIVE_EVENT_UI_MAX_MOUNTED_ROWS,
+    LIVE_EVENT_UI_MAX_RETAINED_BYTES,
+    LiveEventDeliveryQueue,
+    isLiveEventObservation,
+} from "./liveEvents";
+import {
     CAPTURE_KIND_SPECS, buildCaptureRequest, captureTimeoutMs, isCaptureViewResult,
     parseSources, validateInteger, validateSymbolPath,
     type CaptureKindSpec, type CaptureParams, type CaptureViewKind, type CaptureViewResult,
@@ -134,7 +148,7 @@ type HeapCaptureSource = "live" | "gcdump";
 
 interface StreamChild {
     process: ChildProcessWithoutNullStreams;
-    lines: ReadlineInterface;
+    lines: ReadlineInterface | BoundedProtocolLineReader;
     handshake: Deferred<void>;
     started: Deferred<void>;
     terminal: Deferred<void>;
@@ -167,6 +181,8 @@ interface StreamChild {
      * fail even though the process has not exited yet and still looks "non-terminal, alive".
      */
     closing: boolean;
+    eventsConnection: boolean;
+    supportedLiveKinds?: string[];
 }
 
 class CounterPanelController implements vscode.Disposable {
@@ -179,6 +195,26 @@ class CounterPanelController implements vscode.Disposable {
     private panelReady?: Deferred<void>;
     private selectedTarget?: TargetProcess;
     private activeChild?: StreamChild;
+    private eventsChild?: StreamChild;
+    private eventsConnectTask?: Promise<StreamChild>;
+    private eventsStartTask?: Promise<void>;
+    private eventsDisposalTask?: Promise<void>;
+    private eventsQueue = new LiveEventDeliveryQueue();
+    private eventsStreamSessionId?: string;
+    private eventsQuality?: {
+        eventPipeEventsLost: number | null;
+        eventPipeLossAvailable: boolean;
+        coreQueueDropped: number;
+        cliDispatchQueueDropped: number;
+    };
+    private eventsQualityRevision = 0;
+    private eventsQualityAcknowledgedRevision = 0;
+    private eventsBatchTimer?: NodeJS.Timeout;
+    private eventsLastBatchAt = 0;
+    private eventsLastQualityAt = 0;
+    private eventsQualityFinal = false;
+    private eventsInFlightQualityRevision?: number;
+    private eventsGeneration = 0;
     private readonly statusBar: vscode.StatusBarItem;
     private disposed = false;
     private shutdownTask?: Promise<void>;
@@ -224,6 +260,178 @@ class CounterPanelController implements vscode.Disposable {
             });
         }
         return this.startCommandTask;
+    }
+
+    public startEvents(): Promise<void> {
+        if (!this.eventsStartTask) {
+            this.eventsStartTask = this.startEventsCore().finally(() => {
+                this.eventsStartTask = undefined;
+            });
+        }
+        return this.eventsStartTask;
+    }
+
+    private async startEventsCore(): Promise<void> {
+        const generation = this.eventsGeneration;
+        if (this.disposed) return;
+        if (this.eventsChild?.sessionId && !this.eventsChild.terminalReceived) {
+            this.panel?.reveal(vscode.ViewColumn.Active);
+            return;
+        }
+
+        const target = this.selectedTarget ?? await this.ensureTargetAndPanel();
+        if (!target || this.disposed) return;
+
+        const providersInput = await vscode.window.showInputBox({
+            prompt: "Explicit EventSource provider names, comma-separated (1-8; provider and keyword choices affect event volume)",
+            value: "System.Runtime",
+            ignoreFocusOut: true,
+        });
+        if (providersInput === undefined || !this.isEventsStartCurrent(generation)) return;
+        const providers = providersInput.split(",").map(name => name.trim()).filter(Boolean);
+        const uniqueProviders = new Set(providers.map(name => name.toLocaleLowerCase("en-US")));
+        if (providers.length < 1 || providers.length > 8
+            || uniqueProviders.size !== providers.length
+            || providers.some(name => name.length > 256 || /[\u0000-\u001f\u007f]/.test(name))) {
+            void vscode.window.showErrorMessage("Choose 1-8 unique provider names, each no longer than 256 characters.");
+            return;
+        }
+
+        const levelInput = await vscode.window.showInputBox({
+            prompt: "EventSource level 0-5 (4 = Informational)",
+            value: "4",
+            validateInput: value => /^[0-5]$/.test(value) ? undefined : "Enter an integer from 0 to 5.",
+            ignoreFocusOut: true,
+        });
+        if (levelInput === undefined || !this.isEventsStartCurrent(generation)) return;
+        const eventLevel = Number(levelInput);
+
+        const keywords = await vscode.window.showInputBox({
+            prompt: "Signed 64-bit decimal keyword mask (0 enables no keyword bits; -1 can enable high-volume events)",
+            value: "0",
+            validateInput: value => isSignedInt64(value)
+                ? undefined
+                : "Enter a signed 64-bit decimal integer (the value is sent losslessly as text).",
+            ignoreFocusOut: true,
+        });
+        if (keywords === undefined || !this.isEventsStartCurrent(generation)) return;
+
+        const acknowledged = await vscode.window.showWarningMessage(
+            "Live Events opens a continuous EventPipe/EventSource stream for the selected providers. "
+            + "Event payloads and exception messages may contain secrets or personal data. They remain "
+            + "in bounded in-memory windows and are not automatically saved or logged. Native Windows ETW "
+            + "and system-wide providers are not included. Broader providers or keyword masks can increase "
+            + "target/runtime work and event volume.",
+            { modal: true },
+            "Acknowledge and Start",
+            "Cancel",
+        );
+        if (acknowledged !== "Acknowledge and Start" || !this.isEventsStartCurrent(generation)) return;
+        if (this.selectedTarget !== target) {
+            this.postEventsMessage({
+                type: "eventsStatus",
+                state: "stopped",
+                message: "The selected process changed before Live Events could start.",
+            });
+            return;
+        }
+
+        if (this.eventsQueue.hasInFlightBatch || this.eventsQueue.retainedEventCount > 0
+            || this.eventsQualityRevision > this.eventsQualityAcknowledgedRevision) {
+            this.scheduleEventsBatch();
+            this.postEventsMessage({
+                type: "eventsStatus",
+                state: "stopped",
+                message: "Wait for the previous Live Events batch and quality update to be acknowledged before starting another stream.",
+            });
+            return;
+        }
+
+        this.eventsQueue = new LiveEventDeliveryQueue();
+        this.eventsStreamSessionId = undefined;
+        this.eventsQuality = undefined;
+        this.eventsQualityRevision = 0;
+        this.eventsQualityAcknowledgedRevision = 0;
+        this.eventsInFlightQualityRevision = undefined;
+        this.eventsLastQualityAt = 0;
+        this.eventsQualityFinal = false;
+        this.postEventsMessage({ type: "eventsStatus", state: "starting", message: "Starting EventPipe EventSource stream…" });
+
+        let session: StreamChild;
+        try {
+            session = await this.connectEventsChild();
+            if (!this.isEventsStartCurrent(generation) || this.selectedTarget !== target) {
+                session.expectedShutdown = true;
+                await this.closeChild(session);
+                if (this.eventsChild === session) this.eventsChild = undefined;
+                return;
+            }
+            this.eventsChild = session;
+            if (session.started.settled) {
+                session.started = deferred<void>();
+                session.terminal = deferred<void>();
+                session.terminalReceived = false;
+                session.expectedShutdown = false;
+            }
+            const requestId = randomBytes(12).toString("hex");
+            session.startInFlight = true;
+            this.writeFrame(session, {
+                type: "start",
+                requestId,
+                processId: target.processId,
+                kinds: [{
+                    kind: "event_source",
+                    providers: providers.map(name => ({ name, eventLevel, keywords })),
+                    observationCapacity: LIVE_EVENT_OBSERVATION_CAPACITY,
+                    acknowledgeRisk: "high",
+                }],
+            });
+            await withTimeout(session.started.promise, 30_000);
+            if (!this.isEventsStartCurrent(generation)) return;
+            this.postEventsMessage({ type: "eventsStatus", state: "running", message: "Live EventPipe events are arriving." });
+        } catch (error) {
+            if (!this.isEventsStartCurrent(generation)) return;
+            const message = withRuntimeGuidance(errorMessage(error));
+            this.postEventsMessage({ type: "eventsStatus", state: "error", message });
+            if (this.eventsChild) await this.closeChild(this.eventsChild);
+            this.eventsChild = undefined;
+            void vscode.window.showErrorMessage(message);
+        } finally {
+            if (this.eventsChild) this.eventsChild.startInFlight = false;
+        }
+    }
+
+    public async stopEvents(): Promise<void> {
+        this.eventsGeneration++;
+        const child = this.eventsChild;
+        if (!child) {
+            this.postEventsMessage({ type: "eventsStatus", state: "stopped", message: "No Live Events stream is running." });
+            return;
+        }
+
+        if (!child.sessionId) {
+            this.postEventsMessage({ type: "eventsStatus", state: "stopping", message: "Cancelling Live Events startup…" });
+            child.expectedShutdown = true;
+            child.started.reject(new Error("Live Events startup was cancelled."));
+            await this.closeChild(child);
+            if (this.eventsChild === child) this.eventsChild = undefined;
+            this.postEventsMessage({ type: "eventsStatus", state: "stopped", message: "Live Events stopped." });
+            return;
+        }
+
+        this.postEventsMessage({ type: "eventsStatus", state: "stopping", message: "Stopping EventPipe EventSource stream…" });
+        try {
+            this.writeFrame(child, { type: "cancel", sessionId: child.sessionId });
+            await withTimeout(child.terminal.promise, 10_000);
+        } catch (error) {
+            this.output.appendLine(`Could not confirm Live Events shutdown: ${errorMessage(error)}`);
+            child.process.kill();
+        } finally {
+            child.expectedShutdown = true;
+            await this.closeChild(child);
+            if (this.eventsChild === child) this.eventsChild = undefined;
+            this.postEventsMessage({ type: "eventsStatus", state: "stopped", message: "Live Events stopped." });
+        }
     }
 
     private async startCountersCore(): Promise<void> {
@@ -274,6 +482,8 @@ class CounterPanelController implements vscode.Disposable {
             if (child && (child.pendingCaptures.size > 0 || child.pendingQueries.size > 0 || child.startInFlight))
                 throw new Error("Wait for the current capture or query before selecting another process.");
             await this.stopCounters();
+            await this.stopEvents();
+            this.resetEventsDeliveryState();
             const previous = this.panel;
             this.panel = undefined;
             this.exporter.clear();
@@ -1080,9 +1290,11 @@ class CounterPanelController implements vscode.Disposable {
             return this.shutdownTask;
         }
         this.disposed = true;
+        this.eventsGeneration++;
+        this.resetEventsDeliveryState();
         this.statusBar.dispose();
         this.panel?.dispose();
-        this.shutdownTask = this.disposeChild();
+        this.shutdownTask = Promise.all([this.disposeChild(), this.disposeEventsChild()]).then(() => undefined);
         return this.shutdownTask;
     }
 
@@ -1142,6 +1354,12 @@ class CounterPanelController implements vscode.Disposable {
                 void this.startStream(this.selectedTarget);
             } else if (message.type === "stop") {
                 void this.stopCounters();
+            } else if (message.type === "startEvents") {
+                void this.startEvents();
+            } else if (message.type === "stopEvents") {
+                void this.stopEvents();
+            } else if (message.type === "ackEventBatch") {
+                this.acknowledgeEventBatch(message.sessionId, message.batchId);
             } else if (message.type === "captureCpu") {
                 void this.captureCpu();
             } else if (message.type === "captureCpuTrace") {
@@ -1179,6 +1397,8 @@ class CounterPanelController implements vscode.Disposable {
         panel.onDidDispose(() => {
             configListener.dispose();
             if (this.panel !== panel) return;
+            this.eventsGeneration++;
+            this.resetEventsDeliveryState();
             this.panel = undefined;
             this.liveReadConsent.clear();
             this.exporter.clear();
@@ -1186,6 +1406,9 @@ class CounterPanelController implements vscode.Disposable {
             this.panelReady?.resolve();
             this.panelReady = undefined;
             void this.disposeChild();
+            void this.disposeEventsChild();
+            if (this.eventsBatchTimer) clearTimeout(this.eventsBatchTimer);
+            this.eventsBatchTimer = undefined;
         });
     }
 
@@ -1298,6 +1521,30 @@ class CounterPanelController implements vscode.Disposable {
     }
 
     private async connectChildCore(): Promise<StreamChild> {
+        return this.connectStreamChild(false);
+    }
+
+    private async connectEventsChild(): Promise<StreamChild> {
+        if (!this.eventsConnectTask) {
+            this.eventsConnectTask = (async () => {
+                const existing = this.eventsChild;
+                if (existing && !existing.closing
+                    && existing.process.exitCode === null && existing.process.signalCode === null) {
+                    return existing;
+                }
+                if (existing) await this.closeChild(existing);
+                return this.connectStreamChild(true);
+            })().then(session => {
+                this.eventsChild = session;
+                return session;
+            }).finally(() => {
+                this.eventsConnectTask = undefined;
+            });
+        }
+        return this.eventsConnectTask;
+    }
+
+    private async connectStreamChild(eventsConnection: boolean): Promise<StreamChild> {
         let child: ChildProcessWithoutNullStreams;
         try {
             child = this.spawnStream();
@@ -1306,7 +1553,9 @@ class CounterPanelController implements vscode.Disposable {
         }
         const session: StreamChild = {
             process: child,
-            lines: createInterface({ input: child.stdout }),
+            lines: eventsConnection
+                ? new BoundedProtocolLineReader(child.stdout, LIVE_EVENT_CONTROL_LINE_MAX_BYTES)
+                : createInterface({ input: child.stdout }),
             handshake: deferred<void>(),
             started: deferred<void>(),
             terminal: deferred<void>(),
@@ -1319,11 +1568,25 @@ class CounterPanelController implements vscode.Disposable {
             expectedShutdown: false,
             startInFlight: false,
             closing: false,
+            eventsConnection,
         };
-        this.activeChild = session;
-        this.statusBar.text = "$(sync~spin) .NET Counters";
+        if (!eventsConnection) {
+            this.activeChild = session;
+            this.statusBar.text = "$(sync~spin) .NET Counters";
+        }
 
-        session.lines.on("line", line => this.handleFrame(session, line));
+        if (session.lines instanceof BoundedProtocolLineReader) {
+            session.lines.on("line", (line: string, byteLength: number) => this.handleFrame(session, line, byteLength));
+            session.lines.on("oversized", () => {
+                const error = new Error(`The CLI emitted a control frame larger than ${LIVE_EVENT_CONTROL_LINE_MAX_BYTES} UTF-8 bytes.`);
+                this.failPending(session, error);
+                session.startupErrorReported = true;
+                this.postEventsMessage({ type: "eventsStatus", state: "error", message: error.message });
+                session.process.kill();
+            });
+        } else {
+            session.lines.on("line", line => this.handleFrame(session, line));
+        }
         child.stdin.on("error", error => this.failPending(session, error));
         child.stderr.on("data", (chunk: Buffer | string) => {
             session.stderrTail = (session.stderrTail + chunk.toString()).slice(-8_192);
@@ -1340,7 +1603,13 @@ class CounterPanelController implements vscode.Disposable {
                     ? describeStreamCompatibilityError(details)
                     : `CLI exited (code ${code ?? "unknown"}, signal ${signal ?? "none"}).`;
                 this.failPending(session, new Error(reason));
-                if (!session.startupErrorReported) {
+                if (!session.startupErrorReported && session.eventsConnection) {
+                    this.postEventsMessage({
+                        type: "eventsStatus",
+                        state: "error",
+                        message: withRuntimeGuidance(reason),
+                    });
+                } else if (!session.startupErrorReported) {
                     this.postMessage({
                         type: "status",
                         state: "error",
@@ -1370,6 +1639,7 @@ class CounterPanelController implements vscode.Disposable {
                 this.activeChild = undefined;
                 this.statusBar.text = "$(pulse) .NET Counters";
             }
+            if (this.eventsChild === session) this.eventsChild = undefined;
         });
 
         this.writeFrame(session, { type: "hello", protocolVersion: PROTOCOL_VERSION });
@@ -1389,7 +1659,7 @@ class CounterPanelController implements vscode.Disposable {
         return spawnStreamingCli(this.getCliPath());
     }
 
-    private handleFrame(session: StreamChild, line: string): void {
+    private handleFrame(session: StreamChild, line: string, byteLength?: number): void {
         let frame: ProtocolFrame;
         try {
             frame = parseProtocolFrame(line);
@@ -1397,11 +1667,19 @@ class CounterPanelController implements vscode.Disposable {
             const compatibilityError = describeStreamCompatibilityError(line);
             this.failPending(session, new Error(compatibilityError));
             session.startupErrorReported = true;
-            this.postMessage({
-                type: "status",
-                state: "error",
-                message: compatibilityError,
-            });
+            if (session.eventsConnection) {
+                this.postEventsMessage({
+                    type: "eventsStatus",
+                    state: "error",
+                    message: compatibilityError,
+                });
+            } else {
+                this.postMessage({
+                    type: "status",
+                    state: "error",
+                    message: compatibilityError,
+                });
+            }
             session.process.kill();
             return;
         }
@@ -1415,6 +1693,18 @@ class CounterPanelController implements vscode.Disposable {
                     session.process.kill();
                     return;
                 }
+                if (session.eventsConnection) {
+                    if (!Array.isArray(frame.supportedLiveKinds)
+                        || !frame.supportedLiveKinds.includes("event_source")) {
+                        const error = new Error("The configured CLI does not advertise the event_source live kind. Update the CLI to a build with Live Events support.");
+                        session.handshake.reject(error);
+                        session.startupErrorReported = true;
+                        this.postEventsMessage({ type: "eventsStatus", state: "error", message: error.message });
+                        session.process.kill();
+                        return;
+                    }
+                    session.supportedLiveKinds = frame.supportedLiveKinds.filter((kind): kind is string => typeof kind === "string");
+                }
                 session.handshake.resolve();
                 break;
 
@@ -1426,11 +1716,21 @@ class CounterPanelController implements vscode.Disposable {
                 }
                 session.sessionId = frame.sessionId;
                 session.started.resolve();
-                this.postMessage({
-                    type: "session",
-                    sessionId: frame.sessionId,
-                    kinds: Array.isArray(frame.kinds) ? frame.kinds : ["counters"],
-                });
+                if (session.eventsConnection) {
+                    this.eventsStreamSessionId = frame.sessionId;
+                    this.postEventsMessage({
+                        type: "eventsStatus",
+                        state: "running",
+                        sessionId: frame.sessionId,
+                        message: "Live EventPipe events are arriving.",
+                    });
+                } else {
+                    this.postMessage({
+                        type: "session",
+                        sessionId: frame.sessionId,
+                        kinds: Array.isArray(frame.kinds) ? frame.kinds : ["counters"],
+                    });
+                }
                 break;
 
             case "observation": {
@@ -1443,7 +1743,22 @@ class CounterPanelController implements vscode.Disposable {
                 // Older (#1091–#1093) CLI builds never tagged observations with a kind; treat an
                 // absent kind as the legacy implicit counters session for forward compatibility.
                 const kind = typeof frame.kind === "string" ? frame.kind : "counters";
-                if (kind === "counters" && isCounterValue(frame.counter)) {
+                if (session.eventsConnection && kind === "event_source") {
+                    const serializedBytes = byteLength ?? Buffer.byteLength(line, "utf8");
+                    if (serializedBytes > LIVE_EVENT_FRAME_MAX_BYTES) {
+                        this.failEventsProtocol(session, `The CLI emitted a Live Events observation larger than ${LIVE_EVENT_FRAME_MAX_BYTES} UTF-8 bytes.`);
+                        break;
+                    }
+                    if (!isLiveEventObservation(frame)) {
+                        this.failEventsProtocol(session, "The CLI emitted a Live Events observation with an unsupported or unbounded schema.");
+                        break;
+                    }
+                    const accepted = this.eventsQueue.enqueue(frame, serializedBytes);
+                    if (!accepted) {
+                        this.eventsQualityRevision++;
+                    }
+                    this.scheduleEventsBatch();
+                } else if (kind === "counters" && isCounterValue(frame.counter)) {
                     this.postMessage({
                         type: "observation",
                         kind: "counters",
@@ -1475,15 +1790,38 @@ class CounterPanelController implements vscode.Disposable {
                     this.liveReadConsent.clear();
                 session.sessionId = undefined;
                 session.terminal.resolve();
-                this.postMessage({
-                    type: "terminal",
-                    status: frame.status,
-                    kinds: Array.isArray(frame.kinds) ? frame.kinds : ["counters"],
-                    eventPipeEventsLost: frame.eventPipeEventsLost,
-                    droppedObservations: frame.droppedObservations,
-                    error: frame.error,
-                });
-                this.statusBar.text = "$(pulse) .NET Counters";
+                if (session.eventsConnection) {
+                    this.eventsQualityFinal = true;
+                    this.postEventsMessage({
+                        type: "eventsStatus",
+                        state: frame.status === "failed" ? "error" : "stopped",
+                        message: frame.status === "targetExited" ? "Target process exited." : "Live Events stopped.",
+                    });
+                } else {
+                    this.postMessage({
+                        type: "terminal",
+                        status: frame.status,
+                        kinds: Array.isArray(frame.kinds) ? frame.kinds : ["counters"],
+                        eventPipeEventsLost: frame.eventPipeEventsLost,
+                        droppedObservations: frame.droppedObservations,
+                        error: frame.error,
+                    });
+                    this.statusBar.text = "$(pulse) .NET Counters";
+                }
+                break;
+
+            case "quality":
+                if (session.eventsConnection && frame.sessionId === session.sessionId
+                    && frame.kind === "event_source" && isLiveEventQuality(frame)) {
+                    this.eventsQuality = {
+                        eventPipeEventsLost: frame.eventPipeEventsLost,
+                        eventPipeLossAvailable: frame.eventPipeLossAvailable,
+                        coreQueueDropped: frame.coreQueueDropped,
+                        cliDispatchQueueDropped: frame.cliDispatchQueueDropped,
+                    };
+                    this.eventsQualityRevision++;
+                    this.scheduleEventsBatch();
+                }
                 break;
 
             case "capture": {
@@ -1557,6 +1895,11 @@ class CounterPanelController implements vscode.Disposable {
                     pendingCapture.deferred.reject(error);
                 } else if (pendingQuery) {
                     pendingQuery.reject(error);
+                } else if (session.eventsConnection) {
+                    this.failPending(session, error);
+                    this.postEventsMessage({ type: "eventsStatus", state: "error", message });
+                    this.output.appendLine(`Live Events CLI protocol error: ${message}`);
+                    session.process.kill();
                 } else if (!session.handshake.settled) {
                     session.handshake.reject(error);
                 } else if (!session.started.settled) {
@@ -1594,7 +1937,8 @@ class CounterPanelController implements vscode.Disposable {
     }
 
     private writeFrame(session: StreamChild, frame: object): void {
-        if (isRecord(frame) && ["capture", "query", "start"].includes(String(frame.type)) && this.pendingExports.size)
+        if (isRecord(frame) && ["capture", "query", "start"].includes(String(frame.type))
+            && [...this.pendingExports.values()].some(pending => pending.session === session))
             throw new Error("Wait for the current export to finish.");
         if (!session.process.stdin.writable) {
             throw new Error("CLI stdin is closed.");
@@ -1687,6 +2031,33 @@ class CounterPanelController implements vscode.Disposable {
         return this.childDisposalTask;
     }
 
+    private disposeEventsChild(): Promise<void> {
+        if (!this.eventsDisposalTask) {
+            this.eventsDisposalTask = this.disposeEventsChildCore().finally(() => {
+                this.eventsDisposalTask = undefined;
+            });
+        }
+        return this.eventsDisposalTask;
+    }
+
+    private async disposeEventsChildCore(): Promise<void> {
+        const child = this.eventsChild;
+        if (!child) return;
+        if (this.eventsBatchTimer) clearTimeout(this.eventsBatchTimer);
+        this.eventsBatchTimer = undefined;
+        if (child.sessionId) {
+            try {
+                this.writeFrame(child, { type: "cancel", sessionId: child.sessionId });
+                await withTimeout(child.terminal.promise, 10_000);
+            } catch (error) {
+                this.output.appendLine(`Forcing Live Events CLI shutdown: ${errorMessage(error)}`);
+                child.process.kill();
+            }
+        }
+        await this.closeChild(child);
+        if (this.eventsChild === child) this.eventsChild = undefined;
+    }
+
     private async disposeChildCore(): Promise<void> {
         const child = this.activeChild;
         if (child) {
@@ -1728,6 +2099,138 @@ class CounterPanelController implements vscode.Disposable {
         if (this.activeChild === session) {
             this.activeChild = undefined;
         }
+        if (this.eventsChild === session) {
+            this.eventsChild = undefined;
+        }
+    }
+
+    private postEventsMessage(message: object): void {
+        void this.panel?.webview.postMessage(message);
+    }
+
+    private isEventsStartCurrent(generation: number): boolean {
+        return !this.disposed && generation === this.eventsGeneration;
+    }
+
+    private resetEventsDeliveryState(): void {
+        if (this.eventsBatchTimer) clearTimeout(this.eventsBatchTimer);
+        this.eventsBatchTimer = undefined;
+        this.eventsQueue = new LiveEventDeliveryQueue();
+        this.eventsStreamSessionId = undefined;
+        this.eventsQuality = undefined;
+        this.eventsQualityRevision = 0;
+        this.eventsQualityAcknowledgedRevision = 0;
+        this.eventsInFlightQualityRevision = undefined;
+        this.eventsLastBatchAt = 0;
+        this.eventsLastQualityAt = 0;
+        this.eventsQualityFinal = false;
+    }
+
+    private failEventsProtocol(session: StreamChild, message: string): void {
+        const error = new Error(message);
+        this.failPending(session, error);
+        session.startupErrorReported = true;
+        this.postEventsMessage({ type: "eventsStatus", state: "error", message });
+        session.process.kill();
+    }
+
+    private acknowledgeEventBatch(sessionId: unknown, batchId: unknown): void {
+        if (typeof sessionId !== "string" || sessionId !== this.eventsStreamSessionId
+            || !Number.isSafeInteger(batchId) || !this.eventsQueue.acknowledge(Number(batchId))) {
+            return;
+        }
+        if (this.eventsInFlightQualityRevision !== undefined) {
+            this.eventsQualityAcknowledgedRevision = Math.max(
+                this.eventsQualityAcknowledgedRevision,
+                this.eventsInFlightQualityRevision,
+            );
+            this.eventsInFlightQualityRevision = undefined;
+        }
+        this.scheduleEventsBatch();
+    }
+
+    private scheduleEventsBatch(): void {
+        if (!this.panel || !this.eventsStreamSessionId || this.eventsQueue.hasInFlightBatch || this.eventsBatchTimer) {
+            return;
+        }
+        const qualityDirty = this.eventsQuality !== undefined
+            && this.eventsQualityRevision > this.eventsQualityAcknowledgedRevision;
+        const now = Date.now();
+        const qualityDue = qualityDirty
+            && (this.eventsQualityFinal || now - this.eventsLastQualityAt >= 1_000);
+        if (this.eventsQueue.retainedEventCount === 0 && !qualityDue) {
+            return;
+        }
+        const intervalMs = 1_000 / LIVE_EVENT_MAX_UPDATES_PER_SECOND;
+        const eventWaitMs = this.eventsQueue.retainedEventCount > 0
+            ? Math.max(0, intervalMs - (now - this.eventsLastBatchAt))
+            : 0;
+        const qualityWaitMs = qualityDirty && !this.eventsQualityFinal
+            ? Math.max(0, 1_000 - (now - this.eventsLastQualityAt))
+            : 0;
+        const waitMs = this.eventsQueue.retainedEventCount > 0
+            ? Math.max(eventWaitMs, qualityDue ? 0 : Math.min(qualityWaitMs, eventWaitMs))
+            : qualityWaitMs;
+        this.eventsBatchTimer = setTimeout(() => {
+            this.eventsBatchTimer = undefined;
+            this.sendEventsBatch();
+        }, waitMs);
+    }
+
+    private sendEventsBatch(): void {
+        const sessionId = this.eventsStreamSessionId;
+        if (!sessionId || !this.panel || this.eventsQueue.hasInFlightBatch) return;
+        const includeQuality = this.eventsQuality !== undefined
+            && this.eventsQualityRevision > this.eventsQualityAcknowledgedRevision
+            && (this.eventsQualityFinal || Date.now() - this.eventsLastQualityAt >= 1_000);
+        const batch = this.eventsQueue.takeBatch(includeQuality);
+        if (!batch) return;
+        const qualityRevision = includeQuality ? this.eventsQualityRevision : undefined;
+        this.eventsInFlightQualityRevision = qualityRevision;
+        this.eventsLastBatchAt = Date.now();
+        if (includeQuality) this.eventsLastQualityAt = this.eventsLastBatchAt;
+        const message = {
+            type: "eventsBatch",
+            sessionId,
+            batchId: batch.batchId,
+            events: batch.events,
+            ...(includeQuality && this.eventsQuality
+                ? { quality: { ...this.eventsQuality, hostDeliveryDropped: this.eventsQueue.dropped } }
+                : {}),
+        };
+        if (batch.events.length > 64 || Buffer.byteLength(JSON.stringify(message), "utf8") > LIVE_EVENT_BATCH_MAX_BYTES) {
+            const child = this.eventsChild;
+            if (child) {
+                this.failEventsProtocol(child, `The Live Events webview batch exceeded the ${LIVE_EVENT_BATCH_MAX_BYTES}-byte bridge limit.`);
+            } else {
+                this.output.appendLine(`A Live Events batch exceeded the ${LIVE_EVENT_BATCH_MAX_BYTES}-byte bridge limit.`);
+            }
+            return;
+        }
+        void this.panel.webview.postMessage(message);
+    }
+}
+
+function isLiveEventQuality(value: Record<string, unknown>): value is Record<string, unknown> & {
+    eventPipeEventsLost: number | null;
+    eventPipeLossAvailable: boolean;
+    coreQueueDropped: number;
+    cliDispatchQueueDropped: number;
+} {
+    return (value.eventPipeEventsLost === null || (Number.isSafeInteger(value.eventPipeEventsLost) && Number(value.eventPipeEventsLost) >= 0))
+        && typeof value.eventPipeLossAvailable === "boolean"
+        && value.eventPipeLossAvailable === (value.eventPipeEventsLost !== null)
+        && Number.isSafeInteger(value.coreQueueDropped) && Number(value.coreQueueDropped) >= 0
+        && Number.isSafeInteger(value.cliDispatchQueueDropped) && Number(value.cliDispatchQueueDropped) >= 0;
+}
+
+function isSignedInt64(value: string): boolean {
+    if (!/^-?(0|[1-9]\d*)$/.test(value)) return false;
+    try {
+        const parsed = BigInt(value);
+        return parsed >= -(1n << 63n) && parsed <= (1n << 63n) - 1n;
+    } catch {
+        return false;
     }
 }
 
@@ -2449,6 +2952,19 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     .statics-form { margin:.5rem 0; display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; }
     .statics-form input { min-width:20rem; }
     .statics-error { color: var(--vscode-errorForeground); }
+    .events-warning { border-left:3px solid var(--vscode-editorWarning-foreground); padding:.4rem .7rem; margin:.6rem 0; }
+    .events-controls { display:flex; gap:.45rem; align-items:center; flex-wrap:wrap; margin:.7rem 0; }
+    .events-controls input { min-width:14rem; max-width:32rem; }
+    .events-table-wrap { max-height:32rem; overflow:auto; border:1px solid var(--vscode-panel-border); }
+    #eventsTable { table-layout:fixed; }
+    #eventsTable th:nth-child(1) { width:10rem; }
+    #eventsTable th:nth-child(2) { width:9rem; }
+    #eventsTable th:nth-child(3) { width:7rem; }
+    #eventsTable td { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    #eventsTable tr[aria-selected="true"] { background:var(--vscode-list-activeSelectionBackground); color:var(--vscode-list-activeSelectionForeground); }
+    #eventsQuality, #eventsStatus { color:var(--vscode-descriptionForeground); margin:.5rem 0; }
+    #eventDetails { margin:.75rem 0; padding:.75rem; border:1px solid var(--vscode-panel-border); border-radius:4px; }
+    #eventDetails pre { white-space:pre-wrap; overflow-wrap:anywhere; }
     ${QUERY_VIEW_STYLES}
   </style>
 </head>
@@ -2466,6 +2982,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     <button id="resultTabDiagnostics" role="tab" aria-selected="false" aria-controls="resultDiagnostics">Diagnostics</button>
     <button id="resultTabHeap" role="tab" aria-selected="false" aria-controls="resultHeap">Heap</button>
     <button id="resultTabThreads" role="tab" aria-selected="false" aria-controls="resultThreads">Threads</button>
+    <button id="resultTabEvents" role="tab" aria-selected="false" aria-controls="resultEvents">Events</button>
   </nav>
   <section id="resultLive" class="result-tab-panel" role="tabpanel" aria-labelledby="resultTabLive">
     <div class="panel-actions">
@@ -2588,6 +3105,30 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       <div id="threadQueryViews" class="query-views"></div>
     </div>
   </section>
+  <section id="resultEvents" class="result-tab-panel" role="tabpanel" aria-labelledby="resultTabEvents" hidden>
+    <div class="events-warning" role="note">Event payloads may contain secrets or personal data. They are held only in bounded in-memory windows and are not automatically saved or logged. Native Windows ETW is not collected.</div>
+    <div class="events-controls">
+      <button id="startEvents" type="button">Start Live Events…</button>
+      <button id="stopEvents" type="button" disabled>Stop</button>
+      <button id="eventsFollow" type="button" disabled>Pause following</button>
+      <button id="eventsClear" type="button">Clear</button>
+      <label for="eventsSearch">Search</label><input id="eventsSearch" type="search" maxlength="${LIVE_EVENT_SEARCH_MAX_CHARS}" placeholder="Search retained events" />
+    </div>
+    <div id="eventsStatus" role="status">Not running.</div>
+    <div id="eventsQuality" role="status"></div>
+    <div class="events-controls">
+      <button id="eventsPrevious" type="button" disabled>Newer</button>
+      <span id="eventsPage" aria-live="polite">No events</span>
+      <button id="eventsNext" type="button" disabled>Older</button>
+    </div>
+    <div class="events-table-wrap">
+      <table id="eventsTable">
+        <thead><tr><th>Source time (UTC)</th><th>Provider</th><th>Event</th><th>Level</th><th>Summary</th></tr></thead>
+        <tbody id="eventsBody"></tbody>
+      </table>
+    </div>
+    <section id="eventDetails" aria-label="Selected event details"><p>Select an event to inspect its bounded payload.</p></section>
+  </section>
 
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
@@ -2638,7 +3179,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     const cpuProfileState = { mode: 'tree', search: '', focus: [], selected: [] };
     let allocationProfileResult;
     const allocationProfileState = { mode: 'tree', search: '', focus: [], selected: [] };
-    const resultTabNames = ['live', 'cpu', 'allocation', 'exceptions', 'diagnostics', 'heap', 'threads'];
+    const resultTabNames = ['live', 'events', 'cpu', 'allocation', 'exceptions', 'diagnostics', 'heap', 'threads'];
     function selectResultTab(name) {
       for (const tabName of resultTabNames) {
         const panel = document.getElementById('result' + tabName[0].toUpperCase() + tabName.slice(1));
@@ -2667,6 +3208,235 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         document.getElementById('resultTab' + nextName[0].toUpperCase() + nextName.slice(1)).focus();
       });
     }
+    const eventsStatusElement = document.getElementById('eventsStatus');
+    const eventsQualityElement = document.getElementById('eventsQuality');
+    const eventsBody = document.getElementById('eventsBody');
+    const eventDetails = document.getElementById('eventDetails');
+    const eventsStartButton = document.getElementById('startEvents');
+    const eventsStopButton = document.getElementById('stopEvents');
+    const eventsFollowButton = document.getElementById('eventsFollow');
+    const eventsSearch = document.getElementById('eventsSearch');
+    const events = [];
+    const eventsMaxCount = ${LIVE_EVENT_UI_MAX_COUNT};
+    const eventsMaxBytes = ${LIVE_EVENT_UI_MAX_RETAINED_BYTES};
+    const eventsPageSize = ${LIVE_EVENT_UI_MAX_MOUNTED_ROWS};
+    const eventsBatchMaxBytes = ${LIVE_EVENT_BATCH_MAX_BYTES};
+    const eventsEncoder = new TextEncoder();
+    let eventsRetainedBytes = 0;
+    let eventsUiEvicted = 0;
+    let payloadTruncatedEvents = 0;
+    let metadataTruncatedEvents = 0;
+    let eventsSessionId;
+    let selectedEvent;
+    let eventsPageIndex = 0;
+    let eventsFollowing = true;
+    let eventsQuality = null;
+    let lastEventsQualityRenderAt = 0;
+    let eventsQualityRenderTimer;
+    function setEventsStatus(state, text, sessionId) {
+      eventsStatusElement.textContent = text || state || '';
+      if (state === 'starting') {
+        eventsSessionId = undefined;
+        eventsQuality = null;
+        eventsQualityElement.textContent = '';
+      }
+      const running = state === 'running' || state === 'starting' || state === 'stopping';
+      eventsStartButton.disabled = running;
+      eventsStopButton.disabled = state !== 'running';
+      if (state === 'running') {
+        eventsSessionId = sessionId || eventsSessionId;
+        eventsFollowButton.disabled = false;
+      } else if (state === 'stopped' || state === 'error') {
+        eventsSessionId = undefined;
+        eventsFollowButton.disabled = true;
+      }
+    }
+    function eventSize(event) {
+      return eventsEncoder.encode(JSON.stringify(event)).length * 2 + 1024;
+    }
+    function eventSearchText(event) {
+      return [event.provider, event.eventName, event.level, ...Object.entries(event.payload).flat()].join(' ').toLocaleLowerCase();
+    }
+    function renderEventDetails(event) {
+      eventDetails.replaceChildren();
+      if (!event) {
+        const empty = document.createElement('p');
+        empty.textContent = 'Select an event to inspect its bounded payload.';
+        eventDetails.appendChild(empty);
+        return;
+      }
+      const heading = document.createElement('h3');
+      heading.textContent = event.provider + ' · ' + event.eventName + ' (' + event.eventId + ', v' + event.version + ')';
+      eventDetails.appendChild(heading);
+      const timing = document.createElement('p');
+      timing.textContent = 'Source: ' + event.timestamp + ' · Received: ' + event.receivedAt
+        + (event.threadId === null ? '' : ' · Thread ' + event.threadId);
+      eventDetails.appendChild(timing);
+      const exceptionFields = ['ExceptionType', 'ExceptionMessage', 'ExceptionEIP', 'ExceptionHRESULT', 'ExceptionFlags', 'ClrInstanceID'];
+      const payloadNames = Object.keys(event.payload).sort();
+      const isManagedException = event.provider === 'Microsoft-Windows-DotNETRuntime'
+        && event.eventId === 80 && event.version === 1
+        && payloadNames.length === exceptionFields.length
+        && payloadNames.every((name, index) => name === exceptionFields.slice().sort()[index]);
+      if (isManagedException) {
+        const note = document.createElement('p');
+        note.textContent = 'Schema-verified managed exception event. Exception messages may contain sensitive data.';
+        eventDetails.appendChild(note);
+      }
+      const payload = document.createElement('pre');
+      payload.textContent = payloadNames.length
+        ? payloadNames.map(name => name + ': ' + event.payload[name]).join('\\n')
+        : event.payloadFieldsUnavailable
+          ? '(payload bytes were present, but decoded fields are unavailable)'
+          : '(no supported payload fields)';
+      eventDetails.appendChild(payload);
+      const quality = document.createElement('p');
+      quality.textContent = [
+        event.payloadFieldsUnavailable ? 'Decoded payload fields unavailable; payload completeness is unknown' : '',
+        event.metadataTruncated ? 'Event metadata truncated' : '',
+        event.payloadTruncated ? 'Payload truncated or contained unsupported values' : '',
+        event.omittedPayloadFields ? event.omittedPayloadFields + ' payload fields omitted' : '',
+        event.omittedPayloadCharacters ? event.omittedPayloadCharacters + ' payload characters omitted' : '',
+        event.unsupportedPayloadValues ? event.unsupportedPayloadValues + ' unsupported payload values' : '',
+      ].filter(Boolean).join(' · ') || 'Payload projection complete for supported fields.';
+      eventDetails.appendChild(quality);
+    }
+    function renderEvents() {
+      const search = eventsSearch.value.slice(0, ${LIVE_EVENT_SEARCH_MAX_CHARS}).trim().toLocaleLowerCase();
+      const filtered = search ? events.filter(item => eventSearchText(item).includes(search)) : events;
+      const pageCount = Math.max(1, Math.ceil(filtered.length / eventsPageSize));
+      eventsPageIndex = Math.min(eventsPageIndex, pageCount - 1);
+      const end = Math.max(0, filtered.length - eventsPageIndex * eventsPageSize);
+      const start = Math.max(0, end - eventsPageSize);
+      const page = filtered.slice(start, end).reverse();
+      eventsBody.replaceChildren();
+      for (const item of page) {
+        const row = document.createElement('tr');
+        row.tabIndex = 0;
+        row.setAttribute('aria-selected', String(item === selectedEvent));
+        const cells = [item.timestamp, item.provider, item.eventName + ' (' + item.eventId + ')', item.level,
+          Object.entries(item.payload).slice(0, 2).map(([name, value]) => name + ': ' + value).join(' · ')
+          || (item.payloadTruncated ? 'Payload fields omitted' : '')];
+        for (const text of cells) {
+          const cell = document.createElement('td');
+          cell.textContent = text;
+          row.appendChild(cell);
+        }
+        row.addEventListener('click', () => {
+          selectedEvent = item;
+          renderEvents();
+        });
+        row.addEventListener('keydown', event => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            selectedEvent = item;
+            renderEvents();
+          }
+        });
+        eventsBody.appendChild(row);
+      }
+      document.getElementById('eventsPage').textContent = filtered.length
+        ? 'Showing ' + (start + 1) + '–' + end + ' of ' + filtered.length
+          + ' matching events (' + events.length + ' retained)'
+        : 'No matching events (' + events.length + ' retained)';
+      document.getElementById('eventsPrevious').disabled = eventsPageIndex === 0;
+      document.getElementById('eventsNext').disabled = end >= filtered.length;
+      renderEventDetails(selectedEvent);
+      renderEventsQuality();
+    }
+    function renderEventsQuality() {
+      if (!eventsQuality) return;
+      const now = Date.now();
+      const waitMs = 1000 - (now - lastEventsQualityRenderAt);
+      if (waitMs > 0) {
+        if (eventsQualityRenderTimer === undefined) {
+          eventsQualityRenderTimer = setTimeout(() => {
+            eventsQualityRenderTimer = undefined;
+            renderEventsQuality();
+          }, waitMs);
+        }
+        return;
+      }
+      if (eventsQualityRenderTimer !== undefined) {
+        clearTimeout(eventsQualityRenderTimer);
+        eventsQualityRenderTimer = undefined;
+      }
+      lastEventsQualityRenderAt = now;
+        eventsQualityElement.textContent = [
+          eventsQuality.eventPipeLossAvailable
+            ? eventsQuality.eventPipeEventsLost + ' EventPipe source events lost'
+            : 'EventPipe source loss count unknown',
+          eventsQuality.coreQueueDropped + ' Core queue drops',
+          eventsQuality.cliDispatchQueueDropped + ' CLI dispatch drops',
+          eventsQuality.hostDeliveryDropped + ' extension host delivery drops',
+          eventsUiEvicted + ' UI-window evictions',
+          payloadTruncatedEvents + ' payload-truncated events',
+          metadataTruncatedEvents + ' metadata-truncated events',
+        ].join(' · ') + ' (layer counts are separate, not a sum).';
+    }
+    function receiveEventsBatch(message) {
+      if (typeof message.sessionId !== 'string' || !Number.isSafeInteger(message.batchId)
+        || !Array.isArray(message.events) || message.events.length > 64) return;
+      if (eventsSessionId && eventsSessionId !== message.sessionId) return;
+      if (eventsEncoder.encode(JSON.stringify(message)).length > eventsBatchMaxBytes) return;
+      eventsSessionId = message.sessionId;
+      for (const item of message.events) {
+        if (item.payloadTruncated) payloadTruncatedEvents = Math.min(Number.MAX_SAFE_INTEGER, payloadTruncatedEvents + 1);
+        if (item.metadataTruncated) metadataTruncatedEvents = Math.min(Number.MAX_SAFE_INTEGER, metadataTruncatedEvents + 1);
+      }
+      if (message.quality && typeof message.quality.eventPipeLossAvailable === 'boolean'
+        && Number.isSafeInteger(message.quality.coreQueueDropped)
+        && Number.isSafeInteger(message.quality.cliDispatchQueueDropped)
+        && Number.isSafeInteger(message.quality.hostDeliveryDropped)) {
+        eventsQuality = message.quality;
+      }
+      for (const item of message.events) {
+        const bytes = eventSize(item);
+        events.push(item);
+        eventsRetainedBytes += bytes;
+      }
+      while (events.length > eventsMaxCount || eventsRetainedBytes > eventsMaxBytes) {
+        const removed = events.shift();
+        eventsUiEvicted = Math.min(Number.MAX_SAFE_INTEGER, eventsUiEvicted + 1);
+        if (removed === selectedEvent) selectedEvent = undefined;
+        eventsRetainedBytes -= eventSize(removed);
+      }
+      if (!selectedEvent) renderEventDetails(undefined);
+      if (eventsFollowing) {
+        eventsPageIndex = 0;
+        renderEvents();
+      } else {
+        renderEventsQuality();
+      }
+      vscode.postMessage({ type: 'ackEventBatch', sessionId: message.sessionId, batchId: message.batchId });
+    }
+    eventsStartButton.addEventListener('click', () => vscode.postMessage({ type: 'startEvents' }));
+    eventsStopButton.addEventListener('click', () => vscode.postMessage({ type: 'stopEvents' }));
+    document.getElementById('eventsClear').addEventListener('click', () => {
+      events.length = 0;
+      eventsRetainedBytes = 0;
+      selectedEvent = undefined;
+      eventsPageIndex = 0;
+      renderEvents();
+    });
+    eventsFollowButton.addEventListener('click', () => {
+      eventsFollowing = !eventsFollowing;
+      eventsFollowButton.textContent = eventsFollowing ? 'Pause following' : 'Follow latest';
+      if (eventsFollowing) eventsPageIndex = 0;
+      renderEvents();
+    });
+    eventsSearch.addEventListener('input', () => { eventsPageIndex = 0; renderEvents(); });
+    document.getElementById('eventsPrevious').addEventListener('click', () => {
+      eventsPageIndex = Math.max(0, eventsPageIndex - 1);
+      renderEvents();
+    });
+    document.getElementById('eventsNext').addEventListener('click', () => {
+      eventsPageIndex++;
+      eventsFollowing = false;
+      eventsFollowButton.textContent = 'Follow latest';
+      renderEvents();
+    });
+    renderEvents();
     function activateCaptureTab(name) {
       selectResultTab(name);
     }
@@ -3193,6 +3963,14 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     window.addEventListener('message', event => {
       const message = event.data;
       if (!message || typeof message.type !== 'string') return;
+      if (message.type === 'eventsStatus') {
+        setEventsStatus(message.state, message.message, message.sessionId);
+        return;
+      }
+      if (message.type === 'eventsBatch') {
+        receiveEventsBatch(message);
+        return;
+      }
       if (handleAddressNavigationMessage(message)) return;
       if (message.type === 'liveReadConsent') { renderLiveReadConsent(message); return; }
       if (message.type === 'threadStaticsState') {
@@ -3352,6 +4130,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     });
     startButton.addEventListener('click', () => vscode.postMessage({ type: 'start' }));
     stopButton.addEventListener('click', () => vscode.postMessage({ type: 'stop' }));
+    eventsFollowButton.disabled = true;
     captureCpuButton.addEventListener('click', () => vscode.postMessage({ type: 'captureCpu' }));
     captureExceptionsButton.addEventListener('click', () => vscode.postMessage({ type: 'captureExceptions' }));
     captureDiagnosticsButton.addEventListener('click', () => vscode.postMessage({ type: 'captureDiagnostics' }));
@@ -3366,6 +4145,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     // Keeps the rolling history window sliding forward in wall-clock time even if the stream goes
     // quiet for a while, instead of only evicting stale points/rows when fresh data arrives.
     setInterval(() => {
+      renderEventsQuality();
       let changed = false;
       counters.forEach(series => {
         const before = series.points.length;

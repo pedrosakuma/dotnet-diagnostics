@@ -9,6 +9,7 @@ using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Dump;
 using DotnetDiagnostics.Core.Exceptions;
+using DotnetDiagnostics.Core.EventSources;
 using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.Safety;
@@ -34,6 +35,7 @@ namespace DotnetDiagnostics.Cli;
 internal static class CliStreamingProtocol
 {
     private const int ProtocolVersion = 2;
+    private const int MaxControlLineBytes = 64 * 1024;
     private static readonly string CliVersion =
         typeof(CliStreamingProtocol).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
         ?? typeof(CliStreamingProtocol).Assembly.GetName().Version?.ToString(3)
@@ -59,6 +61,12 @@ internal static class CliStreamingProtocol
                 static (services, processId, options) => services.GetRequiredService<IGcSessionFactory>()
                     .CreateSession(processId, (GcSessionOptions)options),
                 AttachGcForwarding),
+            ["event_source"] = new KindDescriptor(
+                "event_source",
+                TryParseEventSourceOptions,
+                static (services, processId, options) => services.GetRequiredService<IEventSourceSessionFactory>()
+                    .CreateSession(processId, ((EventSourceStartOptions)options).SessionOptions),
+                AttachEventSourceForwarding),
         };
 
     /// <summary>Point-in-time kinds known to the <c>capture</c> request/response flow.</summary>
@@ -251,7 +259,15 @@ internal static class CliStreamingProtocol
         {
             while (true)
             {
-                var line = await stdin.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+                var inputLine = await ReadProtocolLineAsync(stdin, cancellationToken).ConfigureAwait(false);
+                if (inputLine.Oversized)
+                {
+                    await WriteErrorAsync(writer, "frame_too_large", $"Control frames are limited to {MaxControlLineBytes} UTF-8 bytes.")
+                        .ConfigureAwait(false);
+                    continue;
+                }
+
+                var line = inputLine.Value;
                 if (line is null)
                 {
                     if (activeSession is not null)
@@ -317,6 +333,7 @@ internal static class CliStreamingProtocol
                             type = "hello",
                             protocolVersion = ProtocolVersion,
                             cliVersion = CliVersion,
+                            supportedLiveKinds = LiveKinds.Keys.Order(StringComparer.Ordinal).ToArray(),
                         }, cancellationToken).ConfigureAwait(false);
                         continue;
                     }
@@ -432,6 +449,17 @@ internal static class CliStreamingProtocol
                 Kind = kindRequest.Kind,
                 Pid = request.ProcessId,
             };
+            if (kindRequest.Options is EventSourceStartOptions eventSourceOptions)
+            {
+                var allowlist = services.GetRequiredService<EventSourceAllowlist>();
+                safetyOptions = safetyOptions with
+                {
+                    Providers = eventSourceOptions.SessionOptions.Providers.Select(provider => provider.ProviderName).ToArray(),
+                    UnsafeProvider = eventSourceOptions.SessionOptions.Providers.Any(
+                        provider => !allowlist.IsAllowed(provider.ProviderName)),
+                    AcknowledgeRisk = eventSourceOptions.AcknowledgeRisk,
+                };
+            }
             var safety = await CliSafetyPreflight.RunAsync(
                 safetyOptions,
                 handles: null,
@@ -450,11 +478,15 @@ internal static class CliStreamingProtocol
             }
         }
 
-        // The composed dispatch queue is shared by every requested kind, so it must be sized to the
-        // largest per-kind observationCapacity requested, not Core's 256-event default: otherwise a
-        // legacy single-kind client requesting a larger capacity would silently regress to 256.
-        var eventCapacity = request.Kinds.Max(k => GetObservationCapacity(k.Options!));
-        var composed = new ComposedDiagnosticSession(request.ProcessId, eventCapacity);
+        // Preserve the existing larger-capacity behavior for older live kinds. EventSource's
+        // shared dispatch queue has a separate hard count budget regardless of other kinds.
+        var eventCapacity = GetComposedEventCapacity(
+            request.Kinds.Max(k => GetObservationCapacity(k.Options!)),
+            request.Kinds.Any(kind => kind.Kind == "event_source"));
+        var dispatchByteCapacity = request.Kinds.Any(kind => kind.Kind == "event_source")
+            ? EventSourceSessionOptions.MaxPendingRetainedBytes
+            : long.MaxValue;
+        var composed = new ComposedDiagnosticSession(request.ProcessId, eventCapacity, dispatchByteCapacity);
         var candidate = new ActiveSession(composed, Guid.NewGuid().ToString("N"), request.Kinds.Select(k => k.Kind).ToArray(), writer);
         try
         {
@@ -462,7 +494,12 @@ internal static class CliStreamingProtocol
             {
                 var descriptor = LiveKinds[kindRequest.Kind];
                 candidate.Subscriptions.Add(descriptor.AttachForwarding(composed, writer, candidate.SessionId, candidate.EventsGate));
-                composed.AddSession(descriptor.CreateChildSession(services, request.ProcessId, kindRequest.Options!));
+                var childSession = descriptor.CreateChildSession(services, request.ProcessId, kindRequest.Options!);
+                if (childSession is EventSourceSession eventSession)
+                {
+                    candidate.EventSourceSession = eventSession;
+                }
+                composed.AddSession(childSession);
             }
 
             try
@@ -2249,6 +2286,55 @@ internal static class CliStreamingProtocol
         await activeSession.TerminalTask.ConfigureAwait(false);
     }
 
+    private static async Task<ProtocolInputLine> ReadProtocolLineAsync(TextReader reader, CancellationToken cancellationToken)
+    {
+        var buffer = new char[1];
+        var line = new System.Text.StringBuilder();
+        var byteCount = 0;
+        var oversized = false;
+        var readAny = false;
+        while (true)
+        {
+            var count = await reader.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false);
+            if (count == 0)
+            {
+                return !readAny
+                    ? new ProtocolInputLine(null, false)
+                    : oversized
+                        ? new ProtocolInputLine(null, true)
+                        : new ProtocolInputLine(line.ToString(), false);
+            }
+
+            for (var index = 0; index < count; index++)
+            {
+                var character = buffer[index];
+                if (character == '\n')
+                {
+                    return oversized
+                        ? new ProtocolInputLine(null, true)
+                        : new ProtocolInputLine(line.ToString().TrimEnd('\r'), false);
+                }
+
+                readAny = true;
+                if (oversized)
+                {
+                    continue;
+                }
+
+                var characterBytes = System.Text.Encoding.UTF8.GetByteCount(buffer.AsSpan(index, 1));
+                if (byteCount + characterBytes > MaxControlLineBytes)
+                {
+                    oversized = true;
+                    line.Clear();
+                    continue;
+                }
+
+                line.Append(character);
+                byteCount += characterBytes;
+            }
+        }
+    }
+
     private static async Task WriteErrorAsync(ProtocolWriter writer, string code, string message) =>
         await writer.WriteAsync(new { type = "error", code, message }, CancellationToken.None).ConfigureAwait(false);
 
@@ -2389,6 +2475,83 @@ internal static class CliStreamingProtocol
         return true;
     }
 
+    internal static bool TryParseEventSourceOptions(JsonElement root, out object? options, out string? error)
+    {
+        options = null;
+        error = null;
+        if (!root.TryGetProperty("providers", out var providersElement)
+            || providersElement.ValueKind != JsonValueKind.Array
+            || providersElement.GetArrayLength() is < 1 or > EventSourceSessionOptions.MaxProviderCount)
+        {
+            error = $"'providers' must be an array containing 1..{EventSourceSessionOptions.MaxProviderCount} provider objects.";
+            return false;
+        }
+
+        var providers = new List<EventSourceProviderSubscription>();
+        var seenNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var providerElement in providersElement.EnumerateArray())
+        {
+            if (providerElement.ValueKind != JsonValueKind.Object
+                || !TryGetString(providerElement, "name", out var name)
+                || string.IsNullOrWhiteSpace(name)
+                || name.Length > EventSourceSessionOptions.MaxProviderNameLength)
+            {
+                error = $"Each provider must have a non-empty 'name' of at most {EventSourceSessionOptions.MaxProviderNameLength} characters.";
+                return false;
+            }
+
+            if (!seenNames.Add(name))
+            {
+                error = "Provider names must be unique (case-insensitive).";
+                return false;
+            }
+
+            var eventLevel = 4;
+            if (providerElement.TryGetProperty("eventLevel", out var levelElement)
+                && (!levelElement.TryGetInt32(out eventLevel) || eventLevel is < 0 or > 5))
+            {
+                error = "'eventLevel' must be an integer between 0 and 5.";
+                return false;
+            }
+
+            if (!TryGetString(providerElement, "keywords", out var keywordsText)
+                || !long.TryParse(keywordsText, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var keywords))
+            {
+                error = "'keywords' must be a signed 64-bit integer encoded as a decimal string.";
+                return false;
+            }
+
+            providers.Add(new EventSourceProviderSubscription(name, eventLevel, keywords));
+        }
+
+        var observationCapacity = EventSourceSessionOptions.DefaultObservationCapacity;
+        if (root.TryGetProperty("observationCapacity", out var capacityElement)
+            && (!capacityElement.TryGetInt32(out observationCapacity)
+                || observationCapacity is < 1 or > EventSourceSessionOptions.MaxObservationCapacity))
+        {
+            error = $"'observationCapacity' must be between 1 and {EventSourceSessionOptions.MaxObservationCapacity}.";
+            return false;
+        }
+
+        string? acknowledgeRisk = null;
+        if (root.TryGetProperty("acknowledgeRisk", out var acknowledgementElement))
+        {
+            if (acknowledgementElement.ValueKind != JsonValueKind.String
+                || acknowledgementElement.GetString() is not ("high" or "critical"))
+            {
+                error = "'acknowledgeRisk' must be 'high' or 'critical' when provided.";
+                return false;
+            }
+
+            acknowledgeRisk = acknowledgementElement.GetString();
+        }
+
+        options = new EventSourceStartOptions(
+            new EventSourceSessionOptions { Providers = providers, ObservationCapacity = observationCapacity },
+            acknowledgeRisk);
+        return true;
+    }
+
     private static IDisposable AttachCounterForwarding(
         ComposedDiagnosticSession composed, ProtocolWriter writer, string sessionId, EventGate eventsGate)
         => composed.Attach<CounterObservation>(async (observation, handlerCancellationToken) =>
@@ -2431,6 +2594,42 @@ internal static class CliStreamingProtocol
             }, handlerCancellationToken).ConfigureAwait(false);
         });
 
+    private static IDisposable AttachEventSourceForwarding(
+        ComposedDiagnosticSession composed, ProtocolWriter writer, string sessionId, EventGate eventsGate)
+        => composed.Attach<EventSourceLiveObservation>(async (observation, handlerCancellationToken) =>
+        {
+            await eventsGate.Task.WaitAsync(handlerCancellationToken).ConfigureAwait(false);
+            if (eventsGate.Suppressed)
+            {
+                return;
+            }
+
+            await writer.WriteEventAsync(new
+            {
+                type = "observation",
+                kind = "event_source",
+                sessionId,
+                observation.Sequence,
+                observation.Timestamp,
+                receivedAt = observation.ReceivedAt,
+                provider = observation.Provider,
+                eventName = observation.EventName,
+                eventId = observation.EventId,
+                version = observation.Version,
+                level = observation.Level,
+                threadId = observation.ThreadId,
+                activityId = observation.ActivityId,
+                relatedActivityId = observation.RelatedActivityId,
+                payload = observation.Payload,
+                metadataTruncated = observation.MetadataTruncated,
+                payloadTruncated = observation.PayloadTruncated,
+                payloadFieldsUnavailable = observation.PayloadFieldsUnavailable,
+                omittedPayloadFields = observation.OmittedPayloadFields,
+                omittedPayloadCharacters = observation.OmittedPayloadCharacters,
+                unsupportedPayloadValues = observation.UnsupportedPayloadValues,
+            }, handlerCancellationToken).ConfigureAwait(false);
+        });
+
     private static bool TryGetString(JsonElement root, string name, out string value)
     {
         if (root.TryGetProperty(name, out var property)
@@ -2469,7 +2668,14 @@ includes the protocol version and CLI informational version.
 Start requires requestId and processId. Send either the legacy single-kind shape
 (optional providers/intervalSeconds/observationCapacity, implying kind "counters") or
 {"kinds":[{"kind":"counters",...},{"kind":"gc",...}]} to run several live kinds in one
-composed session. Send stop or cancel with the returned sessionId. Send
+composed session. An EventSource example is:
+{"type":"start","requestId":"events-1","processId":1234,"kinds":[{"kind":"event_source","providers":[{"name":"Microsoft-Windows-DotNETRuntime","eventLevel":4,"keywords":"0"}],"observationCapacity":256,"acknowledgeRisk":"high"}]}
+to collect EventPipe/EventSource events from 1-8 explicit providers. Provider names are unique and
+at most 256 characters; eventLevel is 0-5; keywords is a signed 64-bit decimal string. EventSource
+frames are bounded to 16 KiB UTF-8 and expose bounded inert-string payloads. Provider payloads,
+especially exception messages, may contain sensitive data. Non-allowlisted providers require
+acknowledgeRisk="high". No wildcard providers or native Windows ETW are supported.
+Send stop or cancel with the returned sessionId. Send
 {"type":"capture","requestId":...,"kind":"cpu","processId":...,"durationSeconds":10,"topN":25}
 for a one-shot point-in-time capture that does not open a live session. Exception captures use
 "kind":"exceptions" or "kind":"crash-guard", with optional "maxRecent" (default 100, range 1-500).
@@ -2526,6 +2732,8 @@ results are 0x hexadecimal strings.
 
     private sealed record KindRequest(string Kind, object? Options);
 
+    private sealed record ProtocolInputLine(string? Value, bool Oversized);
+
     private delegate bool TryParseKindOptions(JsonElement element, out object? options, out string? error);
 
     private sealed record KindDescriptor(
@@ -2534,12 +2742,22 @@ results are 0x hexadecimal strings.
         Func<IServiceProvider, int, object, IDiagnosticSession> CreateChildSession,
         Func<ComposedDiagnosticSession, ProtocolWriter, string, EventGate, IDisposable> AttachForwarding);
 
+    internal static int GetComposedEventCapacity(int maximumRequestedCapacity, bool includesEventSource) =>
+        includesEventSource
+            ? Math.Min(maximumRequestedCapacity, EventSourceSessionOptions.MaxObservationCapacity)
+            : maximumRequestedCapacity;
+
     private static int GetObservationCapacity(object options) => options switch
     {
         CounterSessionOptions counters => counters.ObservationCapacity,
         GcSessionOptions gc => gc.ObservationCapacity,
+        EventSourceStartOptions events => events.SessionOptions.ObservationCapacity,
         _ => 256,
     };
+
+    internal sealed record EventSourceStartOptions(
+        EventSourceSessionOptions SessionOptions,
+        string? AcknowledgeRisk);
 
     /// <summary>
     /// Gates observation forwarding until the composed session has either announced <c>started</c>
@@ -2566,11 +2784,13 @@ results are 0x hexadecimal strings.
     }
 
     private sealed class ActiveSession(
-        ComposedDiagnosticSession session, string sessionId, IReadOnlyList<string> kinds, ProtocolWriter writer)
+        ComposedDiagnosticSession session, string sessionId, IReadOnlyList<string> kinds, ProtocolWriter writer) : IDisposable
     {
         // Matches the Core session's own shutdown budget (see EventPipeDiagnosticSessionBase.ShutdownWaitBudget)
         // so a stuck stdout pipe cannot make stop/cancel/EOF handling hang indefinitely.
         private static readonly TimeSpan TerminalWriteBudget = TimeSpan.FromSeconds(5);
+        private readonly CancellationTokenSource _qualityCancellation = new();
+        private Task _qualityTask = Task.CompletedTask;
 
         public EventGate EventsGate { get; } = new();
         public List<IDisposable> Subscriptions { get; } = [];
@@ -2578,22 +2798,87 @@ results are 0x hexadecimal strings.
         public ComposedDiagnosticSession Session { get; } = session;
         public string SessionId { get; } = sessionId;
         public IReadOnlyList<string> Kinds { get; } = kinds;
+        public EventSourceSession? EventSourceSession { get; set; }
         public Task TerminalTask { get; private set; } = Task.CompletedTask;
 
         public void AllowEvents() => EventsGate.Allow();
 
         public void SuppressEvents() => EventsGate.Suppress();
 
-        public void StartTerminalPump() => TerminalTask = PublishTerminalWhenCompleteAsync();
+        public void Dispose() => _qualityCancellation.Dispose();
+
+        public void StartTerminalPump()
+        {
+            if (EventSourceSession is not null)
+            {
+                _qualityTask = PublishQualityWhileActiveAsync(EventSourceSession);
+            }
+
+            TerminalTask = PublishTerminalWhenCompleteAsync();
+        }
+
+        private async Task PublishQualityWhileActiveAsync(EventSourceSession eventSourceSession)
+        {
+            try
+            {
+                while (!Session.Completion.IsCompleted)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(1), _qualityCancellation.Token).ConfigureAwait(false);
+                    if (Session.Completion.IsCompleted)
+                    {
+                        break;
+                    }
+
+                    await writer.WriteAsync(new
+                    {
+                        type = "quality",
+                        kind = "event_source",
+                        sessionId = SessionId,
+                        observedAt = DateTimeOffset.UtcNow,
+                        eventPipeEventsLost = (long?)null,
+                        eventPipeLossAvailable = false,
+                        coreQueueDropped = eventSourceSession.DroppedObservations,
+                        cliDispatchQueueDropped = Session.DroppedEvents,
+                    }, _qualityCancellation.Token).ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException) when (_qualityCancellation.IsCancellationRequested)
+            {
+            }
+        }
 
         private async Task PublishTerminalWhenCompleteAsync()
         {
             var completion = await Session.Completion.ConfigureAwait(false);
+            _qualityCancellation.Cancel();
+            try
+            {
+                await _qualityTask.WaitAsync(TerminalWriteBudget).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+            }
+
             // The session has already finished dispatching; this flush is best-effort and bounded so a
             // wedged stdout consumer cannot block the CLI's stop/cancel/EOF handling forever.
             try
             {
                 await EventsGate.Task.WaitAsync(TerminalWriteBudget).ConfigureAwait(false);
+                if (EventSourceSession is not null)
+                {
+                    await writer.WriteAsync(new
+                    {
+                        type = "quality",
+                        kind = "event_source",
+                        sessionId = SessionId,
+                        observedAt = DateTimeOffset.UtcNow,
+                        eventPipeEventsLost = completion.EventPipeEventsLost,
+                        eventPipeLossAvailable = completion.EventPipeEventsLost.HasValue,
+                        coreQueueDropped = EventSourceSession.DroppedObservations,
+                        cliDispatchQueueDropped = Session.DroppedEvents,
+                    }, CancellationToken.None).WaitAsync(TerminalWriteBudget).ConfigureAwait(false);
+                }
+
                 await writer.WriteAsync(new
                 {
                     type = "terminal",
@@ -2614,6 +2899,7 @@ results are 0x hexadecimal strings.
             }
             finally
             {
+                Dispose();
                 foreach (var subscription in Subscriptions)
                 {
                     subscription.Dispose();
@@ -2629,6 +2915,23 @@ results are 0x hexadecimal strings.
         public async Task WriteAsync(object frame, CancellationToken cancellationToken)
         {
             var json = JsonSerializer.Serialize(frame, frame.GetType(), JsonOptions);
+            await WriteSerializedAsync(json, cancellationToken).ConfigureAwait(false);
+        }
+
+        public async Task WriteEventAsync(object frame, CancellationToken cancellationToken)
+        {
+            var json = JsonSerializer.Serialize(frame, frame.GetType(), JsonOptions);
+            if (System.Text.Encoding.UTF8.GetByteCount(json) > EventSourceSessionOptions.MaxEventFrameBytes)
+            {
+                throw new InvalidOperationException(
+                    $"Live EventSource frame exceeded the {EventSourceSessionOptions.MaxEventFrameBytes}-byte UTF-8 limit.");
+            }
+
+            await WriteSerializedAsync(json, cancellationToken).ConfigureAwait(false);
+        }
+
+        private async Task WriteSerializedAsync(string json, CancellationToken cancellationToken)
+        {
             await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {

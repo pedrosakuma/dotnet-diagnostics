@@ -32,14 +32,15 @@ not require a version bump. Send a handshake before any other request:
 {"type":"hello","protocolVersion":2}
 ```
 
-The CLI replies with the negotiated protocol and its informational CLI version:
+The CLI replies with the negotiated protocol, its informational CLI version, and the supported live
+kind names:
 
 ```json
-{"type":"hello","protocolVersion":2,"cliVersion":"0.30.0"}
+{"type":"hello","protocolVersion":2,"cliVersion":"0.31.0","supportedLiveKinds":["counters","event_source","gc"]}
 ```
 
-Clients may use `cliVersion` for feature-compatibility guidance; the field is additive and does not
-change protocol negotiation.
+Clients may use `cliVersion` for feature-compatibility guidance and `supportedLiveKinds` to gate
+optional live-stream features; both fields are additive and do not change protocol negotiation.
 
 ### Live sessions (`start`/`stop`)
 
@@ -55,11 +56,11 @@ request shapes are accepted:
   ```
 
 - **Multi-kind shape**: send a non-empty `kinds` array to run several live kinds concurrently in one
-  composed session. Supported kinds are `counters` (same options as above, nested) and `gc` (only
-  `observationCapacity`):
+  composed session. Supported kinds are `counters` (same options as above, nested), `gc` (only
+  `observationCapacity`), and `event_source`:
 
   ```json
-  {"type":"start","requestId":"capture-2","processId":1234,"kinds":[{"kind":"counters","providers":["System.Runtime"]},{"kind":"gc"}]}
+  {"type":"start","requestId":"capture-2","processId":1234,"kinds":[{"kind":"counters","providers":["System.Runtime"]},{"kind":"gc"},{"kind":"event_source","providers":[{"name":"Microsoft-Windows-DotNETRuntime","eventLevel":5,"keywords":"-1"}],"observationCapacity":256,"acknowledgeRisk":"high"}]}
   ```
 
 Each kind in `kinds` must be unique and recognized; every requested kind clears the Core safety
@@ -71,11 +72,11 @@ echoing the active live kinds:
 {"type":"started","requestId":"capture-2","sessionId":"<session-id>","processId":1234,"kinds":["counters","gc"]}
 ```
 
-As samples arrive, the CLI emits `observation` frames tagged with the originating `kind`
-(`"counters"` or `"gc"`), a monotonically increasing sequence, and a timestamp. Counters observations
-carry a `counter` payload; GC observations carry a `collection` payload. Sequence gaps and the
-terminal `droppedObservations` count make bounded-queue loss visible. Stop or cancel the session with
-its ID:
+As samples arrive, the CLI emits `observation` frames tagged with the originating `kind`, a
+monotonically increasing sequence, and a timestamp. Counters observations carry a `counter` payload;
+GC observations carry a `collection` payload. EventSource observations use the schema below.
+Sequence gaps and the terminal `droppedObservations` count make bounded-queue loss visible. Stop or
+cancel the session with its ID:
 
 ```json
 {"type":"stop","sessionId":"<session-id>"}
@@ -89,6 +90,113 @@ The Core session APIs apply these provider and queue bounds themselves as well; 
 protocol-side validation. Malformed or unsupported requests receive an `error` frame. EOF stops an
 active session, drains it, emits its terminal frame, and exits. Closing a panel should send `cancel`
 (or close stdin) before disposing the child process.
+
+#### EventSource live kind
+
+`event_source` opens a Core-owned continuous EventPipe session. JSONL may compose it with `counters`
+or `gc`; the VS Code Events tab uses a separate CLI connection so that stream has independent
+controls and lifecycle. Its `providers` field contains 1–8 explicit provider objects. Each name is
+unique case-insensitively and at most 256 characters; `eventLevel` is an integer from 0 through 5
+(default 4); `keywords` is a signed 64-bit decimal **string** (no JSON-number coercion). Provider
+subscriptions are filtered to those explicit names. EventPipe does not provide wildcard or native
+Windows ETW collection. Non-allowlisted providers require `"acknowledgeRisk":"high"`; they are
+rejected before any requested kind starts if acknowledgement is missing.
+
+Each event observation contains `sessionId`, `sequence`, source `timestamp`, Core callback `receivedAt`,
+`provider`, `eventName`, `eventId`, `version`, `level`, optional `threadId`, `activityId` and
+`relatedActivityId`, a `payload` object, `metadataTruncated`, `payloadTruncated`,
+`omittedPayloadFields`, `omittedPayloadCharacters`, `unsupportedPayloadValues`, and
+`payloadFieldsUnavailable`. The latter is true when TraceEvent reports nonzero event-data bytes
+but exposes no decoded payload fields: `payload` stays empty and completeness is unknown.
+It does not establish why fields are unavailable or invent fields or unsupported-value counts.
+False does not guarantee payload completeness; older frames may omit this additive flag,
+in which case this condition was not reported. Payload values
+are inert strings for null, strings, characters, booleans, numeric primitives, enums, GUIDs and date
+values. Other runtime object types are represented by an explicit unsupported-type marker; arbitrary
+`ToString()` and recursive object formatting are not used. Per observation, payload retention is
+limited to 32 fields, 128 characters per field name, 1,024 characters per value, and 2,048 aggregate
+payload name/value characters. Metadata strings are limited to 256 characters. The serialized event
+frame is limited to 16 KiB UTF-8.
+
+The runtime provider's managed-exception event (ID 80, version 1) uses TraceEvent's
+CLR decoder, since dynamic callbacks on Linux can expose no decoded fields. It is
+not also published through the dynamic decoder. Other identities and versions
+retain the generic dynamic payload projection; the viewer specializes details
+only when the observed identity, version and payload field set match.
+
+The collector's pending queue defaults to 32 observations, with an explicit
+`observationCapacity` range of 1-256 and a separate 4 MiB conservative retained-byte cap.
+The smaller default favors fresher admitted events under slow consumption, at the
+cost of more explicitly counted drop-newest rejections. When `event_source` is in
+the composition, the shared composed-dispatch queue is independently capped at
+4 MiB and uses the maximum requested kind capacity, limited to 256. Events-only
+default requests therefore use 32; a counters/GC sibling requesting 256 raises
+shared dispatch to 256 without changing the Events child queue. Counters/GC
+defaults remain unchanged. Accounted bytes estimate
+managed retention; they are not an RSS measurement. The EventPipe circular buffer is 64 MiB.
+TraceEvent exposes already-decoded payload values to the callback; the collector reads only the
+bounded field set and immediately truncates values, but cannot cap allocation internal to TraceEvent
+while decoding one provider event.
+
+The VS Code Events connection explicitly requests 32 observations and uses a
+64-event / 1 MiB accounted host window, including its single acknowledged batch
+in flight. The host hard count limit remains 256; it is not the operational
+default. Batch limits remain 64 events / 64 KiB and at most 10 updates per
+second; UI history remains 2,000 events / 8 MiB with at most 100 mounted rows.
+Smaller upstream windows are not a latency guarantee: pipe buffering, scheduling,
+IPC and downstream processing still contribute. The Events host continuously
+drains and validates stdout rather than pausing at host capacity. If the window
+is full (including an unacknowledged batch), newest event offers are rejected
+and counted separately as `hostDeliveryDropped`. Quality/control/terminal frames
+continue to be consumed; quality updates coalesce until a batch can be acknowledged.
+This is an explicit host backpressure-to-drop-newest policy change, not a Core/CLI
+overflow change or latency guarantee. Report actual per-layer counters rather
+than inferring drops from generated volume; UI retention and counters/GC behavior
+are unchanged.
+
+CLI quality frames are emitted about once per second
+and once at termination, with distinct fields for `coreQueueDropped` and
+`cliDispatchQueueDropped`. `eventPipeEventsLost` is `null` and `eventPipeLossAvailable` is `false`
+while the source loss count is unknown; the final quality frame reports it when TraceEvent provides
+one. These are separate layer-specific counts and must not be summed as a single total. Payload
+truncation and unsupported-value counts are per event, not transport-loss estimates.
+
+Provider payloads are application-controlled and may contain secrets or personal data, especially
+exception messages. Consumers should warn before collection, keep events in bounded memory by
+default, and avoid automatic persistence or logging of payload values.
+
+#### Manual live-event load acceptance
+
+The Windows-only acceptance runner in `scripts/live-events-acceptance.cjs` uses the sample's
+`CoreClrSample.LiveEventStress` EventSource to generate 11,000 events per second for 330 seconds
+(30 seconds of warm-up followed by five measured minutes). It streams and counts JSONL frames rather
+than saving event payloads. The runner also checks a quiet interval, a 20,000-character value's
+truncation, per-minute received counts, separate loss counters, maximum frame size, CLI working-set
+RSS, and sampled Core callback-to-host-read latency. `receivedAt` is assigned in the
+Core EventPipe callback, not when the extension host parses a frame. Core
+callback-to-display, host parse-to-display, and webview message-to-display are
+different boundaries; a passing downstream-only measurement does not establish
+end-to-end acceptance. Cross-process timing also requires explicit clock-domain
+and alignment qualifications. Its optional blocked-output scenario pauses CLI
+stdout and sends `stop` before resuming it:
+
+```powershell
+dotnet build samples\CoreClrSample\CoreClrSample.csproj -c Release
+dotnet build src\DotnetDiagnostics.Cli\DotnetDiagnostics.Cli.csproj -c Release
+node scripts\live-events-acceptance.cjs
+
+$env:LIVE_EVENTS_DURATION_SECONDS = "12"
+$env:LIVE_EVENTS_RATE = "11000"
+$env:LIVE_EVENTS_BLOCK_STDOUT_SECONDS = "14"
+node scripts\live-events-acceptance.cjs
+```
+
+The sustained run takes more than five minutes and is an opt-in manual check, not a CI job. Run it
+serially rather than alongside other load-heavy tests.
+
+The run measures the CLI process and target sample only; it does not measure the VS Code extension
+host, webview renderer RSS, visible-panel interaction latency, or receipt-to-render latency. Those
+values require a live VS Code UI and must not be inferred from the CLI harness.
 
 ### Point-in-time captures (`capture`)
 

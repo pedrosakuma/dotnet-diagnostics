@@ -132,6 +132,8 @@ public sealed class GcSessionTests
 
         public Task<DiagnosticSessionCompletion> Completion => _completion.Task;
 
+        public long DroppedObservations => droppedObservations;
+
         public IDisposable Attach<TEvent>(Func<TEvent, CancellationToken, ValueTask> handler)
             where TEvent : DiagnosticSessionEvent
         {
@@ -178,6 +180,8 @@ public sealed class GcSessionTests
         public int ProcessId { get; } = processId;
 
         public Task<DiagnosticSessionCompletion> Completion => _completion.Task;
+
+        public long DroppedObservations => droppedObservations;
 
         public IDisposable Attach<TEvent>(Func<TEvent, CancellationToken, ValueTask> handler)
             where TEvent : DiagnosticSessionEvent

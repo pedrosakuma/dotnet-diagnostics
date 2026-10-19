@@ -5,6 +5,7 @@ using System.Threading.Channels;
 using DotnetDiagnostics.Cli;
 using DotnetDiagnostics.Core.Artifacts;
 using DotnetDiagnostics.Core.Dump;
+using DotnetDiagnostics.Core.EventSources;
 using DotnetDiagnostics.Core.Threads;
 using DotnetDiagnostics.TestSupport;
 using FluentAssertions;
@@ -69,6 +70,121 @@ public sealed class CliStreamingProtocolKindsTests
 
         frames[1].RootElement.GetProperty("code").GetString().Should().Be("invalid_start");
         frames[1].RootElement.GetProperty("message").GetString().Should().Contain("must not repeat kind 'counters'");
+    }
+
+    [Fact]
+    public async Task Hello_AdvertisesEventSourceLiveKind()
+    {
+        var (frames, _) = await RunInProcessAsync(new { type = "hello", protocolVersion = 2 });
+
+        frames.Should().ContainSingle();
+        frames[0].RootElement.GetProperty("supportedLiveKinds").EnumerateArray()
+            .Select(item => item.GetString()).Should().Contain("event_source");
+    }
+
+    [Theory]
+    [InlineData(null, 32)]
+    [InlineData(1, 1)]
+    [InlineData(32, 32)]
+    [InlineData(256, 256)]
+    public void EventSourceOptions_UseFreshnessDefaultWithoutReducingExplicitHardLimit(int? requested, int expected)
+    {
+        var request = new Dictionary<string, object>
+        {
+            ["providers"] = new[] { new { name = "System.Runtime", eventLevel = 4, keywords = "0" } },
+        };
+        if (requested.HasValue) request["observationCapacity"] = requested.Value;
+        using var document = JsonDocument.Parse(JsonSerializer.Serialize(request));
+
+        CliStreamingProtocol.TryParseEventSourceOptions(document.RootElement, out var options, out var error)
+            .Should().BeTrue(error);
+        options.Should().BeOfType<CliStreamingProtocol.EventSourceStartOptions>()
+            .Which.SessionOptions.ObservationCapacity.Should().Be(expected);
+        EventSourceSessionOptions.MaxObservationCapacity.Should().Be(256);
+    }
+
+    [Theory]
+    [InlineData(32, true, 32)]
+    [InlineData(256, true, 256)]
+    [InlineData(4096, true, 256)]
+    [InlineData(4096, false, 4096)]
+    public void ComposedCapacity_PreservesMaximumRequestedKindAndTheEventsHardCap(
+        int maximumRequestedCapacity, bool includesEventSource, int expected)
+    {
+        CliStreamingProtocol.GetComposedEventCapacity(maximumRequestedCapacity, includesEventSource)
+            .Should().Be(expected);
+    }
+
+    [Fact]
+    public async Task Start_EventSourceRejectsNonStringKeywordsAndCaseInsensitiveDuplicateProviders()
+    {
+        var (invalidKeywords, _) = await RunInProcessAsync(
+            new { type = "hello", protocolVersion = 2 },
+            new
+            {
+                type = "start",
+                requestId = "r1",
+                processId = 999_999,
+                kinds = new object[]
+                {
+                    new
+                    {
+                        kind = "event_source",
+                        providers = new[] { new { name = "Example.Provider", eventLevel = 5, keywords = -1 } },
+                    },
+                },
+            });
+
+        invalidKeywords[1].RootElement.GetProperty("code").GetString().Should().Be("invalid_start");
+        invalidKeywords[1].RootElement.GetProperty("message").GetString().Should().Contain("signed 64-bit integer");
+
+        var (duplicateProviders, _) = await RunInProcessAsync(
+            new { type = "hello", protocolVersion = 2 },
+            new
+            {
+                type = "start",
+                requestId = "r1",
+                processId = 999_999,
+                kinds = new object[]
+                {
+                    new
+                    {
+                        kind = "event_source",
+                        providers = new[]
+                        {
+                            new { name = "Example.Provider", eventLevel = 5, keywords = "-1" },
+                            new { name = "example.provider", eventLevel = 5, keywords = "0" },
+                        },
+                    },
+                },
+            });
+
+        duplicateProviders[1].RootElement.GetProperty("code").GetString().Should().Be("invalid_start");
+        duplicateProviders[1].RootElement.GetProperty("message").GetString().Should().Contain("unique");
+    }
+
+    [Fact]
+    public async Task Start_EventSourceRequiresAcknowledgementForNonAllowlistedProviders()
+    {
+        var (frames, _) = await RunInProcessAsync(
+            new { type = "hello", protocolVersion = 2 },
+            new
+            {
+                type = "start",
+                requestId = "r1",
+                processId = 999_999,
+                kinds = new object[]
+                {
+                    new
+                    {
+                        kind = "event_source",
+                        providers = new[] { new { name = "Example.PrivateProvider", eventLevel = 5, keywords = "-1" } },
+                    },
+                },
+            });
+
+        frames[1].RootElement.GetProperty("code").GetString().Should().Be("safety_rejected");
+        frames[1].RootElement.GetProperty("message").GetString().Should().Contain("event_source");
     }
 
     [Fact]
@@ -911,10 +1027,51 @@ public sealed class CliStreamingProtocolKindsTests
         private sealed class ChannelTextReader : TextReader
         {
             private readonly Channel<string?> _channel = Channel.CreateUnbounded<string?>();
+            private string? _currentLine;
+            private int _position;
 
             public Task WriteLineAsync(string line) => _channel.Writer.WriteAsync(line).AsTask();
 
             public void Complete() => _channel.Writer.TryComplete();
+
+            public override async ValueTask<int> ReadAsync(Memory<char> buffer, CancellationToken cancellationToken = default)
+            {
+                if (buffer.IsEmpty)
+                {
+                    return 0;
+                }
+
+                if (_currentLine is null)
+                {
+                    string? line;
+                    try
+                    {
+                        line = await _channel.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (ChannelClosedException)
+                    {
+                        return 0;
+                    }
+
+                    if (line is null)
+                    {
+                        return 0;
+                    }
+
+                    _currentLine = line + "\n";
+                }
+
+                var count = Math.Min(buffer.Length, _currentLine.Length - _position);
+                _currentLine.AsMemory(_position, count).CopyTo(buffer);
+                _position += count;
+                if (_position == _currentLine.Length)
+                {
+                    _currentLine = null;
+                    _position = 0;
+                }
+
+                return count;
+            }
 
             public override async ValueTask<string?> ReadLineAsync(CancellationToken cancellationToken)
             {

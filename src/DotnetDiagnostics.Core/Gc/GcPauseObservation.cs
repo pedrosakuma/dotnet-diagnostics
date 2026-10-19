@@ -25,6 +25,10 @@ public sealed record GcPauseObservation : DiagnosticSessionEvent
     public GcEvent Collection { get; }
 
     /// <inheritdoc />
+    public override int RetainedSizeBytes => EstimateRetainedSizeBytes(
+        (long)Collection.Reason.Length + Collection.Type.Length);
+
+    /// <inheritdoc />
     public override DiagnosticSessionEvent WithSequence(long sequence) =>
         new GcPauseObservation(sequence, Timestamp, Collection);
 }

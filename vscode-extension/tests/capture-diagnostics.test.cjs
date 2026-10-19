@@ -105,6 +105,24 @@ test("each kind completes through the compiled controller and actual frame valid
         assert.equal(session.pendingCaptures.size, 0);
     }
 });
+test("malformed JSONL frames report an error in the active Events view", () => {
+    const controller = Object.create(Controller.prototype);
+    const messages = [], eventsMessages = [];
+    let killed = false;
+    controller.postMessage = message => messages.push(message);
+    controller.postEventsMessage = message => eventsMessages.push(message);
+    controller.failPending = () => {};
+    controller.handleFrame({
+        eventsConnection: true,
+        startupErrorReported: false,
+        process: { kill() { killed = true; } },
+    }, "{malformed");
+    assert.equal(eventsMessages.length, 1);
+    assert.equal(eventsMessages[0].type, "eventsStatus");
+    assert.equal(eventsMessages[0].state, "error");
+    assert.equal(messages.length, 0);
+    assert.equal(killed, true);
+});
 test("busy captures do not send queued reproduction guidance or discard previous evidence", async () => {
     for (const state of [
         { pendingCaptures: new Map([["cpu", {}]]) }, { pendingQueries: new Map([["q", {}]]) }, { startInFlight: true },

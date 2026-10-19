@@ -70,7 +70,8 @@ internal static class CliInvocationSafety
             "collect" => Collect(options),
             "stream" => InvocationSafetyRequest.Create(
                 DiagnosticOperationCatalog.CollectEvents,
-                ("kind", options.Kind ?? "counters")),
+                ("kind", options.Kind ?? "counters"),
+                ("unsafeProvider", options.UnsafeProvider)),
             "inspect" => InspectProcess(options.View),
             "inspect-heap" => InspectHeap(options),
             "dump" => InvocationSafetyRequest.Create(

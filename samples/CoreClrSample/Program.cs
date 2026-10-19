@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Diagnostics.Tracing;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 
@@ -10,6 +11,10 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddOpenApi();
 
 var app = builder.Build();
+long liveEventStressGenerated = 0;
+long liveEventStressElapsedTicks = 0;
+var liveEventStressRunning = 0;
+string? liveEventStressError = null;
 
 // Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
@@ -179,6 +184,75 @@ app.MapGet("/leak", (int? mb) =>
 .WithName("LeakBytes");
 
 app.MapGet("/heap-array-fixture", () => Results.Ok(ArrayInspectionFixture.Rows.Length));
+
+app.MapGet("/live-events/stress/start", (int? rate, int? seconds, int? payloadChars) =>
+{
+    if (Interlocked.CompareExchange(ref liveEventStressRunning, 1, 0) != 0)
+        return Results.Conflict(new { error = "A live-event stress run is already active." });
+
+    var eventsPerSecond = Math.Clamp(rate ?? 10_000, 1, 50_000);
+    var durationSeconds = Math.Clamp(seconds ?? 330, 1, 3600);
+    var payload = new string('x', Math.Clamp(payloadChars ?? 16, 0, 1_000_000));
+    var targetEvents = (long)eventsPerSecond * durationSeconds;
+    Interlocked.Exchange(ref liveEventStressGenerated, 0);
+    Interlocked.Exchange(ref liveEventStressElapsedTicks, 0);
+    Volatile.Write(ref liveEventStressError, null);
+
+    _ = Task.Run(async () =>
+    {
+        var elapsed = Stopwatch.StartNew();
+        long generated = 0;
+        try
+        {
+            while (elapsed.Elapsed < TimeSpan.FromSeconds(durationSeconds))
+            {
+                var due = Math.Min(targetEvents, (long)(elapsed.Elapsed.TotalSeconds * eventsPerSecond));
+                while (generated < due)
+                {
+                    LiveEventStressSource.Log.Generated(generated + 1, payload);
+                    generated++;
+                }
+
+                Interlocked.Exchange(ref liveEventStressGenerated, generated);
+                await Task.Delay(10);
+            }
+        }
+        catch (Exception exception)
+        {
+            Volatile.Write(ref liveEventStressError, $"{exception.GetType().Name}: {exception.Message}");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref liveEventStressGenerated, generated);
+            Interlocked.Exchange(ref liveEventStressElapsedTicks, elapsed.ElapsedTicks);
+            Volatile.Write(ref liveEventStressRunning, 0);
+        }
+    });
+
+    return Results.Accepted("/live-events/status", new { running = true, requestedEventsPerSecond = eventsPerSecond, requestedDurationSeconds = durationSeconds });
+});
+
+app.MapGet("/live-events/status", () =>
+{
+    var generated = Interlocked.Read(ref liveEventStressGenerated);
+    var elapsedSeconds = (double)Interlocked.Read(ref liveEventStressElapsedTicks) / Stopwatch.Frequency;
+    var eventsPerSecond = elapsedSeconds > 0 ? generated / elapsedSeconds : 0;
+    return Results.Json(new
+    {
+        running = Volatile.Read(ref liveEventStressRunning) != 0,
+        generatedEvents = generated,
+        elapsedSeconds,
+        achievedEventsPerSecond = eventsPerSecond,
+        error = Volatile.Read(ref liveEventStressError),
+    });
+});
+
+app.MapGet("/live-events/oversized", (int? payloadChars) =>
+{
+    var payload = new string('x', Math.Clamp(payloadChars ?? 1_000_000, 0, 1_000_000));
+    LiveEventStressSource.Log.Generated(1, payload);
+    return Results.Ok(new { payloadCharacters = payload.Length });
+});
 
 // Exception-storm: control flow via int.Parse on bad input inside a hot loop.
 app.MapGet("/parse", () =>

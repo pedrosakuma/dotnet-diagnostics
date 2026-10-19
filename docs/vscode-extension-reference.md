@@ -3,8 +3,8 @@
 Detailed usage, troubleshooting, lifecycle and contributor information for
 [.NET Diagnostics for VS Code](../vscode-extension/README.md).
 
-This desktop/workspace-host extension provides a live runtime-counters and GC-pauses panel, plus a
-point-in-time CPU capture, backed by the Core-owned EventPipe/CPU-sampling sessions in
+This desktop/workspace-host extension provides live runtime counters, GC pauses and EventPipe
+EventSource events, plus a point-in-time CPU capture, backed by Core-owned EventPipe/CPU-sampling sessions in
 `dotnet-diagnostics-cli`. It does not collect diagnostics in TypeScript and does not use the MCP
 server as a data transport.
 
@@ -102,6 +102,26 @@ The extension runs `dotnet-diagnostics-cli processes --json` for discovery and s
 frames. The CLI path can be set in the machine-scoped `dotnetDiagnostics.cliPath` setting; the
 extension host must be able to execute it. Runtime, missing-tool, and protocol-version errors are
 shown with actionable guidance.
+
+The **Events** tab starts an independent `event_source` EventPipe session; it can run while the
+counters/GC stream is stopped or active. It asks for 1–8 explicit provider names, an event level
+(0–5), and a signed 64-bit decimal keyword mask, then requires acknowledgement because provider
+payloads can contain secrets or personal data. It does not use native Windows ETW, wildcard
+providers, the MCP server, or persistent storage. Pause following freezes the visible page while
+collection and bounded retention continue; Clear removes the retained UI events without stopping
+the stream. The table supports bounded search, paging and one selected event detail view. Managed
+exception details are labeled only for the runtime provider's schema-verified
+runtime exception event (provider `Microsoft-Windows-DotNETRuntime`, ID 80, version 1, exact
+`ExceptionType`, `ExceptionMessage`, `ExceptionEIP`, `ExceptionHRESULT`, `ExceptionFlags`, and
+`ClrInstanceID` payload fields). TraceEvent may expose a task label rather than
+`ExceptionThrown_V1` in its event-name field for this runtime event, so specialization uses the
+provider, numeric identity, version and exact payload schema; the original event name remains visible.
+Other events and incompatible schemas remain generic.
+Source-loss availability, Core queue drops, CLI dispatch drops, host-delivery drops, UI evictions,
+and payload/metadata truncation are shown separately, never combined into an apparent total. The
+exact frame schema and limits are in the [CLI stream reference](cli-reference.md#eventsourcelivekind).
+Component accounting budgets and their distinction from measured RSS are in
+[`resource-boundedness.md`](resource-boundedness.md#eventpipe-eventsource-live-events-1201).
 
 The **.NET Processes** view adds refresh, a name/PID/runtime/platform filter, and context actions
 for counters and CPU/heap/thread captures. Click a process once to select it; context actions

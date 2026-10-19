@@ -13,6 +13,7 @@ using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Db;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Dump;
+using DotnetDiagnostics.Core.EventSources;
 using DotnetDiagnostics.Core.Evidence;
 using DotnetDiagnostics.Core.Exceptions;
 using DotnetDiagnostics.Core.GatedCapture;
@@ -458,6 +459,159 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         }
         completion.Status.Should().Be(DiagnosticSessionStatus.Stopped);
         completion.EndedAt.Should().BeOnOrAfter(completion.StartedAt);
+        completion.Error.Should().BeNull();
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task LiveEventSourceSession_StreamsBoundedEventsBeforeStop()
+    {
+        EnsureSampleRunning();
+        var baseUrl = await EnsureListeningUrlAsync(TimeSpan.FromSeconds(30));
+
+        using var driverCancellation = new CancellationTokenSource();
+        using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
+        var driver = Task.CompletedTask;
+
+        try
+        {
+            await using var session = new EventPipeEventSourceSessionFactory().CreateSession(
+                Pid,
+                new EventSourceSessionOptions
+                {
+                    Providers = [new("Microsoft-Windows-DotNETRuntime", 5, -1)],
+                    ObservationCapacity = 64,
+                });
+            var observations = new List<EventSourceLiveObservation>();
+            var received = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var subscription = session.Attach<EventSourceLiveObservation>((observation, _) =>
+            {
+                observations.Add(observation);
+                received.TrySetResult();
+                return ValueTask.CompletedTask;
+            });
+
+            await session.StartAsync();
+            driver = Task.Run(async () =>
+            {
+                while (!driverCancellation.IsCancellationRequested)
+                {
+                    try { _ = await http.GetAsync("/render?count=2000", driverCancellation.Token); }
+                    catch (OperationCanceledException) { break; }
+                    catch (HttpRequestException) { }
+                }
+            }, driverCancellation.Token);
+            await received.Task.WaitAsync(TimeSpan.FromSeconds(20));
+            driverCancellation.Cancel();
+            await driver.WaitAsync(TimeSpan.FromSeconds(5));
+            var completion = await session.StopAsync().WaitAsync(TimeSpan.FromSeconds(10));
+
+            observations.Should().NotBeEmpty();
+            observations.Should().OnlyContain(observation =>
+                observation.Provider == "Microsoft-Windows-DotNETRuntime"
+                && observation.Provider.Length <= EventSourceSessionOptions.MaxProviderNameLength
+                && observation.EventName.Length <= 256
+                && observation.Payload.Count <= EventSourceSessionOptions.MaxPayloadFields
+                && observation.Payload.All(field => field.Key.Length <= EventSourceSessionOptions.MaxPayloadFieldNameLength
+                    && field.Value.Length <= EventSourceSessionOptions.MaxPayloadValueLength)
+                && observation.Payload.Sum(field => field.Key.Length + field.Value.Length)
+                    <= EventSourceSessionOptions.MaxPayloadCharacters);
+            observations.Select(observation => observation.Sequence)
+                .Should().BeInAscendingOrder();
+            completion.Status.Should().Be(DiagnosticSessionStatus.Stopped);
+            completion.Error.Should().BeNull();
+        }
+        finally
+        {
+            driverCancellation.Cancel();
+            await driver;
+        }
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task LiveEventSourceSession_ManagedExceptionPayloadMatchesRendererSchema()
+    {
+        EnsureSampleRunning();
+        var baseUrl = await EnsureListeningUrlAsync(TimeSpan.FromSeconds(30));
+        using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
+        var exceptionObservation = new TaskCompletionSource<EventSourceLiveObservation>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var sessionReceiving = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var workloadObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var exceptionCount = 0;
+        var expectedExceptions = int.MaxValue;
+
+        await using var session = new EventPipeEventSourceSessionFactory().CreateSession(
+            Pid,
+            new EventSourceSessionOptions
+            {
+                Providers = [new("Microsoft-Windows-DotNETRuntime", 5, -1)],
+                ObservationCapacity = 64,
+            });
+        using var subscription = session.Attach<EventSourceLiveObservation>((observation, _) =>
+        {
+            sessionReceiving.TrySetResult();
+            if (observation.EventId == 80
+                && observation.Payload.TryGetValue("ExceptionType", out var exceptionType)
+                && exceptionType.Contains("FormatException", StringComparison.Ordinal))
+            {
+                if (Interlocked.Increment(ref exceptionCount) >= Volatile.Read(ref expectedExceptions))
+                {
+                    workloadObserved.TrySetResult();
+                }
+                exceptionObservation.TrySetResult(observation);
+            }
+
+            return ValueTask.CompletedTask;
+        });
+
+        await session.StartAsync();
+        await sessionReceiving.Task.WaitAsync(TimeSpan.FromSeconds(20));
+        using var response = await http.GetAsync("/parse");
+        response.EnsureSuccessStatusCode();
+        using var responseDocument = System.Text.Json.JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var generatedExceptions = responseDocument.RootElement.GetProperty("ko").GetInt32();
+        generatedExceptions.Should().BePositive();
+        Volatile.Write(ref expectedExceptions, generatedExceptions);
+        if (Volatile.Read(ref exceptionCount) >= generatedExceptions)
+        {
+            workloadObserved.TrySetResult();
+        }
+
+        var workloadDeadlineExpired = false;
+        try
+        {
+            await workloadObserved.Task.WaitAsync(TimeSpan.FromSeconds(20));
+        }
+        catch (TimeoutException)
+        {
+            workloadDeadlineExpired = true;
+        }
+        var completion = await session.StopAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        var counts = $"generated={generatedExceptions}, observed={Volatile.Read(ref exceptionCount)}, "
+            + $"Core queue drops={session.DroppedObservations}, completion drops={completion.DroppedObservations}, "
+            + $"EventPipe source loss={completion.EventPipeEventsLost?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "unknown"}, "
+            + $"status={completion.Status}, error={completion.Error?.Message ?? "none"}";
+        workloadDeadlineExpired.Should().BeFalse(
+            $"the workload must reach this session's observation handler within 20 seconds before stop; {counts}");
+        var observed = await exceptionObservation.Task;
+
+        observed.Provider.Should().Be("Microsoft-Windows-DotNETRuntime");
+        observed.Version.Should().Be(1);
+        observed.Payload.Keys.Should().BeEquivalentTo(
+            "ExceptionType",
+            "ExceptionMessage",
+            "ExceptionEIP",
+            "ExceptionHRESULT",
+            "ExceptionFlags",
+            "ClrInstanceID");
+        observed.Payload["ExceptionType"].Should().Contain("FormatException");
+        observed.Payload["ExceptionMessage"].Should().NotBeNullOrEmpty();
+        observed.PayloadTruncated.Should().BeFalse();
+        observed.PayloadFieldsUnavailable.Should().BeFalse();
+        Volatile.Read(ref exceptionCount).Should().Be(generatedExceptions,
+            $"each source exception must be emitted once, not by both decoders; {counts}");
+
+        completion.Status.Should().Be(DiagnosticSessionStatus.Stopped);
         completion.Error.Should().BeNull();
     }
 

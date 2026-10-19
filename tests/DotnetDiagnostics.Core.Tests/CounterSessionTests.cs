@@ -451,6 +451,8 @@ public sealed class CounterSessionTests
 
         public Task<DiagnosticSessionCompletion> Completion => _completion.Task;
 
+        public long DroppedObservations => droppedObservations;
+
         public IDisposable Attach<TEvent>(Func<TEvent, CancellationToken, ValueTask> handler)
             where TEvent : DiagnosticSessionEvent
         {
