@@ -5,6 +5,10 @@ versioned independently from the CLI and the .NET packages.
 
 ## Unreleased
 
+- Keep result-tab keyboard navigation in visible DOM order, show selected receipt-time bounds on
+  live controls, and distinguish a ready selected process from active live counters. Collection
+  failures now retain their original reason and offer applicable Environment/Output recovery actions.
+
 ## 0.3.1
 
 - Fix the Live counter chart staying blank when the panel was laid out hidden or at zero size; the chart now
