@@ -25,6 +25,7 @@ using FluentAssertions;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using ModelContextProtocol;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Extensions.Tasks;
 using ModelContextProtocol.Protocol;
@@ -1039,7 +1040,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         evidence.MeterProcessCumulative.Should().NotBeNull();
         evidence.MeterProcessCumulative!.Value.Should().BeGreaterThan(0);
         evidence.GcCollectorWindowCount.Should().BeGreaterThan(0);
-        evidence.GcCollectorWindowSeconds.Should().BeInRange(report.DurationSeconds, report.DurationSeconds + 10);
+        evidence.GcCollectorWindowSeconds.Should().BeGreaterThan(0);
         evidence.Explanation.Should().Contain("not interchangeable");
 
         var countersEntry = report.Results
@@ -1061,6 +1062,9 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         gcEntry.Data.Should().NotBeNull();
         gcEntry.Handle.Should().NotBeNullOrWhiteSpace();
         var gcData = gcEntry.Data!.Value.GetProperty("gc");
+        var collectedGc = gcData.Deserialize<GcSummary>(McpJsonUtilities.DefaultOptions)!;
+        collectedGc.RequestedDuration.Should().Be(TimeSpan.FromSeconds(report.DurationSeconds));
+        evidence.GcCollectorWindowSeconds.Should().Be(collectedGc.Duration.TotalSeconds);
         var totalCollections = gcData.GetProperty("totalCollections").GetInt32();
         totalCollections.Should().BeGreaterThanOrEqualTo(evidence.GcCollectorWindowCount);
         var inlineGen2Count = gcData.GetProperty("generations").EnumerateArray()
@@ -1082,6 +1086,18 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         var gcSnapshot = DeserializeStructured<CollectionQueryResult>(gcQuery);
         gcSnapshot.Should().NotBeNull();
         var gcPayload = gcSnapshot!.Payload.Should().BeOfType<JsonElement>().Subject;
+        gcSnapshot.StartedAt.Should().Be(collectedGc.StartedAt);
+        gcSnapshot.Duration.Should().Be(collectedGc.Duration);
+        var observation = gcPayload.GetProperty("evidence");
+        observation.GetProperty("completion").GetString().Should().Be("normal-stop");
+        var observedStart = observation.GetProperty("observationStart").GetDateTimeOffset();
+        var observedEnd = observation.GetProperty("observationEnd").GetDateTimeOffset();
+        observedStart.Should().Be(collectedGc.StartedAt);
+        (observedEnd - observedStart).TotalSeconds.Should().Be(evidence.GcCollectorWindowSeconds,
+            "the batch must report the actual EventPipe-header-to-drain window, not the requested delay; " +
+            "requested={0}s, start={1:O}, end={2:O}, completion={3}",
+            report.DurationSeconds, observedStart, observedEnd,
+            observation.GetProperty("completion").GetString());
         gcPayload.GetProperty("totalCollections").GetInt32().Should().Be(totalCollections);
         gcPayload.GetProperty("measurementVersion").GetInt32().Should().Be(2);
         gcPayload.GetProperty("measurementStatus").GetString().Should().Be(gcData.GetProperty("pauseMeasurementStatus").GetString());

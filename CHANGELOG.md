@@ -4,6 +4,9 @@
 
 ### Changed
 
+- Batch GC evidence coverage now checks exact parity with the observed GC artifact
+  and observation timestamps instead of treating requested delay as a lower bound
+  on the independently measured window. Runtime measurements remain unchanged (#1209).
 - MCP catalogs advertise unconstrained immediate output properties as `{}` instead
   of the equivalent `true` schema, allowing TypeScript MCP SDK 1.32.1 discovery
   without restricting accepted result values or changing tool responses (#1207).
