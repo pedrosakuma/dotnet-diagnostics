@@ -48,6 +48,36 @@ public sealed class CollectBatchSalientEvidenceTests
     }
 
     [Fact]
+    public void Apply_GcObservedWindowIsNotClampedToRequestedDuration()
+    {
+        AssertObservedWindow(TimeSpan.FromTicks(199_952_756));
+        AssertObservedWindow(TimeSpan.FromSeconds(20));
+        AssertObservedWindow(TimeSpan.FromSeconds(21));
+
+        static void AssertObservedWindow(TimeSpan observed)
+        {
+            var store = new MemoryDiagnosticHandleStore();
+            var counters = LohCounterSnapshot();
+            var gc = Gen2GcSummary() with
+            {
+                Duration = observed,
+                RequestedDuration = TimeSpan.FromSeconds(20),
+            };
+            var countersHandle = store.Register(123, CollectionHandleKinds.Counters, counters, TimeSpan.FromMinutes(10));
+            var gcHandle = store.Register(123, CollectionHandleKinds.GcEvents, gc, TimeSpan.FromMinutes(10));
+            var report = BatchReport(countersHandle, gcHandle) with { DurationSeconds = 20 };
+
+            var projected = CollectBatchSalientEvidence.Apply(report, store);
+            var query = CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.GcEvents, "events", gc, topN: 50);
+
+            projected.DurationSeconds.Should().Be(20);
+            projected.Gen2Evidence!.GcCollectorWindowSeconds.Should().Be(observed.TotalSeconds);
+            query.Result!.Duration.Should().Be(observed);
+            store.TryGet<GcSummary>(gcHandle.Id)!.RequestedDuration.Should().Be(TimeSpan.FromSeconds(20));
+        }
+    }
+
+    [Fact]
     public void Apply_LohAllocBatch_PreservesFullCounterDrilldownParity()
     {
         var store = new MemoryDiagnosticHandleStore();

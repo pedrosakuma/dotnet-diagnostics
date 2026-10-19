@@ -2006,6 +2006,13 @@ bounded generation-tag variants).
   `gcCollectorWindowSeconds` window. This count comes from the GC collector's exact generation
   aggregate and continues updating after its 200-row raw-event retention cap.
 
+`gcCollectorWindowSeconds` is the measured interval from the EventPipe session-header
+timestamp through collector drain completion, not the requested `durationSeconds`
+delay. These boundaries can yield a slightly shorter or longer interval; the measured
+value is never clamped to the request. The GC artifact retains `requestedDuration`
+separately, and `query_snapshot` exposes the same measured duration and observation
+start/end timestamps.
+
 Null Meter fields mean that the target runtime did not publish the requested series during the
 window; they are never inferred from the incompatible EventCounter or GC-window values.
 
