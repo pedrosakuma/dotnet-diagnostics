@@ -59,8 +59,16 @@ public sealed class CultureLookupCpuDiagnosticsTests
         evidence.Metrics.Should().Contain(metric => metric.Name == "cpu-top1-running-self-share" && metric.Value == 2);
     }
 
-    [Fact]
-    public void IcuCoverage_ProjectsCapturedIdentityAndExactDenominators()
+    [Theory]
+    [InlineData(@"C:\Windows\System32\icu.dll", "icu.dll", true)]
+    [InlineData("C:/Windows/System32/icu.dll", "icu.dll", true)]
+    [InlineData(@"C:\Windows\System32\ICU.DLL", "icu.dll", true)]
+    [InlineData(null, "icu.dll", true)]
+    [InlineData(@"C:\Windows\System32\other.dll", "icu.dll", false)]
+    [InlineData(@"C:\Windows\icu.dll\other.dll", "icu.dll", false)]
+    [InlineData(@"C:\Windows\System32\noticu.dll", "icu.dll", false)]
+    public void IcuCoverage_ProjectsCapturedIdentityAndExactDenominators(
+        string? imagePath, string module, bool expectedIcu)
     {
         var result = DiffuseResult();
         var signature = Guid.Parse("94451369-D782-EA5D-26A5-A3501C131722");
@@ -79,8 +87,8 @@ public sealed class CultureLookupCpuDiagnosticsTests
             Modules:
             [
                 new NativeModuleLeafCoverage(
-                    "icu.dll",
-                    @"C:\Windows\System32\icu.dll",
+                    module,
+                    imagePath,
                     0x1800_0000,
                     2_769_976,
                     "icu.pdb",
@@ -107,6 +115,17 @@ public sealed class CultureLookupCpuDiagnosticsTests
         var evidence = ScenarioLiveRunner.CompleteCultureCpuEvidence(
             BaseEvidence, result, maximumEvidenceItems: 5);
 
+        if (!expectedIcu)
+        {
+            evidence.Metrics.Should().Contain(metric =>
+                metric.Name == "icu-native-image-observed" && metric.Value == 0);
+            evidence.Metrics.Should().NotContain(metric =>
+                metric.Name == "icu-native-leaf-sample-weighted-coverage");
+            return;
+        }
+
+        evidence.Metrics.Should().Contain(metric =>
+            metric.Name == "icu-native-image-observed" && metric.Value == 1);
         evidence.Metrics.Should().Contain(metric =>
             metric.Name == "icu-native-leaf-sample-weighted-coverage" && metric.Value == 75);
         evidence.Metrics.Should().Contain(metric =>
@@ -114,6 +133,11 @@ public sealed class CultureLookupCpuDiagnosticsTests
             && Math.Abs(metric.Value - 66.66666666666667) < 0.0001);
         evidence.Metrics.Should().Contain(metric =>
             metric.Name == "icu-native-leaf-unretained-sample-weight" && metric.Value == 2);
+        evidence.Notes.Should().Contain(note =>
+            note.Contains($"path={imagePath ?? "missing"};", StringComparison.Ordinal)
+            && note.Contains("base=0x18000000; size=2769976; pdb=icu.pdb;", StringComparison.Ordinal)
+            && note.Contains("age=1;", StringComparison.Ordinal)
+            && note.Contains("guid=94451369-d782-ea5d-26a5-a3501c131722", StringComparison.OrdinalIgnoreCase));
         evidence.Notes.Should().Contain(note =>
             note.Contains("guid=94451369-d782-ea5d-26a5-a3501c131722", StringComparison.OrdinalIgnoreCase)
             && note.Contains("resolver=Ready", StringComparison.Ordinal));
