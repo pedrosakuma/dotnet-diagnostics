@@ -292,7 +292,7 @@ public sealed class ScenarioLiveRunner
 
         var icu = coverage.Modules
             .Where(module => string.Equals(
-                Path.GetFileName(module.ImagePath ?? module.Module),
+                Path.GetFileName((module.ImagePath ?? module.Module).Replace('\\', '/')),
                 "icu.dll",
                 StringComparison.OrdinalIgnoreCase))
             .OrderByDescending(module => module.TotalLeafSamples)

@@ -4,6 +4,8 @@
 
 ### Changed
 
+- Scenario ICU coverage recognizes captured Windows image paths independently of
+  the replay host OS, preserving the captured identity and exact denominators (#1203).
 - Batch GC evidence coverage now checks exact parity with the observed GC artifact
   and observation timestamps instead of treating requested delay as a lower bound
   on the independently measured window. Runtime measurements remain unchanged (#1209).
