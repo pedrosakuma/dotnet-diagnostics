@@ -2508,7 +2508,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         after.Summary.PreviousInvestigationId.Should().Be(before.Summary.InvestigationId);
         after.Summary.Evidence.Should().ContainSingle(e => e.Kind == "counters");
 
-        // 3. Compare before and after — verdict must be improvement on queue/throughput.
+        // Queue and throughput deltas remain observations without a workload judgment.
         var compareResult = await client.CallToolAsync(
             "compare_to_baseline",
             new Dictionary<string, object?>
@@ -2521,11 +2521,11 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         compareResult.IsError.Should().NotBe(true);
         var diff = DeserializeStructured<SummaryDiff>(compareResult);
         diff.Should().NotBeNull();
-        diff!.Verdict.Should().Be("improvement");
+        diff!.Verdict.Should().Be("incomparable", "thread metrics are missing from the counters-only side");
         diff.KeyMetricDeltas.Should().Contain(d =>
-            d.Name.Contains("threadpool-queue-length", StringComparison.Ordinal) && d.Outcome == "improved");
+            d.Name.Contains("threadpool-queue-length", StringComparison.Ordinal) && d.Outcome == "down");
         diff.KeyMetricDeltas.Should().Contain(d =>
-            d.Name.Contains("requests-per-second", StringComparison.Ordinal) && d.Outcome == "improved");
+            d.Name.Contains("requests-per-second", StringComparison.Ordinal) && d.Outcome == "up");
     }
 
     [Fact]
@@ -2617,6 +2617,65 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         var trustedNarrative = DeserializeEnvelope(result)!.Summary;
         trustedNarrative.Should().NotContain(injection)
             .And.NotContain("https://evil.example");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CompareToBaseline_SummaryInputs_ReportObjectiveDeltasAndConsistentHints(bool snapshotBodies)
+    {
+        string Summary(string id, double latency, double share, string method)
+        {
+            var summary = new InvestigationSummary(
+                InvestigationSummary.SchemaV1, id, DateTimeOffset.UnixEpoch, 1234,
+                new InvestigationProvenance(),
+                new InvestigationFindings(100, DateTimeOffset.UnixEpoch, TimeSpan.FromSeconds(1),
+                    [new HotspotSummary(new SymbolRef("App.dll", method), 10, 10, share, share)],
+                    new Dictionary<string, double> { ["request-latency-p95"] = latency })
+                {
+                    CpuEvidenceKind = CpuSampleEvidenceKind.OsOnCpuSamples,
+                    KeyMetricUnits = new Dictionary<string, string?> { ["request-latency-p95"] = "s" },
+                });
+            return JsonSerializer.Serialize(summary, InvestigationSummaryJsonContext.Default.InvestigationSummary);
+        }
+
+        var baseline = Summary("baseline", 1, 10, "old");
+        var current = Summary("current", 0.5, 20, "new");
+        var arguments = snapshotBodies
+            ? new Dictionary<string, object?> { ["snapshotsJson"] = new[] { baseline, current } }
+            : new Dictionary<string, object?> { ["baselineSummaryJson"] = baseline, ["currentSummaryJson"] = current };
+        await using var client = await ConnectAsync();
+        var result = await client.CallToolAsync("compare_to_baseline", arguments, cancellationToken: CancellationToken.None);
+
+        result.IsError.Should().NotBe(true);
+        var diff = DeserializeStructured<SummaryDiff>(result)!;
+        diff.Verdict.Should().Be("not_assessed");
+        var metric = diff.KeyMetricDeltas.Should().ContainSingle().Which;
+        metric.Outcome.Should().Be("down");
+        metric.BetterDirection.Should().Be("neutral");
+        metric.DeltaAbs.Should().Be(-0.5);
+        metric.DeltaUnit.Should().Be("s");
+        diff.NewHotspots.Single().InclusiveDeltaPoints.Should().BeNull();
+        diff.RemovedHotspots.Single().InclusiveDeltaPoints.Should().BeNull();
+        var envelope = DeserializeEnvelope(result)!;
+        envelope.Summary.Should().Contain("not_assessed").And.Contain("no performance assessment")
+            .And.Contain("retained top lists").And.NotContain("improvement").And.NotContain("regress");
+        envelope.Hints.Should().ContainSingle()
+            .Which.Reason.Should().Be("Collect matching workload, throughput and latency evidence before interpreting the retained deltas.");
+        diff.Notes.Should().Contain(note => note.Contains("Workload equivalence", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task CompareToBaseline_NonfiniteMeasurement_ReturnsExplicitError()
+    {
+        await using var client = await ConnectAsync();
+        var baseline = SummaryJson("baseline", 10);
+        var current = SummaryJson("current", 15).Replace("\"InclusivePercent\": 15", "\"InclusivePercent\": 1e400", StringComparison.Ordinal);
+        current.Should().NotBe(SummaryJson("current", 15), "the fixture must inject an overflowing JSON number");
+        var result = await client.CallToolAsync("compare_to_baseline",
+            new Dictionary<string, object?> { ["baselineSummaryJson"] = baseline, ["currentSummaryJson"] = current },
+            cancellationToken: CancellationToken.None);
+        DeserializeEnvelope(result)!.Error!.Kind.Should().Be("InvalidSummaryJson");
     }
 
     [Fact]

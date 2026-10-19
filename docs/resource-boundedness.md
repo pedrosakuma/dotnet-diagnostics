@@ -59,7 +59,12 @@ selected providers; it is separate from counters/GC sessions. Provider count is 
 are at most 256 characters, the event level is 0–5, and keyword bitmasks travel as signed-64-bit
 decimal strings. The EventPipe circular buffer is 64 MiB.
 
-Projection is performed inside the EventPipe callback before enqueueing. One event retains at most
+Projection is performed inside the EventPipe callback before enqueueing, but only after the
+queue's pending-count check. Offers rejected because the queue is full still consume a sequence
+number and increment the drop count without decoding or serializing their payload. The retained-byte
+check follows projection because the observation's size is not known beforehand. This avoids
+spending the drain budget projecting events that cannot be retained; it does not guarantee that
+every high-volume stream can stop within the unchanged shutdown deadline. One event retains at most
 32 payload fields, 128 characters per field name, 1,024 characters per value, 2,048 aggregate
 payload name/value characters, and 256 characters for each metadata string. Values are formatted
 only for supported primitive-like types; unsupported types get an explicit marker, and arbitrary

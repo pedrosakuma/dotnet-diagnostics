@@ -1614,7 +1614,7 @@ public sealed class DiagnosticTools
         UseStructuredContent = true)]
     [Description(
         "Compares summary/snapshot JSON or explicit local durable captureComparison references. " +
-        "Legacy SummaryDiff/journey behavior is unchanged. Durable CPU/heap/counters return qualified retained differences, " +
+        "SummaryDiff reports objective deltas, not performance judgments; journey behavior is unchanged. Durable CPU/heap/counters return qualified retained differences, " +
         "both identities/quality and incompatibilities, never causal verdicts. No live attach or arbitrary input paths.")]
     public static Task<DiagnosticResult<object>> CompareToBaseline(
         ISummaryComparer comparer,
