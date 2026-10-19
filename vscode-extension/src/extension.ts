@@ -2982,15 +2982,15 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     .query-view-section { margin-top:.75rem; }
     .query-view-table-wrap { max-width:100%; overflow-x:auto; }
     .query-view-table { min-width:32rem; }
-    .cpu-query-table { min-width:32rem; table-layout:fixed; }
+    .query-view-table.cpu-query-table { min-width:48rem; table-layout:fixed; }
     .cpu-query-table .cpu-query-symbol { width:31%; }
     .cpu-query-table .cpu-query-module { width:17%; }
-    .cpu-query-table .cpu-query-number { width:11%; }
+    .cpu-query-table .cpu-query-number { width:6.5rem; }
     .cpu-query-table .cpu-query-action { width:9rem; }
     .cpu-query-table th.cpu-query-number { overflow-wrap:normal; word-break:normal; }
     .cpu-query-table td.cpu-query-number { white-space:nowrap; }
     .cpu-query-table .cpu-query-symbol, .cpu-query-table .cpu-query-module { overflow-wrap:normal; word-break:normal; }
-    .cpu-query-table .cpu-query-symbol span, .cpu-query-table .cpu-query-module span { white-space:nowrap; overflow-wrap:normal; }
+    .cpu-query-table .cpu-query-symbol span, .cpu-query-table .cpu-query-module span { display:inline-block; white-space:nowrap; overflow-wrap:normal; }
     .cpu-query-table .cpu-query-action button { white-space:nowrap; padding:.35rem .45rem; font-size:.8rem; }
     .cpu-query-group-table .cpu-query-module { width:52%; }
     .cpu-query-group-table .cpu-query-number { width:24%; }

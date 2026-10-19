@@ -202,9 +202,10 @@ test("live panel groups results by capture tab and wires CPU drilldown", () => {
     assert.match(html, /class="cpu-query-controls" role="group" aria-label="Allocation drilldown views"/);
     assert.match(html, /data-allocation-view="call-tree" aria-pressed="false"/);
     assert.match(html, /\.cpu-query-controls button\[aria-pressed="true"\]/);
-    assert.match(html, /\.cpu-query-table \.cpu-query-number \{ width:11%; \}/);
+    assert.match(html, /\.cpu-query-table \.cpu-query-number \{ width:6\.5rem; \}/);
     assert.match(html, /\.cpu-query-table \.cpu-query-action \{ width:9rem; \}/);
-    assert.match(html, /\.cpu-query-table \{ min-width:32rem; table-layout:fixed; \}/);
+    assert.match(html, /\.query-view-table\.cpu-query-table \{ min-width:48rem; table-layout:fixed; \}/);
+    assert.match(html, /\.cpu-query-table \.cpu-query-symbol span, \.cpu-query-table \.cpu-query-module span \{ display:inline-block; white-space:nowrap; overflow-wrap:normal; \}/);
     assert.match(html, /\.cpu-query-summary-table \.cpu-query-category \{ width:56%; overflow-wrap:anywhere; word-break:normal; \}/);
     assert.match(script, /message\.type === 'query' && message\.kind === 'cpu'/);
     assert.match(script, /renderCpuQuery\(message\.view, message\.result, false\)/);
