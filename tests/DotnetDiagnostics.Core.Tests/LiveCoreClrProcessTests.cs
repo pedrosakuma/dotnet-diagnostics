@@ -533,86 +533,183 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         EnsureSampleRunning();
         var baseUrl = await EnsureListeningUrlAsync(TimeSpan.FromSeconds(30));
         using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
-        var exceptionObservation = new TaskCompletionSource<EventSourceLiveObservation>(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-        var sessionReceiving = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var workloadObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var exceptionCount = 0;
-        var expectedExceptions = int.MaxValue;
+        const int generatedExceptions = 167;
+        const int batchSize = 32;
+        var messages = Enumerable.Range(0, generatedExceptions + 1)
+            .Select(id => $"live-schema-{id.ToString(CultureInfo.InvariantCulture)}")
+            .ToArray();
+        var identities = messages.Select((message, id) => (message, id))
+            .ToDictionary(pair => pair.message, pair => pair.id, StringComparer.Ordinal);
+        var counts = new int[messages.Length];
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var generated = 0;
+        var witnesses = 0;
+        for (var start = 1; start <= generatedExceptions; start += batchSize)
+        {
+            var count = Math.Min(batchSize, generatedExceptions - start + 1);
+            var witness = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var observations = new List<EventSourceLiveObservation>(count + 1);
+            await using var session = new EventPipeEventSourceSessionFactory().CreateSession(Pid,
+                new EventSourceSessionOptions
+                {
+                    Providers = [new("Microsoft-Windows-DotNETRuntime", 3, 0x8000)],
+                    ObservationCapacity = 64,
+                });
+            using var subscription = session.Attach<EventSourceLiveObservation>((observation, _) =>
+            {
+                observations.Add(observation);
+                if (observation.EventId == 80
+                    && observation.Payload.TryGetValue("ExceptionMessage", out var message)
+                    && identities.TryGetValue(message, out var id))
+                {
+                    Interlocked.Increment(ref counts[id]);
+                    if (id == 0) witness.TrySetResult();
+                }
+                return ValueTask.CompletedTask;
+            });
+            var deadlineExpired = false;
+            DiagnosticSessionCompletion completion;
+            try
+            {
+                await session.StartAsync(deadline.Token);
+                // Each session must witness an exception, not unrelated CLR traffic, before its workload.
+                await GenerateAsync(0, 1);
+                await witness.Task.WaitAsync(deadline.Token);
+                witnesses++;
+                await GenerateAsync(start, count);
+                generated += count;
+                // Low-volume EventPipe buffers need not flush until stop. Keep the complete fixture
+                // below queue capacity even if dispatch makes no progress before this source flush.
+                await session.StopAsync().WaitAsync(deadline.Token);
+            }
+            catch (OperationCanceledException) when (deadline.IsCancellationRequested)
+            {
+                deadlineExpired = true;
+            }
+            finally
+            {
+                completion = await session.StopAsync().WaitAsync(TimeSpan.FromSeconds(10));
+            }
+            var evidence = $"batch start={start}, generated={generated}, observed={counts.Skip(1).Sum()}, "
+                + $"Core queue drops={session.DroppedObservations}, completion drops={completion.DroppedObservations}, "
+                + $"EventPipe source loss={completion.EventPipeEventsLost?.ToString(CultureInfo.InvariantCulture) ?? "unknown"}, "
+                + $"status={completion.Status}, error={completion.Error?.Message ?? "none"}";
+            output.WriteLine(evidence);
+            deadlineExpired.Should().BeFalse($"all identified exceptions must drain within 20 seconds; {evidence}");
+            session.DroppedObservations.Should().Be(0, evidence);
+            completion.DroppedObservations.Should().Be(0, evidence);
+            completion.EventPipeEventsLost.Should().Be(0, evidence);
+            completion.Status.Should().Be(DiagnosticSessionStatus.Stopped);
+            completion.Error.Should().BeNull();
+            observations.Select(observation => observation.Payload["ExceptionMessage"]).Should()
+                .BeEquivalentTo(Enumerable.Range(start, count).Prepend(0).Select(id => messages[id]));
+            observations.Select(observation => observation.Sequence).Should()
+                .Equal(Enumerable.Range(1, count + 1).Select(sequence => (long)sequence));
+            foreach (var observed in observations) AssertManagedExceptionSchema(observed);
+        }
+        generated.Should().Be(generatedExceptions);
+        counts[0].Should().Be(witnesses, "each session must emit its readiness witness exactly once");
+        counts.Skip(1).Should().OnlyContain(count => count == 1,
+            "all 167 unique workload identities must be emitted exactly once, not by both decoders");
 
-        await using var session = new EventPipeEventSourceSessionFactory().CreateSession(
-            Pid,
+        async Task GenerateAsync(int start, int count)
+        {
+            using var response = await http.GetAsync(
+                FormattableString.Invariant($"/live-events/managed-exceptions?start={start}&count={count}"), deadline.Token);
+            response.EnsureSuccessStatusCode();
+            using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(deadline.Token));
+            document.RootElement.GetProperty("generated").GetInt32().Should().Be(count);
+        }
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task LiveEventSourceSession_ManagedExceptionsUnderPressureReportLossAndDrain()
+    {
+        EnsureSampleRunning();
+        var baseUrl = await EnsureListeningUrlAsync(TimeSpan.FromSeconds(30));
+        using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
+        const int capacity = 64;
+        const int burstCount = 167;
+        var generated = 0;
+        var handlerEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseHandler = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var observations = new List<EventSourceLiveObservation>(capacity + 1);
+        await using var session = new EventPipeEventSourceSessionFactory().CreateSession(Pid,
             new EventSourceSessionOptions
             {
-                Providers = [new("Microsoft-Windows-DotNETRuntime", 5, -1)],
-                ObservationCapacity = 64,
+                Providers = [new("Microsoft-Windows-DotNETRuntime", 3, 0x8000)],
+                ObservationCapacity = capacity,
             });
-        using var subscription = session.Attach<EventSourceLiveObservation>((observation, _) =>
+        using var subscription = session.Attach<EventSourceLiveObservation>(async (observation, token) =>
         {
-            sessionReceiving.TrySetResult();
-            if (observation.EventId == 80
-                && observation.Payload.TryGetValue("ExceptionType", out var exceptionType)
-                && exceptionType.Contains("FormatException", StringComparison.Ordinal))
+            observations.Add(observation);
+            if (observations.Count == 1)
             {
-                if (Interlocked.Increment(ref exceptionCount) >= Volatile.Read(ref expectedExceptions))
-                {
-                    workloadObserved.TrySetResult();
-                }
-                exceptionObservation.TrySetResult(observation);
+                handlerEntered.TrySetResult();
+                await releaseHandler.Task.WaitAsync(token);
             }
-
-            return ValueTask.CompletedTask;
         });
-
-        await session.StartAsync();
-        await sessionReceiving.Task.WaitAsync(TimeSpan.FromSeconds(20));
-        using var response = await http.GetAsync("/parse");
-        response.EnsureSuccessStatusCode();
-        using var responseDocument = System.Text.Json.JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-        var generatedExceptions = responseDocument.RootElement.GetProperty("ko").GetInt32();
-        generatedExceptions.Should().BePositive();
-        Volatile.Write(ref expectedExceptions, generatedExceptions);
-        if (Volatile.Read(ref exceptionCount) >= generatedExceptions)
-        {
-            workloadObserved.TrySetResult();
-        }
-
-        var workloadDeadlineExpired = false;
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         try
         {
-            await workloadObserved.Task.WaitAsync(TimeSpan.FromSeconds(20));
+            await session.StartAsync(deadline.Token);
+            await GenerateAsync(0, 1);
+            await handlerEntered.Task.WaitAsync(deadline.Token);
+            await GenerateAsync(1, burstCount);
+            // Stop flushes upstream buffers while the witnessed probe still occupies the handler.
+            // The next 64 exceptions remain pending; the remaining 103 offers must be rejected.
+            var stopping = session.StopAsync();
+            while (session.DroppedObservations < burstCount - capacity)
+            {
+                await Task.Delay(10, deadline.Token);
+            }
+            session.DroppedObservations.Should().Be(burstCount - capacity);
+            releaseHandler.TrySetResult();
+            var completion = await stopping.WaitAsync(TimeSpan.FromSeconds(10));
+            completion.Status.Should().Be(DiagnosticSessionStatus.Stopped);
+            completion.Error.Should().BeNull();
+            completion.EventPipeEventsLost.Should().Be(0);
+            completion.DroppedObservations.Should().Be(burstCount - capacity);
+            session.DroppedObservations.Should().Be(completion.DroppedObservations);
+            observations.Select(observation => observation.Sequence).Should()
+                .Equal(Enumerable.Range(1, capacity + 1).Select(sequence => (long)sequence));
+            observations.Select(observation => observation.Payload["ExceptionMessage"]).Should()
+                .Equal(Enumerable.Range(0, capacity + 1)
+                    .Select(id => $"live-schema-{id.ToString(CultureInfo.InvariantCulture)}"));
+            foreach (var observed in observations) AssertManagedExceptionSchema(observed);
         }
-        catch (TimeoutException)
+        finally
         {
-            workloadDeadlineExpired = true;
+            releaseHandler.TrySetResult();
+            var final = await session.StopAsync().WaitAsync(TimeSpan.FromSeconds(10));
+            output.WriteLine($"generated={generated}, observed={observations.Count}, "
+                + $"Core queue drops={session.DroppedObservations}, completion drops={final.DroppedObservations}, "
+                + $"EventPipe source loss={final.EventPipeEventsLost}, status={final.Status}, error={final.Error?.Message ?? "none"}");
         }
-        var completion = await session.StopAsync().WaitAsync(TimeSpan.FromSeconds(10));
-        var counts = $"generated={generatedExceptions}, observed={Volatile.Read(ref exceptionCount)}, "
-            + $"Core queue drops={session.DroppedObservations}, completion drops={completion.DroppedObservations}, "
-            + $"EventPipe source loss={completion.EventPipeEventsLost?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "unknown"}, "
-            + $"status={completion.Status}, error={completion.Error?.Message ?? "none"}";
-        workloadDeadlineExpired.Should().BeFalse(
-            $"the workload must reach this session's observation handler within 20 seconds before stop; {counts}");
-        var observed = await exceptionObservation.Task;
 
+        async Task GenerateAsync(int start, int count)
+        {
+            using var response = await http.GetAsync(
+                FormattableString.Invariant($"/live-events/managed-exceptions?start={start}&count={count}"), deadline.Token);
+            response.EnsureSuccessStatusCode();
+            using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(deadline.Token));
+            document.RootElement.GetProperty("generated").GetInt32().Should().Be(count);
+            generated += count;
+        }
+    }
+
+    private static void AssertManagedExceptionSchema(EventSourceLiveObservation observed)
+    {
         observed.Provider.Should().Be("Microsoft-Windows-DotNETRuntime");
+        observed.EventId.Should().Be(80);
         observed.Version.Should().Be(1);
         observed.Payload.Keys.Should().BeEquivalentTo(
-            "ExceptionType",
-            "ExceptionMessage",
-            "ExceptionEIP",
-            "ExceptionHRESULT",
-            "ExceptionFlags",
-            "ClrInstanceID");
-        observed.Payload["ExceptionType"].Should().Contain("FormatException");
+            "ExceptionType", "ExceptionMessage", "ExceptionEIP",
+            "ExceptionHRESULT", "ExceptionFlags", "ClrInstanceID");
+        observed.Payload["ExceptionType"].Should().Be("System.FormatException");
         observed.Payload["ExceptionMessage"].Should().NotBeNullOrEmpty();
         observed.PayloadTruncated.Should().BeFalse();
         observed.PayloadFieldsUnavailable.Should().BeFalse();
-        Volatile.Read(ref exceptionCount).Should().Be(generatedExceptions,
-            $"each source exception must be emitted once, not by both decoders; {counts}");
-
-        completion.Status.Should().Be(DiagnosticSessionStatus.Stopped);
-        completion.Error.Should().BeNull();
     }
 
     [Fact(Timeout = 60_000)]

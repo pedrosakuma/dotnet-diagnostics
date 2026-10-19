@@ -254,6 +254,22 @@ app.MapGet("/live-events/oversized", (int? payloadChars) =>
     return Results.Ok(new { payloadCharacters = payload.Length });
 });
 
+// Bounded, uniquely identified exceptions for live schema and drop-newest admission tests.
+app.MapGet("/live-events/managed-exceptions", (int start, int count) =>
+{
+    if (start < 0 || count is < 1 or > 167 || start > 168 - count)
+    {
+        return Results.BadRequest("Exception identities must be in [0, 167], with count in [1, 167].");
+    }
+
+    for (var id = start; id < start + count; id++)
+    {
+        try { throw new FormatException($"live-schema-{id.ToString(CultureInfo.InvariantCulture)}"); }
+        catch (FormatException) { }
+    }
+    return Results.Ok(new { generated = count });
+});
+
 // Exception-storm: control flow via int.Parse on bad input inside a hot loop.
 app.MapGet("/parse", () =>
 {
