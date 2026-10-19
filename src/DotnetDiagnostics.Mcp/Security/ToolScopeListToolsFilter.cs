@@ -169,6 +169,17 @@ internal static class ToolScopeListToolsFilter
             root["properties"] = properties;
         }
 
+        // Both forms accept every JSON value. Some client protocol decoders require
+        // immediate property schemas to be objects even though boolean schemas are valid.
+        foreach (var property in properties.ToArray())
+        {
+            if (property.Value is JsonValue value
+                && value.TryGetValue<bool>(out var unconstrained) && unconstrained)
+            {
+                properties[property.Key] = new JsonObject();
+            }
+        }
+
         if (properties.ContainsKey("capture"))
         {
             // CaptureInfo is shared by every DiagnosticResult<T>. Expand only the routing

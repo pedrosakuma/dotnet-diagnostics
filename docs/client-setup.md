@@ -21,6 +21,16 @@ This is the MCP server's **start here** doc: pick one transport track first, the
 
 For permission-shaped failures on the HTTP track, make `inspect_process(view="preflight")` your first troubleshooting step before retrying a more expensive tool.
 
+### Output-schema compatibility
+
+Unconstrained immediate output properties are advertised as the empty schema
+`{}`, rather than the equivalent boolean schema `true`. Both accept every JSON
+value, including null, scalars, arrays and objects. This preserves the result
+contract while supporting clients such as the TypeScript MCP SDK 1.32.1, whose
+tool-catalog decoder rejects boolean schemas at that position (#1207).
+Typed properties, existing references and structured/text results are unchanged.
+Catalog acceptance does not establish that a client validates returned results.
+
 ### Optional durable SQLite evidence
 
 The default tool catalog and ephemeral collection behavior remain unchanged.

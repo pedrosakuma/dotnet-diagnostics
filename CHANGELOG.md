@@ -4,6 +4,9 @@
 
 ### Changed
 
+- MCP catalogs advertise unconstrained immediate output properties as `{}` instead
+  of the equivalent `true` schema, allowing TypeScript MCP SDK 1.32.1 discovery
+  without restricting accepted result values or changing tool responses (#1207).
 - CPU capture summaries no longer repeat drilldown commands already present in
   structured hints. Shorter ranking hints preserve navigation arguments and
   distinguish exclusive stack samples from measured CPU time (#1202).
