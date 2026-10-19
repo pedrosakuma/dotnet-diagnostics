@@ -3002,7 +3002,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       </table>
     </section>
   </section>
-  <section id="resultCpu" class="result-tab-panel" role="tabpanel" aria-labelledby="resultTabCpu" hidden>
+  <section id="resultCpu" class="result-tab-panel" role="tabpanel" aria-labelledby="resultTabCpu" data-export-kind="cpu" hidden>
     <div class="panel-actions">
       <button id="captureCpu" type="button">Capture CPU sample</button>
       <details class="cpu-export-actions">

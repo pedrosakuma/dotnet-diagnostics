@@ -53,6 +53,62 @@ test("export uses only host-held evidence and opens an editable local document",
     await exporter.handle({ type: "exportResult", format: "csv" });
     assert.equal(docs.length, 1);
 });
+test("CPU export stays bound to its displayed capture after another collector publishes a result", async () => {
+    const exporter = new e.ResultExporter(), docs = [], errors = [];
+    vscode.window.showTextDocument = async document => docs.push(document);
+    vscode.window.showErrorMessage = async message => errors.push(message);
+    exporter.observe({ type: "capture", kind: "cpu", summary: { totalSamples: 12345 } });
+    exporter.observe({ type: "captureStatus", kind: "exceptions", state: "running" });
+    exporter.observe({ type: "capture", kind: "exceptions", result: { totalExceptions: 678 } });
+
+    for (const format of ["json", "csv"]) {
+        await exporter.handle({ type: "exportResult", captureKind: "cpu", format });
+    }
+
+    assert.equal(errors.length, 0);
+    assert.match(docs[0].content, /12345/);
+    assert.doesNotMatch(docs[0].content, /678/);
+    assert.match(docs[1].content, /12345/);
+    assert.doesNotMatch(docs[1].content, /678/);
+    assert.match(docs[1].content, /metric,value/);
+    await exporter.handle({ type: "exportResult", format: "json" });
+    assert.equal(JSON.parse(docs[2].content).measurements[0].value, 678);
+});
+test("scoped exports preserve evidence on a rejected attempt and refuse a replaced or missing capture", async () => {
+    const exporter = new e.ResultExporter(), docs = [], errors = [];
+    vscode.window.showTextDocument = async document => docs.push(document);
+    vscode.window.showErrorMessage = async message => errors.push(message);
+    exporter.observe({ type: "capture", kind: "cpu", summary: { totalSamples: 42 } });
+    exporter.observe({ type: "captureStatus", kind: "cpu", state: "error" });
+    await exporter.handle({ type: "exportResult", captureKind: "cpu", format: "json" });
+    assert.equal(JSON.parse(docs[0].content).measurements[0].value, 42);
+
+    exporter.observe({ type: "captureStatus", kind: "cpu", state: "running" });
+    exporter.observe({ type: "captureStatus", kind: "cpu", state: "error" });
+    exporter.observe({ type: "capture", kind: "exceptions", result: { totalExceptions: 7 } });
+
+    await exporter.handle({ type: "exportResult", captureKind: "cpu", format: "json" });
+    assert.equal(docs.length, 1);
+    assert.match(errors[0], /displayed capture is no longer available/);
+
+    exporter.observe({ type: "capture", kind: "cpu" });
+    await exporter.handle({ type: "exportResult", captureKind: "cpu", format: "csv" });
+    assert.equal(docs.length, 1);
+    assert.match(errors[1], /displayed capture is no longer available/);
+});
+test("generic export buttons include their containing capture kind when available", () => {
+    const posted = [], listeners = new Map();
+    const document = { getElementById(id) {
+        return { addEventListener(_event, handler) { listeners.set(id, handler); },
+            closest(selector) { return selector === "[data-export-kind]" ? { dataset: { exportKind: "cpu" } } : null; } };
+    } };
+    new Function("document", "vscode", e.RESULT_EXPORT_SCRIPT)(document, { postMessage: message => posted.push(message) });
+
+    listeners.get("exportJson")();
+    listeners.get("exportCsv")();
+    assert.deepEqual(posted.map(message => [message.format, message.captureKind]),
+        [["json", "cpu"], ["csv", "cpu"]]);
+});
 test("address exports follow host-held navigation history and refuse pending or failed evidence", async () => {
     const exporter = new e.ResultExporter(), docs = [], errors = [];
     vscode.window.showTextDocument = async document => docs.push(document);
