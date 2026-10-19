@@ -204,7 +204,7 @@ test("live panel groups results by capture tab and wires CPU drilldown", () => {
     assert.match(html, /\.cpu-query-controls button\[aria-pressed="true"\]/);
     assert.match(html, /\.cpu-query-table \.cpu-query-number \{ width:11%; \}/);
     assert.match(html, /\.cpu-query-table \.cpu-query-action \{ width:9rem; \}/);
-    assert.match(html, /\.cpu-query-table \{ min-width:48rem; table-layout:fixed; \}/);
+    assert.match(html, /\.cpu-query-table \{ min-width:32rem; table-layout:fixed; \}/);
     assert.match(html, /\.cpu-query-summary-table \.cpu-query-category \{ width:56%; overflow-wrap:anywhere; word-break:normal; \}/);
     assert.match(script, /message\.type === 'query' && message\.kind === 'cpu'/);
     assert.match(script, /renderCpuQuery\(message\.view, message\.result, false\)/);
@@ -299,8 +299,11 @@ test("CPU and allocation drilldown controls expose their active view and preserv
     const table = elements(container, element => element.tagName === "table"
         && element.className.includes("cpu-query-table"))[0];
     assert.ok(table);
-    assert.ok(elements(table, element => element.tagName === "td"
-        && element.className === "cpu-query-symbol")[0].textContent.includes("Cache<System.String>.Get(System.Int32)"));
+    const methodCell = elements(table, element => element.tagName === "td"
+        && element.className === "cpu-query-symbol")[0];
+    assert.equal(methodCell.textContent, "Example.Collections.Cache<System.String>.Get(System.Int32)");
+    assert.ok(elements(methodCell, element => element.tagName === "wbr").length >= 5,
+        "long method signatures should wrap at punctuation and identifier boundaries");
     assert.ok(elements(table, element => element.tagName === "td"
         && element.className === "cpu-query-number").every(cell => cell.textContent.length > 0));
     assert.ok(elements(table, element => element.tagName === "td"
