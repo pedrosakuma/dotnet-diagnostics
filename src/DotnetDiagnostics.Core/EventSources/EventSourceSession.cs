@@ -56,8 +56,7 @@ public sealed class EventSourceSession : EventPipeDiagnosticSessionBase
         void Publish(TraceEvent traceEvent)
         {
             if (!_providerNames.Contains(traceEvent.ProviderName)) return;
-            var observation = ProjectEvent(traceEvent);
-            observations.TryPublish(sequence => observation.WithSequence(sequence));
+            observations.TryPublish(sequence => ProjectEvent(traceEvent).WithSequence(sequence));
         }
     }
 

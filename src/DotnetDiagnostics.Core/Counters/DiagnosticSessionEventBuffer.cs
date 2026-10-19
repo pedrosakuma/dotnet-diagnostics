@@ -5,6 +5,7 @@ namespace DotnetDiagnostics.Core.Counters;
 internal sealed class DiagnosticSessionEventBuffer
 {
     private readonly Channel<DiagnosticSessionEvent> _channel;
+    private readonly int _capacity;
     private readonly long _retainedBytesCapacity;
     private readonly object _publishLock = new();
     private long _sequence;
@@ -16,6 +17,7 @@ internal sealed class DiagnosticSessionEventBuffer
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(capacity);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(retainedBytesCapacity);
         _retainedBytesCapacity = retainedBytesCapacity;
+        _capacity = capacity;
         _channel = Channel.CreateBounded<DiagnosticSessionEvent>(new BoundedChannelOptions(capacity)
         {
             FullMode = BoundedChannelFullMode.Wait,
@@ -48,6 +50,12 @@ internal sealed class DiagnosticSessionEventBuffer
         lock (_publishLock)
         {
             var sequence = ++_sequence;
+            if (_channel.Reader.Count >= _capacity)
+            {
+                Interlocked.Increment(ref _droppedObservations);
+                return false;
+            }
+
             var sessionEvent = createEvent(sequence);
             var retainedBytes = sessionEvent.RetainedSizeBytes;
             if (retainedBytes <= _retainedBytesCapacity

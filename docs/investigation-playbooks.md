@@ -277,8 +277,13 @@ not CPU time or completed work; compatible overlapping captures return `not_asse
 EventPipe stack frequency and heuristic wait classification do not establish measured
 scheduler state, so same-semantics comparisons remain `inconclusive`; mixed or
 legacy-unknown evidence is `incomparable`. A replaced hotspot is not by itself a
-performance regression. The legacy `InvestigationSummary` comparison path is separate
-from these snapshot diffs and retains its existing indicative verdict contract.
+performance regression. The separate `InvestigationSummary` comparison path also reports
+objective deltas by default: latency and throughput do not produce automatic performance
+verdicts. `not_assessed` leaves interpretation to the user/model; structural incompatibility
+and unavailable evidence remain explicit. New/removed hotspots describe retained top-list
+membership, not process-wide absence. See the
+[`compare_to_baseline` contract](./tool-reference.md#compare_to_baseline) for the behavioral
+migration, units and null semantics.
 
 ### Local ambiguity smoke observations (2026-10-18, #1192)
 

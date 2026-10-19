@@ -4267,7 +4267,7 @@ manifests require current producer/kind/view authorization plus
 `dotnet-diagnostics/historical-comparison/v1` result preserves quality, incompatible
 definitions, and unavailable deltas without a causal verdict. See
 [historical comparisons](./historical-comparisons.md) for the exact matrix,
-CLI/MCP examples and bounds. Legacy behavior below is unchanged.
+CLI/MCP examples and bounds. The summary comparison contract below is separate.
 
 Diffs a current investigation summary against a baseline (or compares an ordered
 journey of `ComparableSnapshot` bodies) and returns a verdict + headline + ranked
@@ -4291,32 +4291,44 @@ dynamic pod Resources are not forwarded.
 "did my fix actually help?" journeys — see
 [investigation-playbooks.md](./investigation-playbooks.md).
 
-Investigation-summary comparison does not treat every newly ranked frame as a regression.
-`Findings.CpuEvidenceKind` gates what hotspot percentages can support. Matching OS-backed
-on-CPU summaries may use hotspot movement in the verdict. Matching EventPipe summaries retain
-and report stack-frequency deltas, but those deltas do not drive a performance verdict; without
-directional metric evidence the result is `inconclusive`. Legacy summaries with no CPU evidence
-metadata remain readable, but their hotspot counts do not establish measured CPU and produce
-`incomparable` without directional metric evidence. Mixed OS-backed, EventPipe, and legacy CPU
-semantics are `incomparable`.
+**Investigation-summary behavior change (#1192):** both summary-input forms now report
+objective deltas by default, with no legacy performance-assessment option. `SummaryDiff`
+keeps its public fields and accepts existing `investigation-summary/v1` JSON; callers that
+branch on the previous verdict/outcome strings must migrate:
 
-Registered lower-is-better names are `threadpool-queue-length`,
-`threadpool-pending-work-items`, `threadpool-thread-count`, `request-p95-milliseconds`,
-`request-p95-seconds`, and `request-latency-p95`. Registered higher-is-better names are
-`requests-completed`, `request-throughput`, `requests-per-second`, and `throughput`. Matching is
-case-insensitive and ignores punctuation. If multiple names in one summary normalize to the same
-key, ordinal name order deterministically selects the retained value and `Notes` reports the
-collision.
-For canonical EventCounter/Meter identities, comparison retains the full
-provider/meter/tag identity for series equality and extracts only the encoded
-counter or instrument/statistic name when applying these legacy direction
-rules.
+| Field | Current meaning |
+|---|---|
+| `Verdict` | `not_assessed` for comparable retained observations, not `improvement`, `regression_*`, `mixed`, or `no_regression*`. It does not mean no change or a healthy workload. |
+| `KeyMetricDeltas[].Outcome` | Numeric `up`, `down`, or `flat`; `incomparable` when the delta is unavailable. |
+| `BetterDirection` | `neutral` for comparable measurements, `unknown` otherwise; no higher/lower-is-better registry. |
+| `DeltaAbs` / `DeltaUnit` | Signed current-minus-baseline difference in a common unit. Duration units normalize to `s`, equivalent rates to their per-second unit, and other matching units are retained. Raw per-side values and units remain unchanged. No relative percentage is invented. |
+| Missing metric/value/unit | An absent side stays `null`; a one-sided or incompatible unit prevents a delta. Both unspecified legacy units allow a raw numeric difference in unspecified units (`DeltaUnit=null`), not an inferred rate/time unit. An unavailable `DeltaAbs` is `null`, never zero. |
+| New/removed hotspots | Missing from the other **retained top list**, not proven absent from the process. The absent side and `InclusiveDeltaPoints` are `null`, not an assumed zero. Matched hotspot changes retain the two-percentage-point display threshold; it is not statistical significance. |
 
-`HotspotSummary.SelfSamples` preserves the on-CPU/heuristic-wait/unknown split and must be
-interpreted with `Findings.CpuEvidenceKind`. Conflicting directional symptoms return `mixed`;
-unrecognized or one-sided key metrics appear in
-`KeyMetricDeltas`/`Notes` but do not silently drive the verdict. An unchanged comparable metric
-does not erase an incomparable verdict-relevant metric.
+Latency, throughput, queue/thread counts and CPU sample shares remain useful observations,
+not a global performance judgment. Workload equivalence, offered work/endpoint mix, matched
+latency populations and statistical repeatability are not established by these summaries.
+Provenance changes are reported without implying `no_regression_after_deploy`.
+
+`Findings.CpuEvidenceKind` still gates CPU comparability. Matching OS-backed on-CPU summaries
+can return `not_assessed`. Matching EventPipe summaries preserve the explicit stack-frequency
+limitation and remain `inconclusive` without comparable key metrics. Missing legacy CPU
+semantics and mixed CPU evidence remain `incomparable`, even when metric observations are
+retained. Empty summaries are `inconclusive`; required metric-definition mismatches remain
+`incomparable` and are not hidden by unchanged comparable rows.
+
+Metric matching preserves full canonical provider/meter/tag/statistic identities. Units are
+case-sensitive (`Mb` and `MB`, or `Ms` and `ms`, are not interchangeable). Legacy
+names match case-insensitively ignoring punctuation; ordinal-first collision handling remains
+deterministic and is reported in `Notes`. Unknown metric names can have numeric deltas when
+their identity and units match. Cumulative meter last values and raw EventCounter increments
+remain evidence-only rows without computed deltas; use their normalized rate rows instead.
+Invalid/missing rate metadata, incompatible units and nonfinite arithmetic remain explicit.
+Nonfinite input measurements are rejected as `InvalidSummaryJson` by MCP.
+`HotspotSummary.SelfSamples` retains its split without inferring performance from it.
+
+This changes only the `InvestigationSummary` comparison policy. Snapshot journeys and durable
+`captureComparison` contracts, evidence-quality gates and BenchmarkDotNet consumers are unchanged.
 
 ---
 
