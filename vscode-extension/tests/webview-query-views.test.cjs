@@ -179,7 +179,7 @@ test("live panel groups results by capture tab and wires CPU drilldown", () => {
         assert.match(html, new RegExp(`role="tab"[^>]*>${label}<`));
         assert.match(html, new RegExp(`role="tabpanel" aria-labelledby="resultTab${id}"`));
     }
-    assert.match(html, /<section id="resultCpu"[\s\S]*?<button id="captureCpu" type="button">/);
+    assert.match(html, /<section id="resultCpu"[^>]*data-export-kind="cpu"[\s\S]*?<button id="captureCpu" type="button">/);
     assert.match(html, /<section id="resultHeap"[\s\S]*?<button id="captureHeap" type="button">/);
     assert.match(script, /function selectResultTab\(name\)/);
     assert.match(script, /event\.key === 'ArrowRight'/);
