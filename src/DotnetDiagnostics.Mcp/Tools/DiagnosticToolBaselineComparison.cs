@@ -178,36 +178,32 @@ internal static class DiagnosticToolBaselineComparison
                 new NextActionHint("export_investigation_summary", "Re-export the summaries from a fresh investigation."));
         }
 
-        var diff = comparer.Compare(baseline, current);
-        var summaryLine = $"Verdict: {diff.Verdict}. {diff.NewHotspots.Count} new, " +
-                          $"{diff.RemovedHotspots.Count} removed, {diff.ChangedHotspots.Count} changed hotspots. " +
-                          $"{diff.KeyMetricDeltas.Count} key metric deltas. " +
+        SummaryDiff diff;
+        try
+        {
+            diff = comparer.Compare(baseline, current);
+        }
+        catch (ArgumentException ex) when (ex.ParamName is nameof(baseline) or nameof(current))
+        {
+            return DiagnosticResult.Fail<object>(
+                "Summary measurements are invalid.",
+                new DiagnosticError("InvalidSummaryJson", "Summary measurements must be finite."),
+                new NextActionHint("export_investigation_summary", "Re-export summaries containing finite measurements."));
+        }
+        var summaryLine = $"Comparison: {diff.Verdict}; no performance assessment. " +
+                          $"{diff.NewHotspots.Count} new, {diff.RemovedHotspots.Count} removed from retained top lists, " +
+                          $"{diff.ChangedHotspots.Count} changed hotspots. " +
+                          $"{diff.KeyMetricDeltas.Count} key metric rows. " +
                           $"Provenance: {diff.Provenance.Summary}.";
 
         return DiagnosticResult.Ok<object>(diff, summaryLine,
             new NextActionHint("collect_sample",
-                NextActionDescription(diff.Verdict),
+                "Collect matching workload, throughput and latency evidence before interpreting the retained deltas.",
                 new Dictionary<string, object?>
                 {
                     ["kind"] = "cpu",
                     ["durationSeconds"] = 20,
                 }));
-    }
-
-    private static string NextActionDescription(string verdict)
-    {
-        if (verdict.StartsWith("regression", StringComparison.Ordinal))
-        {
-            return "Re-sample the regressing process and drill into the new top frame.";
-        }
-
-        if (string.Equals(verdict, "mixed", StringComparison.Ordinal)
-            || string.Equals(verdict, "incomparable", StringComparison.Ordinal))
-        {
-            return "Capture matching queue/throughput and classified CPU evidence before drawing a regression conclusion.";
-        }
-
-        return "Optional: capture a fresh sample to confirm the improvement is stable.";
     }
 
     private static DiagnosticResult<object> CompareComparableSnapshots(

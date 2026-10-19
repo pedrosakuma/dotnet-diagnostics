@@ -101,7 +101,8 @@ public sealed class LiveEventsIndependenceTests(Xunit.Abstractions.ITestOutputHe
             await CliStreamingProtocolTests.WriteRequestAsync(events, new { type = "cancel", sessionId = eventsId });
             using (var terminal = await CliStreamingProtocolTests.ReadUntilTypeAsync(events, "terminal")
                 .WaitAsync(TimeSpan.FromSeconds(10)))
-                terminal.RootElement.GetProperty("status").GetString().Should().Be("stopped");
+                terminal.RootElement.GetProperty("status").GetString().Should().Be(
+                    "stopped", "the Events terminal frame is {0}", terminal.RootElement.GetRawText());
             await events.StandardInput.DisposeAsync();
             await events.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
             events.ExitCode.Should().Be(0);
