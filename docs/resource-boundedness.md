@@ -84,14 +84,18 @@ explicitly requests 32 Events observations. The extension host's operational
 window is 64 events, including its single in-flight batch, within unchanged hard
 limits of 256 events / 1 MiB (accounted per event as twice serialized UTF-8 bytes plus 1 KiB object
 overhead), sends one acknowledged webview batch at a time (at most 64 events / 64 KiB), and limits
-bridge updates to 10 per second. A stalled webview therefore applies bounded backpressure and
-eventually causes counted host-queue drops rather than unbounded buffering. When the host queue
-reaches either cap or rejects an observation because the next event would exceed the byte cap, the
-Events connection pauses its bounded JSONL reader at a frame boundary; webview acknowledgement
-resumes it when the queue has room. This lets the CLI/Core bounded queues absorb or report overload
-before the extension host parses more observations. A frame already present in the current bounded
-pipe chunk can still be rejected and is counted by the host queue. Stop disables this read
-backpressure and resumes the reader before cancellation so shutdown frames can be consumed.
+bridge updates to 10 per second. The Events connection continuously drains and validates CLI
+stdout even when the host window is full or the webview withholds acknowledgement.
+New event offers exceeding either host cap are rejected at insertion and counted in
+`hostDeliveryDropped`; admitted FIFO events, including the in-flight batch, remain retained.
+This explicitly replaces host-capacity reader backpressure with host drop-newest: it can increase
+host drops while avoiding a capacity-induced backlog of decoded/serialized frames outside the
+host window. It is not a latency or RSS guarantee. The bounded JSONL reader is not paused by host
+capacity or ACK state, and its deferred chunk does not grow while waiting for an ACK.
+Quality frames continue to be consumed and coalesced into one latest snapshot; control and
+terminal frames remain readable independently of delivery ACKs. A matching ACK frees admitted
+events and permits the next bounded batch; it does not resume or gate protocol reading.
+Counters/GC connections and Core/CLI overflow policies are unchanged.
 
 The webview retains at most 2,000 events / 8 MiB, mounts at most 100 table rows per page, searches
 at most 256 characters, and keeps at most one selected event. UI accounted event bytes use twice

@@ -289,27 +289,7 @@ test("disposing the Events panel clears batches that can no longer be acknowledg
     assert.equal(controller.eventsStreamSessionId, undefined);
     assert.equal(controller.eventsQuality, undefined);
 });
-test("Events shutdown disables backpressure and resumes the protocol reader", () => {
-    const extensionPath = path.join(__dirname, "../out/extension.js");
-    const Controller = new Function("require", "exports", fs.readFileSync(extensionPath, "utf8")
-        + "\nreturn CounterPanelController;")(createRequire(extensionPath), {});
-    const { BoundedProtocolLineReader } = require("../out/liveEvents.js");
-    const { PassThrough } = require("node:stream");
-    const controller = Object.create(Controller.prototype);
-    const input = new PassThrough();
-    const lines = new BoundedProtocolLineReader(input, 65_536);
-    lines.pause();
-    const child = { lines, eventsReaderBackpressureDisabled: false };
-
-    controller.resumeEventsReaderForShutdown(child);
-
-    assert.equal(child.eventsReaderBackpressureDisabled, true);
-    assert.equal(input.isPaused(), false);
-    lines.close();
-    input.destroy();
-});
-
-test("Events reader pauses at configured host capacity and resumes only after a current ACK", () => {
+test("blocked Events webview keeps stdout draining, rejects newest offers and coalesces quality until ACK", async () => {
     const extensionPath = path.join(__dirname, "../out/extension.js");
     const Controller = new Function("require", "exports", fs.readFileSync(extensionPath, "utf8")
         + "\nreturn CounterPanelController;")(createRequire(extensionPath), {});
@@ -319,41 +299,167 @@ test("Events reader pauses at configured host capacity and resumes only after a 
         const controller = Object.create(Controller.prototype);
         const input = new PassThrough();
         const lines = new BoundedProtocolLineReader(input, 65_536);
-        const child = { sessionId: "current", eventsConnection: true, lines, eventsReaderBackpressureDisabled: false };
+        let resolveTerminal;
+        const terminal = { promise: new Promise(resolve => { resolveTerminal = resolve; }), resolve: () => resolveTerminal() };
+        const child = { sessionId: "current", eventsConnection: true, lines, terminal };
         controller.eventsQueue = new LiveEventDeliveryQueue(capacity);
         controller.eventsChild = child;
         controller.eventsStreamSessionId = "current";
         controller.eventsQualityRevision = 0;
+        controller.eventsQualityAcknowledgedRevision = 0;
+        controller.eventsLastQualityAt = 0;
+        controller.eventsGeneration = 0;
+        const posted = [];
+        controller.panel = { webview: { postMessage: message => { posted.push(message); return Promise.resolve(true); } } };
         controller.scheduleEventsBatch = () => {};
+        controller.postEventsMessage = message => posted.push(message);
         lines.on("line", (line, bytes) => controller.handleFrame(child, line, bytes));
-        const frames = Array.from({ length: capacity + 1 }, (_, index) => JSON.stringify({
-            type: "observation", kind: "event_source", sessionId: "current", sequence: index + 1,
+        const frame = sequence => JSON.stringify({
+            type: "observation", kind: "event_source", sessionId: "current", sequence,
             timestamp: "2026-01-01T00:00:00Z", receivedAt: "2026-01-01T00:00:00Z",
             provider: "System.Runtime", eventName: "Event", eventId: 1, version: 0,
             level: "Informational", threadId: null, activityId: null, relatedActivityId: null,
             payload: {}, metadataTruncated: false, payloadTruncated: false,
             omittedPayloadFields: 0, omittedPayloadCharacters: 0, unsupportedPayloadValues: 0,
-        }));
+        }) + "\n";
+        const quality = count => JSON.stringify({
+            type: "quality", kind: "event_source", sessionId: "current",
+            eventPipeEventsLost: null, eventPipeLossAvailable: false,
+            coreQueueDropped: count, cliDispatchQueueDropped: count * 2,
+        }) + "\n";
+        const assertDrained = () => {
+            assert.equal(input.isPaused(), false);
+            assert.equal(input.readableLength, 0);
+            assert.equal(lines.deferredText, "");
+            assert.equal(lines.pendingBytes, 0);
+            assert.equal(lines.pending, "");
+        };
         try {
-            input.write(frames.join("\n") + "\n");
-            assert.equal(input.isPaused(), true);
+            for (let sequence = 1; sequence <= capacity; sequence++) input.write(frame(sequence));
+            controller.sendEventsBatch();
+            const batch = posted.find(message => message.type === "eventsBatch");
+            assert.equal(batch.events.length, capacity);
+            const heldBytes = controller.eventsQueue.retainedByteCount;
+            controller.sendEventsBatch();
+            assert.equal(posted.filter(message => message.type === "eventsBatch").length, 1, "one batch held in flight");
+            for (let start = capacity + 1; start <= 10_000; start += 100) {
+                let chunk = "";
+                for (let sequence = start; sequence < Math.min(start + 100, 10_001); sequence++) {
+                    chunk += frame(sequence);
+                    if (sequence % 10 === 0) chunk += quality(sequence);
+                }
+                input.write(chunk);
+                assertDrained();
+                assert.equal(controller.eventsQueue.retainedEventCount, capacity);
+                assert.equal(controller.eventsQueue.retainedByteCount, heldBytes);
+            }
             assert.equal(controller.eventsQueue.retainedEventCount, capacity);
-            assert.equal(controller.eventsQueue.dropped, 0, "paused unread frames are not rejected queue offers");
-            const batch = controller.eventsQueue.takeBatch();
+            assert.equal(controller.eventsQueue.dropped, 10_000 - capacity, "actual parsed reader offers rejected at insertion");
+            assert.equal(controller.eventsQuality.coreQueueDropped, 10_000);
+            assert.equal(controller.eventsQuality.cliDispatchQueueDropped, 20_000);
+            assert.deepEqual(batch.events.map(event => event.sequence), Array.from({ length: capacity }, (_, i) => i + 1));
             controller.acknowledgeEventBatch("stale-session", batch.batchId);
             controller.acknowledgeEventBatch("current", batch.batchId + 1);
-            assert.equal(input.isPaused(), true);
             assert.equal(controller.eventsQueue.retainedEventCount, capacity);
             controller.acknowledgeEventBatch("current", batch.batchId);
-            assert.equal(input.isPaused(), false);
+            assert.equal(controller.eventsQueue.retainedEventCount, 0);
+            const drops = controller.eventsQueue.dropped;
+            input.write(frame(10_001));
             assert.equal(controller.eventsQueue.retainedEventCount, 1);
-            assert.equal(controller.eventsQueue.dropped, 0);
-            assert.equal(controller.eventsQueue.takeBatch().events[0].sequence, capacity + 1);
+            controller.sendEventsBatch();
+            const recovered = posted.filter(message => message.type === "eventsBatch").at(-1);
+            assert.equal(recovered.events[0].sequence, 10_001, "recovery admits new input, not a deferred old chunk");
+            assert.deepEqual(recovered.quality, {
+                eventPipeEventsLost: null, eventPipeLossAvailable: false,
+                coreQueueDropped: 10_000, cliDispatchQueueDropped: 20_000, hostDeliveryDropped: drops,
+            });
+            const qualityRevision = controller.eventsInFlightQualityRevision;
+            input.write(quality(10_001));
+            controller.acknowledgeEventBatch("current", batch.batchId);
+            assert.equal(controller.eventsQueue.hasInFlightBatch, true, "old ACK cannot release recovery batch");
+            controller.acknowledgeEventBatch("current", recovered.batchId);
+            assert.equal(controller.eventsQualityAcknowledgedRevision, qualityRevision);
+            assert.ok(controller.eventsQualityRevision > qualityRevision, "newer quality remains dirty after ACK of older snapshot");
+            controller.eventsLastQualityAt = 0;
+            controller.sendEventsBatch();
+            const qualityOnly = posted.filter(message => message.type === "eventsBatch").at(-1);
+            assert.equal(qualityOnly.events.length, 0);
+            assert.equal(qualityOnly.quality.coreQueueDropped, 10_001);
+            controller.acknowledgeEventBatch("current", qualityOnly.batchId);
+            assert.equal(controller.eventsQualityAcknowledgedRevision, controller.eventsQualityRevision);
+
+            // Stop must consume the terminal frame even while a new full batch has no ACK.
+            for (let sequence = 10_002; sequence < 10_002 + capacity; sequence++) input.write(frame(sequence));
+            controller.sendEventsBatch();
+            const held = posted.filter(message => message.type === "eventsBatch").at(-1);
+            assert.equal(controller.eventsQueue.retainedEventCount, capacity);
+            controller.writeFrame = (session, request) => {
+                assert.equal(session, child);
+                assert.equal(request.type, "cancel");
+                input.write(quality(10_002));
+                input.write(JSON.stringify({ type: "terminal", sessionId: "current", status: "stopped" }) + "\n");
+            };
+            let closed = false;
+            controller.closeChild = async session => { assert.equal(session, child); closed = true; };
+            await controller.stopEvents();
+            assert.equal(closed, true);
+            assert.equal(child.terminalReceived, true);
+            assert.equal(controller.eventsQualityFinal, true);
+            assert.equal(controller.eventsChild, undefined);
+            assert.equal(controller.eventsQueue.hasInFlightBatch, true, "terminal does not depend on a webview ACK");
+            assertDrained();
+            controller.acknowledgeEventBatch("current", held.batchId);
+            controller.eventsLastQualityAt = 0;
+            controller.sendEventsBatch();
+            const finalQuality = posted.filter(message => message.type === "eventsBatch").at(-1);
+            assert.equal(finalQuality.events.length, 0);
+            assert.equal(finalQuality.quality.coreQueueDropped, 10_002);
+            assert.equal(finalQuality.quality.hostDeliveryDropped, drops);
+            controller.acknowledgeEventBatch("current", finalQuality.batchId);
+            assert.equal(controller.eventsQueue.retainedEventCount, 0);
+            assert.equal(controller.eventsQueue.retainedByteCount, 0);
         } finally {
             lines.close();
             input.destroy();
         }
     }
+});
+
+test("Events still validates rejected offers and bounded lines while the webview is blocked", () => {
+    const extensionPath = path.join(__dirname, "../out/extension.js");
+    const Controller = new Function("require", "exports", fs.readFileSync(extensionPath, "utf8")
+        + "\nreturn CounterPanelController;")(createRequire(extensionPath), {});
+    const { BoundedProtocolLineReader, LiveEventDeliveryQueue } = require("../out/liveEvents.js");
+    const { PassThrough } = require("node:stream");
+    const controller = Object.create(Controller.prototype);
+    const input = new PassThrough();
+    const lines = new BoundedProtocolLineReader(input, 65_536);
+    const child = { sessionId: "current", eventsConnection: true, lines };
+    controller.eventsQueue = new LiveEventDeliveryQueue(1);
+    controller.eventsQueue.enqueue({ sequence: 1 }, 100);
+    controller.eventsQueue.takeBatch();
+    const errors = [];
+    controller.failEventsProtocol = (_child, message) => errors.push(message);
+    lines.on("line", (line, bytes) => controller.handleFrame(child, line, bytes));
+    let oversized = 0;
+    lines.on("oversized", () => oversized++);
+    try {
+        input.write(JSON.stringify({
+            type: "observation", kind: "event_source", sessionId: "current", sequence: 2,
+            timestamp: "2026-01-01T00:00:00Z",
+        }) + "\n");
+        assert.match(errors[0], /unsupported or unbounded schema/);
+        assert.equal(controller.eventsQueue.dropped, 0, "invalid frames are protocol errors, not host offer drops");
+        for (let i = 0; i < 100; i++) input.write("x".repeat(4096));
+        assert.equal(lines.pendingBytes, 0);
+        assert.equal(lines.pending, "");
+        input.write("\n");
+        assert.equal(oversized, 1);
+        assert.equal(lines.deferredText, "");
+        assert.equal(input.readableLength, 0);
+        assert.equal(input.isPaused(), false);
+        assert.equal(controller.eventsQueue.retainedEventCount, 1);
+    } finally { lines.close(); input.destroy(); }
 });
 
 test("Events request uses32 while independent counters and GC retain256 defaults", () => {

@@ -144,9 +144,15 @@ in flight. The host hard count limit remains 256; it is not the operational
 default. Batch limits remain 64 events / 64 KiB and at most 10 updates per
 second; UI history remains 2,000 events / 8 MiB with at most 100 mounted rows.
 Smaller upstream windows are not a latency guarantee: pipe buffering, scheduling,
-IPC and downstream processing still contribute. Rejected synthetic queue offers
-are not the same as drops during reader-backpressured live traffic; report the
-observed counters rather than inferring drops from generated volume.
+IPC and downstream processing still contribute. The Events host continuously
+drains and validates stdout rather than pausing at host capacity. If the window
+is full (including an unacknowledged batch), newest event offers are rejected
+and counted separately as `hostDeliveryDropped`. Quality/control/terminal frames
+continue to be consumed; quality updates coalesce until a batch can be acknowledged.
+This is an explicit host backpressure-to-drop-newest policy change, not a Core/CLI
+overflow change or latency guarantee. Report actual per-layer counters rather
+than inferring drops from generated volume; UI retention and counters/GC behavior
+are unchanged.
 
 CLI quality frames are emitted about once per second
 and once at termination, with distinct fields for `coreQueueDropped` and

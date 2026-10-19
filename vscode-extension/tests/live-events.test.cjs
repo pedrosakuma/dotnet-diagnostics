@@ -96,7 +96,7 @@ test("default host window includes the held batch and accounts rejected syntheti
     assert.equal(queue.retainedEventCount, 64);
     assert.equal(queue.retainedByteCount, bytes);
     for (let sequence = 65; sequence <= 100_000; sequence++) assert.equal(queue.enqueue(observation(sequence)), false);
-    assert.equal(queue.dropped, 100_000 - 64, "rejected offers, not a claim about reader-backpressured traffic");
+    assert.equal(queue.dropped, 100_000 - 64, "rejected synthetic offers; live traffic has independent per-layer counts");
     assert.equal(queue.takeBatch(), undefined);
     assert.equal(queue.acknowledge(batch.batchId + 1), false);
     assert.equal(queue.isAtCapacity, true);
