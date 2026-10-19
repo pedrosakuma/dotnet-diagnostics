@@ -764,15 +764,29 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
         case "exceptions": {
             const data = asRecord(result.data);
             const recent = Array.isArray(data.recent) ? data.recent.map(asRecord) : [];
+            const startedAt = typeof data.startedAt === "string" ? data.startedAt : undefined;
+            const startedAtDate = startedAt ? new Date(startedAt) : undefined;
             metrics([
                 ["Observed exceptions", data.totalExceptions],
                 ["Retained events", recent.length],
                 ["Event cap", data.recentCap],
-                ["Started", data.startedAt],
+                ["Started", startedAtDate && Number.isFinite(startedAtDate.getTime())
+                    ? startedAtDate.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "medium" })
+                    : startedAt],
                 ["Duration", data.duration],
                 ["Process exited", data.processExited],
                 ["Unhandled exception observed", data.unhandledExceptionObserved],
             ]);
+            if (startedAt) {
+                const exactTimestamp = document.createElement("details");
+                exactTimestamp.className = "query-view-timestamp";
+                const exactTimestampLabel = document.createElement("summary");
+                exactTimestampLabel.textContent = "Exact start time";
+                const exactTimestampValue = document.createElement("code");
+                exactTimestampValue.textContent = startedAt;
+                exactTimestamp.append(exactTimestampLabel, exactTimestampValue);
+                content.appendChild(exactTimestamp);
+            }
             appendMessage(content, formatValue(result.summary), "query-view-note");
             table("Exception types (all observed events)", data.byType, [
                 ["Exception type", row => row.exceptionType],
@@ -979,6 +993,9 @@ export const QUERY_VIEW_STYLES = `
     table.query-view-table { border-collapse:collapse; width:100%; font-size:.85rem; }
     .query-view-table th, .query-view-table td { text-align:left; vertical-align:top; padding:.35rem .5rem; border-bottom:1px solid var(--vscode-panel-border); overflow-wrap:anywhere; }
     .query-view-table th { color:var(--vscode-descriptionForeground); font-weight:600; }
+    .query-view-timestamp { margin:.25rem 0 .6rem; color:var(--vscode-descriptionForeground); font-size:.85rem; }
+    .query-view-timestamp summary { cursor:pointer; }
+    .query-view-timestamp code { display:block; margin-top:.25rem; overflow-wrap:anywhere; user-select:text; }
     details.query-view-nested { border-top:1px solid var(--vscode-panel-border); padding:.35rem 0; }
     details.query-view-nested > summary { cursor:pointer; font-weight:500; }
     .query-view-nested-body { padding:.35rem 0 .2rem .7rem; }
