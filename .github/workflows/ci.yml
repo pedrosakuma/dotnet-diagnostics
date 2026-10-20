@@ -145,14 +145,14 @@ jobs:
         run: |
           test -f "$DOTNET_DIAGNOSTICS_CLI_DLL"
           set -o pipefail
-          npm test 2>&1 | tee extension-tests.log
+          npm test 2>&1 | tee "$RUNNER_TEMP/extension-tests.log"
 
       - name: Upload extension test evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: extension-pr-tests-${{ matrix.os }}
-          path: vscode-extension/extension-tests.log
+          path: ${{ runner.temp }}/extension-tests.log
           if-no-files-found: warn
 
       - name: Remove staged private NuGet configuration
