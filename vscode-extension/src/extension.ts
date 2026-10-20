@@ -13,6 +13,7 @@ import type { ProcessEntry } from "./processHistory";
 import { CaptureHistory, type HistoryRow } from "./captureHistory";
 import { CAPTURE_VIEW_RENDERER_SCRIPT } from "./captureViewRenderer";
 import { CPU_PROFILE_SCRIPT, CPU_PROFILE_STYLES } from "./cpuProfileViewer";
+import { WEBVIEW_FIELD_STYLES } from "./webviewFields";
 import { LIVE_TIME_NAVIGATION_SCRIPT } from "./liveTimeNavigation";
 import { LiveReadConsent, LIVE_READ_CONSENT_HTML, LIVE_READ_CONSENT_SCRIPT } from "./liveReadConsent";
 import { ACTION_AVAILABILITY_SCRIPT, ACTION_AVAILABILITY_STYLES, PROFILE_ACTIONS_SCRIPT } from "./actionAvailability";
@@ -3002,7 +3003,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     .controls { display:flex; gap:.45rem; align-items:center; flex-wrap:wrap; }
     .panel-actions { display:flex; gap:.45rem; align-items:center; flex-wrap:wrap; margin:.7rem 0; }
     .cpu-export-actions { border:1px solid var(--vscode-panel-border); border-radius:4px; padding:.4rem .6rem; }
-    button, select { color:var(--vscode-button-foreground); background:var(--vscode-button-background); border:0; border-radius:2px; padding:.45rem .75rem; }
+    button { color:var(--vscode-button-foreground); background:var(--vscode-button-background); border:0; border-radius:2px; padding:.45rem .75rem; }
     button:hover { background:var(--vscode-button-hoverBackground); }
     button:disabled { opacity:.55; }
     .export-controls { margin:.6rem 0; }
@@ -3049,11 +3050,9 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     #captureStatus { color:var(--vscode-descriptionForeground); margin:.3rem 0; }
     .empty { display:none; }
     .statics-form { margin:.5rem 0; display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; }
-    .statics-form input { min-width:20rem; }
     .statics-error { color: var(--vscode-errorForeground); }
     .events-warning { border-left:3px solid var(--vscode-editorWarning-foreground); padding:.4rem .7rem; margin:.6rem 0; }
     .events-controls { display:flex; gap:.45rem; align-items:center; flex-wrap:wrap; margin:.7rem 0; }
-    .events-controls input { min-width:14rem; max-width:32rem; }
     .events-table-wrap { max-height:32rem; overflow:auto; border:1px solid var(--vscode-panel-border); }
     #eventsTable { table-layout:fixed; }
     #eventsTable th:nth-child(1) { width:10rem; }
@@ -3065,6 +3064,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     #eventDetails { margin:.75rem 0; padding:.75rem; border:1px solid var(--vscode-panel-border); border-radius:4px; }
     #eventDetails pre { white-space:pre-wrap; overflow-wrap:anywhere; }
     ${QUERY_VIEW_STYLES}
+    ${WEBVIEW_FIELD_STYLES}
   </style>
 </head>
 <body>
@@ -4356,9 +4356,9 @@ export function renderDumpAnalysisHtml(dumpFileName: string, nonce: string): str
     th, td { text-align:left; padding:.25rem .6rem; border-bottom:1px solid var(--vscode-panel-border); }
     .empty { display:none; }
     .statics-form { margin:.5rem 0; display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; }
-    .statics-form input { min-width:20rem; }
     .statics-error { color: var(--vscode-errorForeground); }
     ${QUERY_VIEW_STYLES}
+    ${WEBVIEW_FIELD_STYLES}
     .status { color:var(--vscode-descriptionForeground); margin:.3rem 0; }
   </style>
 </head>
