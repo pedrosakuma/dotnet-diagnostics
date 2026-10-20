@@ -5,6 +5,10 @@ versioned independently from the CLI and the .NET packages.
 
 ## Unreleased
 
+- Theme webview text/search fields and dropdowns with native VS Code input/dropdown tokens,
+  including keyboard focus, placeholders and disabled states across live, dump and saved evidence.
+  Keep fields within narrow panes instead of imposing a fixed thread-statics minimum width.
+
 - Include the Getting Started walkthrough Markdown in the VSIX so installed extensions can render all three steps.
 - Keep result-tab keyboard navigation in visible DOM order, show selected receipt-time bounds on
   live controls, and distinguish a ready selected process from active live counters. Collection
