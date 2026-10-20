@@ -230,7 +230,12 @@ class WorkflowTests(unittest.TestCase):
     def test_policy_changes_exercise_extension_lane_without_skipping_full_ci(self):
         changes = job_block(self.ci, "changes")
         self.assertIn("extension_ci:", changes)
-        self.assertIn("'scripts/ci_extension_selection.py'", changes)
+        # The filter uses "every" for code exclusions: alternatives must be one
+        # brace pattern, not separate positive patterns no path can all match.
+        patterns = changes.split("            extension_ci:\n", 1)[1].split("\n\n", 1)[0].splitlines()
+        self.assertEqual(patterns, [
+            "              - '{.github/workflows/ci.yml,.github/workflows/kind-integration.yml,"
+            "scripts/ci_extension_selection.py,scripts/tests/test_ci_extension_selection.py}'"])
         block = job_block(self.ci, "extension-tests")
         self.assertIn("needs.changes.outputs.extension_ci == 'true'", block)
         for job in ("ubuntu-gate", "windows-gate"):

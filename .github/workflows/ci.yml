@@ -60,10 +60,7 @@ jobs:
               - '**'
               - '!**/*.md'
             extension_ci:
-              - '.github/workflows/ci.yml'
-              - '.github/workflows/kind-integration.yml'
-              - 'scripts/ci_extension_selection.py'
-              - 'scripts/tests/test_ci_extension_selection.py'
+              - '{.github/workflows/ci.yml,.github/workflows/kind-integration.yml,scripts/ci_extension_selection.py,scripts/tests/test_ci_extension_selection.py}'
 
       - name: Select bounded extension PR fast path
         id: extension
