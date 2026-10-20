@@ -16,6 +16,7 @@ module.exports = {
   ThemeIcon,
   TreeItem,
   TreeItemCollapsibleState,
+  QuickPickItemKind: { Separator: -1, Default: 0 },
   window: {
     createOutputChannel: () => ({ appendLine() {}, dispose() {} }),
     createTreeView: () => ({ dispose() {} }),

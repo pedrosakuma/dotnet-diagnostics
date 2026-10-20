@@ -17,6 +17,8 @@ const extensionRequire = createRequire(extensionPath);
 const vscode = require("./stubs/vscode-stub.js");
 const Controller = new Function("require", "exports",
     fs.readFileSync(extensionPath, "utf8") + "\nreturn CounterPanelController;")(extensionRequire, {});
+const Actions = new Function("require", "exports",
+    fs.readFileSync(extensionPath, "utf8") + "\nreturn DiagnosticsActionsProvider;")(extensionRequire, {});
 
 function view(kind = "contention") {
     return {
@@ -56,6 +58,62 @@ test("one command exposes exactly the ten scoped kinds", () => {
     assert.deepEqual(kinds.CAPTURE_KIND_SPECS.filter(s => s.risk === "high").map(s => s.kind), ["off_cpu"]);
     const manifest = require("../package.json");
     assert.equal(manifest.contributes.commands.filter(c => c.command === "dotnetDiagnostics.captureDiagnostics").length, 1);
+});
+test("native capture groups expose every existing flow without attaching on expansion", () => {
+    const provider = new Actions();
+    const roots = provider.getChildren();
+    const groups = roots.filter(item => item.collapsibleState !== vscode.TreeItemCollapsibleState.None);
+    assert.deepEqual(groups.map(item => item.label),
+        ["Monitoring", "CPU", "Memory & GC", "Threads & waits", "Requests & networking", "Exceptions"]);
+    const leaves = groups.flatMap(group => {
+        assert.equal(group.command, undefined, "expansion is not a diagnostic command");
+        assert.equal(typeof group.id, "string");
+        return provider.getChildren(group);
+    });
+    const generic = leaves.filter(item => item.command.command === "dotnetDiagnostics.captureDiagnostics");
+    assert.deepEqual(generic.map(item => item.command.arguments[0]).sort(),
+        kinds.CAPTURE_KIND_SPECS.map(spec => spec.kind).sort());
+    assert.equal(new Set(generic.map(item => item.command.arguments[0])).size, 10);
+    for (const suffix of ["captureCpu", "captureCpuTrace", "captureHeap", "captureThreadSnapshot",
+        "captureExceptions", "startCounters", "stopCounters", "startEvents"])
+        assert.equal(leaves.filter(item => item.command.command === "dotnetDiagnostics." + suffix).length, 1, suffix);
+    for (const suffix of ["captureDiagnostics", "analyzeDumpFile"])
+        assert.equal(roots.filter(item => item.command?.command === "dotnetDiagnostics." + suffix).length, 1, suffix);
+    assert.deepEqual(provider.getChildren(leaves[0]), []);
+    assert.deepEqual(provider.getChildren().filter(item => item.id).map(item => item.id), groups.map(item => item.id));
+});
+test("expert diagnostic picker has matching native headings, searchable descriptions and all ten kinds", async () => {
+    const { controller, frames } = fixture();
+    let choices;
+    vscode.window.showQuickPick = async (items, options) => {
+        choices = items;
+        assert.equal(options.matchOnDescription, true);
+        return undefined;
+    };
+    await controller.captureDiagnostics();
+    assert.deepEqual(choices.filter(item => item.kind === vscode.QuickPickItemKind.Separator).map(item => item.label),
+        ["Memory & GC", "Threads & waits", "Requests & networking"]);
+    assert.deepEqual(choices.filter(item => item.spec).map(item => item.spec.kind).sort(),
+        kinds.CAPTURE_KIND_SPECS.map(spec => spec.kind).sort());
+    assert.equal(frames.length, 0, "cancelling navigation never collects");
+});
+test("each grouped leaf skips only the kind picker and uses the canonical capture flow", async () => {
+    for (const spec of kinds.CAPTURE_KIND_SPECS) {
+        const { controller, frames } = fixture(spec);
+        vscode.window.showQuickPick = () => { throw new Error("leaf already selected a kind"); };
+        await controller.captureDiagnostics(spec.kind);
+        assert.equal(frames.length, 1, spec.kind);
+        assert.equal(frames[0].kind, spec.kind);
+        assert.equal(frames[0].acknowledgeRisk, spec.risk === "high" ? "high" : undefined);
+    }
+});
+test("grouped off-CPU entry still requires consent before connecting", async () => {
+    const { controller, frames } = fixture(kinds.CAPTURE_KIND_SPECS[1]);
+    vscode.window.showQuickPick = () => { throw new Error("leaf already selected a kind"); };
+    vscode.window.showWarningMessage = async () => "Cancel";
+    controller.acquireChild = () => { throw new Error("must not connect without consent"); };
+    await controller.captureDiagnostics("off_cpu");
+    assert.equal(frames.length, 0);
 });
 test("parameters reject invalid input and forward only applicable options", () => {
     for (const invalid of ["0", "301", "1.5", "-1", "abc", ""])

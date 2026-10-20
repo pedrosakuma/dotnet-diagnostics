@@ -131,6 +131,33 @@ first. The CLI does not expose process start time, so PID reuse with identical m
 distinguished. Process command lines are not retained in the tree or workspace state.
 The view displays at most 500 processes and explicitly reports an inventory cap.
 
+After selecting a process, browse the **Live Diagnostics** action tree:
+
+| Group | Existing actions |
+|---|---|
+| CPU | CPU sample; CPU sample with raw trace (explicit acknowledgement) |
+| Memory & GC | Allocations; heap snapshot (Live or GC Dump source picker); garbage collections; GC and activities |
+| Threads & waits | Thread snapshot; off-CPU blocking; lock contention; thread pool events |
+| Requests & networking | In-flight requests; Kestrel; database; networking (HTTP, DNS, TLS, sockets, not file/disk I/O) |
+| Exceptions | Capture Exceptions, then choose Managed exceptions or Crash guard |
+| Monitoring | Start/Stop Live Counters (including GC pauses); Start Live Events (independent provider-configured stream) |
+
+Expanding a group only navigates. Selecting a capture enters the same existing parameter,
+source and consent flow, using the selected process or asking for one when needed.
+**Capture Diagnostics** stays available beside the groups and in the Command Palette; its
+searchable ten-kind picker uses matching domain headings. Allocations there and under
+Memory & GC use the same capture and Allocations result, not separate products.
+GC/activity overlap remains overlap evidence, not a causal latency diagnosis.
+
+The eight result tabs and existing Command Palette/process-context shortcuts are unchanged.
+Groups organize collection entry points, not result views or permissions: query/export/compare
+actions still require their actual evidence prerequisites. Retention paths, thread wait chains,
+heap object inspection and other drilldowns remain beside their evidence, not separate collectors.
+**Analyze Dump File** remains a standalone action for an existing file with no selected process
+required. **Saved Captures** remains a sibling view; **Capture and Save Snapshot** stays on the
+process context menu and explicitly collects a new heap/GC dump/thread snapshot. Grouping does not
+add persistence for other captures or convert current results into saved evidence.
+
 **Saved Captures** lists the CLI's durable capture catalog, 50 entries per page (up to 500 loaded,
 with an explicit cap notice), with refresh,
 reopen and confirmed CLI-managed deletion. It survives extension and CLI process restarts;
