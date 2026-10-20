@@ -4,6 +4,10 @@
 
 ### Changed
 
+- VS Code capture actions are organized into CPU, Memory & GC, Threads & waits,
+  Requests & networking, and Exceptions, with Monitoring and existing dump/saved
+  evidence kept separate. The diagnostic capture picker uses matching groups;
+  existing expert commands, result tabs and consent flows remain intact (#1224).
 - **Behavior change:** `InvestigationSummary` comparison now reports objective deltas
   by default, with no legacy option. Comparable results use `not_assessed` rather
   than performance verdicts; key metrics use `up`/`down`/`flat` and neutral direction,

@@ -39,6 +39,13 @@ reveal and array-range navigation require 0.31.0 or later. CLI 0.30.0 supports t
    your app in **.NET Processes**.
 3. Choose **Start Live Counters**, or capture a snapshot while reproducing the problem.
 
+The **Live Diagnostics** action tree groups captures under **CPU**, **Memory & GC**,
+**Threads & waits**, **Requests & networking**, and **Exceptions**. **Monitoring**
+contains live counters/GC pauses and the independent Live Events stream. Expand a group
+to browse; only selecting an action enters its existing capture/consent flow.
+**Capture Diagnostics** remains the searchable expert catalog for its ten capture kinds.
+**Analyze Dump File** and **Saved Captures** remain separate offline entry points.
+
 For a guided introduction, run **.NET Diagnostics: Open Getting Started** from the Command Palette.
 
 ## Screenshots

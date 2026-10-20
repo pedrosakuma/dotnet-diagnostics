@@ -131,6 +131,14 @@
         "title": ".NET Diagnostics: Capture CPU Now"
       },
       {
+        "command": "dotnetDiagnostics.captureCpuTrace",
+        "title": ".NET Diagnostics: Capture CPU + raw trace"
+      },
+      {
+        "command": "dotnetDiagnostics.startEvents",
+        "title": ".NET Diagnostics: Start Live Events"
+      },
+      {
         "command": "dotnetDiagnostics.captureExceptions",
         "title": ".NET Diagnostics: Capture Exceptions"
       },
@@ -214,6 +222,14 @@
         }
       ],
       "commandPalette": [
+        {
+          "command": "dotnetDiagnostics.captureCpuTrace",
+          "when": "false"
+        },
+        {
+          "command": "dotnetDiagnostics.startEvents",
+          "when": "false"
+        },
         {
           "command": "dotnetDiagnostics.selectProcess",
           "when": "false"

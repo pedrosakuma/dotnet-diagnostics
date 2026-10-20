@@ -26,6 +26,16 @@ export const CAPTURE_KIND_SPECS: readonly CaptureKindSpec[] = [
     { kind: "networking", label: "Networking", description: "HTTP, DNS, TLS and sockets (hosts can be sensitive)", risk: "moderate", defaultTopN: 25 },
 ];
 
+export const CAPTURE_GROUPS: readonly {
+    id: string; label: string; kinds: readonly CaptureViewKind[];
+}[] = [
+    { id: "cpu", label: "CPU", kinds: [] },
+    { id: "memory", label: "Memory & GC", kinds: ["allocation", "gc", "gc-activities"] },
+    { id: "threads", label: "Threads & waits", kinds: ["off_cpu", "contention", "threadpool"] },
+    { id: "requests", label: "Requests & networking", kinds: ["requests", "kestrel", "db", "networking"] },
+    { id: "exceptions", label: "Exceptions", kinds: [] },
+];
+
 export interface CaptureParams {
     durationSeconds: number;
     topN: number;

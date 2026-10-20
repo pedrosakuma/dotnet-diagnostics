@@ -32,7 +32,7 @@ import {
     isLiveEventObservation,
 } from "./liveEvents";
 import {
-    CAPTURE_KIND_SPECS, buildCaptureRequest, captureTimeoutMs, isCaptureViewResult,
+    CAPTURE_GROUPS, CAPTURE_KIND_SPECS, buildCaptureRequest, captureTimeoutMs, isCaptureViewKind, isCaptureViewResult,
     parseSources, validateInteger, validateSymbolPath,
     type CaptureKindSpec, type CaptureParams, type CaptureViewKind, type CaptureViewResult,
 } from "./captureKinds";
@@ -663,9 +663,9 @@ class CounterPanelController implements vscode.Disposable {
         }
     }
 
-    public captureDiagnostics(): Promise<void> {
+    public captureDiagnostics(kind?: CaptureViewKind): Promise<void> {
         if (!this.captureDiagnosticsTask) {
-            this.captureDiagnosticsTask = this.captureDiagnosticsCore().finally(() => {
+            this.captureDiagnosticsTask = this.captureDiagnosticsCore(kind).finally(() => {
                 this.captureDiagnosticsTask = undefined;
             });
         }
@@ -673,20 +673,26 @@ class CounterPanelController implements vscode.Disposable {
     }
 
     public captureAllocations(): Promise<void> {
-        if (!this.captureDiagnosticsTask) {
-            this.captureDiagnosticsTask = this.captureDiagnosticsCore("allocation").finally(() => { this.captureDiagnosticsTask = undefined; });
-        }
-        return this.captureDiagnosticsTask;
+        return this.captureDiagnostics("allocation");
     }
 
-    private async captureDiagnosticsCore(requestedKind?: "allocation"): Promise<void> {
+    private async captureDiagnosticsCore(requestedKind?: CaptureViewKind): Promise<void> {
         if (this.disposed) return;
         const target = this.selectedTarget ?? await this.ensureTargetAndPanel();
         if (!target || this.disposed) return;
-        const selection = requestedKind ? { spec: CAPTURE_KIND_SPECS.find(spec => spec.kind === requestedKind)! } : await vscode.window.showQuickPick(
-            CAPTURE_KIND_SPECS.map(spec => ({ label: spec.label, description: spec.description, spec })),
-            { placeHolder: "Select a diagnostic capture; captured names, paths and SQL may contain sensitive data" });
-        if (!selection || this.disposed) return;
+        const choices: Array<vscode.QuickPickItem & { spec?: CaptureKindSpec }> = [];
+        for (const group of CAPTURE_GROUPS) {
+            if (!group.kinds.length) continue;
+            choices.push({ label: group.label, kind: vscode.QuickPickItemKind.Separator });
+            for (const kind of group.kinds) {
+                const spec = CAPTURE_KIND_SPECS.find(item => item.kind === kind)!;
+                choices.push({ label: spec.label, description: spec.description, spec });
+            }
+        }
+        const selection = requestedKind ? { spec: CAPTURE_KIND_SPECS.find(spec => spec.kind === requestedKind) } : await vscode.window.showQuickPick(
+            choices,
+            { placeHolder: "All diagnostic captures; names, paths and SQL may contain sensitive data", matchOnDescription: true });
+        if (!selection?.spec || this.disposed) return;
         const spec = selection.spec;
         if (spec.kind === "allocation" && this.cpuQueryGuard.inFlight) {
             vscode.window.showWarningMessage("Wait for the current profile query to finish before capturing allocations.");
@@ -2891,8 +2897,14 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.commands.registerCommand("dotnetDiagnostics.startCounters", (row?: ProcessRow) => processCommand(row, "counters", () => controller.startCounters())),
         vscode.commands.registerCommand("dotnetDiagnostics.stopCounters", () => controller.stopCounters()),
         vscode.commands.registerCommand("dotnetDiagnostics.captureCpu", (row?: ProcessRow) => processCommand(row, "cpu", () => controller.captureCpu())),
+        vscode.commands.registerCommand("dotnetDiagnostics.captureCpuTrace", () => guarded(() => controller.captureCpuTrace())),
+        vscode.commands.registerCommand("dotnetDiagnostics.startEvents", () => guarded(() => controller.startEvents())),
         vscode.commands.registerCommand("dotnetDiagnostics.captureExceptions", () => controller.captureExceptions()),
-        vscode.commands.registerCommand("dotnetDiagnostics.captureDiagnostics", () => controller.captureDiagnostics()),
+        vscode.commands.registerCommand("dotnetDiagnostics.captureDiagnostics", (kind?: unknown) => guarded(async () => {
+            if (kind !== undefined && (typeof kind !== "string" || !isCaptureViewKind(kind)))
+                throw new Error("Select a supported diagnostic capture.");
+            await controller.captureDiagnostics(kind);
+        })),
         vscode.commands.registerCommand("dotnetDiagnostics.captureHeap", (row?: ProcessRow) => processCommand(row, "heap", () => controller.captureHeap())),
         vscode.commands.registerCommand("dotnetDiagnostics.captureThreadSnapshot", (row?: ProcessRow) => processCommand(row, "threads", () => controller.captureThreadSnapshot())),
         vscode.commands.registerCommand("dotnetDiagnostics.analyzeDumpFile", () => analyzeDumpFile(output, context)),
@@ -2901,6 +2913,7 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 class DiagnosticsActionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
+    private readonly children = new WeakMap<vscode.TreeItem, vscode.TreeItem[]>();
     private readonly changed = new vscode.EventEmitter<vscode.TreeItem | undefined>();
     public readonly onDidChangeTreeData = this.changed.event;
     private liveCountersActive = false;
@@ -2914,7 +2927,8 @@ class DiagnosticsActionsProvider implements vscode.TreeDataProvider<vscode.TreeI
         return element;
     }
 
-    public getChildren(): vscode.TreeItem[] {
+    public getChildren(element?: vscode.TreeItem): vscode.TreeItem[] {
+        if (element) return this.children.get(element) ?? [];
         const start = new vscode.TreeItem("Start Live Counters", vscode.TreeItemCollapsibleState.None);
         start.description = "Choose a running .NET process";
         start.iconPath = new vscode.ThemeIcon("play");
@@ -2972,7 +2986,33 @@ class DiagnosticsActionsProvider implements vscode.TreeDataProvider<vscode.TreeI
         captureDiagnostics.description = "Allocation, off-CPU, contention, thread pool, GC, requests, Kestrel, DB, networking";
         captureDiagnostics.iconPath = new vscode.ThemeIcon("search");
         captureDiagnostics.command = { command: "dotnetDiagnostics.captureDiagnostics", title: "Capture Diagnostics" };
-        return [start, stop, captureCpu, captureExceptions, captureDiagnostics, captureHeap, captureThreadSnapshot, analyzeDumpFile];
+        const action = (label: string, command: string, description: string, args?: unknown[]): vscode.TreeItem => {
+            const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
+            item.command = { command, title: label, arguments: args };
+            item.description = description;
+            item.tooltip = `${label}: ${description}`;
+            return item;
+        };
+        const group = (id: string, label: string, children: vscode.TreeItem[]): vscode.TreeItem => {
+            const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.Collapsed);
+            item.id = `dotnetDiagnostics.group.${id}`;
+            this.children.set(item, children);
+            return item;
+        };
+        const groups = CAPTURE_GROUPS.map(spec => {
+            const captures = spec.kinds.map(kind => {
+                const capture = CAPTURE_KIND_SPECS.find(item => item.kind === kind)!;
+                return action(`Capture ${capture.label}`, "dotnetDiagnostics.captureDiagnostics", capture.description, [kind]);
+            });
+            if (spec.id === "cpu") captures.push(captureCpu,
+                action("Capture CPU + raw trace", "dotnetDiagnostics.captureCpuTrace", "Unredacted trace; explicit confirmation before collection"));
+            if (spec.id === "memory") captures.splice(1, 0, captureHeap);
+            if (spec.id === "threads") captures.unshift(captureThreadSnapshot);
+            if (spec.id === "exceptions") captures.push(captureExceptions);
+            return group(spec.id, spec.label, captures);
+        });
+        const events = action("Start Live Events", "dotnetDiagnostics.startEvents", "Independent EventPipe stream; explicit providers and consent");
+        return [group("monitoring", "Monitoring", [start, stop, events]), ...groups, captureDiagnostics, analyzeDumpFile];
     }
 }
 

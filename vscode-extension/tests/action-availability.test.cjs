@@ -194,7 +194,11 @@ test("sidebar Stop Live Counters is discoverable but has no command without an a
     const vscode = require("./stubs/vscode-stub.js");
     vscode.EventEmitter = class { event() {} fire() {} dispose() {} };
     const provider = new Actions();
-    const stop = () => provider.getChildren().find(item => item.label === "Stop Live Counters");
+    const stop = () => {
+        const monitoring = provider.getChildren().find(item => item.label === "Monitoring");
+        assert.equal(monitoring.command, undefined);
+        return provider.getChildren(monitoring).find(item => item.label === "Stop Live Counters");
+    };
     assert.equal(stop().command, undefined);
     assert.match(stop().tooltip, /Start Live Counters/);
     provider.setLiveCountersActive(true);
