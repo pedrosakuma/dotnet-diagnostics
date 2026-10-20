@@ -67,12 +67,11 @@ export async function openShareable(value: unknown, format: "json" | "csv"): Pro
 
 export class ResultExporter {
     private current?: unknown;
-    private currentCaptureKind?: string;
     private cpuCapture?: unknown;
     private readonly navigation = new Map<string, unknown>();
     private selectedNavigation?: string;
     private activeHistory?: Set<string>;
-    public set(value: unknown): void { this.current = value; this.currentCaptureKind = undefined; }
+    public set(value: unknown): void { this.current = value; }
     public clear(): void {
         this.set(undefined);
         this.cpuCapture = undefined;
@@ -90,19 +89,10 @@ export class ResultExporter {
             const kind = typeof message.kind === "string" ? message.kind : undefined;
             if (kind === "cpu") this.cpuCapture = value;
             this.current = value;
-            this.currentCaptureKind = kind;
-        } else if (message.type === "captureStatus" && message.kind === "cpu"
-            && ["starting", "running"].includes(String(message.state))) {
-            this.cpuCapture = undefined;
-            if (this.currentCaptureKind === "cpu") {
-                this.current = undefined;
-                this.currentCaptureKind = undefined;
-            }
         } else if (message.type === "navigation") {
             if (message.sensitiveValues === true) {
                 if (this.selectedNavigation === this.navigationKey(message)) {
                     this.current = undefined;
-                    this.currentCaptureKind = undefined;
                 }
                 return;
             }
@@ -133,7 +123,6 @@ export class ResultExporter {
             this.selectedNavigation = this.navigationKey(message);
             this.current = message.ready === true && this.selectedNavigation
                 ? this.navigation.get(this.selectedNavigation) : undefined;
-            this.currentCaptureKind = undefined;
             return true;
         }
         if (!record(message) || message.type !== "exportResult" || !["json", "csv"].includes(String(message.format))) return false;

@@ -50,6 +50,9 @@ function installLiveTimeNavigation(
         ? points.filter(point => point.receivedAtMs >= range!.start && point.receivedAtMs <= range!.end) : points;
     function update(): void {
         const points = getPoints();
+        const empty = !points.length && !gcRows.length;
+        reset.setAttribute("aria-disabled", String(empty));
+        reset.title = empty ? "Wait for retained counter observations or GC pauses." : "";
         const visible = filter(points);
         if (inspected && !visible.includes(inspected)) {
             inspected = undefined;

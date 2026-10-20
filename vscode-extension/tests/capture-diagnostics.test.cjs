@@ -127,11 +127,13 @@ test("busy captures do not send queued reproduction guidance or discard previous
     for (const state of [
         { pendingCaptures: new Map([["cpu", {}]]) }, { pendingQueries: new Map([["q", {}]]) }, { startInFlight: true },
     ]) {
-        const { controller, messages, frames } = fixture(undefined, state);
+        const { controller, messages, frames, session } = fixture(undefined, state);
+        const previous = controller.allocationProfile = { session, handle: "previous" };
         await controller.captureDiagnostics();
         assert.equal(frames.length, 0);
         assert.equal(messages.at(-1).state, "error");
         assert.ok(!messages.some(m => m.state === "running"));
+        assert.equal(controller.allocationProfile, previous);
     }
 });
 test("a sibling capture cannot close the connection retaining a CPU export handle", async () => {
@@ -174,6 +176,23 @@ test("allocation capture retains its exact connection and byte-weighted handle, 
     controller.sendQuery = async () => ({ data: {} });
     await controller.queryCpu("call-tree", undefined, "allocation");
     assert.match(messages.findLast(message => message.type === "queryError").message, /did not confirm allocation-byte weighting/);
+    assert.equal(controller.allocationProfile, undefined);
+});
+test("failed allocation capture preserves the previous profile; successful table-only replacement invalidates it", async () => {
+    const { controller, session, messages } = fixture();
+    const previous = controller.allocationProfile = { session, handle: "previous" };
+    controller.writeFrame = (_session, frame) => controller.handleFrame(session, JSON.stringify({
+        type: "error", requestId: frame.requestId, code: "capture_safety_rejected", message: "Capture rejected",
+    }));
+    await controller.captureAllocations();
+    assert.equal(controller.allocationProfile, previous);
+    assert.equal(messages.at(-1).state, "error");
+    controller.writeFrame = (_session, frame) => controller.handleFrame(session, JSON.stringify({
+        type: "capture", requestId: frame.requestId, kind: "allocation", result: view("allocation"),
+    }));
+    await controller.captureAllocations();
+    assert.equal(controller.allocationProfile, undefined);
+    assert.ok(messages.some(m => m.type === "queryError" && /only allocation tables/.test(m.message)));
 });
 test("allocation capture preserves existing evidence when a profile query is busy", async () => {
     const { controller, frames } = fixture();

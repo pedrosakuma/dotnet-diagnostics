@@ -121,8 +121,10 @@ function event(sequence, overrides = {}) {
 
 test("Events executes pause/follow/filter/clear and local details without diagnostic requests", { timeout: 10_000 }, () => {
     const ui = eventsDocument();
+    assert.equal(ui.get("eventsClear").attributes["aria-disabled"], "true");
     ui.setEventsStatus("running", "Running", "events-1");
     ui.batch([event(1), event(2)]);
+    assert.equal(ui.get("eventsClear").attributes["aria-disabled"], "false");
     const body = ui.get("eventsBody");
     assert.equal(body.children.length, 2);
     body.children[0].dispatch("click");
@@ -150,6 +152,7 @@ test("Events executes pause/follow/filter/clear and local details without diagno
 
     ui.get("eventsClear").dispatch("click");
     assert.equal(ui.snapshot().count, 0);
+    assert.equal(ui.get("eventsClear").attributes["aria-disabled"], "true");
     assert.equal(ui.snapshot().bytes, 0);
     assert.equal(ui.snapshot().selected, undefined);
     assert.equal(body.children.length, 0);

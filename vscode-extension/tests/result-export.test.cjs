@@ -74,7 +74,7 @@ test("CPU export stays bound to its displayed capture after another collector pu
     await exporter.handle({ type: "exportResult", format: "json" });
     assert.equal(JSON.parse(docs[2].content).measurements[0].value, 678);
 });
-test("scoped exports preserve evidence on a rejected attempt and refuse a replaced or missing capture", async () => {
+test("scoped exports preserve evidence through rejected, running and failed attempts until replaced", async () => {
     const exporter = new e.ResultExporter(), docs = [], errors = [];
     vscode.window.showTextDocument = async document => docs.push(document);
     vscode.window.showErrorMessage = async message => errors.push(message);
@@ -88,13 +88,17 @@ test("scoped exports preserve evidence on a rejected attempt and refuse a replac
     exporter.observe({ type: "capture", kind: "exceptions", result: { totalExceptions: 7 } });
 
     await exporter.handle({ type: "exportResult", captureKind: "cpu", format: "json" });
-    assert.equal(docs.length, 1);
-    assert.match(errors[0], /displayed capture is no longer available/);
+    assert.equal(docs.length, 2);
+    assert.equal(JSON.parse(docs[1].content).measurements[0].value, 42);
+
+    exporter.observe({ type: "capture", kind: "cpu", summary: { totalSamples: 99 } });
+    await exporter.handle({ type: "exportResult", captureKind: "cpu", format: "json" });
+    assert.equal(JSON.parse(docs[2].content).measurements[0].value, 99);
 
     exporter.observe({ type: "capture", kind: "cpu" });
     await exporter.handle({ type: "exportResult", captureKind: "cpu", format: "csv" });
-    assert.equal(docs.length, 1);
-    assert.match(errors[1], /displayed capture is no longer available/);
+    assert.equal(docs.length, 3);
+    assert.match(errors[0], /displayed capture is no longer available/);
 });
 test("generic export buttons include their containing capture kind when available", () => {
     const posted = [], listeners = new Map();
@@ -257,6 +261,7 @@ test("comparison summary counts objective deltas, including zero and unavailable
         const session = { pendingCaptures: new Map(), pendingQueries: new Map(), startInFlight: false,
             process: { exitCode: null }, closing: false };
         controller.cpuExport = { session, handle: "cpu-handle" };
+        controller.exporter = new e.ResultExporter();
         controller.pendingExports = new Map();
         controller.output = { appendLine() {} };
         controller.writeFrame = (_session, frame) => {

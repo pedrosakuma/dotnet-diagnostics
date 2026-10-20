@@ -2,6 +2,7 @@ import { captureQueryArgs, parseEnvelope, runHistoryCli, type CaptureSummary } f
 import { QUERY_VIEW_RENDERER_SCRIPT, QUERY_VIEW_STYLES } from "./queryViewRenderer";
 import { RESULT_EXPORT_BUTTONS, RESULT_EXPORT_SCRIPT } from "./resultExport";
 import { COMPARISON_RENDERER_SCRIPT } from "./baselineCompare";
+import { ACTION_AVAILABILITY_SCRIPT, ACTION_AVAILABILITY_STYLES } from "./actionAvailability";
 import { WEBVIEW_FIELD_STYLES } from "./webviewFields";
 
 const SHARED_VIEWS = ["roots-by-kind", "finalizer-queue", "fragmentation", "gchandles", "async", "timers", "alc",
@@ -115,13 +116,14 @@ export function renderHistoryHtml(nonce: string, cspSource: string, detail: Capt
     return `<!DOCTYPE html><html><head><meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${cspSource} 'nonce-${nonce}'; script-src 'nonce-${nonce}';">
 <style nonce="${nonce}">body{font-family:var(--vscode-font-family);padding:1rem;color:var(--vscode-foreground)}
-table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:.25rem;border-bottom:1px solid var(--vscode-panel-border)}${QUERY_VIEW_STYLES}${WEBVIEW_FIELD_STYLES}</style></head><body>
+table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:.25rem;border-bottom:1px solid var(--vscode-panel-border)}${QUERY_VIEW_STYLES}${WEBVIEW_FIELD_STYLES}${ACTION_AVAILABILITY_STYLES}</style></head><body>
 <h2>${escapeHtml(detail.name)}</h2><p>Saved capture ${escapeHtml(detail.captureId)} - ${escapeHtml(detail.createdUtc)}. Offline, read-only evidence; the original process is not contacted.</p>
 <label>Artifact <select id="artifact">${options}</select></label><label>View <select id="view"></select></label>
 ${RESULT_EXPORT_BUTTONS}<button id="compareBaseline">Compare with saved baseline</button>
 <p id="status" role="status"></p><div id="views" class="query-views"></div>
 <script nonce="${nonce}">
 const vscode = acquireVsCodeApi(), choices = ${choices};
+${ACTION_AVAILABILITY_SCRIPT}
 ${RESULT_EXPORT_SCRIPT}
 ${COMPARISON_RENDERER_SCRIPT}
 document.getElementById("compareBaseline").addEventListener("click", () =>
@@ -129,9 +131,18 @@ document.getElementById("compareBaseline").addEventListener("click", () =>
 ${QUERY_VIEW_RENDERER_SCRIPT}
 ${SAVED_PRIMARY_RENDERER_SCRIPT}
 const artifact = document.getElementById("artifact"), view = document.getElementById("view"), status = document.getElementById("status");
-let sequence = 0, current;
+let sequence = 0, current, loaded = false, comparing = false;
+function updateActions() {
+  for (const id of ["exportJson", "exportCsv"])
+    setActionAvailable(document.getElementById(id), loaded, "Select a successfully loaded saved view first.");
+  setActionAvailable(document.getElementById("compareBaseline"), loaded && !comparing,
+    comparing ? "Wait for the current comparison to finish." : "Select a successfully loaded saved view first.");
+}
 function ask() {
   current = undefined;
+  loaded = false;
+  comparing = false;
+  updateActions();
   vscode.postMessage({ type: "selectionChanged" });
   document.getElementById("views").replaceChildren();
   if (!view.value || view.selectedOptions[0]?.disabled) { status.textContent = "No displayable offline view. Use the CLI for the remaining advertised views."; return; }
@@ -153,6 +164,13 @@ function fill() {
 artifact.addEventListener("change", fill); view.addEventListener("change", ask);
 window.addEventListener("message", e => {
   const m = e.data;
+  if (m?.type === "comparisonState") {
+    if (current && m.requestId === current.requestId && m.artifactId === artifact.value) {
+      comparing = m.state === "running";
+      updateActions();
+    }
+    return;
+  }
   if (m?.type === "comparison") {
     if (current && m.requestId === current.requestId && m.artifactId === artifact.value) {
       renderComparison("views", m.result); status.textContent = "Saved baseline comparison.";
@@ -162,6 +180,8 @@ window.addEventListener("message", e => {
   if (!m || m.type !== "result" || !current || m.requestId !== current.requestId || m.view !== current.view) return;
   artifact.disabled = view.disabled = false;
   status.textContent = m.ok ? m.summary : m.message;
+  loaded = m.ok === true;
+  updateActions();
   if (!m.ok) { renderQueryView("views", m.view, m.message, true); return; }
   if (["top-types","threads-summary","summary","events","pauseHistogram","timeline","longestPauses","byGeneration","heap-stats"].includes(m.view))
     renderSavedPrimary("views", m.view, m.data);

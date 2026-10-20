@@ -5,6 +5,10 @@ versioned independently from the CLI and the .NET packages.
 
 ## Unreleased
 
+- Gate CPU exports, retained-profile exploration and saved-view export/comparison on available
+  evidence. Failed or rejected captures preserve prior results; redacted CPU measurements remain
+  exportable after disconnection. Explain unavailable actions without removing keyboard focus.
+  Disable idle Stop, empty live-time reset, empty Events Clear and permission revocation without grants.
 - Theme webview text/search fields and dropdowns with native VS Code input/dropdown tokens,
   including keyboard focus, placeholders and disabled states across live, dump and saved evidence.
   Keep fields within narrow panes instead of imposing a fixed thread-statics minimum width.
