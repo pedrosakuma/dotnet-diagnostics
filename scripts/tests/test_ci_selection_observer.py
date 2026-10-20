@@ -117,6 +117,19 @@ class ReportTests(unittest.TestCase):
     def test_malformed_needs_does_not_break_actual_record(self):
         self.assertEqual(OBS.actual_execution("garbage")["jobs"]["changes"]["result"], "unknown")
 
+    def test_extension_selection_is_distinct_from_hypothetical_general_policy(self):
+        report = self.build(env={**self.ENV, "CI_EXTENSION_ONLY": "true"},
+                            paths=["vscode-extension/src/extension.ts"],
+                            needs={"extension-tests": {"result": "success"}})
+        self.assertTrue(report["actualExecution"]["selectionApplied"])
+        self.assertEqual(report["actualExecution"]["selectionPolicy"], "ci-extension-pr/1")
+        self.assertEqual(report["actualExecution"]["jobs"]["extension-tests"]["result"], "success")
+        # The old, broad classifier is still conservative for unmapped frontend paths.
+        self.assertTrue(report["recommendation"]["hypothetical"])
+        self.assertTrue(report["recommendation"]["fullValidation"])
+        self.assertIn("fast path applied", OBS.summary(report))
+        self.assertNotIn("nothing was skipped", OBS.summary(report))
+
     def test_changed_paths_rejects_missing_or_zero_shas(self):
         for base, head in (("", "b"), ("0" * 40, "b" * 40), ("a", "")):
             with self.assertRaises(ValueError):

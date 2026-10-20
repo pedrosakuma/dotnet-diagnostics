@@ -82,6 +82,13 @@ Do **not** put the `if:` on the job (or use `paths-ignore` at the workflow
 level): a *skipped* required job never reports its context and deadlocks the PR
 in "Expected — Waiting" forever. A job whose `needs` succeeded but whose steps
 all skip still reports **success**, which is what satisfies the required check.
+Verified extension-only same-repository PRs also have a bounded fast path:
+Linux/Windows extension tests, VSIX integrity and a freshly built CLI handshake
+replace unrelated .NET live/deployment coverage. Non-Markdown `main` pushes and
+mixed/shared changes remain full. See [`docs/ci-extension-fast-path.md`](./docs/ci-extension-fast-path.md)
+for exact-SHA selection, required-gate behavior and the
+`CI_EXTENSION_FAST_PATH_DISABLED` rollback variable. The general risk observer
+does not authorize selection.
 The Kind workflow additionally caches Docker layers via `type=gha`; GHA cache is
 branch-scoped (PRs read `main`'s cache, write their own). Crash dumps upload only
 on failure (`if: ${{ failure() && … }}`); TRX always.
@@ -89,7 +96,8 @@ on failure (`if: ${{ failure() && … }}`); TRX always.
 In `ci.yml`, lightweight CLI, BenchmarkDotNet, and packaging checks run in
 separate fast-test jobs alongside the serialized live-process suites, so their
 results surface early. The existing `Build & Test` contexts aggregate both
-groups; the full suite remains required. Test steps have explicit timeouts, and
+groups; the full suite remains required outside the bounded extension PR path.
+Test steps have explicit timeouts, and
 evidence-verification and artifact-upload steps must still run after a test
 failure or timeout.
 On Windows, the five-minute inactivity watchdog requests full hang dumps as

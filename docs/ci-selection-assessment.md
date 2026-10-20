@@ -1,9 +1,14 @@
 # CI selection assessment: retain observation-only mode
 
-Assessment for #1198, following #1194. **Decision: defer activation.** This
+Assessment for #1198, following #1194. **Decision: defer general activation.** This
 assessment changes neither the classifier nor CI execution. Full configured
 coverage, required contexts, private-feed boundaries and evidence checks remain
 in place. No release-only replacement gate or cross-SHA waiver is introduced.
+
+Subsequent #1237 introduces a separately approved
+[extension-only PR pilot](./ci-extension-fast-path.md), independent of the
+general classifier assessed here. The original sample, findings and decision
+below remain historical evidence, not authorization for general selection.
 
 ## Fixed sample and evidence boundary
 

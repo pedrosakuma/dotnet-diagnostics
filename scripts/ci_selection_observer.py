@@ -15,7 +15,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-POLICY_VERSION = "ci-selection-observer/1"
+POLICY_VERSION = "ci-selection-observer/2"
 SCHEMA_VERSION = 1
 MAX_LISTED_PATHS = 500
 
@@ -39,6 +39,7 @@ JOBS = {
     "windows-gate": (),
     "docker-smoke": ("docker-smoke",),
     "helm-render-smoke": ("helm-render-smoke",),
+    "extension-tests": (),
 }
 
 BASELINE = ("ubuntu-fast",)
@@ -196,7 +197,7 @@ def changed_paths(base, head, merge_base=True):
     return paths
 
 
-def actual_execution(needs):
+def actual_execution(needs, extension_only=False):
     """Record what ran; `needs` maps job id -> {result}. Missing means unknown."""
     jobs = {}
     for job, suites in JOBS.items():
@@ -204,8 +205,12 @@ def actual_execution(needs):
         result = entry.get("result") if isinstance(entry, dict) else None
         jobs[job] = {"result": result or "unknown", "suites": list(suites)}
     return {
-        "selectionApplied": False,
-        "note": "All configured jobs run regardless of the recommendation; results below are actual.",
+        "selectionApplied": extension_only,
+        "selectionPolicy": "ci-extension-pr/1" if extension_only else None,
+        "note": ("Bounded extension-only PR selection applied; extension-tests replaces unrelated "
+                 ".NET/deployment suites. The general recommendation remains hypothetical."
+                 if extension_only else
+                 "No selection applied; results below record actual configured job outcomes."),
         "jobs": jobs,
     }
 
@@ -246,7 +251,7 @@ def build_report(env, needs, timings):
                  "checkedOut": checkout},
         "recommendation": recommendation,
         "estimatedSavings": savings,
-        "actualExecution": actual_execution(needs),
+        "actualExecution": actual_execution(needs, env.get("CI_EXTENSION_ONLY") == "true"),
         "notes": notes,
     }
 
@@ -261,8 +266,10 @@ def summary(report):
     lines = [
         "## CI selection observer (observation only)",
         "",
-        f"Policy `{report['policyVersion']}` - status **{report['status']}**. "
-        "All configured jobs ran; nothing was skipped by this observer.",
+        f"Policy `{report['policyVersion']}` - status **{report['status']}**. " +
+        ("Bounded extension PR fast path applied; general recommendations remain hypothetical."
+         if report["actualExecution"]["selectionApplied"] else
+         "No selection applied; this observer does not skip jobs."),
         "",
         f"- Hypothetical recommendation: **{'full validation' if rec['fullValidation'] else 'targeted'}**",
         f"- Recommended suites: {', '.join(rec['suites'])}",
