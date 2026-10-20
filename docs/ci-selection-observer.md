@@ -1,15 +1,16 @@
 # CI selection observer (observation only)
 
-Phase 1 of change-risk-based CI selection. The `CI selection observer (observation only)` job in
+The general change-risk-based CI classifier remains observation-only. The `CI selection observer (observation only)` job in
 `.github/workflows/ci.yml` classifies each change and records what a **hypothetical** selector would
-run. It does **not** select, skip, or gate anything: every configured job and test still runs, the
-docs-only fast path is unchanged, and required check contexts, triggers, trust gates and private
-NuGet handling are untouched. The goal is to gather data before a later, separately approved policy.
-This does not claim any CI acceleration.
+run. It does **not** select, skip, or gate anything. The separately approved
+[extension-only PR fast path](./ci-extension-fast-path.md) now performs bounded
+selection independently; docs-only behavior and full validation of other code
+changes remain unchanged. Required contexts and private-feed trust gates remain.
 
 The [ten-run follow-up assessment](./ci-selection-assessment.md) retains
-observation-only mode: transitive test dependencies, shared-manifest precedence
-and activation-time evidence handling are not yet safe enough to enable skipping.
+observation-only mode for this general classifier: transitive test dependencies,
+shared-manifest precedence and activation-time evidence handling are not safe
+enough for general selection. The extension path does not rely on these rules.
 
 ## Safety properties
 
@@ -27,12 +28,12 @@ Artifact `ci-selection-observation` (`ci-selection.json` + `ci-selection.md`, al
 
 | Field | Meaning |
 |---|---|
-| `policyVersion` | Classifier policy (`ci-selection-observer/1`); bump when rules or timings change |
+| `policyVersion` | Observer policy (`ci-selection-observer/2`); version 2 records the independent extension selection |
 | `status` | `assessed`, or `unavailable` (diff/SHA failure; recommendation is full, savings not assessed) |
 | `shas` | `base`, `head`, `tested` (`GITHUB_SHA`, the merge commit on PRs) and `checkedOut` |
 | `recommendation` | `hypothetical: true`; suites, `wouldSkipSuites`, per-path category/reason |
 | `estimatedSavings` | Min/max runner-minutes of skipped suites that have measured timings |
-| `actualExecution` | `selectionApplied: false` and the real result of every observed job |
+| `actualExecution` | Actual `selectionApplied`, bounded `selectionPolicy` when used, and the real result of every observed job, including `extension-tests` |
 
 Suites: `ubuntu-fast`, `ubuntu-core`, `ubuntu-smoke`, `ubuntu-mcp`, `windows-build`, `windows-fast`,
 `windows-core`, `windows-smoke`, `windows-mcp`, `docker-smoke`, `helm-render-smoke`. Windows suites

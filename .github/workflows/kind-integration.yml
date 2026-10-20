@@ -23,13 +23,15 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Same gate as ci.yml: docs-only changes skip the (expensive) kind steps but
-  # the job still runs and reports success so the required check is satisfied.
+  # Same gate as ci.yml: docs-only and verified extension-only PRs omit Kind
+  # steps, but the required job still runs and verifies its classification.
   changes:
     name: Detect changes
     runs-on: ubuntu-latest
     outputs:
-      code: ${{ steps.filter.outputs.code }}
+      code: ${{ steps.filter.outputs.code == 'true' && steps.extension.outputs.extension_only != 'true' }}
+      requested_code: ${{ steps.filter.outputs.code }}
+      extension_only: ${{ steps.extension.outputs.extension_only }}
       trusted_source: ${{ github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -46,9 +48,26 @@ jobs:
               - '**'
               - '!**/*.md'
 
+      - name: Select bounded extension PR fast path
+        id: extension
+        env:
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_TRUSTED_SOURCE: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]' }}
+          CI_EXTENSION_FAST_PATH_DISABLED: ${{ vars.CI_EXTENSION_FAST_PATH_DISABLED }}
+        run: python scripts/ci_extension_selection.py
+
+      - name: Upload extension selection decision
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kind-extension-selection
+          path: extension-selection-report/
+          if-no-files-found: error
+
   kind:
     name: Kind Integration (ubuntu-latest)
     needs: changes
+    if: always()
     runs-on: ubuntu-latest
     # Acceptance for issue #20 P6: stand up two CoreClrSample replicas on a
     # kind cluster, install the orchestrator Helm chart, port-forward and run
@@ -64,6 +83,25 @@ jobs:
       BEARER_TOKEN: kind-test-bearer-token
       KIND_LOCAL_PORT: "5130"
     steps:
+      - name: Verify classification before allowing omitted Kind steps
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          CODE: ${{ needs.changes.outputs.code }}
+          REQUESTED_CODE: ${{ needs.changes.outputs.requested_code }}
+          EXTENSION_ONLY: ${{ needs.changes.outputs.extension_only }}
+          TRUSTED_SOURCE: ${{ needs.changes.outputs.trusted_source }}
+        run: |
+          if [[ "$CHANGES_RESULT" != "success" ]]; then
+            echo "::error::Change classification did not succeed."
+            exit 1
+          fi
+          if [[ "$CODE" == "true" || ( "$CODE" == "false" && "$REQUESTED_CODE" == "false" && "$EXTENSION_ONLY" == "false" ) || ( "$CODE" == "false" && "$REQUESTED_CODE" == "true" && "$EXTENSION_ONLY" == "true" && "$TRUSTED_SOURCE" == "true" ) ]]; then
+            echo "Classification verified; extension-only PRs omit unrelated Kind coverage."
+            exit 0
+          fi
+          echo "::error::No verified full, docs-only or extension-only classification."
+          exit 1
+
       - name: Reject unvalidated code changes from untrusted pull request
         if: needs.changes.outputs.code == 'true' && needs.changes.outputs.trusted_source != 'true'
         run: |
