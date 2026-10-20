@@ -54,6 +54,27 @@ normalization, retained populations, unavailable reasons and qualified/incompati
 Relative delta is a ratio, not percent; a zero baseline does not imply an infinite improvement.
 Comparison does not contact the original process or prove equivalent workloads or causation.
 
+### Evidence-dependent actions
+
+Initial capture actions, result tabs and Command Palette entry points remain available without
+requiring an investigation wizard. Result actions follow these prerequisites:
+
+| Action | No result / loading | Ready | Failed attempt / disconnected |
+|---|---|---|---|
+| CPU redacted JSON/CSV | Unavailable until a CPU result exists | Host-held measurements; no CLI request | Previous successful measurements remain exportable, including while a new capture runs |
+| CPU profile queries / investigation summary | Unavailable without a retained CLI profile; wait during capture/query/export | Uses the displayed capture's CLI handle | Previous valid profile survives rejected/failed captures; disconnect or an expired-handle response requires recapture |
+| Raw trace export | Requires **Capture CPU + raw trace** and an idle retained connection | Separate acknowledgement and local destination | Unavailable after disconnect or replacement by a capture without a trace |
+| Allocation exploration | Hidden without a retained profile; busy operations temporarily disable queries | Uses the allocation profile, independently of CPU | Table-only and disconnected results remain readable with recapture guidance |
+| Saved-view export / comparison | Unavailable on selection change, unsupported views, loading or failure | Only the successfully loaded selection; comparison waits for the current comparison | Stale responses cannot enable another selection; a successful new selection restores actions |
+
+Unavailable result actions keep keyboard focus and explain their prerequisite in a tooltip;
+CPU/allocation status text also describes the retained evidence. If an allocation explorer holding
+focus becomes unavailable, focus returns to **Capture allocations** before the explorer is hidden.
+Sidebar **Stop Live Counters** has no action without an active counter session. Live-time reset,
+Events **Clear**, and permission revocation require retained observations/GC rows, retained events,
+and remembered live-read grants respectively. UI availability does not replace host-side validation,
+authorization, request correlation or measurement-only privacy projection.
+
 ## Prerequisites
 
 - VS Code 1.96 or newer with a Node.js extension host.
@@ -211,7 +232,8 @@ bounded projection from the retained artifact. This backend query chooses the hi
 occurrence containing the method name, not necessarily the selected call path.
 **Full capture tree** queries the original root, still bounded. **Callers / callees**
 uses the same method-name lookup; **Back to CPU profile** restores the cached projection,
-mode, search and local focus without a new request. A new CPU capture clears the old profile.
+mode, search and local focus without a new request. A successful new CPU capture replaces the old
+profile; preparing, rejected or failed attempts preserve still-valid evidence.
 
 The **Allocations** tab provides **Capture allocations** and a sampled Allocation Explorer.
 The allocation option in **Capture Diagnostics** opens this same tab. It reuses the tree/flame,

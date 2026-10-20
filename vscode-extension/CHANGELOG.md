@@ -5,6 +5,10 @@ versioned independently from the CLI and the .NET packages.
 
 ## Unreleased
 
+- Gate CPU exports, retained-profile exploration and saved-view export/comparison on available
+  evidence. Failed or rejected captures preserve prior results; redacted CPU measurements remain
+  exportable after disconnection. Explain unavailable actions without removing keyboard focus.
+  Disable idle Stop, empty live-time reset, empty Events Clear and permission revocation without grants.
 - Keep result-tab keyboard navigation in visible DOM order, show selected receipt-time bounds on
   live controls, and distinguish a ready selected process from active live counters. Collection
   failures now retain their original reason and offer applicable Environment/Output recovery actions.

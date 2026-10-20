@@ -510,6 +510,29 @@ test("CPU caller/callee and query errors return to cached mode, search and exact
     assert.deepEqual(state.focus, [], "a different projection must not reuse old path indices");
 });
 
+test("disconnected CPU projections keep local exploration while redrawn query controls stay unavailable", () => {
+    const { renderCpuQuery, container, requests } = cpuRenderer();
+    renderCpuQuery("call-tree", { data: { totalSamples: 10,
+        root: cpuNode("Root", 10, 0, [cpuNode("Work", 10, 10)]),
+    } }, false);
+    container.setAttribute("data-profile-query-available", "false");
+    container.setAttribute("data-profile-query-reason", "Capture again for CLI queries.");
+    click(container, "Flame graph (icicle)");
+    assert.ok(container.querySelector("svg"), "switching cached presentation is not a CLI operation");
+    click(container, "Focus selected branch");
+    const queryButtons = elements(container, element =>
+        element.textContent === "Callers / callees" || element.textContent === "Query subtree by method");
+    assert.equal(queryButtons.length, 2);
+    assert.ok(queryButtons.every(button => button.getAttribute("aria-disabled") === "true"));
+    assert.ok(queryButtons.every(button => button.title === "Capture again for CLI queries."));
+    click(container, "Query subtree by method");
+    assert.deepEqual(requests, []);
+    container.setAttribute("data-profile-query-available", "true");
+    click(container, "Reset focus");
+    click(container, "Query subtree by method");
+    assert.equal(requests.length, 1, "reconnection restores newly rendered query controls");
+});
+
 test("CPU profile enforces client node/depth bounds and reports omissions", () => {
     const { renderCpuQuery, container } = cpuRenderer();
     renderCpuQuery("call-tree", { data: { totalSamples: 100,
@@ -1121,6 +1144,15 @@ test("live time selection filters only retained observations and GC receipt time
     assert.match(root.textContent, /Following live.*Selected receipt-time bounds: 1970-01-01T00:00:01\.000Z to 1970-01-01T00:00:01\.000Z/);
     assert.ok(gcRows.every(row => !row.element.hidden));
     assert.equal(redraws, 2);
+    const reset = root.querySelector("button");
+    points = [];
+    gcRows.length = 0;
+    nav.update();
+    assert.equal(reset.getAttribute("aria-disabled"), "true");
+    assert.match(reset.title, /Wait for retained/);
+    gcRows.push({ receivedAtMs: 2000, element: document.createElement("tr") });
+    nav.update();
+    assert.equal(reset.getAttribute("aria-disabled"), "false", "retained GC rows are sufficient to reset their time selection");
 });
 
 test("all diagnostic kinds provide sortable selectable returned rows without fabricating a timeline", () => {
@@ -1244,11 +1276,13 @@ test("live-read permissions display scoped grants, bounded history and a revoke 
         operation: "object", decision: "allowed once", timestamp: "t" + i,
     })) });
     assert.match(summary.textContent, /Object remembered/);
+    assert.equal(revoke.getAttribute("aria-disabled"), "false");
     assert.equal(history.children.length, 30);
     revoke.listeners.click();
     assert.deepEqual(messages, [{ type: "revokeLiveReads" }]);
     render({ grants: [], history: [] });
     assert.match(summary.textContent, /none remembered/);
+    assert.equal(revoke.getAttribute("aria-disabled"), "true");
     assert.equal(history.children.length, 0);
     const live = renderHtml(target, "nonce", 120);
     const dump = renderDumpAnalysisHtml("fixture.dmp", "nonce");

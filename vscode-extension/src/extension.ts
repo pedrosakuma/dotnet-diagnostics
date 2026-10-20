@@ -15,6 +15,7 @@ import { CAPTURE_VIEW_RENDERER_SCRIPT } from "./captureViewRenderer";
 import { CPU_PROFILE_SCRIPT, CPU_PROFILE_STYLES } from "./cpuProfileViewer";
 import { LIVE_TIME_NAVIGATION_SCRIPT } from "./liveTimeNavigation";
 import { LiveReadConsent, LIVE_READ_CONSENT_HTML, LIVE_READ_CONSENT_SCRIPT } from "./liveReadConsent";
+import { ACTION_AVAILABILITY_SCRIPT, ACTION_AVAILABILITY_STYLES, PROFILE_ACTIONS_SCRIPT } from "./actionAvailability";
 import {
     BoundedProtocolLineReader,
     LIVE_EVENT_BATCH_MAX_BYTES,
@@ -136,7 +137,7 @@ interface Deferred<T> {
  * payloads.
  */
 type PendingCapture =
-    | { kind: "cpu"; deferred: Deferred<CpuSampleSummary> }
+    | { kind: "cpu"; exportTrace?: boolean; deferred: Deferred<CpuSampleSummary> }
     | { kind: "exceptions" | "crash-guard"; deferred: Deferred<ExceptionCaptureResult> }
     | { kind: "heap"; deferred: Deferred<HeapCaptureResult> }
     | { kind: "thread-snapshot"; deferred: Deferred<ThreadCaptureResult> }
@@ -187,7 +188,8 @@ interface StreamChild {
 
 class CounterPanelController implements vscode.Disposable {
     private readonly exporter = new ResultExporter();
-    private cpuExport?: { session: StreamChild; handle: string };
+    private cpuExport?: { session: StreamChild; handle: string; trace?: boolean };
+    public liveCountersChanged?: (active: boolean) => void;
     private allocationProfile?: { session: StreamChild; handle: string };
     private readonly pendingExports = new Map<string, { session: StreamChild; deferred: Deferred<unknown> }>();
     private exporting = false;
@@ -534,7 +536,6 @@ class CounterPanelController implements vscode.Disposable {
             return;
         }
 
-        this.cpuExport = undefined;
         this.postMessage({ type: "captureStatus", kind: "cpu", state: "running", message: "Capturing CPU…" });
 
         let session: StreamChild;
@@ -552,7 +553,7 @@ class CounterPanelController implements vscode.Disposable {
         }
 
         const requestId = randomBytes(12).toString("hex");
-        const pending: PendingCapture = { kind: "cpu", deferred: deferred<CpuSampleSummary>() };
+        const pending: PendingCapture = { kind: "cpu", exportTrace, deferred: deferred<CpuSampleSummary>() };
         session.pendingCaptures.set(requestId, pending);
         try {
             this.writeFrame(session, {
@@ -717,7 +718,6 @@ class CounterPanelController implements vscode.Disposable {
         const requestId = randomBytes(12).toString("hex");
         const pending: PendingCapture = { kind: "diagnostics", captureKind: spec.kind, deferred: deferred<CaptureViewResult>() };
         session.pendingCaptures.set(requestId, pending);
-        if (spec.kind === "allocation") this.allocationProfile = undefined;
         try {
             this.writeFrame(session, buildCaptureRequest(requestId, spec, target.processId, params));
             status("running", `${spec.label} capture requested (${params.durationSeconds} seconds after startup). Allow time for tracing startup, then reproduce the problem.`);
@@ -1031,16 +1031,22 @@ class CounterPanelController implements vscode.Disposable {
 
         const outcome = await this.cpuQueryGuard.run(async () => {
             this.postMessage({ type: kind === "cpu" ? "cpuQueryState" : "allocationQueryState", state: "running" });
+            const saved = kind === "allocation" ? this.allocationProfile : this.cpuExport;
             try {
-                const saved = kind === "allocation" ? this.allocationProfile : this.cpuExport;
                 if (!saved || saved.session.closing || saved.session.process.exitCode !== null || saved.session.process.signalCode !== null) {
                     throw new Error(`Capture ${kind} first. Drilldown requires this panel's retained CLI connection.`);
                 }
                 const result = await this.sendQuery(saved.session, saved.handle, view, undefined, undefined, rootMethodFilter);
-                if (kind === "allocation" && result.weightUnit !== "allocation-tick-estimated-bytes")
+                if (kind === "allocation" && result.weightUnit !== "allocation-tick-estimated-bytes") {
+                    if (this.allocationProfile === saved) this.allocationProfile = undefined;
                     throw new Error("The CLI did not confirm allocation-byte weighting; update the CLI before exploring this profile.");
+                }
                 this.postMessage({ type: "query", kind, view, result });
             } catch (error) {
+                if (isRecord(error) && error.code === "unknown_handle") {
+                    if (kind === "cpu" && this.cpuExport === saved) this.cpuExport = undefined;
+                    if (kind === "allocation" && this.allocationProfile === saved) this.allocationProfile = undefined;
+                }
                 const message = errorMessage(error);
                 this.postMessage({ type: "queryError", kind, view, message });
                 this.output.appendLine(`${kind} query view '${view}' failed: ${message}`);
@@ -1644,8 +1650,10 @@ class CounterPanelController implements vscode.Disposable {
             }
             if (this.cpuExport?.session === session) this.cpuExport = undefined;
             if (this.allocationProfile?.session === session) this.allocationProfile = undefined;
+            this.postMessage({ type: "profileAvailability" });
             if (this.activeChild === session) {
                 this.activeChild = undefined;
+                this.liveCountersChanged?.(false);
                 this.statusBar.text = "$(pulse) .NET Counters";
             }
             if (this.eventsChild === session) this.eventsChild = undefined;
@@ -1843,8 +1851,8 @@ class CounterPanelController implements vscode.Disposable {
                     && isCaptureViewResult(frame.result) && frame.result.kind === pending.captureKind) {
                     pending.deferred.resolve(frame.result);
                 } else if (pending.kind === "cpu" && isCpuSampleSummary(frame.result)) {
-                    this.cpuExport = typeof frame.exportHandle === "string" && frame.exportHandle.length <= 128
-                        ? { session, handle: frame.exportHandle } : undefined;
+                    this.cpuExport = typeof frame.exportHandle === "string" && frame.exportHandle.length > 0 && frame.exportHandle.length <= 128
+                        ? { session, handle: frame.exportHandle, trace: pending.exportTrace === true } : undefined;
                     pending.deferred.resolve(frame.result);
                 } else if ((pending.kind === "exceptions" || pending.kind === "crash-guard")
                     && isExceptionCaptureResult(frame.result)) {
@@ -1883,7 +1891,7 @@ class CounterPanelController implements vscode.Disposable {
 
             case "error": {
                 const message = typeof frame.message === "string" ? frame.message : "The CLI returned a protocol error.";
-                const error = new Error(
+                const error = Object.assign(new Error(
                     frame.code === "protocol_version_unsupported"
                         ? `CLI protocol mismatch: ${message}`
                         // An older CLI build that predates #1110/#1112 does not recognize the
@@ -1893,7 +1901,7 @@ class CounterPanelController implements vscode.Disposable {
                         : frame.code === "unsupported_capture_kind"
                             ? withRuntimeGuidance(message)
                             : message,
-                );
+                ), { code: frame.code });
                 const requestId = typeof frame.requestId === "string" ? frame.requestId : undefined;
                 const pendingCapture = requestId ? session.pendingCaptures.get(requestId) : undefined;
                 const pendingQuery = requestId ? session.pendingQueries.get(requestId) : undefined;
@@ -1961,7 +1969,14 @@ class CounterPanelController implements vscode.Disposable {
             message = { ...message, state: "stopped" };
         }
         this.exporter.observe(message);
-        void this.panel?.webview.postMessage(message);
+        const retained = (profile: { session: StreamChild } | undefined): boolean => !!profile
+            && !profile.session.closing && profile.session.process.exitCode === null && profile.session.process.signalCode === null;
+        void this.panel?.webview.postMessage({ ...message, profiles: {
+            cpu: retained(this.cpuExport), trace: retained(this.cpuExport) && this.cpuExport?.trace === true,
+            allocation: retained(this.allocationProfile),
+        } });
+        if (isRecord(message) && (message.type === "status" || message.type === "terminal"))
+            this.liveCountersChanged?.(message.type === "status" && ["running", "stopping"].includes(String(message.state)));
         if (isRecord(message) && message.state === "error" && typeof message.message === "string") {
             this.offerRecoveryActions(message.message, message.type === "captureStatus");
         }
@@ -1970,6 +1985,7 @@ class CounterPanelController implements vscode.Disposable {
     private async exportCpu(format: "summary" | "trace"): Promise<void> {
         if (this.exporting) return;
         this.exporting = true;
+        this.postMessage({ type: "cpuExportState", state: "running" });
         try {
             const saved = this.cpuExport;
             if (!saved || saved.session.closing || saved.session.process.exitCode !== null)
@@ -2013,6 +2029,8 @@ class CounterPanelController implements vscode.Disposable {
                     await vscode.window.showInformationMessage("Raw trace exported locally. It is unredacted; no upload was performed.");
                 }
             } catch (error) {
+                if (isRecord(error) && error.code === "unknown_handle" && this.cpuExport === saved)
+                    this.cpuExport = undefined;
                 if (!result.settled) {
                     saved.session.expectedShutdown = true;
                     await this.closeChild(saved.session);
@@ -2021,7 +2039,10 @@ class CounterPanelController implements vscode.Disposable {
             } finally { this.pendingExports.delete(requestId); }
         } catch (error) {
             await vscode.window.showErrorMessage(`CPU export failed: ${errorMessage(error)}`);
-        } finally { this.exporting = false; }
+        } finally {
+            this.exporting = false;
+            this.postMessage({ type: "cpuExportState", state: "idle" });
+        }
     }
 
     private async showCliError(error: unknown): Promise<void> {
@@ -2092,7 +2113,9 @@ class CounterPanelController implements vscode.Disposable {
 
     private async closeChild(session: StreamChild): Promise<void> {
         if (this.heapSnapshot?.session === session) this.liveReadConsent.clear();
+        if (this.cpuExport?.session === session) this.cpuExport = undefined;
         if (this.allocationProfile?.session === session) this.allocationProfile = undefined;
+        this.postMessage({ type: "profileAvailability" });
         if (session.process.exitCode === null && session.process.signalCode === null) {
             session.closing = true;
             try {
@@ -2842,14 +2865,17 @@ export function activate(context: vscode.ExtensionContext): void {
     };
     const processCommand = (row: ProcessRow | undefined, action: ProcessAction, fallback: () => Promise<void>): Promise<void> =>
         row ? guarded(() => processes.invoke(row, action)) : fallback();
+    const actions = new DiagnosticsActionsProvider();
+    controller.liveCountersChanged = active => actions.setLiveCountersActive(active);
     const actionsView = vscode.window.createTreeView("dotnetDiagnostics.actions", {
-        treeDataProvider: new DiagnosticsActionsProvider(),
+        treeDataProvider: actions,
         showCollapseAll: false,
     });
     context.subscriptions.push(
         output,
         controller,
         actionsView,
+        actions,
         processes,
         history,
         vscode.window.createTreeView("dotnetDiagnostics.processes", { treeDataProvider: processes }),
@@ -2874,6 +2900,15 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 class DiagnosticsActionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
+    private readonly changed = new vscode.EventEmitter<vscode.TreeItem | undefined>();
+    public readonly onDidChangeTreeData = this.changed.event;
+    private liveCountersActive = false;
+    public setLiveCountersActive(active: boolean): void {
+        if (active === this.liveCountersActive) return;
+        this.liveCountersActive = active;
+        this.changed.fire(undefined);
+    }
+    public dispose(): void { this.changed.dispose(); }
     public getTreeItem(element: vscode.TreeItem): vscode.TreeItem {
         return element;
     }
@@ -2888,9 +2923,10 @@ class DiagnosticsActionsProvider implements vscode.TreeDataProvider<vscode.TreeI
         };
 
         const stop = new vscode.TreeItem("Stop Live Counters", vscode.TreeItemCollapsibleState.None);
-        stop.description = "Stop the active capture";
+        stop.description = this.liveCountersActive ? "Stop the active capture" : "No live counters running";
+        stop.tooltip = this.liveCountersActive ? "Stop the active live counters session." : "Start Live Counters first.";
         stop.iconPath = new vscode.ThemeIcon("debug-stop");
-        stop.command = {
+        if (this.liveCountersActive) stop.command = {
             command: "dotnetDiagnostics.stopCounters",
             title: "Stop Live Counters",
         };
@@ -2970,6 +3006,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     button:hover { background:var(--vscode-button-hoverBackground); }
     button:disabled { opacity:.55; }
     .export-controls { margin:.6rem 0; }
+    ${ACTION_AVAILABILITY_STYLES}
     .result-tabs { display:flex; gap:.2rem; overflow-x:auto; position:sticky; top:0; z-index:2; padding:.45rem 0; background:var(--vscode-editor-background); border-bottom:1px solid var(--vscode-panel-border); }
     .result-tabs button { flex:0 0 auto; background:transparent; color:var(--vscode-foreground); border-bottom:2px solid transparent; }
     .result-tabs button[aria-selected="true"] { color:var(--vscode-textLink-foreground); border-bottom-color:var(--vscode-focusBorder); }
@@ -3077,6 +3114,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       </details>
     </div>
     <div id="captureStatus" role="status"></div>
+    <p id="cpuEvidencePrerequisite" role="status">Capture CPU to enable measurement exports.</p>
     ${RESULT_EXPORT_BUTTONS}
     <div id="captureResult" class="empty">
       <div id="captureHeadline"></div>
@@ -3106,6 +3144,8 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       Navigation reuses this capture without collecting again. All types are combined in the profile.</p>
     <div id="captureAllocationStatus" role="status"></div>
     <details><summary>Allocation types, sites and capture quality</summary><div id="allocationCaptureViews"></div></details>
+    <p id="allocationEvidencePrerequisite" role="status">Capture allocations to enable profile exploration.</p>
+    <div id="allocationExplorer" hidden>
     <div class="cpu-query-controls" role="group" aria-label="Allocation drilldown views">
       <button type="button" data-allocation-view="call-tree" aria-pressed="false">Call tree</button>
       <button type="button" data-allocation-view="top-methods" aria-pressed="false">Top methods</button>
@@ -3115,6 +3155,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     </div>
     <div id="allocationQueryStatus" role="status"></div>
     <div id="allocationQueryViews" class="query-views"></div>
+    </div>
   </section>
   <section id="resultExceptions" class="result-tab-panel" role="tabpanel" aria-labelledby="resultTabExceptions" hidden>
     <div class="panel-actions"><button id="captureExceptions" type="button">Capture exceptions…</button></div>
@@ -3194,6 +3235,9 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
 
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
+    ${ACTION_AVAILABILITY_SCRIPT}
+    ${PROFILE_ACTIONS_SCRIPT}
+    const updateEvidenceActions = installProfileActions();
     ${RESULT_EXPORT_SCRIPT}
     for (const type of ["captureCpuTrace", "exportSummary", "exportTrace"])
       document.getElementById(type).addEventListener("click", () => vscode.postMessage({ type }));
@@ -3407,6 +3451,9 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       renderEventsQuality();
     }
     function renderEventsQuality() {
+      const clear = document.getElementById('eventsClear');
+      clear.setAttribute('aria-disabled', String(events.length === 0));
+      clear.title = events.length === 0 ? 'No retained events to clear.' : '';
       if (!eventsQuality) return;
       const now = Date.now();
       const waitMs = 1000 - (now - lastEventsQualityRenderAt);
@@ -3501,13 +3548,6 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     renderEvents();
     function activateCaptureTab(name) {
       selectResultTab(name);
-    }
-    let cpuCaptureBusy = false;
-    let cpuQueryBusy = false;
-    function updateCpuQueryControls() {
-      for (const button of document.querySelectorAll('[data-cpu-view]')) {
-        button.disabled = cpuCaptureBusy || cpuQueryBusy;
-      }
     }
     const cpuQueryLabels = {
       triage: 'CPU overview',
@@ -3626,6 +3666,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
             const button = document.createElement('button');
             button.type = 'button';
             button.textContent = 'Callers / callees';
+            button.setAttribute('data-profile-query', '');
             button.addEventListener('click', () => vscode.postMessage({
               type: queryType, view: 'caller-callee', rootMethodFilter: action(item),
             }));
@@ -4082,24 +4123,11 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       if (message.type === 'threadStaticsState') {
         setThreadStaticsBusy(message.state === 'running');
       } else if (message.type === 'cpuQueryState') {
-        cpuQueryBusy = message.state === 'running';
+        const cpuQueryBusy = message.state === 'running';
         cpuQueryStatus.textContent = cpuQueryBusy ? 'Loading CPU drilldown…' : '';
-        updateCpuQueryControls();
       } else if (message.type === 'captureStatus' && message.kind === 'cpu') {
         activateCaptureTab('cpu');
         captureStatusElement.textContent = message.message || message.state || '';
-        cpuCaptureBusy = message.state === 'running' || message.state === 'starting';
-        captureCpuButton.disabled = cpuCaptureBusy;
-        updateCpuQueryControls();
-        if (cpuCaptureBusy) {
-          updateCpuQuerySelection('cpu', null);
-          cpuProfileResult = undefined;
-          cpuProfileState.focus = [];
-          cpuProfileState.selected = [];
-          cpuProfileState.search = '';
-          cpuQueryViews.replaceChildren();
-          cpuQueryStatus.textContent = '';
-        }
       } else if (message.type === 'status') {
         const liveStatus = message.message || message.state;
         statusElement.textContent = liveStatus.startsWith('Live counters') ? liveStatus : 'Live counters: ' + liveStatus;
@@ -4115,23 +4143,17 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       } else if (message.type === 'allocationQueryState') {
         const busy = message.state === 'running';
         document.getElementById('allocationQueryStatus').textContent = busy ? 'Loading allocation details…' : '';
-        document.querySelectorAll('[data-allocation-view]').forEach(button => { button.disabled = busy; });
-        document.getElementById('captureAllocation').disabled = busy;
       } else if (message.type === 'captureStatus' && message.kind === 'allocation') {
         activateCaptureTab('allocation');
         document.getElementById('captureAllocationStatus').textContent = message.message || message.state || '';
-        document.getElementById('captureAllocation').disabled = message.state === 'running';
-        if (message.state === 'running') {
-          updateCpuQuerySelection('allocation', null);
-          allocationProfileResult = undefined;
-          allocationProfileState.focus = [];
-          allocationProfileState.selected = [];
-          allocationProfileState.search = '';
-          document.getElementById('allocationQueryViews').replaceChildren();
-          document.getElementById('allocationCaptureViews').replaceChildren();
-        }
       } else if (message.type === 'capture' && message.kind === 'allocation') {
         activateCaptureTab('allocation');
+        updateCpuQuerySelection('allocation', null);
+        allocationProfileResult = undefined;
+        allocationProfileState.focus = [];
+        allocationProfileState.selected = [];
+        allocationProfileState.search = '';
+        document.getElementById('allocationQueryViews').replaceChildren();
         renderCaptureView('allocationCaptureViews', message.result);
       } else if (message.type === 'query' && message.kind === 'allocation') {
         if (message.result?.weightUnit !== 'allocation-tick-estimated-bytes') {
@@ -4185,6 +4207,13 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         renderThreadCapture(message.result);
       } else if (message.type === 'capture') {
         activateCaptureTab('cpu');
+        updateCpuQuerySelection('cpu', null);
+        cpuProfileResult = undefined;
+        cpuProfileState.focus = [];
+        cpuProfileState.selected = [];
+        cpuProfileState.search = '';
+        cpuQueryViews.replaceChildren();
+        cpuQueryStatus.textContent = '';
         renderCapture(message.summary);
       } else if (message.type === 'query' && message.kind === 'cpu') {
         cpuQueryStatus.textContent = '';
@@ -4226,6 +4255,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           : message.status === 'failed' ? 'Live counters failed.' : 'Live counters stopped.';
         if (typeof message.error === 'string' && message.error.length > 0) errorElement.textContent = message.error;
       }
+      updateEvidenceActions(message);
     });
 
     metricSelect.addEventListener('change', () => {
@@ -4251,6 +4281,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     if (typeof ResizeObserver === 'function') new ResizeObserver(() => resizeCanvas()).observe(canvas);
     resizeCanvas();
     updateButtons(false);
+    updateEvidenceActions({});
     // Keeps the rolling history window sliding forward in wall-clock time even if the stream goes
     // quiet for a while, instead of only evicting stale points/rows when fresh data arrives.
     setInterval(() => {

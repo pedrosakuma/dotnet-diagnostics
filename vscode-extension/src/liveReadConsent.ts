@@ -66,7 +66,7 @@ export const LIVE_READ_CONSENT_HTML = `<details id="liveReadConsents">
 <p>Remembered permissions apply separately to Object and GC root reads for this heap snapshot and CLI connection only.
 Reads can suspend the target and expose sensitive data. A new heap capture or closed panel ends these grants.
 Captures and exports still need their own acknowledgement.</p>
-<button id="revokeLiveReads" type="button">Revoke remembered live reads</button>
+<button id="revokeLiveReads" type="button" aria-disabled="true" title="No remembered live-read permission.">Revoke remembered live reads</button>
 <p id="liveReadConsentStatus" role="status"></p>
 <ol id="liveReadConsentHistory"></ol>
 </details>`;
@@ -77,6 +77,9 @@ function renderLiveReadConsent(message) {
   const root = document.getElementById('liveReadConsents');
   const grants = Array.isArray(message.grants) ? message.grants : [];
   const names = grants.map(name => name === 'gcroot' ? 'GC root' : 'Object');
+  const revoke = document.getElementById('revokeLiveReads');
+  revoke.setAttribute('aria-disabled', String(!grants.length));
+  revoke.title = grants.length ? '' : 'No remembered live-read permission.';
   root.querySelector('summary').textContent = 'Live-read permissions: ' + (names.length ? names.join(', ') + ' remembered' : 'none remembered');
   document.getElementById('liveReadConsentStatus').textContent = names.length
     ? 'Active for the current heap snapshot session only: ' + names.join(', ') : 'No remembered live-read permission.';
