@@ -2,6 +2,7 @@ import { captureQueryArgs, parseEnvelope, runHistoryCli, type CaptureSummary } f
 import { QUERY_VIEW_RENDERER_SCRIPT, QUERY_VIEW_STYLES } from "./queryViewRenderer";
 import { RESULT_EXPORT_BUTTONS, RESULT_EXPORT_SCRIPT } from "./resultExport";
 import { COMPARISON_RENDERER_SCRIPT } from "./baselineCompare";
+import { WEBVIEW_FIELD_STYLES } from "./webviewFields";
 
 const SHARED_VIEWS = ["roots-by-kind", "finalizer-queue", "fragmentation", "gchandles", "async", "timers", "alc",
     "deadlocks", "unique-stacks", "wait-chains", "threadpool"];
@@ -114,7 +115,7 @@ export function renderHistoryHtml(nonce: string, cspSource: string, detail: Capt
     return `<!DOCTYPE html><html><head><meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${cspSource} 'nonce-${nonce}'; script-src 'nonce-${nonce}';">
 <style nonce="${nonce}">body{font-family:var(--vscode-font-family);padding:1rem;color:var(--vscode-foreground)}
-table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:.25rem;border-bottom:1px solid var(--vscode-panel-border)}${QUERY_VIEW_STYLES}</style></head><body>
+table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:.25rem;border-bottom:1px solid var(--vscode-panel-border)}${QUERY_VIEW_STYLES}${WEBVIEW_FIELD_STYLES}</style></head><body>
 <h2>${escapeHtml(detail.name)}</h2><p>Saved capture ${escapeHtml(detail.captureId)} - ${escapeHtml(detail.createdUtc)}. Offline, read-only evidence; the original process is not contacted.</p>
 <label>Artifact <select id="artifact">${options}</select></label><label>View <select id="view"></select></label>
 ${RESULT_EXPORT_BUTTONS}<button id="compareBaseline">Compare with saved baseline</button>
