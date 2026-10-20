@@ -13,6 +13,7 @@ class TreeItem {
 }
 const TreeItemCollapsibleState = { None: 0, Collapsed: 1, Expanded: 2 };
 module.exports = {
+  EventEmitter: class { event() {} fire() {} dispose() {} },
   ThemeIcon,
   TreeItem,
   TreeItemCollapsibleState,

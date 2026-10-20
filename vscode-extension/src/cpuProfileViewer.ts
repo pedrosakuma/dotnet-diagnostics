@@ -83,6 +83,17 @@ function renderCpuProfile(
         element.addEventListener("click", action);
         return element;
     };
+    const queryButton = (text: string, view: string, methodFilter?: string) => {
+        const element = button(text, () => {
+            if (element.getAttribute("aria-disabled") !== "true") query(view, methodFilter);
+        });
+        element.setAttribute("data-profile-query", "");
+        const availability = container.closest("[data-profile-query-available]");
+        const available = availability?.getAttribute("data-profile-query-available") !== "false";
+        element.setAttribute("aria-disabled", String(!available));
+        element.title = available ? "" : availability?.getAttribute("data-profile-query-reason") ?? "Capture a retained profile first.";
+        return element;
+    };
     const text = (parent: HTMLElement, value: string, className?: string) => {
         const element = document.createElement("p");
         element.textContent = value;
@@ -97,7 +108,7 @@ function renderCpuProfile(
     const reset = button("Reset focus", () => {
         state.focus = []; state.selected = []; redraw();
     });
-    controls.append(treeButton, flameButton, reset, button("Full capture tree", () => query("call-tree")));
+    controls.append(treeButton, flameButton, reset, queryButton("Full capture tree", "call-tree"));
     container.appendChild(controls);
 
     const label = document.createElement("label");
@@ -163,8 +174,8 @@ function renderCpuProfile(
             : "Self scheduler-state evidence: Unavailable. Sampled stacks alone do not establish on-CPU time.",
         "query-view-provenance");
         selection.append(button("Focus selected branch", () => setFocus(selected)),
-            button("Callers / callees", () => query("caller-callee", method(selected.node))),
-            button("Query subtree by method", () => query("call-tree", method(selected.node))));
+            queryButton("Callers / callees", "caller-callee", method(selected.node)),
+            queryButton("Query subtree by method", "call-tree", method(selected.node)));
         text(selection, "Queries match the highest-ranked occurrence containing the method name, not necessarily "
             + "this exact call path. They read the retained capture, without sampling again.", "query-view-provenance");
     }

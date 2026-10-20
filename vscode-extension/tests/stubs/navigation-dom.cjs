@@ -28,6 +28,12 @@ function extendDom(Element) {
         this._parent = undefined;
     };
     Element.prototype.removeAttribute = function (name) { delete this.attributes[name]; };
+    Element.prototype.closest = function (selector) {
+        const attribute = /^\[([^\]]+)\]$/.exec(selector)?.[1];
+        for (let current = this; current; current = current.parentElement)
+            if (attribute && Object.hasOwn(current.attributes, attribute)) return current;
+        return null;
+    };
     Element.prototype.insertBefore = function (child, next) {
         child.remove();
         child._parent = this;

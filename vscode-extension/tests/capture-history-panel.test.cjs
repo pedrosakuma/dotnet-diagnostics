@@ -108,9 +108,10 @@ test("baseline comparison follows only the currently loaded artifact and ignores
         baseline.compareSaved = async () => ({ status: "qualified", metrics: [], reasons: [] });
         await receive({ type: "query", artifactId: B, view: "top-types", requestId: 3 });
         await receive({ type: "compareBaseline", artifactId: B, requestId: 3 });
-        assert.equal(messages.at(-1).type, "comparison");
-        assert.equal(messages.at(-1).requestId, 3);
-        assert.equal(messages.at(-1).artifactId, B);
+        const comparison = messages.find(message => message.type === "comparison" && message.requestId === 3);
+        assert.equal(comparison.artifactId, B);
+        assert.equal(messages.at(-1).type, "comparisonState");
+        assert.equal(messages.at(-1).state, "idle");
     } finally {
         h.runHistoryCli = originalRun;
         vscode.window.createWebviewPanel = originalCreate;

@@ -99,6 +99,7 @@ export class CaptureHistory implements vscode.TreeDataProvider<HistoryRow>, vsco
                 const candidate = selectedQuery;
                 querying = true;
                 try {
+                    await panel.webview.postMessage({ type: "comparisonState", ...candidate, state: "running" });
                     const result = await compareSaved(this.cliPath(), detail, candidate.artifactId);
                     if (result && !disposed && selectedQuery === candidate) {
                         exporter.set({ metrics: result.metrics });
@@ -106,7 +107,11 @@ export class CaptureHistory implements vscode.TreeDataProvider<HistoryRow>, vsco
                     }
                 } catch (error) {
                     await vscode.window.showErrorMessage(`Baseline comparison failed: ${error instanceof Error ? error.message : String(error)}`);
-                } finally { querying = false; }
+                } finally {
+                    querying = false;
+                    if (!disposed && selectedQuery === candidate)
+                        await panel.webview.postMessage({ type: "comparisonState", ...candidate, state: "idle" });
+                }
                 return;
             }
             if (message?.type === "copyAddress") {
