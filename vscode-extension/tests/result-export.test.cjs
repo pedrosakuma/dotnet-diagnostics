@@ -74,6 +74,20 @@ test("CPU export stays bound to its displayed capture after another collector pu
     await exporter.handle({ type: "exportResult", format: "json" });
     assert.equal(JSON.parse(docs[2].content).measurements[0].value, 678);
 });
+test("exports reject stale webview evidence identities", async () => {
+    const exporter = new e.ResultExporter(), docs = [], errors = [];
+    vscode.window.showTextDocument = async document => docs.push(document);
+    vscode.window.showErrorMessage = async message => errors.push(message);
+    exporter.observe({ type: "capture", kind: "cpu", evidenceId: A, summary: { totalSamples: 42 } });
+    await exporter.handle({ type: "exportResult", captureKind: "cpu", evidenceId: A, format: "json" });
+    exporter.observe({ type: "capture", kind: "cpu", evidenceId: B, summary: { totalSamples: 99 } });
+    await exporter.handle({ type: "exportResult", captureKind: "cpu", evidenceId: A, format: "json" });
+    await exporter.handle({ type: "exportResult", captureKind: "cpu", evidenceId: B, format: "json" });
+    assert.equal(docs.length, 2);
+    assert.equal(JSON.parse(docs[0].content).measurements[0].value, 42);
+    assert.equal(JSON.parse(docs[1].content).measurements[0].value, 99);
+    assert.match(errors[0], /replaced before export/);
+});
 test("scoped exports preserve evidence through rejected, running and failed attempts until replaced", async () => {
     const exporter = new e.ResultExporter(), docs = [], errors = [];
     vscode.window.showTextDocument = async document => docs.push(document);
@@ -112,6 +126,20 @@ test("generic export buttons include their containing capture kind when availabl
     listeners.get("exportCsv")();
     assert.deepEqual(posted.map(message => [message.format, message.captureKind]),
         [["json", "cpu"], ["csv", "cpu"]]);
+});
+test("CPU export buttons carry the evidence identity with the scoped export", () => {
+    const posted = [], listeners = new Map();
+    const document = { getElementById(id) {
+        return { addEventListener(_event, handler) { listeners.set(id, handler); },
+            closest(selector) {
+                if (selector === "[data-export-kind]") return { dataset: { exportKind: "cpu" } };
+                if (selector === "[data-evidence-id]") return { dataset: { evidenceId: A } };
+                return null;
+            } };
+    } };
+    new Function("document", "vscode", e.RESULT_EXPORT_SCRIPT)(document, { postMessage: message => posted.push(message) });
+    listeners.get("exportJson")();
+    assert.deepEqual(posted[0], { type: "exportResult", format: "json", captureKind: "cpu", evidenceId: A });
 });
 test("address exports follow host-held navigation history and refuse pending or failed evidence", async () => {
     const exporter = new e.ResultExporter(), docs = [], errors = [];

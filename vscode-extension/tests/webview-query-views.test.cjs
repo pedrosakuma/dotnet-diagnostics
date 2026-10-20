@@ -180,28 +180,33 @@ test("live and dump webviews include the specialized renderer and styles", () =>
     }
 });
 
-test("live panel groups results by capture tab and wires CPU drilldown", () => {
+test("live panel exposes the compact evidence workspace and keeps other result routes", () => {
     const html = renderHtml(target, "nonce123", 120);
     const script = extractInlineScript(html);
     for (const [label, id] of [
-        ["Live", "Live"], ["CPU", "Cpu"], ["Allocations", "Allocation"], ["Exceptions", "Exceptions"],
-        ["Diagnostics", "Diagnostics"], ["Heap", "Heap"], ["Threads", "Threads"],
+        ["Live", "Live"], ["Workspace", "Workspace"], ["Exceptions", "Exceptions"],
+        ["Diagnostics", "Diagnostics"], ["Threads", "Threads"],
     ]) {
         assert.match(html, new RegExp(`role="tab"[^>]*>${label}<`));
         assert.match(html, new RegExp(`role="tabpanel" aria-labelledby="resultTab${id}"`));
     }
+    assert.match(html, /<select id="workspaceDomain">[\s\S]*?Memory &amp; GC/);
+    assert.match(html, /id="workspaceEvidenceKind"/);
+    assert.match(html, /id="workspaceView"/);
+    assert.match(html, /id="workspaceCanvas"/);
+    assert.match(html, /id="captureGc" type="button">Capture GC evidence…/);
+    assert.match(html, /id="cpuSamplingDisclaimer"/);
     assert.match(html, /<section id="resultCpu"[^>]*data-export-kind="cpu"[\s\S]*?<button id="captureCpu" type="button">/);
     assert.match(html, /<section id="resultHeap"[\s\S]*?<button id="captureHeap" type="button">/);
     assert.match(script, /function selectResultTab\(selected\)/);
     assert.match(script, /event\.key === 'ArrowRight'/);
-    assert.match(script, /vscode\.postMessage\(\{ type: 'queryCpu', view \}\)/);
-    assert.match(script, /type: queryType, view: 'caller-callee', rootMethodFilter: action\(item\)/);
-    assert.match(script, /vscode\.postMessage\(\{ type: 'queryAllocation', view \}\)/);
-    assert.match(html, /class="cpu-query-controls" role="group" aria-label="CPU drilldown views"/);
-    assert.match(html, /data-cpu-view="triage" aria-pressed="false"/);
-    assert.match(html, /class="cpu-query-controls" role="group" aria-label="Allocation drilldown views"/);
-    assert.match(html, /data-allocation-view="call-tree" aria-pressed="false"/);
-    assert.match(html, /\.cpu-query-controls button\[aria-pressed="true"\]/);
+    assert.match(script, /function selectProfileView\(kind, view, rootMethodFilter\)/);
+    assert.match(script, /Selecting it did not query or read the target/);
+    assert.match(script, /function loadSelectedProfileView\(\)/);
+    assert.match(script, /workspaceGcStatus\.textContent = 'Replaced: shared Diagnostics slot now contains '/);
+    assert.match(script, /evidenceId,\s*view,/);
+    assert.doesNotMatch(script, /vscode\.postMessage\(\{ type: 'queryCpu', view \}\)/);
+    assert.match(script, /evidenceId: allocation \? allocationEvidenceId : cpuEvidenceId/);
     assert.match(html, /\.cpu-query-table \.cpu-query-number \{ width:6\.5rem; \}/);
     assert.match(html, /\.cpu-query-table \.cpu-query-action \{ width:9rem; \}/);
     assert.match(html, /\.query-view-table\.cpu-query-table \{ min-width:48rem; table-layout:fixed; \}/);
@@ -215,26 +220,12 @@ function cpuRenderer() {
     const html = renderHtml(target, "nonce123", 120);
     const script = extractInlineScript(html);
     const start = script.indexOf("const cpuQueryLabels = {");
-    const end = script.indexOf("for (const button of document.querySelectorAll('[data-cpu-view]'))", start);
+    const end = script.indexOf("const profileAvailability = {", start);
     assert.ok(start >= 0 && end > start, "CPU renderer source should be present");
     const source = script.slice(start, end);
     const { document, makeContainer } = createDocumentStub();
     const cpuQueryViews = makeContainer("cpuQueryViews");
     const allocationContainer = makeContainer("allocationQueryViews");
-    const cpuNavigation = makeContainer("cpuNavigation");
-    const allocationNavigation = makeContainer("allocationNavigation");
-    for (const view of ["triage", "call-tree", "top-methods", "hot-path", "by-module", "by-namespace"]) {
-        const button = new ElementStub("button");
-        button.setAttribute("data-cpu-view", view);
-        button.setAttribute("aria-pressed", "false");
-        cpuNavigation.appendChild(button);
-    }
-    for (const view of ["call-tree", "top-methods", "hot-path", "by-module", "by-namespace"]) {
-        const button = new ElementStub("button");
-        button.setAttribute("data-allocation-view", view);
-        button.setAttribute("aria-pressed", "false");
-        allocationNavigation.appendChild(button);
-    }
     const requests = [];
     // eslint-disable-next-line no-new-func -- tests the renderer emitted into the webview.
     const { renderCpuQuery, state } = new Function("document", "cpuQueryViews", "vscode",
@@ -243,12 +234,16 @@ function cpuRenderer() {
         const cpuProfileState = { mode: 'tree', search: '', focus: [], selected: [] };
         let allocationProfileResult;
         const allocationProfileState = { mode: 'tree', search: '', focus: [], selected: [] };
+        let cpuEvidenceId;
+        let allocationEvidenceId;
+        const activeProfileViews = { cpu: 'triage', allocation: 'call-tree' };
+        const activeProfileFilters = { cpu: undefined, allocation: undefined };
         ${source}
         return { renderCpuQuery, state: cpuProfileState };`)(
         document, cpuQueryViews, { postMessage: request => requests.push(request) });
     return {
         renderCpuQuery, state, container: cpuQueryViews, allocationContainer,
-        cpuNavigation, allocationNavigation, requests,
+        requests,
     };
 }
 
@@ -275,15 +270,11 @@ test("allocation explorer uses estimated bytes, separate profile state and alloc
     assert.match(allocationContainer.textContent, /800 of 1000/);
 });
 
-test("CPU and allocation drilldown controls expose their active view and preserve method symbols", () => {
-    const { renderCpuQuery, container, cpuNavigation, allocationNavigation } = cpuRenderer();
-    const selectedViews = controls => elements(controls, element => element.tagName === "button")
-        .filter(button => button.getAttribute("aria-pressed") === "true")
-        .map(button => button.getAttribute("data-cpu-view") ?? button.getAttribute("data-allocation-view"));
+test("CPU and allocation profile tables preserve method symbols independently", () => {
+    const { renderCpuQuery, container, allocationContainer } = cpuRenderer();
     renderCpuQuery("triage", { data: { topWaitCategories: [{
         waitReason: "ThreadPool worker idle wait", exclusiveSamples: 12, exclusivePercent: 42.9,
     }] } }, false);
-    assert.deepEqual(selectedViews(cpuNavigation), ["triage"]);
     const waitTable = elements(container, element => element.tagName === "table"
         && element.className.includes("cpu-query-summary-table"))[0];
     assert.ok(waitTable);
@@ -296,7 +287,6 @@ test("CPU and allocation drilldown controls expose their active view and preserv
         inclusiveSamples: 18,
         exclusivePercent: 66.7,
     }] } }, false);
-    assert.deepEqual(selectedViews(cpuNavigation), ["top-methods"]);
     const table = elements(container, element => element.tagName === "table"
         && element.className.includes("cpu-query-table"))[0];
     assert.ok(table);
@@ -310,8 +300,8 @@ test("CPU and allocation drilldown controls expose their active view and preserv
     assert.ok(elements(table, element => element.tagName === "td"
         && element.className === "cpu-query-action")[0].querySelector("button"));
     renderCpuQuery("by-module", { data: {} }, false, "allocation");
-    assert.deepEqual(selectedViews(allocationNavigation), ["by-module"]);
-    assert.deepEqual(selectedViews(cpuNavigation), ["top-methods"], "CPU and allocation selections stay independent");
+    assert.match(allocationContainer.textContent, /Modules/);
+    assert.match(container.textContent, /Top methods/);
 });
 
 function elements(root, predicate) {
@@ -347,6 +337,7 @@ test("CPU call tree renders native disclosures and selected-method queries", () 
     click(container, "Callers / callees");
     assert.deepEqual(requests, [{
         type: "queryCpu",
+        evidenceId: undefined,
         view: "caller-callee",
         rootMethodFilter: "App.Main()",
     }]);
@@ -471,7 +462,9 @@ test("CPU flame keyboard focus, Escape, reset, and method queries are explicitly
     assert.match(container.querySelector(".cpu-profile-selection").textContent, /Work/);
     assert.ok(elements(container, element => element.focused).length);
     click(container, "Query subtree by method");
-    assert.deepEqual(requests.pop(), { type: "queryCpu", view: "call-tree", rootMethodFilter: "Work" });
+    assert.deepEqual(requests.pop(), {
+        type: "queryCpu", evidenceId: undefined, view: "call-tree", rootMethodFilter: "Work",
+    });
     assert.match(container.textContent, /highest-ranked occurrence containing the method name/);
     const focused = elements(container, element => element.tagName === "g" && element.attributes.role === "button")[0];
     focused.listeners.keydown({ key: "Escape", preventDefault() {} });
@@ -481,7 +474,7 @@ test("CPU flame keyboard focus, Escape, reset, and method queries are explicitly
     click(container, "Reset focus");
     assert.deepEqual(state.focus, []);
     click(container, "Full capture tree");
-    assert.deepEqual(requests, [{ type: "queryCpu", view: "call-tree" }]);
+    assert.deepEqual(requests, [{ type: "queryCpu", evidenceId: undefined, view: "call-tree" }]);
 });
 
 test("CPU caller/callee and query errors return to cached mode, search and exact local focus", () => {

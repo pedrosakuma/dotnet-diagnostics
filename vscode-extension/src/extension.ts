@@ -138,9 +138,9 @@ interface Deferred<T> {
  * payloads.
  */
 type PendingCapture =
-    | { kind: "cpu"; exportTrace?: boolean; deferred: Deferred<CpuSampleSummary> }
+    | { kind: "cpu"; evidenceId: string; exportTrace?: boolean; deferred: Deferred<CpuSampleSummary> }
     | { kind: "exceptions" | "crash-guard"; deferred: Deferred<ExceptionCaptureResult> }
-    | { kind: "heap"; deferred: Deferred<HeapCaptureResult> }
+    | { kind: "heap"; evidenceId: string; deferred: Deferred<HeapCaptureResult> }
     | { kind: "thread-snapshot"; deferred: Deferred<ThreadCaptureResult> }
     | { kind: "diagnostics"; captureKind: CaptureViewKind; deferred: Deferred<CaptureViewResult> };
 
@@ -189,9 +189,9 @@ interface StreamChild {
 
 class CounterPanelController implements vscode.Disposable {
     private readonly exporter = new ResultExporter();
-    private cpuExport?: { session: StreamChild; handle: string; trace?: boolean };
+    private cpuExport?: { session: StreamChild; handle: string; evidenceId: string; trace?: boolean };
     public liveCountersChanged?: (active: boolean) => void;
-    private allocationProfile?: { session: StreamChild; handle: string };
+    private allocationProfile?: { session: StreamChild; handle: string; evidenceId: string };
     private readonly pendingExports = new Map<string, { session: StreamChild; deferred: Deferred<unknown> }>();
     private exporting = false;
     private panel?: vscode.WebviewPanel;
@@ -241,7 +241,7 @@ class CounterPanelController implements vscode.Disposable {
      * The live heap snapshot whose handle address navigation queries (issue #1168). The owning
      * connection stays open (like `threadSnapshot`) because handles live in the CLI process.
      */
-    private heapSnapshot?: { session: StreamChild; handle: string };
+    private heapSnapshot?: { session: StreamChild; handle: string; evidenceId: string };
     private readonly liveReadConsent = new LiveReadConsent(state => this.postMessage(state));
     private readonly addressNavigation = new AddressNavigationController(this.createAddressNavigationHost());
     private connectChildTask?: Promise<StreamChild>;
@@ -537,7 +537,11 @@ class CounterPanelController implements vscode.Disposable {
             return;
         }
 
-        this.postMessage({ type: "captureStatus", kind: "cpu", state: "running", message: "Capturing CPU…" });
+        const requestId = randomBytes(12).toString("hex");
+        this.postMessage({
+            type: "captureStatus", kind: "cpu", evidenceId: requestId,
+            state: "running", message: "Capturing CPU…",
+        });
 
         let session: StreamChild;
         let ownsSession: boolean;
@@ -547,14 +551,14 @@ class CounterPanelController implements vscode.Disposable {
             this.postMessage({
                 type: "captureStatus",
                 kind: "cpu",
+                evidenceId: requestId,
                 state: "error",
                 message: withRuntimeGuidance(errorMessage(error)),
             });
             return;
         }
 
-        const requestId = randomBytes(12).toString("hex");
-        const pending: PendingCapture = { kind: "cpu", exportTrace, deferred: deferred<CpuSampleSummary>() };
+        const pending: PendingCapture = { kind: "cpu", evidenceId: requestId, exportTrace, deferred: deferred<CpuSampleSummary>() };
         session.pendingCaptures.set(requestId, pending);
         try {
             this.writeFrame(session, {
@@ -567,13 +571,20 @@ class CounterPanelController implements vscode.Disposable {
                 ...(exportTrace ? { exportTrace: true } : {}),
             });
             const summary = await withTimeout(pending.deferred.promise, 60_000);
-            this.postMessage({ type: "capture", kind: "cpu", summary });
-            this.postMessage({ type: "captureStatus", kind: "cpu", state: "done", message: "CPU capture complete." });
-            if (this.hasCpuExportFor(session)) void this.queryCpu("triage");
+            this.postMessage({ type: "capture", kind: "cpu", evidenceId: requestId, summary });
+            this.postMessage({
+                type: "captureStatus", kind: "cpu", evidenceId: requestId,
+                state: "done", message: "CPU capture complete.",
+            });
+            const currentExport = this.cpuExport;
+            if (currentExport?.session === session && currentExport.evidenceId === requestId) {
+                void this.queryCpu("triage", undefined, "cpu", requestId);
+            }
         } catch (error) {
             this.postMessage({
                 type: "captureStatus",
                 kind: "cpu",
+                evidenceId: requestId,
                 state: "error",
                 message: withRuntimeGuidance(errorMessage(error)),
             });
@@ -707,8 +718,16 @@ class CounterPanelController implements vscode.Disposable {
                 { modal: true }, "Acknowledge and Capture", "Cancel");
             if (acknowledged !== "Acknowledge and Capture" || this.disposed) return;
         }
+        const requestId = randomBytes(12).toString("hex");
         const status = (state: string, message: string): void =>
-            this.postMessage({ type: "captureStatus", kind: spec.kind === "allocation" ? "allocation" : "diagnostics", state, message });
+            this.postMessage({
+                type: "captureStatus",
+                kind: spec.kind === "allocation" ? "allocation" : "diagnostics",
+                captureKind: spec.kind,
+                evidenceId: requestId,
+                state,
+                message,
+            });
         status("starting", `Preparing ${spec.label} capture...`);
         let session: StreamChild;
         let ownsSession: boolean;
@@ -722,7 +741,6 @@ class CounterPanelController implements vscode.Disposable {
             status("error", "The CLI connection is busy. Wait for the current capture, query or session startup to finish.");
             return;
         }
-        const requestId = randomBytes(12).toString("hex");
         const pending: PendingCapture = { kind: "diagnostics", captureKind: spec.kind, deferred: deferred<CaptureViewResult>() };
         session.pendingCaptures.set(requestId, pending);
         try {
@@ -731,12 +749,15 @@ class CounterPanelController implements vscode.Disposable {
             const result = await withTimeout(pending.deferred.promise, captureTimeoutMs(spec.kind, params.durationSeconds));
             if (spec.kind === "allocation") {
                 this.allocationProfile = typeof result.handle === "string" && result.handle.length > 0 && result.handle.length <= 128
-                    ? { session, handle: result.handle } : undefined;
-                this.postMessage({ type: "capture", kind: "allocation", result });
-                if (this.allocationProfile) await this.queryCpu("call-tree", undefined, "allocation");
-                else this.postMessage({ type: "queryError", kind: "allocation", view: "call-tree",
+                    ? { session, handle: result.handle, evidenceId: requestId } : undefined;
+                this.postMessage({ type: "capture", kind: "allocation", evidenceId: requestId, result });
+                if (this.allocationProfile?.evidenceId === requestId) {
+                    await this.queryCpu("call-tree", undefined, "allocation", requestId);
+                } else this.postMessage({ type: "queryError", kind: "allocation", evidenceId: requestId, view: "call-tree",
                     message: "This CLI returned only allocation tables. Use a CLI build supporting allocation explorer handles." });
-            } else this.postMessage({ type: "capture", kind: "diagnostics", result });
+            } else this.postMessage({
+                type: "capture", kind: "diagnostics", captureKind: spec.kind, evidenceId: requestId, result,
+            });
             status("done", `${spec.label} capture complete.`);
         } catch (error) {
             const message = withRuntimeGuidance(errorMessage(error));
@@ -821,9 +842,11 @@ class CounterPanelController implements vscode.Disposable {
             return;
         }
 
+        const requestId = randomBytes(12).toString("hex");
         this.postMessage({
             type: "captureStatus",
             kind: "heap",
+            evidenceId: requestId,
             state: "running",
             message: `Capturing heap snapshot (${sourcePick.label})…`,
         });
@@ -836,14 +859,14 @@ class CounterPanelController implements vscode.Disposable {
             this.postMessage({
                 type: "captureStatus",
                 kind: "heap",
+                evidenceId: requestId,
                 state: "error",
                 message: withRuntimeGuidance(errorMessage(error)),
             });
             return;
         }
 
-        const requestId = randomBytes(12).toString("hex");
-        const pending: PendingCapture = { kind: "heap", deferred: deferred<HeapCaptureResult>() };
+        const pending: PendingCapture = { kind: "heap", evidenceId: requestId, deferred: deferred<HeapCaptureResult>() };
         session.pendingCaptures.set(requestId, pending);
         this.heapSnapshot = undefined;
         this.liveReadConsent.clear();
@@ -866,10 +889,16 @@ class CounterPanelController implements vscode.Disposable {
             // suspends the whole target during a ClrMD walk — both can legitimately take longer
             // than the CPU capture's fixed-duration sample, so this uses a longer ceiling.
             const result = await withTimeout(pending.deferred.promise, 120_000);
-            this.postMessage({ type: "capture", kind: "heap", source: sourcePick.source, result });
+            const handle = result.data?.handle;
+            if (handle && sourcePick.source !== "gcdump") {
+                this.heapSnapshot = { session, handle, evidenceId: requestId };
+                keepSession = true;
+            }
+            this.postMessage({ type: "capture", kind: "heap", evidenceId: requestId, source: sourcePick.source, result });
             this.postMessage({
                 type: "captureStatus",
                 kind: "heap",
+                evidenceId: requestId,
                 state: "done",
                 message: "Heap snapshot capture complete.",
             });
@@ -878,16 +907,14 @@ class CounterPanelController implements vscode.Disposable {
             // discipline, since the CLI's request loop processes one request at a time per
             // connection. Skipped for `gcdump`: see the opt-in comment above for why none of these
             // views apply to a gcdump-origin snapshot.
-            const handle = result.data?.handle;
             if (handle && sourcePick.source !== "gcdump") {
-                this.heapSnapshot = { session, handle };
-                keepSession = true;
-                await this.runHeapQueries(session, handle, queryOptIns);
+                await this.runHeapQueries(session, handle, queryOptIns, requestId);
             }
         } catch (error) {
             this.postMessage({
                 type: "captureStatus",
                 kind: "heap",
+                evidenceId: requestId,
                 state: "error",
                 message: withRuntimeGuidance(errorMessage(error)),
             });
@@ -983,7 +1010,12 @@ class CounterPanelController implements vscode.Disposable {
      * comment) against the just-captured `handle`. Each view's result (or failure) is posted to
      * the webview independently so one slow/failing view doesn't block the others from rendering.
      */
-    private async runHeapQueries(session: StreamChild, handle: string, optIns: HeapQueryOptIns): Promise<void> {
+    private async runHeapQueries(
+        session: StreamChild,
+        handle: string,
+        optIns: HeapQueryOptIns,
+        evidenceId: string,
+    ): Promise<void> {
         const views: string[] = [...ALWAYS_AVAILABLE_HEAP_QUERY_VIEWS];
         if (optIns.includeStaticFields) {
             views.push("static-fields");
@@ -1001,9 +1033,11 @@ class CounterPanelController implements vscode.Disposable {
         for (const view of views) {
             try {
                 const result = await this.sendQuery(session, handle, view);
-                this.postMessage({ type: "query", kind: "heap", view, result });
+                if (this.heapSnapshot?.evidenceId !== evidenceId) break;
+                this.postMessage({ type: "query", kind: "heap", evidenceId, view, result });
             } catch (error) {
-                this.postMessage({ type: "queryError", kind: "heap", view, message: errorMessage(error) });
+                if (this.heapSnapshot?.evidenceId !== evidenceId) break;
+                this.postMessage({ type: "queryError", kind: "heap", evidenceId, view, message: errorMessage(error) });
                 this.output.appendLine(`Heap query view '${view}' failed: ${errorMessage(error)}`);
             }
         }
@@ -1025,49 +1059,69 @@ class CounterPanelController implements vscode.Disposable {
         }
     }
 
-    private async queryCpu(view: string, rootMethodFilter?: string, kind: "cpu" | "allocation" = "cpu"): Promise<void> {
+    private async queryCpu(
+        view: string,
+        rootMethodFilter?: string,
+        kind: "cpu" | "allocation" = "cpu",
+        expectedEvidenceId?: string,
+    ): Promise<void> {
         if (!CPU_QUERY_VIEWS.has(view) || (kind === "allocation" && view === "triage")) {
-            this.postMessage({ type: "queryError", kind, view, message: "Unsupported profile query view." });
+            this.postMessage({ type: "queryError", kind, evidenceId: expectedEvidenceId, view, message: "Unsupported profile query view." });
             return;
         }
         if (rootMethodFilter !== undefined
             && (rootMethodFilter.length === 0 || rootMethodFilter.length > 512 || /[\u0000-\u001f\u007f]/.test(rootMethodFilter))) {
-            this.postMessage({ type: "queryError", kind, view, message: "The method filter must be 1–512 characters without control characters." });
+            this.postMessage({
+                type: "queryError", kind, evidenceId: expectedEvidenceId, view,
+                message: "The method filter must be 1–512 characters without control characters.",
+            });
             return;
         }
 
         const outcome = await this.cpuQueryGuard.run(async () => {
-            this.postMessage({ type: kind === "cpu" ? "cpuQueryState" : "allocationQueryState", state: "running" });
             const saved = kind === "allocation" ? this.allocationProfile : this.cpuExport;
+            const evidenceId = expectedEvidenceId ?? saved?.evidenceId;
+            this.postMessage({
+                type: kind === "cpu" ? "cpuQueryState" : "allocationQueryState",
+                evidenceId,
+                state: "running",
+            });
             try {
+                if (expectedEvidenceId !== undefined && saved?.evidenceId !== expectedEvidenceId) {
+                    throw new Error("This profile was replaced or is no longer the current retained capture. Select the current evidence before loading a view.");
+                }
                 if (!saved || saved.session.closing || saved.session.process.exitCode !== null || saved.session.process.signalCode !== null) {
                     throw new Error(`Capture ${kind} first. Drilldown requires this panel's retained CLI connection.`);
                 }
                 const result = await this.sendQuery(saved.session, saved.handle, view, undefined, undefined, rootMethodFilter);
+                const current = kind === "allocation" ? this.allocationProfile : this.cpuExport;
+                if (current !== saved || saved.session.closing || saved.session.process.exitCode !== null || saved.session.process.signalCode !== null) {
+                    throw new Error("This profile was replaced or disconnected while the view was loading. Select current evidence and retry.");
+                }
                 if (kind === "allocation" && result.weightUnit !== "allocation-tick-estimated-bytes") {
                     if (this.allocationProfile === saved) this.allocationProfile = undefined;
                     throw new Error("The CLI did not confirm allocation-byte weighting; update the CLI before exploring this profile.");
                 }
-                this.postMessage({ type: "query", kind, view, result });
+                this.postMessage({ type: "query", kind, evidenceId: saved.evidenceId, rootMethodFilter, view, result });
             } catch (error) {
                 if (isRecord(error) && error.code === "unknown_handle") {
                     if (kind === "cpu" && this.cpuExport === saved) this.cpuExport = undefined;
                     if (kind === "allocation" && this.allocationProfile === saved) this.allocationProfile = undefined;
                 }
                 const message = errorMessage(error);
-                this.postMessage({ type: "queryError", kind, view, message });
+                this.postMessage({ type: "queryError", kind, evidenceId, rootMethodFilter, view, message });
                 this.output.appendLine(`${kind} query view '${view}' failed: ${message}`);
             } finally {
-                this.postMessage({ type: kind === "cpu" ? "cpuQueryState" : "allocationQueryState", state: "idle" });
+                this.postMessage({
+                    type: kind === "cpu" ? "cpuQueryState" : "allocationQueryState",
+                    evidenceId,
+                    state: "idle",
+                });
             }
         });
         if (!outcome.started) {
             this.output.appendLine("Ignored a duplicate CPU query while one is already in flight.");
         }
-    }
-
-    private hasCpuExportFor(session: StreamChild): boolean {
-        return this.cpuExport?.session === session;
     }
 
     private hasRetainedProfileFor(session: StreamChild): boolean {
@@ -1381,6 +1435,15 @@ class CounterPanelController implements vscode.Disposable {
                 void this.captureExceptions();
             } else if (message.type === "captureDiagnostics") {
                 void this.captureDiagnostics();
+            } else if (message.type === "captureGc") {
+                if (message.kind !== "gc" && message.kind !== "gc-activities") {
+                    this.postMessage({
+                        type: "captureStatus", kind: "diagnostics", state: "error",
+                        message: "Choose Garbage collections or GC activities before capturing.",
+                    });
+                } else {
+                    void this.captureDiagnostics(message.kind);
+                }
             } else if (message.type === "captureAllocation") {
                 void this.captureAllocations();
             } else if (message.type === "captureHeap") {
@@ -1399,7 +1462,8 @@ class CounterPanelController implements vscode.Disposable {
                 const rootMethodFilter = message.rootMethodFilter === undefined
                     ? undefined
                     : typeof message.rootMethodFilter === "string" ? message.rootMethodFilter.trim() : "";
-                void this.queryCpu(view, rootMethodFilter, message.type === "queryAllocation" ? "allocation" : "cpu");
+                const evidenceId = typeof message.evidenceId === "string" ? message.evidenceId : undefined;
+                void this.queryCpu(view, rootMethodFilter, message.type === "queryAllocation" ? "allocation" : "cpu", evidenceId);
             } else if (message.type === "navigationSelection") {
                 void this.exporter.handle(message);
             } else if (message.type === "copyAddress" || message.type === "navigateAddress") {
@@ -1859,7 +1923,7 @@ class CounterPanelController implements vscode.Disposable {
                     pending.deferred.resolve(frame.result);
                 } else if (pending.kind === "cpu" && isCpuSampleSummary(frame.result)) {
                     this.cpuExport = typeof frame.exportHandle === "string" && frame.exportHandle.length > 0 && frame.exportHandle.length <= 128
-                        ? { session, handle: frame.exportHandle, trace: pending.exportTrace === true } : undefined;
+                        ? { session, handle: frame.exportHandle, evidenceId: pending.evidenceId, trace: pending.exportTrace === true } : undefined;
                     pending.deferred.resolve(frame.result);
                 } else if ((pending.kind === "exceptions" || pending.kind === "crash-guard")
                     && isExceptionCaptureResult(frame.result)) {
@@ -3042,6 +3106,11 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     header { margin:.8rem 0; }
     .controls { display:flex; gap:.45rem; align-items:center; flex-wrap:wrap; }
     .panel-actions { display:flex; gap:.45rem; align-items:center; flex-wrap:wrap; margin:.7rem 0; }
+    .workspace-controls, .workspace-view-controls { display:flex; gap:.45rem; align-items:center; flex-wrap:wrap; margin:.6rem 0; }
+    .workspace-evidence-status { color:var(--vscode-descriptionForeground); margin:.45rem 0; }
+    #workspaceCanvas > section { margin-top:.6rem; }
+    #workspaceCanvas > section[hidden], #workspaceGcCapture[hidden] { display:none; }
+    #workspaceLoadView[hidden] { display:none; }
     .cpu-export-actions { border:1px solid var(--vscode-panel-border); border-radius:4px; padding:.4rem .6rem; }
     button { color:var(--vscode-button-foreground); background:var(--vscode-button-background); border:0; border-radius:2px; padding:.45rem .75rem; }
     button:hover { background:var(--vscode-button-hoverBackground); }
@@ -3051,10 +3120,6 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     .result-tabs { display:flex; gap:.2rem; overflow-x:auto; position:sticky; top:0; z-index:2; padding:.45rem 0; background:var(--vscode-editor-background); border-bottom:1px solid var(--vscode-panel-border); }
     .result-tabs button { flex:0 0 auto; background:transparent; color:var(--vscode-foreground); border-bottom:2px solid transparent; }
     .result-tabs button[aria-selected="true"] { color:var(--vscode-textLink-foreground); border-bottom-color:var(--vscode-focusBorder); }
-    .cpu-query-controls { display:flex; gap:.1rem; flex-wrap:wrap; margin:.8rem 0; border-bottom:1px solid var(--vscode-panel-border); }
-    .cpu-query-controls button { flex:0 0 auto; background:transparent; color:var(--vscode-descriptionForeground); border:0; border-bottom:2px solid transparent; border-radius:0; padding:.4rem .55rem; }
-    .cpu-query-controls button:hover:not(:disabled) { background:var(--vscode-list-hoverBackground); color:var(--vscode-foreground); }
-    .cpu-query-controls button[aria-pressed="true"] { color:var(--vscode-textLink-foreground); border-bottom-color:var(--vscode-focusBorder); font-weight:600; }
     .query-view { margin:.8rem 0; padding:.75rem; border:1px solid var(--vscode-panel-border); border-radius:4px; }
     .query-view h3, .query-view h4 { margin:.1rem 0 .5rem; }
     .query-view-section { margin-top:.75rem; }
@@ -3115,14 +3180,35 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
   <div id="status" role="status">Live counters are ready. Select Start to begin collection; other captures run only when requested.</div>
   <nav class="result-tabs" role="tablist" aria-label="Diagnostic results">
     <button id="resultTabLive" role="tab" aria-selected="true" aria-controls="resultLive">Live</button>
-    <button id="resultTabCpu" role="tab" aria-selected="false" aria-controls="resultCpu">CPU</button>
-    <button id="resultTabAllocation" role="tab" aria-selected="false" aria-controls="resultAllocation">Allocations</button>
+    <button id="resultTabWorkspace" role="tab" aria-selected="false" aria-controls="resultWorkspace">Workspace</button>
     <button id="resultTabExceptions" role="tab" aria-selected="false" aria-controls="resultExceptions">Exceptions</button>
     <button id="resultTabDiagnostics" role="tab" aria-selected="false" aria-controls="resultDiagnostics">Diagnostics</button>
-    <button id="resultTabHeap" role="tab" aria-selected="false" aria-controls="resultHeap">Heap</button>
     <button id="resultTabThreads" role="tab" aria-selected="false" aria-controls="resultThreads">Threads</button>
     <button id="resultTabEvents" role="tab" aria-selected="false" aria-controls="resultEvents">Events</button>
   </nav>
+  <section id="resultWorkspace" class="result-tab-panel" role="tabpanel" aria-labelledby="resultTabWorkspace" hidden>
+    <div class="workspace-controls">
+      <label for="workspaceDomain">Domain</label>
+      <select id="workspaceDomain">
+        <option value="cpu">CPU</option>
+        <option value="memory">Memory &amp; GC</option>
+      </select>
+      <label for="workspaceEvidenceKind">Evidence</label>
+      <select id="workspaceEvidenceKind" aria-label="Select current evidence kind"></select>
+    </div>
+    <div id="workspaceEvidenceStatus" class="workspace-evidence-status" role="status">No evidence selected.</div>
+    <div class="workspace-view-controls">
+      <label for="workspaceView">View</label>
+      <select id="workspaceView" aria-label="Select a view"></select>
+      <button id="workspaceLoadView" type="button" hidden>Load view</button>
+    </div>
+    <div id="workspaceGcCapture" hidden>
+      <div class="panel-actions"><button id="captureGc" type="button">Capture GC evidence…</button></div>
+      <div id="workspaceGcStatus" role="status"></div>
+      <div id="workspaceGcResults" class="query-views"></div>
+    </div>
+    <div id="workspaceCanvas"></div>
+  </section>
   <section id="resultLive" class="result-tab-panel" role="tabpanel" aria-labelledby="resultTabLive">
     <div class="panel-actions">
       <label for="metric">Counter</label><select id="metric" aria-label="Select counter"></select>
@@ -3141,7 +3227,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       </table>
     </section>
   </section>
-  <section id="resultCpu" class="result-tab-panel" role="tabpanel" aria-labelledby="resultTabCpu" data-export-kind="cpu" hidden>
+  <section id="resultCpu" class="result-tab-panel" role="tabpanel" aria-labelledby="resultTabWorkspace" data-export-kind="cpu" data-evidence-id="" hidden>
     <div class="panel-actions">
       <button id="captureCpu" type="button">Capture CPU sample</button>
       <details class="cpu-export-actions">
@@ -3156,6 +3242,10 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     <div id="captureStatus" role="status"></div>
     <p id="cpuEvidencePrerequisite" role="status">Capture CPU to enable measurement exports.</p>
     ${RESULT_EXPORT_BUTTONS}
+    <p id="cpuSamplingDisclaimer" class="query-view-provenance">
+      CPU percentages are shares of captured stack samples, not measured CPU time or utilization.
+      Total includes descendants; Self excludes descendants. Percentages use the full captured-sample denominator and do not change with focus or search.
+    </p>
     <div id="captureResult" class="empty">
       <div id="captureHeadline"></div>
       <details id="cpuHotspotSummary">
@@ -3165,14 +3255,6 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         <tbody id="captureBody"></tbody>
       </table>
       </details>
-      <div class="cpu-query-controls" role="group" aria-label="CPU drilldown views">
-        <button type="button" data-cpu-view="triage" aria-pressed="false">Overview</button>
-        <button type="button" data-cpu-view="call-tree" aria-pressed="false">Call tree</button>
-        <button type="button" data-cpu-view="top-methods" aria-pressed="false">Top methods</button>
-        <button type="button" data-cpu-view="hot-path" aria-pressed="false">Hot path</button>
-        <button type="button" data-cpu-view="by-module" aria-pressed="false">By module</button>
-        <button type="button" data-cpu-view="by-namespace" aria-pressed="false">By namespace</button>
-      </div>
       <div id="cpuQueryStatus" role="status"></div>
       <div id="cpuQueryViews" class="query-views"></div>
     </div>
@@ -3186,13 +3268,6 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     <details><summary>Allocation types, sites and capture quality</summary><div id="allocationCaptureViews"></div></details>
     <p id="allocationEvidencePrerequisite" role="status">Capture allocations to enable profile exploration.</p>
     <div id="allocationExplorer" hidden>
-    <div class="cpu-query-controls" role="group" aria-label="Allocation drilldown views">
-      <button type="button" data-allocation-view="call-tree" aria-pressed="false">Call tree</button>
-      <button type="button" data-allocation-view="top-methods" aria-pressed="false">Top methods</button>
-      <button type="button" data-allocation-view="hot-path" aria-pressed="false">Hot path</button>
-      <button type="button" data-allocation-view="by-module" aria-pressed="false">By module</button>
-      <button type="button" data-allocation-view="by-namespace" aria-pressed="false">By namespace</button>
-    </div>
     <div id="allocationQueryStatus" role="status"></div>
     <div id="allocationQueryViews" class="query-views"></div>
     </div>
@@ -3326,6 +3401,122 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     let allocationProfileResult;
     const allocationProfileState = { mode: 'tree', search: '', focus: [], selected: [] };
     const resultTabs = Array.from(document.querySelectorAll('.result-tabs [role="tab"]'));
+    const workspaceDomain = document.getElementById('workspaceDomain');
+    const workspaceEvidenceKind = document.getElementById('workspaceEvidenceKind');
+    const workspaceEvidenceStatus = document.getElementById('workspaceEvidenceStatus');
+    const workspaceView = document.getElementById('workspaceView');
+    const workspaceLoadView = document.getElementById('workspaceLoadView');
+    const workspaceCanvas = document.getElementById('workspaceCanvas');
+    const workspaceGcCapture = document.getElementById('workspaceGcCapture');
+    const workspaceGcStatus = document.getElementById('workspaceGcStatus');
+    const workspaceGcResults = document.getElementById('workspaceGcResults');
+    const workspacePanels = {
+      cpu: document.getElementById('resultCpu'),
+      allocation: document.getElementById('resultAllocation'),
+      heap: document.getElementById('resultHeap'),
+    };
+    for (const panel of Object.values(workspacePanels)) {
+      panel.classList.remove('result-tab-panel');
+      panel.removeAttribute('role');
+      panel.removeAttribute('aria-labelledby');
+      workspaceCanvas.appendChild(panel);
+    }
+    workspaceGcCapture.removeAttribute('hidden');
+    workspaceCanvas.appendChild(workspaceGcCapture);
+    let selectedWorkspaceEvidence = 'cpu';
+    const workspaceEvidenceStatusByKind = new Map();
+    let cpuEvidenceId;
+    let allocationEvidenceId;
+    let heapEvidenceId;
+    let heapEvidenceSource;
+    let diagnosticsRequestId;
+    let pendingCpuEvidenceId;
+    let pendingAllocationEvidenceId;
+    let pendingHeapEvidenceId;
+    const cpuViewCache = new Map();
+    const allocationViewCache = new Map();
+    const profileViewLabels = {
+      triage: 'Overview',
+      'call-tree': 'Call tree',
+      'top-methods': 'Top methods',
+      'hot-path': 'Hot path',
+      'by-module': 'By module',
+      'by-namespace': 'By namespace',
+    };
+    function setWorkspaceStatus(kind, message) {
+      const statusKind = kind === 'gc-activities' ? 'gc' : kind;
+      workspaceEvidenceStatusByKind.set(statusKind, message);
+      if (selectedWorkspaceEvidence === statusKind || selectedWorkspaceEvidence === 'gc-activities' && statusKind === 'gc') {
+        workspaceEvidenceStatus.textContent = message;
+      }
+    }
+    function setWorkspaceEvidence(kind) {
+      selectedWorkspaceEvidence = kind;
+      workspaceDomain.value = kind === 'cpu' ? 'cpu' : 'memory';
+      workspaceEvidenceKind.replaceChildren();
+      const choices = kind === 'cpu'
+        ? [['cpu', 'CPU sample']]
+        : [['heap', 'Heap snapshot'], ['allocation', 'Allocation profile'],
+          ['gc', 'Garbage collections'], ['gc-activities', 'GC activities']];
+      for (const [value, label] of choices) {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = label;
+        workspaceEvidenceKind.appendChild(option);
+      }
+      workspaceEvidenceKind.value = kind;
+      for (const [panelKind, panel] of Object.entries(workspacePanels)) panel.hidden = panelKind !== kind;
+      const sharedGcEvidence = kind === 'gc' || kind === 'gc-activities';
+      workspaceGcCapture.hidden = !sharedGcEvidence;
+      document.getElementById('captureGc').textContent = kind === 'gc-activities'
+        ? 'Capture GC activities…' : 'Capture GC evidence…';
+      workspaceEvidenceStatus.textContent = workspaceEvidenceStatusByKind.get(kind === 'gc-activities' ? 'gc' : kind)
+        || 'No completed evidence is displayed for this kind.';
+      workspaceView.replaceChildren();
+      workspaceView.disabled = false;
+      workspaceLoadView.hidden = true;
+      if (kind === 'cpu' || kind === 'allocation') {
+        for (const [view, label] of Object.entries(profileViewLabels)) {
+          if (kind === 'allocation' && view === 'triage') continue;
+          const option = document.createElement('option');
+          option.value = view;
+          option.textContent = label;
+          workspaceView.appendChild(option);
+        }
+        const view = kind === 'cpu' ? 'triage' : 'call-tree';
+        workspaceView.value = view;
+        selectProfileView(kind, view);
+      } else {
+        const option = document.createElement('option');
+        option.value = kind === 'heap' ? 'snapshot' : 'capture-result';
+        workspaceView.appendChild(option);
+        option.textContent = kind === 'heap' ? 'Snapshot totals' : 'Capture result';
+        if (kind === 'heap' && heapEvidenceSource === 'live') {
+          const details = document.createElement('option');
+          details.value = 'details';
+          details.textContent = 'Heap details';
+          workspaceView.appendChild(details);
+          workspaceView.disabled = false;
+        } else workspaceView.disabled = true;
+      }
+    }
+    workspaceDomain.addEventListener('change', () => setWorkspaceEvidence(workspaceDomain.value === 'cpu' ? 'cpu' : 'heap'));
+    workspaceEvidenceKind.addEventListener('change', () => setWorkspaceEvidence(workspaceEvidenceKind.value));
+    workspaceView.addEventListener('change', () => {
+      if (selectedWorkspaceEvidence === 'cpu' || selectedWorkspaceEvidence === 'allocation') {
+        selectProfileView(selectedWorkspaceEvidence, workspaceView.value);
+      } else if (selectedWorkspaceEvidence === 'heap') {
+        const button = document.getElementById(workspaceView.value === 'details' ? 'openHeapDetails' : 'backToHeapTypes');
+        button?.click();
+      }
+    });
+    document.getElementById('openHeapDetails').addEventListener('click', () => {
+      if (selectedWorkspaceEvidence === 'heap') workspaceView.value = 'details';
+    });
+    document.getElementById('backToHeapTypes').addEventListener('click', () => {
+      if (selectedWorkspaceEvidence === 'heap') workspaceView.value = 'snapshot';
+    });
+    workspaceLoadView.addEventListener('click', () => loadSelectedProfileView());
     function selectResultTab(selected) {
       const selectedTab = typeof selected === 'string'
         ? resultTabs.find(button => button.id === 'resultTab' + selected[0].toUpperCase() + selected.slice(1))
@@ -3587,7 +3778,10 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     });
     renderEvents();
     function activateCaptureTab(name) {
-      selectResultTab(name);
+      if (name === 'cpu' || name === 'allocation' || name === 'heap' || name === 'gc') {
+        selectResultTab('Workspace');
+        setWorkspaceEvidence(name);
+      } else selectResultTab(name);
     }
     const cpuQueryLabels = {
       triage: 'CPU overview',
@@ -3598,12 +3792,6 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       'by-namespace': 'By namespace',
       'caller-callee': 'Callers and callees',
     };
-    function updateCpuQuerySelection(kind, view) {
-      const attribute = kind === 'allocation' ? 'data-allocation-view' : 'data-cpu-view';
-      for (const button of document.querySelectorAll('[' + attribute + ']')) {
-        button.setAttribute('aria-pressed', button.getAttribute(attribute) === view ? 'true' : 'false');
-      }
-    }
     function appendCpuQuerySymbol(cell, value) {
       const segments = String(value).split(/(?<=[.,:;<>(),])|(?<=[a-z0-9])(?=[A-Z])/);
       for (let index = 0; index < segments.length; index++) {
@@ -3621,7 +3809,6 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     }
     function renderCpuQuery(view, result, isError, kind = 'cpu') {
       const allocation = kind === 'allocation';
-      updateCpuQuerySelection(kind, view);
       const target = allocation ? document.getElementById('allocationQueryViews') : cpuQueryViews;
       const profileResult = allocation ? allocationProfileResult : cpuProfileResult;
       const profileState = allocation ? allocationProfileState : cpuProfileState;
@@ -3707,9 +3894,15 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
             button.type = 'button';
             button.textContent = 'Callers / callees';
             button.setAttribute('data-profile-query', '');
-            button.addEventListener('click', () => vscode.postMessage({
-              type: queryType, view: 'caller-callee', rootMethodFilter: action(item),
-            }));
+            button.addEventListener('click', () => {
+              const rootMethodFilter = action(item);
+              activeProfileViews[kind] = 'caller-callee';
+              activeProfileFilters[kind] = rootMethodFilter;
+              vscode.postMessage({
+                type: queryType, evidenceId: allocation ? allocationEvidenceId : cpuEvidenceId,
+                view: 'caller-callee', rootMethodFilter,
+              });
+            });
             cell.appendChild(button);
             row.appendChild(cell);
           }
@@ -3775,10 +3968,14 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         }
         if (allocation) allocationProfileResult = result;
         else cpuProfileResult = result;
-        renderCpuProfile(section, data, (queryView, method) => vscode.postMessage({
-          type: queryType, view: queryView,
-          ...(method === undefined ? {} : { rootMethodFilter: method }),
-        }), profileState, allocation ? 'allocation-tick-estimated-bytes' : 'samples');
+        renderCpuProfile(section, data, (queryView, method) => {
+          activeProfileViews[kind] = queryView;
+          activeProfileFilters[kind] = method;
+          vscode.postMessage({
+            type: queryType, evidenceId: allocation ? allocationEvidenceId : cpuEvidenceId, view: queryView,
+            ...(method === undefined ? {} : { rootMethodFilter: method }),
+          });
+        }, profileState, allocation ? 'allocation-tick-estimated-bytes' : 'samples');
       }
       target.replaceChildren(section);
     }
@@ -3788,20 +3985,72 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       if (label === 'Category') return 'cpu-query-category';
       return 'cpu-query-number';
     }
-    for (const button of document.querySelectorAll('[data-cpu-view]')) {
-      button.addEventListener('click', () => {
-        const view = button.getAttribute('data-cpu-view');
-        updateCpuQuerySelection('cpu', view);
-        vscode.postMessage({ type: 'queryCpu', view });
+    const profileAvailability = { cpu: false, allocation: false };
+    const profileQueryBusy = { cpu: false, allocation: false };
+    const profileCaptureBusy = { cpu: false, allocation: false };
+    const activeProfileViews = { cpu: 'triage', allocation: 'call-tree' };
+    const activeProfileFilters = { cpu: undefined, allocation: undefined };
+    function profileCache(kind) { return kind === 'allocation' ? allocationViewCache : cpuViewCache; }
+    function profileEvidenceId(kind) { return kind === 'allocation' ? allocationEvidenceId : cpuEvidenceId; }
+    function profileViewTarget(kind) {
+      return kind === 'allocation' ? document.getElementById('allocationQueryViews') : cpuQueryViews;
+    }
+    function profileQueryKey(view, rootMethodFilter) {
+      return view + ':' + (rootMethodFilter || '');
+    }
+    function cacheProfileQuery(kind, view, rootMethodFilter, result) {
+      const cache = profileCache(kind);
+      cache.set(profileQueryKey(view, rootMethodFilter), result);
+      while (cache.size > 8) cache.delete(cache.keys().next().value);
+    }
+    function selectProfileView(kind, view, rootMethodFilter) {
+      activeProfileViews[kind] = view;
+      activeProfileFilters[kind] = rootMethodFilter;
+      const cache = profileCache(kind);
+      const cached = cache.get(profileQueryKey(view, rootMethodFilter));
+      if (cached) {
+        workspaceLoadView.hidden = true;
+        renderCpuQuery(view, cached, false, kind);
+        return;
+      }
+      const target = profileViewTarget(kind);
+      const section = document.createElement('section');
+      section.className = 'query-view';
+      const message = document.createElement('p');
+      message.className = 'query-view-provenance';
+      message.textContent = profileEvidenceId(kind)
+        ? 'This view is not loaded for the current capture. Selecting it did not query or read the target.'
+        : 'Capture this profile before loading a view.';
+      section.appendChild(message);
+      target.replaceChildren(section);
+      workspaceLoadView.hidden = false;
+      workspaceLoadView.disabled = !profileEvidenceId(kind) || !profileAvailability[kind]
+        || profileQueryBusy[kind] || profileCaptureBusy[kind];
+      workspaceLoadView.textContent = profileQueryBusy[kind] || profileCaptureBusy[kind] ? 'Busy…'
+        : profileAvailability[kind] ? 'Load view' : 'Retained profile unavailable';
+    }
+    function loadSelectedProfileView() {
+      const kind = selectedWorkspaceEvidence;
+      if (kind !== 'cpu' && kind !== 'allocation') return;
+      const evidenceId = profileEvidenceId(kind);
+      if (!evidenceId || !profileAvailability[kind] || profileQueryBusy[kind] || profileCaptureBusy[kind]) return;
+      const view = workspaceView.value;
+      const cache = profileCache(kind);
+      if (cache.has(profileQueryKey(view))) {
+        selectProfileView(kind, view);
+        return;
+      }
+      workspaceLoadView.disabled = true;
+      workspaceLoadView.textContent = 'Loading…';
+      const status = kind === 'cpu' ? cpuQueryStatus : document.getElementById('allocationQueryStatus');
+      status.textContent = 'Loading ' + (profileViewLabels[view] || view) + ' from the retained capture…';
+      vscode.postMessage({
+        type: kind === 'allocation' ? 'queryAllocation' : 'queryCpu',
+        evidenceId,
+        view,
       });
     }
-    for (const button of document.querySelectorAll('[data-allocation-view]')) {
-      button.addEventListener('click', () => {
-        const view = button.getAttribute('data-allocation-view');
-        updateCpuQuerySelection('allocation', view);
-        vscode.postMessage({ type: 'queryAllocation', view });
-      });
-    }
+    setWorkspaceEvidence('cpu');
     const counters = new Map();
     const maxSeries = ${MAX_WEBVIEW_SERIES};
     // Defensive backstops in case a timestamp is missing/unparseable and time-based eviction
@@ -4150,6 +4399,15 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     window.addEventListener('message', event => {
       const message = event.data;
       if (!message || typeof message.type !== 'string') return;
+      if (message.profiles && typeof message.profiles === 'object') {
+        profileAvailability.cpu = message.profiles.cpu === true;
+        profileAvailability.allocation = message.profiles.allocation === true;
+        if ((selectedWorkspaceEvidence === 'cpu' || selectedWorkspaceEvidence === 'allocation')
+          && !profileAvailability[selectedWorkspaceEvidence] && workspaceLoadView.hidden === false) {
+          workspaceLoadView.disabled = true;
+          workspaceLoadView.textContent = 'Retained profile unavailable';
+        }
+      }
       if (message.type === 'eventsStatus') {
         setEventsStatus(message.state, message.message, message.sessionId);
         return;
@@ -4163,11 +4421,24 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       if (message.type === 'threadStaticsState') {
         setThreadStaticsBusy(message.state === 'running');
       } else if (message.type === 'cpuQueryState') {
+        if (message.evidenceId !== cpuEvidenceId) return;
         const cpuQueryBusy = message.state === 'running';
+        profileQueryBusy.cpu = cpuQueryBusy;
         cpuQueryStatus.textContent = cpuQueryBusy ? 'Loading CPU drilldown…' : '';
+        if (!cpuQueryBusy && workspaceLoadView.hidden === false && selectedWorkspaceEvidence === 'cpu') {
+          workspaceLoadView.disabled = false;
+          workspaceLoadView.textContent = 'Load view';
+        }
       } else if (message.type === 'captureStatus' && message.kind === 'cpu') {
+        if (typeof message.evidenceId === 'string') pendingCpuEvidenceId = message.evidenceId;
         activateCaptureTab('cpu');
         captureStatusElement.textContent = message.message || message.state || '';
+        profileCaptureBusy.cpu = message.state === 'running' || message.state === 'starting';
+        if (selectedWorkspaceEvidence === 'cpu' && workspaceLoadView.hidden === false) {
+          workspaceLoadView.disabled = profileCaptureBusy.cpu || profileQueryBusy.cpu || !profileAvailability.cpu;
+          workspaceLoadView.textContent = profileCaptureBusy.cpu ? 'Capture in progress…'
+            : workspaceLoadView.disabled ? 'Retained profile unavailable' : 'Load view';
+        }
       } else if (message.type === 'status') {
         const liveStatus = message.message || message.state;
         statusElement.textContent = liveStatus.startsWith('Live counters') ? liveStatus : 'Live counters: ' + liveStatus;
@@ -4181,42 +4452,112 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           addCounter(message);
         }
       } else if (message.type === 'allocationQueryState') {
+        if (message.evidenceId !== allocationEvidenceId) return;
         const busy = message.state === 'running';
+        profileQueryBusy.allocation = busy;
         document.getElementById('allocationQueryStatus').textContent = busy ? 'Loading allocation details…' : '';
+        if (!busy && workspaceLoadView.hidden === false && selectedWorkspaceEvidence === 'allocation') {
+          workspaceLoadView.disabled = false;
+          workspaceLoadView.textContent = 'Load view';
+        }
       } else if (message.type === 'captureStatus' && message.kind === 'allocation') {
+        if (typeof message.evidenceId === 'string') pendingAllocationEvidenceId = message.evidenceId;
         activateCaptureTab('allocation');
         document.getElementById('captureAllocationStatus').textContent = message.message || message.state || '';
+        profileCaptureBusy.allocation = message.state === 'running' || message.state === 'starting';
+        if (selectedWorkspaceEvidence === 'allocation' && workspaceLoadView.hidden === false) {
+          workspaceLoadView.disabled = profileCaptureBusy.allocation || profileQueryBusy.allocation || !profileAvailability.allocation;
+          workspaceLoadView.textContent = profileCaptureBusy.allocation ? 'Capture in progress…'
+            : workspaceLoadView.disabled ? 'Retained profile unavailable' : 'Load view';
+        }
       } else if (message.type === 'capture' && message.kind === 'allocation') {
+        if (message.evidenceId !== pendingAllocationEvidenceId) return;
         activateCaptureTab('allocation');
-        updateCpuQuerySelection('allocation', null);
+        profileCaptureBusy.allocation = false;
+        allocationEvidenceId = typeof message.evidenceId === 'string' ? message.evidenceId : undefined;
+        allocationViewCache.clear();
+        activeProfileViews.allocation = 'call-tree';
+        activeProfileFilters.allocation = undefined;
+        document.getElementById('resultAllocation').dataset.evidenceId = allocationEvidenceId || '';
+        setWorkspaceStatus('allocation', 'Current evidence: allocation profile · ' + (message.result?.kind || 'capture complete')
+          + '. Values are estimated sampled allocation bytes, not CPU samples or retained heap.');
         allocationProfileResult = undefined;
         allocationProfileState.focus = [];
         allocationProfileState.selected = [];
         allocationProfileState.search = '';
         document.getElementById('allocationQueryViews').replaceChildren();
         renderCaptureView('allocationCaptureViews', message.result);
+        setWorkspaceEvidence('allocation');
       } else if (message.type === 'query' && message.kind === 'allocation') {
+        if (message.evidenceId !== allocationEvidenceId) return;
         if (message.result?.weightUnit !== 'allocation-tick-estimated-bytes') {
           renderCpuQuery(message.view, 'CLI did not confirm allocation-byte weighting.', true, 'allocation');
-        } else renderCpuQuery(message.view, message.result, false, 'allocation');
+        } else {
+          cacheProfileQuery('allocation', message.view, message.rootMethodFilter, message.result);
+          if (selectedWorkspaceEvidence === 'allocation'
+            && message.view === activeProfileViews.allocation
+            && message.rootMethodFilter === activeProfileFilters.allocation) {
+            if (profileViewLabels[message.view]) workspaceView.value = message.view;
+            workspaceLoadView.hidden = true;
+            renderCpuQuery(message.view, message.result, false, 'allocation');
+          }
+        }
       } else if (message.type === 'queryError' && message.kind === 'allocation') {
-        renderCpuQuery(message.view, message.message, true, 'allocation');
+        if (message.evidenceId !== allocationEvidenceId) return;
+        if (!profileAvailability.allocation) {
+          setWorkspaceStatus('allocation', 'Cached allocation views may remain visible; the retained profile is unavailable for additional queries.');
+        }
+        if (selectedWorkspaceEvidence === 'allocation'
+          && message.view === activeProfileViews.allocation
+          && message.rootMethodFilter === activeProfileFilters.allocation) {
+          workspaceLoadView.hidden = false;
+          workspaceLoadView.disabled = !profileAvailability.allocation;
+          workspaceLoadView.textContent = profileAvailability.allocation ? 'Retry view load' : 'Retained profile unavailable';
+          renderCpuQuery(message.view, message.message, true, 'allocation');
+        }
       } else if (message.type === 'captureStatus' && message.kind === 'exceptions') {
         activateCaptureTab('exceptions');
         captureExceptionsStatus.textContent = message.message || message.state || '';
         captureExceptionsButton.disabled = message.state === 'running' || message.state === 'starting';
         if (message.state === 'running') document.getElementById('exceptionCaptureViews').replaceChildren();
       } else if (message.type === 'captureStatus' && message.kind === 'diagnostics') {
-        activateCaptureTab('diagnostics');
+        if (typeof message.evidenceId === 'string') diagnosticsRequestId = message.evidenceId;
+        const gcCapture = message.captureKind === 'gc' || message.captureKind === 'gc-activities';
+        activateCaptureTab(gcCapture ? message.captureKind : 'diagnostics');
         captureDiagnosticsStatus.textContent = message.message || message.state || '';
         captureDiagnosticsButton.disabled = message.state === 'running' || message.state === 'starting';
+        if (gcCapture) {
+          document.getElementById('workspaceGcStatus').textContent = message.message || message.state || '';
+          document.getElementById('captureGc').disabled = message.state === 'running' || message.state === 'starting';
+        }
         if (message.state === 'running') document.getElementById('diagnosticsCaptureViews').replaceChildren();
       } else if (message.type === 'capture' && message.kind === 'diagnostics') {
-        activateCaptureTab('diagnostics');
-        renderCaptureView('diagnosticsCaptureViews', message.result);
+        if (message.evidenceId !== diagnosticsRequestId) return;
+        if (message.captureKind === 'gc' || message.captureKind === 'gc-activities') {
+          activateCaptureTab(message.captureKind);
+          document.getElementById('workspaceGcStatus').textContent = 'Current diagnostics evidence: '
+            + String(message.captureKind) + '.';
+          setWorkspaceStatus(message.captureKind, 'Current diagnostics owner: ' + String(message.captureKind) + '.');
+          document.getElementById('diagnosticsCaptureViews').replaceChildren();
+          renderCaptureView('workspaceGcResults', message.result);
+        } else {
+          activateCaptureTab('diagnostics');
+          workspaceGcStatus.textContent = 'Replaced: shared Diagnostics slot now contains '
+            + String(message.captureKind || 'another diagnostics capture') + '.';
+          setWorkspaceStatus('gc', 'GC evidence is not current: the shared diagnostics slot now contains '
+            + String(message.captureKind || 'another diagnostics capture') + '.');
+          workspaceGcResults.replaceChildren();
+          renderCaptureView('diagnosticsCaptureViews', message.result);
+        }
       } else if (message.type === 'captureStatus' && message.kind === 'heap') {
+        if (typeof message.evidenceId === 'string') pendingHeapEvidenceId = message.evidenceId;
         activateCaptureTab('heap');
         captureHeapStatusElement.textContent = message.message || message.state || '';
+        if (message.state === 'running') {
+          setWorkspaceStatus('heap', 'Heap recapture in progress. A prior visual may remain; query availability and consent follow the current retained owner.');
+        } else if (message.state === 'error') {
+          setWorkspaceStatus('heap', 'Heap recapture failed. A prior visual may remain; queryability is not inferred from that display.');
+        }
         captureHeapButton.disabled = message.state === 'running';
         if (message.state === 'running') {
           // Clear any query-view sections left over from a previous capture so a stale
@@ -4240,14 +4581,27 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         renderQueryView('exceptionCaptureViews', 'exceptions', message.result, false);
         document.getElementById('exceptionCaptureViews-exceptions').open = true;
       } else if (message.type === 'capture' && message.kind === 'heap') {
+        if (message.evidenceId !== pendingHeapEvidenceId) return;
+        heapEvidenceSource = message.source;
         activateCaptureTab('heap');
+        heapEvidenceId = typeof message.evidenceId === 'string' ? message.evidenceId : undefined;
         renderHeapCapture(message.source, message.result);
+        setWorkspaceStatus('heap', 'Current displayed evidence: heap snapshot (' + String(message.source || 'source unavailable')
+          + '). Retained live-query availability is governed by the snapshot owner and consent state.');
       } else if (message.type === 'capture' && message.kind === 'thread-snapshot') {
         activateCaptureTab('threads');
         renderThreadCapture(message.result);
       } else if (message.type === 'capture') {
+        if (message.evidenceId !== pendingCpuEvidenceId) return;
         activateCaptureTab('cpu');
-        updateCpuQuerySelection('cpu', null);
+        profileCaptureBusy.cpu = false;
+        cpuEvidenceId = typeof message.evidenceId === 'string' ? message.evidenceId : undefined;
+        cpuViewCache.clear();
+        activeProfileViews.cpu = 'triage';
+        activeProfileFilters.cpu = undefined;
+        document.getElementById('resultCpu').dataset.evidenceId = cpuEvidenceId || '';
+        setWorkspaceStatus('cpu', 'Current evidence: CPU profile · ' + String(message.summary?.totalSamples ?? 'sample count unavailable')
+          + ' captured stack samples. Percentages are sample shares, not measured CPU time or utilization; Total includes descendants and Self excludes them.');
         cpuProfileResult = undefined;
         cpuProfileState.focus = [];
         cpuProfileState.selected = [];
@@ -4255,17 +4609,43 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         cpuQueryViews.replaceChildren();
         cpuQueryStatus.textContent = '';
         renderCapture(message.summary);
+        document.getElementById('cpuSamplingDisclaimer').textContent =
+          'CPU percentages are shares of captured stack samples, not measured CPU time or utilization. '
+          + 'Total includes descendants; Self excludes descendants. Full capture denominator: '
+          + String(message.summary?.totalSamples ?? 'unavailable') + ' captured stack samples. Focus and search do not renormalize values.';
+        setWorkspaceEvidence('cpu');
       } else if (message.type === 'query' && message.kind === 'cpu') {
+        if (message.evidenceId !== cpuEvidenceId) return;
         cpuQueryStatus.textContent = '';
-        renderCpuQuery(message.view, message.result, false);
+        cacheProfileQuery('cpu', message.view, message.rootMethodFilter, message.result);
+        if (selectedWorkspaceEvidence === 'cpu'
+          && message.view === activeProfileViews.cpu
+          && message.rootMethodFilter === activeProfileFilters.cpu) {
+          if (profileViewLabels[message.view]) workspaceView.value = message.view;
+          workspaceLoadView.hidden = true;
+          renderCpuQuery(message.view, message.result, false);
+        }
       } else if (message.type === 'queryError' && message.kind === 'cpu') {
+        if (message.evidenceId !== cpuEvidenceId) return;
         cpuQueryStatus.textContent = '';
-        renderCpuQuery(message.view, message.message, true);
+        if (!profileAvailability.cpu) {
+          setWorkspaceStatus('cpu', 'Cached CPU views may remain visible; the retained profile is unavailable for additional queries.');
+        }
+        if (selectedWorkspaceEvidence === 'cpu'
+          && message.view === activeProfileViews.cpu
+          && message.rootMethodFilter === activeProfileFilters.cpu) {
+          workspaceLoadView.hidden = false;
+          workspaceLoadView.disabled = !profileAvailability.cpu;
+          workspaceLoadView.textContent = profileAvailability.cpu ? 'Retry view load' : 'Retained profile unavailable';
+          renderCpuQuery(message.view, message.message, true);
+        }
       } else if (message.type === 'query' && message.kind === 'heap') {
+        if (message.evidenceId !== heapEvidenceId) return;
         renderQueryView('heapQueryViews', message.view, message.result, false);
       } else if (message.type === 'query' && message.kind === 'thread-snapshot') {
         renderQueryView('threadQueryViews', message.view, message.result, false);
       } else if (message.type === 'queryError' && message.kind === 'heap') {
+        if (message.evidenceId !== heapEvidenceId) return;
         renderQueryView('heapQueryViews', message.view, message.message, true);
       } else if (message.type === 'queryError' && message.kind === 'thread-snapshot') {
         renderQueryView('threadQueryViews', message.view, message.message, true);
@@ -4311,6 +4691,9 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     stopButton.addEventListener('click', () => vscode.postMessage({ type: 'stop' }));
     eventsFollowButton.disabled = true;
     captureCpuButton.addEventListener('click', () => vscode.postMessage({ type: 'captureCpu' }));
+    document.getElementById('captureGc').addEventListener('click', () => vscode.postMessage({
+      type: 'captureGc', kind: selectedWorkspaceEvidence,
+    }));
     captureExceptionsButton.addEventListener('click', () => vscode.postMessage({ type: 'captureExceptions' }));
     captureDiagnosticsButton.addEventListener('click', () => vscode.postMessage({ type: 'captureDiagnostics' }));
     document.getElementById('captureAllocation').addEventListener('click', () => vscode.postMessage({ type: 'captureAllocation' }));

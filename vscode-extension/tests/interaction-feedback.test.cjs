@@ -44,13 +44,15 @@ test("result tabs navigate in rendered order and preserve focus and selection st
         querySelectorAll: selector => selector === '.result-tabs [role="tab"]' ? tabs : [],
         getElementById: id => panels.get(id),
     };
-    const start = inlineScript().indexOf("const resultTabs = Array.from(");
+    const start = inlineScript().indexOf("function selectResultTab(selected)");
     const end = inlineScript().indexOf("const eventsStatusElement =", start);
     assert.ok(start >= 0 && end > start);
-    const navigation = new Function("document", `${inlineScript().slice(start, end)}; return { resultTabs, selectResultTab };`)(document);
+    const navigation = new Function("document",
+        `const resultTabs = Array.from(document.querySelectorAll('.result-tabs [role="tab"]'));`
+        + `${inlineScript().slice(start, end)}; return { resultTabs, selectResultTab };`)(document);
     const resultTabs = navigation.resultTabs;
     assert.deepEqual(resultTabs.map(tab => tab.label),
-        ["Live", "CPU", "Allocations", "Exceptions", "Diagnostics", "Heap", "Threads", "Events"]);
+        ["Live", "Workspace", "Exceptions", "Diagnostics", "Threads", "Events"]);
 
     function press(index, key) {
         let prevented = false;
@@ -81,7 +83,7 @@ test("result tabs navigate in rendered order and preserve focus and selection st
     assertSelected(tabs.length - 1);
     assert.equal(tabs.at(-1).focused, true);
     navigation.selectResultTab("exceptions");
-    assertSelected(3);
+    assertSelected(2);
     assert.equal(press(0, "Escape"), false);
 });
 
