@@ -134,10 +134,12 @@ class DecisionTests(unittest.TestCase):
 
     def test_cli_writes_decision_and_boolean_output(self):
         with patch.dict(os.environ, {**self.env, "GITHUB_OUTPUT": "outputs",
-                                     "GITHUB_STEP_SUMMARY": "summary"}, clear=True):
+                                     "GITHUB_STEP_SUMMARY": "summary",
+                                     "CI_EXTENSION_FAST_PATH_DISABLED": ""}):
             SELECT.main(["--output", "report"])
+        report = json.loads(Path("report/selection.json").read_text())
+        self.assertTrue(report["extensionOnly"], report)
         self.assertEqual(Path("outputs").read_text(), "extension_only=true\n")
-        self.assertTrue(json.loads(Path("report/selection.json").read_text())["extensionOnly"])
 
 
 def job_block(text, job):
