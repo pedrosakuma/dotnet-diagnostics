@@ -2973,12 +2973,29 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     .result-tabs { display:flex; gap:.2rem; overflow-x:auto; position:sticky; top:0; z-index:2; padding:.45rem 0; background:var(--vscode-editor-background); border-bottom:1px solid var(--vscode-panel-border); }
     .result-tabs button { flex:0 0 auto; background:transparent; color:var(--vscode-foreground); border-bottom:2px solid transparent; }
     .result-tabs button[aria-selected="true"] { color:var(--vscode-textLink-foreground); border-bottom-color:var(--vscode-focusBorder); }
-    .cpu-query-controls { display:flex; gap:.4rem; flex-wrap:wrap; margin:.8rem 0; }
+    .cpu-query-controls { display:flex; gap:.1rem; flex-wrap:wrap; margin:.8rem 0; border-bottom:1px solid var(--vscode-panel-border); }
+    .cpu-query-controls button { flex:0 0 auto; background:transparent; color:var(--vscode-descriptionForeground); border:0; border-bottom:2px solid transparent; border-radius:0; padding:.4rem .55rem; }
+    .cpu-query-controls button:hover:not(:disabled) { background:var(--vscode-list-hoverBackground); color:var(--vscode-foreground); }
+    .cpu-query-controls button[aria-pressed="true"] { color:var(--vscode-textLink-foreground); border-bottom-color:var(--vscode-focusBorder); font-weight:600; }
     .query-view { margin:.8rem 0; padding:.75rem; border:1px solid var(--vscode-panel-border); border-radius:4px; }
     .query-view h3, .query-view h4 { margin:.1rem 0 .5rem; }
     .query-view-section { margin-top:.75rem; }
     .query-view-table-wrap { max-width:100%; overflow-x:auto; }
     .query-view-table { min-width:32rem; }
+    .query-view-table.cpu-query-table { min-width:48rem; table-layout:fixed; }
+    .cpu-query-table .cpu-query-symbol { width:31%; }
+    .cpu-query-table .cpu-query-module { width:17%; }
+    .cpu-query-table .cpu-query-number { width:6.5rem; }
+    .cpu-query-table .cpu-query-action { width:9rem; }
+    .cpu-query-table th.cpu-query-number { overflow-wrap:normal; word-break:normal; }
+    .cpu-query-table td.cpu-query-number { white-space:nowrap; }
+    .cpu-query-table .cpu-query-symbol, .cpu-query-table .cpu-query-module { overflow-wrap:normal; word-break:normal; }
+    .cpu-query-table .cpu-query-symbol span, .cpu-query-table .cpu-query-module span { display:inline-block; white-space:nowrap; overflow-wrap:normal; }
+    .cpu-query-table .cpu-query-action button { white-space:nowrap; padding:.35rem .45rem; font-size:.8rem; }
+    .cpu-query-group-table .cpu-query-module { width:52%; }
+    .cpu-query-group-table .cpu-query-number { width:24%; }
+    .cpu-query-summary-table .cpu-query-category { width:56%; overflow-wrap:anywhere; word-break:normal; }
+    .cpu-query-summary-table .cpu-query-number { width:22%; }
     .query-view-provenance { color:var(--vscode-descriptionForeground); }
     .query-view-error { border-color:var(--vscode-errorForeground); }
     ${CPU_PROFILE_STYLES}
@@ -3070,13 +3087,13 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         <tbody id="captureBody"></tbody>
       </table>
       </details>
-      <div class="cpu-query-controls" aria-label="CPU drilldown views">
-        <button data-cpu-view="triage">Overview</button>
-        <button data-cpu-view="call-tree">Call tree</button>
-        <button data-cpu-view="top-methods">Top methods</button>
-        <button data-cpu-view="hot-path">Hot path</button>
-        <button data-cpu-view="by-module">By module</button>
-        <button data-cpu-view="by-namespace">By namespace</button>
+      <div class="cpu-query-controls" role="group" aria-label="CPU drilldown views">
+        <button type="button" data-cpu-view="triage" aria-pressed="false">Overview</button>
+        <button type="button" data-cpu-view="call-tree" aria-pressed="false">Call tree</button>
+        <button type="button" data-cpu-view="top-methods" aria-pressed="false">Top methods</button>
+        <button type="button" data-cpu-view="hot-path" aria-pressed="false">Hot path</button>
+        <button type="button" data-cpu-view="by-module" aria-pressed="false">By module</button>
+        <button type="button" data-cpu-view="by-namespace" aria-pressed="false">By namespace</button>
       </div>
       <div id="cpuQueryStatus" role="status"></div>
       <div id="cpuQueryViews" class="query-views"></div>
@@ -3089,12 +3106,12 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       Navigation reuses this capture without collecting again. All types are combined in the profile.</p>
     <div id="captureAllocationStatus" role="status"></div>
     <details><summary>Allocation types, sites and capture quality</summary><div id="allocationCaptureViews"></div></details>
-    <div class="cpu-query-controls" aria-label="Allocation drilldown views">
-      <button data-allocation-view="call-tree">Call tree</button>
-      <button data-allocation-view="top-methods">Top methods</button>
-      <button data-allocation-view="hot-path">Hot path</button>
-      <button data-allocation-view="by-module">By module</button>
-      <button data-allocation-view="by-namespace">By namespace</button>
+    <div class="cpu-query-controls" role="group" aria-label="Allocation drilldown views">
+      <button type="button" data-allocation-view="call-tree" aria-pressed="false">Call tree</button>
+      <button type="button" data-allocation-view="top-methods" aria-pressed="false">Top methods</button>
+      <button type="button" data-allocation-view="hot-path" aria-pressed="false">Hot path</button>
+      <button type="button" data-allocation-view="by-module" aria-pressed="false">By module</button>
+      <button type="button" data-allocation-view="by-namespace" aria-pressed="false">By namespace</button>
     </div>
     <div id="allocationQueryStatus" role="status"></div>
     <div id="allocationQueryViews" class="query-views"></div>
@@ -3501,8 +3518,30 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       'by-namespace': 'By namespace',
       'caller-callee': 'Callers and callees',
     };
+    function updateCpuQuerySelection(kind, view) {
+      const attribute = kind === 'allocation' ? 'data-allocation-view' : 'data-cpu-view';
+      for (const button of document.querySelectorAll('[' + attribute + ']')) {
+        button.setAttribute('aria-pressed', button.getAttribute(attribute) === view ? 'true' : 'false');
+      }
+    }
+    function appendCpuQuerySymbol(cell, value) {
+      const segments = String(value).split(/(?<=[.,:;<>(),])|(?<=[a-z0-9])(?=[A-Z])/);
+      for (let index = 0; index < segments.length; index++) {
+        const segment = segments[index];
+        if (!segment) continue;
+        const segmentNode = document.createElement('span');
+        segmentNode.textContent = segment;
+        cell.appendChild(segmentNode);
+        const punctuationBreak = /[.,:;<>(),]$/.test(segment);
+        const camelCaseBreak = /[a-z0-9]$/.test(segment) && /^[A-Z]/.test(segments[index + 1] || '');
+        if (punctuationBreak || camelCaseBreak) {
+          cell.appendChild(document.createElement('wbr'));
+        }
+      }
+    }
     function renderCpuQuery(view, result, isError, kind = 'cpu') {
       const allocation = kind === 'allocation';
+      updateCpuQuerySelection(kind, view);
       const target = allocation ? document.getElementById('allocationQueryViews') : cpuQueryViews;
       const profileResult = allocation ? allocationProfileResult : cpuProfileResult;
       const profileState = allocation ? allocationProfileState : cpuProfileState;
@@ -3541,18 +3580,23 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         tableTitle.textContent = title;
         wrapper.appendChild(tableTitle);
         const tableNode = document.createElement('table');
-        tableNode.className = 'query-view-table';
+        tableNode.className = 'query-view-table cpu-query-table'
+          + (title === 'Modules' || title === 'Namespaces' ? ' cpu-query-group-table' : '')
+          + (title === 'Wait categories' ? ' cpu-query-summary-table' : '')
+          + (action ? ' cpu-query-action-table' : '');
         const head = document.createElement('tr');
         for (const [label] of columns) {
           const cell = document.createElement('th');
           cell.scope = 'col';
           cell.textContent = allocation ? label.replace(/samples/gi, 'estimated bytes') : label;
+          cell.className = cpuQueryColumnClass(label);
           head.appendChild(cell);
         }
         if (action) {
           const cell = document.createElement('th');
           cell.scope = 'col';
           cell.textContent = 'Drill down';
+          cell.className = 'cpu-query-action';
           head.appendChild(cell);
         }
         const thead = document.createElement('thead');
@@ -3564,14 +3608,21 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           : [];
         for (const item of safeRows) {
           const row = document.createElement('tr');
-          for (const [, getValue] of columns) {
+          for (const [label, getValue] of columns) {
             const cell = document.createElement('td');
             const value = getValue(item);
-            cell.textContent = value === undefined || value === null ? '—' : String(value);
+            cell.className = cpuQueryColumnClass(label);
+            if ((label === 'Method' || label === 'Module' || label === 'Namespace')
+              && value !== undefined && value !== null) {
+              appendCpuQuerySymbol(cell, value);
+            } else {
+              cell.textContent = value === undefined || value === null ? '—' : String(value);
+            }
             row.appendChild(cell);
           }
           if (action) {
             const cell = document.createElement('td');
+            cell.className = 'cpu-query-action';
             const button = document.createElement('button');
             button.type = 'button';
             button.textContent = 'Callers / callees';
@@ -3650,15 +3701,25 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       }
       target.replaceChildren(section);
     }
+    function cpuQueryColumnClass(label) {
+      if (label === 'Method') return 'cpu-query-symbol';
+      if (label === 'Module' || label === 'Namespace') return 'cpu-query-module';
+      if (label === 'Category') return 'cpu-query-category';
+      return 'cpu-query-number';
+    }
     for (const button of document.querySelectorAll('[data-cpu-view]')) {
-      button.addEventListener('click', () => vscode.postMessage({
-        type: 'queryCpu', view: button.getAttribute('data-cpu-view'),
-      }));
+      button.addEventListener('click', () => {
+        const view = button.getAttribute('data-cpu-view');
+        updateCpuQuerySelection('cpu', view);
+        vscode.postMessage({ type: 'queryCpu', view });
+      });
     }
     for (const button of document.querySelectorAll('[data-allocation-view]')) {
-      button.addEventListener('click', () => vscode.postMessage({
-        type: 'queryAllocation', view: button.getAttribute('data-allocation-view'),
-      }));
+      button.addEventListener('click', () => {
+        const view = button.getAttribute('data-allocation-view');
+        updateCpuQuerySelection('allocation', view);
+        vscode.postMessage({ type: 'queryAllocation', view });
+      });
     }
     const counters = new Map();
     const maxSeries = ${MAX_WEBVIEW_SERIES};
@@ -4031,6 +4092,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         captureCpuButton.disabled = cpuCaptureBusy;
         updateCpuQueryControls();
         if (cpuCaptureBusy) {
+          updateCpuQuerySelection('cpu', null);
           cpuProfileResult = undefined;
           cpuProfileState.focus = [];
           cpuProfileState.selected = [];
@@ -4060,6 +4122,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         document.getElementById('captureAllocationStatus').textContent = message.message || message.state || '';
         document.getElementById('captureAllocation').disabled = message.state === 'running';
         if (message.state === 'running') {
+          updateCpuQuerySelection('allocation', null);
           allocationProfileResult = undefined;
           allocationProfileState.focus = [];
           allocationProfileState.selected = [];

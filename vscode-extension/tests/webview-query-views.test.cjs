@@ -60,6 +60,10 @@ class ElementStub {
         this.attributes[name] = String(value);
     }
 
+    getAttribute(name) {
+        return this.attributes[name] ?? null;
+    }
+
     addEventListener(type, listener) {
         (this.listeners ??= {})[type] = listener;
     }
@@ -117,6 +121,13 @@ function createDocumentStub() {
         },
         createElementNS(_namespace, tagName) {
             return new ElementStub(tagName);
+        },
+        querySelectorAll(selector) {
+            const attribute = /^\[([^\]]+)\]$/.exec(selector)?.[1];
+            if (!attribute) return [];
+            const all = element => [element, ...element.children.flatMap(all)];
+            return [...containers.values()].flatMap(all)
+                .filter(element => Object.prototype.hasOwnProperty.call(element.attributes, attribute));
         },
     };
 
@@ -183,9 +194,19 @@ test("live panel groups results by capture tab and wires CPU drilldown", () => {
     assert.match(html, /<section id="resultHeap"[\s\S]*?<button id="captureHeap" type="button">/);
     assert.match(script, /function selectResultTab\(selected\)/);
     assert.match(script, /event\.key === 'ArrowRight'/);
-    assert.match(script, /type: 'queryCpu', view: button\.getAttribute\('data-cpu-view'\)/);
+    assert.match(script, /vscode\.postMessage\(\{ type: 'queryCpu', view \}\)/);
     assert.match(script, /type: queryType, view: 'caller-callee', rootMethodFilter: action\(item\)/);
-    assert.match(script, /type: 'queryAllocation', view: button\.getAttribute\('data-allocation-view'\)/);
+    assert.match(script, /vscode\.postMessage\(\{ type: 'queryAllocation', view \}\)/);
+    assert.match(html, /class="cpu-query-controls" role="group" aria-label="CPU drilldown views"/);
+    assert.match(html, /data-cpu-view="triage" aria-pressed="false"/);
+    assert.match(html, /class="cpu-query-controls" role="group" aria-label="Allocation drilldown views"/);
+    assert.match(html, /data-allocation-view="call-tree" aria-pressed="false"/);
+    assert.match(html, /\.cpu-query-controls button\[aria-pressed="true"\]/);
+    assert.match(html, /\.cpu-query-table \.cpu-query-number \{ width:6\.5rem; \}/);
+    assert.match(html, /\.cpu-query-table \.cpu-query-action \{ width:9rem; \}/);
+    assert.match(html, /\.query-view-table\.cpu-query-table \{ min-width:48rem; table-layout:fixed; \}/);
+    assert.match(html, /\.cpu-query-table \.cpu-query-symbol span, \.cpu-query-table \.cpu-query-module span \{ display:inline-block; white-space:nowrap; overflow-wrap:normal; \}/);
+    assert.match(html, /\.cpu-query-summary-table \.cpu-query-category \{ width:56%; overflow-wrap:anywhere; word-break:normal; \}/);
     assert.match(script, /message\.type === 'query' && message\.kind === 'cpu'/);
     assert.match(script, /renderCpuQuery\(message\.view, message\.result, false\)/);
 });
@@ -200,6 +221,20 @@ function cpuRenderer() {
     const { document, makeContainer } = createDocumentStub();
     const cpuQueryViews = makeContainer("cpuQueryViews");
     const allocationContainer = makeContainer("allocationQueryViews");
+    const cpuNavigation = makeContainer("cpuNavigation");
+    const allocationNavigation = makeContainer("allocationNavigation");
+    for (const view of ["triage", "call-tree", "top-methods", "hot-path", "by-module", "by-namespace"]) {
+        const button = new ElementStub("button");
+        button.setAttribute("data-cpu-view", view);
+        button.setAttribute("aria-pressed", "false");
+        cpuNavigation.appendChild(button);
+    }
+    for (const view of ["call-tree", "top-methods", "hot-path", "by-module", "by-namespace"]) {
+        const button = new ElementStub("button");
+        button.setAttribute("data-allocation-view", view);
+        button.setAttribute("aria-pressed", "false");
+        allocationNavigation.appendChild(button);
+    }
     const requests = [];
     // eslint-disable-next-line no-new-func -- tests the renderer emitted into the webview.
     const { renderCpuQuery, state } = new Function("document", "cpuQueryViews", "vscode",
@@ -211,7 +246,10 @@ function cpuRenderer() {
         ${source}
         return { renderCpuQuery, state: cpuProfileState };`)(
         document, cpuQueryViews, { postMessage: request => requests.push(request) });
-    return { renderCpuQuery, state, container: cpuQueryViews, allocationContainer, requests };
+    return {
+        renderCpuQuery, state, container: cpuQueryViews, allocationContainer,
+        cpuNavigation, allocationNavigation, requests,
+    };
 }
 
 test("allocation explorer uses estimated bytes, separate profile state and allocation query messages", () => {
@@ -235,6 +273,45 @@ test("allocation explorer uses estimated bytes, separate profile state and alloc
     renderCpuQuery("call-tree", { data: { totalSamples: 2, root: cpuNode("Cpu", 2, 2) } }, false);
     assert.match(container.textContent, /inclusive sample counts/);
     assert.match(allocationContainer.textContent, /800 of 1000/);
+});
+
+test("CPU and allocation drilldown controls expose their active view and preserve method symbols", () => {
+    const { renderCpuQuery, container, cpuNavigation, allocationNavigation } = cpuRenderer();
+    const selectedViews = controls => elements(controls, element => element.tagName === "button")
+        .filter(button => button.getAttribute("aria-pressed") === "true")
+        .map(button => button.getAttribute("data-cpu-view") ?? button.getAttribute("data-allocation-view"));
+    renderCpuQuery("triage", { data: { topWaitCategories: [{
+        waitReason: "ThreadPool worker idle wait", exclusiveSamples: 12, exclusivePercent: 42.9,
+    }] } }, false);
+    assert.deepEqual(selectedViews(cpuNavigation), ["triage"]);
+    const waitTable = elements(container, element => element.tagName === "table"
+        && element.className.includes("cpu-query-summary-table"))[0];
+    assert.ok(waitTable);
+    assert.equal(elements(waitTable, element => element.tagName === "td"
+        && element.className === "cpu-query-category")[0].textContent, "ThreadPool worker idle wait");
+    renderCpuQuery("top-methods", { data: { methods: [{
+        method: "Example.Collections.Cache<System.String>.Get(System.Int32)",
+        module: "Example.Application.dll",
+        exclusiveSamples: 12,
+        inclusiveSamples: 18,
+        exclusivePercent: 66.7,
+    }] } }, false);
+    assert.deepEqual(selectedViews(cpuNavigation), ["top-methods"]);
+    const table = elements(container, element => element.tagName === "table"
+        && element.className.includes("cpu-query-table"))[0];
+    assert.ok(table);
+    const methodCell = elements(table, element => element.tagName === "td"
+        && element.className === "cpu-query-symbol")[0];
+    assert.equal(methodCell.textContent, "Example.Collections.Cache<System.String>.Get(System.Int32)");
+    assert.ok(elements(methodCell, element => element.tagName === "wbr").length >= 5,
+        "long method signatures should wrap at punctuation and identifier boundaries");
+    assert.ok(elements(table, element => element.tagName === "td"
+        && element.className === "cpu-query-number").every(cell => cell.textContent.length > 0));
+    assert.ok(elements(table, element => element.tagName === "td"
+        && element.className === "cpu-query-action")[0].querySelector("button"));
+    renderCpuQuery("by-module", { data: {} }, false, "allocation");
+    assert.deepEqual(selectedViews(allocationNavigation), ["by-module"]);
+    assert.deepEqual(selectedViews(cpuNavigation), ["top-methods"], "CPU and allocation selections stay independent");
 });
 
 function elements(root, predicate) {
@@ -514,6 +591,13 @@ test("exception captures render counts, retained messages and stacks as text wit
     assert.match(container.textContent, /5 event\(s\) omitted/);
     assert.match(container.textContent, /collector-note/);
     assert.match(container.textContent, /Unhandled exception observedNo/);
+    const startedMetric = elements(container, element => element.className === "query-view-metric")
+        .find(element => element.textContent.startsWith("Started"));
+    assert.ok(startedMetric);
+    assert.doesNotMatch(startedMetric.textContent, /2026-10-14T00:00:00Z/);
+    const exactTimestamp = container.querySelector(".query-view-timestamp");
+    assert.equal(exactTimestamp.querySelector("summary").textContent, "Exact start time");
+    assert.equal(exactTimestamp.querySelector("code").textContent, "2026-10-14T00:00:00Z");
     assert.equal(container.querySelector("img"), null);
     assert.equal(container.querySelector("script"), null);
     renderQueryView("exceptionCaptureViews", "exceptions", {

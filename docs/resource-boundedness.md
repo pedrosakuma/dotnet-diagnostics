@@ -77,6 +77,16 @@ capacity range of 1-256 and a separate 4 MiB conservative retained-byte cap, enf
 at insertion. Core and composed queues retain drop-newest overflow behavior.
 The smaller Events default trades more explicitly counted rejections for less
 FIFO residence under slow consumption; it is not a latency guarantee.
+Generated workload counts are not retained-observation counts: a normal stop drains
+accepted observations but cannot replay rejected offers. Low-volume target-side
+EventPipe buffers may also remain unflushed until stop; transport loss of zero does
+not establish live delivery before that boundary. The managed-exception schema
+test therefore retains all 167 uniquely identified workload exceptions across
+small exception-only sessions, each with its own observed exception witness,
+followed by stop/drain and zero local/source loss assertions. A separate blocked-handler
+test verifies one in-flight witness plus 64 pending exceptions and exactly 103
+drop-newest rejections from a 167-exception burst, without demanding exhaustive
+delivery through that deliberate loss.
 Accounted size estimates use four bytes per retained string character plus per-event
 overhead and 128 bytes per payload field; this is an implementation budget, not a measurement of
 managed heap size or RSS. When `event_source` is composed with other live kinds, the shared
