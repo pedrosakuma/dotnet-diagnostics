@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 const {
     describeStreamCompatibilityError,
+    describeStreamExit,
     parseProcessList,
     parseProtocolFrame,
     buildQueryFrame,
@@ -11,6 +12,18 @@ const {
     isDumpHeapCaptureResult,
     isThreadCaptureResult,
 } = require("../out/protocol.js");
+
+test("successful protocol exits report lifecycle and bounded stderr, never an old CLI", () => {
+    const message = describeStreamExit(true, 3, null, "SAFETY warning: CPU sampling exposes method names.");
+    assert.match(message, /successful JSONL protocol handshake \(code 3, signal none\)/);
+    assert.match(message, /SAFETY warning/);
+    assert.doesNotMatch(message, /older CLI|Update\/build/);
+    const long = describeStreamExit(true, null, "SIGTERM", "x".repeat(9000));
+    assert.match(long, /signal SIGTERM/);
+    assert.match(long, /last 2048 characters/);
+    assert.ok(long.length < 2300);
+    assert.match(describeStreamExit(false, 1, null, "Unknown command stream"), /before the JSONL.*older CLI/);
+});
 
 test("process list parser retains valid targets without exposing command lines", () => {
     const processes = parseProcessList(JSON.stringify({

@@ -32,7 +32,10 @@ readline.createInterface({input:process.stdin}).on('line', line => {
     }
     if(frame.type === 'exitTarget') send({type:'terminal',sessionId:'owned-events',status:'targetExited'});
     if(frame.type === 'cancel') send({type:'terminal',sessionId:'owned-events',status:'stopped'});
-    if(frame.type === 'disconnect') process.exit(0);
+    if(frame.type === 'disconnect') {
+        if(mode === 'safety-stderr') process.stderr.write('SAFETY warning: bounded EventPipe capture exposes names.\\n');
+        process.exit(0);
+    }
 }).on('close', () => process.exit(0));
 `;
 
@@ -68,6 +71,22 @@ function fixture(mode) {
         },
     };
 }
+
+test("a successful v2 stream with SAFETY stderr disconnects without an old-CLI diagnosis", { timeout: 10_000 }, async () => {
+    const f = fixture("safety-stderr");
+    try {
+        const session = await f.connect();
+        assert.equal(session.protocolReady, true);
+        f.controller.writeFrame(session, { type: "disconnect" });
+        await session.closed.promise;
+        const errors = f.messages.filter(m => m.state === "error").map(m => m.message).join("\n");
+        assert.match(errors, /CLI exited after a successful JSONL protocol handshake/);
+        assert.match(errors, /SAFETY warning/);
+        assert.doesNotMatch(errors, /older CLI|Update\/build/);
+        assert.ok(f.logs.some(line => line.includes("SAFETY warning")));
+        await f.assertExited();
+    } finally { await f.cleanup(); }
+});
 
 test("Events rejects an old CLI without capability and closes its owned child", { timeout: 10_000 }, async () => {
     const f = fixture("old");

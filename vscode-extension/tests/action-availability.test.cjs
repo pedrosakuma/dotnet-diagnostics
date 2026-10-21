@@ -40,6 +40,10 @@ function dom() {
             appendChild(n) { this.children.push(n); return n; },
             replaceChildren(...nodes) { this.children = nodes; if (this.id === "view") this.value = ""; },
             querySelector(selector) { return this.children.find(n => n.tag === selector) ?? null; },
+            querySelectorAll(selector) {
+                return this.children.filter(n => selector === "[data-profile-retention-note]"
+                    && n.attributes["data-profile-retention-note"] !== undefined);
+            },
             setAttribute(name, value) { this.attributes[name] = String(value); },
             getAttribute(name) { return this.attributes[name]; },
             addEventListener(type, callback) { this.listeners[type] = callback; },
@@ -125,6 +129,21 @@ test("unavailable actions remain focusable but block click and keyboard-generate
     ui.update({ type: "capture", kind: "cpu" });
     ui.get("exportJson").click();
     assert.equal(calls, 1);
+});
+
+test("disconnect updates cached projection provenance and disables raw exports without discarding measurement exports", () => {
+    const ui = profileUi();
+    const note = ui.document.createElement("p");
+    note.setAttribute("data-profile-retention-note","");
+    ui.get("cpuQueryViews").children.push(note);
+    ui.update({type:"capture",kind:"cpu",profiles:ready});
+    assert.match(note.textContent,/explicit query on the retained CLI connection/);
+    ui.update({type:"profileAvailability",profiles:{cpu:false,trace:false,allocation:false}});
+    assert.match(note.textContent,/Cached loaded projection only/);
+    assert.match(note.textContent,/raw trace exports require a new capture/);
+    assert.equal(ui.get("cpuQueryViews").getAttribute("data-profile-retained"),"false");
+    assert.equal(ui.available("exportTrace"),false);
+    assert.equal(ui.available("exportJson"),true);
 });
 test("saved view actions follow loaded selection, reject stale responses and recover after failure", () => {
     const ui = dom(), messages = [];

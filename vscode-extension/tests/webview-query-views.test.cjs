@@ -28,6 +28,7 @@ class ElementStub {
         this.tagName = tagName;
         this.children = [];
         this.attributes = {};
+        this.style = {};
         this.classes = new Set();
         this.classList = {
             add: name => this.classes.add(name),
@@ -216,6 +217,58 @@ test("live panel exposes the compact evidence workspace and keeps other result r
     assert.match(script, /renderCpuQuery\(message\.view, message\.result, false\)/);
 });
 
+test("domain return restores CPU view and filter without a request; new captures discard that selection and cache", () => {
+    const script = extractInlineScript(renderHtml(target, "nonce", 120));
+    const navigation = script.slice(script.indexOf("let selectedWorkspaceEvidence ="),
+        script.indexOf("function selectResultTab(selected)"));
+    const profile = script.slice(script.indexOf("const profileAvailability ="),
+        script.indexOf("const counters = new Map()"));
+    const captureStart = script.indexOf("cpuEvidenceId = typeof message.evidenceId");
+    const capture = script.slice(captureStart, script.indexOf("setWorkspaceEvidence('cpu');", captureStart)
+        + "setWorkspaceEvidence('cpu');".length);
+    const { document, makeContainer } = createDocumentStub();
+    const names = ["workspaceDomain", "workspaceEvidenceKind", "workspaceEvidenceStatus", "workspaceView",
+        "workspaceLoadView", "workspaceGcCapture", "cpuQueryViews", "cpuQueryStatus",
+        "openHeapDetails", "backToHeapTypes", "captureGc", "resultCpu", "cpuSamplingDisclaimer"];
+    const nodes = Object.fromEntries(names.map(id => [id, makeContainer(id)]));
+    const requests = [], renders = [];
+    const api = new Function("document", "vscode", "renders", `
+      const {${names.join(",")}} = Object.fromEntries(${JSON.stringify(names)}.map(id=>[id,document.getElementById(id)]));
+      const workspacePanels = {};
+      const cpuQueryLabels = {'caller-callee':'Callers / callees'};
+      const cpuProfileState = {}, allocationProfileState = {};
+      let cpuProfileResult;
+      const renderCapture = () => {};
+      const renderCpuQuery = (...args) => renders.push(args);
+      ${navigation}
+      ${profile}
+      return {setWorkspaceEvidence,selectProfileView,cacheProfileQuery,loadSelectedProfileView,
+        setAvailable:()=>{profileAvailability.cpu=true},
+        capture:message=>{${capture}}};
+    `)(document, {postMessage:m=>requests.push(m)}, renders);
+    api.capture({evidenceId:"cpu-1",summary:{totalSamples:100}});
+    api.setAvailable();
+    api.cacheProfileQuery("cpu","call-tree","Repeat",{data:{root:"cached exact projection"}});
+    api.selectProfileView("cpu","call-tree","Repeat");
+    api.setWorkspaceEvidence("heap");
+    api.setWorkspaceEvidence("cpu");
+    assert.equal(nodes.workspaceView.value,"call-tree");
+    assert.equal(nodes.workspaceLoadView.hidden,true);
+    assert.equal(renders.at(-1)[1].data.root,"cached exact projection");
+    assert.deepEqual(requests,[]);
+    api.selectProfileView("cpu","top-methods");
+    api.setWorkspaceEvidence("heap"); api.setWorkspaceEvidence("cpu");
+    assert.equal(nodes.workspaceView.value,"top-methods");
+    assert.equal(nodes.workspaceLoadView.hidden,false);
+    assert.deepEqual(requests,[],"even restored unloaded navigation must remain inert");
+    api.loadSelectedProfileView();
+    assert.deepEqual(requests,[{type:"queryCpu",evidenceId:"cpu-1",view:"top-methods"}]);
+    api.capture({evidenceId:"cpu-2",summary:{totalSamples:2}});
+    assert.equal(nodes.workspaceView.value,"triage");
+    api.selectProfileView("cpu","call-tree","Repeat");
+    assert.equal(nodes.workspaceLoadView.hidden,false,"old projection cannot become current under new evidence");
+});
+
 function cpuRenderer() {
     const html = renderHtml(target, "nonce123", 120);
     const script = extractInlineScript(html);
@@ -238,6 +291,7 @@ function cpuRenderer() {
         let allocationEvidenceId;
         const activeProfileViews = { cpu: 'triage', allocation: 'call-tree' };
         const activeProfileFilters = { cpu: undefined, allocation: undefined };
+        const profileResultFilters = { cpu: undefined, allocation: undefined };
         ${source}
         return { renderCpuQuery, state: cpuProfileState };`)(
         document, cpuQueryViews, { postMessage: request => requests.push(request) });
@@ -320,20 +374,19 @@ function cpuNode(method, inclusiveSamples, exclusiveSamples, children = []) {
     return { frame: { method, module: "App" }, inclusiveSamples, exclusiveSamples, children };
 }
 
-test("CPU call tree renders native disclosures and selected-method queries", () => {
+test("CPU call tree renders a semantic table with disclosures and selected-method queries", () => {
     const { renderCpuQuery, container, requests } = cpuRenderer();
     renderCpuQuery("call-tree", { data: { totalSamples: 20,
         root: cpuNode("App.Main()", 20, 2, [cpuNode("App.Work()", 18, 18)]),
     } }, false);
 
-    const tree = container.querySelector("ul");
+    const tree = container.querySelector(".cpu-call-tree");
     assert.ok(tree);
-    assert.equal(tree.attributes.role, undefined, "native disclosures do not pretend to implement an ARIA tree");
-    const rootDetails = tree.querySelector("details");
-    assert.equal(rootDetails.open, true);
-    assert.match(rootDetails.textContent, /App\.Main\(\)/);
-    assert.match(rootDetails.textContent, /inclusive 20 \(100.0% of capture; 100.0% of focus\) \| self 2/);
-    assert.match(rootDetails.textContent, /App\.Work\(\)/);
+    assert.equal(tree.attributes.role, undefined, "semantic table does not pretend to implement an ARIA treegrid");
+    assert.equal(tree.querySelector(".cpu-profile-disclosure").getAttribute("aria-expanded"),"true");
+    assert.match(tree.textContent, /App\.Main\(\)/);
+    assert.match(tree.textContent, /100.0%10.0%/);
+    assert.match(tree.textContent, /App\.Work\(\)/);
     click(container, "Callers / callees");
     assert.deepEqual(requests, [{
         type: "queryCpu",
@@ -414,16 +467,18 @@ test("CPU focus uses exact local paths across modes, preserves capture denominat
     } }, false);
     click(container, "Focus", 3);
     assert.deepEqual(state.focus, [1]);
+    assert.equal(elements(container, e => e.attributes["data-node-path"] === "1.0")[0].hidden, false,
+        "focusing a collapsed branch opens its loaded children");
     assert.match(container.querySelector(".cpu-profile-selection").textContent, /40.0% of capture; 100.0% of focus/);
     click(container, "Flame graph (icicle)");
     assert.match(container.querySelector("svg").textContent, /Second/);
     assert.doesNotMatch(container.querySelector("svg").textContent, /First/);
     click(container, "Call tree");
-    assert.match(container.querySelector("ul").textContent, /Second/);
-    assert.doesNotMatch(container.querySelector("ul").textContent, /First/);
+    assert.match(container.querySelector(".cpu-call-tree").textContent, /Second/);
+    assert.doesNotMatch(container.querySelector(".cpu-call-tree").textContent, /First/);
     click(container.querySelector("nav"), "Root");
     assert.deepEqual(state.focus, []);
-    assert.match(container.querySelector("ul").textContent, /First/);
+    assert.match(container.querySelector(".cpu-call-tree").textContent, /First/);
     assert.deepEqual(requests, [], "all local focus and mode changes must avoid backend requests");
 });
 
@@ -437,7 +492,7 @@ test("CPU search highlights without filtering counts, expands matches, and persi
     input.listeners.input();
     assert.match(container.textContent, /1 matching loaded node/);
     assert.match(container.querySelector(".cpu-profile-match").textContent, /B.Wait/);
-    assert.match(container.querySelector("ul").textContent, /A.Work/);
+    assert.match(container.querySelector(".cpu-call-tree").textContent, /A.Work/);
     click(container, "Flame graph (icicle)");
     const matched = elements(container, element => element.attributes.class === "cpu-flame-match");
     assert.equal(matched.length, 1);
@@ -524,6 +579,43 @@ test("disconnected CPU projections keep local exploration while redrawn query co
     click(container, "Reset focus");
     click(container, "Query subtree by method");
     assert.equal(requests.length, 1, "reconnection restores newly rendered query controls");
+});
+
+test("CPU tree-table aligns fixed capture shares and expands only the known loaded hotpath without losing manual paths", () => {
+    const { renderCpuQuery, container, state, requests } = cpuRenderer();
+    const result = {summary:"Partial tree. The handle retains the full tree.",data:{totalSamples:100,truncated:true,
+        root:cpuNode("Root",100,0,[
+            cpuNode("Repeat",60,10,[cpuNode("Loaded",30,30)]),
+            cpuNode("Repeat",40,0,[cpuNode("Other",40,40)]),
+        ])}};
+    renderCpuQuery("call-tree",result,false);
+    const table = container.querySelector(".cpu-call-tree");
+    assert.deepEqual(elements(table,e=>e.tagName==="th").map(e=>e.textContent),["Method / call path","Total %","Self %"]);
+    const rows = elements(table,e=>e.attributes["data-node-path"]!==undefined);
+    const metrics = row=>row.children.slice(1).map(e=>e.textContent);
+    assert.deepEqual(metrics(rows[1]),["60.0%","10.0%"]);
+    assert.deepEqual(metrics(rows[3]),["40.0%","0.0%"]);
+    assert.equal(rows[2].hidden,true);
+    const toggle = rows[3].querySelector(".cpu-profile-disclosure");
+    toggle.listeners.click();
+    assert.equal(rows[4].hidden,false);
+    assert.deepEqual(state.expanded,["","1"]);
+    click(container,"Expand hotpath");
+    const expandedRows = elements(container,e=>e.attributes["data-node-path"]!==undefined);
+    assert.equal(expandedRows[2].hidden,false);
+    assert.equal(expandedRows[4].hidden,false,"off-path manual expansion survives");
+    assert.deepEqual(state.focus,[]);
+    assert.deepEqual(state.selected,[]);
+    assert.deepEqual(requests,[]);
+    assert.match(container.textContent,/not a global diagnosis/);
+    assert.doesNotMatch(container.textContent,/handle retains the full tree/);
+    assert.match(container.textContent,/100 captured stack samples/);
+    renderCpuQuery("call-tree",result,false);
+    assert.ok(state.expanded.includes("1"),"cached redraw retains path-keyed expansion");
+    renderCpuQuery("call-tree",{data:{totalSamples:100,truncated:true,
+        root:cpuNode("Root",100,0,[cpuNode("Known minority",20,20)])}},false);
+    click(container,"Expand hotpath");
+    assert.deepEqual(state.expanded,[""],"a dominating omitted branch cannot be manufactured or expanded");
 });
 
 test("CPU profile enforces client node/depth bounds and reports omissions", () => {

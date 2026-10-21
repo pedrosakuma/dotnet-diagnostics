@@ -15,6 +15,12 @@ document.addEventListener("click", event => {
 }, true);
 `;
 
+export function profileRetentionText(retained: boolean): string {
+    return retained
+        ? "Cached loaded projection. Additional evidence requires an explicit query on the retained CLI connection."
+        : "Cached loaded projection only. The retained CLI profile is unavailable; additional queries and raw trace exports require a new capture.";
+}
+
 function installProfileActions(): (message: {
     type?: string; kind?: string; state?: string;
     profiles?: { cpu: boolean; trace: boolean; allocation: boolean };
@@ -58,6 +64,9 @@ function installProfileActions(): (message: {
             const container = document.getElementById(id);
             container?.setAttribute("data-profile-query-available", String(available));
             container?.setAttribute("data-profile-query-reason", reason);
+            container?.setAttribute("data-profile-retained", String(id === "cpuQueryViews" ? profiles.cpu : profiles.allocation));
+            for (const note of Array.from(container?.querySelectorAll<HTMLElement>("[data-profile-retention-note]") ?? []))
+                note.textContent = profileRetentionText(id === "cpuQueryViews" ? profiles.cpu : profiles.allocation);
         }
         const explorer = document.getElementById("allocationExplorer");
         if (explorer) {
@@ -75,5 +84,5 @@ function installProfileActions(): (message: {
     };
 }
 
-export const PROFILE_ACTIONS_SCRIPT = installProfileActions.toString();
+export const PROFILE_ACTIONS_SCRIPT = `${profileRetentionText.toString()}\n${installProfileActions.toString()}`;
 export const ACTION_AVAILABILITY_STYLES = `button[aria-disabled="true"], [aria-disabled="true"] button { color:var(--vscode-disabledForeground); cursor:default; }`;

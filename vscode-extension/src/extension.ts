@@ -38,6 +38,7 @@ import {
 } from "./captureKinds";
 import {
     describeStreamCompatibilityError,
+    describeStreamExit,
     isGcCollection,
     isCpuSampleSummary,
     isExceptionCaptureResult,
@@ -152,6 +153,7 @@ interface StreamChild {
     process: ChildProcessWithoutNullStreams;
     lines: ReadlineInterface | BoundedProtocolLineReader;
     handshake: Deferred<void>;
+    protocolReady: boolean;
     started: Deferred<void>;
     terminal: Deferred<void>;
     closed: Deferred<void>;
@@ -1643,6 +1645,7 @@ class CounterPanelController implements vscode.Disposable {
                 ? new BoundedProtocolLineReader(child.stdout, LIVE_EVENT_CONTROL_LINE_MAX_BYTES)
                 : createInterface({ input: child.stdout }),
             handshake: deferred<void>(),
+            protocolReady: false,
             started: deferred<void>(),
             terminal: deferred<void>(),
             closed: deferred<void>(),
@@ -1685,9 +1688,7 @@ class CounterPanelController implements vscode.Disposable {
             session.lines.close();
             if (!session.terminalReceived && !session.expectedShutdown) {
                 const details = session.stderrTail.trim();
-                const reason = details
-                    ? describeStreamCompatibilityError(details)
-                    : `CLI exited (code ${code ?? "unknown"}, signal ${signal ?? "none"}).`;
+                const reason = describeStreamExit(session.protocolReady, code, signal, details);
                 this.failPending(session, new Error(reason));
                 if (!session.startupErrorReported && session.eventsConnection) {
                     this.postEventsMessage({
@@ -1752,7 +1753,10 @@ class CounterPanelController implements vscode.Disposable {
         try {
             frame = parseProtocolFrame(line);
         } catch (error) {
-            const compatibilityError = describeStreamCompatibilityError(line);
+            const compatibilityError = session.protocolReady
+                ? "The CLI emitted invalid JSONL on an established protocol connection. Check the .NET Diagnostics output for details."
+                : describeStreamCompatibilityError(line);
+            if (session.protocolReady) this.output.appendLine(`Invalid CLI protocol frame (last 2048 characters): ${line.slice(-2048)}`);
             this.failPending(session, new Error(compatibilityError));
             session.startupErrorReported = true;
             if (session.eventsConnection) {
@@ -1793,6 +1797,7 @@ class CounterPanelController implements vscode.Disposable {
                     }
                     session.supportedLiveKinds = frame.supportedLiveKinds.filter((kind): kind is string => typeof kind === "string");
                 }
+                session.protocolReady = true;
                 session.handshake.resolve();
                 break;
 
@@ -3483,9 +3488,15 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           option.textContent = label;
           workspaceView.appendChild(option);
         }
-        const view = kind === 'cpu' ? 'triage' : 'call-tree';
+        const view = activeProfileViews[kind];
+        if (!profileViewLabels[view]) {
+          const option = document.createElement('option');
+          option.value = view;
+          option.textContent = cpuQueryLabels[view] || view;
+          workspaceView.appendChild(option);
+        }
         workspaceView.value = view;
-        selectProfileView(kind, view);
+        selectProfileView(kind, view, activeProfileFilters[kind]);
       } else {
         const option = document.createElement('option');
         option.value = kind === 'heap' ? 'snapshot' : 'capture-result';
@@ -3823,7 +3834,13 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         const back = document.createElement('button');
         back.type = 'button';
         back.textContent = allocation ? 'Back to allocation profile' : 'Back to CPU profile';
-        back.addEventListener('click', () => renderCpuQuery('call-tree', profileResult, false, kind));
+        back.addEventListener('click', () => {
+          activeProfileViews[kind] = 'call-tree';
+          activeProfileFilters[kind] = profileResultFilters[kind];
+          const selector = document.getElementById('workspaceView');
+          if (selector) selector.value = 'call-tree';
+          renderCpuQuery('call-tree', profileResult, false, kind);
+        });
         section.appendChild(back);
       }
       if (isError) {
@@ -3837,7 +3854,9 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       if (typeof result.summary === 'string') {
         const summary = document.createElement('p');
         summary.className = 'query-view-provenance';
-        summary.textContent = result.summary;
+        summary.textContent = view === 'call-tree'
+          ? result.summary.replace('The handle retains the full tree.', 'Only loaded nodes are displayed here.')
+          : result.summary;
         section.appendChild(summary);
       }
       function table(title, rows, columns, action) {
@@ -3965,9 +3984,11 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         if (profileResult !== result) {
           profileState.focus = [];
           profileState.selected = [];
+          profileState.expanded = undefined;
         }
         if (allocation) allocationProfileResult = result;
         else cpuProfileResult = result;
+        profileResultFilters[kind] = activeProfileFilters[kind];
         renderCpuProfile(section, data, (queryView, method) => {
           activeProfileViews[kind] = queryView;
           activeProfileFilters[kind] = method;
@@ -3990,6 +4011,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     const profileCaptureBusy = { cpu: false, allocation: false };
     const activeProfileViews = { cpu: 'triage', allocation: 'call-tree' };
     const activeProfileFilters = { cpu: undefined, allocation: undefined };
+    const profileResultFilters = { cpu: undefined, allocation: undefined };
     function profileCache(kind) { return kind === 'allocation' ? allocationViewCache : cpuViewCache; }
     function profileEvidenceId(kind) { return kind === 'allocation' ? allocationEvidenceId : cpuEvidenceId; }
     function profileViewTarget(kind) {
@@ -4035,9 +4057,10 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       const evidenceId = profileEvidenceId(kind);
       if (!evidenceId || !profileAvailability[kind] || profileQueryBusy[kind] || profileCaptureBusy[kind]) return;
       const view = workspaceView.value;
+      const rootMethodFilter = activeProfileFilters[kind];
       const cache = profileCache(kind);
-      if (cache.has(profileQueryKey(view))) {
-        selectProfileView(kind, view);
+      if (cache.has(profileQueryKey(view, rootMethodFilter))) {
+        selectProfileView(kind, view, rootMethodFilter);
         return;
       }
       workspaceLoadView.disabled = true;
@@ -4048,6 +4071,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         type: kind === 'allocation' ? 'queryAllocation' : 'queryCpu',
         evidenceId,
         view,
+        ...(rootMethodFilter === undefined ? {} : { rootMethodFilter }),
       });
     }
     setWorkspaceEvidence('cpu');
@@ -4485,6 +4509,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         allocationProfileState.focus = [];
         allocationProfileState.selected = [];
         allocationProfileState.search = '';
+        allocationProfileState.expanded = undefined;
         document.getElementById('allocationQueryViews').replaceChildren();
         renderCaptureView('allocationCaptureViews', message.result);
         setWorkspaceEvidence('allocation');
@@ -4606,6 +4631,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         cpuProfileState.focus = [];
         cpuProfileState.selected = [];
         cpuProfileState.search = '';
+        cpuProfileState.expanded = undefined;
         cpuQueryViews.replaceChildren();
         cpuQueryStatus.textContent = '';
         renderCapture(message.summary);
