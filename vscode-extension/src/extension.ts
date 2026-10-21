@@ -3208,6 +3208,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         <option value="cpu">CPU</option>
         <option value="memory">Memory &amp; GC</option>
         <option value="threads">Threads &amp; waits</option>
+        <option value="requests">Requests &amp; networking</option>
       </select>
       <label for="workspaceEvidenceKind">Evidence</label>
       <select id="workspaceEvidenceKind" aria-label="Select current evidence kind"></select>
@@ -3462,7 +3463,9 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       networking: 'Networking',
     };
     const isThreadCapture = kind => ['off_cpu', 'contention', 'threadpool'].includes(kind);
-    const usesWorkspaceForGenericCapture = kind => kind === 'gc' || kind === 'gc-activities' || isThreadCapture(kind);
+    const isRequestCapture = kind => ['requests', 'kestrel', 'db', 'networking'].includes(kind);
+    const usesWorkspaceForGenericCapture = kind => kind === 'gc' || kind === 'gc-activities'
+      || isThreadCapture(kind) || isRequestCapture(kind);
     let genericCaptureKind;
     let threadSnapshotEvidenceId;
     let threadSnapshotQueryAvailable = false;
@@ -3500,15 +3503,19 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     function setWorkspaceEvidence(kind) {
       selectedWorkspaceEvidence = kind;
       workspaceDomain.value = kind === 'cpu' ? 'cpu'
-        : ['heap', 'allocation', 'gc', 'gc-activities'].includes(kind) ? 'memory' : 'threads';
+        : ['heap', 'allocation', 'gc', 'gc-activities'].includes(kind) ? 'memory'
+          : isThreadCapture(kind) || kind === 'thread-snapshot' ? 'threads' : 'requests';
       workspaceEvidenceKind.replaceChildren();
       const choices = kind === 'cpu'
         ? [['cpu', 'CPU sample']]
         : workspaceDomain.value === 'memory'
           ? [['heap', 'Heap snapshot'], ['allocation', 'Allocation profile'],
             ['gc', 'Garbage collections'], ['gc-activities', 'GC activities']]
-          : [['thread-snapshot', 'Thread snapshot'], ['off_cpu', 'Off-CPU blocking'],
-            ['contention', 'Lock contention'], ['threadpool', 'Thread-pool capture']];
+          : workspaceDomain.value === 'threads'
+            ? [['thread-snapshot', 'Thread snapshot'], ['off_cpu', 'Off-CPU blocking'],
+              ['contention', 'Lock contention'], ['threadpool', 'Thread-pool capture']]
+            : [['requests', 'In-flight requests'], ['kestrel', 'Kestrel'],
+              ['db', 'Database'], ['networking', 'Networking']];
       for (const [value, label] of choices) {
         const option = document.createElement('option');
         option.value = value;
@@ -3616,7 +3623,9 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       }
     }
     workspaceDomain.addEventListener('change', () => setWorkspaceEvidence(
-      workspaceDomain.value === 'cpu' ? 'cpu' : workspaceDomain.value === 'memory' ? 'heap' : 'thread-snapshot'));
+      workspaceDomain.value === 'cpu' ? 'cpu'
+        : workspaceDomain.value === 'memory' ? 'heap'
+          : workspaceDomain.value === 'threads' ? 'thread-snapshot' : 'requests'));
     workspaceEvidenceKind.addEventListener('change', () => setWorkspaceEvidence(workspaceEvidenceKind.value));
     workspaceView.addEventListener('change', () => {
       if (selectedWorkspaceEvidence === 'cpu' || selectedWorkspaceEvidence === 'allocation') {
@@ -3893,7 +3902,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     renderEvents();
     function activateCaptureTab(name) {
       if (name === 'cpu' || name === 'allocation' || name === 'heap' || name === 'gc' || name === 'gc-activities'
-        || name === 'thread-snapshot' || isThreadCapture(name)) {
+        || name === 'thread-snapshot' || isThreadCapture(name) || isRequestCapture(name)) {
         selectResultTab('Workspace');
         setWorkspaceEvidence(name);
       } else selectResultTab(name);
@@ -3915,7 +3924,8 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       if (usesWorkspaceForGenericCapture(kind)) workspaceCanvas.appendChild(genericCaptureViews);
       else document.getElementById('resultDiagnostics').appendChild(genericCaptureViews);
       captureDiagnosticsStatus.textContent = usesWorkspaceForGenericCapture(kind)
-        ? 'Current result is in Workspace → ' + (isThreadCapture(kind) ? 'Threads & waits' : 'Memory & GC') + '.'
+        ? 'Current result is in Workspace → ' + (isThreadCapture(kind) ? 'Threads & waits'
+          : isRequestCapture(kind) ? 'Requests & networking' : 'Memory & GC') + '.'
         : 'Current result is in Diagnostics.';
     }
     const cpuQueryLabels = {
@@ -4679,7 +4689,8 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         if (typeof message.evidenceId === 'string') diagnosticsRequestId = message.evidenceId;
         const gcCapture = message.captureKind === 'gc' || message.captureKind === 'gc-activities';
         const threadCapture = isThreadCapture(message.captureKind);
-        activateCaptureTab(gcCapture || threadCapture ? message.captureKind : 'diagnostics');
+        const requestCapture = isRequestCapture(message.captureKind);
+        activateCaptureTab(gcCapture || threadCapture || requestCapture ? message.captureKind : 'diagnostics');
         captureDiagnosticsStatus.textContent = message.message || message.state || '';
         captureDiagnosticsButton.disabled = message.state === 'running' || message.state === 'starting';
         if (gcCapture) {
@@ -4687,6 +4698,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           document.getElementById('captureGc').disabled = message.state === 'running' || message.state === 'starting';
         }
         if (threadCapture) workspaceCaptureStatus.textContent = message.message || message.state || '';
+        if (requestCapture) workspaceCaptureStatus.textContent = message.message || message.state || '';
       } else if (message.type === 'capture' && message.kind === 'diagnostics') {
         if (message.evidenceId !== diagnosticsRequestId) return;
         const captureKind = String(message.captureKind || '');

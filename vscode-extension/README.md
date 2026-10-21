@@ -45,10 +45,13 @@ contains live counters/GC pauses and the independent Live Events stream. Expand 
 to browse; only selecting an action enters its existing capture/consent flow.
 **Capture Diagnostics** remains the searchable expert catalog for its ten capture kinds.
 The live panel's **Workspace** uses compact **Domain → Evidence → View** selectors for CPU,
-Memory & GC, and Threads & waits. Thread snapshots and off-CPU/contention/thread-pool captures
-share that domain's presentation without sharing evidence ownership: the snapshot handle is
-independent from the single replaceable generic-capture result. Requests, Exceptions, Monitoring,
-dump analysis, and saved evidence keep their existing result surfaces.
+Memory & GC, Threads & waits, and Requests & networking. Thread snapshots and off-CPU/contention/
+thread-pool captures share their domain's presentation without sharing evidence ownership: the
+snapshot handle is independent from the single replaceable generic-capture result. Requests,
+Kestrel, database, and networking captures share the Requests & networking workspace and the
+existing single replaceable generic-capture result; its **Capture result** view is descriptive,
+not a retained-handle query. Exceptions, Monitoring, dump analysis, and saved evidence keep their
+existing result surfaces.
 **Analyze Dump File** and **Saved Captures** remain separate offline entry points.
 
 For a guided introduction, run **.NET Diagnostics: Open Getting Started** from the Command Palette.
