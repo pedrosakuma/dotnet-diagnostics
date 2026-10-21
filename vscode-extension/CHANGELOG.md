@@ -5,6 +5,10 @@ versioned independently from the CLI and the .NET packages.
 
 ## Unreleased
 
+- Add Threads & waits to the compact live Workspace for point-in-time thread snapshots and
+  off-CPU, contention, and thread-pool captures. Snapshot views remain distinct from generic
+  event captures; generic results keep their single replacement slot and truthful cross-kind status.
+  Thread snapshot capture, preload, and explicit statics-query responses are bound to evidence IDs.
 - Gate CPU exports, retained-profile exploration and saved-view export/comparison on available
   evidence. Failed or rejected captures preserve prior results; redacted CPU measurements remain
   exportable after disconnection. Explain unavailable actions without removing keyboard focus.

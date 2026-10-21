@@ -68,14 +68,21 @@ for (const [name, html] of [
         const match = /threadStaticsButton\.addEventListener\('click', \(\) => \{[\s\S]*?\n    \}\);/.exec(script);
         assert.ok(match, "expected the thread-statics click handler");
 
-        function run(inputValue) {
+        function run(inputValue, evidenceId = "thread-evidence-1", queryAvailable = true) {
             const posted = [];
             const input = { value: inputValue };
             const error = { textContent: "" };
             let handler;
             const button = { disabled: false, textContent: "Query thread statics", addEventListener(_event, fn) { handler = fn; } };
-            new Function("threadStaticsButton", "threadStaticsInput", "threadStaticsError", "vscode", busyFn[0] + match[0])(
-                button, input, error, { postMessage: message => posted.push(message) });
+            const correlated = name === "live";
+            const parameters = correlated
+                ? ["threadStaticsButton", "threadStaticsInput", "threadStaticsError", "threadSnapshotEvidenceId",
+                    "threadSnapshotQueryAvailable", "vscode"]
+                : ["threadStaticsButton", "threadStaticsInput", "threadStaticsError", "vscode"];
+            const values = correlated
+                ? [button, input, error, evidenceId, queryAvailable, { postMessage: message => posted.push(message) }]
+                : [button, input, error, { postMessage: message => posted.push(message) }];
+            new Function(...parameters, busyFn[0] + match[0])(...values);
             handler();
             const first = { disabled: button.disabled, text: button.textContent };
             handler();
@@ -87,10 +94,18 @@ for (const [name, html] of [
         assert.match(empty.error, /exact type name/);
 
         const ok = run("  MyApp.Cache ");
-        assert.deepEqual(ok.posted, [{ type: "queryThreadStatics", typeFilter: "MyApp.Cache" }]);
+        assert.deepEqual(ok.posted, name === "live"
+            ? [{ type: "queryThreadStatics", evidenceId: "thread-evidence-1", typeFilter: "MyApp.Cache" }]
+            : [{ type: "queryThreadStatics", typeFilter: "MyApp.Cache" }]);
         assert.equal(ok.error, "");
         assert.deepEqual(ok.first, { disabled: true, text: "Querying…" }, "button must disable on submit; duplicate click posts nothing");
         assert.equal(empty.first.disabled, false);
+
+        if (name === "live") {
+            const noHandle = run("MyApp.Cache", "thread-evidence-2", false);
+            assert.deepEqual(noHandle.posted, []);
+            assert.match(noHandle.error, /retained query handle/);
+        }
     });
 }
 
@@ -115,8 +130,10 @@ test("live and dump controllers guard thread-statics and report busy state", () 
     const source = fs.readFileSync(path.join(__dirname, "..", "src", "extension.ts"), "utf8");
     assert.equal((source.match(/new SingleFlightGuard\(\)/g) || []).length, 3);
     assert.equal((source.match(/this\.threadStaticsGuard\.run\(/g) || []).length, 2);
-    assert.equal((source.match(/type: "threadStaticsState", state: "running"/g) || []).length, 2);
-    assert.equal((source.match(/type: "threadStaticsState", state: "idle"/g) || []).length, 2);
+    assert.equal((source.match(/type: "threadStaticsState", evidenceId, state: "running"/g) || []).length, 1);
+    assert.equal((source.match(/type: "threadStaticsState", evidenceId, state: "idle"/g) || []).length, 1);
+    assert.equal((source.match(/type: "threadStaticsState", state: "running"/g) || []).length, 1);
+    assert.equal((source.match(/type: "threadStaticsState", state: "idle"/g) || []).length, 1);
     assert.equal((source.match(/message\.type === 'threadStaticsState'/g) || []).length, 2);
 });
 
