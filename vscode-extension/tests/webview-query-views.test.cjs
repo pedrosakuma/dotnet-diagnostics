@@ -581,6 +581,18 @@ test("disconnected CPU projections keep local exploration while redrawn query co
     assert.equal(requests.length, 1, "reconnection restores newly rendered query controls");
 });
 
+test("selecting a cached tree after disconnect derives retention copy from its attached owner", () => {
+    const {renderCpuQuery,container,requests}=cpuRenderer();
+    container.setAttribute("data-profile-retained","false");
+    container.setAttribute("data-profile-query-available","false");
+    renderCpuQuery("call-tree",{summary:"The handle retains the full tree.",
+        data:{totalSamples:10,root:cpuNode("Root",10,10)}},false);
+    assert.match(container.textContent,/Cached loaded projection only/);
+    assert.doesNotMatch(container.textContent,/handle retains the full tree/);
+    click(container,"Query subtree by method");
+    assert.deepEqual(requests,[]);
+});
+
 test("CPU tree-table aligns fixed capture shares and expands only the known loaded hotpath without losing manual paths", () => {
     const { renderCpuQuery, container, state, requests } = cpuRenderer();
     const result = {summary:"Partial tree. The handle retains the full tree.",data:{totalSamples:100,truncated:true,

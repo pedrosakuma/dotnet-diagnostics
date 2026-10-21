@@ -3989,6 +3989,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         if (allocation) allocationProfileResult = result;
         else cpuProfileResult = result;
         profileResultFilters[kind] = activeProfileFilters[kind];
+        target.replaceChildren(section);
         renderCpuProfile(section, data, (queryView, method) => {
           activeProfileViews[kind] = queryView;
           activeProfileFilters[kind] = method;
