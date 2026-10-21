@@ -170,10 +170,18 @@ searchable ten-kind picker uses matching domain headings. Allocations there and 
 Memory & GC use the same capture and Allocations result, not separate products.
 GC/activity overlap remains overlap evidence, not a causal latency diagnosis.
 
-The eight result tabs and existing Command Palette/process-context shortcuts are unchanged.
-Groups organize collection entry points, not result views or permissions: query/export/compare
-actions still require their actual evidence prerequisites. Retention paths, thread wait chains,
-heap object inspection and other drilldowns remain beside their evidence, not separate collectors.
+The live panel keeps **Live**, **Workspace**, **Exceptions**, **Diagnostics**, and **Events** as
+its result tabs; the Workspace domain selector now includes **CPU**, **Memory & GC**, and
+**Threads & waits**. Its compact **Domain → Evidence → View** controls navigate one content panel.
+Thread snapshots and off-CPU, contention, and thread-pool captures appear under Threads & waits;
+the point-in-time snapshot and the generic event capture remain separate evidence kinds.
+Those three generic kinds share the same single replaceable result slot used by GC and the other
+generic captures. A successful capture replaces that slot across domains, and the previous domain
+reports that its evidence is no longer current. A failed attempt does not replace the slot.
+Requests & networking, Exceptions, Monitoring, and offline dump/saved panels retain their existing
+result surfaces. Groups organize collection entry points, not permissions: actions still require
+their actual evidence prerequisites. Retention paths, thread wait chains, heap object inspection
+and other drilldowns remain beside their evidence, not separate collectors.
 **Analyze Dump File** remains a standalone action for an existing file with no selected process
 required. **Saved Captures** remains a sibling view; **Capture and Save Snapshot** stays on the
 process context menu and explicitly collects a new heap/GC dump/thread snapshot. Grouping does not
@@ -196,7 +204,7 @@ must be recovered with the CLI first. CPU/exception persistence is not exposed b
 History calls inherit the CLI artifact root (including `MCP_ARTIFACT_ROOT`), have a 60-second
 deadline and a combined 8388608-character output cap; failures are explicit, not partial JSON.
 
-Open the **CPU** tab and choose **Capture CPU sample** (also available as the tree-view action or
+Open **Workspace**, choose **CPU** under **Domain**, and select **Capture CPU sample** (also available as the tree-view action or
 Command Palette command `dotnetDiagnostics.captureCpu`) to take a single point-in-time CPU sample
 of the selected process.
 Unlike the counters/GC timeline, a capture is a one-shot snapshot: it reuses the panel's active
@@ -205,9 +213,9 @@ The connection is retained while the panel owns a CPU export or allocation-explo
 The capture renders its own top-hotspot table (module, method, inclusive/exclusive sample
 counts) that is replaced by the next capture rather than appended to a history. A capture does not
 start or stop the live counters/GC session, and it is not compared against any baseline.
-The live panel groups both actions and results into **Live**, **CPU**, **Allocations**, **Exceptions**, **Diagnostics**,
-**Heap** and **Threads** tabs, so capture controls stay beside the evidence they produce; starting
-or completing a capture selects its corresponding tab. CPU
+The live panel keeps CPU, allocation and heap evidence within the **Workspace** domain/evidence
+selectors; other existing tabs remain available for their current result surfaces. Starting or
+completing an explicit capture selects its corresponding domain or result tab. CPU
 captures automatically show a triage overview and can be queried on the captured artifact for a
 call tree, top methods, hot path, module/namespace aggregates, and callers/callees of a selected
 method. These are in-memory views of the same sample, not additional captures; the owning CLI

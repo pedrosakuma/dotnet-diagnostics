@@ -162,6 +162,8 @@ export const EVIDENCE_NAVIGATION_STYLES = `
     th > button.evidence-sort:hover { background:transparent; color:var(--vscode-textLink-foreground); }
     th > button.evidence-sort:focus-visible { outline:1px solid var(--vscode-focusBorder); outline-offset:3px; }
     .evidence-controls { display:flex; flex-wrap:wrap; gap:.6rem; margin:.5rem 0; align-items:center; }
+    .evidence-controls label { display:flex; flex-wrap:wrap; gap:.35rem; min-width:0; max-width:100%; }
+    .evidence-controls input { box-sizing:border-box; min-width:0; max-width:100%; }
     .evidence-controls span { color:var(--vscode-descriptionForeground); font-size:.85rem; }
     .evidence-selection { border-left:3px solid var(--vscode-focusBorder); padding:.5rem; overflow-wrap:anywhere; max-height:45vh; overflow:auto; }
     button.heap-type-link {

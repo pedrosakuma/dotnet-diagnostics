@@ -88,6 +88,21 @@ test("exports reject stale webview evidence identities", async () => {
     assert.equal(JSON.parse(docs[1].content).measurements[0].value, 99);
     assert.match(errors[0], /replaced before export/);
 });
+test("a displayed thread snapshot cannot export a later generic networking capture", async () => {
+    const exporter = new e.ResultExporter(), docs = [], errors = [];
+    vscode.window.showTextDocument = async document => docs.push(document);
+    vscode.window.showErrorMessage = async message => errors.push(message);
+    exporter.observe({ type: "capture", kind: "thread-snapshot", evidenceId: A, result: { totalThreads: 4 } });
+    exporter.observe({
+        type: "capture", kind: "diagnostics", captureKind: "networking", evidenceId: B,
+        result: { totalEvents: 9 },
+    });
+
+    await exporter.handle({ type: "exportResult", evidenceId: A, format: "json" });
+
+    assert.equal(docs.length, 0);
+    assert.match(errors[0], /replaced before export/);
+});
 test("scoped exports preserve evidence through rejected, running and failed attempts until replaced", async () => {
     const exporter = new e.ResultExporter(), docs = [], errors = [];
     vscode.window.showTextDocument = async document => docs.push(document);

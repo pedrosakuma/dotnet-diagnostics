@@ -41,10 +41,14 @@ function renderCaptureView(containerId: string, result: unknown): void {
             body.appendChild(row);
         }
         node.appendChild(body);
-        parent.appendChild(node);
+        const wrapper = el("div");
+        wrapper.className = "query-view-table-wrap";
+        wrapper.appendChild(node);
+        parent.appendChild(wrapper);
     };
     table("Metrics", ["Metric", "Value", "Note"], view.metrics.map(m => [m.label, m.value, m.note ?? ""]));
     const label = el("label", "Evidence table ");
+    label.className = "diagnostic-evidence-table-label";
     const selector = document.createElement("select");
     selector.setAttribute("aria-label", "Diagnostic evidence table");
     label.appendChild(selector);
@@ -77,6 +81,7 @@ function renderCaptureView(containerId: string, result: unknown): void {
     for (const l of e.limitations)
         container.appendChild(el("p", `${l.category} (${l.scope}${l.affectedCount != null ? `, ${l.affectedCount}` : ""}): ${l.detail}`));
     const notes = el("ul");
+    notes.className = "diagnostic-capture-notes";
     for (const note of view.notes) notes.appendChild(el("li", note));
     container.appendChild(notes);
     enhanceEvidenceTables(container);

@@ -32,6 +32,7 @@ class ElementStub {
         this.classes = new Set();
         this.classList = {
             add: name => this.classes.add(name),
+            remove: name => this.classes.delete(name),
             toggle: (name, enabled) => enabled ? this.classes.add(name) : this.classes.delete(name),
             contains: name => this.classes.has(name),
         };
@@ -74,11 +75,13 @@ class ElementStub {
     }
 
     appendChild(child) {
+        child._parent = this;
         this.children.push(child);
         return child;
     }
 
     replaceChildren(...children) {
+        for (const child of this.children) child._parent = null;
         this.children = [];
         this._textContent = "";
         this.append(...children);
@@ -184,17 +187,23 @@ test("live and dump webviews include the specialized renderer and styles", () =>
 test("live panel exposes the compact evidence workspace and keeps other result routes", () => {
     const html = renderHtml(target, "nonce123", 120);
     const script = extractInlineScript(html);
+    const dumpHtml = renderDumpAnalysisHtml("sample.dmp", "nonce123");
     for (const [label, id] of [
         ["Live", "Live"], ["Workspace", "Workspace"], ["Exceptions", "Exceptions"],
-        ["Diagnostics", "Diagnostics"], ["Threads", "Threads"],
+        ["Diagnostics", "Diagnostics"], ["Events", "Events"],
     ]) {
         assert.match(html, new RegExp(`role="tab"[^>]*>${label}<`));
         assert.match(html, new RegExp(`role="tabpanel" aria-labelledby="resultTab${id}"`));
     }
-    assert.match(html, /<select id="workspaceDomain">[\s\S]*?Memory &amp; GC/);
+    assert.doesNotMatch(html, /id="resultTabThreads"/);
+    assert.match(html, /<select id="workspaceDomain">[\s\S]*?Memory &amp; GC[\s\S]*?Threads &amp; waits/);
     assert.match(html, /id="workspaceEvidenceKind"/);
     assert.match(html, /id="workspaceView"/);
     assert.match(html, /id="workspaceCanvas"/);
+    assert.match(html, /<section id="resultThreads" hidden>/);
+    assert.match(html, /#resultThreads\.workspace-thread-snapshot \.evidence-view-switcher/);
+    assert.match(script, /workspacePanels\['thread-snapshot'\]\.classList\.add\('workspace-thread-snapshot'\)/);
+    assert.doesNotMatch(dumpHtml, /workspace-thread-snapshot/);
     assert.match(html, /id="captureGc" type="button">Capture GC evidence…/);
     assert.match(html, /id="cpuSamplingDisclaimer"/);
     assert.match(html, /<section id="resultCpu"[^>]*data-export-kind="cpu"[\s\S]*?<button id="captureCpu" type="button">/);
@@ -204,13 +213,22 @@ test("live panel exposes the compact evidence workspace and keeps other result r
     assert.match(script, /function selectProfileView\(kind, view, rootMethodFilter\)/);
     assert.match(script, /Selecting it did not query or read the target/);
     assert.match(script, /function loadSelectedProfileView\(\)/);
-    assert.match(script, /workspaceGcStatus\.textContent = 'Replaced: shared Diagnostics slot now contains '/);
+    assert.match(script, /function selectThreadSnapshotView\(view\)/);
+    assert.match(script, /setWorkspaceStatus\(genericCaptureKind, 'Not current: the shared generic capture result was replaced by '/);
+    assert.match(script, /message\.evidenceId !== threadSnapshotEvidenceId/);
+    assert.match(script, /message\.retainedEvidenceInvalidated === true/);
+    assert.doesNotMatch(script, /workspaceGcResults/);
     assert.match(script, /evidenceId,\s*view,/);
     assert.doesNotMatch(script, /vscode\.postMessage\(\{ type: 'queryCpu', view \}\)/);
     assert.match(script, /evidenceId: allocation \? allocationEvidenceId : cpuEvidenceId/);
     assert.match(html, /\.cpu-query-table \.cpu-query-number \{ width:6\.5rem; \}/);
     assert.match(html, /\.cpu-query-table \.cpu-query-action \{ width:9rem; \}/);
     assert.match(html, /\.query-view-table\.cpu-query-table \{ min-width:48rem; table-layout:fixed; \}/);
+    assert.match(html, /\.diagnostic-capture-notes li \{ overflow-wrap:anywhere; \}/);
+    assert.match(html, /@media \(max-width:480px\) \{\s*#diagnosticsCaptureViews > \.diagnostic-evidence-table-label \{ display:flex; flex-direction:column; align-items:flex-start; gap:\.35rem; max-width:100%; \}/);
+    assert.match(html, /#diagnosticsCaptureViews > \.diagnostic-evidence-table-label > select \{ box-sizing:border-box; min-width:0; width:100%; max-width:100%; \}/);
+    assert.match(html, /\.evidence-controls label \{ display:flex; flex-wrap:wrap; gap:\.35rem; min-width:0; max-width:100%; \}/);
+    assert.match(html, /\.evidence-controls input \{ box-sizing:border-box; min-width:0; max-width:100%; \}/);
     assert.match(html, /\.cpu-query-table \.cpu-query-symbol span, \.cpu-query-table \.cpu-query-module span \{ display:inline-block; white-space:nowrap; overflow-wrap:normal; \}/);
     assert.match(html, /\.cpu-query-summary-table \.cpu-query-category \{ width:56%; overflow-wrap:anywhere; word-break:normal; \}/);
     assert.match(script, /message\.type === 'query' && message\.kind === 'cpu'/);
@@ -228,13 +246,26 @@ test("domain return restores CPU view and filter without a request; new captures
         + "setWorkspaceEvidence('cpu');".length);
     const { document, makeContainer } = createDocumentStub();
     const names = ["workspaceDomain", "workspaceEvidenceKind", "workspaceEvidenceStatus", "workspaceView",
-        "workspaceLoadView", "workspaceGcCapture", "cpuQueryViews", "cpuQueryStatus",
-        "openHeapDetails", "backToHeapTypes", "captureGc", "resultCpu", "cpuSamplingDisclaimer"];
+        "workspaceLoadView", "workspaceGcCapture", "workspaceGcStatus", "cpuQueryViews", "cpuQueryStatus",
+        "openHeapDetails", "backToHeapTypes", "captureGc", "resultCpu", "resultAllocation", "resultHeap",
+        "resultThreads", "cpuSamplingDisclaimer", "workspaceCanvas", "workspaceCaptureStatus",
+        "workspaceThreadViewStatus", "diagnosticsCaptureViews", "captureThreadHeadline", "captureThreadTable",
+        "threadQueryViews", "threadDetails", "threadStaticsForm"];
     const nodes = Object.fromEntries(names.map(id => [id, makeContainer(id)]));
+    nodes.captureThreadTable.closest = () => nodes.threadDetails;
+    document.querySelector = selector => selector === "#resultThreads .statics-form" ? nodes.threadStaticsForm : null;
     const requests = [], renders = [];
     const api = new Function("document", "vscode", "renders", `
       const {${names.join(",")}} = Object.fromEntries(${JSON.stringify(names)}.map(id=>[id,document.getElementById(id)]));
-      const workspacePanels = {};
+      const workspacePanels = {cpu:resultCpu,allocation:resultAllocation,heap:resultHeap,'thread-snapshot':resultThreads};
+      const genericCaptureViews = diagnosticsCaptureViews;
+      const isThreadCapture = kind => ['off_cpu','contention','threadpool'].includes(kind);
+      const usesWorkspaceForGenericCapture = kind => ['gc','gc-activities'].includes(kind) || isThreadCapture(kind);
+      const threadSnapshotViewLabels = {snapshot:'Snapshot summary',deadlocks:'Deadlocks','unique-stacks':'Grouped stacks',
+        'wait-chains':'Wait chains',threadpool:'Snapshot thread-pool query','thread-statics':'Thread statics'};
+      let threadSnapshotEvidenceId = "thread-1";
+      let threadSnapshotQueryAvailable = true;
+      let threadSnapshotView = 'snapshot';
       const cpuQueryLabels = {'caller-callee':'Callers / callees'};
       const cpuProfileState = {}, allocationProfileState = {};
       let cpuProfileResult;
@@ -242,7 +273,7 @@ test("domain return restores CPU view and filter without a request; new captures
       const renderCpuQuery = (...args) => renders.push(args);
       ${navigation}
       ${profile}
-      return {setWorkspaceEvidence,selectProfileView,cacheProfileQuery,loadSelectedProfileView,
+      return {setWorkspaceEvidence,selectThreadSnapshotView,selectProfileView,cacheProfileQuery,loadSelectedProfileView,
         setAvailable:()=>{profileAvailability.cpu=true},
         capture:message=>{${capture}}};
     `)(document, {postMessage:m=>requests.push(m)}, renders);
@@ -267,6 +298,55 @@ test("domain return restores CPU view and filter without a request; new captures
     assert.equal(nodes.workspaceView.value,"triage");
     api.selectProfileView("cpu","call-tree","Repeat");
     assert.equal(nodes.workspaceLoadView.hidden,false,"old projection cannot become current under new evidence");
+    api.setWorkspaceEvidence("thread-snapshot");
+    assert.equal(nodes.workspaceDomain.value, "threads");
+    assert.deepEqual(nodes.workspaceEvidenceKind.children.map(option => option.value),
+        ["thread-snapshot", "off_cpu", "contention", "threadpool"]);
+    assert.equal(nodes.workspaceView.value, "snapshot");
+    api.selectThreadSnapshotView("thread-statics");
+    assert.match(nodes.workspaceThreadViewStatus.textContent, /explicitly query this snapshot/);
+    assert.deepEqual(requests, [{type:"queryCpu",evidenceId:"cpu-1",view:"top-methods"}],
+        "switching thread views remains local and never issues an implicit query");
+});
+
+test("GC, contention and networking captures keep one truthful replaceable generic result slot", () => {
+    const script = extractInlineScript(renderHtml(target, "nonce", 120));
+    const start = script.indexOf("function setGenericCaptureOwner(kind, evidenceId) {");
+    const end = script.indexOf("    const cpuQueryLabels = {", start);
+    assert.ok(start >= 0 && end > start);
+    const source = script.slice(start, end);
+    const statuses = new Map();
+    const makeNode = () => ({
+        dataset: {}, hidden: false, parentElement: null,
+        appendChild(child) { child.parentElement = this; return child; },
+    });
+    const workspaceCanvas = makeNode(), genericCaptureViews = makeNode();
+    const captureDiagnosticsStatus = { textContent: "" }, workspaceGcStatus = { textContent: "" };
+    const diagnostics = makeNode();
+    const document = { getElementById: id => id === "resultDiagnostics" ? diagnostics : null };
+    const replaceOwner = new Function("document", "workspaceCanvas", "genericCaptureViews", "captureDiagnosticsStatus",
+        "workspaceGcStatus", "setWorkspaceStatus", "usesWorkspaceForGenericCapture", "isThreadCapture", `
+          let genericCaptureKind;
+          const genericCaptureLabels = {gc:"Garbage collections",contention:"Lock contention",networking:"Networking"};
+          ${source}
+          return {setGenericCaptureOwner,getOwner:()=>genericCaptureKind};
+        `)(document, workspaceCanvas, genericCaptureViews, captureDiagnosticsStatus, workspaceGcStatus,
+        (kind, status) => statuses.set(kind, status),
+        kind => ["gc", "gc-activities", "off_cpu", "contention", "threadpool"].includes(kind),
+        kind => ["off_cpu", "contention", "threadpool"].includes(kind));
+
+    replaceOwner.setGenericCaptureOwner("gc", "gc-1");
+    assert.equal(genericCaptureViews.parentElement, workspaceCanvas);
+    assert.equal(genericCaptureViews.dataset.evidenceId, "gc-1");
+    replaceOwner.setGenericCaptureOwner("contention", "contention-1");
+    assert.equal(replaceOwner.getOwner(), "contention");
+    assert.equal(genericCaptureViews.parentElement, workspaceCanvas);
+    assert.match(statuses.get("gc"), /no longer current|replaced/i);
+    replaceOwner.setGenericCaptureOwner("networking", "networking-1");
+    assert.equal(genericCaptureViews.parentElement, diagnostics);
+    assert.equal(genericCaptureViews.dataset.evidenceId, "networking-1");
+    assert.match(statuses.get("contention"), /no longer current|replaced/i);
+    assert.match(captureDiagnosticsStatus.textContent, /Diagnostics/);
 });
 
 function cpuRenderer() {
@@ -1373,6 +1453,10 @@ test("all diagnostic kinds provide sortable selectable returned rows without fab
         assert.equal(tables[1].querySelector(".evidence-pick"), null);
         assert.equal(tables[1].querySelector("tbody").children[0].children[1].textContent, "0");
         assert.match(tables[1].textContent, /<script>operation<\/script>/);
+        assert.ok(root.querySelector(".diagnostic-evidence-table-label"));
+        assert.ok(root.querySelector(".diagnostic-capture-notes"));
+        assert.equal(tables.every(table => table._parent.className === "query-view-table-wrap"), true,
+            "each captured table keeps horizontal scrolling inside its own bounded wrapper");
         assert.equal(root.querySelector("script"), null);
     }
 });

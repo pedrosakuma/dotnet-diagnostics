@@ -164,6 +164,74 @@ test("each kind completes through the compiled controller and actual frame valid
         assert.equal(session.pendingCaptures.size, 0);
     }
 });
+test("live thread snapshot capture and eager queries share one evidence identity", async () => {
+    const controller = Object.create(Controller.prototype);
+    const messages = [], frames = [];
+    const session = {
+        pendingCaptures: new Map(), pendingQueries: new Map(), startInFlight: false, closing: false,
+        process: { exitCode: null, signalCode: null },
+    };
+    controller.selectedTarget = { processId: 4242 };
+    controller.disposed = false;
+    controller.output = { appendLine() {} };
+    controller.postMessage = message => messages.push(message);
+    controller.acquireChild = async () => ({ session, owns: false });
+    controller.sendQuery = async (_session, handle, viewName) => ({ handle, view: viewName });
+    controller.writeFrame = (_session, frame) => {
+        frames.push(frame);
+        controller.handleFrame(session, JSON.stringify({
+            type: "capture", requestId: frame.requestId, kind: frame.kind,
+            result: { summary: "snapshot", data: {
+                processId: 4242, origin: "live", capturedAt: "now", walkDuration: "00:00:01",
+                threads: [], locks: [], handle: "thread-handle",
+            } },
+        }));
+    };
+    vscode.window.showWarningMessage = async () => "Acknowledge and Capture";
+
+    await controller.captureThreadSnapshotCore();
+
+    const capture = messages.find(message => message.type === "capture" && message.kind === "thread-snapshot");
+    assert.ok(capture.evidenceId);
+    assert.equal(capture.retainedHandleAvailable, true);
+    assert.equal(frames[0].requestId, capture.evidenceId);
+    assert.deepEqual(messages.filter(message => message.type === "captureStatus").map(message => message.evidenceId),
+        [capture.evidenceId, capture.evidenceId, capture.evidenceId]);
+    assert.equal(messages.find(message => message.state === "running").retainedEvidenceInvalidated, true);
+    const queries = messages.filter(message => message.type === "query" && message.kind === "thread-snapshot");
+    assert.deepEqual(queries.map(message => message.view), ["deadlocks", "unique-stacks", "wait-chains", "threadpool"]);
+    assert.ok(queries.every(message => message.evidenceId === capture.evidenceId));
+    assert.equal(controller.threadSnapshot.evidenceId, capture.evidenceId);
+    const lastQueryIndex = messages.findLastIndex(message => message.type === "query" && message.kind === "thread-snapshot");
+    const doneStatusIndex = messages.findIndex(message => message.type === "captureStatus" && message.state === "done");
+    assert.ok(doneStatusIndex > lastQueryIndex, "capture status remains active until eager snapshot views finish");
+    assert.equal(session.pendingCaptures.size, 0);
+});
+test("late thread snapshot query results cannot cross evidence replacement", async () => {
+    const controller = Object.create(Controller.prototype);
+    const messages = [];
+    const session = { closing: false, process: { exitCode: null, signalCode: null } };
+    controller.output = { appendLine() {} };
+    controller.postMessage = message => messages.push(message);
+    controller.threadSnapshot = { session, handle: "thread-a", evidenceId: "thread-a" };
+    let release;
+    controller.sendQuery = () => new Promise(resolve => { release = resolve; });
+
+    const preload = controller.runThreadQueries(session, "thread-a", "thread-a");
+    await Promise.resolve();
+    controller.threadSnapshot = { session, handle: "thread-b", evidenceId: "thread-b" };
+    release({ view: "deadlocks" });
+    await preload;
+    assert.deepEqual(messages, [], "a late automatic query must not update the replacement snapshot");
+
+    controller.threadSnapshot = { session, handle: "thread-a", evidenceId: "thread-a" };
+    const statics = controller.queryThreadStaticsCore("Example.Cache", "thread-a");
+    await Promise.resolve();
+    controller.threadSnapshot = { session, handle: "thread-b", evidenceId: "thread-b" };
+    release({ view: "thread-statics" });
+    await statics;
+    assert.deepEqual(messages, [], "a late explicit statics query must not update another snapshot");
+});
 test("malformed JSONL frames report an error in the active Events view", () => {
     const controller = Object.create(Controller.prototype);
     const messages = [], eventsMessages = [];
@@ -298,6 +366,7 @@ test("every kind uses structured text-only tables, quality and explicit unavaila
         assert.match(text(container), /4 retained row\(s\) omitted/);
         assert.match(text(container), /Evidence quality: not reported/);
         assert.match(text(container), /cap-note/);
-        assert.ok(container.children.some(n => n.tag === "table"));
+        assert.ok(container.children.some(n => n.className === "query-view-table-wrap"
+            && n.children.some(child => child.tag === "table")));
     }
 });

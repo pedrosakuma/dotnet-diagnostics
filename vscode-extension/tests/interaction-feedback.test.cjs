@@ -52,7 +52,7 @@ test("result tabs navigate in rendered order and preserve focus and selection st
         + `${inlineScript().slice(start, end)}; return { resultTabs, selectResultTab };`)(document);
     const resultTabs = navigation.resultTabs;
     assert.deepEqual(resultTabs.map(tab => tab.label),
-        ["Live", "Workspace", "Exceptions", "Diagnostics", "Threads", "Events"]);
+        ["Live", "Workspace", "Exceptions", "Diagnostics", "Events"]);
 
     function press(index, key) {
         let prevented = false;
