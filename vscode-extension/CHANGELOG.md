@@ -5,6 +5,12 @@ versioned independently from the CLI and the .NET packages.
 
 ## Unreleased
 
+- Move managed-exception and crash-guard results into the Exceptions domain of the compact live
+  Workspace, retaining one dedicated, replaceable exception result independent of the generic
+  capture slot. Bind statuses and results to the capture request and mode; navigation performs no
+  new reads, stale responses are ignored, and failed or busy attempts preserve the current result.
+  Keep the live EventPipe source, target PID, capture mode, retention notes, and sensitive-message
+  disclaimer visible without turning exception modes into retained history.
 - Place in-flight request, Kestrel, database, and networking capture results in the Requests &
   networking workspace. They reuse the single replaceable generic-capture result and expose no
   synthetic retained-query view or load action. Prioritize the in-flight request summary and

@@ -170,18 +170,27 @@ searchable ten-kind picker uses matching domain headings. Allocations there and 
 Memory & GC use the same capture and Allocations result, not separate products.
 GC/activity overlap remains overlap evidence, not a causal latency diagnosis.
 
-The live panel keeps **Live**, **Workspace**, **Exceptions**, **Diagnostics**, and **Events** as
-its result tabs; the Workspace domain selector now includes **CPU**, **Memory & GC**, and
-**Threads & waits**. Its compact **Domain → Evidence → View** controls navigate one content panel.
+The live panel keeps **Live**, **Workspace**, **Diagnostics**, and **Events** as its result tabs.
+The Workspace domain selector includes **CPU**, **Memory & GC**, **Threads & waits**,
+**Requests & networking**, and **Exceptions**. Its compact **Domain → Evidence → View** controls
+navigate one content panel.
 Thread snapshots and off-CPU, contention, and thread-pool captures appear under Threads & waits;
 the point-in-time snapshot and the generic event capture remain separate evidence kinds.
 Those three generic kinds share the same single replaceable result slot used by GC and the other
 generic captures. A successful capture replaces that slot across domains, and the previous domain
 reports that its evidence is no longer current. A failed attempt does not replace the slot.
-Requests & networking, Exceptions, Monitoring, and offline dump/saved panels retain their existing
-result surfaces. Groups organize collection entry points, not permissions: actions still require
-their actual evidence prerequisites. Retention paths, thread wait chains, heap object inspection
-and other drilldowns remain beside their evidence, not separate collectors.
+Requests, Kestrel, database, and networking captures share that generic result slot in Requests &
+networking. Managed-exception and crash-guard captures retain their separate single replaceable
+exception result owner and display the actual mode, live EventPipe source, target PID, and bounded
+retention notes. Busy or failed attempts before capture starts preserve the prior exception result;
+once a replacement capture starts, the prior result is cleared. Request identities prevent late
+status/results from replacing newer evidence, and status completion does not reclaim navigation
+focus. Switching to Exceptions only displays already-captured evidence; it starts no CLI operation.
+Exception messages may contain sensitive application data, and process exit alone does not prove
+an unhandled exception. Monitoring and offline dump/saved panels remain separate result surfaces.
+Groups organize collection entry points, not permissions: actions still require their actual
+evidence prerequisites. Retention paths, thread wait chains, heap object inspection and other
+drilldowns remain beside their evidence, not separate collectors.
 **Analyze Dump File** remains a standalone action for an existing file with no selected process
 required. **Saved Captures** remains a sibling view; **Capture and Save Snapshot** stays on the
 process context menu and explicitly collects a new heap/GC dump/thread snapshot. Grouping does not

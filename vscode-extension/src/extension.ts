@@ -629,25 +629,29 @@ class CounterPanelController implements vscode.Disposable {
         ], { placeHolder: "Capture exceptions for 10 seconds; messages can contain sensitive application data" });
         if (!selection || this.disposed) return;
         const kind = selection.captureKind;
-        this.postMessage({ type: "captureStatus", kind: "exceptions", state: "starting", message: "Preparing exception capture…" });
+        const requestId = randomBytes(12).toString("hex");
+        const postExceptionStatus = (state: string, message: string): void => {
+            this.postMessage({
+                type: "captureStatus", kind: "exceptions", evidenceId: requestId,
+                captureKind: kind, state, message,
+            });
+        };
+        postExceptionStatus("starting", "Preparing exception capture…");
         let session: StreamChild;
         let ownsSession: boolean;
         try {
             ({ session, owns: ownsSession } = await this.acquireChild());
         } catch (error) {
-            this.postMessage({ type: "captureStatus", kind: "exceptions", state: "error", message: withRuntimeGuidance(errorMessage(error)) });
+            postExceptionStatus("error", withRuntimeGuidance(errorMessage(error)));
             return;
         }
 
         if (session.pendingCaptures.size > 0 || session.pendingQueries.size > 0 || session.startInFlight) {
-            this.postMessage({
-                type: "captureStatus", kind: "exceptions", state: "error",
-                message: "The CLI connection is busy. Wait for the current capture, query or session startup to finish, then capture exceptions before reproducing the problem.",
-            });
+            postExceptionStatus("error",
+                "The CLI connection is busy. Wait for the current capture, query or session startup to finish, then capture exceptions before reproducing the problem.");
             return;
         }
 
-        const requestId = randomBytes(12).toString("hex");
         const pending: PendingCapture = { kind, deferred: deferred<ExceptionCaptureResult>() };
         session.pendingCaptures.set(requestId, pending);
         try {
@@ -657,14 +661,15 @@ class CounterPanelController implements vscode.Disposable {
             });
             this.postMessage({
                 type: "captureStatus", kind: "exceptions", state: "running",
+                evidenceId: requestId, captureKind: kind,
                 message: "Exception capture requested (10 seconds after startup). Allow EventPipe ~1 second to start, then reproduce the problem now.",
             });
             const result = await withTimeout(pending.deferred.promise, 60_000);
-            this.postMessage({ type: "capture", kind: "exceptions", result });
-            this.postMessage({ type: "captureStatus", kind: "exceptions", state: "done", message: "Exception capture complete." });
+            this.postMessage({ type: "capture", kind: "exceptions", evidenceId: requestId, captureKind: kind, result });
+            postExceptionStatus("done", "Exception capture complete.");
         } catch (error) {
             const message = withRuntimeGuidance(errorMessage(error));
-            this.postMessage({ type: "captureStatus", kind: "exceptions", state: "error", message });
+            postExceptionStatus("error", message);
             this.output.appendLine(`Exception capture failed: ${message}`);
         } finally {
             session.pendingCaptures.delete(requestId);
@@ -3201,7 +3206,6 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
   <nav class="result-tabs" role="tablist" aria-label="Diagnostic results">
     <button id="resultTabLive" role="tab" aria-selected="true" aria-controls="resultLive">Live</button>
     <button id="resultTabWorkspace" role="tab" aria-selected="false" aria-controls="resultWorkspace">Workspace</button>
-    <button id="resultTabExceptions" role="tab" aria-selected="false" aria-controls="resultExceptions">Exceptions</button>
     <button id="resultTabDiagnostics" role="tab" aria-selected="false" aria-controls="resultDiagnostics">Diagnostics</button>
     <button id="resultTabEvents" role="tab" aria-selected="false" aria-controls="resultEvents">Events</button>
   </nav>
@@ -3213,6 +3217,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         <option value="memory">Memory &amp; GC</option>
         <option value="threads">Threads &amp; waits</option>
         <option value="requests">Requests &amp; networking</option>
+        <option value="exceptions">Exceptions</option>
       </select>
       <label for="workspaceEvidenceKind">Evidence</label>
       <select id="workspaceEvidenceKind" aria-label="Select current evidence kind"></select>
@@ -3295,10 +3300,15 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     <div id="allocationQueryViews" class="query-views"></div>
     </div>
   </section>
-  <section id="resultExceptions" class="result-tab-panel" role="tabpanel" aria-labelledby="resultTabExceptions" hidden>
+  <section id="resultExceptions" hidden>
     <div class="panel-actions"><button id="captureExceptions" type="button">Capture exceptions…</button></div>
     <div id="captureExceptionsStatus" role="status"></div>
+    <p id="exceptionEvidenceIdentity" class="workspace-evidence-status" role="status">No exception evidence has been captured.</p>
     <div id="exceptionCaptureViews" class="query-views"></div>
+    <p class="query-view-provenance">
+      Managed exceptions retain bounded messages without stack frames; crash guard includes available stacks.
+      Exception messages can contain sensitive application data. A process exit alone is not proof of an unhandled exception.
+    </p>
   </section>
   <section id="resultDiagnostics" class="result-tab-panel" role="tabpanel" aria-labelledby="resultTabDiagnostics" hidden>
     <div class="panel-actions"><button id="captureDiagnostics" type="button">Capture diagnostics…</button></div>
@@ -3439,6 +3449,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       allocation: document.getElementById('resultAllocation'),
       heap: document.getElementById('resultHeap'),
       'thread-snapshot': document.getElementById('resultThreads'),
+      exceptions: document.getElementById('resultExceptions'),
     };
     workspacePanels['thread-snapshot'].classList.add('workspace-thread-snapshot');
     for (const panel of Object.values(workspacePanels)) {
@@ -3480,6 +3491,10 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     workspaceCanvas.appendChild(workspaceGcCapture);
     let selectedWorkspaceEvidence = 'cpu';
     const workspaceEvidenceStatusByKind = new Map();
+    const exceptionCaptureModes = { exceptions: 'Managed exceptions', 'crash-guard': 'Crash guard' };
+    let exceptionEvidenceId;
+    let exceptionEvidenceMode;
+    let pendingExceptionEvidenceId;
     let cpuEvidenceId;
     let allocationEvidenceId;
     let heapEvidenceId;
@@ -3508,11 +3523,14 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     function setWorkspaceEvidence(kind) {
       selectedWorkspaceEvidence = kind;
       workspaceDomain.value = kind === 'cpu' ? 'cpu'
+        : kind === 'exceptions' ? 'exceptions'
         : ['heap', 'allocation', 'gc', 'gc-activities'].includes(kind) ? 'memory'
           : isThreadCapture(kind) || kind === 'thread-snapshot' ? 'threads' : 'requests';
       workspaceEvidenceKind.replaceChildren();
       const choices = kind === 'cpu'
         ? [['cpu', 'CPU sample']]
+        : kind === 'exceptions'
+          ? [['exceptions', exceptionEvidenceMode ? exceptionCaptureModes[exceptionEvidenceMode] : 'No completed exception capture']]
         : workspaceDomain.value === 'memory'
           ? [['heap', 'Heap snapshot'], ['allocation', 'Allocation profile'],
             ['gc', 'Garbage collections'], ['gc-activities', 'GC activities']]
@@ -3528,6 +3546,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         workspaceEvidenceKind.appendChild(option);
       }
       workspaceEvidenceKind.value = kind;
+      workspaceEvidenceKind.disabled = kind === 'exceptions';
       for (const [panelKind, panel] of Object.entries(workspacePanels)) panel.hidden = panelKind !== kind;
       const sharedGcEvidence = kind === 'gc' || kind === 'gc-activities';
       workspaceGcCapture.hidden = !sharedGcEvidence;
@@ -3584,7 +3603,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         const option = document.createElement('option');
         option.value = kind === 'heap' ? 'snapshot' : 'capture-result';
         workspaceView.appendChild(option);
-        option.textContent = kind === 'heap' ? 'Snapshot totals' : 'Capture result';
+        option.textContent = kind === 'heap' ? 'Snapshot totals' : kind === 'exceptions' ? 'Exception details' : 'Capture result';
         if (kind === 'heap' && heapEvidenceSource === 'live') {
           const details = document.createElement('option');
           details.value = 'details';
@@ -3630,7 +3649,8 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     workspaceDomain.addEventListener('change', () => setWorkspaceEvidence(
       workspaceDomain.value === 'cpu' ? 'cpu'
         : workspaceDomain.value === 'memory' ? 'heap'
-          : workspaceDomain.value === 'threads' ? 'thread-snapshot' : 'requests'));
+          : workspaceDomain.value === 'threads' ? 'thread-snapshot'
+            : workspaceDomain.value === 'exceptions' ? 'exceptions' : 'requests'));
     workspaceEvidenceKind.addEventListener('change', () => setWorkspaceEvidence(workspaceEvidenceKind.value));
     workspaceView.addEventListener('change', () => {
       if (selectedWorkspaceEvidence === 'cpu' || selectedWorkspaceEvidence === 'allocation') {
@@ -3907,7 +3927,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     renderEvents();
     function activateCaptureTab(name) {
       if (name === 'cpu' || name === 'allocation' || name === 'heap' || name === 'gc' || name === 'gc-activities'
-        || name === 'thread-snapshot' || isThreadCapture(name) || isRequestCapture(name)) {
+        || name === 'thread-snapshot' || name === 'exceptions' || isThreadCapture(name) || isRequestCapture(name)) {
         selectResultTab('Workspace');
         setWorkspaceEvidence(name);
       } else selectResultTab(name);
@@ -4686,10 +4706,28 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           renderCpuQuery(message.view, message.message, true, 'allocation');
         }
       } else if (message.type === 'captureStatus' && message.kind === 'exceptions') {
-        activateCaptureTab('exceptions');
+        if (typeof message.evidenceId !== 'string' || !exceptionCaptureModes[message.captureKind]) return;
+        if (message.state === 'starting') pendingExceptionEvidenceId = message.evidenceId;
+        if (message.evidenceId !== pendingExceptionEvidenceId) return;
         captureExceptionsStatus.textContent = message.message || message.state || '';
         captureExceptionsButton.disabled = message.state === 'running' || message.state === 'starting';
-        if (message.state === 'running') document.getElementById('exceptionCaptureViews').replaceChildren();
+        if (message.state === 'starting') activateCaptureTab('exceptions');
+        if (message.state === 'running') {
+          exceptionEvidenceId = undefined;
+          exceptionEvidenceMode = undefined;
+          const exceptionPanel = document.getElementById('resultExceptions');
+          exceptionPanel.dataset.evidenceId = '';
+          exceptionPanel.dataset.captureKind = '';
+          document.getElementById('exceptionCaptureViews').replaceChildren();
+          document.getElementById('exceptionEvidenceIdentity').textContent =
+            'Capture in progress: ' + exceptionCaptureModes[message.captureKind] + ' · Live EventPipe.';
+          setWorkspaceStatus('exceptions', 'The previous exception result was replaced when this capture started.');
+          if (selectedWorkspaceEvidence === 'exceptions') setWorkspaceEvidence('exceptions');
+        } else if (message.state === 'error') {
+          setWorkspaceStatus('exceptions', exceptionEvidenceId
+            ? 'Capture failed; the displayed ' + exceptionCaptureModes[exceptionEvidenceMode] + ' evidence remains current.'
+            : 'Capture failed; no current exception evidence is available.');
+        }
       } else if (message.type === 'captureStatus' && message.kind === 'diagnostics') {
         if (typeof message.evidenceId === 'string') diagnosticsRequestId = message.evidenceId;
         const gcCapture = message.captureKind === 'gc' || message.captureKind === 'gc-activities';
@@ -4767,7 +4805,19 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         captureStatusElement.textContent = message.message || message.state || '';
         captureCpuButton.disabled = message.state === 'running';
       } else if (message.type === 'capture' && message.kind === 'exceptions') {
-        activateCaptureTab('exceptions');
+        if (message.evidenceId !== pendingExceptionEvidenceId || !exceptionCaptureModes[message.captureKind]) return;
+        exceptionEvidenceId = message.evidenceId;
+        exceptionEvidenceMode = message.captureKind;
+        const exceptionPanel = document.getElementById('resultExceptions');
+        exceptionPanel.dataset.evidenceId = exceptionEvidenceId;
+        exceptionPanel.dataset.captureKind = exceptionEvidenceMode;
+        const exceptionData = message.result?.data || {};
+        document.getElementById('exceptionEvidenceIdentity').textContent =
+          exceptionCaptureModes[exceptionEvidenceMode] + ' · Live EventPipe · PID '
+          + String(exceptionData.processId ?? 'unavailable') + ' · ' + String(exceptionData.duration ?? 'duration unavailable');
+        setWorkspaceStatus('exceptions', 'Current evidence: ' + exceptionCaptureModes[exceptionEvidenceMode]
+          + ' · Live EventPipe · PID ' + String(exceptionData.processId ?? 'unavailable') + '.');
+        if (selectedWorkspaceEvidence === 'exceptions') setWorkspaceEvidence('exceptions');
         renderQueryView('exceptionCaptureViews', 'exceptions', message.result, false);
         document.getElementById('exceptionCaptureViews-exceptions').open = true;
       } else if (message.type === 'capture' && message.kind === 'heap') {

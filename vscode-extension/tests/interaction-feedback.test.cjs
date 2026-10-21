@@ -52,7 +52,7 @@ test("result tabs navigate in rendered order and preserve focus and selection st
         + `${inlineScript().slice(start, end)}; return { resultTabs, selectResultTab };`)(document);
     const resultTabs = navigation.resultTabs;
     assert.deepEqual(resultTabs.map(tab => tab.label),
-        ["Live", "Workspace", "Exceptions", "Diagnostics", "Events"]);
+        ["Live", "Workspace", "Diagnostics", "Events"]);
 
     function press(index, key) {
         let prevented = false;
@@ -76,14 +76,14 @@ test("result tabs navigate in rendered order and preserve focus and selection st
         assert.equal(press(i, "ArrowLeft"), true);
         assertSelected((i + tabs.length - 1) % tabs.length);
     }
-    assert.equal(press(4, "Home"), true);
+    assert.equal(press(tabs.length - 1, "Home"), true);
     assertSelected(0);
     assert.equal(tabs[0].focused, true);
     assert.equal(press(2, "End"), true);
     assertSelected(tabs.length - 1);
     assert.equal(tabs.at(-1).focused, true);
-    navigation.selectResultTab("exceptions");
-    assertSelected(2);
+    navigation.selectResultTab("workspace");
+    assertSelected(1);
     assert.equal(press(0, "Escape"), false);
 });
 
@@ -114,10 +114,14 @@ test("initial status describes a ready selected process and live status remains 
     assert.ok(exceptionBranch);
     const captureExceptionsStatus = { textContent: "" }, captureExceptionsButton = { disabled: false };
     const liveBefore = statusElement.textContent;
-    new Function("message", "captureExceptionsStatus", "captureExceptionsButton", "activateCaptureTab", "document",
-        exceptionBranch[1])(
-        { state: "done", message: "Exception capture complete." }, captureExceptionsStatus,
-        captureExceptionsButton, () => {}, { getElementById: () => ({ replaceChildren() {} }) });
+    new Function("message", "captureExceptionsStatus", "captureExceptionsButton", "activateCaptureTab",
+        "exceptionCaptureModes", "pendingExceptionEvidenceId", "exceptionEvidenceId", "exceptionEvidenceMode",
+        "selectedWorkspaceEvidence", "setWorkspaceStatus", "setWorkspaceEvidence", "document", exceptionBranch[1])(
+        { state: "done", evidenceId: "request-1", captureKind: "exceptions", message: "Exception capture complete." },
+        captureExceptionsStatus, captureExceptionsButton, () => assert.fail("completion must not steal focus"),
+        { exceptions: "Managed exceptions", "crash-guard": "Crash guard" }, "request-1", "evidence-1", "exceptions",
+        "cpu", () => {}, () => assert.fail("completion must not change domains"),
+        { getElementById: () => ({ replaceChildren() {} }) });
     assert.equal(captureExceptionsStatus.textContent, "Exception capture complete.");
     assert.equal(statusElement.textContent, liveBefore, "a completed exception capture must not overwrite Live status");
 });

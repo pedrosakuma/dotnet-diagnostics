@@ -19,7 +19,7 @@ const Controller = new Function("require", "exports",
     name => name === "vscode" ? vscode : extensionRequire(name), {},
 );
 
-function fixture(overrides = {}) {
+function fixture(overrides = {}, captureKind = "exceptions") {
     const messages = [];
     const frames = [];
     const session = {
@@ -40,7 +40,7 @@ function fixture(overrides = {}) {
             },
         });
     };
-    vscode.window.showQuickPick = async items => items[0];
+    vscode.window.showQuickPick = async items => items.find(item => item.captureKind === captureKind);
     return { controller, messages, frames, session };
 }
 
@@ -58,6 +58,10 @@ test("exception capture never queues reproduction guidance behind a busy CLI ope
         assert.ok(!messages.some(message => message.state === "running"),
             "busy rejection must not send the running status that clears previous evidence");
         assert.ok(!messages.some(message => /reproduce the problem now/.test(message.message)));
+        const requestId = messages[0].evidenceId;
+        assert.ok(requestId);
+        assert.ok(messages.every(message => message.evidenceId === requestId));
+        assert.ok(messages.every(message => message.captureKind === "exceptions"));
     }
 });
 
@@ -71,10 +75,26 @@ test("idle exception capture sends bounded JSONL request and renders independent
     });
     assert.ok(messages.some(message => /reproduce the problem now/.test(message.message)));
     assert.equal(messages[0].state, "starting");
-    assert.equal(messages.find(message => message.type === "capture").kind, "exceptions");
+    const requestId = frames[0].requestId;
+    assert.ok(requestId);
+    assert.ok(messages.every(message => message.evidenceId === requestId));
+    const capture = messages.find(message => message.type === "capture");
+    assert.equal(capture.kind, "exceptions");
+    assert.equal(capture.captureKind, "exceptions");
+    assert.equal(capture.evidenceId, requestId);
     assert.equal(messages.at(-1).state, "done");
     assert.equal(session.pendingCaptures.size, 0);
     assert.equal(controller.captureExceptionsTask, undefined);
+});
+
+test("crash-guard mode stays explicit on the bounded request and every correlated response", async () => {
+    const { controller, messages, frames } = fixture({}, "crash-guard");
+    await controller.captureExceptions();
+    const requestId = frames[0].requestId;
+    assert.equal(frames[0].kind, "crash-guard");
+    assert.ok(messages.every(message => message.evidenceId === requestId));
+    assert.ok(messages.every(message => message.captureKind === "crash-guard"));
+    assert.equal(messages.find(message => message.type === "capture").kind, "exceptions");
 });
 
 test("cancelling exception picker does not acquire or write a CLI request", async () => {
