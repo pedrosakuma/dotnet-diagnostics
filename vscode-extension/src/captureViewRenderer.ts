@@ -89,7 +89,6 @@ function renderCaptureView(containerId: string, result: unknown): void {
         ? `PID ${p.processId} · ${p.requestedDurationSeconds}s window · Live capture, not saved`
         : `Live capture, not saved - pid ${p.processId} - requested ${p.requestedDurationSeconds}s`));
     if (useRequestLayout) {
-        container.appendChild(el("p", "Filters and sorting apply only to returned rows. This is the state at window close, not a complete request timeline or parent/child map. Start/stop pairing uses an activity ID or trace/span ID pair; uncorrelatable events are skipped and repeated starts replace the tracked entry."));
         if (view.notes.length) {
             const notes = el("ul");
             notes.className = "diagnostic-capture-notes";
@@ -155,11 +154,12 @@ function renderCaptureView(containerId: string, result: unknown): void {
     };
     if (useRequestLayout && requestTable) {
         const longRunningRows = requestTable.rows.filter(row => row[requestStateColumnIndex] === true).length;
-        const filterLabel = el("label", "Request state");
+        container.appendChild(el("p", "In flight at window close · Filters apply to shown rows."));
+        const filterLabel = el("label", "Show requests");
         filterLabel.className = "diagnostic-request-filter";
         const stateFilter = document.createElement("select");
         stateFilter.id = "inFlightRequestsStateFilter";
-        stateFilter.setAttribute("aria-label", "Filter in-flight requests by state");
+        stateFilter.setAttribute("aria-label", "Show in-flight requests");
         const allOption = document.createElement("option");
         allOption.value = "all";
         allOption.textContent = `All in-flight (${requestTable.rows.length} shown)`;
@@ -181,6 +181,14 @@ function renderCaptureView(containerId: string, result: unknown): void {
             requestTable.columns.findIndex(column => column.toLowerCase() === "started"));
         if (requestTable.rows.length === 0) panel.appendChild(el("p", requestTable.emptyText));
         container.appendChild(panel);
+        const captureDetails = el("details");
+        captureDetails.className = "diagnostic-request-details";
+        captureDetails.appendChild(el("summary", "Capture details and limitations"));
+        captureDetails.appendChild(el("p", "Search, sorting, and filtering apply only to returned rows. "
+            + "This snapshot shows requests still tracked at window close, not a complete request timeline or parent/child map. "
+            + "Start/stop pairing uses an activity ID or trace/span ID pair. Events without correlatable IDs are skipped, "
+            + "and repeated starts replace the tracked entry."));
+        container.appendChild(captureDetails);
     } else {
         table("Metrics", ["Metric", "Value", "Note"], view.metrics.map(m => [m.label, m.value, m.note ?? ""]));
         const label = el("label", "Evidence table ");

@@ -1603,16 +1603,30 @@ test("in-flight request rows lead the result and state filters compose with retu
     assert.match(root.textContent, /PID 42 · 10s window · Live capture, not saved/);
     assert.doesNotMatch(root.textContent, /An unparsed fallback summary|requests\n/);
     assert.doesNotMatch(root.textContent, /Metrics/);
+    assert.match(root.textContent, /In flight at window close · Filters apply to shown rows/);
+    const conciseSummary = root.children.find(child =>
+        child.textContent === "In flight at window close · Filters apply to shown rows.");
+    assert.ok(conciseSummary, "the short result scope is visible outside the details disclosure");
     assert.match(root.textContent, /All in-flight \(4 shown\)/);
     assert.match(root.textContent, /At or above 750 ms \(2 shown\)/,
         "filter count comes from returned rows, not the capture-wide long-running metric");
     assert.match(root.textContent, /Dropped 2 newer starts/);
     assert.match(root.textContent, /Correlation uses tracked starts/);
-    assert.match(root.textContent, /Start\/stop pairing uses an activity ID or trace\/span ID pair/);
     assert.match(root.textContent, /1 retained row\(s\) omitted/);
     assert.match(root.textContent, /Capture window \(requests\): The snapshot is partial/);
     const selector = document.getElementById("inFlightRequestsStateFilter");
-    assert.equal(selector.getAttribute("aria-label"), "Filter in-flight requests by state");
+    assert.equal(selector.getAttribute("aria-label"), "Show in-flight requests");
+    const details = root.querySelector("details");
+    assert.equal(details.querySelector("summary").textContent, "Capture details and limitations");
+    assert.notEqual(details.open, true, "detailed capture guidance starts collapsed");
+    assert.match(details.textContent, /Start\/stop pairing uses an activity ID or trace\/span ID pair/);
+    assert.match(details.textContent, /Events without correlatable IDs are skipped/);
+    assert.match(details.textContent, /repeated starts replace the tracked entry/);
+    const notes = root.querySelector(".diagnostic-capture-notes");
+    assert.equal(notes._parent, root, "collector warnings remain visible outside the collapsed details");
+    assert.match(notes.textContent, /Dropped 2 newer starts/);
+    assert.ok(root.children.some(child => child.textContent.includes("Capture window (requests): The snapshot is partial")),
+        "evidence limitations remain visible outside the collapsed details");
     const table = document.getElementById("inFlightRequestsTable");
     const body = table.querySelector("tbody");
     assert.equal(body.children.length, 4);
