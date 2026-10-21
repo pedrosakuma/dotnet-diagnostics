@@ -45,9 +45,15 @@ contains live counters/GC pauses and the independent Live Events stream. Expand 
 to browse; only selecting an action enters its existing capture/consent flow.
 **Capture Diagnostics** remains the searchable expert catalog for its ten capture kinds.
 The live panel's **Workspace** uses compact **Domain → Evidence → View** selectors for CPU,
-Memory & GC, and Threads & waits. Thread snapshots and off-CPU/contention/thread-pool captures
-share that domain's presentation without sharing evidence ownership: the snapshot handle is
-independent from the single replaceable generic-capture result. Requests, Exceptions, Monitoring,
+Memory & GC, Threads & waits, and Requests & networking. Thread snapshots and off-CPU/contention/
+thread-pool captures share their domain's presentation without sharing evidence ownership: the
+snapshot handle is independent from the single replaceable generic-capture result. Requests,
+Kestrel, database, and networking captures share the Requests & networking workspace and the
+existing single replaceable generic-capture result; its **Capture result** view is descriptive,
+not a retained-handle query. In-flight request results lead with the capture-window summary and
+retained request rows; state filters and search apply only to returned rows, with truncation and
+capture-quality notes kept visible. Started timestamps display in UTC; the original ISO value
+remains available to assistive technology and in the timestamp tooltip. Exceptions, Monitoring,
 dump analysis, and saved evidence keep their existing result surfaces.
 **Analyze Dump File** and **Saved Captures** remain separate offline entry points.
 

@@ -6,6 +6,9 @@ function enhanceEvidenceTable(table: HTMLTableElement | null): void {
     if (!body || !headers.length) return;
     table.dataset.navigation = "ready";
     const rows = Array.from(body.children) as HTMLTableRowElement[];
+    const stateFilter = table.dataset.rowFilterSelectId
+        ? document.getElementById(table.dataset.rowFilterSelectId) as HTMLSelectElement | null
+        : null;
     const controls = document.createElement("div");
     controls.className = "evidence-controls";
     const label = document.createElement("label");
@@ -24,17 +27,30 @@ function enhanceEvidenceTable(table: HTMLTableElement | null): void {
     let descending = false;
     function draw(): void {
         const term = input.value.toLowerCase();
-        const visible = rows.filter(row => (row.textContent ?? "").toLowerCase().includes(term));
+        const stateRows = stateFilter && stateFilter.value !== "all"
+            ? rows.filter(row => row.dataset.rowFilterState === stateFilter.value)
+            : rows;
+        const visible = stateRows.filter(row => ((row.textContent ?? "") + " " + (row.dataset.searchText ?? "")).toLowerCase().includes(term));
         if (sortIndex >= 0) visible.sort((a, b) => {
-            const left = a.children[sortIndex]?.textContent ?? "";
-            const right = b.children[sortIndex]?.textContent ?? "";
+            const leftCell = a.children[sortIndex];
+            const rightCell = b.children[sortIndex];
+            const left = leftCell?.getAttribute("data-sort-value") ?? leftCell?.textContent ?? "";
+            const right = rightCell?.getAttribute("data-sort-value") ?? rightCell?.textContent ?? "";
+            const timestampPrefix = "timestamp:";
+            if (left.startsWith(timestampPrefix) && right.startsWith(timestampPrefix)) {
+                const leftTimestamp = BigInt(left.slice(timestampPrefix.length));
+                const rightTimestamp = BigInt(right.slice(timestampPrefix.length));
+                return descending
+                    ? Number(rightTimestamp > leftTimestamp) - Number(rightTimestamp < leftTimestamp)
+                    : Number(leftTimestamp > rightTimestamp) - Number(leftTimestamp < rightTimestamp);
+            }
             const decimal = /^-?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i;
             const result = decimal.test(left) && decimal.test(right) && Number.isFinite(Number(left)) && Number.isFinite(Number(right))
                 ? Number(left) - Number(right) : collator.compare(left, right);
             return descending ? -result : result;
         });
         body!.replaceChildren(...visible);
-        status.textContent = visible.length + " of " + rows.length + " returned rows. Not a full-capture filter.";
+        status.textContent = visible.length + " of " + stateRows.length + " returned rows. Not a full-capture filter.";
     }
     headers.forEach((header, index) => {
         const button = document.createElement("button");
@@ -53,6 +69,7 @@ function enhanceEvidenceTable(table: HTMLTableElement | null): void {
         header.replaceChildren(button);
     });
     input.addEventListener("input", draw);
+    stateFilter?.addEventListener("change", draw);
     draw();
 }
 

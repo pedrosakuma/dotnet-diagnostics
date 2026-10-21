@@ -196,7 +196,7 @@ test("live panel exposes the compact evidence workspace and keeps other result r
         assert.match(html, new RegExp(`role="tabpanel" aria-labelledby="resultTab${id}"`));
     }
     assert.doesNotMatch(html, /id="resultTabThreads"/);
-    assert.match(html, /<select id="workspaceDomain">[\s\S]*?Memory &amp; GC[\s\S]*?Threads &amp; waits/);
+    assert.match(html, /<select id="workspaceDomain">[\s\S]*?Memory &amp; GC[\s\S]*?Threads &amp; waits[\s\S]*?Requests &amp; networking/);
     assert.match(html, /id="workspaceEvidenceKind"/);
     assert.match(html, /id="workspaceView"/);
     assert.match(html, /id="workspaceCanvas"/);
@@ -239,6 +239,9 @@ test("domain return restores CPU view and filter without a request; new captures
     const script = extractInlineScript(renderHtml(target, "nonce", 120));
     const navigation = script.slice(script.indexOf("let selectedWorkspaceEvidence ="),
         script.indexOf("function selectResultTab(selected)"));
+    const activationStart = script.indexOf("function activateCaptureTab(name) {");
+    const activationEnd = script.indexOf("    function setGenericCaptureOwner", activationStart);
+    const activation = script.slice(activationStart, activationEnd);
     const profile = script.slice(script.indexOf("const profileAvailability ="),
         script.indexOf("const counters = new Map()"));
     const captureStart = script.indexOf("cpuEvidenceId = typeof message.evidenceId");
@@ -260,7 +263,12 @@ test("domain return restores CPU view and filter without a request; new captures
       const workspacePanels = {cpu:resultCpu,allocation:resultAllocation,heap:resultHeap,'thread-snapshot':resultThreads};
       const genericCaptureViews = diagnosticsCaptureViews;
       const isThreadCapture = kind => ['off_cpu','contention','threadpool'].includes(kind);
-      const usesWorkspaceForGenericCapture = kind => ['gc','gc-activities'].includes(kind) || isThreadCapture(kind);
+      const isRequestCapture = kind => ['requests','kestrel','db','networking'].includes(kind);
+      const usesWorkspaceForGenericCapture = kind => ['gc','gc-activities'].includes(kind)
+        || isThreadCapture(kind) || isRequestCapture(kind);
+      let genericCaptureKind;
+      let activeResultTab;
+      const selectResultTab = name => { activeResultTab = name; };
       const threadSnapshotViewLabels = {snapshot:'Snapshot summary',deadlocks:'Deadlocks','unique-stacks':'Grouped stacks',
         'wait-chains':'Wait chains',threadpool:'Snapshot thread-pool query','thread-statics':'Thread statics'};
       let threadSnapshotEvidenceId = "thread-1";
@@ -272,8 +280,10 @@ test("domain return restores CPU view and filter without a request; new captures
       const renderCapture = () => {};
       const renderCpuQuery = (...args) => renders.push(args);
       ${navigation}
+      ${activation}
       ${profile}
-      return {setWorkspaceEvidence,selectThreadSnapshotView,selectProfileView,cacheProfileQuery,loadSelectedProfileView,
+      return {setWorkspaceEvidence,activateCaptureTab,getActiveResultTab:()=>activeResultTab,
+        selectThreadSnapshotView,selectProfileView,cacheProfileQuery,loadSelectedProfileView,
         setAvailable:()=>{profileAvailability.cpu=true},
         capture:message=>{${capture}}};
     `)(document, {postMessage:m=>requests.push(m)}, renders);
@@ -307,6 +317,20 @@ test("domain return restores CPU view and filter without a request; new captures
     assert.match(nodes.workspaceThreadViewStatus.textContent, /explicitly query this snapshot/);
     assert.deepEqual(requests, [{type:"queryCpu",evidenceId:"cpu-1",view:"top-methods"}],
         "switching thread views remains local and never issues an implicit query");
+    for (const kind of ["requests", "kestrel", "db", "networking"]) {
+        api.activateCaptureTab(kind);
+        assert.equal(api.getActiveResultTab(), "Workspace");
+        assert.equal(nodes.workspaceDomain.value, "requests");
+        assert.deepEqual(nodes.workspaceEvidenceKind.children.map(option => option.value),
+            ["requests", "kestrel", "db", "networking"]);
+        assert.equal(nodes.workspaceEvidenceKind.value, kind);
+        assert.equal(nodes.workspaceView.value, "capture-result");
+        assert.equal(nodes.workspaceView.disabled, true, "generic results have no retained query view");
+        assert.equal(nodes.workspaceLoadView.hidden, true, "navigation has no synthetic load action");
+        assert.match(nodes.workspaceEvidenceStatus.textContent, /No completed evidence/);
+    }
+    assert.deepEqual(requests, [{type:"queryCpu",evidenceId:"cpu-1",view:"top-methods"}],
+        "request-family navigation performs no CLI work");
 });
 
 test("GC, contention and networking captures keep one truthful replaceable generic result slot", () => {
@@ -327,12 +351,15 @@ test("GC, contention and networking captures keep one truthful replaceable gener
     const replaceOwner = new Function("document", "workspaceCanvas", "genericCaptureViews", "captureDiagnosticsStatus",
         "workspaceGcStatus", "setWorkspaceStatus", "usesWorkspaceForGenericCapture", "isThreadCapture", `
           let genericCaptureKind;
-          const genericCaptureLabels = {gc:"Garbage collections",contention:"Lock contention",networking:"Networking"};
+          const genericCaptureLabels = {gc:"Garbage collections",contention:"Lock contention",networking:"Networking",
+            requests:"In-flight requests",kestrel:"Kestrel",db:"Database"};
+          const isRequestCapture = kind => ["requests", "kestrel", "db", "networking"].includes(kind);
           ${source}
           return {setGenericCaptureOwner,getOwner:()=>genericCaptureKind};
         `)(document, workspaceCanvas, genericCaptureViews, captureDiagnosticsStatus, workspaceGcStatus,
         (kind, status) => statuses.set(kind, status),
-        kind => ["gc", "gc-activities", "off_cpu", "contention", "threadpool"].includes(kind),
+        kind => ["gc", "gc-activities", "off_cpu", "contention", "threadpool",
+            "requests", "kestrel", "db", "networking"].includes(kind),
         kind => ["off_cpu", "contention", "threadpool"].includes(kind));
 
     replaceOwner.setGenericCaptureOwner("gc", "gc-1");
@@ -343,10 +370,85 @@ test("GC, contention and networking captures keep one truthful replaceable gener
     assert.equal(genericCaptureViews.parentElement, workspaceCanvas);
     assert.match(statuses.get("gc"), /no longer current|replaced/i);
     replaceOwner.setGenericCaptureOwner("networking", "networking-1");
-    assert.equal(genericCaptureViews.parentElement, diagnostics);
+    assert.equal(genericCaptureViews.parentElement, workspaceCanvas);
     assert.equal(genericCaptureViews.dataset.evidenceId, "networking-1");
     assert.match(statuses.get("contention"), /no longer current|replaced/i);
-    assert.match(captureDiagnosticsStatus.textContent, /Diagnostics/);
+    assert.match(captureDiagnosticsStatus.textContent, /Requests & networking/);
+    replaceOwner.setGenericCaptureOwner("requests", "requests-1");
+    assert.equal(genericCaptureViews.parentElement, workspaceCanvas);
+    assert.equal(genericCaptureViews.dataset.evidenceId, "requests-1");
+    assert.match(statuses.get("networking"), /replaced by In-flight requests/i);
+    replaceOwner.setGenericCaptureOwner("kestrel", "kestrel-1");
+    assert.equal(genericCaptureViews.dataset.evidenceId, "kestrel-1");
+    assert.match(statuses.get("requests"), /replaced by Kestrel/i);
+    replaceOwner.setGenericCaptureOwner("db", "db-1");
+    assert.equal(genericCaptureViews.dataset.evidenceId, "db-1");
+    assert.match(statuses.get("kestrel"), /replaced by Database/i);
+});
+
+test("request-family failures preserve the current result and late completions cannot replace it", () => {
+    const script = extractInlineScript(renderHtml(target, "nonce", 120));
+    const routeStart = script.indexOf("} else if (message.type === 'captureStatus' && message.kind === 'diagnostics') {");
+    const routeEnd = script.indexOf("      } else if (message.type === 'captureStatus' && message.kind === 'heap')", routeStart);
+    const route = script.slice(routeStart, routeEnd).replace(/^\s*}\s*else if/, "if") + " }";
+    const ownerStart = script.indexOf("function setGenericCaptureOwner(kind, evidenceId) {");
+    const ownerEnd = script.indexOf("    const cpuQueryLabels = {", ownerStart);
+    const owner = script.slice(ownerStart, ownerEnd);
+    assert.ok(routeStart >= 0 && routeEnd > routeStart && ownerStart >= 0 && ownerEnd > ownerStart);
+
+    const makeNode = () => ({
+        dataset: {}, hidden: false, disabled: false, parentElement: null, textContent: "",
+        appendChild(child) { child.parentElement = this; return child; },
+        replaceChildren() {},
+    });
+    const workspaceCanvas = makeNode(), diagnostics = makeNode(), genericCaptureViews = makeNode();
+    const captureDiagnosticsStatus = makeNode(), captureDiagnosticsButton = makeNode();
+    const workspaceCaptureStatus = makeNode(), workspaceGcStatus = makeNode();
+    const statuses = new Map();
+    const document = { getElementById: id => id === "resultDiagnostics" ? diagnostics : null };
+    const api = new Function("document", "workspaceCanvas", "genericCaptureViews", "captureDiagnosticsStatus",
+        "captureDiagnosticsButton", "workspaceCaptureStatus", "workspaceGcStatus", "setWorkspaceStatus", `
+          let diagnosticsRequestId;
+          let genericCaptureKind;
+          let activeCapture;
+          const genericCaptureLabels = {gc:"Garbage collections",contention:"Lock contention",
+            networking:"Networking",requests:"In-flight requests"};
+          const isThreadCapture = kind => ["off_cpu","contention","threadpool"].includes(kind);
+          const isRequestCapture = kind => ["requests","kestrel","db","networking"].includes(kind);
+          const usesWorkspaceForGenericCapture = kind => ["gc","gc-activities"].includes(kind)
+            || isThreadCapture(kind) || isRequestCapture(kind);
+          const activateCaptureTab = kind => { activeCapture = kind; };
+          const renderCaptureView = () => {};
+          ${owner}
+          function handleMessage(message) { ${route} }
+          return {handleMessage, getOwner:()=>genericCaptureKind, getActiveCapture:()=>activeCapture};
+        `)(document, workspaceCanvas, genericCaptureViews, captureDiagnosticsStatus, captureDiagnosticsButton,
+        workspaceCaptureStatus, workspaceGcStatus, (kind, message) => statuses.set(kind, message));
+
+    const status = (evidenceId, captureKind, state) => api.handleMessage({
+        type: "captureStatus", kind: "diagnostics", evidenceId, captureKind, state, message: state,
+    });
+    const result = (evidenceId, captureKind) => api.handleMessage({
+        type: "capture", kind: "diagnostics", evidenceId, captureKind, result: { kind: captureKind },
+    });
+    status("networking-1", "networking", "running");
+    result("networking-1", "networking");
+    assert.equal(api.getOwner(), "networking");
+    assert.equal(genericCaptureViews.dataset.evidenceId, "networking-1");
+    status("requests-failed", "requests", "running");
+    status("requests-failed", "requests", "error");
+    assert.equal(api.getOwner(), "networking", "a failed request capture does not replace valid evidence");
+    assert.equal(genericCaptureViews.dataset.evidenceId, "networking-1");
+    result("networking-1", "networking");
+    assert.equal(api.getOwner(), "networking", "a completion from the previous request is ignored");
+    assert.equal(genericCaptureViews.dataset.evidenceId, "networking-1");
+    status("contention-2", "contention", "running");
+    result("contention-2", "contention");
+    assert.equal(api.getOwner(), "contention");
+    assert.equal(genericCaptureViews.dataset.evidenceId, "contention-2");
+    result("requests-failed", "requests");
+    assert.equal(api.getOwner(), "contention", "a late failed-request completion cannot overwrite newer evidence");
+    assert.equal(genericCaptureViews.dataset.evidenceId, "contention-2");
 });
 
 function cpuRenderer() {
@@ -1459,6 +1561,175 @@ test("all diagnostic kinds provide sortable selectable returned rows without fab
             "each captured table keeps horizontal scrolling inside its own bounded wrapper");
         assert.equal(root.querySelector("script"), null);
     }
+});
+
+test("in-flight request rows lead the result and state filters compose with returned-row search", () => {
+    const { document, makeContainer } = createDocumentStub();
+    const root = makeContainer("diagnostics");
+    const { CAPTURE_VIEW_RENDERER_SCRIPT } = require("../out/captureViewRenderer.js");
+    const render = new Function("document", CAPTURE_VIEW_RENDERER_SCRIPT + ";return renderCaptureView;")(document);
+    render("diagnostics", {
+        kind: "requests", title: "requests", summary: "An unparsed fallback summary.",
+        provenance: { processId: 42, requestedDurationSeconds: 10 },
+        metrics: [
+            { label: "Started", value: 12 },
+            { label: "Completed", value: 7 },
+            { label: "In flight at end", value: 5 },
+            { label: "Long-running", value: 3 },
+            { label: "Long-running threshold (ms)", value: 750 },
+        ],
+        tables: [{
+            id: "requests", title: "In-flight requests",
+            columns: ["Method", "Path", "Elapsed (ms)", "Long-running", "Started", "Trace ID"],
+            rows: [
+                ["GET", "/alpha", 2400, true, "t1", "trace-a"],
+                ["POST", "/beta", 300, false, "t2", "trace-b"],
+                ["GET", "/gamma", 1700, true, "t3", "trace-c"],
+                ["GET", "/delta", 100, false, "t4", "trace-d"],
+            ],
+            totalRows: 5, omittedRows: 1, emptyText: "No in-flight requests.",
+        }],
+        notes: ["In-flight requests: 1 retained row(s) omitted from the view at topN=4.",
+            "Dropped 2 newer starts at maxRequests=100; counts are lower bounds.",
+            "Correlation uses tracked starts; counts do not prove unique operations."],
+        evidence: { source: "collector", limitations: [
+            { category: "Capture window", scope: "requests", detail: "The snapshot is partial." },
+        ] },
+    });
+
+    assert.match(root.textContent, /In-flight requests/);
+    assert.match(root.textContent, /Window: 12 observed starts · 7 matched completions/);
+    assert.match(root.textContent, /At close: 5 tracked in flight · 3 tracked long-running \(≥ 750 ms\)/);
+    assert.match(root.textContent, /PID 42 · 10s window · Live capture, not saved/);
+    assert.doesNotMatch(root.textContent, /An unparsed fallback summary|requests\n/);
+    assert.doesNotMatch(root.textContent, /Metrics/);
+    assert.match(root.textContent, /In flight at window close · Filters apply to shown rows/);
+    const conciseSummary = root.children.find(child =>
+        child.textContent === "In flight at window close · Filters apply to shown rows.");
+    assert.ok(conciseSummary, "the short result scope stays visible above the table");
+    assert.match(root.textContent, /All in-flight \(4 shown\)/);
+    assert.match(root.textContent, /At or above 750 ms \(2 shown\)/,
+        "filter count comes from returned rows, not the capture-wide long-running metric");
+    assert.match(root.textContent, /Dropped 2 newer starts/);
+    assert.match(root.textContent, /Correlation uses tracked starts/);
+    assert.match(root.textContent, /1 retained row\(s\) omitted/);
+    assert.match(root.textContent, /Capture window \(requests\): The snapshot is partial/);
+    const selector = document.getElementById("inFlightRequestsStateFilter");
+    assert.equal(selector.getAttribute("aria-label"), "Show in-flight requests");
+    const table = document.getElementById("inFlightRequestsTable");
+    const disclaimer = root.querySelector(".diagnostic-request-disclaimer");
+    assert.ok(disclaimer, "full capture limitations appear as a readable disclaimer");
+    assert.match(disclaimer.textContent, /Search, sorting, and filtering apply only to returned rows/);
+    assert.match(disclaimer.textContent, /Start\/stop pairing uses an activity ID or trace\/span ID pair/);
+    assert.match(disclaimer.textContent, /Events without correlatable IDs are skipped/);
+    assert.match(disclaimer.textContent, /repeated starts replace the tracked entry/);
+    assert.ok(root.children.indexOf(disclaimer) > root.children.indexOf(table._parent),
+        "the disclaimer follows the request table");
+    assert.equal(root.querySelector("details"), null, "the full explanation is no longer hidden behind disclosure");
+    const notes = root.querySelector(".diagnostic-capture-notes");
+    assert.equal(notes._parent, root, "collector warnings remain visible before the request table");
+    assert.match(notes.textContent, /Dropped 2 newer starts/);
+    assert.ok(root.children.some(child => child.textContent.includes("Capture window (requests): The snapshot is partial")),
+        "evidence limitations remain visible before the request table");
+    const body = table.querySelector("tbody");
+    assert.equal(body.children.length, 4);
+    const search = root.querySelector("input");
+    search.value = "beta";
+    search.listeners.input();
+    assert.equal(body.children.length, 1);
+    assert.match(root.textContent, /1 of 4 returned rows/);
+    selector.value = "long-running";
+    selector.listeners.change();
+    assert.equal(body.children.length, 0, "search and state filters intersect");
+    assert.match(root.textContent, /0 of 2 returned rows/);
+    search.value = "gamma";
+    search.listeners.input();
+    assert.deepEqual(body.children.map(row => row.children[1].textContent), ["/gamma"]);
+    assert.match(root.textContent, /1 of 2 returned rows/);
+    selector.value = "all";
+    selector.listeners.change();
+    assert.deepEqual(body.children.map(row => row.children[1].textContent), ["/gamma"]);
+    assert.match(root.textContent, /1 of 4 returned rows/);
+});
+
+test("in-flight request state filter omits a threshold claim when threshold metadata is absent", () => {
+    const { document, makeContainer } = createDocumentStub();
+    const root = makeContainer("diagnostics");
+    const { CAPTURE_VIEW_RENDERER_SCRIPT } = require("../out/captureViewRenderer.js");
+    const render = new Function("document", CAPTURE_VIEW_RENDERER_SCRIPT + ";return renderCaptureView;")(document);
+    render("diagnostics", {
+        kind: "requests", title: "Requests", summary: "Request capture.",
+        provenance: { processId: 42, requestedDurationSeconds: 10 },
+        metrics: [{ label: "Long-running", value: 1 }],
+        tables: [{
+            id: "requests", title: "In-flight requests",
+            columns: ["Method", "Path", "Elapsed (ms)", "Long-running", "Started", "Trace ID"],
+            rows: [["GET", "/slow", 1200, true, "t1", "trace-a"]],
+            totalRows: 1, omittedRows: 0, emptyText: "No in-flight requests.",
+        }],
+        notes: [],
+        evidence: { source: "collector", limitations: [] },
+    });
+
+    const selector = document.getElementById("inFlightRequestsStateFilter");
+    assert.match(selector.children[1].textContent, /^Long-running \(1 shown\)$/);
+    assert.doesNotMatch(selector.children[1].textContent, /(?:above|at or above|ms)/i);
+});
+
+test("in-flight request Started timestamps display in UTC while preserving precise ISO values and sort order", () => {
+    const { document, makeContainer } = createDocumentStub();
+    const root = makeContainer("diagnostics");
+    const { CAPTURE_VIEW_RENDERER_SCRIPT } = require("../out/captureViewRenderer.js");
+    const render = new Function("document", CAPTURE_VIEW_RENDERER_SCRIPT + ";return renderCaptureView;")(document);
+    const later = "2026-10-21T22:45:00.0000000Z";
+    const offsetEarlier = "2026-10-21T23:30:00.7395271+02:00";
+    const result = {
+        kind: "requests", title: "Requests", summary: "Request capture.",
+        provenance: { processId: 42, requestedDurationSeconds: 10 },
+        metrics: [{ label: "Long-running threshold (ms)", value: 1000 }],
+        tables: [{
+            id: "requests", title: "In-flight requests",
+            columns: ["Method", "Path", "Elapsed (ms)", "Long-running", "Started", "Trace ID"],
+            rows: [
+                ["GET", "/later", 1200, true, later, "trace-a"],
+                ["GET", "/offset", 1300, true, offsetEarlier, "trace-b"],
+                ["GET", "/invalid", 1400, false, "not-an-ISO-timestamp", "trace-c"],
+                ["GET", "/missing", 1500, false, null, "trace-d"],
+            ],
+            totalRows: 4, omittedRows: 0, emptyText: "No in-flight requests.",
+        }],
+        notes: [],
+        evidence: { source: "collector", limitations: [] },
+    };
+    render("diagnostics", result);
+
+    const table = document.getElementById("inFlightRequestsTable");
+    const body = table.children[2];
+    const laterCell = body.children[0].children[4];
+    const offsetCell = body.children[1].children[4];
+    const invalidCell = body.children[2].children[4];
+    const missingCell = body.children[3].children[4];
+    assert.equal(laterCell.children[0].textContent, "21 Oct 2026, 22:45:00.000 UTC");
+    assert.equal(laterCell.children[0].getAttribute("datetime"), later);
+    assert.equal(laterCell.children[0].getAttribute("title"), `Original ISO timestamp: ${later}`);
+    assert.match(laterCell.children[0].getAttribute("aria-label"), new RegExp(later.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.equal(offsetCell.children[0].textContent, "21 Oct 2026, 21:30:00.739 UTC");
+    assert.equal(offsetCell.children[0].getAttribute("datetime"), offsetEarlier);
+    assert.equal(invalidCell.textContent, "not-an-ISO-timestamp");
+    assert.equal(invalidCell.children.length, 0);
+    assert.equal(missingCell.textContent, "Unavailable");
+    assert.equal(missingCell.children.length, 0);
+    assert.equal(result.tables[0].rows[0][4], later, "rendering does not mutate the source timestamp");
+
+    const startedSort = table.children[1].children[0].children[4].children[0];
+    startedSort.listeners.click();
+    assert.deepEqual(body.children.slice(0, 2).map(row => row.children[1].textContent), ["/offset", "/later"],
+        "sort order follows the UTC instant, not the displayed date or source offset");
+    const search = root.querySelector("input");
+    search.value = offsetEarlier;
+    search.listeners.input();
+    assert.deepEqual(body.children.map(row => row.children[1].textContent), ["/offset"],
+        "search still matches the original ISO timestamp");
 });
 
 test("heap view switching retains table filters and selection, surfaces hidden failures, and does not auto-switch on arrival", () => {
