@@ -623,8 +623,15 @@ completed successfully for that source. These runs predate the 0.4.0 package and
 its VSIX. The rebuilt 0.4.0 VSIX passed manifest/changelog/walkthrough-resource integrity checks
 (59 packaged files), installed and activated in an isolated VS Code 1.143 profile, and its bundled
 CLI runner/parser completed a JSONL handshake with a rebuilt CLI
-`1.0.0+4e52d0586e354f3aadedec2202a3d05ad7cdb02b` (protocol v2). The extension suite passed 255
-tests with one skip, including a real handshake against that CLI build. This is package-integrity,
+`1.0.0+4e52d0586e354f3aadedec2202a3d05ad7cdb02b` (protocol v2). That is the local build's default
+assembly version, not a published CLI release or evidence of full feature compatibility.
+The supported full-feature floor remains CLI 0.31.0; CLI 0.29.0 remains the base protocol-v2 floor.
+The installed **Check Environment** command did not complete in the automation harness, so no
+successful installed environment-check or full-compatibility result is claimed.
+Independent release review found a missing saved-comparison changelog entry. The corrected VSIX
+was rebuilt and archive-checked: only `extension/changelog.md` changed; runtime and resource bytes
+match the installed candidate. The extension suite passed 255 tests with one skip, including a
+real handshake against that CLI build. This is package-integrity,
 protocol, and minimal-launch evidence, not a full VS Code interaction or capture-correctness
 certification; a second full capture matrix is not part of this preparation.
 
@@ -632,7 +639,8 @@ The installed 0.3.1 candidate was exercised on Windows VS Code 1.143 with CLI
 `0.31.0+4e52d0586e354f3aadedec2202a3d05ad7cdb02b` (protocol v2). One instrumented packaged
 allocation capture returned 418 events and 44,635,168 estimated bytes; a 12-node call-tree query
 on the same handle returned the same root-byte count. An earlier empty allocation result remains
-unexplained; this evidence does not establish that it is fixed. Live Events passed a bounded
+unexplained and is deferred to [issue #1244](https://github.com/pedrosakuma/dotnet-diagnostics/issues/1244);
+this evidence does not establish that it is fixed. Live Events passed a bounded
 Microsoft-Windows-DotNETRuntime sample alongside counters, including pause/filter/clear/stop
 interactions, but source-drop availability was unknown; only local drop counters were zero.
 
