@@ -233,9 +233,10 @@ the string; the separate one-request sensitive-data consent remains required.
 Heap type exploration uses an adjacent details pane in wide panels, with independent scrolling
 for the returned type list and details. Selecting a type no longer opens its details below the
 whole table. At widths of 850 px or less, the same pane replaces the list; **Back to types**
-restores the existing list, filters, sort and page scroll position. **Explore heap details**
-opens captured query views without choosing a type. This layout is shared by live heap and dump
-analysis and starts no additional diagnostic reads.
+restores the existing list, filters, sort and page scroll position. In the domain workspace,
+**View → Heap details** navigates to the captured details without choosing a type; **Snapshot totals**
+returns to the type list. The separate dump-analysis surface retains **Explore heap details**.
+Both routes use the same responsive pane and start no additional diagnostic reads.
 
 The **Call tree** view has linked tree-table and **Flame graph (icicle)** modes.
 The tree-table aligns method/call path, **Total %** (including descendants) and **Self %**
@@ -248,8 +249,12 @@ the bounded table horizontally rather than dropping either metric.
 manual expansion, selection and focus. Its marked path is not a global hotpath claim: expansion
 stops when omitted descendants could dominate. The separate **Hot path** view remains an
 explicit retained-profile query when not already cached.
-Select a method in the tree for inclusive/self counts and available on-CPU, heuristic-wait
-and unknown evidence. **Focus** (or clicking a flame block) zooms into that exact loaded
+Click a tree row or press Enter/Space on it to select that exact call-path occurrence only:
+selection does not expand, focus or query. The selected row uses the editor's selection colors.
+A single contextual area immediately above the independently scrolling tree names the selected
+branch and provides **Focus branch** beside **Expand hotpath**. With no selection it asks for a row,
+and Focus is disabled. Raw inclusive/self counts and available on-CPU, heuristic-wait and unknown
+evidence appear there. **Focus branch** (or clicking a flame block) zooms into that exact loaded
 branch; breadcrumbs and **Reset focus** navigate back. Repeated method names remain separate
 call paths. Keyboard users can use the table's disclosure buttons, or Tab and Enter/Space
 on flame blocks (Escape moves to the parent). **Find method or module** highlights matches
@@ -267,6 +272,7 @@ high-contrast themes use editor/system colors. Narrow panels scroll horizontally
 shrinking the labels. **Query subtree by method** requests another
 bounded projection from the retained artifact. This backend query chooses the highest-ranked
 occurrence containing the method name, not necessarily the selected call path.
+Retained-capture queries are in a separate disclosure, not the local branch-action area.
 **Full capture tree** queries the original root, still bounded. **Callers / callees**
 uses the same method-name lookup; **Back to CPU profile** restores the cached projection,
 mode, search and local focus without a new request. A successful new CPU capture replaces the old

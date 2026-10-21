@@ -3295,7 +3295,6 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       <div id="captureHeapHeadline"></div>
       <div id="heapWorkspace" class="heap-workspace" data-focused="false">
       <div id="heapTypeList" class="heap-type-list">
-      <button id="openHeapDetails" type="button">Explore heap details</button>
       <table id="captureHeapTable">
         <thead><tr><th>Type</th><th>Instances</th><th>Bytes</th></tr></thead>
         <tbody id="captureHeapBody"></tbody>
@@ -3402,9 +3401,9 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     ${LIVE_TIME_NAVIGATION_SCRIPT}
     ${LIVE_READ_CONSENT_SCRIPT}
     let cpuProfileResult;
-    const cpuProfileState = { mode: 'tree', search: '', focus: [], selected: [] };
+    const cpuProfileState = { mode: 'tree', search: '', focus: [], selected: undefined };
     let allocationProfileResult;
-    const allocationProfileState = { mode: 'tree', search: '', focus: [], selected: [] };
+    const allocationProfileState = { mode: 'tree', search: '', focus: [], selected: undefined };
     const resultTabs = Array.from(document.querySelectorAll('.result-tabs [role="tab"]'));
     const workspaceDomain = document.getElementById('workspaceDomain');
     const workspaceEvidenceKind = document.getElementById('workspaceEvidenceKind');
@@ -3517,12 +3516,8 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       if (selectedWorkspaceEvidence === 'cpu' || selectedWorkspaceEvidence === 'allocation') {
         selectProfileView(selectedWorkspaceEvidence, workspaceView.value);
       } else if (selectedWorkspaceEvidence === 'heap') {
-        const button = document.getElementById(workspaceView.value === 'details' ? 'openHeapDetails' : 'backToHeapTypes');
-        button?.click();
+        navigateHeapDetails(workspaceView.value === 'details');
       }
-    });
-    document.getElementById('openHeapDetails').addEventListener('click', () => {
-      if (selectedWorkspaceEvidence === 'heap') workspaceView.value = 'details';
     });
     document.getElementById('backToHeapTypes').addEventListener('click', () => {
       if (selectedWorkspaceEvidence === 'heap') workspaceView.value = 'snapshot';
@@ -3983,7 +3978,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       } else if (view === 'call-tree') {
         if (profileResult !== result) {
           profileState.focus = [];
-          profileState.selected = [];
+          profileState.selected = undefined;
           profileState.expanded = undefined;
         }
         if (allocation) allocationProfileResult = result;
@@ -4508,7 +4503,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           + '. Values are estimated sampled allocation bytes, not CPU samples or retained heap.');
         allocationProfileResult = undefined;
         allocationProfileState.focus = [];
-        allocationProfileState.selected = [];
+        allocationProfileState.selected = undefined;
         allocationProfileState.search = '';
         allocationProfileState.expanded = undefined;
         document.getElementById('allocationQueryViews').replaceChildren();
@@ -4630,7 +4625,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           + ' captured stack samples. Percentages are sample shares, not measured CPU time or utilization; Total includes descendants and Self excludes them.');
         cpuProfileResult = undefined;
         cpuProfileState.focus = [];
-        cpuProfileState.selected = [];
+        cpuProfileState.selected = undefined;
         cpuProfileState.search = '';
         cpuProfileState.expanded = undefined;
         cpuQueryViews.replaceChildren();

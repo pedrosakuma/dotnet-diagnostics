@@ -155,10 +155,10 @@ function loadRenderer() {
     const { document, makeContainer } = createDocumentStub();
     // eslint-disable-next-line no-new-func -- exercises the exact script emitted into the webview.
     const api = new Function(
-        "document",
+        "document", "window",
         `${QUERY_VIEW_RENDERER_SCRIPT}\nreturn { renderQueryView, enhanceEvidenceTable, resetEvidenceTable,
-            renderHeapTypeNavigation, updateThreadNavigation, renderExceptionNavigation };`,
-    )(document);
+            renderHeapTypeNavigation, navigateHeapDetails, updateThreadNavigation, renderExceptionNavigation };`,
+    )(document, {scrollY:13, scrollTo(){}});
     return { ...api, makeContainer, document };
 }
 
@@ -284,9 +284,9 @@ function cpuRenderer() {
     const { renderCpuQuery, state } = new Function("document", "cpuQueryViews", "vscode",
         `${CPU_PROFILE_SCRIPT}
         let cpuProfileResult;
-        const cpuProfileState = { mode: 'tree', search: '', focus: [], selected: [] };
+        const cpuProfileState = { mode: 'tree', search: '', focus: [], selected: undefined };
         let allocationProfileResult;
-        const allocationProfileState = { mode: 'tree', search: '', focus: [], selected: [] };
+        const allocationProfileState = { mode: 'tree', search: '', focus: [], selected: undefined };
         let cpuEvidenceId;
         let allocationEvidenceId;
         const activeProfileViews = { cpu: 'triage', allocation: 'call-tree' };
@@ -309,6 +309,7 @@ test("allocation explorer uses estimated bytes, separate profile state and alloc
     assert.match(allocationContainer.textContent, /estimated allocation bytes/);
     assert.match(allocationContainer.textContent, /800 of 1000 estimated bytes \(80.0%\)/);
     assert.doesNotMatch(allocationContainer.textContent, /heuristic-wait|on-CPU \//);
+    selectCpuPath(allocationContainer, "");
     click(allocationContainer, "Callers / callees");
     assert.equal(requests.at(-1).type, "queryAllocation");
     click(allocationContainer, "Flame graph (icicle)");
@@ -374,6 +375,11 @@ function cpuNode(method, inclusiveSamples, exclusiveSamples, children = []) {
     return { frame: { method, module: "App" }, inclusiveSamples, exclusiveSamples, children };
 }
 
+function selectCpuPath(container, path) {
+    const row = elements(container, e => e.attributes["data-node-path"] === path)[0];
+    row.listeners.keydown({key:"Enter",target:row,preventDefault(){}});
+}
+
 test("CPU call tree renders a semantic table with disclosures and selected-method queries", () => {
     const { renderCpuQuery, container, requests } = cpuRenderer();
     renderCpuQuery("call-tree", { data: { totalSamples: 20,
@@ -387,6 +393,7 @@ test("CPU call tree renders a semantic table with disclosures and selected-metho
     assert.match(tree.textContent, /App\.Main\(\)/);
     assert.match(tree.textContent, /100.0%10.0%/);
     assert.match(tree.textContent, /App\.Work\(\)/);
+    selectCpuPath(container, "");
     click(container, "Callers / callees");
     assert.deepEqual(requests, [{
         type: "queryCpu",
@@ -465,7 +472,8 @@ test("CPU focus uses exact local paths across modes, preserves capture denominat
             cpuNode("Repeat", 40, 0, [cpuNode("Second", 40, 40)]),
         ]),
     } }, false);
-    click(container, "Focus", 3);
+    selectCpuPath(container, "1");
+    click(container, "Focus branch");
     assert.deepEqual(state.focus, [1]);
     assert.equal(elements(container, e => e.attributes["data-node-path"] === "1.0")[0].hidden, false,
         "focusing a collapsed branch opens its loaded children");
@@ -538,7 +546,8 @@ test("CPU caller/callee and query errors return to cached mode, search and exact
         root: cpuNode("Root", 10, 0, [cpuNode("Work", 10, 10)]),
     } };
     renderCpuQuery("call-tree", result, false);
-    click(container, "Focus", 1);
+    selectCpuPath(container, "0");
+    click(container, "Focus branch");
     click(container, "Flame graph (icicle)");
     const input = container.querySelector("input");
     input.value = "Work";
@@ -567,7 +576,9 @@ test("disconnected CPU projections keep local exploration while redrawn query co
     container.setAttribute("data-profile-query-reason", "Capture again for CLI queries.");
     click(container, "Flame graph (icicle)");
     assert.ok(container.querySelector("svg"), "switching cached presentation is not a CLI operation");
-    click(container, "Focus selected branch");
+    click(container, "Call tree");
+    selectCpuPath(container, "0");
+    click(container, "Focus branch");
     const queryButtons = elements(container, element =>
         element.textContent === "Callers / callees" || element.textContent === "Query subtree by method");
     assert.equal(queryButtons.length, 2);
@@ -577,6 +588,7 @@ test("disconnected CPU projections keep local exploration while redrawn query co
     assert.deepEqual(requests, []);
     container.setAttribute("data-profile-query-available", "true");
     click(container, "Reset focus");
+    selectCpuPath(container, "");
     click(container, "Query subtree by method");
     assert.equal(requests.length, 1, "reconnection restores newly rendered query controls");
 });
@@ -589,6 +601,7 @@ test("selecting a cached tree after disconnect derives retention copy from its a
         data:{totalSamples:10,root:cpuNode("Root",10,10)}},false);
     assert.match(container.textContent,/Cached loaded projection only/);
     assert.doesNotMatch(container.textContent,/handle retains the full tree/);
+    selectCpuPath(container, "");
     click(container,"Query subtree by method");
     assert.deepEqual(requests,[]);
 });
@@ -617,7 +630,7 @@ test("CPU tree-table aligns fixed capture shares and expands only the known load
     assert.equal(expandedRows[2].hidden,false);
     assert.equal(expandedRows[4].hidden,false,"off-path manual expansion survives");
     assert.deepEqual(state.focus,[]);
-    assert.deepEqual(state.selected,[]);
+    assert.equal(state.selected,undefined);
     assert.deepEqual(requests,[]);
     assert.match(container.textContent,/not a global diagnosis/);
     assert.doesNotMatch(container.textContent,/handle retains the full tree/);
@@ -628,6 +641,49 @@ test("CPU tree-table aligns fixed capture shares and expands only the known load
         root:cpuNode("Root",100,0,[cpuNode("Known minority",20,20)])}},false);
     click(container,"Expand hotpath");
     assert.deepEqual(state.expanded,[""],"a dominating omitted branch cannot be manufactured or expanded");
+});
+
+test("CPU contextual actions select exact occurrences by mouse and keyboard without focus, expansion or requests", () => {
+    const {renderCpuQuery,container,state,requests}=cpuRenderer();
+    const result={data:{totalSamples:100,root:cpuNode("Root",100,0,[
+        cpuNode("Same.Name",60,10,[cpuNode("Leaf",50,50)]),
+        cpuNode("Same.Name",40,40),
+    ])}};
+    renderCpuQuery("call-tree",result,false);
+    const context=container.querySelector(".cpu-profile-selection");
+    assert.match(context.textContent,/Select a row for branch actions/);
+    assert.equal(context.querySelector("button").disabled,true);
+    assert.equal(elements(container,e=>e.textContent==="Callers / callees").length,0);
+    const rows=elements(container,e=>e.attributes["data-node-path"]!==undefined);
+    assert.equal(elements(container.querySelector(".cpu-call-tree"),e=>e.textContent==="Focus"||e.textContent==="Hotpath").length,0);
+    const expanded=[...state.expanded ?? [""]];
+    rows[1].listeners.click({target:rows[1]});
+    assert.deepEqual(state.selected,[0]);
+    assert.equal(rows[1].getAttribute("aria-selected"),"true");
+    assert.match(context.textContent,/Selected branch: Same.Name/);
+    assert.equal(context.querySelector(".cpu-profile-selected-name").title,"Same.Name");
+    const second=rows[3];
+    second.listeners.keydown({key:" ",target:second,preventDefault(){}});
+    assert.deepEqual(state.selected,[1],"same-name occurrence has its own path identity");
+    assert.equal(rows[1].getAttribute("aria-selected"),"false");
+    assert.equal(second.getAttribute("aria-selected"),"true");
+    assert.deepEqual(state.focus,[]);
+    assert.deepEqual(state.expanded ?? [""],expanded);
+    assert.deepEqual(requests,[]);
+    const expand=elements(context,e=>e.tagName==="button"&&e.textContent==="Expand hotpath")[0];
+    expand.listeners.click();
+    assert.equal(container.querySelector(".cpu-profile-selection"),context,"context is stable while tree redraws");
+    assert.equal(elements(context,e=>e.textContent==="Expand hotpath")[0],expand,"local control keeps its identity/focus");
+    assert.deepEqual(state.selected,[1]);
+    renderCpuQuery("call-tree",result,false);
+    assert.deepEqual(state.selected,[1]);
+    assert.match(container.querySelector(".cpu-profile-selection").textContent,/40.0% of capture/);
+    click(container,"Focus branch");
+    assert.deepEqual(state.focus,[1]);
+    assert.deepEqual(requests,[]);
+    click(container,"Reset focus");
+    assert.equal(state.selected,undefined);
+    assert.equal(container.querySelector(".cpu-profile-selection").querySelector("button").disabled,true);
 });
 
 test("CPU profile enforces client node/depth bounds and reports omissions", () => {
@@ -650,6 +706,7 @@ test("CPU profile renders untrusted names as text and preserves unknown schedule
     const root = cpuNode(name, 10, 10);
     root.selfSamples = { runningSamples: 0, waitingSamples: 2, unknownSamples: 8 };
     renderCpuQuery("call-tree", { data: { totalSamples: 10, root } }, false);
+    selectCpuPath(container, "");
     assert.match(container.textContent, /0 on-CPU \/ 2 heuristic-wait \/ 8 unknown/);
     assert.ok(container.textContent.includes(name));
     click(container, "Flame graph (icicle)");
@@ -675,6 +732,8 @@ test("CPU profile handles empty/zero data and rejects missing, negative or incon
         assert.equal(container.querySelector("svg"), null);
     }
     renderCpuQuery("call-tree", { data: { root: cpuNode("Unknown total", 1, 1) } }, false);
+    click(container, "Call tree");
+    selectCpuPath(container, "");
     assert.match(container.textContent, /Unavailable of capture/);
     assert.match(container.textContent, /Self scheduler-state evidence: Unavailable/);
 });
@@ -1014,6 +1073,45 @@ test("live and dump heap layouts keep types and details in separate responsive p
         assert.match(html, /workspace\.dataset\.focused = "true"/);
         assert.match(html, /window\.scrollTo\(\{ top: overviewScroll \}\)/);
     }
+});
+
+test("workspace heap View navigation replaces only the duplicate live shortcut and preserves legacy navigation", () => {
+    const live=renderHtml(target,"nonce",120),dump=renderDumpAnalysisHtml("fixture.dmp","nonce");
+    assert.doesNotMatch(live, /id="openHeapDetails"/);
+    assert.match(dump,/id="openHeapDetails" type="button">Explore heap details/);
+    assert.match(extractInlineScript(live),/navigateHeapDetails\(workspaceView.value === 'details'\)/);
+    const {makeContainer,document,renderHeapTypeNavigation,navigateHeapDetails}=loadRenderer();
+    const workspace=makeContainer("heapWorkspace");
+    const types=document.createElement("div");types.id="heapTypeList";workspace.appendChild(types);
+    const table=makeTable(document,types,["Type"],[["App.Cache"]],"captureHeapTable");
+    const pane=document.createElement("section");pane.id="heapDetailPane";workspace.appendChild(pane);
+    const back=document.createElement("button");back.id="backToHeapTypes";pane.appendChild(back);
+    const views=document.createElement("div");views.id="heapQueryViews";pane.appendChild(views);
+    const view=makeContainer("workspaceView");view.value="snapshot";
+    renderHeapTypeNavigation([{typeFullName:"App.Cache",instanceCount:2,totalBytes:100}]);
+    navigateHeapDetails(true);
+    assert.equal(workspace.dataset.focused,"true");
+    assert.equal(view.value,"details");
+    assert.equal(pane.focused,true);
+    assert.equal(pane.scrolledIntoView,true);
+    navigateHeapDetails(false);
+    assert.equal(workspace.dataset.focused,"false");
+    assert.equal(view.value,"snapshot");
+    assert.equal(view.focused,true,"no legacy shortcut is needed to restore keyboard focus");
+    click(table,"App.Cache");
+    assert.equal(workspace.dataset.focused,"true");
+    assert.equal(view.value,"details","type selection keeps workspace destination truthful");
+    back.onclick();
+    assert.equal(workspace.dataset.focused,"false");
+    assert.equal(view.value,"snapshot");
+    const open=document.createElement("button");open.id="openHeapDetails";types.appendChild(open);
+    renderHeapTypeNavigation([{typeFullName:"App.Cache",instanceCount:2,totalBytes:100}]);
+    open.onclick();
+    assert.equal(workspace.dataset.focused,"true","legacy dump shortcut still navigates");
+    back.onclick();
+    assert.equal(workspace.dataset.focused,"false");
+    assert.equal(open.focused,true);
+    assert.equal(views.children.length,0,"all navigation is local; no evidence was manufactured");
 });
 
 test("heap type focus navigates captured paths, handles late paths and clears without a live read", () => {
