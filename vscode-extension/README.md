@@ -45,16 +45,20 @@ contains live counters/GC pauses and the independent Live Events stream. Expand 
 to browse; only selecting an action enters its existing capture/consent flow.
 **Capture Diagnostics** remains the searchable expert catalog for its ten capture kinds.
 The live panel's **Workspace** uses compact **Domain → Evidence → View** selectors for CPU,
-Memory & GC, Threads & waits, and Requests & networking. Thread snapshots and off-CPU/contention/
-thread-pool captures share their domain's presentation without sharing evidence ownership: the
-snapshot handle is independent from the single replaceable generic-capture result. Requests,
-Kestrel, database, and networking captures share the Requests & networking workspace and the
-existing single replaceable generic-capture result; its **Capture result** view is descriptive,
+Memory & GC, Threads & waits, Requests & networking, and Exceptions. Thread snapshots and
+off-CPU/contention/thread-pool captures share their domain's presentation without sharing evidence
+ownership: the snapshot handle is independent from the single replaceable generic-capture result.
+Requests, Kestrel, database, and networking captures share the Requests & networking workspace and
+the existing single replaceable generic-capture result; its **Capture result** view is descriptive,
 not a retained-handle query. In-flight request results lead with the capture-window summary and
 retained request rows; state filters and search apply only to returned rows, with truncation and
-capture-quality notes kept visible. Started timestamps display in UTC; the original ISO value
-remains available to assistive technology and in the timestamp tooltip. Exceptions, Monitoring,
-dump analysis, and saved evidence keep their existing result surfaces.
+capture-quality notes kept visible. Managed-exception and crash-guard results use a separate
+single replaceable exception result, keep the selected mode and live EventPipe target visible, and
+do not become history or queryable evidence by navigating. Exception messages can contain
+sensitive application data; a process exit alone does not prove an unhandled exception. Started
+timestamps display in UTC; the original ISO value remains available to assistive technology and in
+the timestamp tooltip. Monitoring, dump analysis, and saved evidence keep their distinct result
+surfaces.
 **Analyze Dump File** and **Saved Captures** remain separate offline entry points.
 
 For a guided introduction, run **.NET Diagnostics: Open Getting Started** from the Command Palette.

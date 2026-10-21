@@ -189,17 +189,22 @@ test("live panel exposes the compact evidence workspace and keeps other result r
     const script = extractInlineScript(html);
     const dumpHtml = renderDumpAnalysisHtml("sample.dmp", "nonce123");
     for (const [label, id] of [
-        ["Live", "Live"], ["Workspace", "Workspace"], ["Exceptions", "Exceptions"],
+        ["Live", "Live"], ["Workspace", "Workspace"],
         ["Diagnostics", "Diagnostics"], ["Events", "Events"],
     ]) {
         assert.match(html, new RegExp(`role="tab"[^>]*>${label}<`));
         assert.match(html, new RegExp(`role="tabpanel" aria-labelledby="resultTab${id}"`));
     }
+    assert.doesNotMatch(html, /id="resultTabExceptions"/);
     assert.doesNotMatch(html, /id="resultTabThreads"/);
-    assert.match(html, /<select id="workspaceDomain">[\s\S]*?Memory &amp; GC[\s\S]*?Threads &amp; waits[\s\S]*?Requests &amp; networking/);
+    assert.match(html, /<select id="workspaceDomain">[\s\S]*?Memory &amp; GC[\s\S]*?Threads &amp; waits[\s\S]*?Requests &amp; networking[\s\S]*?Exceptions/);
     assert.match(html, /id="workspaceEvidenceKind"/);
     assert.match(html, /id="workspaceView"/);
     assert.match(html, /id="workspaceCanvas"/);
+    assert.match(html, /id="resultExceptions" hidden/);
+    assert.match(html, /exceptionCaptureViews[\s\S]*?Managed exceptions retain bounded messages without stack frames/);
+    assert.match(script, /exceptions: document\.getElementById\('resultExceptions'\)/);
+    assert.match(script, /workspaceCanvas\.appendChild\(panel\)/);
     assert.match(html, /<section id="resultThreads" hidden>/);
     assert.match(html, /#resultThreads\.workspace-thread-snapshot \.evidence-view-switcher/);
     assert.match(script, /workspacePanels\['thread-snapshot'\]\.classList\.add\('workspace-thread-snapshot'\)/);
@@ -968,28 +973,147 @@ test("exception captures render counts, retained messages and stacks as text wit
     assert.ok(!container.textContent.includes(message), "new results replace old sensitive messages");
 });
 
-test("live webview wires exception requests and result/status handling separately from CPU", () => {
+test("live webview wires exception evidence into the workspace without a duplicate result tab", () => {
     const html = renderHtml(target, "nonce123", 120);
     const script = extractInlineScript(html);
     assert.match(html, /id="captureExceptions"/);
     assert.match(html, /id="captureExceptionsStatus" role="status"/);
+    assert.match(html, /id="exceptionEvidenceIdentity" class="workspace-evidence-status" role="status"/);
     assert.match(script, /captureExceptionsButton\.addEventListener\('click', \(\) => vscode\.postMessage\(\{ type: 'captureExceptions' \}\)\)/);
     assert.match(script, /message\.type === 'captureStatus' && message\.kind === 'exceptions'/);
+    assert.match(script, /message\.evidenceId !== pendingExceptionEvidenceId/);
     assert.match(script, /renderQueryView\('exceptionCaptureViews', 'exceptions', message\.result, false\)/);
+    const navigationHandler = /workspaceDomain\.addEventListener\('change', \(\) => ([\s\S]*?)\)\);/.exec(script);
+    assert.ok(navigationHandler);
+    assert.doesNotMatch(navigationHandler[1], /postMessage|capture/);
     const statusBranch = /message\.type === 'captureStatus' && message\.kind === 'exceptions'\) \{([\s\S]*?)\n      \} else/.exec(script);
     assert.ok(statusBranch);
-    const elements = new Map([
-        ["captureExceptionsStatus", { textContent: "" }],
-        ["captureExceptionsButton", { disabled: false }],
-        ["exceptionCaptureViews", { clears: 0, replaceChildren() { this.clears++; } }],
-    ]);
-    const dispatchStatus = new Function("message", "captureExceptionsStatus", "captureExceptionsButton", "activateCaptureTab", "document", statusBranch[1]);
-    for (const state of ["starting", "error", "running"]) {
-        dispatchStatus({ state }, elements.get("captureExceptionsStatus"), elements.get("captureExceptionsButton"),
-            () => {}, { getElementById: id => elements.get(id) });
-        assert.equal(elements.get("exceptionCaptureViews").clears, state === "running" ? 1 : 0,
-            "only an issued capture clears prior evidence");
+    function statusHarness(initial = {}) {
+        const state = {
+            pendingExceptionEvidenceId: undefined,
+            exceptionEvidenceId: "previous-evidence",
+            exceptionEvidenceMode: "crash-guard",
+            ...initial,
+        };
+        const activated = [];
+        const statuses = [];
+        const views = { clears: 0, replaceChildren() { this.clears++; } };
+        const panel = { dataset: {} };
+        const identity = { textContent: "" };
+        const elements = new Map([
+            ["captureExceptionsStatus", { textContent: "" }],
+            ["captureExceptionsButton", { disabled: false }],
+            ["exceptionCaptureViews", views],
+            ["resultExceptions", panel],
+            ["exceptionEvidenceIdentity", identity],
+        ]);
+        const dispatch = new Function("message", "state", "deps", `
+            let pendingExceptionEvidenceId = state.pendingExceptionEvidenceId;
+            let exceptionEvidenceId = state.exceptionEvidenceId;
+            let exceptionEvidenceMode = state.exceptionEvidenceMode;
+            const { exceptionCaptureModes, captureExceptionsStatus, captureExceptionsButton,
+                activateCaptureTab, document, setWorkspaceStatus, selectedWorkspaceEvidence,
+                setWorkspaceEvidence } = deps;
+            ${statusBranch[1]}
+            Object.assign(state, { pendingExceptionEvidenceId, exceptionEvidenceId, exceptionEvidenceMode });
+        `);
+        const deps = {
+            exceptionCaptureModes: { exceptions: "Managed exceptions", "crash-guard": "Crash guard" },
+            captureExceptionsStatus: elements.get("captureExceptionsStatus"),
+            captureExceptionsButton: elements.get("captureExceptionsButton"),
+            activateCaptureTab: name => activated.push(name),
+            document: { getElementById: id => elements.get(id) },
+            setWorkspaceStatus: (...args) => statuses.push(args),
+            selectedWorkspaceEvidence: "cpu",
+            setWorkspaceEvidence() { assert.fail("status must not change the selected domain"); },
+        };
+        return { state, activated, statuses, views, panel, identity, elements, dispatch, deps };
     }
+
+    const harness = statusHarness();
+    harness.dispatch({
+        state: "starting", evidenceId: "new-request", captureKind: "crash-guard", message: "Preparing",
+    }, harness.state, harness.deps);
+    assert.deepEqual(harness.activated, ["exceptions"]);
+    assert.equal(harness.views.clears, 0);
+    assert.equal(harness.state.exceptionEvidenceId, "previous-evidence");
+    harness.dispatch({
+        state: "running", evidenceId: "old-request", captureKind: "exceptions", message: "Stale",
+    }, harness.state, harness.deps);
+    assert.equal(harness.views.clears, 0, "late status from an older request cannot clear current evidence");
+    harness.dispatch({
+        state: "error", evidenceId: "new-request", captureKind: "crash-guard", message: "Busy",
+    }, harness.state, harness.deps);
+    assert.equal(harness.views.clears, 0, "busy/failing before collection preserves the current result");
+    assert.equal(harness.state.exceptionEvidenceId, "previous-evidence");
+    assert.match(harness.statuses.at(-1)[1], /Crash guard evidence remains current/);
+    assert.deepEqual(harness.activated, ["exceptions"], "completion/error status does not steal focus");
+
+    const running = statusHarness({ pendingExceptionEvidenceId: "running-request" });
+    running.dispatch({
+        state: "running", evidenceId: "running-request", captureKind: "exceptions", message: "Capturing",
+    }, running.state, running.deps);
+    assert.equal(running.views.clears, 1);
+    assert.equal(running.state.exceptionEvidenceId, undefined);
+    assert.equal(running.state.exceptionEvidenceMode, undefined);
+    assert.equal(running.panel.dataset.evidenceId, "");
+    assert.match(running.identity.textContent, /Managed exceptions · Live EventPipe/);
+    assert.deepEqual(running.activated, [], "running status after navigation does not reclaim focus");
+});
+
+test("exception result ownership stays dedicated, mode-specific and request-correlated", () => {
+    const html = renderHtml(target, "nonce123", 120);
+    const script = extractInlineScript(html);
+    const resultBranch = /message\.type === 'capture' && message\.kind === 'exceptions'\) \{([\s\S]*?)\n      \} else if \(message\.type === 'capture' && message\.kind === 'heap'\)/.exec(script);
+    assert.ok(resultBranch);
+    const state = { pendingExceptionEvidenceId: "request-2" };
+    const panel = { dataset: {} };
+    const identity = { textContent: "" };
+    const details = { open: false };
+    const rendered = [];
+    const statuses = [];
+    const document = {
+        getElementById(id) {
+            return id === "resultExceptions" ? panel
+                : id === "exceptionEvidenceIdentity" ? identity
+                : id === "exceptionCaptureViews-exceptions" ? details
+                : null;
+        },
+    };
+    const dispatch = new Function("message", "state", "deps", `
+        let pendingExceptionEvidenceId = state.pendingExceptionEvidenceId;
+        let exceptionEvidenceId = state.exceptionEvidenceId;
+        let exceptionEvidenceMode = state.exceptionEvidenceMode;
+        const { exceptionCaptureModes, document, setWorkspaceStatus, selectedWorkspaceEvidence,
+            setWorkspaceEvidence, renderQueryView } = deps;
+        ${resultBranch[1]}
+        Object.assign(state, { pendingExceptionEvidenceId, exceptionEvidenceId, exceptionEvidenceMode });
+    `);
+    const deps = {
+        exceptionCaptureModes: { exceptions: "Managed exceptions", "crash-guard": "Crash guard" },
+        document,
+        setWorkspaceStatus: (...args) => statuses.push(args),
+        selectedWorkspaceEvidence: "cpu",
+        setWorkspaceEvidence() { assert.fail("late result must not change the selected domain"); },
+        renderQueryView: (...args) => rendered.push(args),
+    };
+
+    dispatch({
+        evidenceId: "old-request", captureKind: "exceptions", result: { data: {} },
+    }, state, deps);
+    assert.equal(state.exceptionEvidenceId, undefined);
+    assert.deepEqual(rendered, [], "late completion cannot overwrite the current exception owner");
+    dispatch({
+        evidenceId: "request-2", captureKind: "crash-guard",
+        result: { data: { processId: 4242, duration: "00:00:10" } },
+    }, state, deps);
+    assert.equal(state.exceptionEvidenceId, "request-2");
+    assert.equal(state.exceptionEvidenceMode, "crash-guard");
+    assert.deepEqual(panel.dataset, { evidenceId: "request-2", captureKind: "crash-guard" });
+    assert.match(identity.textContent, /Crash guard · Live EventPipe · PID 4242 · 00:00:10/);
+    assert.equal(rendered[0][0], "exceptionCaptureViews", "exceptions never render into the generic capture slot");
+    assert.deepEqual(statuses, [["exceptions", "Current evidence: Crash guard · Live EventPipe · PID 4242."]]);
+    assert.equal(details.open, true);
 });
 
 test("roots-by-kind renders human-readable metrics and a category table", () => {
