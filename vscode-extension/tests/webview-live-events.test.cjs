@@ -21,7 +21,9 @@ const html = renderHtml({
 }, "nonce123", 120);
 
 test("Live Events panel exposes bounded controls and clear sensitive-data framing", () => {
-    assert.match(html, /id="resultTabEvents"/);
+    assert.match(html, /id="monitoringTabEvents" role="tab"[^>]*aria-controls="monitoringEvents">Live Events/);
+    assert.match(html, /id="monitoringEvents" class="monitoring-view" role="tabpanel"/);
+    assert.doesNotMatch(html, /id="resultTabEvents"|id="resultTabDiagnostics"/);
     assert.match(html, /id="startEvents"/);
     assert.match(html, /id="stopEvents"/);
     assert.match(html, /id="eventsSearch"[^>]*maxlength="256"/);
@@ -31,6 +33,45 @@ test("Live Events panel exposes bounded controls and clear sensitive-data framin
     assert.match(html, /const eventsMaxBytes = 8388608;/);
     assert.match(html, /const eventsPageSize = 100;/);
     assert.match(html, /const eventsBatchMaxBytes = 65536;/);
+});
+
+test("Monitoring subview navigation is local, keyboard accessible, and does not touch stream state", () => {
+    const script = /<script nonce="[^"]*">([\s\S]*?)<\/script>/.exec(html)?.[1];
+    assert.ok(script);
+    const start = script.indexOf("const monitoringTabs =");
+    const end = script.indexOf("const eventsStatusElement =", start);
+    assert.ok(start >= 0 && end > start);
+    const source = script.slice(start, end);
+    assert.doesNotMatch(source, /postMessage|startEvents|stopEvents|ackEventBatch|receiveEventsBatch/);
+
+    const panels = new Map([
+        ["monitoringLive", { hidden: false }],
+        ["monitoringEvents", { hidden: true }],
+    ]);
+    const tabs = ["Live", "Events"].map(name => ({
+        id: "monitoringTab" + name,
+        attributes: { "aria-controls": "monitoring" + name, "aria-selected": String(name === "Live") },
+        listeners: {},
+        setAttribute(key, value) { this.attributes[key] = String(value); },
+        getAttribute(key) { return this.attributes[key]; },
+        addEventListener(type, listener) { this.listeners[type] = listener; },
+        focus() { this.focused = true; },
+    }));
+    const document = {
+        querySelectorAll: selector => selector === '.monitoring-tabs [role="tab"]' ? tabs : [],
+        getElementById: id => panels.get(id),
+    };
+    const navigation = new Function("document", `${source}; return {monitoringTabs, selectMonitoringTab};`)(document);
+    assert.equal(panels.get("monitoringLive").hidden, false);
+    tabs[0].listeners.keydown({ key: "ArrowRight", preventDefault() {} });
+    assert.equal(panels.get("monitoringLive").hidden, true);
+    assert.equal(panels.get("monitoringEvents").hidden, false);
+    assert.equal(tabs[1].attributes["aria-selected"], "true");
+    assert.equal(tabs[1].tabIndex, 0);
+    assert.equal(tabs[1].focused, true);
+    navigation.selectMonitoringTab(tabs[0]);
+    assert.equal(panels.get("monitoringLive").hidden, false);
+    assert.equal(panels.get("monitoringEvents").hidden, true);
 });
 
 test("managed exception specialization requires the known provider, ID, version and exact payload fields", () => {

@@ -5,8 +5,8 @@ EventPipe events, find CPU hotspots, inspect heap and thread snapshots, and anal
 
 ## What you can do
 
-- **Watch a running app:** live counters and GC pauses in one panel, or start a separate
-  EventPipe/EventSource stream with bounded search and event details.
+- **Watch a running app:** live counters and GC pauses, or a separate EventPipe/EventSource stream
+  with bounded search and event details in the Monitoring view.
 - **Capture a problem:** CPU, heap, threads, exceptions, allocations, contention and more.
 - **Explore allocation pressure:** sampled, estimated-byte call trees and flame graphs with
   method/module navigation, plus allocation type/site tables. Not exact object/lifetime tracking.
@@ -41,9 +41,13 @@ reveal and array-range navigation require 0.31.0 or later. CLI 0.30.0 supports t
 
 The **Live Diagnostics** action tree groups captures under **CPU**, **Memory & GC**,
 **Threads & waits**, **Requests & networking**, and **Exceptions**. **Monitoring**
-contains live counters/GC pauses and the independent Live Events stream. Expand a group
-to browse; only selecting an action enters its existing capture/consent flow.
-**Capture Diagnostics** remains the searchable expert catalog for its ten capture kinds.
+contains separate **Live counters & GC pauses** and **Live Events** views. Switching views
+does not start or stop either stream, collect or reopen evidence, or change event acknowledgements.
+Each stream keeps its own lifecycle, status, retained buffer and controls. Expand an action-tree
+group to browse; only selecting an action enters its existing capture/consent flow.
+**Capture Diagnostics** remains the searchable expert catalog for all ten capture kinds. Its
+generic results appear in their canonical **Workspace** domain; allocations keep their dedicated
+profile and query path.
 The live panel's **Workspace** uses compact **Domain → Evidence → View** selectors for CPU,
 Memory & GC, Threads & waits, Requests & networking, and Exceptions. Thread snapshots and
 off-CPU/contention/thread-pool captures share their domain's presentation without sharing evidence
@@ -57,8 +61,8 @@ single replaceable exception result, keep the selected mode and live EventPipe t
 do not become history or queryable evidence by navigating. Exception messages can contain
 sensitive application data; a process exit alone does not prove an unhandled exception. Started
 timestamps display in UTC; the original ISO value remains available to assistive technology and in
-the timestamp tooltip. Monitoring, dump analysis, and saved evidence keep their distinct result
-surfaces.
+the timestamp tooltip. Monitoring, dump analysis, and saved evidence keep their source-specific
+result surfaces.
 **Analyze Dump File** and **Saved Captures** remain separate offline entry points.
 
 For a guided introduction, run **.NET Diagnostics: Open Getting Started** from the Command Palette.
