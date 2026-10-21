@@ -3138,9 +3138,13 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     .query-view-table { min-width:32rem; }
     .query-view-table.cpu-query-table { min-width:48rem; table-layout:fixed; }
     .diagnostic-capture-notes li { overflow-wrap:anywhere; }
+    .diagnostic-request-filter { display:flex; align-items:center; flex-wrap:wrap; gap:.4rem; margin:.5rem 0; }
+    .diagnostic-request-filter select { box-sizing:border-box; min-width:0; max-width:100%; }
     @media (max-width:480px) {
       #diagnosticsCaptureViews > .diagnostic-evidence-table-label { display:flex; flex-direction:column; align-items:flex-start; gap:.35rem; max-width:100%; }
       #diagnosticsCaptureViews > .diagnostic-evidence-table-label > select { box-sizing:border-box; min-width:0; width:100%; max-width:100%; }
+      #diagnosticsCaptureViews > .diagnostic-request-filter { align-items:flex-start; flex-direction:column; }
+      #diagnosticsCaptureViews > .diagnostic-request-filter > select { width:100%; }
     }
     .cpu-query-table .cpu-query-symbol { width:31%; }
     .cpu-query-table .cpu-query-module { width:17%; }
@@ -3193,7 +3197,6 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     <h2>.NET Diagnostics</h2>
     <div>${escapeHtml(label)}</div>
   </header>
-  <div id="status" role="status">Live counters are ready. Select Start to begin collection; other captures run only when requested.</div>
   <nav class="result-tabs" role="tablist" aria-label="Diagnostic results">
     <button id="resultTabLive" role="tab" aria-selected="true" aria-controls="resultLive">Live</button>
     <button id="resultTabWorkspace" role="tab" aria-selected="false" aria-controls="resultWorkspace">Workspace</button>
@@ -3228,6 +3231,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     <div id="workspaceCanvas"></div>
   </section>
   <section id="resultLive" class="result-tab-panel" role="tabpanel" aria-labelledby="resultTabLive">
+    <div id="status" role="status">Live counters are ready. Select Start to begin collection; other captures run only when requested.</div>
     <div class="panel-actions">
       <label for="metric">Counter</label><select id="metric" aria-label="Select counter"></select>
       <button id="start">Start</button><button id="stop" disabled>Stop</button>
@@ -3919,7 +3923,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       genericCaptureViews.dataset.evidenceId = evidenceId || '';
       genericCaptureViews.dataset.captureKind = kind;
       const label = genericCaptureLabels[kind] || kind;
-      setWorkspaceStatus(kind, 'Current generic capture result: ' + label + '.');
+      setWorkspaceStatus(kind, (isRequestCapture(kind) ? 'Current result: ' : 'Current generic capture result: ') + label + '.');
       genericCaptureViews.hidden = false;
       if (usesWorkspaceForGenericCapture(kind)) workspaceCanvas.appendChild(genericCaptureViews);
       else document.getElementById('resultDiagnostics').appendChild(genericCaptureViews);
@@ -4698,7 +4702,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           document.getElementById('captureGc').disabled = message.state === 'running' || message.state === 'starting';
         }
         if (threadCapture) workspaceCaptureStatus.textContent = message.message || message.state || '';
-        if (requestCapture) workspaceCaptureStatus.textContent = message.message || message.state || '';
+        if (requestCapture) workspaceCaptureStatus.textContent = message.state === 'done' ? '' : message.message || message.state || '';
       } else if (message.type === 'capture' && message.kind === 'diagnostics') {
         if (message.evidenceId !== diagnosticsRequestId) return;
         const captureKind = String(message.captureKind || '');
@@ -4708,7 +4712,8 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           if (captureKind === 'gc' || captureKind === 'gc-activities') {
             workspaceGcStatus.textContent = 'Current generic capture: ' + (genericCaptureLabels[captureKind] || captureKind) + '.';
           } else {
-            workspaceCaptureStatus.textContent = 'Current generic capture: ' + (genericCaptureLabels[captureKind] || captureKind) + '.';
+            workspaceCaptureStatus.textContent = isRequestCapture(captureKind)
+              ? '' : 'Current generic capture: ' + (genericCaptureLabels[captureKind] || captureKind) + '.';
           }
         } else {
           activateCaptureTab('diagnostics');

@@ -1563,6 +1563,158 @@ test("all diagnostic kinds provide sortable selectable returned rows without fab
     }
 });
 
+test("in-flight request rows lead the result and state filters compose with returned-row search", () => {
+    const { document, makeContainer } = createDocumentStub();
+    const root = makeContainer("diagnostics");
+    const { CAPTURE_VIEW_RENDERER_SCRIPT } = require("../out/captureViewRenderer.js");
+    const render = new Function("document", CAPTURE_VIEW_RENDERER_SCRIPT + ";return renderCaptureView;")(document);
+    render("diagnostics", {
+        kind: "requests", title: "requests", summary: "An unparsed fallback summary.",
+        provenance: { processId: 42, requestedDurationSeconds: 10 },
+        metrics: [
+            { label: "Started", value: 12 },
+            { label: "Completed", value: 7 },
+            { label: "In flight at end", value: 5 },
+            { label: "Long-running", value: 3 },
+            { label: "Long-running threshold (ms)", value: 750 },
+        ],
+        tables: [{
+            id: "requests", title: "In-flight requests",
+            columns: ["Method", "Path", "Elapsed (ms)", "Long-running", "Started", "Trace ID"],
+            rows: [
+                ["GET", "/alpha", 2400, true, "t1", "trace-a"],
+                ["POST", "/beta", 300, false, "t2", "trace-b"],
+                ["GET", "/gamma", 1700, true, "t3", "trace-c"],
+                ["GET", "/delta", 100, false, "t4", "trace-d"],
+            ],
+            totalRows: 5, omittedRows: 1, emptyText: "No in-flight requests.",
+        }],
+        notes: ["In-flight requests: 1 retained row(s) omitted from the view at topN=4.",
+            "Dropped 2 newer starts at maxRequests=100; counts are lower bounds.",
+            "Correlation uses tracked starts; counts do not prove unique operations."],
+        evidence: { source: "collector", limitations: [
+            { category: "Capture window", scope: "requests", detail: "The snapshot is partial." },
+        ] },
+    });
+
+    assert.match(root.textContent, /In-flight requests/);
+    assert.match(root.textContent, /Window: 12 observed starts · 7 matched completions/);
+    assert.match(root.textContent, /At close: 5 tracked in flight · 3 tracked long-running \(≥ 750 ms\)/);
+    assert.match(root.textContent, /PID 42 · 10s window · Live capture, not saved/);
+    assert.doesNotMatch(root.textContent, /An unparsed fallback summary|requests\n/);
+    assert.doesNotMatch(root.textContent, /Metrics/);
+    assert.match(root.textContent, /All in-flight \(4 shown\)/);
+    assert.match(root.textContent, /At or above 750 ms \(2 shown\)/,
+        "filter count comes from returned rows, not the capture-wide long-running metric");
+    assert.match(root.textContent, /Dropped 2 newer starts/);
+    assert.match(root.textContent, /Correlation uses tracked starts/);
+    assert.match(root.textContent, /Start\/stop pairing uses an activity ID or trace\/span ID pair/);
+    assert.match(root.textContent, /1 retained row\(s\) omitted/);
+    assert.match(root.textContent, /Capture window \(requests\): The snapshot is partial/);
+    const selector = document.getElementById("inFlightRequestsStateFilter");
+    assert.equal(selector.getAttribute("aria-label"), "Filter in-flight requests by state");
+    const table = document.getElementById("inFlightRequestsTable");
+    const body = table.querySelector("tbody");
+    assert.equal(body.children.length, 4);
+    const search = root.querySelector("input");
+    search.value = "beta";
+    search.listeners.input();
+    assert.equal(body.children.length, 1);
+    assert.match(root.textContent, /1 of 4 returned rows/);
+    selector.value = "long-running";
+    selector.listeners.change();
+    assert.equal(body.children.length, 0, "search and state filters intersect");
+    assert.match(root.textContent, /0 of 2 returned rows/);
+    search.value = "gamma";
+    search.listeners.input();
+    assert.deepEqual(body.children.map(row => row.children[1].textContent), ["/gamma"]);
+    assert.match(root.textContent, /1 of 2 returned rows/);
+    selector.value = "all";
+    selector.listeners.change();
+    assert.deepEqual(body.children.map(row => row.children[1].textContent), ["/gamma"]);
+    assert.match(root.textContent, /1 of 4 returned rows/);
+});
+
+test("in-flight request state filter omits a threshold claim when threshold metadata is absent", () => {
+    const { document, makeContainer } = createDocumentStub();
+    const root = makeContainer("diagnostics");
+    const { CAPTURE_VIEW_RENDERER_SCRIPT } = require("../out/captureViewRenderer.js");
+    const render = new Function("document", CAPTURE_VIEW_RENDERER_SCRIPT + ";return renderCaptureView;")(document);
+    render("diagnostics", {
+        kind: "requests", title: "Requests", summary: "Request capture.",
+        provenance: { processId: 42, requestedDurationSeconds: 10 },
+        metrics: [{ label: "Long-running", value: 1 }],
+        tables: [{
+            id: "requests", title: "In-flight requests",
+            columns: ["Method", "Path", "Elapsed (ms)", "Long-running", "Started", "Trace ID"],
+            rows: [["GET", "/slow", 1200, true, "t1", "trace-a"]],
+            totalRows: 1, omittedRows: 0, emptyText: "No in-flight requests.",
+        }],
+        notes: [],
+        evidence: { source: "collector", limitations: [] },
+    });
+
+    const selector = document.getElementById("inFlightRequestsStateFilter");
+    assert.match(selector.children[1].textContent, /^Long-running \(1 shown\)$/);
+    assert.doesNotMatch(selector.children[1].textContent, /(?:above|at or above|ms)/i);
+});
+
+test("in-flight request Started timestamps display in UTC while preserving precise ISO values and sort order", () => {
+    const { document, makeContainer } = createDocumentStub();
+    const root = makeContainer("diagnostics");
+    const { CAPTURE_VIEW_RENDERER_SCRIPT } = require("../out/captureViewRenderer.js");
+    const render = new Function("document", CAPTURE_VIEW_RENDERER_SCRIPT + ";return renderCaptureView;")(document);
+    const later = "2026-10-21T22:45:00.0000000Z";
+    const offsetEarlier = "2026-10-21T23:30:00.7395271+02:00";
+    const result = {
+        kind: "requests", title: "Requests", summary: "Request capture.",
+        provenance: { processId: 42, requestedDurationSeconds: 10 },
+        metrics: [{ label: "Long-running threshold (ms)", value: 1000 }],
+        tables: [{
+            id: "requests", title: "In-flight requests",
+            columns: ["Method", "Path", "Elapsed (ms)", "Long-running", "Started", "Trace ID"],
+            rows: [
+                ["GET", "/later", 1200, true, later, "trace-a"],
+                ["GET", "/offset", 1300, true, offsetEarlier, "trace-b"],
+                ["GET", "/invalid", 1400, false, "not-an-ISO-timestamp", "trace-c"],
+                ["GET", "/missing", 1500, false, null, "trace-d"],
+            ],
+            totalRows: 4, omittedRows: 0, emptyText: "No in-flight requests.",
+        }],
+        notes: [],
+        evidence: { source: "collector", limitations: [] },
+    };
+    render("diagnostics", result);
+
+    const table = document.getElementById("inFlightRequestsTable");
+    const body = table.children[2];
+    const laterCell = body.children[0].children[4];
+    const offsetCell = body.children[1].children[4];
+    const invalidCell = body.children[2].children[4];
+    const missingCell = body.children[3].children[4];
+    assert.equal(laterCell.children[0].textContent, "21 Oct 2026, 22:45:00.000 UTC");
+    assert.equal(laterCell.children[0].getAttribute("datetime"), later);
+    assert.equal(laterCell.children[0].getAttribute("title"), `Original ISO timestamp: ${later}`);
+    assert.match(laterCell.children[0].getAttribute("aria-label"), new RegExp(later.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.equal(offsetCell.children[0].textContent, "21 Oct 2026, 21:30:00.739 UTC");
+    assert.equal(offsetCell.children[0].getAttribute("datetime"), offsetEarlier);
+    assert.equal(invalidCell.textContent, "not-an-ISO-timestamp");
+    assert.equal(invalidCell.children.length, 0);
+    assert.equal(missingCell.textContent, "Unavailable");
+    assert.equal(missingCell.children.length, 0);
+    assert.equal(result.tables[0].rows[0][4], later, "rendering does not mutate the source timestamp");
+
+    const startedSort = table.children[1].children[0].children[4].children[0];
+    startedSort.listeners.click();
+    assert.deepEqual(body.children.slice(0, 2).map(row => row.children[1].textContent), ["/offset", "/later"],
+        "sort order follows the UTC instant, not the displayed date or source offset");
+    const search = root.querySelector("input");
+    search.value = offsetEarlier;
+    search.listeners.input();
+    assert.deepEqual(body.children.map(row => row.children[1].textContent), ["/offset"],
+        "search still matches the original ISO timestamp");
+});
+
 test("heap view switching retains table filters and selection, surfaces hidden failures, and does not auto-switch on arrival", () => {
             const { renderQueryView, makeContainer, document } = loadRenderer();
             const root = makeContainer("heapQueryViews");

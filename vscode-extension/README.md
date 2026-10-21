@@ -50,8 +50,11 @@ thread-pool captures share their domain's presentation without sharing evidence 
 snapshot handle is independent from the single replaceable generic-capture result. Requests,
 Kestrel, database, and networking captures share the Requests & networking workspace and the
 existing single replaceable generic-capture result; its **Capture result** view is descriptive,
-not a retained-handle query. Exceptions, Monitoring, dump analysis, and saved evidence keep their
-existing result surfaces.
+not a retained-handle query. In-flight request results lead with the capture-window summary and
+retained request rows; state filters and search apply only to returned rows, with truncation and
+capture-quality notes kept visible. Started timestamps display in UTC; the original ISO value
+remains available to assistive technology and in the timestamp tooltip. Exceptions, Monitoring,
+dump analysis, and saved evidence keep their existing result surfaces.
 **Analyze Dump File** and **Saved Captures** remain separate offline entry points.
 
 For a guided introduction, run **.NET Diagnostics: Open Getting Started** from the Command Palette.

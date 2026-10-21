@@ -7,7 +7,9 @@ versioned independently from the CLI and the .NET packages.
 
 - Place in-flight request, Kestrel, database, and networking capture results in the Requests &
   networking workspace. They reuse the single replaceable generic-capture result and expose no
-  synthetic retained-query view or load action.
+  synthetic retained-query view or load action. Prioritize the in-flight request summary and
+  retained rows, with bounded state filters and capture limitations visible beside the evidence.
+  Display Started timestamps in UTC while preserving the original ISO value and chronological sort.
 - Add Threads & waits to the compact live Workspace for point-in-time thread snapshots and
   off-CPU, contention, and thread-pool captures. Snapshot views remain distinct from generic
   event captures; generic results keep their single replacement slot and truthful cross-kind status.
