@@ -5,6 +5,19 @@ versioned independently from the CLI and the .NET packages.
 
 ## Unreleased
 
+## 0.4.0 - 2026-10-21
+
+Use CLI **0.31.0 or later** for the full feature set; the base protocol-v2 workflows still
+support CLI 0.29.0. The extension never installs or updates the CLI automatically.
+
+- Add a separate, bounded EventPipe Live Events stream with explicit provider selection and
+  sensitive-payload acknowledgement, pause-following, search, paging and event details.
+  Keep source-loss availability and local delivery/retention drops distinct; unsupported event
+  schemas remain generic rather than being inferred as managed exceptions.
+- Group sidebar capture entry points by profiling domain and introduce compact
+  Domain / Evidence / View navigation for CPU and Memory & GC. Navigate only existing bounded
+  evidence: CPU, allocation profiles, heap snapshots and generic captures retain their distinct
+  ownership, query paths, permissions and replacement rules.
 - Consolidate live counters/GC pauses and Live Events under Monitoring as independent local views.
   Switching views preserves each stream's lifecycle, status, retained buffer, selected event and
   delivery acknowledgements; navigation does not collect or reopen evidence. Route all generic
@@ -40,6 +53,11 @@ versioned independently from the CLI and the .NET packages.
 - Keep result-tab keyboard navigation in visible DOM order, show selected receipt-time bounds on
   live controls, and distinguish a ready selected process from active live counters. Collection
   failures now retain their original reason and offer applicable Environment/Output recovery actions.
+- Repair CPU export action binding while preserving measurement-only redaction and the retained
+  capture's ownership and request correlation.
+- Summarize saved comparisons with counts of observed up, down, flat and unavailable deltas.
+  Direction is not a performance verdict; equivalent workloads, throughput and latency must be
+  established separately.
 
 ## 0.3.1
 
