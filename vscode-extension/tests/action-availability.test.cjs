@@ -40,6 +40,10 @@ function dom() {
             appendChild(n) { this.children.push(n); return n; },
             replaceChildren(...nodes) { this.children = nodes; if (this.id === "view") this.value = ""; },
             querySelector(selector) { return this.children.find(n => n.tag === selector) ?? null; },
+            querySelectorAll(selector) {
+                return this.children.filter(n => selector === "[data-profile-retention-note]"
+                    && n.attributes["data-profile-retention-note"] !== undefined);
+            },
             setAttribute(name, value) { this.attributes[name] = String(value); },
             getAttribute(name) { return this.attributes[name]; },
             addEventListener(type, callback) { this.listeners[type] = callback; },
@@ -126,6 +130,21 @@ test("unavailable actions remain focusable but block click and keyboard-generate
     ui.get("exportJson").click();
     assert.equal(calls, 1);
 });
+
+test("disconnect updates cached projection provenance and disables raw exports without discarding measurement exports", () => {
+    const ui = profileUi();
+    const note = ui.document.createElement("p");
+    note.setAttribute("data-profile-retention-note","");
+    ui.get("cpuQueryViews").children.push(note);
+    ui.update({type:"capture",kind:"cpu",profiles:ready});
+    assert.match(note.textContent,/explicit query on the retained CLI connection/);
+    ui.update({type:"profileAvailability",profiles:{cpu:false,trace:false,allocation:false}});
+    assert.match(note.textContent,/Cached loaded projection only/);
+    assert.match(note.textContent,/raw trace exports require a new capture/);
+    assert.equal(ui.get("cpuQueryViews").getAttribute("data-profile-retained"),"false");
+    assert.equal(ui.available("exportTrace"),false);
+    assert.equal(ui.available("exportJson"),true);
+});
 test("saved view actions follow loaded selection, reject stale responses and recover after failure", () => {
     const ui = dom(), messages = [];
     const artifactId = "b".repeat(32);
@@ -189,6 +208,68 @@ test("a stale allocation handle invalidates only that profile; rejected queries 
     assert.equal(controller.allocationProfile, undefined);
     assert.equal(controller.cpuExport, cpu);
     assert.ok(messages.some(m => m.type === "queryError" && m.message === "Expired"));
+});
+test("profile query identity rejects stale requests and suppresses late results after owner replacement", async () => {
+    const controller = Object.create(Controller.prototype);
+    const session = { closing: false, process: { exitCode: null, signalCode: null } };
+    controller.cpuExport = { session, handle: "first", evidenceId: "first" };
+    controller.cpuQueryGuard = new SingleFlightGuard();
+    controller.output = { appendLine() {} };
+    const messages = [];
+    controller.postMessage = message => messages.push(message);
+    let sendCount = 0;
+    controller.sendQuery = async () => {
+        sendCount++;
+        return { data: { totalSamples: 4 } };
+    };
+
+    await controller.queryCpu("call-tree", undefined, "cpu", "stale");
+    assert.equal(sendCount, 0, "a stale evidence identity must not reach the retained-handle query");
+    assert.ok(messages.some(message => message.type === "queryError"
+        && message.evidenceId === "stale" && /replaced/.test(message.message)));
+
+    messages.length = 0;
+    let started;
+    const queryStarted = new Promise(resolve => { started = resolve; });
+    let finishQuery;
+    controller.sendQuery = async () => {
+        sendCount++;
+        started();
+        return await new Promise(resolve => { finishQuery = resolve; });
+    };
+    const pending = controller.queryCpu("call-tree", undefined, "cpu", "first");
+    await queryStarted;
+    controller.cpuExport = { session, handle: "second", evidenceId: "second" };
+    finishQuery({ data: { totalSamples: 9 } });
+    await pending;
+    assert.ok(messages.some(message => message.type === "queryError"
+        && message.evidenceId === "first" && /replaced or disconnected/.test(message.message)));
+    assert.equal(messages.some(message => message.type === "query" && message.evidenceId === "first"), false);
+    assert.equal(controller.cpuExport.evidenceId, "second");
+});
+test("heap preloaded views stop publishing when their retained snapshot is replaced", async () => {
+    const controller = Object.create(Controller.prototype);
+    const session = {};
+    controller.heapSnapshot = { session, handle: "first", evidenceId: "first" };
+    const messages = [];
+    controller.postMessage = message => messages.push(message);
+    controller.output = { appendLine() {} };
+    let queries = 0;
+    controller.sendQuery = async () => {
+        queries++;
+        controller.heapSnapshot = { session, handle: "second", evidenceId: "second" };
+        return { data: {} };
+    };
+
+    await controller.runHeapQueries(session, "first", {
+        includeStaticFields: false,
+        includeDelegateTargets: false,
+        includeRetentionPaths: false,
+        includeRetainedExceptions: false,
+    }, "first");
+
+    assert.equal(queries, 1);
+    assert.equal(messages.length, 0, "a late query for the replaced snapshot must not reach the webview");
 });
 test("sidebar Stop Live Counters is discoverable but has no command without an active session", () => {
     const vscode = require("./stubs/vscode-stub.js");

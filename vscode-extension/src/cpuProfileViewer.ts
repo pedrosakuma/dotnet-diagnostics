@@ -1,3 +1,7 @@
+import { profileRetentionText } from "./actionAvailability";
+
+const retentionText = profileRetentionText;
+
 interface CpuTreeNode {
     frame: { method: string; module: string };
     inclusiveSamples: number;
@@ -17,7 +21,8 @@ interface CpuProfileState {
     mode: string;
     search: string;
     focus: number[];
-    selected: number[];
+    selected?: number[];
+    expanded?: string[];
 }
 
 function renderCpuProfile(
@@ -66,7 +71,7 @@ function renderCpuProfile(
         left.length === right.length && left.every((part, i) => part === right[i]);
     const atPath = (path: number[]) => entries.find(entry => samePath(entry.path, path));
     let focus = atPath(state.focus) ?? entries[0];
-    let selected = atPath(state.selected) ?? focus;
+    let selected = state.selected ? atPath(state.selected) : undefined;
     if (!focus) {
         container.textContent = "No call tree was available for this sample.";
         return;
@@ -76,6 +81,9 @@ function renderCpuProfile(
     const percent = (value: number, total: number) =>
         total > 0 ? (100 * value / total).toFixed(1) + "%" : "Unavailable";
     const captureTotal = data.totalSamples ?? 0;
+    const pathKey = (path: number[]) => path.join(".");
+    const expanded = new Set(state.expanded ?? [pathKey(focus.path)]);
+    const loadedHotpath = new Set<string>();
     const button = (text: string, action: () => void) => {
         const element = document.createElement("button");
         element.type = "button";
@@ -106,9 +114,16 @@ function renderCpuProfile(
     const treeButton = button("Call tree", () => { state.mode = "tree"; redraw(); });
     const flameButton = button("Flame graph (icicle)", () => { state.mode = "flame"; redraw(); });
     const reset = button("Reset focus", () => {
-        state.focus = []; state.selected = []; redraw();
+        state.focus = []; state.selected = undefined; redraw();
     });
-    controls.append(treeButton, flameButton, reset, queryButton("Full capture tree", "call-tree"));
+    controls.append(treeButton, flameButton, reset);
+    const expandHotpath = button("Expand hotpath", () => {
+        for (const key of loadedHotpath) expanded.add(key);
+        state.expanded = [...expanded];
+        state.mode = "tree";
+        redraw();
+    });
+    expandHotpath.title = "Expand only the dominant known loaded branch; never queries or loads omitted descendants.";
     container.appendChild(controls);
 
     const label = document.createElement("label");
@@ -122,6 +137,11 @@ function renderCpuProfile(
     container.appendChild(label);
     const searchStatus = text(container, "", "query-view-provenance");
     searchStatus.setAttribute("role", "status");
+    text(container, "Hotpath marks the largest known loaded branch, not a global diagnosis. "
+        + "Expansion is local; omitted descendants require an explicit retained-capture query.", "query-view-provenance");
+    const retention = text(container, retentionText(
+        container.closest("[data-profile-retained]")?.getAttribute("data-profile-retained") !== "false"), "query-view-provenance");
+    retention.setAttribute("data-profile-retention-note", "");
     text(container, (allocation
         ? "Widths show estimated allocation bytes attributed to sampled stacks, not object counts, retained bytes or CPU time. "
         : "Widths show inclusive sample counts, not elapsed time or measured CPU utilization. ")
@@ -141,9 +161,29 @@ function renderCpuProfile(
     breadcrumb.setAttribute("aria-label", allocation ? "Allocation focus path" : "CPU focus path");
     breadcrumb.className = "cpu-profile-controls";
     container.appendChild(breadcrumb);
+    const queries = document.createElement("details");
+    queries.className = "cpu-profile-queries";
+    const querySummary = document.createElement("summary");
+    querySummary.textContent = "Retained-capture queries";
+    queries.appendChild(querySummary);
+    queries.appendChild(queryButton("Full capture tree", "call-tree"));
+    const methodQueries = document.createElement("div");
+    queries.appendChild(methodQueries);
+    text(queries, "Queries match the highest-ranked occurrence containing the method name, not necessarily "
+        + "the selected call path. They read the retained capture, without sampling again.", "query-view-provenance");
+    container.appendChild(queries);
     const selection = document.createElement("section");
-    selection.setAttribute("aria-label", "Selected method");
+    selection.setAttribute("aria-label", "Local branch actions");
     selection.className = "cpu-profile-selection";
+    const selectedName = text(selection, "", "cpu-profile-selected-name");
+    selectedName.setAttribute("role", "status");
+    const selectedInfo = text(selection, "", "query-view-provenance");
+    const selectedSelf = text(selection, "", "query-view-provenance");
+    const localActions = document.createElement("div");
+    localActions.className = "cpu-profile-controls";
+    const focusBranch = button("Focus branch", () => { if (selected) setFocus(selected); });
+    localActions.append(focusBranch, expandHotpath);
+    selection.appendChild(localActions);
     container.appendChild(selection);
     const visualization = document.createElement("div");
     visualization.className = "cpu-profile-visualization";
@@ -158,53 +198,120 @@ function renderCpuProfile(
     const underFocus = (entry: typeof focus) =>
         focus.path.every((part, i) => entry.path[i] === part);
     function select(entry: typeof focus): void {
-        selected = entry; state.selected = entry.path; drawSelection();
+        selected = entry; state.selected = entry.path; drawSelection(); highlightSelection();
     }
     function setFocus(entry: typeof focus): void {
+        expanded.add(pathKey(entry.path));
+        state.expanded = [...expanded];
         state.focus = entry.path; state.selected = entry.path; redraw();
         visualization.querySelector<HTMLElement>("button, summary, [tabindex]")?.focus();
     }
     function drawSelection(): void {
-        selection.replaceChildren();
-        text(selection, info(selected.node));
-        const self = selected.node.selfSamples;
-        if (!allocation) text(selection, self && validCount(self.runningSamples) && validCount(self.waitingSamples) && validCount(self.unknownSamples)
+        selectedName.textContent = selected ? "Selected branch: " + method(selected.node)
+            : "Select a row for branch actions.";
+        selectedName.title = selected ? method(selected.node) : "";
+        selectedInfo.textContent = selected ? info(selected.node) : "";
+        const self = selected?.node.selfSamples;
+        selectedSelf.textContent = !selected || allocation ? "" : self && validCount(self.runningSamples) && validCount(self.waitingSamples) && validCount(self.unknownSamples)
             ? "Self evidence: " + self.runningSamples + " on-CPU / " + self.waitingSamples
                 + " heuristic-wait / " + self.unknownSamples + " unknown."
-            : "Self scheduler-state evidence: Unavailable. Sampled stacks alone do not establish on-CPU time.",
-        "query-view-provenance");
-        selection.append(button("Focus selected branch", () => setFocus(selected)),
+            : "Self scheduler-state evidence: Unavailable. Sampled stacks alone do not establish on-CPU time.";
+        focusBranch.disabled = !selected;
+        methodQueries.replaceChildren();
+        if (selected) methodQueries.append(
             queryButton("Callers / callees", "caller-callee", method(selected.node)),
             queryButton("Query subtree by method", "call-tree", method(selected.node)));
-        text(selection, "Queries match the highest-ranked occurrence containing the method name, not necessarily "
-            + "this exact call path. They read the retained capture, without sampling again.", "query-view-provenance");
+        else text(methodQueries, "Select a row to query a method.");
+    }
+    function highlightSelection(): void {
+        for (const row of Array.from(visualization.querySelectorAll<HTMLElement>("[data-node-path]"))) {
+            const active = !!selected && row.getAttribute("data-node-path") === pathKey(selected.path);
+            row.setAttribute("aria-selected", String(active));
+        }
     }
     function drawTree(): void {
-        const list = document.createElement("ul");
-        list.className = "cpu-call-tree";
-        function append(entry: typeof focus, parent: HTMLElement): void {
-            const item = document.createElement("li");
-            const children = entries.filter(candidate => candidate.parent === entries.indexOf(entry));
-            const row = document.createElement("div");
-            row.className = "cpu-profile-row" + (matches(entry.node) ? " cpu-profile-match" : "");
-            const pick = button(info(entry.node), () => select(entry));
-            pick.className = "cpu-profile-method";
-            row.append(pick, button("Focus", () => setFocus(entry)));
-            if (children.length) {
-                const disclosure = document.createElement("details");
-                disclosure.open = samePath(entry.path, focus.path) || state.search.length > 0;
-                const summary = document.createElement("summary");
-                summary.textContent = method(entry.node) + " (" + children.length + " loaded branches)";
-                disclosure.append(summary, row);
-                const nested = document.createElement("ul");
-                for (const child of children) append(child, nested);
-                disclosure.appendChild(nested);
-                item.appendChild(disclosure);
-            } else item.appendChild(row);
-            parent.appendChild(item);
+        const table = document.createElement("table");
+        table.className = "cpu-call-tree";
+        const caption = document.createElement("caption");
+        caption.textContent = "Total includes descendants; Self excludes them. Both are shares of "
+            + captureTotal + " captured " + (allocation ? "estimated sampled bytes." : "stack samples.");
+        table.appendChild(caption);
+        const head = document.createElement("thead");
+        const header = document.createElement("tr");
+        for (const label of ["Method / call path", "Total %", "Self %"]) {
+            const cell = document.createElement("th");
+            cell.scope = "col";
+            cell.textContent = label;
+            header.appendChild(cell);
         }
-        append(focus, list);
-        visualization.appendChild(list);
+        head.appendChild(header);
+        table.appendChild(head);
+        const body = document.createElement("tbody");
+        const rows: Array<{ entry: typeof focus; row: HTMLTableRowElement; toggle?: HTMLButtonElement }> = [];
+        const update = () => {
+            for (const { entry, row, toggle } of rows) {
+                row.hidden = false;
+                for (let length = focus.path.length; length < entry.path.length; length++) {
+                    if (!expanded.has(pathKey(entry.path.slice(0, length))) && state.search.length === 0) row.hidden = true;
+                }
+                if (toggle) toggle.setAttribute("aria-expanded", String(expanded.has(pathKey(entry.path)) || state.search.length > 0));
+            }
+        };
+        for (const entry of entries.filter(underFocus)) {
+            const children = entries.filter(candidate => candidate.parent === entries.indexOf(entry));
+            const row = document.createElement("tr");
+            row.setAttribute("data-node-path", pathKey(entry.path));
+            row.className = (matches(entry.node) ? "cpu-profile-match " : "")
+                + (loadedHotpath.has(pathKey(entry.path)) ? "cpu-profile-hotpath" : "");
+            row.tabIndex = 0;
+            row.addEventListener("click", event => {
+                if (!(event.target as Element).closest(".cpu-profile-disclosure")) select(entry);
+            });
+            row.addEventListener("keydown", event => {
+                if (event.target === row && (event.key === "Enter" || event.key === " ")) {
+                    event.preventDefault();
+                    select(entry);
+                }
+            });
+            const cell = document.createElement("td");
+            const name = document.createElement("div");
+            name.className = "cpu-profile-row";
+            name.style.paddingInlineStart = (entry.path.length - focus.path.length) + "rem";
+            let toggle: HTMLButtonElement | undefined;
+            if (children.length) {
+                toggle = button("", () => {
+                    const key = pathKey(entry.path);
+                    if (expanded.has(key)) expanded.delete(key); else expanded.add(key);
+                    state.expanded = [...expanded];
+                    update();
+                });
+                toggle.className = "cpu-profile-disclosure";
+                toggle.setAttribute("aria-label", "Expand or collapse " + method(entry.node));
+                name.appendChild(toggle);
+            } else {
+                const spacer = document.createElement("span");
+                spacer.className = "cpu-profile-disclosure-space";
+                name.appendChild(spacer);
+            }
+            const pick = button(method(entry.node), () => select(entry));
+            pick.title = info(entry.node);
+            pick.className = "cpu-profile-method";
+            name.appendChild(pick);
+            cell.appendChild(name);
+            row.appendChild(cell);
+            for (const count of [entry.node.inclusiveSamples, entry.node.exclusiveSamples]) {
+                const metric = document.createElement("td");
+                metric.className = "cpu-profile-number";
+                metric.textContent = percent(count, captureTotal);
+                metric.title = count + " " + unit + " / " + captureTotal + " captured " + unit;
+                row.appendChild(metric);
+            }
+            rows.push({ entry, row, toggle });
+            body.appendChild(row);
+        }
+        update();
+        table.appendChild(body);
+        visualization.appendChild(table);
     }
     function drawFlame(): void {
         function compactMethod(node: CpuTreeNode): string {
@@ -318,7 +425,20 @@ function renderCpuProfile(
     }
     function redraw(): void {
         focus = atPath(state.focus) ?? entries[0];
-        selected = atPath(state.selected) ?? focus;
+        selected = state.selected ? atPath(state.selected) : undefined;
+        loadedHotpath.clear();
+        let branch: typeof focus | undefined = focus;
+        while (branch) {
+            loadedHotpath.add(pathKey(branch.path));
+            const index = entries.indexOf(branch);
+            const children = entries.filter(entry => entry.parent === index);
+            const largest: (typeof entries)[number] | undefined = children.reduce<(typeof entries)[number] | undefined>((best, child) =>
+                !best || child.node.inclusiveSamples > best.node.inclusiveSamples ? child : best, undefined);
+            const omitted: number = branch.node.inclusiveSamples - branch.node.exclusiveSamples
+                - children.reduce((sum, child) => sum + child.node.inclusiveSamples, 0);
+            // An omitted branch may dominate; do not descend past unknown evidence.
+            branch = largest && largest.node.inclusiveSamples > 0 && largest.node.inclusiveSamples > omitted ? largest : undefined;
+        }
         treeButton.setAttribute("aria-pressed", String(state.mode !== "flame"));
         flameButton.setAttribute("aria-pressed", String(state.mode === "flame"));
         reset.disabled = focus.path.length === 0;
@@ -334,27 +454,40 @@ function renderCpuProfile(
         drawSelection();
         visualization.replaceChildren();
         if (state.mode === "flame") drawFlame(); else drawTree();
+        highlightSelection();
     }
     search.addEventListener("input", () => { state.search = search.value.slice(0, 512); redraw(); });
     redraw();
 }
 
-export const CPU_PROFILE_SCRIPT = renderCpuProfile.toString();
+export const CPU_PROFILE_SCRIPT = `const retentionText = ${profileRetentionText.toString()};\n${renderCpuProfile.toString()}`;
 
 export const CPU_PROFILE_STYLES = `
     .cpu-profile-controls { display:flex; flex-wrap:wrap; gap:.4rem; margin:.6rem 0; }
     .cpu-profile-controls button[aria-pressed="true"] { outline:2px solid var(--vscode-focusBorder); }
-    .cpu-profile-selection { border:1px solid var(--vscode-panel-border); padding:.5rem; margin:.6rem 0; overflow-wrap:anywhere; }
+    .cpu-profile-selection { border:1px solid var(--vscode-panel-border); padding:.5rem; margin:.6rem 0 0; overflow-wrap:anywhere; }
+    .cpu-profile-selected-name { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:600; }
+    .cpu-profile-queries { margin:.6rem 0; }
     .cpu-profile-selection button { margin:.2rem; }
-    .cpu-profile-row { display:flex; gap:.4rem; margin:.3rem 0; align-items:center; }
-    .cpu-profile-method { text-align:left; background:transparent; color:var(--vscode-textLink-foreground); overflow-wrap:anywhere; }
+    .cpu-profile-row { display:flex; gap:.35rem; align-items:center; min-width:0; }
+    .cpu-profile-method { flex:1; min-width:0; text-align:left; background:transparent; color:var(--vscode-textLink-foreground); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .cpu-profile-match { outline:2px solid var(--vscode-editor-findMatchHighlightBorder, var(--vscode-focusBorder)); }
     .cpu-profile-warning { border-left:3px solid var(--vscode-editorWarning-foreground); padding:.5rem; }
-    .cpu-call-tree, .cpu-call-tree ul { list-style:none; padding-left:1rem; }
-    .cpu-call-tree { padding-left:0; }
-    .cpu-call-tree summary { cursor:pointer; overflow-wrap:anywhere; }
+    .cpu-call-tree { width:100%; min-width:34rem; table-layout:fixed; border-collapse:collapse; }
+    .cpu-call-tree caption { text-align:left; margin:.5rem 0; }
+    .cpu-call-tree th:first-child { width:auto; text-align:left; }
+    .cpu-call-tree th:not(:first-child), .cpu-profile-number { width:4.5rem; text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums; }
+    .cpu-call-tree td { padding:.25rem; border-bottom:1px solid var(--vscode-panel-border); }
+    .cpu-profile-disclosure, .cpu-profile-disclosure-space { flex:none; width:1.6rem; }
+    .cpu-profile-disclosure { padding:.2rem; background:transparent; color:var(--vscode-foreground); }
+    .cpu-profile-disclosure::before { content:'\\25B8'; }
+    .cpu-profile-disclosure[aria-expanded="true"]::before { content:'\\25BE'; }
+    .cpu-profile-hotpath .cpu-profile-method { text-decoration:underline; text-decoration-color:var(--vscode-focusBorder); }
+    .cpu-call-tree tr[aria-selected="true"] { background:var(--vscode-list-activeSelectionBackground); color:var(--vscode-list-activeSelectionForeground); outline:1px solid var(--vscode-contrastActiveBorder, transparent); }
+    .cpu-call-tree tr[aria-selected="true"] button { color:inherit; }
+    .cpu-call-tree tr:focus-visible { outline:2px solid var(--vscode-focusBorder); outline-offset:-2px; }
     .cpu-flame { display:block; width:100%; height:auto; min-width:1000px; }
-    .cpu-profile-visualization { overflow-x:auto; }
+    .cpu-profile-visualization { overflow:auto; max-height:65vh; }
     .cpu-flame-node { fill:#a8ccef; stroke:#18212b; }
     .cpu-flame-node[data-color="1"] { fill:#a8d8bd; }
     .cpu-flame-node[data-color="2"] { fill:#e8c49c; }

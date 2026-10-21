@@ -1,5 +1,12 @@
 declare function updateEvidenceViewSwitcher(container: HTMLElement): void;
 
+function navigateHeapDetails(details: boolean): void {
+    const workspace = document.getElementById("heapWorkspace") as (HTMLElement & {
+        navigateDetails?: (details: boolean) => void;
+    }) | null;
+    workspace?.navigateDetails?.(details);
+}
+
 function navigateThreadFromGroup(id: number): void {
     const explorer = document.getElementById("threadExplorer") as (HTMLElement & {
         threadState?: { selected?: unknown; mode?: string; fromGroup?: boolean };
@@ -21,7 +28,9 @@ function navigateThreadFromGroup(id: number): void {
 function renderHeapTypeNavigation(types: Array<Record<string, unknown>>): void {
     const table = document.getElementById("captureHeapTable") as HTMLTableElement | null;
     if (!table) return;
-    const workspace = document.getElementById("heapWorkspace");
+    const workspace = document.getElementById("heapWorkspace") as (HTMLElement & {
+        navigateDetails?: (details: boolean) => void;
+    }) | null;
     const pane = document.getElementById("heapDetailPane");
     const back = document.getElementById("backToHeapTypes");
     const open = document.getElementById("openHeapDetails");
@@ -31,15 +40,27 @@ function renderHeapTypeNavigation(types: Array<Record<string, unknown>>): void {
         if (!workspace || !pane) return;
         if (workspace.dataset.focused !== "true") overviewScroll = window.scrollY;
         workspace.dataset.focused = "true";
+        const view = document.getElementById("workspaceView") as HTMLSelectElement | null;
+        if (view) view.value = "details";
         pane.focus({ preventScroll: true });
         pane.scrollIntoView({ block: "nearest" });
     };
-    if (workspace) workspace.dataset.focused = "false";
+    if (workspace) {
+        workspace.dataset.focused = "false";
+        workspace.navigateDetails = details => {
+            if (details) showDetails();
+            else {
+                workspace.dataset.focused = "false";
+                const view = document.getElementById("workspaceView") as HTMLSelectElement | null;
+                if (view) view.value = "snapshot";
+                (selectedButton ?? open ?? view)?.focus({ preventScroll: true });
+                window.scrollTo({ top: overviewScroll });
+            }
+        };
+    }
     if (open) open.onclick = showDetails;
     if (back) back.onclick = () => {
-        if (workspace) workspace.dataset.focused = "false";
-        (selectedButton ?? open)?.focus({ preventScroll: true });
-        window.scrollTo({ top: overviewScroll });
+        navigateHeapDetails(false);
     };
     document.getElementById("heapTypeSelection")?.remove();
     const selection = document.createElement("section");
@@ -340,5 +361,5 @@ function updateThreadNavigation(view: string, result: Record<string, unknown>): 
     }
 }
 
-export const SNAPSHOT_NAVIGATION_SCRIPT = renderHeapTypeNavigation.toString() + "\n"
+export const SNAPSHOT_NAVIGATION_SCRIPT = navigateHeapDetails.toString() + "\n" + renderHeapTypeNavigation.toString() + "\n"
     + applyHeapTypeFocus.toString() + "\n" + navigateThreadFromGroup.toString() + "\n" + updateThreadNavigation.toString();

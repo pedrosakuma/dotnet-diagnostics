@@ -306,6 +306,15 @@ export function describeStreamCompatibilityError(output: string): string {
     return "The configured dotnet-diagnostics-cli returned output that is not a valid JSONL protocol frame. Check the CLI executable and its version.";
 }
 
+export function describeStreamExit(protocolReady: boolean, code: number | null, signal: string | null, stderr: string): string {
+    const details = stderr.trim();
+    const lifecycle = protocolReady ? " after a successful JSONL protocol handshake" : " before the JSONL protocol handshake completed";
+    const status = `CLI exited${lifecycle} (code ${code ?? "unknown"}, signal ${signal ?? "none"}).`;
+    const guidance = !protocolReady && details ? ` ${describeStreamCompatibilityError(details)}` : "";
+    return status + guidance + (details
+        ? ` Stderr${details.length > 2048 ? " (last 2048 characters)" : ""}: ${details.slice(-2048)}` : "");
+}
+
 export function isGcCollection(value: unknown): value is GcCollection {
     return isRecord(value)
         && typeof value.timestamp === "string"

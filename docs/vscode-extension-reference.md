@@ -233,15 +233,30 @@ the string; the separate one-request sensitive-data consent remains required.
 Heap type exploration uses an adjacent details pane in wide panels, with independent scrolling
 for the returned type list and details. Selecting a type no longer opens its details below the
 whole table. At widths of 850 px or less, the same pane replaces the list; **Back to types**
-restores the existing list, filters, sort and page scroll position. **Explore heap details**
-opens captured query views without choosing a type. This layout is shared by live heap and dump
-analysis and starts no additional diagnostic reads.
+restores the existing list, filters, sort and page scroll position. In the domain workspace,
+**View → Heap details** navigates to the captured details without choosing a type; **Snapshot totals**
+returns to the type list. The separate dump-analysis surface retains **Explore heap details**.
+Both routes use the same responsive pane and start no additional diagnostic reads.
 
-The **Call tree** view has linked expandable-tree and **Flame graph (icicle)** modes.
-Select a method in the tree for inclusive/self counts and available on-CPU, heuristic-wait
-and unknown evidence. **Focus** (or clicking a flame block) zooms into that exact loaded
+The **Call tree** view has linked tree-table and **Flame graph (icicle)** modes.
+The tree-table aligns method/call path, **Total %** (including descendants) and **Self %**
+(excluding descendants), both using the full capture denominator. CPU percentages are shares
+of captured stack samples, not measured CPU time or utilization. Allocation percentages instead
+use estimated sampled bytes, not CPU time or retained heap bytes. Raw weights and full method/module
+names remain available in selected-method details and metric tooltips. A narrow panel scrolls
+the bounded table horizontally rather than dropping either metric.
+**Expand hotpath** expands only the dominant known loaded branch without a query, preserving
+manual expansion, selection and focus. Its marked path is not a global hotpath claim: expansion
+stops when omitted descendants could dominate. The separate **Hot path** view remains an
+explicit retained-profile query when not already cached.
+Click a tree row or press Enter/Space on it to select that exact call-path occurrence only:
+selection does not expand, focus or query. The selected row uses the editor's selection colors.
+A single contextual area immediately above the independently scrolling tree names the selected
+branch and provides **Focus branch** beside **Expand hotpath**. With no selection it asks for a row,
+and Focus is disabled. Raw inclusive/self counts and available on-CPU, heuristic-wait and unknown
+evidence appear there. **Focus branch** (or clicking a flame block) zooms into that exact loaded
 branch; breadcrumbs and **Reset focus** navigate back. Repeated method names remain separate
-call paths. Keyboard users can use native tree disclosures/buttons, or Tab and Enter/Space
+call paths. Keyboard users can use the table's disclosure buttons, or Tab and Enter/Space
 on flame blocks (Escape moves to the parent). **Find method or module** highlights matches
 in the loaded focus without hiding nodes or changing sample totals.
 
@@ -257,10 +272,16 @@ high-contrast themes use editor/system colors. Narrow panels scroll horizontally
 shrinking the labels. **Query subtree by method** requests another
 bounded projection from the retained artifact. This backend query chooses the highest-ranked
 occurrence containing the method name, not necessarily the selected call path.
+Retained-capture queries are in a separate disclosure, not the local branch-action area.
 **Full capture tree** queries the original root, still bounded. **Callers / callees**
 uses the same method-name lookup; **Back to CPU profile** restores the cached projection,
 mode, search and local focus without a new request. A successful new CPU capture replaces the old
 profile; preparing, rejected or failed attempts preserve still-valid evidence.
+Returning to CPU in the **Workspace** restores its selected view and method filter without
+querying; an unloaded view still requires **Load view**. A successful new capture resets the
+selection and view cache. After disconnect or handle expiry, cached projections remain readable
+but additional CLI queries, investigation exports and raw trace exports are unavailable.
+Redacted measurement exports remain available offline.
 
 The **Allocations** tab provides **Capture allocations** and a sampled Allocation Explorer.
 The allocation option in **Capture Diagnostics** opens this same tab. It reuses the tree/flame,
@@ -507,6 +528,8 @@ the `dump` heap-capture source and the `dumpFile` field accepted by both the `he
 discovery (or CPU/heap capture) but reject an unrecognized capture kind or field; update it or point
 `dotnetDiagnostics.cliPath` at a compatible executable. The extension fails with a concise
 compatibility message instead of displaying CLI help output in the counters panel.
+An unexpected exit after a successful JSONL handshake is reported as a connection exit, with
+exit code/signal and bounded stderr evidence, not as proof of an outdated CLI.
 
 The counters chart and GC pauses table only keep a rolling trailing window of history, not the
 full session — matching how other real-time diagnostics panels (e.g. VS Code's own

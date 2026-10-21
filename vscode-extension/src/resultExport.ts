@@ -68,6 +68,8 @@ export async function openShareable(value: unknown, format: "json" | "csv"): Pro
 export class ResultExporter {
     private current?: unknown;
     private cpuCapture?: unknown;
+    private currentEvidenceId?: string;
+    private cpuCaptureEvidenceId?: string;
     private readonly navigation = new Map<string, unknown>();
     private selectedNavigation?: string;
     private activeHistory?: Set<string>;
@@ -75,6 +77,8 @@ export class ResultExporter {
     public clear(): void {
         this.set(undefined);
         this.cpuCapture = undefined;
+        this.currentEvidenceId = undefined;
+        this.cpuCaptureEvidenceId = undefined;
         this.navigation.clear();
         this.selectedNavigation = undefined;
         this.activeHistory = undefined;
@@ -87,7 +91,12 @@ export class ResultExporter {
             this.activeHistory = undefined;
             const value = message.result ?? message.summary;
             const kind = typeof message.kind === "string" ? message.kind : undefined;
-            if (kind === "cpu") this.cpuCapture = value;
+            const evidenceId = typeof message.evidenceId === "string" ? message.evidenceId : undefined;
+            this.currentEvidenceId = evidenceId;
+            if (kind === "cpu") {
+                this.cpuCapture = value;
+                this.cpuCaptureEvidenceId = evidenceId;
+            }
             this.current = value;
         } else if (message.type === "navigation") {
             if (message.sensitiveValues === true) {
@@ -128,6 +137,10 @@ export class ResultExporter {
         if (!record(message) || message.type !== "exportResult" || !["json", "csv"].includes(String(message.format))) return false;
         try {
             const scoped = Object.prototype.hasOwnProperty.call(message, "captureKind");
+            const evidenceId = typeof message.evidenceId === "string" ? message.evidenceId : undefined;
+            if (evidenceId !== undefined && evidenceId !== (scoped ? this.cpuCaptureEvidenceId : this.currentEvidenceId)) {
+                throw new Error("The displayed evidence was replaced before export. Select the current evidence and try again.");
+            }
             const value = scoped
                 ? message.captureKind === "cpu" ? this.cpuCapture : undefined
                 : this.current;
@@ -151,6 +164,11 @@ export const RESULT_EXPORT_SCRIPT = `for (const format of ["json", "csv"]) {
   const button = document.getElementById(format === "json" ? "exportJson" : "exportCsv");
   button.addEventListener("click", () => {
     const captureKind = button.closest("[data-export-kind]")?.dataset.exportKind;
-    vscode.postMessage({ type: "exportResult", format, ...(captureKind ? { captureKind } : {}) });
+    const evidenceId = button.closest("[data-evidence-id]")?.dataset.evidenceId;
+    vscode.postMessage({
+      type: "exportResult", format,
+      ...(captureKind ? { captureKind } : {}),
+      ...(evidenceId ? { evidenceId } : {}),
+    });
   });
 }`;
