@@ -5,6 +5,8 @@ versioned independently from the CLI and the .NET packages.
 
 ## Unreleased
 
+## 0.4.0 - 2026-10-21
+
 - Consolidate live counters/GC pauses and Live Events under Monitoring as independent local views.
   Switching views preserves each stream's lifecycle, status, retained buffer, selected event and
   delivery acknowledgements; navigation does not collect or reopen evidence. Route all generic
