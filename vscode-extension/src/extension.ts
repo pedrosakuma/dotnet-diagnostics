@@ -3137,6 +3137,11 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     .query-view-table-wrap { max-width:100%; overflow-x:auto; }
     .query-view-table { min-width:32rem; }
     .query-view-table.cpu-query-table { min-width:48rem; table-layout:fixed; }
+    .diagnostic-capture-notes li { overflow-wrap:anywhere; }
+    @media (max-width:480px) {
+      #diagnosticsCaptureViews > .diagnostic-evidence-table-label { display:flex; flex-direction:column; align-items:flex-start; gap:.35rem; max-width:100%; }
+      #diagnosticsCaptureViews > .diagnostic-evidence-table-label > select { box-sizing:border-box; min-width:0; width:100%; max-width:100%; }
+    }
     .cpu-query-table .cpu-query-symbol { width:31%; }
     .cpu-query-table .cpu-query-module { width:17%; }
     .cpu-query-table .cpu-query-number { width:6.5rem; }

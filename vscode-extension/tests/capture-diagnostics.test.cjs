@@ -366,6 +366,7 @@ test("every kind uses structured text-only tables, quality and explicit unavaila
         assert.match(text(container), /4 retained row\(s\) omitted/);
         assert.match(text(container), /Evidence quality: not reported/);
         assert.match(text(container), /cap-note/);
-        assert.ok(container.children.some(n => n.tag === "table"));
+        assert.ok(container.children.some(n => n.className === "query-view-table-wrap"
+            && n.children.some(child => child.tag === "table")));
     }
 });

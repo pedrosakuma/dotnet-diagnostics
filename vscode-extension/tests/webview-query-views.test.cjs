@@ -224,6 +224,11 @@ test("live panel exposes the compact evidence workspace and keeps other result r
     assert.match(html, /\.cpu-query-table \.cpu-query-number \{ width:6\.5rem; \}/);
     assert.match(html, /\.cpu-query-table \.cpu-query-action \{ width:9rem; \}/);
     assert.match(html, /\.query-view-table\.cpu-query-table \{ min-width:48rem; table-layout:fixed; \}/);
+    assert.match(html, /\.diagnostic-capture-notes li \{ overflow-wrap:anywhere; \}/);
+    assert.match(html, /@media \(max-width:480px\) \{\s*#diagnosticsCaptureViews > \.diagnostic-evidence-table-label \{ display:flex; flex-direction:column; align-items:flex-start; gap:\.35rem; max-width:100%; \}/);
+    assert.match(html, /#diagnosticsCaptureViews > \.diagnostic-evidence-table-label > select \{ box-sizing:border-box; min-width:0; width:100%; max-width:100%; \}/);
+    assert.match(html, /\.evidence-controls label \{ display:flex; flex-wrap:wrap; gap:\.35rem; min-width:0; max-width:100%; \}/);
+    assert.match(html, /\.evidence-controls input \{ box-sizing:border-box; min-width:0; max-width:100%; \}/);
     assert.match(html, /\.cpu-query-table \.cpu-query-symbol span, \.cpu-query-table \.cpu-query-module span \{ display:inline-block; white-space:nowrap; overflow-wrap:normal; \}/);
     assert.match(html, /\.cpu-query-summary-table \.cpu-query-category \{ width:56%; overflow-wrap:anywhere; word-break:normal; \}/);
     assert.match(script, /message\.type === 'query' && message\.kind === 'cpu'/);
@@ -1448,6 +1453,10 @@ test("all diagnostic kinds provide sortable selectable returned rows without fab
         assert.equal(tables[1].querySelector(".evidence-pick"), null);
         assert.equal(tables[1].querySelector("tbody").children[0].children[1].textContent, "0");
         assert.match(tables[1].textContent, /<script>operation<\/script>/);
+        assert.ok(root.querySelector(".diagnostic-evidence-table-label"));
+        assert.ok(root.querySelector(".diagnostic-capture-notes"));
+        assert.equal(tables.every(table => table._parent.className === "query-view-table-wrap"), true,
+            "each captured table keeps horizontal scrolling inside its own bounded wrapper");
         assert.equal(root.querySelector("script"), null);
     }
 });
