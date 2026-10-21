@@ -14,6 +14,7 @@ Module._resolveFilename = function (request, ...rest) {
 const { renderHtml, renderDumpAnalysisHtml } = require("../out/extension.js");
 const { QUERY_VIEW_RENDERER_SCRIPT } = require("../out/queryViewRenderer.js");
 const { CPU_PROFILE_SCRIPT } = require("../out/cpuProfileViewer.js");
+const { CAPTURE_GROUPS, CAPTURE_KIND_SPECS } = require("../out/captureKinds.js");
 
 const target = {
     processId: 4242,
@@ -184,17 +185,39 @@ test("live and dump webviews include the specialized renderer and styles", () =>
     }
 });
 
+test("every generic capture kind has one canonical Workspace domain and no Diagnostics fallback", () => {
+    const script = extractInlineScript(renderHtml(target, "nonce", 120));
+    const match = /const genericCaptureDomains = (\{[^;]+\});/.exec(script);
+    assert.ok(match, "the route table is emitted from the capture-group catalog");
+    const routes = JSON.parse(match[1]);
+    const expected = Object.fromEntries(CAPTURE_GROUPS.flatMap(group =>
+        group.kinds.filter(kind => kind !== "allocation").map(kind => [kind, group.id])));
+    assert.deepEqual(routes, expected);
+    assert.deepEqual(Object.keys(routes).sort(),
+        CAPTURE_KIND_SPECS.filter(spec => spec.kind !== "allocation").map(spec => spec.kind).sort());
+    assert.doesNotMatch(script, /resultDiagnostics|resultTabDiagnostics|selectResultTab\('diagnostics'\)/);
+    assert.match(script, /Unsupported generic capture kind/);
+    assert.match(script, /function setGenericCaptureOwner\(kind, evidenceId\)/);
+});
+
 test("live panel exposes the compact evidence workspace and keeps other result routes", () => {
     const html = renderHtml(target, "nonce123", 120);
     const script = extractInlineScript(html);
     const dumpHtml = renderDumpAnalysisHtml("sample.dmp", "nonce123");
     for (const [label, id] of [
-        ["Live", "Live"], ["Workspace", "Workspace"],
-        ["Diagnostics", "Diagnostics"], ["Events", "Events"],
+        ["Monitoring", "Monitoring"], ["Workspace", "Workspace"],
     ]) {
         assert.match(html, new RegExp(`role="tab"[^>]*>${label}<`));
         assert.match(html, new RegExp(`role="tabpanel" aria-labelledby="resultTab${id}"`));
     }
+    assert.match(html, /id="monitoringTabLive" role="tab"[^>]*aria-controls="monitoringLive">Live counters &amp; GC pauses/);
+    assert.match(html, /id="monitoringTabEvents" role="tab"[^>]*aria-controls="monitoringEvents">Live Events/);
+    assert.match(html, /id="monitoringLive" class="monitoring-view" role="tabpanel"/);
+    assert.match(html, /id="monitoringEvents" class="monitoring-view" role="tabpanel"[^>]*hidden/);
+    assert.match(html, /id="resultLive"/);
+    assert.match(html, /id="resultEvents"/);
+    assert.doesNotMatch(html, /id="resultTabDiagnostics"|id="resultDiagnostics"/);
+    assert.doesNotMatch(html, /id="resultTabEvents"|id="resultTabLive"/);
     assert.doesNotMatch(html, /id="resultTabExceptions"/);
     assert.doesNotMatch(html, /id="resultTabThreads"/);
     assert.match(html, /<select id="workspaceDomain">[\s\S]*?Memory &amp; GC[\s\S]*?Threads &amp; waits[\s\S]*?Requests &amp; networking[\s\S]*?Exceptions/);
@@ -230,8 +253,8 @@ test("live panel exposes the compact evidence workspace and keeps other result r
     assert.match(html, /\.cpu-query-table \.cpu-query-action \{ width:9rem; \}/);
     assert.match(html, /\.query-view-table\.cpu-query-table \{ min-width:48rem; table-layout:fixed; \}/);
     assert.match(html, /\.diagnostic-capture-notes li \{ overflow-wrap:anywhere; \}/);
-    assert.match(html, /@media \(max-width:480px\) \{\s*#diagnosticsCaptureViews > \.diagnostic-evidence-table-label \{ display:flex; flex-direction:column; align-items:flex-start; gap:\.35rem; max-width:100%; \}/);
-    assert.match(html, /#diagnosticsCaptureViews > \.diagnostic-evidence-table-label > select \{ box-sizing:border-box; min-width:0; width:100%; max-width:100%; \}/);
+    assert.match(html, /@media \(max-width:480px\) \{\s*#genericCaptureViews > \.diagnostic-evidence-table-label \{ display:flex; flex-direction:column; align-items:flex-start; gap:\.35rem; max-width:100%; \}/);
+    assert.match(html, /#genericCaptureViews > \.diagnostic-evidence-table-label > select \{ box-sizing:border-box; min-width:0; width:100%; max-width:100%; \}/);
     assert.match(html, /\.evidence-controls label \{ display:flex; flex-wrap:wrap; gap:\.35rem; min-width:0; max-width:100%; \}/);
     assert.match(html, /\.evidence-controls input \{ box-sizing:border-box; min-width:0; max-width:100%; \}/);
     assert.match(html, /\.cpu-query-table \.cpu-query-symbol span, \.cpu-query-table \.cpu-query-module span \{ display:inline-block; white-space:nowrap; overflow-wrap:normal; \}/);
@@ -257,7 +280,7 @@ test("domain return restores CPU view and filter without a request; new captures
         "workspaceLoadView", "workspaceGcCapture", "workspaceGcStatus", "cpuQueryViews", "cpuQueryStatus",
         "openHeapDetails", "backToHeapTypes", "captureGc", "resultCpu", "resultAllocation", "resultHeap",
         "resultThreads", "cpuSamplingDisclaimer", "workspaceCanvas", "workspaceCaptureStatus",
-        "workspaceThreadViewStatus", "diagnosticsCaptureViews", "captureThreadHeadline", "captureThreadTable",
+        "workspaceThreadViewStatus", "genericCaptureViews", "captureThreadHeadline", "captureThreadTable",
         "threadQueryViews", "threadDetails", "threadStaticsForm"];
     const nodes = Object.fromEntries(names.map(id => [id, makeContainer(id)]));
     nodes.captureThreadTable.closest = () => nodes.threadDetails;
@@ -266,7 +289,6 @@ test("domain return restores CPU view and filter without a request; new captures
     const api = new Function("document", "vscode", "renders", `
       const {${names.join(",")}} = Object.fromEntries(${JSON.stringify(names)}.map(id=>[id,document.getElementById(id)]));
       const workspacePanels = {cpu:resultCpu,allocation:resultAllocation,heap:resultHeap,'thread-snapshot':resultThreads};
-      const genericCaptureViews = diagnosticsCaptureViews;
       const isThreadCapture = kind => ['off_cpu','contention','threadpool'].includes(kind);
       const isRequestCapture = kind => ['requests','kestrel','db','networking'].includes(kind);
       const usesWorkspaceForGenericCapture = kind => ['gc','gc-activities'].includes(kind)
@@ -338,7 +360,7 @@ test("domain return restores CPU view and filter without a request; new captures
         "request-family navigation performs no CLI work");
 });
 
-test("GC, contention and networking captures keep one truthful replaceable generic result slot", () => {
+test("all nine generic capture kinds keep one truthful replaceable result slot in Workspace", () => {
     const script = extractInlineScript(renderHtml(target, "nonce", 120));
     const start = script.indexOf("function setGenericCaptureOwner(kind, evidenceId) {");
     const end = script.indexOf("    const cpuQueryLabels = {", start);
@@ -350,35 +372,38 @@ test("GC, contention and networking captures keep one truthful replaceable gener
         appendChild(child) { child.parentElement = this; return child; },
     });
     const workspaceCanvas = makeNode(), genericCaptureViews = makeNode();
-    const captureDiagnosticsStatus = { textContent: "" }, workspaceGcStatus = { textContent: "" };
-    const diagnostics = makeNode();
-    const document = { getElementById: id => id === "resultDiagnostics" ? diagnostics : null };
-    const replaceOwner = new Function("document", "workspaceCanvas", "genericCaptureViews", "captureDiagnosticsStatus",
-        "workspaceGcStatus", "setWorkspaceStatus", "usesWorkspaceForGenericCapture", "isThreadCapture", `
+    const workspaceCaptureStatus = { textContent: "" }, workspaceGcStatus = { textContent: "" };
+    const replaceOwner = new Function("workspaceCanvas", "genericCaptureViews", "workspaceCaptureStatus",
+        "workspaceGcStatus", "setWorkspaceStatus", "usesWorkspaceForGenericCapture", `
           let genericCaptureKind;
-          const genericCaptureLabels = {gc:"Garbage collections",contention:"Lock contention",networking:"Networking",
-            requests:"In-flight requests",kestrel:"Kestrel",db:"Database"};
+          let selectedWorkspaceEvidence = "gc";
+          const genericCaptureLabels = {gc:"Garbage collections","gc-activities":"GC and activities",
+            off_cpu:"Off-CPU blocking",contention:"Lock contention",threadpool:"Thread-pool capture",
+            networking:"Networking",requests:"In-flight requests",kestrel:"Kestrel",db:"Database"};
           const isRequestCapture = kind => ["requests", "kestrel", "db", "networking"].includes(kind);
+          const selectEvidence = kind => { selectedWorkspaceEvidence = kind; };
           ${source}
-          return {setGenericCaptureOwner,getOwner:()=>genericCaptureKind};
-        `)(document, workspaceCanvas, genericCaptureViews, captureDiagnosticsStatus, workspaceGcStatus,
+          return {setGenericCaptureOwner,getOwner:()=>genericCaptureKind,selectEvidence};
+        `)(workspaceCanvas, genericCaptureViews, workspaceCaptureStatus, workspaceGcStatus,
         (kind, status) => statuses.set(kind, status),
         kind => ["gc", "gc-activities", "off_cpu", "contention", "threadpool",
-            "requests", "kestrel", "db", "networking"].includes(kind),
-        kind => ["off_cpu", "contention", "threadpool"].includes(kind));
+            "requests", "kestrel", "db", "networking"].includes(kind));
 
     replaceOwner.setGenericCaptureOwner("gc", "gc-1");
     assert.equal(genericCaptureViews.parentElement, workspaceCanvas);
     assert.equal(genericCaptureViews.dataset.evidenceId, "gc-1");
+    assert.equal(genericCaptureViews.hidden, false);
     replaceOwner.setGenericCaptureOwner("contention", "contention-1");
     assert.equal(replaceOwner.getOwner(), "contention");
     assert.equal(genericCaptureViews.parentElement, workspaceCanvas);
+    assert.equal(genericCaptureViews.hidden, true, "late results do not appear under a different selected evidence kind");
     assert.match(statuses.get("gc"), /no longer current|replaced/i);
+    replaceOwner.selectEvidence("contention");
     replaceOwner.setGenericCaptureOwner("networking", "networking-1");
     assert.equal(genericCaptureViews.parentElement, workspaceCanvas);
     assert.equal(genericCaptureViews.dataset.evidenceId, "networking-1");
     assert.match(statuses.get("contention"), /no longer current|replaced/i);
-    assert.match(captureDiagnosticsStatus.textContent, /Requests & networking/);
+    assert.equal(genericCaptureViews.hidden, true);
     replaceOwner.setGenericCaptureOwner("requests", "requests-1");
     assert.equal(genericCaptureViews.parentElement, workspaceCanvas);
     assert.equal(genericCaptureViews.dataset.evidenceId, "requests-1");
@@ -389,6 +414,8 @@ test("GC, contention and networking captures keep one truthful replaceable gener
     replaceOwner.setGenericCaptureOwner("db", "db-1");
     assert.equal(genericCaptureViews.dataset.evidenceId, "db-1");
     assert.match(statuses.get("kestrel"), /replaced by Database/i);
+    assert.equal(replaceOwner.setGenericCaptureOwner("unknown", "unknown-1"), false);
+    assert.match(workspaceCaptureStatus.textContent, /Unsupported generic capture kind/);
 });
 
 test("request-family failures preserve the current result and late completions cannot replace it", () => {
@@ -406,28 +433,29 @@ test("request-family failures preserve the current result and late completions c
         appendChild(child) { child.parentElement = this; return child; },
         replaceChildren() {},
     });
-    const workspaceCanvas = makeNode(), diagnostics = makeNode(), genericCaptureViews = makeNode();
-    const captureDiagnosticsStatus = makeNode(), captureDiagnosticsButton = makeNode();
+    const workspaceCanvas = makeNode(), genericCaptureViews = makeNode();
     const workspaceCaptureStatus = makeNode(), workspaceGcStatus = makeNode();
     const statuses = new Map();
-    const document = { getElementById: id => id === "resultDiagnostics" ? diagnostics : null };
-    const api = new Function("document", "workspaceCanvas", "genericCaptureViews", "captureDiagnosticsStatus",
-        "captureDiagnosticsButton", "workspaceCaptureStatus", "workspaceGcStatus", "setWorkspaceStatus", `
+    const document = { getElementById: () => makeNode() };
+    const api = new Function("document", "workspaceCanvas", "genericCaptureViews",
+        "workspaceCaptureStatus", "workspaceGcStatus", "setWorkspaceStatus", `
           let diagnosticsRequestId;
           let genericCaptureKind;
           let activeCapture;
-          const genericCaptureLabels = {gc:"Garbage collections",contention:"Lock contention",
-            networking:"Networking",requests:"In-flight requests"};
-          const isThreadCapture = kind => ["off_cpu","contention","threadpool"].includes(kind);
+          let selectedWorkspaceEvidence = "cpu";
+          const genericCaptureLabels = {gc:"Garbage collections","gc-activities":"GC and activities",
+            off_cpu:"Off-CPU blocking",contention:"Lock contention",threadpool:"Thread-pool capture",
+            networking:"Networking",requests:"In-flight requests",kestrel:"Kestrel",db:"Database"};
           const isRequestCapture = kind => ["requests","kestrel","db","networking"].includes(kind);
-          const usesWorkspaceForGenericCapture = kind => ["gc","gc-activities"].includes(kind)
-            || isThreadCapture(kind) || isRequestCapture(kind);
+          const usesWorkspaceForGenericCapture = kind => ["gc","gc-activities","off_cpu","contention",
+            "threadpool","requests","kestrel","db","networking"].includes(kind);
           const activateCaptureTab = kind => { activeCapture = kind; };
           const renderCaptureView = () => {};
           ${owner}
           function handleMessage(message) { ${route} }
-          return {handleMessage, getOwner:()=>genericCaptureKind, getActiveCapture:()=>activeCapture};
-        `)(document, workspaceCanvas, genericCaptureViews, captureDiagnosticsStatus, captureDiagnosticsButton,
+          return {handleMessage, getOwner:()=>genericCaptureKind, getActiveCapture:()=>activeCapture,
+            selectEvidence:kind=>{selectedWorkspaceEvidence=kind;},selectActiveCapture:kind=>{activeCapture=kind;}};
+        `)(document, workspaceCanvas, genericCaptureViews,
         workspaceCaptureStatus, workspaceGcStatus, (kind, message) => statuses.set(kind, message));
 
     const status = (evidenceId, captureKind, state) => api.handleMessage({
@@ -436,24 +464,44 @@ test("request-family failures preserve the current result and late completions c
     const result = (evidenceId, captureKind) => api.handleMessage({
         type: "capture", kind: "diagnostics", evidenceId, captureKind, result: { kind: captureKind },
     });
+    status("networking-1", "networking", "starting");
+    assert.equal(api.getActiveCapture(), "networking");
     status("networking-1", "networking", "running");
+    api.selectEvidence("cpu");
+    api.selectActiveCapture("user-selected-cpu");
     result("networking-1", "networking");
     assert.equal(api.getOwner(), "networking");
     assert.equal(genericCaptureViews.dataset.evidenceId, "networking-1");
+    assert.equal(api.getActiveCapture(), "user-selected-cpu", "completion does not steal the selected view");
+    assert.equal(genericCaptureViews.hidden, true, "background completion does not display under CPU");
     status("requests-failed", "requests", "running");
     status("requests-failed", "requests", "error");
     assert.equal(api.getOwner(), "networking", "a failed request capture does not replace valid evidence");
     assert.equal(genericCaptureViews.dataset.evidenceId, "networking-1");
+    assert.match(statuses.get("requests"), /running|error/i);
     result("networking-1", "networking");
     assert.equal(api.getOwner(), "networking", "a completion from the previous request is ignored");
     assert.equal(genericCaptureViews.dataset.evidenceId, "networking-1");
+    status("contention-2", "contention", "starting");
     status("contention-2", "contention", "running");
+    api.selectActiveCapture("Monitoring");
+    api.selectEvidence("cpu");
     result("contention-2", "contention");
     assert.equal(api.getOwner(), "contention");
     assert.equal(genericCaptureViews.dataset.evidenceId, "contention-2");
+    assert.equal(api.getActiveCapture(), "Monitoring");
+    assert.equal(genericCaptureViews.hidden, true);
     result("requests-failed", "requests");
     assert.equal(api.getOwner(), "contention", "a late failed-request completion cannot overwrite newer evidence");
     assert.equal(genericCaptureViews.dataset.evidenceId, "contention-2");
+    status("unknown-1", "not-a-capture", "error");
+    assert.match(workspaceCaptureStatus.textContent, /Unsupported generic capture kind/);
+    result("unknown-1", "not-a-capture");
+    assert.equal(api.getOwner(), "contention", "unsupported kinds cannot replace the current result");
+    status(undefined, "networking", "error");
+    assert.match(workspaceCaptureStatus.textContent, /omitted its evidence ID/);
+    result(undefined, "networking");
+    assert.equal(api.getOwner(), "contention", "uncorrelated results cannot replace the current result");
 });
 
 function cpuRenderer() {

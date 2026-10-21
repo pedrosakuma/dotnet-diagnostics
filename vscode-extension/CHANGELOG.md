@@ -5,6 +5,11 @@ versioned independently from the CLI and the .NET packages.
 
 ## Unreleased
 
+- Consolidate live counters/GC pauses and Live Events under Monitoring as independent local views.
+  Switching views preserves each stream's lifecycle, status, retained buffer, selected event and
+  delivery acknowledgements; navigation does not collect or reopen evidence. Route all generic
+  capture results into their canonical Workspace domains, keep allocations on their dedicated
+  profile path, and retire the obsolete Diagnostics result tab without removing the expert command.
 - Move managed-exception and crash-guard results into the Exceptions domain of the compact live
   Workspace, retaining one dedicated, replaceable exception result independent of the generic
   capture slot. Bind statuses and results to the capture request and mode; navigation performs no

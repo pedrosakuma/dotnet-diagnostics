@@ -52,7 +52,7 @@ test("result tabs navigate in rendered order and preserve focus and selection st
         + `${inlineScript().slice(start, end)}; return { resultTabs, selectResultTab };`)(document);
     const resultTabs = navigation.resultTabs;
     assert.deepEqual(resultTabs.map(tab => tab.label),
-        ["Live", "Workspace", "Diagnostics", "Events"]);
+        ["Monitoring", "Workspace"]);
 
     function press(index, key) {
         let prevented = false;
@@ -79,7 +79,7 @@ test("result tabs navigate in rendered order and preserve focus and selection st
     assert.equal(press(tabs.length - 1, "Home"), true);
     assertSelected(0);
     assert.equal(tabs[0].focused, true);
-    assert.equal(press(2, "End"), true);
+    assert.equal(press(tabs.length - 1, "End"), true);
     assertSelected(tabs.length - 1);
     assert.equal(tabs.at(-1).focused, true);
     navigation.selectResultTab("workspace");
@@ -90,9 +90,9 @@ test("result tabs navigate in rendered order and preserve focus and selection st
 test("initial status describes a ready selected process and live status remains counter-scoped", () => {
     const html = renderHtml(target, "nonce", 120);
     assert.match(html, /id="status" role="status">Live counters are ready\./);
-    assert.match(html, /<section id="resultLive"[\s\S]*?<div id="status" role="status">Live counters are ready\./);
+    assert.match(html, /<section id="monitoringLive"[\s\S]*?<div id="status" role="status">Live counters are ready\./);
     assert.ok(html.indexOf('id="status"') > html.indexOf('<section id="resultLive"'),
-        "the live-counter status belongs to the Live tab, not the Workspace");
+        "the live-counter status stays inside Monitoring's counter view");
     assert.doesNotMatch(html, /Connecting to CLI/);
 
     const script = inlineScript();
