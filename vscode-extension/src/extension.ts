@@ -3140,6 +3140,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     .diagnostic-capture-notes li { overflow-wrap:anywhere; }
     .diagnostic-request-filter { display:flex; align-items:center; flex-wrap:wrap; gap:.4rem; margin:.5rem 0; }
     .diagnostic-request-filter select { box-sizing:border-box; min-width:0; max-width:100%; }
+    .diagnostic-request-disclaimer { color:var(--vscode-descriptionForeground); font-size:.85rem; margin:.6rem 0; }
     @media (max-width:480px) {
       #diagnosticsCaptureViews > .diagnostic-evidence-table-label { display:flex; flex-direction:column; align-items:flex-start; gap:.35rem; max-width:100%; }
       #diagnosticsCaptureViews > .diagnostic-evidence-table-label > select { box-sizing:border-box; min-width:0; width:100%; max-width:100%; }

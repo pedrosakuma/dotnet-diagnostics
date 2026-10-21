@@ -181,14 +181,12 @@ function renderCaptureView(containerId: string, result: unknown): void {
             requestTable.columns.findIndex(column => column.toLowerCase() === "started"));
         if (requestTable.rows.length === 0) panel.appendChild(el("p", requestTable.emptyText));
         container.appendChild(panel);
-        const captureDetails = el("details");
-        captureDetails.className = "diagnostic-request-details";
-        captureDetails.appendChild(el("summary", "Capture details and limitations"));
-        captureDetails.appendChild(el("p", "Search, sorting, and filtering apply only to returned rows. "
+        const disclaimer = el("p", "Search, sorting, and filtering apply only to returned rows. "
             + "This snapshot shows requests still tracked at window close, not a complete request timeline or parent/child map. "
             + "Start/stop pairing uses an activity ID or trace/span ID pair. Events without correlatable IDs are skipped, "
-            + "and repeated starts replace the tracked entry."));
-        container.appendChild(captureDetails);
+            + "and repeated starts replace the tracked entry.");
+        disclaimer.className = "diagnostic-request-disclaimer";
+        container.appendChild(disclaimer);
     } else {
         table("Metrics", ["Metric", "Value", "Note"], view.metrics.map(m => [m.label, m.value, m.note ?? ""]));
         const label = el("label", "Evidence table ");
