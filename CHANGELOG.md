@@ -2,7 +2,12 @@
 
 ## [Unreleased]
 
-## [0.32.0] — 2026-10-22
+## [0.32.1] — 2026-10-22
+
+This is the first published release with the changes below. The `v0.32.0` tag was created
+but its release workflows failed in the portable producer contract suites before any
+packaging or publication (fixed by #1249), so 0.32.0 was not published and its notes are
+included here. Use 0.32.1 or later.
 
 ### Added
 
@@ -82,9 +87,9 @@
 
 ## Earlier unreleased history
 
-The entries below accumulated under `Unreleased` before `[0.32.0]` was cut. The
+The entries below accumulated under `Unreleased` before `[0.32.1]` was cut. The
 changed items that were new after `v0.31.0` (checked with `git log v0.31.0..main`)
-are listed under 0.32.0 above. The 0.29, 0.30 and 0.31 releases have no changelog
+are listed under 0.32.1 above. The 0.29, 0.30 and 0.31 releases have no changelog
 sections; the items below were not re-attributed to them. The first item is
 VS Code extension-only (extension changes are versioned separately), and the
 ARM64 item was already present at `v0.31.0`; consult the release tags for exact content.
