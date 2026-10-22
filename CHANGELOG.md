@@ -37,19 +37,14 @@
     are not causality, a critical path or exclusive delay. Coexistence with external
     DiagnosticSource sessions, privileged attach and the full runtime matrix are not
     established. No MCP tool is added; this is Core and CLI only.
-
-## Unreleased history before 0.32.0
-
-Entries below accumulated under `Unreleased` before `[0.32.0]` was cut. They are not
-re-attributed here: the 0.29, 0.30 and 0.31 releases have no changelog sections, so
-some of these items shipped in those tags. Consult the release tags for exact content.
+- **CLI `event_source` live kind (#1204).** Adds a bounded, continuous Core-owned
+  EventPipe session over explicitly requested EventSources, with caps and loss
+  reporting described in [resource boundedness](docs/resource-boundedness.md).
 
 ### Changed
 
-- VS Code capture actions are organized into CPU, Memory & GC, Threads & waits,
-  Requests & networking, and Exceptions, with Monitoring and existing dump/saved
-  evidence kept separate. The diagnostic capture picker uses matching groups;
-  existing expert commands, result tabs and consent flows remain intact (#1224).
+**Includes a behavior change for consumers of comparison verdicts** (#1192, #1189).
+
 - **Behavior change:** `InvestigationSummary` comparison now reports objective deltas
   by default, with no legacy option. Comparable results use `not_assessed` rather
   than performance verdicts; key metrics use `up`/`down`/`flat` and neutral direction,
@@ -84,6 +79,22 @@ some of these items shipped in those tags. Consult the release tags for exact co
   metric or row has a better-direction; a note explains that deltas are objective signals (#1189).
 - CPU `onCpuSelfPercent`/`exclusivePercent` (OS on-CPU backend) are now direction-neutral: they are shares of samples, not CPU time or work done, so a rising share is no longer labelled `regressed` (#1189).
 - Pairwise `query_snapshot(view="diff")` on OS on-CPU `cpu-sample` handles reports `not_assessed` instead of a `regression`/`mixed` verdict derived from per-method sample shares (#1189).
+
+## Earlier unreleased history
+
+The entries below accumulated under `Unreleased` before `[0.32.0]` was cut. The
+changed items that were new after `v0.31.0` (checked with `git log v0.31.0..main`)
+are listed under 0.32.0 above. The 0.29, 0.30 and 0.31 releases have no changelog
+sections; the items below were not re-attributed to them. The first item is
+VS Code extension-only (extension changes are versioned separately), and the
+ARM64 item was already present at `v0.31.0`; consult the release tags for exact content.
+
+### Changed
+
+- VS Code capture actions are organized into CPU, Memory & GC, Threads & waits,
+  Requests & networking, and Exceptions, with Monitoring and existing dump/saved
+  evidence kept separate. The diagnostic capture picker uses matching groups;
+  existing expert commands, result tabs and consent flows remain intact (#1224).
 
 ### Added
 
