@@ -49,6 +49,7 @@
     "onCommand:dotnetDiagnostics.captureCpu",
     "onCommand:dotnetDiagnostics.captureExceptions",
     "onCommand:dotnetDiagnostics.captureDiagnostics",
+    "onCommand:dotnetDiagnostics.captureRequestActivities",
     "onCommand:dotnetDiagnostics.captureHeap",
     "onCommand:dotnetDiagnostics.captureThreadSnapshot",
     "onView:dotnetDiagnostics.actions",
@@ -145,6 +146,10 @@
       {
         "command": "dotnetDiagnostics.captureDiagnostics",
         "title": ".NET Diagnostics: Capture Diagnostics"
+      },
+      {
+        "command": "dotnetDiagnostics.captureRequestActivities",
+        "title": ".NET Diagnostics: Requests + Completed Activities Reproduction"
       },
       {
         "command": "dotnetDiagnostics.captureHeap",

@@ -192,9 +192,10 @@ test("every generic capture kind has one canonical Workspace domain and no Diagn
     const routes = JSON.parse(match[1]);
     const expected = Object.fromEntries(CAPTURE_GROUPS.flatMap(group =>
         group.kinds.filter(kind => kind !== "allocation").map(kind => [kind, group.id])));
+    expected["request-activities"] = "requests";
     assert.deepEqual(routes, expected);
     assert.deepEqual(Object.keys(routes).sort(),
-        CAPTURE_KIND_SPECS.filter(spec => spec.kind !== "allocation").map(spec => spec.kind).sort());
+        [...CAPTURE_KIND_SPECS.filter(spec => spec.kind !== "allocation").map(spec => spec.kind), "request-activities"].sort());
     assert.doesNotMatch(script, /resultDiagnostics|resultTabDiagnostics|selectResultTab\('diagnostics'\)/);
     assert.match(script, /Unsupported generic capture kind/);
     assert.match(script, /function setGenericCaptureOwner\(kind, evidenceId\)/);
@@ -281,7 +282,7 @@ test("domain return restores CPU view and filter without a request; new captures
         "openHeapDetails", "backToHeapTypes", "captureGc", "resultCpu", "resultAllocation", "resultHeap",
         "resultThreads", "cpuSamplingDisclaimer", "workspaceCanvas", "workspaceCaptureStatus",
         "workspaceThreadViewStatus", "genericCaptureViews", "captureThreadHeadline", "captureThreadTable",
-        "threadQueryViews", "threadDetails", "threadStaticsForm"];
+        "threadQueryViews", "threadDetails", "threadStaticsForm", "jointReproduction"];
     const nodes = Object.fromEntries(names.map(id => [id, makeContainer(id)]));
     nodes.captureThreadTable.closest = () => nodes.threadDetails;
     document.querySelector = selector => selector === "#resultThreads .statics-form" ? nodes.threadStaticsForm : null;
@@ -349,7 +350,7 @@ test("domain return restores CPU view and filter without a request; new captures
         assert.equal(api.getActiveResultTab(), "Workspace");
         assert.equal(nodes.workspaceDomain.value, "requests");
         assert.deepEqual(nodes.workspaceEvidenceKind.children.map(option => option.value),
-            ["requests", "kestrel", "db", "networking"]);
+            ["requests", "request-activities", "kestrel", "db", "networking"]);
         assert.equal(nodes.workspaceEvidenceKind.value, kind);
         assert.equal(nodes.workspaceView.value, "capture-result");
         assert.equal(nodes.workspaceView.disabled, true, "generic results have no retained query view");
@@ -451,6 +452,7 @@ test("request-family failures preserve the current result and late completions c
             "threadpool","requests","kestrel","db","networking"].includes(kind);
           const activateCaptureTab = kind => { activeCapture = kind; };
           const renderCaptureView = () => {};
+          const jointView = {reset() {}};
           ${owner}
           function handleMessage(message) { ${route} }
           return {handleMessage, getOwner:()=>genericCaptureKind, getActiveCapture:()=>activeCapture,

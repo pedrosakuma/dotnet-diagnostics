@@ -5,6 +5,17 @@ versioned independently from the CLI and the .NET packages.
 
 ## Unreleased
 
+- Add an explicit **Requests + completed Activities** reproduction in Requests & networking,
+  using only the CLI's advertised `requestActivities` v1 capability (not guaranteed by CLI 0.31.0).
+  Keep simple request captures unchanged. Exact ActivitySource names, a bounded window and an
+  EventPipe privacy/cost notice precede collection; no automatic discovery or historical recovery.
+  Select an exact retained request, explicitly load related completed Activities, and return
+  locally. Show structural relationship separately from verification/withheld reasons, window,
+  source, loss and omissions; durations are not causality, exclusive delay or a critical path.
+  Use the shared replaceable generic result and only one loaded selected-request response.
+  Replacement, expiry and disconnect disable CLI reads; retained displays are labelled stale.
+  No MCP dependency, open-operation tracking, persistence, export or version bump.
+
 ## 0.4.0 - 2026-10-21
 
 Use CLI **0.31.0 or later** for the full feature set; the base protocol-v2 workflows still

@@ -12,6 +12,9 @@ import { ProcessTree, type ProcessAction, type ProcessRow } from "./processTree"
 import type { ProcessEntry } from "./processHistory";
 import { CaptureHistory, type HistoryRow } from "./captureHistory";
 import { CAPTURE_VIEW_RENDERER_SCRIPT } from "./captureViewRenderer";
+import { isJointCapture, isJointRelatedQuery, parseJointSources, supportsRequestActivities,
+    type JointCapture, type JointQuery, type RelatedActivity } from "./requestActivities";
+import { REQUEST_ACTIVITIES_SCRIPT } from "./requestActivitiesView";
 import { CPU_PROFILE_SCRIPT, CPU_PROFILE_STYLES } from "./cpuProfileViewer";
 import { WEBVIEW_FIELD_STYLES } from "./webviewFields";
 import { LIVE_TIME_NAVIGATION_SCRIPT } from "./liveTimeNavigation";
@@ -139,6 +142,7 @@ interface Deferred<T> {
  * payloads.
  */
 type PendingCapture =
+    | { kind: "request-activities"; generation: number; processId: number; sources: string[]; durationSeconds: number; deferred: Deferred<JointCapture> }
     | { kind: "cpu"; evidenceId: string; exportTrace?: boolean; deferred: Deferred<CpuSampleSummary> }
     | { kind: "exceptions" | "crash-guard"; deferred: Deferred<ExceptionCaptureResult> }
     | { kind: "heap"; evidenceId: string; deferred: Deferred<HeapCaptureResult> }
@@ -187,9 +191,15 @@ interface StreamChild {
     closing: boolean;
     eventsConnection: boolean;
     supportedLiveKinds?: string[];
+    requestActivities?: boolean;
+    pendingJointQueries?: Map<string, Deferred<JointQuery<RelatedActivity>>>;
 }
 
 class CounterPanelController implements vscode.Disposable {
+    private joint?: { session: StreamChild; evidenceId: string; result: JointCapture; timer: NodeJS.Timeout };
+    private jointCaptureTask?: Promise<void>;
+    private jointQueryTask?: Promise<void>;
+    private jointGeneration = 0;
     private readonly exporter = new ResultExporter();
     private cpuExport?: { session: StreamChild; handle: string; evidenceId: string; trace?: boolean };
     public liveCountersChanged?: (active: boolean) => void;
@@ -484,7 +494,7 @@ class CounterPanelController implements vscode.Disposable {
         if (selected?.processId !== entry.processId || selectedIdentity !== entry.identity) {
             if (this.exporting) throw new Error("Wait for the current export before selecting another process.");
             const child = this.activeChild;
-            if (child && (child.pendingCaptures.size > 0 || child.pendingQueries.size > 0 || child.startInFlight))
+            if (child && (child.pendingCaptures.size > 0 || child.pendingQueries.size > 0 || child.pendingJointQueries?.size || child.startInFlight))
                 throw new Error("Wait for the current capture or query before selecting another process.");
             await this.stopCounters();
             await this.stopEvents();
@@ -692,6 +702,151 @@ class CounterPanelController implements vscode.Disposable {
 
     public captureAllocations(): Promise<void> {
         return this.captureDiagnostics("allocation");
+    }
+
+    public captureRequestActivities(): Promise<void> {
+        this.jointCaptureTask ??= this.captureRequestActivitiesCore().finally(() => { this.jointCaptureTask = undefined; });
+        return this.jointCaptureTask;
+    }
+
+    private invalidateJoint(message: string): void {
+        const previous = this.joint;
+        if (!previous) return;
+        clearTimeout(previous.timer);
+        this.joint = undefined;
+        this.postMessage({ type: "jointUnavailable", evidenceId: previous.evidenceId, message });
+    }
+
+    private async captureRequestActivitiesCore(): Promise<void> {
+        if (this.disposed) return;
+        const target = this.selectedTarget ?? await this.ensureTargetAndPanel();
+        if (!target || this.disposed) return;
+        const sourceText = await vscode.window.showInputBox({
+            title: "Requests + completed Activities: exact source names",
+            prompt: "Enter 1–20 exact ActivitySource names, comma-separated. No wildcards or discovery. Sources must already emit Activities.",
+            validateInput: value => parseJointSources(value) ? undefined : "Use exact names: 1–200 ASCII letters, digits, '.', '_' or '-'.",
+        });
+        if (sourceText === undefined) return;
+        const sources = parseJointSources(sourceText);
+        if (!sources) { void vscode.window.showErrorMessage("Invalid exact ActivitySource names; previous evidence is unchanged."); return; }
+        const durationText = await vscode.window.showInputBox({
+            title: "Reproduction window (seconds)", value: "10",
+            validateInput: value => validateInteger(value, 1, 300, "Duration"),
+        });
+        if (durationText === undefined) return;
+        if (validateInteger(durationText, 1, 300, "Duration")) {
+            void vscode.window.showErrorMessage("Duration must be an integer from 1 to 300; previous evidence is unchanged."); return;
+        }
+        const durationSeconds = Number(durationText);
+        const proceed = await vscode.window.showWarningMessage(
+            `Capture PID ${target.processId} for ${durationSeconds}s using ASP.NET requests and completed Activities from ${sources.join(", ")}. `
+            + "EventPipe tracing has startup latency and overhead. Names, paths and correlation IDs may be sensitive. "
+            + "No tags, SQL, URLs, persistence or privileged attach. Reproduce after startup; dispatch is not readiness. "
+            + "This replaces the shared result and cannot recover historical operations. Stop this CLI's live counters first. "
+            + "Coexistence with other DiagnosticSource sessions is not established.",
+            { modal: true }, "Capture reproduction", "Cancel");
+        if (proceed !== "Capture reproduction" || this.disposed) return;
+        if (this.selectedTarget !== target) {
+            void vscode.window.showErrorMessage("The selected target changed during setup. Start a new reproduction for the current target.");
+            return;
+        }
+        const evidenceId = randomBytes(12).toString("hex");
+        const status = (state: string, message: string): void =>
+            this.postMessage({ type: "jointStatus", evidenceId, state, message });
+        status("starting", "Checking CLI capability; prior evidence is preserved until dispatch is acknowledged.");
+        let session: StreamChild;
+        let owns: boolean;
+        try { ({ session, owns } = await this.acquireChild()); }
+        catch (error) { status("error", errorMessage(error)); return; }
+        try {
+            if (this.selectedTarget !== target) throw new Error("The selected target changed during CLI setup. Start a new reproduction.");
+            if (!session.requestActivities) throw new Error(
+                "This CLI does not advertise requestActivities v1. Build/configure a CLI with that capability; version 0.31.0 alone is not sufficient.");
+            if (session.sessionId || session.startInFlight)
+                throw new Error("Stop this CLI's live counters before this reproduction capture.");
+            if (session.pendingCaptures.size || session.pendingQueries.size || session.pendingJointQueries?.size)
+                throw new Error("Wait for the current CLI capture or query to finish.");
+            const pending: PendingCapture = { kind: "request-activities", generation: ++this.jointGeneration, processId: target.processId,
+                sources, durationSeconds, deferred: deferred<JointCapture>() };
+            session.pendingCaptures.set(evidenceId, pending);
+            try {
+                this.writeFrame(session, { type: "capture", requestId: evidenceId, kind: "request-activities",
+                    processId: target.processId, durationSeconds, sources });
+                const result = await withTimeout(pending.deferred.promise, (durationSeconds + 60) * 1000);
+                if (this.disposed || session.closing || session.process.exitCode !== null || session.process.signalCode !== null
+                    || this.selectedTarget !== target || pending.generation !== this.jointGeneration)
+                    throw new Error("Joint evidence owner changed, target changed or CLI disconnected before display; no artifact is available.");
+                this.invalidateJoint("Replaced by a new reproduction capture.");
+                const timer = setTimeout(() => {
+                    if (this.joint?.evidenceId === evidenceId) this.invalidateJoint("Expired: retained display only; further CLI queries are unavailable.");
+                }, Math.max(0, Date.parse(result.handleExpiresAt) - Date.now()));
+                this.joint = { session, evidenceId, result, timer };
+                this.postMessage({ type: "jointCapture", evidenceId, result });
+                status("done", "Reproduction capture returned. Only requests pending at close and completed Activities were retained.");
+            } catch (error) {
+                // Timeout must not leave a collector running behind a success-shaped UI.
+                if (!pending.deferred.settled) {
+                    session.expectedShutdown = true;
+                    await this.closeChild(session);
+                }
+                throw error;
+            } finally { session.pendingCaptures.delete(evidenceId); }
+        } catch (error) {
+            status("error", errorMessage(error));
+            this.output.appendLine(`Request/Activity capture: ${errorMessage(error)}`);
+        } finally {
+            if (owns && !session.sessionId && !this.hasRetainedProfileFor(session)) {
+                session.expectedShutdown = true;
+                await this.closeChild(session);
+            }
+        }
+    }
+
+    private queryRequestActivities(evidenceId: string, requestRowId: string): Promise<void> {
+        this.jointQueryTask ??= this.queryRequestActivitiesCore(evidenceId, requestRowId)
+            .finally(() => { this.jointQueryTask = undefined; });
+        return this.jointQueryTask;
+    }
+
+    private async queryRequestActivitiesCore(evidenceId: string, requestRowId: string): Promise<void> {
+        const saved = this.joint;
+        const fail = (message: string): void => this.postMessage({ type: "jointQueryError", evidenceId, requestRowId, message });
+        if (!saved || saved.evidenceId !== evidenceId) { fail("Joint evidence unavailable: replaced, expired or disconnected."); return; }
+        const { session, result } = saved;
+        if (Date.now() >= Date.parse(result.handleExpiresAt)) {
+            this.invalidateJoint("Expired: retained display only; further CLI queries are unavailable.");
+            fail("Joint evidence has expired."); return;
+        }
+        if (!result.requests.rows.some(row => row.rowId === requestRowId)) { fail("Select an exact retained request row."); return; }
+        if (session.closing || session.process.exitCode !== null || session.process.signalCode !== null) {
+            this.invalidateJoint("Disconnected: retained display only; further CLI queries are unavailable.");
+            fail("The owning CLI connection is closed."); return;
+        }
+        if (session.pendingCaptures.size || session.pendingQueries.size || session.pendingJointQueries?.size || session.startInFlight) {
+            fail("Wait for the current CLI operation to finish."); return;
+        }
+        const requestId = randomBytes(12).toString("hex");
+        const pending = deferred<JointQuery<RelatedActivity>>();
+        session.pendingJointQueries ??= new Map();
+        session.pendingJointQueries.set(requestId, pending);
+        this.postMessage({ type: "jointQueryStarted", evidenceId, requestRowId });
+        try {
+            this.writeFrame(session, { type: "query", requestId, handle: result.handle,
+                captureId: result.captureId, view: "related-activities", requestRowId, topN: 100 });
+            const response = await withTimeout(pending.promise, 15_000);
+            if (this.joint !== saved) return;
+            const base = result.requests;
+            if (["captureId", "processId", "processStartedAt", "observationStart", "observationEnd",
+                "retainedRequests", "retainedActivities", "quality"].some(key =>
+                JSON.stringify(response[key as keyof typeof response]) !== JSON.stringify(base[key as keyof typeof base])))
+                throw new Error("The CLI related evidence does not match this capture's process, window or quality.");
+            this.postMessage({ type: "jointRelated", evidenceId, requestRowId, result: response });
+        } catch (error) {
+            if (this.joint !== saved) return;
+            if (isRecord(error) && error.code === "handle_unavailable")
+                this.invalidateJoint("CLI evidence unavailable: replaced or expired; retained display only.");
+            fail(errorMessage(error));
+        } finally { session.pendingJointQueries.delete(requestId); }
     }
 
     private async captureDiagnosticsCore(requestedKind?: CaptureViewKind): Promise<void> {
@@ -1138,7 +1293,7 @@ class CounterPanelController implements vscode.Disposable {
     }
 
     private hasRetainedProfileFor(session: StreamChild): boolean {
-        return this.cpuExport?.session === session || this.allocationProfile?.session === session;
+        return this.cpuExport?.session === session || this.allocationProfile?.session === session || this.joint?.session === session;
     }
 
     /**
@@ -1443,6 +1598,15 @@ class CounterPanelController implements vscode.Disposable {
                 void this.captureExceptions();
             } else if (message.type === "captureDiagnostics") {
                 void this.captureDiagnostics();
+            } else if (message.type === "captureRequestActivities") {
+                void this.captureRequestActivities();
+            } else if (message.type === "queryRequestActivities"
+                && typeof message.evidenceId === "string" && typeof message.requestRowId === "string") {
+                void this.queryRequestActivities(message.evidenceId, message.requestRowId);
+            } else if (message.type === "cancelRequestActivities" && typeof message.evidenceId === "string") {
+                const session = this.activeChild;
+                if (session?.pendingCaptures.get(message.evidenceId)?.kind === "request-activities")
+                    this.writeFrame(session, { type: "cancel", requestId: message.evidenceId });
             } else if (message.type === "captureGc") {
                 if (message.kind !== "gc" && message.kind !== "gc-activities") {
                     this.postMessage({
@@ -1694,6 +1858,9 @@ class CounterPanelController implements vscode.Disposable {
             this.failPending(session, error);
         });
         child.once("close", (code, signal) => {
+            if (this.joint?.session === session) this.invalidateJoint("Disconnected: retained display only; further CLI queries are unavailable.");
+            for (const pending of session.pendingJointQueries?.values() ?? []) pending.reject(new Error("The owning CLI connection closed."));
+            session.pendingJointQueries?.clear();
             if (this.heapSnapshot?.session === session) this.liveReadConsent.clear();
             session.lines.close();
             if (!session.terminalReceived && !session.expectedShutdown) {
@@ -1759,6 +1926,16 @@ class CounterPanelController implements vscode.Disposable {
     }
 
     private handleFrame(session: StreamChild, line: string, byteLength?: number): void {
+        if (!session.eventsConnection && ([...session.pendingCaptures.values()].some(pending => pending.kind === "request-activities")
+            || session.pendingJointQueries?.size) && Buffer.byteLength(line, "utf8") > 1024 * 1024) {
+            const error = new Error("The CLI joint evidence frame exceeded the 1 MiB protocol budget.");
+            for (const pending of session.pendingCaptures.values()) pending.deferred.reject(error);
+            for (const pending of session.pendingJointQueries?.values() ?? []) pending.reject(error);
+            if (this.joint?.session === session) this.invalidateJoint(error.message);
+            this.output.appendLine(error.message);
+            session.process.kill();
+            return;
+        }
         let frame: ProtocolFrame;
         try {
             frame = parseProtocolFrame(line);
@@ -1808,6 +1985,7 @@ class CounterPanelController implements vscode.Disposable {
                     session.supportedLiveKinds = frame.supportedLiveKinds.filter((kind): kind is string => typeof kind === "string");
                 }
                 session.protocolReady = true;
+                session.requestActivities = supportsRequestActivities(frame.requestActivities);
                 session.handshake.resolve();
                 break;
 
@@ -1927,13 +2105,32 @@ class CounterPanelController implements vscode.Disposable {
                 }
                 break;
 
+            case "capture-started": {
+                const pending = typeof frame.requestId === "string" ? session.pendingCaptures.get(frame.requestId) : undefined;
+                if (pending?.kind === "request-activities" && pending.generation === this.jointGeneration
+                    && frame.kind === "request-activities" && frame.processId === pending.processId) {
+                    this.invalidateJoint("Replaced by an acknowledged reproduction capture.");
+                    this.postMessage({ type: "jointDispatched", evidenceId: frame.requestId,
+                        message: "Dispatched, not readiness: allow EventPipe startup before reproducing. Waiting for bounded drain and result." });
+                }
+                break;
+            }
             case "capture": {
                 const requestId = typeof frame.requestId === "string" ? frame.requestId : undefined;
                 const pending = requestId ? session.pendingCaptures.get(requestId) : undefined;
                 if (!pending) {
                     break;
                 }
-                if (pending.kind === "diagnostics" && frame.kind === pending.captureKind
+                if (pending.kind === "request-activities" && pending.generation !== this.jointGeneration) {
+                    pending.deferred.reject(new Error("The joint capture owner was replaced or disconnected; stale terminal ignored."));
+                    break;
+                }
+                if (pending.kind === "request-activities" && frame.kind === pending.kind
+                    && isJointCapture(frame.result) && frame.result.requests.processId === pending.processId
+                    && frame.result.requestedDurationSeconds === pending.durationSeconds
+                    && JSON.stringify(frame.result.sources) === JSON.stringify(pending.sources)) {
+                    pending.deferred.resolve(frame.result);
+                } else if (pending.kind === "diagnostics" && frame.kind === pending.captureKind
                     && isCaptureViewResult(frame.result) && frame.result.kind === pending.captureKind) {
                     pending.deferred.resolve(frame.result);
                 } else if (pending.kind === "cpu" && isCpuSampleSummary(frame.result)) {
@@ -1963,6 +2160,13 @@ class CounterPanelController implements vscode.Disposable {
 
             case "query": {
                 const requestId = typeof frame.requestId === "string" ? frame.requestId : undefined;
+                const jointPending = requestId ? session.pendingJointQueries?.get(requestId) : undefined;
+                if (jointPending) {
+                    if (frame.handle === this.joint?.result.handle && frame.view === "related-activities" && isJointRelatedQuery(frame.result))
+                        jointPending.resolve(frame.result);
+                    else jointPending.reject(new Error("The CLI returned malformed or mismatched related Activity evidence."));
+                    break;
+                }
                 const pending = requestId ? session.pendingQueries.get(requestId) : undefined;
                 if (!pending) {
                     break;
@@ -1991,9 +2195,12 @@ class CounterPanelController implements vscode.Disposable {
                 const requestId = typeof frame.requestId === "string" ? frame.requestId : undefined;
                 const pendingCapture = requestId ? session.pendingCaptures.get(requestId) : undefined;
                 const pendingQuery = requestId ? session.pendingQueries.get(requestId) : undefined;
+                const jointPending = requestId ? session.pendingJointQueries?.get(requestId) : undefined;
                 const pendingExport = requestId ? this.pendingExports.get(requestId) : undefined;
                 if (pendingExport?.session === session) {
                     pendingExport.deferred.reject(error);
+                } else if (jointPending) {
+                    jointPending.reject(error);
                 } else if (pendingCapture) {
                     pendingCapture.deferred.reject(error);
                 } else if (pendingQuery) {
@@ -2040,6 +2247,13 @@ class CounterPanelController implements vscode.Disposable {
     }
 
     private writeFrame(session: StreamChild, frame: object): void {
+        if (!session.eventsConnection && isRecord(frame) && ["capture", "start"].includes(String(frame.type))) {
+            if ([...session.pendingCaptures.values()].some(pending => pending.kind === "request-activities")
+                && !(frame.type === "capture" && frame.kind === "request-activities"))
+                throw new Error("Wait for the request/Activity reproduction capture to finish before starting another capture or live session.");
+        }
+        if (isRecord(frame) && ["capture", "start"].includes(String(frame.type)) && session.pendingJointQueries?.size)
+            throw new Error("Wait for the current related Activities query to finish.");
         if (isRecord(frame) && ["capture", "query", "start"].includes(String(frame.type))
             && [...this.pendingExports.values()].some(pending => pending.session === session))
             throw new Error("Wait for the current export to finish.");
@@ -2047,6 +2261,11 @@ class CounterPanelController implements vscode.Disposable {
             throw new Error("CLI stdin is closed.");
         }
         session.process.stdin.write(`${JSON.stringify(frame)}\n`);
+        if (isRecord(frame) && frame.type === "capture" && frame.kind !== "request-activities") {
+            this.jointGeneration++;
+            if (this.joint?.session === session)
+                this.invalidateJoint("Replaced by another capture: retained display only; further CLI queries are unavailable.");
+        }
     }
 
     private postMessage(message: object): void {
@@ -2198,6 +2417,9 @@ class CounterPanelController implements vscode.Disposable {
     }
 
     private async closeChild(session: StreamChild): Promise<void> {
+        if (this.joint?.session === session
+            || !session.eventsConnection && [...session.pendingCaptures.values()].some(pending => pending.kind === "request-activities")) this.jointGeneration++;
+        if (this.joint?.session === session) this.invalidateJoint("Disconnected: retained display only; further CLI queries are unavailable.");
         if (this.heapSnapshot?.session === session) this.liveReadConsent.clear();
         if (this.cpuExport?.session === session) this.cpuExport = undefined;
         if (this.allocationProfile?.session === session) this.allocationProfile = undefined;
@@ -2979,6 +3201,7 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.commands.registerCommand("dotnetDiagnostics.captureCpuTrace", () => guarded(() => controller.captureCpuTrace())),
         vscode.commands.registerCommand("dotnetDiagnostics.startEvents", () => guarded(() => controller.startEvents())),
         vscode.commands.registerCommand("dotnetDiagnostics.captureExceptions", () => controller.captureExceptions()),
+        vscode.commands.registerCommand("dotnetDiagnostics.captureRequestActivities", () => guarded(() => controller.captureRequestActivities())),
         vscode.commands.registerCommand("dotnetDiagnostics.captureDiagnostics", (kind?: unknown) => guarded(async () => {
             if (kind !== undefined && (typeof kind !== "string" || !isCaptureViewKind(kind)))
                 throw new Error("Select a supported diagnostic capture.");
@@ -3088,6 +3311,8 @@ class DiagnosticsActionsProvider implements vscode.TreeDataProvider<vscode.TreeI
             if (spec.id === "memory") captures.splice(1, 0, captureHeap);
             if (spec.id === "threads") captures.unshift(captureThreadSnapshot);
             if (spec.id === "exceptions") captures.push(captureExceptions);
+            if (spec.id === "requests") captures.push(action("Requests + completed Activities",
+                "dotnetDiagnostics.captureRequestActivities", "Explicit reproduction; exact ActivitySources; requires CLI capability"));
             return group(spec.id, spec.label, captures);
         });
         const events = action("Start Live Events", "dotnetDiagnostics.startEvents", "Independent EventPipe stream; explicit providers and consent");
@@ -3111,6 +3336,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     const label = `${target.managedEntrypointAssemblyName ?? "Unknown .NET application"} · PID ${target.processId}`;
     const genericCaptureDomains = Object.fromEntries(CAPTURE_GROUPS.flatMap(group =>
         group.kinds.filter(kind => kind !== "allocation").map(kind => [kind, group.id])));
+    genericCaptureDomains["request-activities"] = "requests";
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -3127,6 +3353,9 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     .workspace-evidence-status { color:var(--vscode-descriptionForeground); margin:.45rem 0; }
     #workspaceCanvas > section { margin-top:.6rem; }
     #workspaceCanvas > section[hidden], #workspaceGcCapture[hidden] { display:none; }
+    #genericCaptureViews p, #genericCaptureViews li { overflow-wrap:anywhere; }
+    #genericCaptureViews input[type="radio"]:focus-visible { outline:2px solid var(--vscode-focusBorder); outline-offset:2px; }
+    #jointReproduction[hidden], #genericCaptureViews section[hidden] { display:none; }
     #workspaceLoadView[hidden] { display:none; }
     #resultThreads.workspace-thread-snapshot .evidence-view-switcher, #resultThreads .statics-form[hidden] { display:none; }
     .cpu-export-actions { border:1px solid var(--vscode-panel-border); border-radius:4px; padding:.4rem .6rem; }
@@ -3144,6 +3373,10 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     .query-view-section { margin-top:.75rem; }
     .query-view-table-wrap { max-width:100%; overflow-x:auto; }
     .query-view-table { min-width:32rem; }
+    .query-view-table.joint-activity-table { min-width:96rem; table-layout:fixed; }
+    .joint-activity-table th:nth-child(2) { width:14rem; }
+    .joint-activity-table th:nth-child(4) { width:18rem; }
+    .query-view-table.joint-request-table { min-width:64rem; }
     .query-view-table.cpu-query-table { min-width:48rem; table-layout:fixed; }
     .diagnostic-capture-notes li { overflow-wrap:anywhere; }
     .diagnostic-request-filter { display:flex; align-items:center; flex-wrap:wrap; gap:.4rem; margin:.5rem 0; }
@@ -3241,6 +3474,12 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       <div id="workspaceGcStatus" role="status"></div>
     </div>
     <div id="workspaceCaptureStatus" role="status"></div>
+    <div id="jointReproduction" hidden>
+      <button id="captureRequestActivities" type="button">New request + completed Activities reproduction…</button>
+      <button id="cancelRequestActivities" type="button" disabled>Cancel reproduction</button>
+      <p>Explicit EventPipe capture with exact ActivitySource names. Cannot recover operations from an earlier request capture.</p>
+      <div id="jointCaptureStatus" role="status"></div>
+    </div>
     <div id="workspaceThreadViewStatus" role="status"></div>
     <div id="workspaceCanvas"><div id="genericCaptureViews" hidden></div></div>
   </section>
@@ -3437,6 +3676,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     const captureThreadBody = document.getElementById('captureThreadBody');
     ${QUERY_VIEW_RENDERER_SCRIPT}
     ${CAPTURE_VIEW_RENDERER_SCRIPT}
+    ${REQUEST_ACTIVITIES_SCRIPT}
     ${CPU_PROFILE_SCRIPT}
     ${LIVE_TIME_NAVIGATION_SCRIPT}
     ${LIVE_READ_CONSENT_SCRIPT}
@@ -3456,6 +3696,13 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     const workspaceCaptureStatus = document.getElementById('workspaceCaptureStatus');
     const workspaceThreadViewStatus = document.getElementById('workspaceThreadViewStatus');
     const genericCaptureViews = document.getElementById('genericCaptureViews');
+    const jointView = createRequestActivitiesView(genericCaptureViews, message => vscode.postMessage(message));
+    let jointPendingId;
+    const jointCaptureStatus = document.getElementById('jointCaptureStatus');
+    document.getElementById('captureRequestActivities').addEventListener('click',
+      () => vscode.postMessage({ type: 'captureRequestActivities' }));
+    document.getElementById('cancelRequestActivities').addEventListener('click',
+      () => { if (jointPendingId) vscode.postMessage({ type: 'cancelRequestActivities', evidenceId: jointPendingId }); });
     const workspacePanels = {
       cpu: document.getElementById('resultCpu'),
       allocation: document.getElementById('resultAllocation'),
@@ -3486,12 +3733,13 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       gc: 'Garbage collections',
       'gc-activities': 'GC and activities',
       requests: 'In-flight requests',
+      'request-activities': 'Requests + completed Activities',
       kestrel: 'Kestrel',
       db: 'Database',
       networking: 'Networking',
     };
     const isThreadCapture = kind => ['off_cpu', 'contention', 'threadpool'].includes(kind);
-    const isRequestCapture = kind => ['requests', 'kestrel', 'db', 'networking'].includes(kind);
+    const isRequestCapture = kind => ['requests', 'request-activities', 'kestrel', 'db', 'networking'].includes(kind);
     const usesWorkspaceForGenericCapture = kind => Object.prototype.hasOwnProperty.call(genericCaptureDomains, kind);
     let genericCaptureKind;
     let threadSnapshotEvidenceId;
@@ -3548,7 +3796,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           : workspaceDomain.value === 'threads'
             ? [['thread-snapshot', 'Thread snapshot'], ['off_cpu', 'Off-CPU blocking'],
               ['contention', 'Lock contention'], ['threadpool', 'Thread-pool capture']]
-            : [['requests', 'In-flight requests'], ['kestrel', 'Kestrel'],
+            : [['requests', 'In-flight requests'], ['request-activities', 'Requests + completed Activities'], ['kestrel', 'Kestrel'],
               ['db', 'Database'], ['networking', 'Networking']];
       for (const [value, label] of choices) {
         const option = document.createElement('option');
@@ -3557,6 +3805,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         workspaceEvidenceKind.appendChild(option);
       }
       workspaceEvidenceKind.value = kind;
+      document.getElementById('jointReproduction').hidden = workspaceDomain.value !== 'requests';
       workspaceEvidenceKind.disabled = kind === 'exceptions';
       for (const [panelKind, panel] of Object.entries(workspacePanels)) panel.hidden = panelKind !== kind;
       const sharedGcEvidence = kind === 'gc' || kind === 'gc-activities';
@@ -4769,6 +5018,36 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
             ? 'Capture failed; the displayed ' + exceptionCaptureModes[exceptionEvidenceMode] + ' evidence remains current.'
             : 'Capture failed; no current exception evidence is available.');
         }
+      } else if (message.type === 'jointStatus') {
+        if (message.state === 'starting') jointPendingId = message.evidenceId;
+        if (jointPendingId && message.evidenceId !== jointPendingId) return;
+        jointCaptureStatus.textContent = message.message;
+        const busy = message.state === 'starting' || message.state === 'running';
+        document.getElementById('captureRequestActivities').disabled = busy;
+        document.getElementById('cancelRequestActivities').disabled = true;
+      } else if (message.type === 'jointDispatched') {
+        if (message.evidenceId !== jointPendingId) return;
+        jointView.reset();
+        setGenericCaptureOwner('request-activities', message.evidenceId);
+        activateCaptureTab('request-activities');
+        jointCaptureStatus.textContent = message.message;
+        document.getElementById('cancelRequestActivities').disabled = false;
+        setWorkspaceStatus('request-activities', message.message);
+      } else if (message.type === 'jointCapture') {
+        if (message.evidenceId !== jointPendingId) return;
+        setGenericCaptureOwner('request-activities', message.evidenceId);
+        activateCaptureTab('request-activities');
+        jointView.capture(message.evidenceId, message.result);
+      } else if (message.type === 'jointUnavailable') {
+        if (genericCaptureKind !== 'request-activities' || genericCaptureViews.dataset.evidenceId !== message.evidenceId) return;
+        jointView.unavailable(message.evidenceId, message.message);
+        setWorkspaceStatus('request-activities', message.message);
+      } else if (message.type === 'jointQueryStarted') {
+        jointView.queryStarted(message.evidenceId, message.requestRowId);
+      } else if (message.type === 'jointRelated') {
+        jointView.receive(message.evidenceId, message.requestRowId, message.result);
+      } else if (message.type === 'jointQueryError') {
+        jointView.error(message.evidenceId, message.requestRowId, message.message);
       } else if (message.type === 'captureStatus' && message.kind === 'diagnostics') {
         const captureKind = String(message.captureKind || '');
         if (!usesWorkspaceForGenericCapture(captureKind)) {
@@ -4802,6 +5081,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         }
         if (message.evidenceId !== diagnosticsRequestId) return;
         if (!setGenericCaptureOwner(captureKind, message.evidenceId)) return;
+        jointView.reset();
         genericCaptureViews.replaceChildren();
         renderCaptureView('genericCaptureViews', message.result);
         if (captureKind === 'gc' || captureKind === 'gc-activities') {
