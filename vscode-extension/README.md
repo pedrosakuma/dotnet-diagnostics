@@ -52,7 +52,7 @@ The live panel's **Workspace** uses compact **Domain → Evidence → View** sel
 Memory & GC, Threads & waits, Requests & networking, and Exceptions. Thread snapshots and
 off-CPU/contention/thread-pool captures share their domain's presentation without sharing evidence
 ownership: the snapshot handle is independent from the single replaceable generic-capture result.
-Requests, Kestrel, database, and networking captures share the Requests & networking workspace and
+Standalone requests, Kestrel, database, and networking captures share the Requests & networking workspace and
 the existing single replaceable generic-capture result; its **Capture result** view is descriptive,
 not a retained-handle query. In-flight request results lead with the capture-window summary and
 retained request rows; state filters and search apply only to returned rows, with truncation and
@@ -64,6 +64,30 @@ timestamps display in UTC; the original ISO value remains available to assistive
 the timestamp tooltip. Monitoring, dump analysis, and saved evidence keep their source-specific
 result surfaces.
 **Analyze Dump File** and **Saved Captures** remain separate offline entry points.
+
+**Requests + completed Activities** is a separate explicit reproduction action in Requests &
+networking and the Command Palette. It requires a CLI built with the additive
+`hello.requestActivities` v1 capability; the new CLI capability is unreleased and **0.31.0 alone
+does not guarantee it**. Missing capability produces upgrade/build guidance, never a fallback
+combination of independent captures. Enter exact ActivitySource names (no wildcards or automatic
+discovery), choose a 1–300 second window and review the EventPipe scope/privacy notice.
+Stop the owning CLI's live counters first; independent Monitoring streams retain their lifecycle.
+Coexistence with other DiagnosticSource sessions is not established.
+Dispatch acknowledges the request, not EventPipe readiness.
+Start capture before reproducing; it cannot recover operations from an earlier request.
+
+The request table shows only first-accepted requests still pending at window close.
+Its All / Long-running filter uses a clearly labelled **local ≥ 1,000 ms threshold**, not the
+standalone collector's classification. Select a request with the keyboard-accessible radio column,
+then explicitly **Load related completed Activities**. This queries the exact capture and row on
+the same CLI connection. Structural direct-child/descendant/shared-trace basis is separate from
+verified/withheld status; finished durations are not a critical path or proof of exclusive delay.
+Only one selected-request response is retained: Back and reopening that response are local;
+loading a different request replaces it. The joint result replaces the shared generic slot.
+CLI evidence expires after ten minutes, disconnect or another capture; loaded displays then say
+retained-only and further reads are disabled. Only completed Activity Stop records are supported,
+so empty results do not mean no open or uninstrumented work. No export, saving, telemetry lookup,
+privileged attach or MCP connection is added. See the [reference](../docs/vscode-extension-reference.md#request-to-completed-activity-navigation).
 
 For a guided introduction, run **.NET Diagnostics: Open Getting Started** from the Command Palette.
 

@@ -343,6 +343,62 @@ Metrics and evidence-quality notes remain visible; an **Evidence table** selecto
 specialized table at a time, listing returned/omitted counts for each choice. Switching keeps
 that table's filter and sort without another request.
 
+### Request-to-completed-Activity navigation
+
+**Requests + completed Activities** (`dotnetDiagnostics.captureRequestActivities`) is an
+explicit reproduction action under **Requests & networking**, also present in that Workspace
+domain and the Command Palette. It does not alter the standalone in-flight request capture.
+The CLI must actually advertise `hello.requestActivities` version 1, its two query views and
+bounded limits. The source capability is unreleased; the general CLI 0.31.0 feature floor
+does not imply support. Unsupported/missing capabilities produce actionable guidance without
+dispatching a capture. Communication remains extension → CLI → Core only.
+
+Enter 1–20 exact ActivitySource names, each 1–200 ASCII letters/digits or `.`, `_`, `-`;
+comma separators and surrounding whitespace are accepted by the input UI. No source is
+preselected, discovered or wildcard-enabled. Choose 1–300 seconds and review the explicit
+EventPipe scope, overhead, privacy and replacement notice. This is not a new privileged/high-risk
+attach consent. The owning CLI's live counters must be stopped first; independent Live Events
+retain their lifecycle. Coexistence with other DiagnosticSource sessions is not established. Collection starts only
+after this action; `capture-started` acknowledges dispatch, not provider readiness.
+Startup latency and instrumentation coverage remain limitations.
+
+The main table shows at most 100 first-accepted requests still pending at observation close,
+not the oldest requests or completed-request history. All / Long-running counts operate on
+shown rows; **≥ 1,000 ms is a local UI-derived threshold**, independent of the standalone
+collector's configurable classification. The exact request radio selection does not query.
+**Load related completed Activities** binds the connection, handle, capture ID and request row ID,
+never a method/path or trace ID alone. It reads immutable captured evidence, not the process again.
+
+The related view preserves request identity, exact sources, process lifetime, window and quality.
+It distinguishes structural `direct-child`, `observed-descendant` and `same-trace-only` bases
+from verified relationships or explicit verification-withheld reasons. A structurally direct
+child remains unverified when quality prevents verification. Finished durations are wall-clock
+observations, not causal explanations, exclusive delay or a critical path; never sum concurrent
+durations. Only completed Activity Stop records are retained (up to 200). A query shows up to
+100 rows with total/omitted counts. Empty results do not establish no work: open operations and
+missing instrumentation/coverage are unknown. Loss, parse errors, drops and truncation remain
+visible beside the evidence, ahead of the full technical disclaimer.
+
+One joint result occupies the existing shared generic slot; there is no independent multi-kind
+history. Only one selected-request response is cached, replacing it when another row loads.
+Back preserves the exact selection, main table and filter; reopening that one loaded response is
+local. Switching to a different previously queried request is not promised to be local.
+Invalid input or a rejected joint request preserves prior evidence until dispatch is acknowledged.
+Any ordinary capture on the owning CLI connection invalidates joint read capability at dispatch.
+A new generic result releases the prior joint UI state; unrelated CPU, heap, thread and exception
+owners retain their existing behavior.
+
+The CLI artifact expires ten minutes after completion or on disconnect/replacement. Further
+queries are disabled; any still-displayed loaded evidence is explicitly labelled retained-only,
+not live or queryable. Stale responses cannot replace a newer owner. Cancellation can return
+explicit partial evidence with verification withheld. No automatic persistence, export, historical
+recovery, origin reopening, telemetry lookup, privileged attach or MCP dependency is added.
+Open operations remain a separate Part 2. See the
+[CLI contract](./cli-reference.md#joint-requestactivity-reproduction-capture-part-1) and
+[resource limits](./resource-boundedness.md#joint-requestactivity-capture-part-1).
+
+### Exception captures
+
 Use **Capture Exceptions** (`dotnetDiagnostics.captureExceptions`, also available in the
 Activity Bar and live panel) for a 10-second exception window. Choose **Managed exceptions**
 for type counts and retained messages, or **Crash guard** for available managed stack frames
