@@ -6,7 +6,7 @@ versioned independently from the CLI and the .NET packages.
 ## Unreleased
 
 - Add an explicit **Requests + completed Activities** reproduction in Requests & networking,
-  using only the CLI's advertised `requestActivities` v1 capability (introduced with CLI 0.32.0; CLI 0.31.0 does not provide it).
+  using only the CLI's advertised `requestActivities` v1 capability (introduced with CLI 0.32.1; CLI 0.31.0 and the unpublished 0.32.0 tag do not provide it as a release).
   Keep simple request captures unchanged. Exact ActivitySource names, a bounded window and an
   EventPipe privacy/cost notice precede collection; no automatic discovery or historical recovery.
   Select an exact retained request, explicitly load related completed Activities, and return
