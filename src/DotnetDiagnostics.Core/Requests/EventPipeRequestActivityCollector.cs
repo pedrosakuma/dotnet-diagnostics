@@ -15,6 +15,7 @@ public interface IRequestActivityCollector
 public sealed class EventPipeRequestActivityCollector : IRequestActivityCollector
 {
     internal Action<string>? Observed { get; init; }
+    internal Action<CapturedActivity>? CompletedActivityObserved { get; init; }
 
     public async Task<RequestActivityCapture> CollectAsync(int processId, RequestActivityOptions options,
         CancellationToken cancellationToken = default)
@@ -70,6 +71,7 @@ public sealed class EventPipeRequestActivityCollector : IRequestActivityCollecto
                                 }
                                 state.ObserveActivity(activity);
                                 Observed?.Invoke("activity");
+                                CompletedActivityObserved?.Invoke(activity);
                             }
                         }
                         catch (Exception ex) when (ex is ArgumentException or OverflowException or InvalidOperationException)

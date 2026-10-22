@@ -1391,8 +1391,14 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
         var requestsReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var activitiesReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var completedChild = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var collector = new EventPipeRequestActivityCollector
         {
+            CompletedActivityObserved = activity =>
+            {
+                if (activity.OperationName == "CoreClrSample.CompletedChild")
+                    completedChild.TrySetResult();
+            },
             Observed = kind =>
             {
                 if (kind == "request") requestsReady.TrySetResult();
@@ -1400,6 +1406,7 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
             },
         };
         var reading = collector.CollectAsync(pid, new(300, ["CoreClrSample.Activities"]), collection.Token);
+        Task<HttpResponseMessage>? pendingRequest = null;
         try
         {
             for (var attempt = 0; attempt < 20 &&
@@ -1411,6 +1418,16 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
             }
             requestsReady.Task.IsCompletedSuccessfully.Should().BeTrue();
             activitiesReady.Task.IsCompletedSuccessfully.Should().BeTrue();
+            pendingRequest = http.GetAsync("/activity/in-flight", budget.Token);
+            // Low-volume EventPipe buffers may not flush until stop; bounded primer traffic
+            // keeps the stream moving until this session actually observes the child.
+            for (var attempt = 0; attempt < 20 && !completedChild.Task.IsCompletedSuccessfully; attempt++)
+            {
+                using var response = await http.GetAsync("/activity?delayMs=1", budget.Token);
+                response.EnsureSuccessStatusCode();
+                await Task.Delay(100, budget.Token);
+            }
+            completedChild.Task.IsCompletedSuccessfully.Should().BeTrue("the child must be retained before terminating the target");
             if (exitTarget)
             {
                 await _sample!.DisposeAsync();
@@ -1419,13 +1436,25 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
             else await collection.CancelAsync();
             var capture = await reading.WaitAsync(TimeSpan.FromSeconds(15), budget.Token);
             capture.Quality.Completion.Should().NotBe("normal");
-            if (exitTarget) capture.Quality.LifetimeStatus.Should().Be("unknown");
-            else capture.Quality.Completion.Should().Be("cancelled");
+            if (!exitTarget) capture.Quality.Completion.Should().Be("cancelled");
+            var request = capture.Requests.Should().ContainSingle(r => r.Path == "/activity/in-flight").Subject;
+            var related = capture.QueryRelated(capture.CaptureId, request.RowId);
+            related.Rows.Should().NotBeEmpty("a completed child was observed before termination/cancellation");
+            related.Rows.Should().OnlyContain(r => !r.Verified && r.VerificationWithheldReason != null);
+            related.Rows.Should().Contain(r => r.Relationship == "direct-child",
+                "incomplete stream quality must withhold verification without erasing structural evidence");
         }
         finally
         {
             await collection.CancelAsync();
             await reading;
+            await budget.CancelAsync();
+            if (pendingRequest is not null)
+            {
+                try { using var response = await pendingRequest; }
+                catch (OperationCanceledException) when (budget.IsCancellationRequested) { }
+                catch (HttpRequestException) when (exitTarget) { }
+            }
         }
     }
 
