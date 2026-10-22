@@ -350,12 +350,14 @@ explicit reproduction action under **Requests & networking**, also present in th
 domain and the Command Palette. It does not alter the standalone in-flight request capture.
 The CLI must actually advertise `hello.requestActivities` version 1, its two query views and
 bounded limits. The source capability is unreleased; the general CLI 0.31.0 feature floor
-does not imply support. Unsupported/missing capabilities produce actionable guidance without
-dispatching a capture. Communication remains extension → CLI → Core only.
+does not imply support. CLI 0.32.1 includes this capability, but the extension checks the actual
+hello contract. Unsupported/missing capabilities produce actionable guidance before configuration
+and without dispatching a capture. Communication remains extension → CLI → Core only.
 
-Enter 1–20 exact ActivitySource names, each 1–200 ASCII letters/digits or `.`, `_`, `-`;
-comma separators and surrounding whitespace are accepted by the input UI. No source is
-preselected, discovered or wildcard-enabled. Choose 1–300 seconds and review the explicit
+Enter 1–20 exact ActivitySource names from the application's configuration or documentation,
+each 1–200 ASCII letters/digits or `.`, `_`, `-`; comma separators and surrounding whitespace are
+accepted by the input UI. No source is preselected, discovered or wildcard-enabled. Choose
+1–300 seconds and review the explicit
 EventPipe scope, overhead, privacy and replacement notice. This is not a new privileged/high-risk
 attach consent. The owning CLI's live counters must be stopped first; independent Live Events
 retain their lifecycle. Coexistence with other DiagnosticSource sessions is not established. Collection starts only
@@ -365,9 +367,13 @@ Startup latency and instrumentation coverage remain limitations.
 The main table shows at most 100 first-accepted requests still pending at observation close,
 not the oldest requests or completed-request history. All / Long-running counts operate on
 shown rows; **≥ 1,000 ms is a local UI-derived threshold**, independent of the standalone
-collector's configurable classification. The exact request radio selection does not query.
-**Load related completed Activities** binds the connection, handle, capture ID and request row ID,
-never a method/path or trace ID alone. It reads immutable captured evidence, not the process again.
+collector's configurable classification. Expand a request row using its keyboard-operable
+chevron. Its first expansion explicitly queries the retained CLI artifact, binding the connection,
+handle, capture ID and request row ID—never a method/path or trace ID alone. It reads immutable
+captured evidence, not the process again, and does not start a new capture. Collapse/reopen the
+same row locally; expanding another replaces the one cached response. A late response for a row
+that is no longer expanded is discarded. Retry an errored or superseded lookup explicitly from
+its expanded row.
 
 The related view preserves request identity, exact sources, process lifetime, window and quality.
 It distinguishes structural `direct-child`, `observed-descendant` and `same-trace-only` bases
@@ -376,13 +382,17 @@ child remains unverified when quality prevents verification. Finished durations 
 observations, not causal explanations, exclusive delay or a critical path; never sum concurrent
 durations. Only completed Activity Stop records are retained (up to 200). A query shows up to
 100 rows with total/omitted counts. Empty results do not establish no work: open operations and
-missing instrumentation/coverage are unknown. Loss, parse errors, drops and truncation remain
-visible beside the evidence, ahead of the full technical disclaimer.
+missing instrumentation/coverage are unknown. Partial completion and source loss are called out
+before the request data; unverified relationship reasons stay visible on each Activity row.
+Remaining counters and provenance are available below the data.
 
 One joint result occupies the existing shared generic slot; there is no independent multi-kind
-history. Only one selected-request response is cached, replacing it when another row loads.
-Back preserves the exact selection, main table and filter; reopening that one loaded response is
-local. Switching to a different previously queried request is not promised to be local.
+history. Only one selected-request response is cached. The inline expanded row shows a compact
+summary before its evidence, with source/identifier/timing details available in secondary
+disclosures and full technical quality/provenance after the data. Partial completion, event loss,
+and unverified relationship reasons remain visible without expanding technical details. Narrow
+panels keep the request table compact and wrap long names; the details remain within the same
+workspace rather than opening a separate view.
 Invalid input or a rejected joint request preserves prior evidence until dispatch is acknowledged.
 Any ordinary capture on the owning CLI connection invalidates joint read capability at dispatch.
 A new generic result releases the prior joint UI state; unrelated CPU, heap, thread and exception

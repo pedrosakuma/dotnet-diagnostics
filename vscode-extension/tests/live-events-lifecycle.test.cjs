@@ -88,6 +88,30 @@ test("a successful v2 stream with SAFETY stderr disconnects without an old-CLI d
     } finally { await f.cleanup(); }
 });
 
+test("an expected clean CLI shutdown is not surfaced as a protocol error", { timeout: 10_000 }, async () => {
+    const f = fixture("normal");
+    try {
+        const session = await f.connect();
+        assert.equal(session.protocolReady, true);
+        await f.controller.closeChild(session);
+        await f.assertExited();
+        assert.equal(f.messages.some(message => message.state === "error"), false);
+    } finally { await f.cleanup(); }
+});
+
+test("an unexpected clean CLI exit remains an explicit protocol error", { timeout: 10_000 }, async () => {
+    const f = fixture("normal");
+    try {
+        const session = await f.connect();
+        assert.equal(session.protocolReady, true);
+        f.controller.writeFrame(session, { type: "disconnect" });
+        await session.closed.promise;
+        assert.ok(f.messages.some(message => message.state === "error"
+            && /CLI exited after a successful JSONL protocol handshake/.test(message.message)));
+        await f.assertExited();
+    } finally { await f.cleanup(); }
+});
+
 test("Events rejects an old CLI without capability and closes its owned child", { timeout: 10_000 }, async () => {
     const f = fixture("old");
     try {
