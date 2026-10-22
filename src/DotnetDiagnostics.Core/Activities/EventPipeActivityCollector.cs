@@ -23,7 +23,8 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector, ISt
     private const long EventsKeyword = 0x2;
     private const long ProviderKeywords = MessagesKeyword | EventsKeyword;
     private const string FilterArgumentName = "FilterAndPayloadSpecs";
-    private const string TransformSuffix = ":-TraceId;SpanId;ParentSpanId;StartTimeTicks=StartTimeUtc.Ticks;DurationTicks=Duration.Ticks;ActivitySourceName=Source.Name;Tags=TagObjects.*Enumerate";
+    private const string IdentityTransformSuffix = ":-TraceId;SpanId;ParentSpanId;StartTimeTicks=StartTimeUtc.Ticks;DurationTicks=Duration.Ticks;ActivitySourceName=Source.Name";
+    private const string TransformSuffix = IdentityTransformSuffix + ";Tags=TagObjects.*Enumerate";
     internal const string HttpDestinationFilter = "HttpHandlerDiagnosticListener/System.Net.Http.HttpRequestOut.Start:-Request.RequestUri.Host;Request.RequestUri.Port;Request.RequestUri.Scheme;ActivityTraceId=*Activity.TraceId;ActivitySpanId=*Activity.SpanId";
 
     private static readonly BoundedWildcardRegexCache WildcardRegexCache = new();
@@ -194,11 +195,12 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector, ISt
         };
     }
 
-    private static bool TryCreateActivity(
+    internal static bool TryCreateActivity(
         TraceEvent traceEvent,
         List<string>? sourceFilters,
         out CapturedActivity activity,
-        out bool hasStartTime)
+        out bool hasStartTime,
+        bool includeTags = true)
     {
         activity = default!;
         hasStartTime = false;
@@ -219,12 +221,12 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector, ISt
 
         var arguments = DiagnosticSourcePayloadParser.ExtractArguments(traceEvent.PayloadByName("Arguments"));
         return TryCreateActivity(sourceName, operationName, arguments, traceEvent.TimeStamp.ToUniversalTime(),
-            sourceFilters, out activity, out hasStartTime);
+            sourceFilters, out activity, out hasStartTime, includeTags);
     }
 
     internal static bool TryCreateActivity(string sourceName, string operationName,
         IReadOnlyDictionary<string, string> arguments, DateTime timestamp, List<string>? sourceFilters,
-        out CapturedActivity activity, out bool hasStartTime)
+        out CapturedActivity activity, out bool hasStartTime, bool includeTags = true)
     {
         activity = default!;
         hasStartTime = false;
@@ -255,7 +257,7 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector, ISt
             StartedAt: new DateTimeOffset(startedAt, TimeSpan.Zero),
             StoppedAt: stoppedAt,
             Duration: duration,
-            Tags: DiagnosticSourcePayloadParser.ParseBracketedTagPairs(GetArgument(arguments, "Tags")));
+            Tags: DiagnosticSourcePayloadParser.ParseBracketedTagPairs(includeTags ? GetArgument(arguments, "Tags") : null));
         return true;
     }
 
@@ -275,12 +277,12 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector, ISt
         return normalized.Count == 0 ? null : normalized;
     }
 
-    internal static IDictionary<string, string> BuildProviderArguments(IReadOnlyList<string>? normalizedSourceFilters, bool includeHttpDestination = false)
+    internal static IDictionary<string, string> BuildProviderArguments(IReadOnlyList<string>? normalizedSourceFilters, bool includeHttpDestination = false, bool includeTags = true)
     {
         var providerFilters = CanApplyProviderSideFilters(normalizedSourceFilters) ? normalizedSourceFilters! : ["*"];
         return new Dictionary<string, string>(1, StringComparer.Ordinal)
         {
-            [FilterArgumentName] = BuildFilterSpec(providerFilters) +
+            [FilterArgumentName] = BuildFilterSpec(providerFilters, includeTags) +
                 (includeHttpDestination && MatchesAnyFilter("System.Net.Http", normalizedSourceFilters)
                     ? "\n" + HttpDestinationFilter : string.Empty),
         };
@@ -292,8 +294,8 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector, ISt
     private static bool IsProviderSafeExactFilter(string filter) =>
         filter == "*" || (filter.IndexOfAny(['*', '?', '+', '/', ':']) < 0);
 
-    private static string BuildFilterSpec(IReadOnlyList<string> providerFilters) =>
-        string.Join('\n', providerFilters.Select(static filter => $"[AS]{filter}/Stop{TransformSuffix}"));
+    private static string BuildFilterSpec(IReadOnlyList<string> providerFilters, bool includeTags) =>
+        string.Join('\n', providerFilters.Select(filter => $"[AS]{filter}/Stop{(includeTags ? TransformSuffix : IdentityTransformSuffix)}"));
 
     private static bool IsActivityStopEvent(string eventName) =>
         eventName.EndsWith("Stop", StringComparison.OrdinalIgnoreCase);
@@ -309,7 +311,7 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector, ISt
     private static DateTime? ParseStartedAt(IReadOnlyDictionary<string, string> arguments)
     {
         var rawTicks = GetArgument(arguments, "StartTimeTicks");
-        if (!long.TryParse(rawTicks, NumberStyles.Integer, CultureInfo.InvariantCulture, out var ticks) || ticks <= 0)
+        if (!long.TryParse(rawTicks, NumberStyles.Integer, CultureInfo.InvariantCulture, out var ticks) || ticks <= 0 || ticks > DateTime.MaxValue.Ticks)
         {
             return null;
         }

@@ -372,6 +372,19 @@ app.MapGet("/activity", async (int? delayMs, bool? collectGc) =>
 })
 .WithName("EmitActivityTrace");
 
+app.MapGet("/activity/in-flight", async (HttpContext context) =>
+{
+    using (var completed = sampleActivitySource.StartActivity("CoreClrSample.CompletedChild"))
+    {
+        using (var descendant = sampleActivitySource.StartActivity("CoreClrSample.CompletedDescendant"))
+            await Task.Delay(10, context.RequestAborted);
+    }
+    using var pending = sampleActivitySource.StartActivity("CoreClrSample.PendingChild");
+    await Task.Delay(TimeSpan.FromSeconds(30), context.RequestAborted);
+    return Results.Ok();
+})
+.WithName("EmitInFlightActivityTrace");
+
 // Async hang fixture (issue #117 — heap async-state inspection). Each request starts
 // a few nested async methods that await a never-completing task; the returned top-level
 // Task is retained in a dictionary so the state machines stay rooted for heap inspection.

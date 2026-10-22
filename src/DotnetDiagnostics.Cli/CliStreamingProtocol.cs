@@ -32,7 +32,7 @@ namespace DotnetDiagnostics.Cli;
 /// <c>counters</c> kind using its top-level fields, so existing clients (the VS Code extension) do
 /// not need changes.
 /// </summary>
-internal static class CliStreamingProtocol
+internal static partial class CliStreamingProtocol
 {
     private const int ProtocolVersion = 2;
     private const int MaxControlLineBytes = 64 * 1024;
@@ -252,6 +252,7 @@ internal static class CliStreamingProtocol
         using var host = buildHost();
         var services = host.Services;
         using var writer = new ProtocolWriter(stdout);
+        await using var joint = new JointCaptureSlot(services, writer, stderr);
         ActiveSession? activeSession = null;
         var negotiated = false;
 
@@ -334,6 +335,12 @@ internal static class CliStreamingProtocol
                             protocolVersion = ProtocolVersion,
                             cliVersion = CliVersion,
                             supportedLiveKinds = LiveKinds.Keys.Order(StringComparer.Ordinal).ToArray(),
+                            requestActivities = new
+                            {
+                                version = 1, captureKind = "request-activities",
+                                queryViews = JointQueryViews,
+                                maxRequests = 100, maxActivities = 200, maxQueryRows = 100,
+                            },
                         }, cancellationToken).ConfigureAwait(false);
                         continue;
                     }
@@ -346,6 +353,11 @@ internal static class CliStreamingProtocol
                             break;
 
                         case "start":
+                            if (joint.IsRunning)
+                            {
+                                await WriteErrorAsync(writer, "capture_active", "Cancel the active joint capture before starting a live session.").ConfigureAwait(false);
+                                break;
+                            }
                             activeSession = await HandleStartAsync(
                                 document.RootElement, services, writer, activeSession, stdin, stdout, stderr, cancellationToken)
                                 .ConfigureAwait(false);
@@ -353,6 +365,11 @@ internal static class CliStreamingProtocol
 
                         case "stop":
                         case "cancel":
+                            if (type == "cancel" && TryGetString(document.RootElement, "requestId", out var cancelId))
+                            {
+                                await joint.CancelAsync(cancelId).ConfigureAwait(false);
+                                break;
+                            }
                             if (activeSession is null
                                 || !TryGetString(document.RootElement, "sessionId", out var requestedSessionId)
                                 || !string.Equals(requestedSessionId, activeSession.SessionId, StringComparison.Ordinal))
@@ -367,11 +384,22 @@ internal static class CliStreamingProtocol
                             break;
 
                         case "capture":
+                            if (TryGetString(document.RootElement, "kind", out var captureKind) && captureKind == "request-activities")
+                            {
+                                await joint.StartAsync(document.RootElement, activeSession is not null, cancellationToken).ConfigureAwait(false);
+                                break;
+                            }
+                            await joint.ClearAsync().ConfigureAwait(false);
                             await HandleCaptureAsync(document.RootElement, services, writer, stdin, stdout, stderr, cancellationToken)
                                 .ConfigureAwait(false);
                             break;
 
                         case "query":
+                            if (JointCaptureSlot.IsJointQuery(document.RootElement))
+                            {
+                                await joint.QueryAsync(document.RootElement).ConfigureAwait(false);
+                                break;
+                            }
                             await HandleQueryAsync(document.RootElement, services, writer, stdin, stdout, stderr, cancellationToken)
                                 .ConfigureAwait(false);
                             break;
@@ -2682,6 +2710,12 @@ for a one-shot point-in-time capture that does not open a live session. Exceptio
 The result includes observed type counts, retained recent events and explicit omission notes.
 Only crash-guard includes available managed stacks. Messages and stacks may contain sensitive data.
 Start capture before load; writing a request is not an EventPipe readiness acknowledgement.
+If hello advertises requestActivities.version=1, use kind "request-activities" with required
+processId and 1-20 exact ActivitySource "sources", durationSeconds 1-300. One union session
+retains at most 100 pending requests and 200 completed Activities in one replaceable artifact.
+Query "requests" or "related-activities" using its handle AND captureId; related-activities
+also requires the retained requestRowId. topN is 1-100. Cancel using the capture requestId.
+No tags, persistence or privileged attach; incomplete evidence is explicit, not causality.
 A heap snapshot capture
 uses {"type":"capture","requestId":...,"kind":"heap","processId":...,"source":"live"|"gcdump"|"dump",
 "topTypes":20,"acknowledgeRisk":"high"}: "source" is required ("live" attaches via ptrace and
@@ -2930,7 +2964,7 @@ results are 0x hexadecimal strings.
             await WriteSerializedAsync(json, cancellationToken).ConfigureAwait(false);
         }
 
-        private async Task WriteSerializedAsync(string json, CancellationToken cancellationToken)
+        public async Task WriteSerializedAsync(string json, CancellationToken cancellationToken)
         {
             await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try

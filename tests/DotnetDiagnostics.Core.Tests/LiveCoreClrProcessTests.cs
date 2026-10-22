@@ -1305,6 +1305,130 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
             activity.ParentId == outer.Id);
     }
 
+    [Fact(Timeout = 60_000)]
+    public async Task RequestActivities_OneOwnerRetainsExactRequestRelationships()
+    {
+        EnsureSampleRunning();
+        var baseUrl = await EnsureListeningUrlAsync(TimeSpan.FromSeconds(30));
+        using var http = new HttpClient { BaseAddress = new Uri(baseUrl), Timeout = TimeSpan.FromSeconds(35) };
+        using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(35));
+        using var workload = CancellationTokenSource.CreateLinkedTokenSource(budget.Token);
+        var requestsReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var activitiesReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var collector = new DotnetDiagnostics.Core.Requests.EventPipeRequestActivityCollector
+        {
+            Observed = kind =>
+            {
+                if (kind == "request") requestsReady.TrySetResult();
+                if (kind == "activity") activitiesReady.TrySetResult();
+            },
+        };
+        var reading = collector.CollectAsync(Pid, new(10, ["CoreClrSample.Activities"]), budget.Token);
+        var pendingRequests = new List<Task<HttpResponseMessage>>();
+        var messages = new List<HttpRequestMessage>();
+        try
+        {
+            for (var attempt = 0; attempt < 20 &&
+                !(requestsReady.Task.IsCompletedSuccessfully && activitiesReady.Task.IsCompletedSuccessfully); attempt++)
+            {
+                using var response = await http.GetAsync("/activity?delayMs=1", budget.Token);
+                response.EnsureSuccessStatusCode();
+                await Task.Delay(100, budget.Token);
+            }
+            requestsReady.Task.IsCompletedSuccessfully.Should().BeTrue("this owner's request branch must observe primer traffic");
+            activitiesReady.Task.IsCompletedSuccessfully.Should().BeTrue("this same owner's Activity branch must observe primer traffic");
+            foreach (var parentSpan in new[] { "1111111111111111", "2222222222222222" })
+            {
+                var request = new HttpRequestMessage(HttpMethod.Get, "/activity/in-flight");
+                messages.Add(request);
+                request.Headers.TryAddWithoutValidation("traceparent", $"00-{RequestActivityCaptureTests.Trace}-{parentSpan}-01");
+                pendingRequests.Add(http.SendAsync(request, workload.Token));
+            }
+            var capture = await reading;
+            capture.Quality.Completion.Should().Be("normal");
+            capture.Quality.EventsLost.Should().Be(0);
+            capture.Quality.ParseErrors.Should().Be(0);
+            capture.Quality.LifetimeStatus.Should().Be("known");
+            capture.Requests.Should().HaveCount(2).And.OnlyContain(r => r.Path == "/activity/in-flight");
+            capture.Requests.Select(r => r.SpanId).Distinct().Should().HaveCount(2);
+            foreach (var request in capture.Requests)
+            {
+                var query = capture.QueryRelated(capture.CaptureId, request.RowId);
+                query.Rows.Should().HaveCount(4, "both requests share a trace but retain distinct parentage");
+                query.Rows.Count(r => r.Relationship == "direct-child" && r.Verified).Should().Be(1);
+                query.Rows.Count(r => r.Relationship == "observed-descendant" && r.Verified).Should().Be(1);
+                query.Rows.Count(r => r.Relationship == "same-trace-only" && !r.Verified).Should().Be(2);
+                query.Rows.Should().NotContain(r => r.Activity.Operation == "CoreClrSample.PendingChild");
+                query.Rows.Should().OnlyContain(r => r.Activity.TraceId == request.TraceId);
+                capture.RetainedActivities.Should().BeGreaterThan(query.TotalRows, "unrelated primers remain retained but are excluded from this query");
+            }
+            pendingRequests.Should().OnlyContain(t => !t.IsCompleted);
+        }
+        finally
+        {
+            await workload.CancelAsync();
+            await budget.CancelAsync();
+            foreach (var pending in pendingRequests)
+            {
+                try { using var response = await pending; }
+                catch (OperationCanceledException) when (workload.IsCancellationRequested) { }
+            }
+            await reading;
+            foreach (var message in messages) message.Dispose();
+        }
+    }
+
+    [Theory(Timeout = 60_000)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RequestActivities_CancelOrOwnedTargetExitDrainsWithExplicitIncompleteQuality(bool exitTarget)
+    {
+        EnsureSampleRunning();
+        var pid = Pid;
+        var baseUrl = await EnsureListeningUrlAsync(TimeSpan.FromSeconds(30));
+        using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var collection = CancellationTokenSource.CreateLinkedTokenSource(budget.Token);
+        using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
+        var requestsReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var activitiesReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var collector = new EventPipeRequestActivityCollector
+        {
+            Observed = kind =>
+            {
+                if (kind == "request") requestsReady.TrySetResult();
+                if (kind == "activity") activitiesReady.TrySetResult();
+            },
+        };
+        var reading = collector.CollectAsync(pid, new(300, ["CoreClrSample.Activities"]), collection.Token);
+        try
+        {
+            for (var attempt = 0; attempt < 20 &&
+                !(requestsReady.Task.IsCompletedSuccessfully && activitiesReady.Task.IsCompletedSuccessfully); attempt++)
+            {
+                using var response = await http.GetAsync("/activity?delayMs=1", budget.Token);
+                response.EnsureSuccessStatusCode();
+                await Task.Delay(100, budget.Token);
+            }
+            requestsReady.Task.IsCompletedSuccessfully.Should().BeTrue();
+            activitiesReady.Task.IsCompletedSuccessfully.Should().BeTrue();
+            if (exitTarget)
+            {
+                await _sample!.DisposeAsync();
+                _sample = null;
+            }
+            else await collection.CancelAsync();
+            var capture = await reading.WaitAsync(TimeSpan.FromSeconds(15), budget.Token);
+            capture.Quality.Completion.Should().NotBe("normal");
+            if (exitTarget) capture.Quality.LifetimeStatus.Should().Be("unknown");
+            else capture.Quality.Completion.Should().Be("cancelled");
+        }
+        finally
+        {
+            await collection.CancelAsync();
+            await reading;
+        }
+    }
+
     [Theory(Timeout = 30_000)]
     [InlineData(2, 0)]
     [InlineData(1, 1)]

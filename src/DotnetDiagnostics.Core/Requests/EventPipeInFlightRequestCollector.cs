@@ -35,7 +35,7 @@ public sealed class EventPipeInFlightRequestCollector : IInFlightRequestCollecto
     // at the implicit Activity1 start/stop transform. The events surface as "Activity1/Start" and
     // "Activity1/Stop". This subscribes to a single DiagnosticListener event (not every ActivitySource),
     // so it stays cheap and prod-safe.
-    private const string StartSpec =
+    internal const string StartSpec =
         // Path/PathBase/Method only — Request.QueryString is deliberately NOT captured: query
         // strings routinely carry secrets/PII (access_token, code, id_token, email, session ids)
         // and this collector has no sensitive-value gate. Matches the path-only RequestsNowCollector.
@@ -44,9 +44,15 @@ public sealed class EventPipeInFlightRequestCollector : IInFlightRequestCollecto
         "ActivityStartTime=*Activity.StartTimeUtc.Ticks;" +
         "ActivityId=*Activity.Id;ActivitySpanId=*Activity.SpanId;ActivityTraceId=*Activity.TraceId";
 
-    private const string StopSpec =
+    internal const string StopSpec =
         "Microsoft.AspNetCore/Microsoft.AspNetCore.Hosting.HttpRequestIn.Stop@Activity1Stop:-" +
         "ActivityId=*Activity.Id;ActivitySpanId=*Activity.SpanId;ActivityTraceId=*Activity.TraceId";
+
+    internal static string BuildFilterSpec(bool includeLegacyIdentity = true)
+    {
+        var specs = StartSpec + "\n" + StopSpec;
+        return includeLegacyIdentity ? specs : specs.Replace("ActivityId=*Activity.Id;", string.Empty, StringComparison.Ordinal);
+    }
 
     private readonly ILogger<EventPipeInFlightRequestCollector> _logger;
 
@@ -107,7 +113,7 @@ public sealed class EventPipeInFlightRequestCollector : IInFlightRequestCollecto
         var client = new DiagnosticsClient(processId);
         var providerArguments = new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            [FilterArgumentName] = StartSpec + "\n" + StopSpec,
+            [FilterArgumentName] = BuildFilterSpec(),
         };
 
         var session = await client
@@ -261,17 +267,22 @@ public sealed class EventPipeInFlightRequestCollector : IInFlightRequestCollecto
             Notes: notes.OrderBy(static note => note, StringComparer.Ordinal).ToList());
     }
 
-    private static bool TryCreateEvent(TraceEvent traceEvent, out RequestEvent requestEvent)
+    internal static bool TryCreateEvent(TraceEvent traceEvent, out RequestEvent requestEvent, bool strictIdentity = false)
     {
         requestEvent = default;
 
         var eventName = traceEvent.EventName ?? string.Empty;
-        var isStart = eventName.EndsWith("Start", StringComparison.OrdinalIgnoreCase);
-        var isStop = eventName.EndsWith("Stop", StringComparison.OrdinalIgnoreCase);
+        var isStart = eventName == "Activity1/Start";
+        var isStop = eventName == "Activity1/Stop";
         if (!isStart && !isStop)
         {
             return false;
         }
+        if (strictIdentity &&
+            (FormatString(traceEvent.PayloadByName("SourceName")) != "Microsoft.AspNetCore" ||
+             FormatString(traceEvent.PayloadByName("EventName")) !=
+             "Microsoft.AspNetCore.Hosting.HttpRequestIn." + (isStart ? "Start" : "Stop")))
+            return false;
 
         var arguments = DiagnosticSourcePayloadParser.ExtractArguments(traceEvent.PayloadByName("Arguments"));
         if (arguments.Count == 0)
@@ -279,13 +290,22 @@ public sealed class EventPipeInFlightRequestCollector : IInFlightRequestCollecto
             return false;
         }
 
+        return TryCreateEvent(isStart, arguments, traceEvent.TimeStamp.ToUniversalTime(), out requestEvent, strictIdentity);
+    }
+
+    internal static bool TryCreateEvent(bool isStart, IReadOnlyDictionary<string, string> arguments,
+        DateTime timestamp, out RequestEvent requestEvent, bool strictIdentity = false)
+    {
+        requestEvent = default;
         var traceId = GetArgument(arguments, "ActivityTraceId");
         var spanId = GetArgument(arguments, "ActivitySpanId");
         var activityId = GetArgument(arguments, "ActivityId");
-        var key = FirstNonEmpty(activityId, ComposeActivityId(traceId, spanId));
+        var key = strictIdentity
+            ? RequestActivityCapture.Key(traceId, spanId) ?? string.Empty
+            : FirstNonEmpty(activityId, ComposeActivityId(traceId, spanId));
         if (string.IsNullOrWhiteSpace(key))
         {
-            // Without a correlatable id we cannot pair Start with Stop; skip.
+            // Without a correlatable id we cannot pair Start with Stop.
             return false;
         }
 
@@ -295,7 +315,9 @@ public sealed class EventPipeInFlightRequestCollector : IInFlightRequestCollecto
             return true;
         }
 
-        var startedAt = ParseStartedAt(arguments) ?? new DateTimeOffset(traceEvent.TimeStamp.ToUniversalTime(), TimeSpan.Zero);
+        var parsedStart = ParseStartedAt(arguments);
+        if (strictIdentity && parsedStart is null) return false;
+        var startedAt = parsedStart ?? new DateTimeOffset(timestamp, TimeSpan.Zero);
 
         requestEvent = new RequestEvent(
             Key: key,
@@ -320,7 +342,7 @@ public sealed class EventPipeInFlightRequestCollector : IInFlightRequestCollecto
     private static DateTimeOffset? ParseStartedAt(IReadOnlyDictionary<string, string> arguments)
     {
         var raw = GetArgument(arguments, "ActivityStartTime");
-        return long.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var ticks) && ticks > 0
+        return long.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var ticks) && ticks > 0 && ticks <= DateTime.MaxValue.Ticks
             ? new DateTimeOffset(new DateTime(ticks, DateTimeKind.Utc))
             : null;
     }
@@ -347,7 +369,7 @@ public sealed class EventPipeInFlightRequestCollector : IInFlightRequestCollecto
         string Method,
         DateTimeOffset StartedAt);
 
-    private readonly record struct RequestEvent(
+    internal readonly record struct RequestEvent(
         string Key,
         bool IsStart,
         PendingRequest? PendingRequest);
