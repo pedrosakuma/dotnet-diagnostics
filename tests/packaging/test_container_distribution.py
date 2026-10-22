@@ -83,8 +83,16 @@ class ContainerDistributionTests(unittest.TestCase):
         ))
         restore_jobs = {
             "build-test", "ubuntu-fast-tests", "windows-build", "windows-core-test",
-            "windows-fast-test", "windows-mcp-test",
+            "windows-fast-test", "windows-mcp-test", "extension-tests",
         }
+        # The extension fast path never falls back to public sources: it is
+        # skipped unless the selection step proved a trusted source, and the
+        # private config is required (the stage step throws without it).
+        extension_job = jobs["extension-tests"]
+        self.assertIn("needs.changes.outputs.trusted_source == 'true'", extension_job)
+        self.assertIn("CI_TRUSTED_SOURCE", CI_WORKFLOW)
+        self.assertIn("no public NuGet fallback is permitted", extension_job)
+        self.assertNotIn("Block untrusted code validation", extension_job)
         configured_jobs = restore_jobs | {"docker-smoke"}
         self.assertEqual(configured_jobs, {
             name for name, job in jobs.items()
@@ -95,16 +103,17 @@ class ContainerDistributionTests(unittest.TestCase):
             if "Remove staged private NuGet configuration" in job
         })
         self.assertEqual(restore_jobs, {
-            name for name, job in jobs.items() if "dotnet restore --configfile " in job
+            name for name, job in jobs.items()
+            if re.search(r"\bdotnet restore\b[^\n]*--configfile ", job)
         })
         for name in configured_jobs:
             with self.subTest(job=name):
                 self.assertEqual(1, jobs[name].count("Stage caller-provided private NuGet configuration"))
                 self.assertEqual(1, jobs[name].count("Remove staged private NuGet configuration"))
-                self.assertEqual(
-                    int(name in restore_jobs),
-                    len(re.findall(r"\bdotnet restore --configfile ", jobs[name])),
-                )
+                restores = re.findall(r"(?m)^\s*(?:run: )?(dotnet restore\b[^\n]*)", jobs[name])
+                self.assertEqual(name in restore_jobs, bool(restores))
+                for command in restores:
+                    self.assertIn("--configfile ", command)
         self.assertNotRegex(CI_WORKFLOW, r"(?m)^\s*run: dotnet restore\s*$")
 
     def test_every_dotnet_workflow_disables_background_checks_and_configures_restore(self):
