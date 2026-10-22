@@ -2,12 +2,49 @@
 
 ## [Unreleased]
 
+## [0.32.0] — 2026-10-22
+
+### Added
+
+- **CLI protocol v2 `request-activities` capture (Part 1, #1241).** The CLI `hello`
+  response advertises `requestActivities` (version 1) and a joint `request-activities`
+  capture that reproduces ASP.NET requests and **completed** Activities from exact,
+  caller-named ActivitySources in one Core-owned EventPipe session, with
+  `requests` and `related-activities` queries over one retained per-connection artifact
+  (#1246). The VS Code extension's CLI-only navigation for it (#1247) is unreleased and
+  versioned separately.
+  - **Detect the capability, not the version.** Clients MUST require
+    `hello.requestActivities` before enabling this feature; the CLI version number alone
+    is not a signal. The general CLI floor (0.31.0) and the protocol-v2 base floor
+    (0.29) are unchanged for all other features.
+  - **Strict identity.** Sources are 1-20 exact names (no globs); request and Activity
+    rows use strict W3C trace/span IDs, per-capture row IDs and the exact capture ID.
+    A relationship is `verified` only when the parent chain is exact and unambiguous and
+    quality permits it; otherwise the observed structural basis is shown with
+    `verified:false` and a reason. Duplicate, conflicting, cyclic or missing identities
+    never fabricate a verified relationship.
+  - **Bounded and explicit quality.** At most 100 pending requests and 200 completed
+    Activities are retained, queries return at most 100 rows, and identity, text and
+    JSONL frame sizes are capped (see
+    [resource boundedness](docs/resource-boundedness.md#joint-requestactivity-capture-part-1)).
+    Loss, parse errors, drops, omissions and unknown process lifetime/provenance are
+    reported rather than presented as empty success.
+  - **Cancellation.** `cancel` stops collection with a bounded drain and may return
+    retained partial evidence with `completion:"cancelled"`; replacement, expiry and
+    disconnect release the artifact.
+  - **Not established.** Only completed Activity Stop records are retained, so absent
+    rows do not show that no work happened; open operations are deferred. Relationships
+    are not causality, a critical path or exclusive delay. Coexistence with external
+    DiagnosticSource sessions, privileged attach and the full runtime matrix are not
+    established. No MCP tool is added; this is Core and CLI only.
+- **CLI `event_source` live kind (#1204).** Adds a bounded, continuous Core-owned
+  EventPipe session over explicitly requested EventSources, with caps and loss
+  reporting described in [resource boundedness](docs/resource-boundedness.md).
+
 ### Changed
 
-- VS Code capture actions are organized into CPU, Memory & GC, Threads & waits,
-  Requests & networking, and Exceptions, with Monitoring and existing dump/saved
-  evidence kept separate. The diagnostic capture picker uses matching groups;
-  existing expert commands, result tabs and consent flows remain intact (#1224).
+**Includes a behavior change for consumers of comparison verdicts** (#1192, #1189).
+
 - **Behavior change:** `InvestigationSummary` comparison now reports objective deltas
   by default, with no legacy option. Comparable results use `not_assessed` rather
   than performance verdicts; key metrics use `up`/`down`/`flat` and neutral direction,
@@ -42,6 +79,22 @@
   metric or row has a better-direction; a note explains that deltas are objective signals (#1189).
 - CPU `onCpuSelfPercent`/`exclusivePercent` (OS on-CPU backend) are now direction-neutral: they are shares of samples, not CPU time or work done, so a rising share is no longer labelled `regressed` (#1189).
 - Pairwise `query_snapshot(view="diff")` on OS on-CPU `cpu-sample` handles reports `not_assessed` instead of a `regression`/`mixed` verdict derived from per-method sample shares (#1189).
+
+## Earlier unreleased history
+
+The entries below accumulated under `Unreleased` before `[0.32.0]` was cut. The
+changed items that were new after `v0.31.0` (checked with `git log v0.31.0..main`)
+are listed under 0.32.0 above. The 0.29, 0.30 and 0.31 releases have no changelog
+sections; the items below were not re-attributed to them. The first item is
+VS Code extension-only (extension changes are versioned separately), and the
+ARM64 item was already present at `v0.31.0`; consult the release tags for exact content.
+
+### Changed
+
+- VS Code capture actions are organized into CPU, Memory & GC, Threads & waits,
+  Requests & networking, and Exceptions, with Monitoring and existing dump/saved
+  evidence kept separate. The diagnostic capture picker uses matching groups;
+  existing expert commands, result tabs and consent flows remain intact (#1224).
 
 ### Added
 
