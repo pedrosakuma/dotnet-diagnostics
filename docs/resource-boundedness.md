@@ -52,6 +52,77 @@ most `topN` (1-100) rows per table, `MaxTextLength=2048` characters per text val
 These are presentation limits, not collector limits: retained totals do not establish
 exhaustive capture coverage. Results identify themselves as unsaved live-stream evidence.
 
+### Joint request/Activity capture (Part 1)
+
+The Core-only `request-activities` JSONL capability (#1241) owns one union
+DiagnosticSource EventPipe session, a 1-300 second requested window, a 30-second
+attach budget and the existing five-second stop plus five-second drain budgets.
+Cancellation, EOF and replacement stop/dispose the owner. An early source end
+ends collection rather than waiting out the requested window. There are no raw
+trace files, durable captures, HTTP calls, profiler, ptrace or dump operations.
+
+Insertion retains at most **100** first-accepted pending requests and **200**
+first-observed completed Activities, the existing standalone collectors' default
+row budgets. Matched tracked request completions remove their pending row and
+release that slot. Duplicate starts do not replace a retained row. This is
+deliberately **not** the standalone request collector's oldest-pending guarantee;
+that collector remains unchanged. Activities never evict, so a noisy prefix can
+consume the budget. Missing/malformed request identities or timestamps are
+rejected explicitly through parse quality. Activities without valid identifiers
+cannot verify a relationship. No Activity tags are requested, parsed or returned
+by the joint collector; no query strings, SQL, headers or destinations are added.
+
+The new joint owner's **MaxIdentities=4096** guard is a deliberate additional
+bound, not an inherited standalone Activity cap. It tracks seen request-start
+and completed-Activity `(traceId,spanId)` identities, including dropped rows, for
+the entire one-window lifetime. Keys are strict lowercase nonzero 32/16-hex W3C
+IDs and are never display-truncated. Counts saturate at two per identity;
+duplicate observations are separately counted. No identity is evicted. Saturation
+withholds all verified joins because duplicate detection is then incomplete.
+The secondary Activity lookup contains at most 200 entries; every query walks
+at most 200 retained rows with chains/depth bounded by that inventory. Temporary
+visited sets contain at most 200 keys. A missing, duplicated or cyclic chain
+does not become a verified descendant.
+
+Source filters are validated before subscription: 1-20 exact names, at most
+200 ASCII characters each, no wildcard or transform syntax. Retained
+method/source/operation strings are at most **256** characters; paths are at most
+**1024**. Overlength values become an explicit omission marker rather than an
+unbounded string or a truncated identity. Controls are normalized, query/fragment
+suffixes excluded and existing sensitive-pattern redaction applied. Redaction
+expansion is checked against the same caps. `truncatedFields` reports overlength
+omissions; application names/paths/IDs may still contain sensitive information.
+
+Cardinality and string caps imply less than **4 MiB conservative accounted
+retention**, even when all three inventories are full. `accountedRetainedBytes`
+includes 128 KiB fixed overhead, 256 + 4 bytes per identity-key character for
+each identity slot, 512 + 4 bytes per retained row-string character, and another
+256 bytes per Activity for the secondary lookup/close-time copies. This accounts
+for bounded object/index lifetime and string storage, not just output row count.
+It is **not** a measured CLR heap/RSS guarantee, and excludes the separate
+64 MiB EventPipe circular buffer, decoder transients, runtime overhead and
+serialization. Worst-case full-inventory/text tests assert that accounted limit.
+
+Capture replies include at most 100 request rows, not the full Activity array.
+Queries return at most **100** rows and explicitly report retained requests,
+retained Activities, matching total and projection omissions (e.g. 200 retained,
+100 returned, 100 omitted). JSONL joint frames have a hard **1 MiB UTF-8** check;
+oversized output fails explicitly. The serializer's escaped-text amplification
+is covered by worst-case Unicode tests. Serialization allocates one bounded JSON
+string outside retained-artifact accounting; writes have a five-second budget.
+Only one joint artifact is retained per CLI connection for ten minutes, with a
+timer that reaps it at expiry. Replacement and disconnect cancel/drain first,
+then invalidate it; there is no multi-capture history or automatic persistence.
+
+Quality exposes observed starts/tracked completions, request and Activity drops,
+parse failures, invalid/duplicate IDs, index saturation, retained identity count,
+text omissions, source loss (unknown is null), actual header/window, completion
+and process-lifetime provenance. A quality limitation may withhold verification
+while preserving the observed structural relationship with an explicit reason.
+No matching Stop records do not establish absence of open/uninstrumented work.
+External DiagnosticSource-session coexistence and the full runtime matrix are
+not established by the controlled single-owner tests.
+
 ### EventPipe EventSource live events (#1201)
 
 The CLI `event_source` live kind is a continuous Core-owned EventPipe session over explicitly

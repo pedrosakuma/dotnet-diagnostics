@@ -222,6 +222,106 @@ Unsupported `kind` values, an inactive/invalid `processId`, or an out-of-range `
 produce an `error` frame (`unsupported_capture_kind`, `invalid_capture`, or `capture_safety_rejected`)
 instead.
 
+#### Joint request/Activity reproduction capture (Part 1)
+
+This additive **protocol v2** capability is separate from the existing standalone
+`requests` capture. The `hello` response advertises
+`requestActivities: { "version": 1, "captureKind": "request-activities",
+"queryViews": ["requests", "related-activities"], "maxRequests": 100,
+"maxActivities": 200, "maxQueryRows": 100 }`. Clients must require this capability
+before enabling request drilldown; a missing/unknown capability on an older CLI
+means unavailable, not an invitation to combine independent captures.
+
+```json
+{"type":"capture","requestId":"joint-1","kind":"request-activities","processId":1234,"durationSeconds":10,"sources":["MyApp","System.Net.Http"]}
+```
+
+`processId` is required; `durationSeconds` is an integer 1-300 (default 10).
+`sources` must contain 1-20 **exact** ActivitySource names, each 1-200 ASCII letters,
+digits, `.`, `_` or `-`. Globs, whitespace, control characters, empty names,
+oversized names and unknown fields are rejected before subscription. No `topN`,
+tags, database statements, destination enrichment, persistence, dump or privileged
+attach option is accepted. Both existing request and Activity safety profiles run
+before collection; warnings go to stderr, never the JSONL channel.
+
+The CLI acknowledges with `type:"capture-started"` and the same `requestId`.
+One Core-owned EventPipe session subscribes to ASP.NET request Start/Stop and the
+selected ActivitySource Stop events together. It **does not** run the standalone
+collectors in parallel. Begin collection before reproducing the issue; a
+`capture-started` frame acknowledges dispatch, **not** that both event branches
+are ready. Sessions have startup/transport latency. Do not run this capture
+alongside a CLI live session; stop that session first. Coexistence with unrelated
+external DiagnosticSource sessions has not been established.
+
+The terminal `capture` frame has `kind:"request-activities"` and
+`result: {handle, handleExpiresAt, captureId, requestedStart,
+requestedDurationSeconds, sources, requests}`. `requests` is the typed request
+query described below, including all retained request rows (at most 100).
+There is **one joint artifact**, not a pair of independently joinable handles.
+The CLI retains it only on this connection for ten minutes. A subsequent valid
+joint capture cancels/drains the previous owner before replacement; any ordinary
+`capture` request also clears the joint slot. Invalid joint requests leave existing
+evidence alone. Expiry releases the artifact; disconnect cancels/drains collection
+and releases it. No multi-capture history, automatic save, export, recovery or
+origin reopening is added. The extension's one-result navigation UI is a separate
+delivery; this contract alone does not implement that UI.
+
+```json
+{"type":"query","requestId":"rows-1","handle":"<result.handle>","captureId":"<result.captureId>","view":"requests","topN":100}
+{"type":"query","requestId":"children-1","handle":"<result.handle>","captureId":"<result.captureId>","view":"related-activities","requestRowId":"<requests.rows[n].rowId>","topN":100}
+{"type":"cancel","requestId":"joint-1"}
+```
+
+Queries are local immutable reads. `topN` is 1-100 (default 100); there is no
+implicit pagination/history. Use the exact capture ID and retained row ID, not a
+method, path, trace ID, array offset or another capture's row ID. Stale handles
+produce `handle_unavailable`; invalid selectors produce `invalid_query`.
+`cancel` targets the running capture's request ID and waits for bounded drain.
+Cancellation can return retained partial evidence with `completion:"cancelled"`;
+attach failure returns an explicit error without an artifact. Early target exit,
+source failure, processing errors and unknown loss/provenance remain explicit,
+not successful empty results.
+
+Both queries include `captureId`, `processId`, nullable `processStartedAt`,
+nullable `observationStart` (EventPipe session header), `observationEnd`,
+`quality`, `retainedRequests`, `retainedActivities`, `totalRows`, `omittedRows`,
+`rows` and `notes`. Null lifetime/header means **unknown**, not a confirmed
+mismatch. Quality includes completion, nullable source loss, lifetime status,
+parse errors, observed starts/matched tracked completions, request/Activity drops,
+invalid/duplicate identities, identity-cap saturation, text omissions, retained
+identity count and accounted retained bytes. These are tracked-subset counts,
+not exhaustive runtime operation counts.
+
+Request rows contain stable per-capture `rowId`, trace/span IDs, redacted
+`method`/path-only `path`, start and elapsed milliseconds. Only first-accepted
+tracked requests still pending at close survive; completed requests are not a
+history. This deliberately differs from the standalone collector's unchanged
+oldest-pending policy. Unidentifiable request starts cannot be paired and are
+reported through parse/omission quality, not fabricated rows.
+
+Related rows contain `activity` (row ID, source, operation, strict W3C identifiers,
+start/stop and observed duration), `relationship`, `verified` and
+`verificationWithheldReason`. A direct child requires its exact parent span and
+trace to match the selected request. An observed descendant requires a retained,
+unambiguous parent chain. Shared-trace-only rows are explicitly distinguished.
+Duplicate/conflicting identities (including dropped rows), cycles, missing
+intermediates, invalid IDs, out-of-window spans, incomplete/lost streams and
+unknown/changed process lifetimes cannot fabricate verified relationships.
+When quality withholds verification, a structurally observed direct-child or
+descendant basis remains visible with `verified:false` and its reason.
+
+Only **completed** Activity Stop records are retained in Part 1. Open operations
+are deferred to Part 2; no matching rows do not establish no work. These
+relationships are not causality, a critical path or exclusive delay; concurrent
+durations must not be added as a request-duration explanation. Request-to-database
+associations require the application's matching ActivitySource instrumentation;
+this slice neither joins standalone SQL aggregates nor collects SQL text.
+
+Limits and exact retention/accounting tradeoffs are recorded in
+[resource boundedness](./resource-boundedness.md#joint-requestactivity-capture-part-1).
+Names, paths and correlation identifiers can still be sensitive even after
+pattern redaction; no external telemetry lookup is performed.
+
 #### CPU exports
 
 After protocol-v2 negotiation, a CPU `capture` accepts optional `exportTrace: true`

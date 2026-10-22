@@ -172,6 +172,7 @@ public static class DiagnosticCoreServiceRegistration
         services.AddSingleton<IStreamingKestrelCollector>(serviceProvider =>
             serviceProvider.GetRequiredService<EventPipeKestrelCollector>());
         services.AddSingleton<EventPipeInFlightRequestCollector>();
+        services.AddSingleton<IRequestActivityCollector, EventPipeRequestActivityCollector>();
         services.AddSingleton<IInFlightRequestCollector>(serviceProvider =>
             serviceProvider.GetRequiredService<EventPipeInFlightRequestCollector>());
         services.AddSingleton<IStreamingInFlightRequestCollector>(serviceProvider =>
