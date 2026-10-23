@@ -514,9 +514,18 @@ snapshot needs the host's corresponding privileged attach access (on Linux, see 
 permission-denied message when that access is unavailable.
 
 In **Workspace > Threads & waits**, **Thread explorer** is the default after a successful snapshot
-and is also directly selectable in **View**. Its returned-thread list shows state and top frame for
-scanability; selecting an item shows the returned inline frames in top-of-stack-first order. The
-inline summary and each returned thread ID in related evidence link directly into the explorer.
+and is also directly selectable in **View**. Its compact table aligns **Thread**, **State** and
+**Top frame**. Each thread's chevron expands its stack immediately below that row, in
+top-of-stack-first order; several stacks can remain open. Native buttons support Enter/Space,
+and top-frame previews wrap to two lines while expanded stacks preserve the full frame text.
+Right/Left arrows expand/collapse, and Escape from a stack collapses it and returns focus to
+its thread. The labeled filter searches returned thread fields and frames only; expansion is
+preserved by managed thread ID while filtering or receiving related evidence. A new snapshot
+resets it. Raw numeric runtime flags are shown as **Not decoded**, not guessed as running or
+waiting; **Technical details** retains the exact reported state, OS ID and inferred wait reason.
+Missing frames remain explicitly **Unavailable**. The
+inline summary and each returned thread ID in related evidence link directly into the expanded
+row; returning to related evidence restores focus to the originating link.
 The **Thread explorer** connects searchable returned threads, expandable stack groups,
 representative group member IDs, inferred cycle participants and wait-chain owners. Selecting
 a thread shows all its returned inline frames and related wait edges; selecting an owner moves

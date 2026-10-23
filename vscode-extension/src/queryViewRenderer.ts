@@ -7,8 +7,8 @@ declare function enhanceEvidenceTables(parent: HTMLElement): void;
 declare function renderExceptionNavigation(parent: HTMLElement, events: Array<Record<string, unknown>>): void;
 declare function applyHeapTypeFocus(): void;
 declare function updateThreadNavigation(view: string, result: Record<string, unknown>): void;
-declare function navigateThreadFromGroup(id: number): void;
-declare function navigateThreadTo(id: number, returnPanel?: string): void;
+declare function navigateThreadFromGroup(id: number, returnFocus?: HTMLElement): void;
+declare function navigateThreadTo(id: number, returnPanel?: string, returnFocus?: HTMLElement): void;
 declare function updateEvidenceViewSwitcher(container: HTMLElement): void;
 declare let addressLiveQueriesAvailable: boolean;
 
@@ -117,7 +117,7 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
             button.className = "heap-type-link";
             button.textContent = "Thread " + value;
             button.addEventListener("click", () => navigateThreadTo(value,
-                containerId === "threadQueryViews" ? "threadQueryViews-" + view : undefined));
+                containerId === "threadQueryViews" ? "threadQueryViews-" + view : undefined, button));
             cell.appendChild(button);
         } else {
             cell.textContent = formatValue(value);
@@ -689,7 +689,7 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
                         button.type = "button";
                         button.className = "heap-type-link";
                         button.textContent = "Thread " + id;
-                        button.addEventListener("click", () => navigateThreadFromGroup(id));
+                        button.addEventListener("click", () => navigateThreadFromGroup(id, button));
                         cell.replaceChildren(button);
                     });
                     const frames = Array.isArray(row.canonicalFrames) ? row.canonicalFrames : [];
@@ -1060,8 +1060,29 @@ export const QUERY_VIEW_STYLES = `
     .query-view-chain { font-family:var(--vscode-editor-font-family); overflow-wrap:anywhere; }
     .query-view-stack-frames { padding-left:1.5rem; }
     .query-view-stack-frames li { margin:.15rem 0; overflow-wrap:anywhere; }
-    .thread-explorer-row { display:grid; grid-template-columns:max-content minmax(0,1fr); gap:.4rem; align-items:start; margin:.2rem 0; }
-    .thread-explorer-row-context { min-width:0; overflow-wrap:anywhere; color:var(--vscode-descriptionForeground); }
+    .thread-search { display:flex; flex-wrap:wrap; align-items:center; gap:.4rem; color:var(--vscode-descriptionForeground); }
+    .thread-search input { flex:1 1 12rem; min-width:0; }
+    .thread-secondary { font-size:.85em; color:var(--vscode-descriptionForeground); }
+    .thread-explorer-table { width:100%; table-layout:fixed; border-collapse:collapse; margin:.5rem 0; }
+    .thread-explorer-table th:first-child { width:7rem; }
+    .thread-explorer-table th:nth-child(2) { width:7rem; }
+    .thread-explorer-table th, .thread-explorer-table td { text-align:left; vertical-align:top; padding:.4rem; overflow-wrap:anywhere; }
+    .thread-top-frame, .thread-stack { font-family:var(--vscode-editor-font-family,monospace); font-size:.9em; }
+    .thread-top-frame-preview { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; overflow-wrap:anywhere; }
+    .thread-disclosure { background:none; border:none; color:var(--vscode-foreground); padding:0; font:inherit; text-align:left; }
+    .thread-disclosure::before { content:'\\25B8'; display:inline-block; width:1em; }
+    .thread-disclosure[aria-expanded="true"]::before { content:'\\25BE'; }
+    .thread-disclosure:hover { background:var(--vscode-list-hoverBackground); }
+    .thread-disclosure:focus-visible { outline:1px solid var(--vscode-focusBorder); outline-offset:2px; }
+    .thread-expanded { background:var(--vscode-list-inactiveSelectionBackground); }
+    .thread-inline-stack { padding:.2rem .4rem .6rem; border-bottom:1px solid var(--vscode-panel-border); min-width:0; }
+    .thread-stack { padding-left:2rem; }
+    .thread-stack li { white-space:pre-wrap; overflow-wrap:anywhere; margin:.35rem 0; }
+    .thread-technical { font-size:.85em; color:var(--vscode-descriptionForeground); margin-top:.5rem; }
+    @media(max-width:600px) {
+      .thread-explorer-table th:first-child { width:5.5rem; }
+      .thread-explorer-table th:nth-child(2) { width:5rem; }
+    }
     .reference-path { list-style:none; padding-left:.8rem; border-left:1px solid var(--vscode-panel-border); }
     .reference-path summary { cursor:pointer; overflow-wrap:anywhere; }
     .query-view-notes { border:1px solid var(--vscode-editorWarning-foreground); padding:.25rem .65rem; margin:.6rem 0; }

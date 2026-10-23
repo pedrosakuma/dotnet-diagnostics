@@ -26,17 +26,27 @@ function setThreadWorkspaceView(view: string): void {
     }
 }
 
-function navigateThreadTo(id: number, returnPanel?: string): void {
+function navigateThreadTo(id: number, returnPanel?: string, returnFocus?: HTMLElement): void {
     const explorer = document.getElementById("threadExplorer") as (HTMLElement & {
-        threadState?: { selected?: unknown; mode?: string; returnPanel?: string };
+        threadState?: {
+            selected?: unknown; mode?: string; returnPanel?: string; returnFocus?: HTMLElement; returnMode?: string;
+            expanded?: number[]; revealSelected?: boolean;
+        };
     }) | null;
     if (!explorer?.threadState) return;
     explorer.threadState.selected = id;
     explorer.threadState.mode = "threads";
     explorer.threadState.returnPanel = returnPanel;
+    explorer.threadState.returnFocus = returnFocus;
+    explorer.threadState.returnMode = undefined;
+    explorer.threadState.revealSelected = true;
+    explorer.threadState.expanded = [...new Set([...(explorer.threadState.expanded ?? []), id])];
     updateThreadNavigation("selection", {});
     setThreadWorkspaceView("thread-explorer");
-    explorer.querySelector<HTMLElement>(".evidence-selection")?.focus({ preventScroll: true });
+    const button = Array.from(explorer.querySelectorAll<HTMLElement>(".thread-disclosure"))
+        .find(item => item.dataset.threadId === String(id));
+    button?.focus({ preventScroll: true });
+    button?.scrollIntoView({ block: "nearest" });
 }
 
 function navigateHeapDetails(details: boolean): void {
@@ -46,8 +56,8 @@ function navigateHeapDetails(details: boolean): void {
     workspace?.navigateDetails?.(details);
 }
 
-function navigateThreadFromGroup(id: number): void {
-    navigateThreadTo(id, "threadQueryViews-unique-stacks");
+function navigateThreadFromGroup(id: number, returnFocus?: HTMLElement): void {
+    navigateThreadTo(id, "threadQueryViews-unique-stacks", returnFocus);
 }
 
 function renderHeapTypeNavigation(types: Array<Record<string, unknown>>): void {
@@ -193,6 +203,10 @@ function updateThreadNavigation(view: string, result: Record<string, unknown>): 
         search: string;
         mode?: string;
         returnPanel?: string;
+        returnFocus?: HTMLElement;
+        returnMode?: string;
+        expanded?: number[];
+        revealSelected?: boolean;
     };
     const host = explorer as HTMLElement & { threadState?: ThreadState };
     if (view === "snapshot") host.threadState = {
@@ -204,17 +218,25 @@ function updateThreadNavigation(view: string, result: Record<string, unknown>): 
     const hadSearchFocus = explorer.querySelector("input") === document.activeElement;
     const focusedMode = Array.from(explorer.querySelectorAll<HTMLButtonElement>(".thread-mode-tab"))
         .find(button => button === document.activeElement)?.dataset.mode;
+    const focusedThread = Array.from(explorer.querySelectorAll<HTMLButtonElement>(".thread-disclosure"))
+        .find(button => button === document.activeElement)?.dataset.threadId;
     explorer.replaceChildren();
-    const heading = document.createElement("h4");
-    heading.textContent = "Thread explorer";
     const note = document.createElement("p");
     note.textContent = "Point-in-time snapshot, not execution history. Wait reasons and cycle candidates may be inferred. "
-        + "Groups may expose representative thread IDs only; missing inline stacks remain unavailable.";
+        + "Groups may expose representative thread IDs only; missing inline stacks remain unavailable. "
+        + "Numeric runtime flags are not decoded here; raw values remain in Technical details.";
     const search = document.createElement("input");
     search.type = "search";
     search.maxLength = 512;
     search.value = state.search;
+    search.id = "threadExplorerSearch";
+    search.placeholder = "Thread ID, state or stack method";
     search.setAttribute("aria-label", "Find returned threads or stack methods");
+    const searchLabel = document.createElement("label");
+    searchLabel.htmlFor = search.id;
+    searchLabel.className = "thread-search";
+    searchLabel.textContent = "Filter returned threads";
+    searchLabel.appendChild(search);
     const listing = document.createElement("div");
     const mode = { value: state.mode ?? "threads" };
     const modes = document.createElement("div");
@@ -263,10 +285,6 @@ function updateThreadNavigation(view: string, result: Record<string, unknown>): 
         modeButtons.push(button);
         modes.appendChild(button);
     }
-    const details = document.createElement("section");
-    details.className = "evidence-selection";
-    details.tabIndex = -1;
-    details.setAttribute("aria-label", "Selected thread");
     const text = (parent: HTMLElement, value: string) => {
         const line = document.createElement("p");
         line.textContent = value;
@@ -276,21 +294,26 @@ function updateThreadNavigation(view: string, result: Record<string, unknown>): 
         if (typeof id !== "number" || !Number.isSafeInteger(id) || id < 0) return;
         const button = document.createElement("button");
         button.type = "button";
+        button.className = "heap-type-link";
         button.textContent = "Thread " + id;
         button.addEventListener("click", () => {
             state.selected = id;
-            drawDetails();
-            details.focus({ preventScroll: true });
-            details.scrollIntoView({ block: "nearest" });
+            if (mode.value !== "threads") state.returnMode = mode.value;
+            state.revealSelected = true;
+            state.expanded = [...new Set([...(state.expanded ?? []), id])];
+            selectMode("threads");
+            const disclosure = Array.from(listing.querySelectorAll<HTMLButtonElement>(".thread-disclosure"))
+                .find(item => item.dataset.threadId === String(id));
+            disclosure?.focus({ preventScroll: true });
+            disclosure?.scrollIntoView({ block: "nearest" });
         });
         parent.appendChild(button);
     };
-    function drawDetails(): void {
-        details.replaceChildren();
-        if (state.returnPanel) {
+    function drawDetails(details: HTMLElement, thread: Record<string, unknown> | undefined, id: number): void {
+        if (state.selected === id && (state.returnPanel || state.returnMode)) {
             const back = document.createElement("button");
             back.type = "button";
-            const panelView = state.returnPanel.replace("threadQueryViews-", "");
+            const panelView = state.returnPanel?.replace("threadQueryViews-", "");
             const returnLabels: Record<string, string> = {
                 snapshot: "inline thread summary",
                 deadlocks: "inferred deadlock candidates",
@@ -298,33 +321,49 @@ function updateThreadNavigation(view: string, result: Record<string, unknown>): 
                 "wait-chains": "wait chains",
                 threadpool: "thread-pool query",
             };
-            back.textContent = "Back to " + (returnLabels[panelView] ?? "thread evidence");
+            back.textContent = "Back to " + (panelView ? returnLabels[panelView] ?? "thread evidence"
+                : state.returnMode === "cycles" ? "inferred cycle candidates" : "wait chains");
             back.addEventListener("click", () => {
-                const returnView = state.returnPanel === "snapshot" ? "snapshot" : panelView;
-                setThreadWorkspaceView(returnView);
-                document.getElementById("tab-" + state.returnPanel)?.focus({ preventScroll: true });
+                if (panelView) {
+                    const returnView = state.returnPanel === "snapshot" ? "snapshot" : panelView;
+                    setThreadWorkspaceView(returnView);
+                    (state.returnFocus ?? document.getElementById("tab-" + state.returnPanel))
+                        ?.focus({ preventScroll: true });
+                } else {
+                    selectMode(state.returnMode ?? "threads");
+                    modeButtons.find(button => button.dataset.mode === mode.value)?.focus({ preventScroll: true });
+                }
             });
             details.appendChild(back);
         }
-        if (state.selected === undefined) { text(details, "Select a thread, stack group member, or wait-chain participant."); return; }
-        const thread = state.threads.find(item => item.managedThreadId === state.selected);
-        text(details, "Managed thread " + state.selected);
+        const technical = document.createElement("details");
+        technical.className = "thread-technical";
+        const technicalLabel = document.createElement("summary");
+        technicalLabel.textContent = "Technical details";
+        technical.appendChild(technicalLabel);
         if (thread) {
-            text(details, "State: " + String(thread.state ?? "Unavailable") + " | wait: "
+            text(technical, "Reported state: " + String(thread.state ?? "Unavailable") + " | wait: "
                 + String(thread.inferredWaitReason ?? "Unavailable") + " | OS thread: " + String(thread.osThreadId ?? "Unavailable"));
             const frames = Array.isArray(thread.frames) ? thread.frames : [];
+            const count = document.createElement("p");
+            count.className = "thread-secondary";
+            count.textContent = frames.length + " returned frame(s)";
+            details.appendChild(count);
             const stack = document.createElement("ol");
+            stack.className = "thread-stack";
+            stack.setAttribute("aria-label", "Returned stack for managed thread " + id);
             for (const frame of frames) {
                 const item = document.createElement("li");
                 item.textContent = typeof frame === "string" ? frame : String(frame.displayName ?? "Unavailable");
                 stack.appendChild(item);
             }
             details.appendChild(stack);
-            if (!frames.length) text(details, "No inline stack was returned for this thread.");
+            if (!frames.length) text(details, "Unavailable: no inline stack was returned for this thread.");
         } else text(details, "This participant was not included in the returned inline thread list.");
+        details.appendChild(technical);
         for (const chain of Array.isArray(state.chains?.chains) ? state.chains.chains : []) {
             for (const link of Array.isArray(chain.links) ? chain.links : []) {
-                if (link.waitingThreadId !== state.selected && link.ownerThreadId !== state.selected) continue;
+                if (link.waitingThreadId !== id && link.ownerThreadId !== id) continue;
                 const edge = document.createElement("div");
                 text(edge, "Waiting thread:");
                 pick(edge, link.waitingThreadId);
@@ -342,32 +381,105 @@ function updateThreadNavigation(view: string, result: Record<string, unknown>): 
         const term = state.search.toLowerCase();
         const matches = state.threads.filter(thread => JSON.stringify(thread).toLowerCase().includes(term));
         if (mode.value === "threads") {
-            text(listing, matches.length + " of " + state.threads.length + " returned threads match.");
-            for (const thread of matches) {
-                if (typeof thread.managedThreadId !== "number") continue;
-                const row = document.createElement("div");
+            const count = document.createElement("p");
+            count.className = "thread-secondary";
+            count.textContent = matches.length + " of " + state.threads.length + " returned threads match.";
+            listing.appendChild(count);
+            const table = document.createElement("table");
+            table.className = "thread-explorer-table";
+            table.setAttribute("aria-label", "Returned threads and inline stacks");
+            const head = document.createElement("thead");
+            const headers = document.createElement("tr");
+            for (const name of ["Thread", "State", "Top frame"]) {
+                const cell = document.createElement("th");
+                cell.scope = "col";
+                cell.textContent = name;
+                headers.appendChild(cell);
+            }
+            head.appendChild(headers);
+            table.appendChild(head);
+            const body = document.createElement("tbody");
+            table.appendChild(body);
+            const selected = state.threads.find(thread => thread.managedThreadId === state.selected);
+            const shown = [...matches];
+            if (state.revealSelected && selected && !shown.includes(selected)) {
+                shown.push(selected);
+                text(listing, "Linked thread shown outside the current filter.");
+            }
+            const appendThread = (thread: Record<string, unknown> | undefined, id: number): void => {
+                const row = document.createElement("tr");
                 row.className = "thread-explorer-row";
-                const topFrame = Array.isArray(thread.frames) && thread.frames.length
+                const topFrame = thread && Array.isArray(thread.frames) && thread.frames.length
                     ? (typeof thread.frames[0] === "string" ? thread.frames[0] : String(thread.frames[0]?.displayName ?? "Unavailable"))
                     : "Unavailable";
+                const rawState = thread?.state;
+                const reportedState = typeof rawState === "string" && rawState.trim() ? rawState.trim() : undefined;
+                const numericState = typeof rawState === "number" || !!reportedState && /^-?\d+$/.test(reportedState);
+                const stateLabel = numericState ? "Not decoded" : reportedState ?? "Unavailable";
+                const disclosureRow = document.createElement("tr");
+                disclosureRow.className = "thread-inline-row";
+                const detailCell = document.createElement("td");
+                detailCell.colSpan = 3;
+                const details = document.createElement("section");
+                details.className = "thread-inline-stack";
+                details.id = "thread-inline-" + id;
+                details.setAttribute("aria-label", "Managed thread " + id + " stack and details");
+                detailCell.appendChild(details);
+                disclosureRow.appendChild(detailCell);
                 const button = document.createElement("button");
                 button.type = "button";
-                button.textContent = "Thread " + thread.managedThreadId;
-                button.setAttribute("aria-label", button.textContent + " | " + String(thread.state ?? "state unavailable")
-                    + " | " + topFrame);
+                button.className = "thread-disclosure";
+                button.dataset.threadId = String(id);
+                button.textContent = "Thread " + id;
+                button.setAttribute("aria-controls", details.id);
+                const setExpanded = (expanded: boolean): void => {
+                    const ids = new Set(state.expanded ?? []);
+                    if (expanded) ids.add(id); else ids.delete(id);
+                    state.expanded = [...ids];
+                    button.setAttribute("aria-expanded", String(expanded));
+                    disclosureRow.hidden = !expanded;
+                    row.classList.toggle("thread-expanded", expanded);
+                    if (expanded) { details.replaceChildren(); drawDetails(details, thread, id); }
+                };
                 button.addEventListener("click", () => {
-                    state.selected = thread.managedThreadId;
-                    drawDetails();
-                    details.focus({ preventScroll: true });
-                    details.scrollIntoView({ block: "nearest" });
+                    state.selected = id;
+                    setExpanded(button.getAttribute("aria-expanded") !== "true");
                 });
-                row.appendChild(button);
-                const context = document.createElement("span");
-                context.className = "thread-explorer-row-context";
-                context.textContent = String(thread.state ?? "state unavailable") + " | " + topFrame;
-                row.appendChild(context);
-                listing.appendChild(row);
+                button.addEventListener("keydown", event => {
+                    if (event.key !== "ArrowRight" && event.key !== "ArrowLeft" && event.key !== "Escape") return;
+                    event.preventDefault();
+                    state.selected = id;
+                    setExpanded(event.key === "ArrowRight");
+                });
+                details.addEventListener("keydown", event => {
+                    if (event.key !== "Escape") return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setExpanded(false);
+                    button.focus({ preventScroll: true });
+                });
+                const identity = document.createElement("td");
+                identity.appendChild(button);
+                const stateCell = document.createElement("td");
+                stateCell.textContent = stateLabel;
+                const frameCell = document.createElement("td");
+                frameCell.className = "thread-top-frame";
+                const preview = document.createElement("span");
+                preview.className = "thread-top-frame-preview";
+                preview.textContent = topFrame;
+                frameCell.appendChild(preview);
+                row.append(identity, stateCell, frameCell);
+                body.append(row, disclosureRow);
+                setExpanded((state.expanded ?? []).includes(id));
+            };
+            for (const thread of shown) {
+                const id = thread.managedThreadId;
+                if (typeof id === "number" && Number.isSafeInteger(id) && id >= 0) appendThread(thread, id);
             }
+            if (state.revealSelected && !selected && typeof state.selected === "number")
+                appendThread(undefined, state.selected);
+            if (!body.children.length) text(listing, state.threads.length ? "No returned threads match this filter." : "No threads were returned.");
+            listing.appendChild(table);
         }
         if (mode.value === "cycles") text(listing, state.deadlocks === undefined
             ? "Cycle evidence has not been returned; check Deadlock candidates for availability."
@@ -401,12 +513,13 @@ function updateThreadNavigation(view: string, result: Record<string, unknown>): 
             listing.appendChild(disclosure);
         }
     }
-    search.addEventListener("input", () => { state.search = search.value; drawList(); });
-    explorer.append(modes, search, listing, details, note);
+    search.addEventListener("input", () => { state.search = search.value; state.revealSelected = false; drawList(); });
+    explorer.append(modes, searchLabel, listing, note);
     selectMode(mode.value);
-    drawDetails();
     if (hadSearchFocus) search.focus({ preventScroll: true });
     else if (focusedMode) modeButtons.find(button => button.dataset.mode === focusedMode)?.focus({ preventScroll: true });
+    else if (focusedThread) Array.from(explorer.querySelectorAll<HTMLButtonElement>(".thread-disclosure"))
+        .find(button => button.dataset.threadId === focusedThread)?.focus({ preventScroll: true });
     const queries = document.getElementById("threadQueryViews");
     if (queries) {
         if (explorer.parentElement !== queries) queries.insertBefore(explorer, queries.firstChild);

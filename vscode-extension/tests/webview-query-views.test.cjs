@@ -1691,7 +1691,7 @@ test("thread tabs support roving keyboard navigation and retain filters, selecti
     key(modes[2], "ArrowRight");
     assert.equal(modes[0].attributes["aria-selected"], "true");
     assert.equal(input.value, "Work");
-    assert.match(explorer.querySelector(".evidence-selection").textContent, /Managed thread 1/);
+    assert.equal(document.getElementById("thread-inline-1").parentElement.parentElement.hidden, false);
     key(modes[0], "ArrowLeft");
     key(modes[2], "Home");
     assert.equal(document.getElementById("threadModePanel").attributes["aria-labelledby"], modes[0].id);
@@ -1713,7 +1713,64 @@ test("thread tabs support roving keyboard navigation and retain filters, selecti
     key(refreshed[1], "Home");
     assert.equal(explorer.hidden, false);
     assert.equal(explorer.querySelector("input").value, "Work");
-    assert.match(explorer.querySelector(".evidence-selection").textContent, /Managed thread 1/);
+    assert.equal(document.getElementById("thread-inline-1").parentElement.parentElement.hidden, false);
+});
+
+test("thread explorer uses aligned inline disclosures without guessing numeric runtime state", () => {
+    const {makeContainer, document, updateThreadNavigation} = loadRenderer();
+    const root = makeContainer("captureThreadResult");
+    const longFrame = "App.Generic.Work<" + "LongNamespace.".repeat(30) + "Type>()";
+    updateThreadNavigation("snapshot", {threads: [
+        {managedThreadId: 4, osThreadId: 24192, state: "16953888", frames: ["App.Poll()", longFrame]},
+        {managedThreadId: 5, osThreadId: 200, state: 131616, frames: []},
+        {managedThreadId: 2, state: "Background, WaitSleepJoin", frames: [{displayName: "<script>App.Wait()</script>"}]},
+    ]});
+    const table = root.querySelector(".thread-explorer-table");
+    assert.deepEqual(table.querySelectorAll("th").map(x => x.textContent), ["Thread", "State", "Top frame"]);
+    const rows = table.querySelectorAll(".thread-explorer-row");
+    assert.deepEqual(rows.map(x => x.children[1].textContent), ["Not decoded", "Not decoded", "Background, WaitSleepJoin"]);
+    assert.equal(rows[1].children[2].textContent, "Unavailable");
+    assert.equal(rows[0].querySelector(".thread-top-frame-preview").textContent, "App.Poll()");
+    assert.equal(root.querySelector(".evidence-selection"), null, "no separate selected stack panel");
+    assert.equal(table.querySelectorAll(".thread-inline-row").every(x => x.hidden), true);
+    assert.equal(root.querySelector("label").htmlFor, "threadExplorerSearch");
+    assert.equal(root.querySelector("input").placeholder, "Thread ID, state or stack method");
+
+    const buttons = table.querySelectorAll(".thread-disclosure");
+    const first = buttons[0];
+    assert.equal(first.tagName.toLowerCase(), "button", "native Enter/Space activation");
+    assert.equal(first.attributes["aria-controls"], "thread-inline-4");
+    first.listeners.keydown({key: "ArrowRight", preventDefault() {}});
+    assert.equal(first.attributes["aria-expanded"], "true");
+    const details = document.getElementById("thread-inline-4");
+    assert.equal(details.parentElement.parentElement, rows[0].nextElementSibling);
+    assert.equal(rows[0].nextElementSibling.hidden, false);
+    assert.deepEqual(details.querySelectorAll("li").map(x => x.textContent), ["App.Poll()", longFrame]);
+    assert.match(details.querySelector(".thread-technical").textContent, /Reported state: 16953888.*OS thread: 24192/);
+    assert.equal(details.querySelector(".thread-technical").open, false, "raw flags stay in a closed native disclosure");
+    click(root, "Thread 5");
+    assert.equal(buttons[1].attributes["aria-expanded"], "true");
+    assert.match(document.getElementById("thread-inline-5").textContent, /Unavailable: no inline stack/);
+    assert.equal(first.attributes["aria-expanded"], "true", "more than one stack may be inspected");
+    details.listeners.keydown({key:"Escape",preventDefault(){},stopPropagation(){}});
+    assert.equal(first.attributes["aria-expanded"], "false");
+    assert.equal(first.focused, true);
+    assert.equal(buttons[1].attributes["aria-expanded"], "true");
+
+    const input=root.querySelector("input");
+    input.value="App.Wait"; input.listeners.input();
+    assert.equal(root.querySelectorAll(".thread-explorer-row").length, 1);
+    click(root, "Thread 2");
+    assert.equal(root.querySelector("script"), null);
+    input.value=""; input.listeners.input();
+    assert.equal(root.querySelectorAll(".thread-explorer-row").length, 3);
+    const restored=root.querySelectorAll(".thread-disclosure").find(x=>x.dataset.threadId==="5");
+    assert.equal(restored.attributes["aria-expanded"], "true", "filtering keeps expansion by stable thread ID");
+    updateThreadNavigation("wait-chains", {waitChains:{chains:[]}});
+    assert.equal(root.querySelectorAll(".thread-disclosure").find(x=>x.dataset.threadId==="5").attributes["aria-expanded"], "true");
+    updateThreadNavigation("snapshot", {threads:[]});
+    assert.match(root.textContent,/No threads were returned/);
+    assert.equal(root.querySelectorAll(".thread-disclosure").length,0);
 });
 
 test("single grouped-stacks tab links representative threads and returns without rebuilding groups", () => {
@@ -1741,20 +1798,23 @@ test("single grouped-stacks tab links representative threads and returns without
     const explorer = document.getElementById("threadExplorer");
     assert.equal(explorer.hidden, false);
     assert.equal(groups.hidden, true);
-    assert.match(explorer.querySelector(".evidence-selection").textContent, /App.Work/);
+    assert.match(document.getElementById("thread-inline-1").textContent, /App.Work/);
+    const sourceLink = groups.querySelectorAll("button").find(button => button.textContent === "Thread 1");
+    assert.equal(document.getElementById("thread-inline-1").parentElement.parentElement.hidden, false);
     click(explorer, "Back to grouped stacks");
     assert.equal(groups.hidden, false);
     assert.equal(input.value, "Thread 1");
     assert.equal(disclosure.open, true);
+    assert.equal(sourceLink.focused, true, "return restores focus to the originating grouped thread link");
     input.value = ""; input.listeners.input();
     click(groups, "Thread 99");
-    assert.match(explorer.querySelector(".evidence-selection").textContent, /not included in the returned inline thread list/);
+    assert.match(document.getElementById("thread-inline-99").textContent, /not included in the returned inline thread list/);
     click(explorer, "Back to grouped stacks");
     assert.equal(groups.hidden, false);
 });
 
 test("thread explorer connects groups, full inline stacks and wait-chain owners, including omitted participants", () => {
-    const { makeContainer, updateThreadNavigation } = loadRenderer();
+    const { makeContainer, document, updateThreadNavigation } = loadRenderer();
     const root = makeContainer("captureThreadResult");
     updateThreadNavigation("snapshot", { threads: [
         { managedThreadId: 1, state: "Wait", frames: ["App.Entry", "<script>App.Block</script>"] },
@@ -1771,14 +1831,16 @@ test("thread explorer connects groups, full inline stacks and wait-chain owners,
         ],
     }] } });
     click(root, "Thread 1");
-    const details = root.querySelector(".evidence-selection");
+    let details = document.getElementById("thread-inline-1");
     assert.match(details.textContent, /App.Entry/);
     assert.match(details.textContent, /<script>App.Block<\/script>/);
     assert.equal(details.querySelector("script"), null);
     assert.match(details.textContent, /confidence: medium/);
     click(details, "Thread 2");
+    details = document.getElementById("thread-inline-2");
     assert.match(details.textContent, /App.Owner/);
     click(details, "Thread 99");
+    details = document.getElementById("thread-inline-99");
     assert.match(details.textContent, /not included in the returned inline thread list/);
     const search = root.querySelector("input");
     search.value = "App.Owner";
@@ -1809,8 +1871,9 @@ test("direct wait-chain thread links synchronize Workspace navigation and return
     assert.equal(selectedView, "thread-explorer");
     assert.equal(workspaceView.value, "thread-explorer");
     const explorer = document.getElementById("threadExplorer");
-    assert.match(explorer.querySelector(".evidence-selection").textContent, /App.Owner/);
-    click(explorer.querySelector(".evidence-selection"), "Back to wait chains");
+    assert.match(document.getElementById("thread-inline-2").textContent, /App.Owner/);
+    assert.equal(document.getElementById("thread-inline-2").parentElement.parentElement.hidden, false);
+    click(document.getElementById("thread-inline-2"), "Back to wait chains");
     assert.equal(selectedView, "wait-chains");
     assert.equal(workspaceView.value, "wait-chains");
 });
@@ -2234,7 +2297,7 @@ test("heap view switching retains table filters and selection, surfaces hidden f
                 threadCount: 4, sampleThreads: [{ managedThreadId: 1 }], canonicalFrames: [{ displayName: "App.Wait" }],
             }] }, false);
             assert.equal(document.getElementById("threadMode-threads").attributes["aria-selected"], "true");
-            assert.match(explorer.querySelector(".evidence-selection").textContent, /Managed thread 1/);
+            assert.equal(document.getElementById("thread-inline-1").parentElement.parentElement.hidden, false);
             assert.equal(explorer.hidden, false);
             assert.equal(document.getElementById("threadQueryViews-unique-stacks").hidden, true);
             assert.match(document.getElementById("threadQueryViews-unique-stacks").textContent, /4 thread/);
