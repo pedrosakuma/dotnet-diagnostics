@@ -2,7 +2,7 @@
   "name": "dotnet-diagnostics",
   "displayName": ".NET Diagnostics",
   "description": "Live .NET runtime counters, GC pauses and EventPipe events, CPU, heap and thread snapshots, and dump analysis for running .NET processes, powered by dotnet-diagnostics-cli.",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "publisher": "pedrosakuma",
   "license": "MIT",
   "icon": "media/icon.png",

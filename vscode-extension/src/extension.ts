@@ -4220,6 +4220,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     }
     function selectThreadSnapshotView(view) {
       threadSnapshotView = view;
+      if (selectedWorkspaceEvidence !== 'thread-snapshot') return;
       workspaceView.value = view;
       const queryViews = document.getElementById('threadQueryViews');
       const staticsForm = document.querySelector('#resultThreads .statics-form');
@@ -5673,7 +5674,8 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           setWorkspaceStatus('thread-snapshot',
             'The previous thread snapshot handle was invalidated when recapture began; any remaining summary is display-only.');
           if (selectedWorkspaceEvidence === 'thread-snapshot') selectThreadSnapshotView('snapshot');
-        } else if (message.state === 'error') {
+        }
+        if (message.state === 'error') {
           if (message.retainedEvidenceInvalidated === true || !threadSnapshotEvidenceId) {
             for (const state of Object.values(threadQueryStates)) {
               if (state.state === 'pending' || state.state === 'not-requested') state.state = 'unavailable';
@@ -5692,7 +5694,8 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         if (message.state === 'running') {
           document.getElementById('threadQueryViews').innerHTML = '';
           document.getElementById('threadExplorer')?.remove();
-          workspaceThreadViewStatus.textContent = 'Snapshot recapture invalidated prior query views; waiting for the new snapshot.';
+          if (selectedWorkspaceEvidence === 'thread-snapshot')
+            workspaceThreadViewStatus.textContent = 'Snapshot recapture invalidated prior query views; waiting for the new snapshot.';
         }
       } else if (message.type === 'captureStatus') {
         captureStatusElement.textContent = message.message || message.state || '';

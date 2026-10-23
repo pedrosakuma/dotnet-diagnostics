@@ -5,6 +5,13 @@ versioned independently from the CLI and the .NET packages.
 
 ## Unreleased
 
+## 0.5.0 - 2026-10-23
+
+The full existing feature set uses CLI **0.31.0 or later**; **Requests + completed
+Activities** additionally requires the advertised `requestActivities` v1 capability,
+available in CLI **0.32.1**. Base protocol-v2 workflows still support CLI 0.29.0.
+The extension does not install or update the CLI automatically.
+
 - Add an explicit **Requests + completed Activities** reproduction in Requests & networking,
   using only the CLI's advertised `requestActivities` v1 capability (introduced with CLI 0.32.1; CLI 0.31.0 and the unpublished 0.32.0 tag do not provide it as a release).
   Keep simple request captures unchanged. Exact ActivitySource names, a bounded window and an
@@ -19,7 +26,37 @@ versioned independently from the CLI and the .NET packages.
   loss and omissions; durations are not causality, exclusive delay or a critical path.
   Use the shared replaceable generic result and only one loaded selected-request response.
   Replacement, expiry and disconnect disable CLI reads; retained displays are labelled stale.
-  No MCP dependency, open-operation tracking, persistence, export or version bump.
+  No MCP dependency, open-operation tracking, persistence or joint-evidence export.
+- Prioritize captured data across CPU, Memory & GC, Threads & waits, Exceptions,
+  Requests & networking, and Monitoring. Keep stable explanations in disclosures or
+  below the evidence while retaining active quality warnings and boundedness notes.
+- Improve CPU profile exploration and keyboard focus restoration. Distinguish retained
+  profiles from new captures and preserve the existing bounded drilldown/cache ownership.
+- Replace per-thread action lists with an aligned Thread / State / Top frame table and
+  inline stack expansion. Preserve exact thread identities, filters, direct links and
+  return focus without additional diagnostic reads. Numeric runtime flags remain explicitly
+  not decoded; raw values are available in technical details.
+- Clarify exception capture modes, retained occurrences, filters and focus. Revalidate the
+  selected target throughout setup and discard stale responses without replacing current evidence.
+- Resolve pending thread-query views after capture failure and preserve another domain's
+  View selection when thread capture or follow-up work finishes in the background.
+- Make the selected process and capture entry points easier to discover. Preserve separate
+  Monitoring stream ownership and distinguish counter sessions and live-time boundaries.
+- Add sortable Live Events headers across all retained, filtered rows before pagination.
+  Show discreet Previous / Next controls only for multiple pages. Sorting pauses following;
+  Follow latest restores descending source time and the first page.
+- Remove redundant Networking narrative from the primary data view. Retain the raw summary in
+  closed capture details, distinguish known informational acquisition facts from active warnings,
+  and keep unknown loss, partial completion and parse failures visible.
+- Align offline dump buttons with the live theme and remove the redundant Explore heap details
+  action. Narrow heap panels expose types and captured breakdowns in one flow; type navigation,
+  local sorting and keyboard return focus remain available.
+
+Known limits: a type selection does not enumerate its object instances. Address-based object
+and root inspection remains reachable from captured address links, not from a complete
+type-to-instance browser; follow-up work is tracked in [#1255](https://github.com/pedrosakuma/dotnet-diagnostics/issues/1255).
+An extremely narrow dump panel can still require horizontal scrolling. These changes do not add
+dump analysis capabilities, decode numeric thread flags, or establish capture completeness.
 
 ## 0.4.0 - 2026-10-21
 

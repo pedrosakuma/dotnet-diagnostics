@@ -349,6 +349,42 @@ test("live panel exposes the compact evidence workspace and keeps other result r
     assert.match(script, /renderCpuQuery\(message\.view, message\.result, false\)/);
 });
 
+test("terminal thread capture status resolves pending queries without overwriting another workspace", () => {
+    const script = extractInlineScript(renderHtml(target, "nonce", 120));
+    const marker = "} else if (message.type === 'captureStatus' && message.kind === 'thread-snapshot') {";
+    const start = script.indexOf(marker) + marker.length;
+    const handler = script.slice(start, script.indexOf("      } else if (message.type === 'captureStatus')", start));
+    const selectStart = script.indexOf("    function selectThreadSnapshotView(view) {");
+    const select = script.slice(selectStart, script.indexOf("    workspaceDomain.addEventListener", selectStart));
+    const create = new Function("selectedWorkspaceEvidence", `
+        const workspaceView = {value:'call-tree'};
+        const workspaceThreadViewStatus = {textContent:'unchanged'};
+        const captureThreadStatusElement = {}, captureThreadSnapshotButton = {};
+        let pendingThreadSnapshotEvidenceId='thread-current', threadSnapshotEvidenceId='thread-prior';
+        let threadSnapshotQueryAvailable=true, threadSnapshotView='thread-explorer';
+        const threadQueryStates=Object.fromEntries(['deadlocks','unique-stacks','wait-chains','threadpool']
+            .map(view=>[view,{state:'pending',count:0}]));
+        const setThreadStaticsBusy=()=>{}, setWorkspaceStatus=()=>{}, refreshThreadQueryPresentation=()=>{};
+        const document={getElementById:()=>({innerHTML:'',remove(){}})};
+        ${select}
+        return {receive(message){${handler}},workspaceView,workspaceThreadViewStatus,threadQueryStates,
+            selectedView:()=>threadSnapshotView,selectThreadSnapshotView};
+    `);
+    for (const domain of ["cpu", "allocation"]) {
+        for (const state of ["error", "done"]) {
+            const api = create(domain);
+            api.receive({evidenceId:"thread-current",state,retainedEvidenceInvalidated:state==="error"});
+            assert.ok(Object.values(api.threadQueryStates).every(item=>item.state==="unavailable"));
+            assert.equal(api.workspaceView.value,"call-tree");
+            assert.equal(api.workspaceThreadViewStatus.textContent,"unchanged");
+        }
+        const api = create(domain);
+        api.selectThreadSnapshotView("thread-explorer");
+        assert.equal(api.selectedView(),"thread-explorer","retained thread navigation state still updates");
+        assert.equal(api.workspaceView.value,"call-tree");
+    }
+});
+
 test("domain return restores CPU view and filter without a request; new captures discard that selection and cache", () => {
     const script = extractInlineScript(renderHtml(target, "nonce", 120));
     const navigation = script.slice(script.indexOf("let selectedWorkspaceEvidence ="),

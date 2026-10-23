@@ -393,7 +393,7 @@ that table's filter and sort without another request.
 explicit reproduction action under **Requests & networking**, also present in that Workspace
 domain and the Command Palette. It does not alter the standalone in-flight request capture.
 The CLI must actually advertise `hello.requestActivities` version 1, its two query views and
-bounded limits. The source capability is unreleased; the general CLI 0.31.0 feature floor
+bounded limits. The capability is available in CLI 0.32.1; the general CLI 0.31.0 feature floor
 does not imply support. CLI 0.32.1 includes this capability, but the extension checks the actual
 hello contract. Unsupported/missing capabilities produce actionable guidance before configuration
 and without dispatching a capture. Communication remains extension → CLI → Core only.
@@ -751,6 +751,40 @@ Visual Studio Marketplace. A matching tag push therefore publishes; do not creat
 part of release preparation. Configure the repository Actions secret `VSCE_PAT` with a publisher
 token that has Marketplace management/publish access. The normal CI workflow continues to test
 extension changes on pushes to `main` and pull requests; it does not publish from those builds.
+
+### 0.5.0 preparation evidence and limits
+
+The latest installed layout-smoke source is `f1a2105f3f522da2ec5e90896c2584ead57b3ef5`.
+Release preparation subsequently corrected terminal thread-query failure state and
+cross-domain View ownership, with emitted-webview regression coverage.
+The extension suite passed 317 tests with three skips (320 total), and independent
+integration and focused follow-up reviews were completed. The Windows smoke used an
+isolated, instrumented installed VS Code 1.143 host and the official CLI 0.32.1 release,
+with release checksums and attestation verified. A separate development-loaded command
+bridge invoked the installed candidate; this is not an uninstrumented-host or
+assistive-technology certification.
+
+Installed candidates returned populated CPU, allocation, exception, counter/GC,
+thread, request, Kestrel, database, Networking and Live Events evidence. A separately
+confirmed joint reproduction returned two requests and four completed Activities,
+with two associated rows in a retained request query; an earlier empty reproduction
+remains inconclusive. The frozen batch used `645ab937`; Networking and Live Events
+fixes were rechecked on `6ed1327`, and subsequent dump layout changes were checked on
+`a16b1aa` and `f1a2105`. The whole matrix was not repeated at each revision or against
+the versioned release package. Package identity changes require separate integrity
+verification; these source smokes are not an exact release-VSIX capture certification.
+
+Live Events initially exposed 158 rows and drained to 159 before stopping; source
+loss availability remained unknown, not an inferred one-event loss. Exception
+collection observed 640 occurrences and retained 100: the difference is a retention
+omission, not necessarily EventPipe loss. An explicitly approved owned sample dump
+was generated locally and reopened read-only, without optional enrichments, for
+populated heap/thread analysis and local root-category navigation. No sensitive dump
+or local smoke profile is part of the release. Optional object values, complete
+type-to-instance navigation, off-CPU/elevated paths, every interaction permutation,
+and assistive-technology behavior were not certified. An extremely narrow dump
+viewport retained horizontal overflow. Bounded synthetic normal/narrow renderer
+checks supplement, but do not replace, installed-host evidence.
 
 ### 0.4.0 preparation evidence and limits
 
