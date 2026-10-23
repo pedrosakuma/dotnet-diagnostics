@@ -721,21 +721,69 @@ class CounterPanelController implements vscode.Disposable {
         if (this.disposed) return;
         const target = this.selectedTarget ?? await this.ensureTargetAndPanel();
         if (!target || this.disposed) return;
+        const evidenceId = randomBytes(12).toString("hex");
+        const status = (state: string, message: string): void =>
+            this.postMessage({ type: "jointStatus", evidenceId, state, message });
+        status("checking", "Checking CLI capability before requesting ActivitySource names…");
+        let preflight: { session: StreamChild; owns: boolean };
+        try { preflight = await this.acquireChild(); }
+        catch (error) {
+            const message = errorMessage(error);
+            status("error", message);
+            this.output.appendLine(`Request/Activity CLI preflight: ${message}`);
+            return;
+        }
+        const closeOwnedPreflight = async (): Promise<void> => {
+            if (preflight.owns) await this.closeChild(preflight.session);
+        };
+        if (this.selectedTarget !== target) {
+            await closeOwnedPreflight();
+            status("error", "The selected target changed during CLI preflight. Start a new reproduction for the current target.");
+            return;
+        }
+        if (!preflight.session.requestActivities) {
+            const message = "This CLI does not advertise requestActivities v1. Use a CLI build that provides the capability; version 0.31.0 alone is not sufficient.";
+            await closeOwnedPreflight();
+            status("error", message);
+            this.output.appendLine(`Request/Activity CLI preflight: ${message}`);
+            return;
+        }
+        if (preflight.session.sessionId || preflight.session.startInFlight) {
+            await closeOwnedPreflight();
+            status("error", "Stop this CLI's live counters before this reproduction capture.");
+            return;
+        }
+        if (preflight.session.pendingCaptures.size || preflight.session.pendingQueries.size
+            || preflight.session.pendingJointQueries?.size) {
+            await closeOwnedPreflight();
+            status("error", "Wait for the current CLI capture or query to finish.");
+            return;
+        }
+        await closeOwnedPreflight();
+        status("configuring", "CLI capability is available. Configure the exact ActivitySource names and reproduction window.");
         const sourceText = await vscode.window.showInputBox({
             title: "Requests + completed Activities: exact source names",
-            prompt: "Enter 1–20 exact ActivitySource names, comma-separated. No wildcards or discovery. Sources must already emit Activities.",
+            prompt: "Enter 1–20 exact ActivitySource names from the app's configuration or documentation. No wildcards or discovery; sources must already emit Activities.",
             validateInput: value => parseJointSources(value) ? undefined : "Use exact names: 1–200 ASCII letters, digits, '.', '_' or '-'.",
         });
-        if (sourceText === undefined) return;
+        if (sourceText === undefined) { status("idle", "Reproduction setup cancelled; previous evidence is unchanged."); return; }
         const sources = parseJointSources(sourceText);
-        if (!sources) { void vscode.window.showErrorMessage("Invalid exact ActivitySource names; previous evidence is unchanged."); return; }
+        if (!sources) {
+            const message = "Invalid exact ActivitySource names; previous evidence is unchanged.";
+            status("error", message);
+            void vscode.window.showErrorMessage(message);
+            return;
+        }
         const durationText = await vscode.window.showInputBox({
             title: "Reproduction window (seconds)", value: "10",
             validateInput: value => validateInteger(value, 1, 300, "Duration"),
         });
-        if (durationText === undefined) return;
+        if (durationText === undefined) { status("idle", "Reproduction setup cancelled; previous evidence is unchanged."); return; }
         if (validateInteger(durationText, 1, 300, "Duration")) {
-            void vscode.window.showErrorMessage("Duration must be an integer from 1 to 300; previous evidence is unchanged."); return;
+            const message = "Duration must be an integer from 1 to 300; previous evidence is unchanged.";
+            status("error", message);
+            void vscode.window.showErrorMessage(message);
+            return;
         }
         const durationSeconds = Number(durationText);
         const proceed = await vscode.window.showWarningMessage(
@@ -745,14 +793,16 @@ class CounterPanelController implements vscode.Disposable {
             + "This replaces the shared result and cannot recover historical operations. Stop this CLI's live counters first. "
             + "Coexistence with other DiagnosticSource sessions is not established.",
             { modal: true }, "Capture reproduction", "Cancel");
-        if (proceed !== "Capture reproduction" || this.disposed) return;
-        if (this.selectedTarget !== target) {
-            void vscode.window.showErrorMessage("The selected target changed during setup. Start a new reproduction for the current target.");
+        if (proceed !== "Capture reproduction" || this.disposed) {
+            status("idle", "Reproduction setup cancelled; previous evidence is unchanged.");
             return;
         }
-        const evidenceId = randomBytes(12).toString("hex");
-        const status = (state: string, message: string): void =>
-            this.postMessage({ type: "jointStatus", evidenceId, state, message });
+        if (this.selectedTarget !== target) {
+            const message = "The selected target changed during setup. Start a new reproduction for the current target.";
+            status("error", message);
+            void vscode.window.showErrorMessage(message);
+            return;
+        }
         status("starting", "Checking CLI capability; prior evidence is preserved until dispatch is acknowledged.");
         let session: StreamChild;
         let owns: boolean;
@@ -761,7 +811,7 @@ class CounterPanelController implements vscode.Disposable {
         try {
             if (this.selectedTarget !== target) throw new Error("The selected target changed during CLI setup. Start a new reproduction.");
             if (!session.requestActivities) throw new Error(
-                "This CLI does not advertise requestActivities v1. Build/configure a CLI with that capability; version 0.31.0 alone is not sufficient.");
+                "This CLI does not advertise requestActivities v1. Use a CLI build that provides the capability; version 0.31.0 alone is not sufficient.");
             if (session.sessionId || session.startInFlight)
                 throw new Error("Stop this CLI's live counters before this reproduction capture.");
             if (session.pendingCaptures.size || session.pendingQueries.size || session.pendingJointQueries?.size)
@@ -802,15 +852,20 @@ class CounterPanelController implements vscode.Disposable {
         }
     }
 
-    private queryRequestActivities(evidenceId: string, requestRowId: string): Promise<void> {
-        this.jointQueryTask ??= this.queryRequestActivitiesCore(evidenceId, requestRowId)
+    private queryRequestActivities(evidenceId: string, requestRowId: string, queryToken?: string): Promise<void> {
+        if (this.jointQueryTask) {
+            this.postMessage({ type: "jointQueryError", evidenceId, requestRowId, queryToken,
+                message: "Another request lookup is still in progress. Retry this exact row when it finishes." });
+            return Promise.resolve();
+        }
+        this.jointQueryTask = this.queryRequestActivitiesCore(evidenceId, requestRowId, queryToken)
             .finally(() => { this.jointQueryTask = undefined; });
         return this.jointQueryTask;
     }
 
-    private async queryRequestActivitiesCore(evidenceId: string, requestRowId: string): Promise<void> {
+    private async queryRequestActivitiesCore(evidenceId: string, requestRowId: string, queryToken?: string): Promise<void> {
         const saved = this.joint;
-        const fail = (message: string): void => this.postMessage({ type: "jointQueryError", evidenceId, requestRowId, message });
+        const fail = (message: string): void => this.postMessage({ type: "jointQueryError", evidenceId, requestRowId, queryToken, message });
         if (!saved || saved.evidenceId !== evidenceId) { fail("Joint evidence unavailable: replaced, expired or disconnected."); return; }
         const { session, result } = saved;
         if (Date.now() >= Date.parse(result.handleExpiresAt)) {
@@ -829,7 +884,7 @@ class CounterPanelController implements vscode.Disposable {
         const pending = deferred<JointQuery<RelatedActivity>>();
         session.pendingJointQueries ??= new Map();
         session.pendingJointQueries.set(requestId, pending);
-        this.postMessage({ type: "jointQueryStarted", evidenceId, requestRowId });
+        this.postMessage({ type: "jointQueryStarted", evidenceId, requestRowId, queryToken });
         try {
             this.writeFrame(session, { type: "query", requestId, handle: result.handle,
                 captureId: result.captureId, view: "related-activities", requestRowId, topN: 100 });
@@ -840,7 +895,7 @@ class CounterPanelController implements vscode.Disposable {
                 "retainedRequests", "retainedActivities", "quality"].some(key =>
                 JSON.stringify(response[key as keyof typeof response]) !== JSON.stringify(base[key as keyof typeof base])))
                 throw new Error("The CLI related evidence does not match this capture's process, window or quality.");
-            this.postMessage({ type: "jointRelated", evidenceId, requestRowId, result: response });
+            this.postMessage({ type: "jointRelated", evidenceId, requestRowId, queryToken, result: response });
         } catch (error) {
             if (this.joint !== saved) return;
             if (isRecord(error) && error.code === "handle_unavailable")
@@ -1601,8 +1656,9 @@ class CounterPanelController implements vscode.Disposable {
             } else if (message.type === "captureRequestActivities") {
                 void this.captureRequestActivities();
             } else if (message.type === "queryRequestActivities"
-                && typeof message.evidenceId === "string" && typeof message.requestRowId === "string") {
-                void this.queryRequestActivities(message.evidenceId, message.requestRowId);
+                && typeof message.evidenceId === "string" && typeof message.requestRowId === "string"
+                && typeof message.queryToken === "string" && message.queryToken.length <= 128) {
+                void this.queryRequestActivities(message.evidenceId, message.requestRowId, message.queryToken);
             } else if (message.type === "cancelRequestActivities" && typeof message.evidenceId === "string") {
                 const session = this.activeChild;
                 if (session?.pendingCaptures.get(message.evidenceId)?.kind === "request-activities")
@@ -1863,7 +1919,7 @@ class CounterPanelController implements vscode.Disposable {
             session.pendingJointQueries?.clear();
             if (this.heapSnapshot?.session === session) this.liveReadConsent.clear();
             session.lines.close();
-            if (!session.terminalReceived && !session.expectedShutdown) {
+            if (!session.terminalReceived && !session.expectedShutdown && !session.closing) {
                 const details = session.stderrTail.trim();
                 const reason = describeStreamExit(session.protocolReady, code, signal, details);
                 this.failPending(session, new Error(reason));
@@ -2426,6 +2482,7 @@ class CounterPanelController implements vscode.Disposable {
         this.postMessage({ type: "profileAvailability" });
         if (session.process.exitCode === null && session.process.signalCode === null) {
             session.closing = true;
+            session.expectedShutdown = true;
             try {
                 session.process.stdin.end();
             } catch (error) {
@@ -3355,6 +3412,30 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     #workspaceCanvas > section[hidden], #workspaceGcCapture[hidden] { display:none; }
     #genericCaptureViews p, #genericCaptureViews li { overflow-wrap:anywhere; }
     #genericCaptureViews input[type="radio"]:focus-visible { outline:2px solid var(--vscode-focusBorder); outline-offset:2px; }
+    .joint-request-toggle { flex:0 0 2rem; min-width:2rem; min-height:2rem; margin:-.25rem .25rem -.25rem -.45rem; padding:.15rem; color:var(--vscode-foreground); background:transparent; font-size:1.2rem; line-height:1; }
+    .joint-request-toggle:hover { background:var(--vscode-toolbar-hoverBackground); }
+    .joint-request-toggle:focus-visible { outline:2px solid var(--vscode-focusBorder); outline-offset:1px; }
+    .joint-request-toggle[aria-expanded="true"] span { display:inline-block; transform:rotate(90deg); }
+    .joint-request-cell { display:flex; align-items:flex-start; min-width:0; }
+    .joint-request-identity { min-width:0; overflow-wrap:anywhere; word-break:normal; }
+    .query-view-table.joint-request-table { min-width:0; width:100%; table-layout:fixed; }
+    .joint-request-table td:last-child { white-space:nowrap; }
+    .joint-request-table .joint-request-details-row > td { padding:.5rem 0 .8rem; white-space:normal; min-width:0; }
+    .joint-request-table .joint-operation-column { width:78%; }
+    .joint-request-table .joint-activity-details > td { width:auto; white-space:normal; }
+    .joint-request-table .joint-activity-name { padding-left:1.5rem; white-space:normal; overflow-wrap:anywhere; }
+    .joint-activity-name .joint-request-toggle { margin-left:0; vertical-align:middle; }
+    .joint-activity-details p { white-space:normal; overflow-wrap:anywhere; margin:.3rem .5rem .3rem 3rem; }
+    .joint-inflight-marker, .joint-link-marker { display:inline-block; font-size:.85em; margin-left:.5rem; color:var(--vscode-descriptionForeground); }
+    .joint-link-marker { color:var(--vscode-editorWarning-foreground); }
+    .joint-activity-details[hidden] { display:none; }
+    .joint-request-details-row section { min-width:0; }
+    .joint-request-details-row h4, .joint-activity-operation { overflow-wrap:break-word; word-break:normal; }
+    .joint-request-details-row p, .joint-technical-details p, .joint-activity-identity p { overflow-wrap:anywhere; }
+    .joint-quality-alert { color:var(--vscode-editorWarning-foreground); margin:.4rem 0; padding-left:1.4rem; }
+    .joint-stale { color:var(--vscode-descriptionForeground); }
+    .joint-technical-details { margin-top:.55rem; }
+    .joint-technical-details summary, .joint-activity-identity summary { cursor:pointer; }
     #jointReproduction[hidden], #genericCaptureViews section[hidden] { display:none; }
     #workspaceLoadView[hidden] { display:none; }
     #resultThreads.workspace-thread-snapshot .evidence-view-switcher, #resultThreads .statics-form[hidden] { display:none; }
@@ -3373,10 +3454,6 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     .query-view-section { margin-top:.75rem; }
     .query-view-table-wrap { max-width:100%; overflow-x:auto; }
     .query-view-table { min-width:32rem; }
-    .query-view-table.joint-activity-table { min-width:96rem; table-layout:fixed; }
-    .joint-activity-table th:nth-child(2) { width:14rem; }
-    .joint-activity-table th:nth-child(4) { width:18rem; }
-    .query-view-table.joint-request-table { min-width:64rem; }
     .query-view-table.cpu-query-table { min-width:48rem; table-layout:fixed; }
     .diagnostic-capture-notes li { overflow-wrap:anywhere; }
     .diagnostic-request-filter { display:flex; align-items:center; flex-wrap:wrap; gap:.4rem; margin:.5rem 0; }
@@ -3475,9 +3552,8 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     </div>
     <div id="workspaceCaptureStatus" role="status"></div>
     <div id="jointReproduction" hidden>
-      <button id="captureRequestActivities" type="button">New request + completed Activities reproduction…</button>
+      <button id="captureRequestActivities" type="button" aria-label="Capture requests and completed Activities">Capture</button>
       <button id="cancelRequestActivities" type="button" disabled>Cancel reproduction</button>
-      <p>Explicit EventPipe capture with exact ActivitySource names. Cannot recover operations from an earlier request capture.</p>
       <div id="jointCaptureStatus" role="status"></div>
     </div>
     <div id="workspaceThreadViewStatus" role="status"></div>
@@ -3816,6 +3892,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       const statusKind = kind === 'gc-activities' ? 'gc' : kind;
       workspaceEvidenceStatus.textContent = workspaceEvidenceStatusByKind.get(statusKind)
         || 'No completed evidence is displayed for this kind.';
+      workspaceEvidenceStatus.hidden = kind === 'request-activities' && genericCaptureKind === kind;
       workspaceThreadViewStatus.textContent = '';
       if (usesWorkspaceForGenericCapture(kind)) {
         if (genericCaptureKind === kind) workspaceCanvas.appendChild(genericCaptureViews);
@@ -5019,12 +5096,16 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
             : 'Capture failed; no current exception evidence is available.');
         }
       } else if (message.type === 'jointStatus') {
-        if (message.state === 'starting') jointPendingId = message.evidenceId;
+        if (message.state === 'checking') jointPendingId = message.evidenceId;
         if (jointPendingId && message.evidenceId !== jointPendingId) return;
-        jointCaptureStatus.textContent = message.message;
-        const busy = message.state === 'starting' || message.state === 'running';
+        jointCaptureStatus.textContent = message.state === 'done' ? '' : message.message;
+        const busy = message.state === 'checking' || message.state === 'configuring'
+          || message.state === 'starting' || message.state === 'running';
         document.getElementById('captureRequestActivities').disabled = busy;
-        document.getElementById('cancelRequestActivities').disabled = true;
+        document.getElementById('cancelRequestActivities').disabled = message.state !== 'running';
+        if (message.state === 'idle' || message.state === 'error' || message.state === 'done') {
+          jointPendingId = undefined;
+        }
       } else if (message.type === 'jointDispatched') {
         if (message.evidenceId !== jointPendingId) return;
         jointView.reset();
@@ -5032,22 +5113,24 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         activateCaptureTab('request-activities');
         jointCaptureStatus.textContent = message.message;
         document.getElementById('cancelRequestActivities').disabled = false;
-        setWorkspaceStatus('request-activities', message.message);
       } else if (message.type === 'jointCapture') {
         if (message.evidenceId !== jointPendingId) return;
         setGenericCaptureOwner('request-activities', message.evidenceId);
         activateCaptureTab('request-activities');
+        jointCaptureStatus.textContent = '';
         jointView.capture(message.evidenceId, message.result);
       } else if (message.type === 'jointUnavailable') {
         if (genericCaptureKind !== 'request-activities' || genericCaptureViews.dataset.evidenceId !== message.evidenceId) return;
         jointView.unavailable(message.evidenceId, message.message);
-        setWorkspaceStatus('request-activities', message.message);
       } else if (message.type === 'jointQueryStarted') {
-        jointView.queryStarted(message.evidenceId, message.requestRowId);
+        if (typeof message.queryToken !== 'string') return;
+        jointView.queryStarted(message.evidenceId, message.requestRowId, message.queryToken);
       } else if (message.type === 'jointRelated') {
-        jointView.receive(message.evidenceId, message.requestRowId, message.result);
+        if (typeof message.queryToken !== 'string') return;
+        jointView.receive(message.evidenceId, message.requestRowId, message.result, message.queryToken);
       } else if (message.type === 'jointQueryError') {
-        jointView.error(message.evidenceId, message.requestRowId, message.message);
+        if (typeof message.queryToken !== 'string') return;
+        jointView.error(message.evidenceId, message.requestRowId, message.message, message.queryToken);
       } else if (message.type === 'captureStatus' && message.kind === 'diagnostics') {
         const captureKind = String(message.captureKind || '');
         if (!usesWorkspaceForGenericCapture(captureKind)) {

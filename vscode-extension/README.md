@@ -66,24 +66,35 @@ result surfaces.
 **Analyze Dump File** and **Saved Captures** remain separate offline entry points.
 
 **Requests + completed Activities** is a separate explicit reproduction action in Requests &
-networking and the Command Palette. It requires a CLI built with the additive
-`hello.requestActivities` v1 capability; the new CLI capability is unreleased and **0.31.0 alone
-does not guarantee it**. Missing capability produces upgrade/build guidance, never a fallback
-combination of independent captures. Enter exact ActivitySource names (no wildcards or automatic
-discovery), choose a 1–300 second window and review the EventPipe scope/privacy notice.
+networking and the Command Palette. It requires the additive `hello.requestActivities` v1
+capability. CLI 0.32.1 includes it, but the extension still checks the actual hello contract rather
+than relying on the version string; missing capability is reported before configuration. No
+fallback combination of independent captures is attempted. Enter exact ActivitySource names from
+the app's configuration or documentation (no wildcards or automatic discovery), choose a
+1–300 second window and review the EventPipe scope/privacy notice.
 Stop the owning CLI's live counters first; independent Monitoring streams retain their lifecycle.
 Coexistence with other DiagnosticSource sessions is not established.
 Dispatch acknowledges the request, not EventPipe readiness.
 Start capture before reproducing; it cannot recover operations from an earlier request.
 
 The request table shows only first-accepted requests still pending at window close.
+The **Capture** action keeps scope in the Evidence selector. A compact result summary shows
+retained counts and the requested duration; retention, coverage and duration-interpretation
+guidance follows the data. Active partial/loss/unavailable warnings remain next to the results.
 Its All / Long-running filter uses a clearly labelled **local ≥ 1,000 ms threshold**, not the
-standalone collector's classification. Select a request with the keyboard-accessible radio column,
-then explicitly **Load related completed Activities**. This queries the exact capture and row on
-the same CLI connection. Structural direct-child/descendant/shared-trace basis is separate from
-verified/withheld status; finished durations are not a critical path or proof of exclusive delay.
-Only one selected-request response is retained: Back and reopening that response are local;
-loading a different request replaces it. The joint result replaces the shared generic slot.
+standalone collector's classification. Expand a request row with the keyboard-operable chevron;
+the first expansion queries completed Activities already retained by the exact CLI capture, not
+the process, and starts no new capture. Collapse/reopen of the same row is local. A different row
+replaces the sole cached response. The request's trace/span identifiers and start time remain
+accessible in its inline disclosure after Activities load. Structural direct-child/descendant/shared-trace basis is separate
+from verified/withheld status; finished durations are not a critical path or proof of exclusive delay.
+Associated Activities use compact operation/time rows aligned with the request's time column.
+Requests carry an **In flight** marker: their time is elapsed at window close, while Activity times
+are finished durations. Flat indentation groups associations, not a call tree. **Weak link** marks
+same-trace-only evidence; **Unverified** remains visible where verification is withheld.
+Expand an Activity locally for source, timing, identifiers, relationship basis and withheld reason;
+this performs no additional CLI query or collection.
+The joint result replaces the shared generic slot.
 CLI evidence expires after ten minutes, disconnect or another capture; loaded displays then say
 retained-only and further reads are disabled. Only completed Activity Stop records are supported,
 so empty results do not mean no open or uninstrumented work. No export, saving, telemetry lookup,

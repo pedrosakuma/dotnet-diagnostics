@@ -9,9 +9,14 @@ versioned independently from the CLI and the .NET packages.
   using only the CLI's advertised `requestActivities` v1 capability (introduced with CLI 0.32.1; CLI 0.31.0 and the unpublished 0.32.0 tag do not provide it as a release).
   Keep simple request captures unchanged. Exact ActivitySource names, a bounded window and an
   EventPipe privacy/cost notice precede collection; no automatic discovery or historical recovery.
-  Select an exact retained request, explicitly load related completed Activities, and return
-  locally. Show structural relationship separately from verification/withheld reasons, window,
-  source, loss and omissions; durations are not causality, exclusive delay or a critical path.
+  Check the CLI capability before configuration. Expand an exact retained request row to query
+  related completed Activities inline, with a compact summary and narrow-pane-friendly evidence.
+  Use a concise **Capture** action, clear completed progress messages, and place stable explanations
+  below the data while keeping active warnings visible. Preserve parent request identifiers after load.
+  Align completed Activity operation/time rows with request times, with local detail chevrons,
+  In flight request markers and explicit Weak link / Unverified association markers.
+  Show structural relationship separately from verification/withheld reasons, window, source,
+  loss and omissions; durations are not causality, exclusive delay or a critical path.
   Use the shared replaceable generic result and only one loaded selected-request response.
   Replacement, expiry and disconnect disable CLI reads; retained displays are labelled stale.
   No MCP dependency, open-operation tracking, persistence, export or version bump.

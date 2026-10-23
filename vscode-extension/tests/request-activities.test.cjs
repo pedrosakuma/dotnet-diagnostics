@@ -54,10 +54,11 @@ function fixture() {
     controller.postMessage = message => messages.push(message);
     controller.activeChild = session;
     controller.jointGeneration = 0;
-    vscode.window.showInputBox = async options => options.value ?? "MyApp";
+    const inputCalls = [];
+    vscode.window.showInputBox = async options => { inputCalls.push(options); return options.value ?? "MyApp"; };
     vscode.window.showWarningMessage = async () => "Capture reproduction";
     vscode.window.showErrorMessage = async () => undefined;
-    return { controller, session, frames, messages };
+    return { controller, session, frames, messages, inputCalls };
 }
 const tick = () => new Promise(resolve => setImmediate(resolve));
 function retained(f) {
@@ -65,6 +66,13 @@ function retained(f) {
     f.controller.joint = { session: f.session, evidenceId: "e1", result, timer: setTimeout(() => {}, 60_000).unref() };
     return result;
 }
+
+test("joint capture button uses a concise visible label with accessible scope", () => {
+    assert.match(source, /<button id="captureRequestActivities" type="button" aria-label="Capture requests and completed Activities">Capture<\/button>/);
+    assert.match(source, /jointCaptureStatus\.textContent = message\.state === 'done' \? '' : message\.message/);
+    assert.match(source, /workspaceEvidenceStatus\.hidden = kind === 'request-activities' && genericCaptureKind === kind/);
+    assert.match(source, /\.joint-request-table \.joint-request-details-row > td \{[^}]*white-space:normal; min-width:0;/);
+});
 
 test("joint capability requires actual compatible hello contract, not a CLI version", () => {
     assert.equal(joint.supportsRequestActivities(capability), true);
@@ -115,8 +123,21 @@ test("invalid configuration, cancelled notice and legacy CLI never dispatch or r
         await f.controller.captureRequestActivities();
         assert.equal(f.frames.length, 0, mode);
         assert.equal(f.controller.joint.result, old, mode);
+        if (mode === "legacy") assert.equal(f.inputCalls.length, 0, "capability is checked before configuration prompts");
         clearTimeout(f.controller.joint.timer);
     }
+});
+test("legacy CLI preflight closes its owned process before showing configuration prompts", async () => {
+    const f = fixture();
+    f.session.requestActivities = false;
+    let closed = 0;
+    f.controller.acquireChild = async () => ({ session: f.session, owns: true });
+    f.controller.closeChild = async session => { assert.equal(session, f.session); closed++; };
+    await f.controller.captureRequestActivities();
+    assert.equal(closed, 1);
+    assert.equal(f.inputCalls.length, 0);
+    assert.equal(f.frames.length, 0);
+    assert.match(f.messages.at(-1).message, /does not advertise requestActivities v1/);
 });
 test("dispatch ACK replaces joint owner; terminal displays without eager queries or MCP", async () => {
     const f = fixture(); retained(f);
@@ -223,7 +244,7 @@ test("oversized joint frame fails explicitly before parsing and closes its owner
 });
 test("explicit related query binds exact row, capture and handle; never method/path/trace", async () => {
     const f = fixture(); const c = retained(f);
-    const task = f.controller.queryRequestActivities("e1", "r2"); await tick();
+    const task = f.controller.queryRequestActivities("e1", "r2", "ui-token-1"); await tick();
     const frame = f.frames[0];
     assert.equal(frame.captureId, c.captureId);
     assert.equal(frame.handle, c.handle);
@@ -235,6 +256,24 @@ test("explicit related query binds exact row, capture and handle; never method/p
     await task;
     assert.equal(f.messages.at(-1).type, "jointRelated");
     assert.equal(f.messages.at(-1).requestRowId, "r2");
+    assert.equal(f.messages.at(-1).queryToken, "ui-token-1");
+    assert.ok(f.messages.some(message => message.type === "jointQueryStarted" && message.queryToken === "ui-token-1"));
+    f.controller.invalidateJoint("cleanup");
+});
+test("a second programmatic row lookup is rejected instead of aliasing the active query", async () => {
+    const f = fixture(); retained(f);
+    const first = f.controller.queryRequestActivities("e1", "r1", "ui-token-1");
+    await tick();
+    await f.controller.queryRequestActivities("e1", "r2", "ui-token-2");
+    assert.equal(f.frames.length, 1);
+    assert.ok(f.messages.some(message => message.type === "jointQueryError"
+        && message.requestRowId === "r2" && message.queryToken === "ui-token-2"));
+    f.controller.handleFrame(f.session, JSON.stringify({ type: "query", requestId: f.frames[0].requestId,
+        handle: f.controller.joint.result.handle, view: "related-activities", result: related() }));
+    await first;
+    assert.ok(f.messages.some(message => message.type === "jointRelated" && message.requestRowId === "r1"
+        && message.queryToken === "ui-token-1"));
+    assert.equal(f.messages.some(message => message.type === "jointRelated" && message.requestRowId === "r2"), false);
     f.controller.invalidateJoint("cleanup");
 });
 test("related query rejects mismatch, malformed data and unavailable selectors explicitly", async () => {
@@ -310,8 +349,10 @@ class Element {
     constructor(tagName) { this.tagName = tagName; this.children = []; this.attributes = {}; this.listeners = {}; }
     set textContent(value) { this._text = String(value); this.children = []; }
     get textContent() { return (this._text ?? "") + this.children.map(c => c.textContent).join(""); }
-    appendChild(child) { this.children.push(child); return child; }
-    replaceChildren(...children) { this.children = children; this._text = ""; }
+    appendChild(child) { child.parentElement = this; this.children.push(child); return child; }
+    insertBefore(child, before) { child.parentElement = this; this.children.splice(this.children.indexOf(before), 0, child); return child; }
+    remove() { if (this.parentElement) this.parentElement.children.splice(this.parentElement.children.indexOf(this), 1); }
+    replaceChildren(...children) { this.children = children; for (const child of children) child.parentElement = this; this._text = ""; }
     setAttribute(key, value) { this.attributes[key] = value; }
     addEventListener(key, fn) { this.listeners[key] = fn; }
     focus() { this.focused = true; }
@@ -332,51 +373,154 @@ function dom() {
         const button = container.querySelectorAll("button").find(b => b.textContent === text);
         assert.ok(button, text); assert.ok(!button.disabled, text); button.listeners.click(); return button;
     };
-    return { container, view, messages, click };
+    const disclosure = rowId => container.querySelectorAll("button").find(button =>
+        button.className === "joint-request-toggle" && button.attributes["aria-label"]?.includes(`request row ${rowId}`));
+    return { container, view, messages, click, disclosure };
 }
-test("actual renderer selects exact duplicate-path row inertly, loads explicitly, back/filter are local with one response", () => {
+test("joint summary is compact and stable explanations follow the data", () => {
+    const d = dom(); d.view.capture("e1", capture());
+    const section = d.container.querySelectorAll("section")[0];
+    assert.equal(section.children[0].textContent, "2 in-flight requests · 2 completed Activities · 10 s requested");
+    const tableIndex = section.children.findIndex(node => node.className === "query-view-table-wrap joint-request-table-wrap");
+    const thresholdIndex = section.children.findIndex(node => node.textContent.startsWith("Long-running is"));
+    assert.ok(tableIndex < thresholdIndex);
+    assert.equal(d.container.children[0].textContent, "", "no obsolete terminal success status");
+    assert.match(d.container.textContent, /not exclusive delay, causality or a critical path/);
+    assert.match(d.container.textContent, /Do not sum concurrent durations/);
+    d.disclosure("r1").listeners.click();
+    d.view.receive("e1", "r1", related(), d.messages.at(-1).queryToken);
+    const details = d.container.querySelectorAll("tr").find(node => node.className === "joint-request-details-row");
+    assert.match(details.textContent, /Request identifiers and timing/);
+    assert.match(details.textContent, new RegExp(`Trace ID: ${trace} · Span ID: ${span}`));
+    assert.match(details.textContent, new RegExp(`Started: ${now}`));
+    assert.equal(d.container.children[0].textContent, "", "no stacked query success status");
+});
+test("inline disclosure queries exact row once, reopens locally, and replaces its one-response cache", () => {
     const d = dom(); d.view.capture("e1", capture());
     assert.equal(d.messages.length, 0);
-    const radios = d.container.querySelectorAll("input");
-    radios[1].listeners.change();
-    assert.equal(d.messages.length, 0);
-    d.click("Load related completed Activities");
-    assert.deepEqual(d.messages, [{ type: "queryRequestActivities", evidenceId: "e1", requestRowId: "r2" }]);
-    d.view.receive("e1", "r2", related());
-    assert.match(d.container.textContent, /Exact request row r2/);
+    const second = d.disclosure("r2");
+    assert.equal(second.attributes["aria-expanded"], "false");
+    assert.match(second.attributes["aria-label"], /retained CLI capture; it does not start a capture or read the process/);
+    second.listeners.click();
+    const firstToken = d.messages[0].queryToken;
+    assert.deepEqual(d.messages[0], { type: "queryRequestActivities", evidenceId: "e1", requestRowId: "r2", queryToken: firstToken });
+    assert.equal(second.attributes["aria-expanded"], "true");
+    d.view.receive("e1", "r2", related(), firstToken);
+    assert.match(d.container.textContent, /Request row r2/);
     assert.match(d.container.textContent, /<script>DB<\/script>/);
-    d.click("Back to selected request");
-    d.click("Show loaded completed Activities");
+    assert.match(d.container.textContent, /direct-child/);
+    second.listeners.click();
+    assert.equal(second.attributes["aria-expanded"], "false");
+    second.listeners.click();
     assert.equal(d.messages.length, 1);
-    d.click("Back to selected request");
     const filter = d.container.querySelectorAll("select")[0];
     filter.value = "long"; filter.listeners.change();
-    assert.equal(d.messages.length, 1);
+    assert.equal(second.attributes["aria-expanded"], "false");
+    assert.equal(d.container.querySelectorAll("tr").filter(row => row.className === "joint-request-details-row")[1].hidden, true);
     assert.match(d.container.textContent, /local UI threshold/);
-    radios[0].listeners.change(); d.click("Load related completed Activities");
+    filter.value = "all"; filter.listeners.change();
+    d.disclosure("r1").listeners.click();
     assert.equal(d.messages.at(-1).requestRowId, "r1");
-    d.view.receive("e1", "r1", related());
-    d.click("Back to selected request"); radios[1].listeners.change();
-    assert.equal(d.container.querySelectorAll("button").some(b => b.textContent === "Show loaded completed Activities"), false);
+    d.view.receive("e1", "r1", related(), d.messages.at(-1).queryToken);
+    d.disclosure("r2").listeners.click();
+    assert.equal(d.messages.at(-1).requestRowId, "r2");
+    assert.notEqual(d.messages.at(-1).queryToken, firstToken);
+});
+test("switching rows discards late responses and offers an explicit retry without auto-query", () => {
+    const d = dom(); d.view.capture("e1", capture());
+    d.disclosure("r1").listeners.click();
+    const staleToken = d.messages.at(-1).queryToken;
+    d.disclosure("r2").listeners.click();
+    assert.equal(d.messages.length, 1);
+    d.view.receive("e1", "r1", related(), staleToken);
+    assert.doesNotMatch(d.container.textContent, /Verified identifier relationship/);
+    assert.match(d.container.textContent, /earlier response was discarded/);
+    const retry = d.container.querySelectorAll("button").find(button => button.textContent === "Retry related Activities lookup");
+    assert.ok(retry && !retry.disabled);
+    retry.listeners.click();
+    const currentToken = d.messages.at(-1).queryToken;
+    assert.equal(d.messages.at(-1).requestRowId, "r2");
+    assert.equal(d.disclosure("r2").focused, true);
+    d.view.receive("e1", "r2", related(), "wrong-token");
+    assert.doesNotMatch(d.container.textContent, /Verified identifier relationship/);
+    d.view.receive("e1", "r2", related(), currentToken);
+    assert.match(d.container.textContent, /Verified identifier relationship/);
+});
+test("Activity disclosures are local aligned flat associations with weak/unverified markers", () => {
+    const d = dom(); d.view.capture("e1", capture());
+    d.disclosure("r1").listeners.click();
+    const result = related();
+    result.rows[0].relationship = "same-trace-only";
+    result.rows[0].verified = false;
+    result.rows[0].verificationWithheldReason = "Parent chain missing.";
+    result.rows[0].activity.durationMs = null;
+    d.view.receive("e1", "r1", result, d.messages.at(-1).queryToken);
+    assert.match(d.container.textContent, /In flight/);
+    assert.match(d.container.textContent, /Weak linkUnverified/);
+    const table = d.container.querySelectorAll("table")[0];
+    assert.equal(d.container.querySelectorAll("table").length, 1, "Activities share the request table columns");
+    assert.equal(d.container.querySelectorAll("colgroup").length, 1);
+    assert.ok(table.querySelectorAll("td").some(node => node.textContent === "Unknown"
+        && node.attributes["aria-label"] === "Finished duration unavailable"));
+    assert.deepEqual(table.querySelectorAll("th").map(node => [node.textContent, node.attributes.scope]),
+        [["Request / associated operation", "col"], ["Time (ms)", "col"]]);
+    const toggle = table.querySelectorAll("button").find(node => node.className.includes("joint-activity-toggle"));
+    const details = table.querySelectorAll("tr").find(node => node.className === "joint-activity-details");
+    assert.equal(details.hidden, true);
+    toggle.listeners.click();
+    assert.equal(details.hidden, false);
+    assert.equal(toggle.attributes["aria-expanded"], "true");
+    assert.match(details.textContent, /Parent chain missing/);
+    assert.match(details.textContent, new RegExp(`Trace ID: ${trace}`));
+    toggle.listeners.click();
+    assert.equal(details.hidden, true);
+    assert.equal(d.messages.length, 1, "Activity details never query or collect");
+    d.disclosure("r1").listeners.click();
+    assert.equal(d.container.querySelectorAll("tr").filter(node => node.className === "joint-activity-row").length, 0);
+    d.disclosure("r1").listeners.click();
+    assert.equal(d.messages.length, 1);
+    assert.equal(d.container.querySelectorAll("tr").filter(node => node.className === "joint-activity-row").length, 1);
+    assert.match(d.container.textContent, /request time is elapsed at window close, not a finished duration/);
+});
+test("query failure stays inline and retry preserves disclosure focus without an automatic retry", () => {
+    const d = dom(); d.view.capture("e1", capture());
+    const toggle = d.disclosure("r1"); toggle.listeners.click();
+    const token = d.messages.at(-1).queryToken;
+    d.view.error("e1", "r1", "CLI query timed out.", token);
+    assert.match(d.container.textContent, /CLI query timed out/);
+    const retry = d.container.querySelectorAll("button").find(button => button.textContent === "Retry related Activities lookup");
+    assert.ok(retry && !retry.disabled);
+    assert.equal(d.messages.length, 1);
+    retry.listeners.click();
+    assert.equal(toggle.focused, true);
+    assert.equal(d.messages.length, 2);
+    assert.equal(d.messages.at(-1).requestRowId, "r1");
 });
 test("renderer preserves incomplete/lost structural evidence, empty meaning and stale retained-only states", () => {
     const d = dom(); const c = capture();
     c.requests.quality.completion = "cancelled"; c.requests.quality.eventsLost = 5;
     c.requests.quality.droppedActivities = 3; d.view.capture("e1", c);
-    assert.match(d.container.textContent, /cancelled; source events lost: 5/);
-    d.container.querySelectorAll("input")[0].listeners.change(); d.click("Load related completed Activities");
+    assert.match(d.container.textContent, /Capture is partial: cancelled/);
+    assert.match(d.container.textContent, /Source event loss: 5/);
+    d.disclosure("r1").listeners.click();
     const r = related(); r.rows[0].verified = false; r.rows[0].verificationWithheldReason = "Incomplete stream";
-    d.view.receive("e1", "r1", r);
-    assert.match(d.container.textContent, /direct-childUnverified: Incomplete stream/);
+    r.rows.push({ ...structuredClone(r.rows[0]), activity: { ...r.rows[0].activity, rowId: "a2" },
+        relationship: "same-trace-only", verificationWithheldReason: "No retained unambiguous parent chain." });
+    r.totalRows = 2;
+    d.view.receive("e1", "r1", r, d.messages.at(-1).queryToken);
+    assert.match(d.container.textContent, /Direct child \(direct-child\) · Unverified: Incomplete stream/);
+    assert.match(d.container.textContent, /Same trace only \(same-trace-only\) · Unverified/);
     d.view.unavailable("e1", "Expired: retained display only");
     assert.match(d.container.textContent, /Expired: retained display only/);
-    d.click("Back to selected request"); d.click("Show loaded completed Activities");
-    assert.equal(d.messages.length, 1);
+    const before = d.messages.length;
+    d.disclosure("r1").listeners.click(); d.disclosure("r1").listeners.click();
+    assert.equal(d.messages.length, before);
+    assert.match(d.container.textContent, /Retained display only/);
     d.view.capture("e2", capture());
-    d.container.querySelectorAll("input")[0].listeners.change(); d.click("Load related completed Activities");
-    d.view.receive("e1", "r1", related());
+    d.disclosure("r1").listeners.click();
+    d.view.receive("e1", "r1", related(), d.messages.at(-1).queryToken);
     assert.doesNotMatch(d.container.textContent, /Verified identifier relationship/);
-    d.view.receive("e2", "r1", query());
+    d.view.receive("e2", "r1", query(), d.messages.at(-1).queryToken);
     assert.match(d.container.textContent, /No retained completed Activities/);
     assert.match(d.container.textContent, /does not mean no work/);
     d.view.reset();
