@@ -300,6 +300,7 @@ class CounterPanelController implements vscode.Disposable {
         if (!target || this.disposed) return;
 
         const providersInput = await vscode.window.showInputBox({
+            title: "Live Events - 1 of 3: providers",
             prompt: "Explicit EventSource provider names, comma-separated (1-8; provider and keyword choices affect event volume)",
             value: "System.Runtime",
             ignoreFocusOut: true,
@@ -314,16 +315,23 @@ class CounterPanelController implements vscode.Disposable {
             return;
         }
 
-        const levelInput = await vscode.window.showInputBox({
-            prompt: "EventSource level 0-5 (4 = Informational)",
-            value: "4",
-            validateInput: value => /^[0-5]$/.test(value) ? undefined : "Enter an integer from 0 to 5.",
+        const levelInput = await vscode.window.showQuickPick([
+            { label: "4 - Informational", level: 4, description: "Includes Critical, Error and Warning" },
+            { label: "0 - LogAlways", level: 0 },
+            { label: "1 - Critical", level: 1 },
+            { label: "2 - Error", level: 2 },
+            { label: "3 - Warning", level: 3 },
+            { label: "5 - Verbose", level: 5, description: "Can increase event volume" },
+        ], {
+            title: "Live Events - 2 of 3: level",
+            placeHolder: "Choose the EventSource level sent to every selected provider",
             ignoreFocusOut: true,
         });
         if (levelInput === undefined || !this.isEventsStartCurrent(generation)) return;
-        const eventLevel = Number(levelInput);
+        const eventLevel = levelInput.level;
 
         const keywords = await vscode.window.showInputBox({
+            title: "Live Events - 3 of 3: keywords",
             prompt: "Signed 64-bit decimal keyword mask (0 enables no keyword bits; -1 can enable high-volume events)",
             value: "0",
             validateInput: value => isSignedInt64(value)
@@ -334,7 +342,9 @@ class CounterPanelController implements vscode.Disposable {
         if (keywords === undefined || !this.isEventsStartCurrent(generation)) return;
 
         const acknowledged = await vscode.window.showWarningMessage(
-            "Live Events opens a continuous EventPipe/EventSource stream for the selected providers. "
+            `Start Live Events for PID ${target.processId} (${target.managedEntrypointAssemblyName || "selected process"})? `
+            + `Providers: ${providers.join(", ")}; level ${eventLevel}; keyword mask ${keywords} (decimal). `
+            + "Live Events opens a continuous EventPipe/EventSource stream for the selected providers. "
             + "Event payloads and exception messages may contain secrets or personal data. They remain "
             + "in bounded in-memory windows and are not automatically saved or logged. Native Windows ETW "
             + "and system-wide providers are not included. Broader providers or keyword masks can increase "
@@ -372,7 +382,8 @@ class CounterPanelController implements vscode.Disposable {
         this.eventsInFlightQualityRevision = undefined;
         this.eventsLastQualityAt = 0;
         this.eventsQualityFinal = false;
-        this.postEventsMessage({ type: "eventsStatus", state: "starting", message: "Starting EventPipe EventSource stream…" });
+        this.postEventsMessage({ type: "eventsStatus", state: "starting", message: "Starting EventPipe EventSource stream…",
+            subscription: { processId: target.processId, providers, eventLevel, keywords } });
 
         let session: StreamChild;
         try {
@@ -405,7 +416,6 @@ class CounterPanelController implements vscode.Disposable {
             });
             await withTimeout(session.started.promise, 30_000);
             if (!this.isEventsStartCurrent(generation)) return;
-            this.postEventsMessage({ type: "eventsStatus", state: "running", message: "Live EventPipe events are arriving." });
         } catch (error) {
             if (!this.isEventsStartCurrent(generation)) return;
             const message = withRuntimeGuidance(errorMessage(error));
@@ -2093,7 +2103,7 @@ class CounterPanelController implements vscode.Disposable {
                         type: "eventsStatus",
                         state: "running",
                         sessionId: frame.sessionId,
-                        message: "Live EventPipe events are arriving.",
+                        message: "Waiting for first event. Only events emitted by the configured providers, level and keywords can appear.",
                     });
                 } else {
                     this.postMessage({
@@ -3536,7 +3546,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     .empty { display:none; }
     .statics-form { margin:.5rem 0; display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; }
     .statics-error { color: var(--vscode-errorForeground); }
-    .events-warning { border-left:3px solid var(--vscode-editorWarning-foreground); padding:.4rem .7rem; margin:.6rem 0; }
+    #resultEvents .events-warning { border:1px solid var(--vscode-editorWarning-foreground); padding:.4rem .7rem; margin:.6rem 0; }
     .events-controls { display:flex; gap:.45rem; align-items:center; flex-wrap:wrap; margin:.7rem 0; }
     .events-table-wrap { max-height:32rem; overflow:auto; border:1px solid var(--vscode-panel-border); }
     #eventsTable { table-layout:fixed; }
@@ -3546,6 +3556,17 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     #eventsTable td { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     #eventsTable tr[aria-selected="true"] { background:var(--vscode-list-activeSelectionBackground); color:var(--vscode-list-activeSelectionForeground); }
     #eventsQuality, #eventsStatus { color:var(--vscode-descriptionForeground); margin:.5rem 0; }
+    #monitoringLive .monitoring-time-controls { display:flex; flex-wrap:wrap; gap:.5rem; align-items:center; margin:.5rem 0; }
+    #monitoringLive .monitoring-time-controls > p, #monitoringLive .monitoring-time-controls > details { flex-basis:100%; margin:.2rem 0; overflow-wrap:anywhere; }
+    #monitoringLive .monitoring-time-controls details label { display:flex; flex-wrap:wrap; gap:.4rem; margin:.4rem 0; }
+    #monitoringLive .panel-actions select { min-width:0; max-width:100%; }
+    #monitoringLive #counterIdentity, #monitoringLive #counterSession, #eventsSubscription, #eventsPresentation { overflow-wrap:anywhere; margin:.4rem 0; }
+    #monitoringLive #chartTime { display:flex; justify-content:space-between; gap:1rem; flex-wrap:wrap; font-size:.85rem; }
+    #monitoringLive #chartNote { color:var(--vscode-descriptionForeground); margin:.4rem 0; }
+    #resultEvents #eventsTable { min-width:42rem; }
+    #resultEvents tr[aria-current="true"] { background:var(--vscode-list-activeSelectionBackground); color:var(--vscode-list-activeSelectionForeground); }
+    #resultEvents #eventsQuality[data-warning="true"] { color:var(--vscode-editorWarning-foreground); }
+    #resultEvents #eventsSearch { min-width:0; max-width:100%; }
     #eventDetails { margin:.75rem 0; padding:.75rem; border:1px solid var(--vscode-panel-border); border-radius:4px; }
     #eventDetails pre { white-space:pre-wrap; overflow-wrap:anywhere; }
     ${QUERY_VIEW_STYLES}
@@ -3606,7 +3627,11 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       <button id="start">Start</button><button id="stop" disabled>Stop</button>
     </div>
     <div id="value">Waiting for first observation</div>
+    <div id="counterIdentity"></div>
+    <div id="counterSession" role="status">No counter session started.</div>
     <canvas id="chart" aria-label="Selected counter time series"></canvas>
+    <div id="chartTime"><span id="chartTimeStart"></span><span id="chartTimeEnd"></span></div>
+    <p id="chartNote">Auto-scaled value axis, not necessarily zero-based. Lines break at session boundaries and observed sequence gaps; gaps are not zero values.</p>
     <div id="quality"></div>
     <div id="error" role="alert"></div>
     <section class="panel">
@@ -3726,6 +3751,9 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       <label for="eventsSearch">Search</label><input id="eventsSearch" type="search" maxlength="${LIVE_EVENT_SEARCH_MAX_CHARS}" placeholder="Search retained events" />
     </div>
     <div id="eventsStatus" role="status">Not running.</div>
+    <div id="eventsSubscription">Start Live Events to choose explicit provider names, level and keyword mask.</div>
+    <div id="eventsPresentation" role="status">Following latest. Newest events appear first.</div>
+    <p id="eventsEmpty">No retained events. Start a stream with the provider, level and keywords documented by your application; zero matches does not confirm target inactivity.</p>
     <div id="eventsQuality" role="status"></div>
     <div class="events-controls">
       <button id="eventsPrevious" type="button" disabled>Newer</button>
@@ -4096,6 +4124,16 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     }
     const eventsStatusElement = document.getElementById('eventsStatus');
     const eventsQualityElement = document.getElementById('eventsQuality');
+    const eventsQualitySummary = document.createElement('p');
+    const eventsQualityDetails = document.createElement('details');
+    const eventsQualityCaption = document.createElement('summary');
+    eventsQualityCaption.textContent = 'All quality counters and scope';
+    const eventsQualityCounts = document.createElement('p');
+    eventsQualityDetails.appendChild(eventsQualityCaption);
+    eventsQualityDetails.appendChild(eventsQualityCounts);
+    eventsQualityDetails.hidden = true;
+    eventsQualityElement.appendChild(eventsQualitySummary);
+    eventsQualityElement.appendChild(eventsQualityDetails);
     const eventsBody = document.getElementById('eventsBody');
     const eventDetails = document.getElementById('eventDetails');
     const eventsStartButton = document.getElementById('startEvents');
@@ -4116,16 +4154,33 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     let selectedEvent;
     let eventsPageIndex = 0;
     let eventsFollowing = true;
+    let eventsRunning = false;
+    let eventsObserved = false;
+    let eventsPausedArrivals = 0;
+    let eventsPausedEvictions = 0;
+    let selectedEventEvicted = false;
     let eventsQuality = null;
     let lastEventsQualityRenderAt = 0;
     let eventsQualityRenderTimer;
-    function setEventsStatus(state, text, sessionId) {
-      eventsStatusElement.textContent = text || state || '';
+    function setEventsStatus(state, text, sessionId, subscription) {
+      eventsRunning = state === 'running';
       if (state === 'starting') {
+        eventsObserved = false;
         eventsSessionId = undefined;
         eventsQuality = null;
-        eventsQualityElement.textContent = '';
+        eventsQualityDetails.hidden = true;
+        eventsQualitySummary.textContent = 'This stream: quality not received yet. Panel lifetime: '
+          + eventsUiEvicted + ' UI-window evictions · ' + payloadTruncatedEvents + ' payload-truncated events · '
+          + metadataTruncatedEvents + ' metadata-truncated events.';
+        if (subscription) {
+          document.getElementById('eventsSubscription').textContent = 'Requested subscription: PID ' + subscription.processId
+            + ' · providers: ' + subscription.providers.join(', ') + ' · level: ' + subscription.eventLevel
+            + ' · keywords: ' + subscription.keywords + ' (signed decimal). Retained rows may include earlier streams.';
+        }
       }
+      eventsStatusElement.textContent = state === 'running'
+        ? eventsObserved ? 'Live Events: events observed.' : 'Waiting for first event. Only configured provider, level and keyword matches can appear.'
+        : text || state || '';
       const running = state === 'running' || state === 'starting' || state === 'stopping';
       eventsStartButton.disabled = running;
       eventsStopButton.disabled = state !== 'running';
@@ -4137,6 +4192,12 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         eventsFollowButton.disabled = true;
       }
     }
+    function renderEventsPresentation() {
+      document.getElementById('eventsPresentation').textContent = eventsFollowing
+        ? 'Following latest. Newest events appear first.'
+        : 'Paused presentation: ' + eventsPausedArrivals + ' new arrivals; ' + eventsPausedEvictions
+          + ' evicted from retention since pausing. Collection and acknowledgements continue; displayed rows can expire. Follow latest to refresh.';
+    }
     function eventSize(event) {
       return eventsEncoder.encode(JSON.stringify(event)).length * 2 + 1024;
     }
@@ -4147,7 +4208,9 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       eventDetails.replaceChildren();
       if (!event) {
         const empty = document.createElement('p');
-        empty.textContent = 'Select an event to inspect its bounded payload.';
+        empty.textContent = selectedEventEvicted
+          ? 'The selected event expired from the retained window. Select an event to inspect its bounded payload.'
+          : 'Select an event to inspect its bounded payload.';
         eventDetails.appendChild(empty);
         return;
       }
@@ -4156,7 +4219,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       eventDetails.appendChild(heading);
       const timing = document.createElement('p');
       timing.textContent = 'Source: ' + event.timestamp + ' · Received: ' + event.receivedAt
-        + (event.threadId === null ? '' : ' · Thread ' + event.threadId);
+        + (event.threadId === null ? '' : ' · Thread ' + event.threadId) + ' · Stream: ' + event.sessionId;
       eventDetails.appendChild(timing);
       const exceptionFields = ['ExceptionType', 'ExceptionMessage', 'ExceptionEIP', 'ExceptionHRESULT', 'ExceptionFlags', 'ClrInstanceID'];
       const payloadNames = Object.keys(event.payload).sort();
@@ -4195,11 +4258,16 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       const end = Math.max(0, filtered.length - eventsPageIndex * eventsPageSize);
       const start = Math.max(0, end - eventsPageSize);
       const page = filtered.slice(start, end).reverse();
+      document.getElementById('eventsEmpty').hidden = filtered.length > 0;
+      document.getElementById('eventsEmpty').textContent = events.length
+        ? 'No retained events match this search. Clear the search to see retained events.'
+        : 'No retained events. Only configured provider, level and keyword matches can appear; zero matches does not confirm target inactivity.';
       eventsBody.replaceChildren();
       for (const item of page) {
         const row = document.createElement('tr');
+        row.eventObservation = item;
         row.tabIndex = 0;
-        row.setAttribute('aria-selected', String(item === selectedEvent));
+        row.setAttribute('aria-current', String(item === selectedEvent));
         const cells = [item.timestamp, item.provider, item.eventName + ' (' + item.eventId + ')', item.level,
           Object.entries(item.payload).slice(0, 2).map(([name, value]) => name + ': ' + value).join(' · ')
           || (item.payloadTruncated ? 'Payload fields omitted' : '')];
@@ -4210,12 +4278,14 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         }
         row.addEventListener('click', () => {
           selectedEvent = item;
+          selectedEventEvicted = false;
           renderEvents();
         });
         row.addEventListener('keydown', event => {
           if (event.key === 'Enter' || event.key === ' ') {
             event.preventDefault();
             selectedEvent = item;
+            selectedEventEvicted = false;
             renderEvents();
           }
         });
@@ -4229,10 +4299,12 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       document.getElementById('eventsNext').disabled = end >= filtered.length;
       renderEventDetails(selectedEvent);
       renderEventsQuality();
+      renderEventsPresentation();
     }
     function renderEventsQuality() {
       const clear = document.getElementById('eventsClear');
       clear.setAttribute('aria-disabled', String(events.length === 0));
+      clear.disabled = events.length === 0;
       clear.title = events.length === 0 ? 'No retained events to clear.' : '';
       if (!eventsQuality) return;
       const now = Date.now();
@@ -4251,17 +4323,27 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         eventsQualityRenderTimer = undefined;
       }
       lastEventsQualityRenderAt = now;
-        eventsQualityElement.textContent = [
+        const layers = [
           eventsQuality.eventPipeLossAvailable
             ? eventsQuality.eventPipeEventsLost + ' EventPipe source events lost'
             : 'EventPipe source loss count unknown',
           eventsQuality.coreQueueDropped + ' Core queue drops',
           eventsQuality.cliDispatchQueueDropped + ' CLI dispatch drops',
           eventsQuality.hostDeliveryDropped + ' extension host delivery drops',
-          eventsUiEvicted + ' UI-window evictions',
-          payloadTruncatedEvents + ' payload-truncated events',
-          metadataTruncatedEvents + ' metadata-truncated events',
-        ].join(' · ') + ' (layer counts are separate, not a sum).';
+        ];
+        const panel = [eventsUiEvicted + ' UI-window evictions',
+          payloadTruncatedEvents + ' payload-truncated events', metadataTruncatedEvents + ' metadata-truncated events'];
+        const streamWarnings = layers.filter(text => !text.startsWith('0 '));
+        const panelWarnings = panel.filter(text => !text.startsWith('0 '));
+        const warnings = [...streamWarnings, ...panelWarnings];
+        eventsQualityElement.setAttribute('data-warning', String(warnings.length > 0));
+        eventsQualitySummary.textContent = warnings.length ? [
+          streamWarnings.length ? 'This stream: ' + streamWarnings.join(' · ') : '',
+          panelWarnings.length ? 'Panel lifetime: ' + panelWarnings.join(' · ') : '',
+        ].filter(Boolean).join('. ') : 'No loss or truncation reported.';
+        eventsQualityCounts.textContent = 'This stream: ' + layers.join(' · ') + '. Panel lifetime (including earlier streams and Clear): '
+          + panel.join(' · ') + '. Layer counts are separate, not a sum. Retention eviction is not source loss.';
+        eventsQualityDetails.hidden = false;
     }
     function receiveEventsBatch(message) {
       if (typeof message.sessionId !== 'string' || !Number.isSafeInteger(message.batchId)
@@ -4269,6 +4351,11 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       if (eventsSessionId && eventsSessionId !== message.sessionId) return;
       if (eventsEncoder.encode(JSON.stringify(message)).length > eventsBatchMaxBytes) return;
       eventsSessionId = message.sessionId;
+      if (message.events.length) {
+        eventsObserved = true;
+        if (eventsRunning) eventsStatusElement.textContent = 'Live Events: events observed.';
+        if (!eventsFollowing) eventsPausedArrivals = Math.min(Number.MAX_SAFE_INTEGER, eventsPausedArrivals + message.events.length);
+      }
       for (const item of message.events) {
         if (item.payloadTruncated) payloadTruncatedEvents = Math.min(Number.MAX_SAFE_INTEGER, payloadTruncatedEvents + 1);
         if (item.metadataTruncated) metadataTruncatedEvents = Math.min(Number.MAX_SAFE_INTEGER, metadataTruncatedEvents + 1);
@@ -4287,7 +4374,8 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       while (events.length > eventsMaxCount || eventsRetainedBytes > eventsMaxBytes) {
         const removed = events.shift();
         eventsUiEvicted = Math.min(Number.MAX_SAFE_INTEGER, eventsUiEvicted + 1);
-        if (removed === selectedEvent) selectedEvent = undefined;
+        if (!eventsFollowing) eventsPausedEvictions = Math.min(Number.MAX_SAFE_INTEGER, eventsPausedEvictions + 1);
+        if (removed === selectedEvent) { selectedEvent = undefined; selectedEventEvicted = true; }
         eventsRetainedBytes -= eventSize(removed);
       }
       if (!selectedEvent) renderEventDetails(undefined);
@@ -4296,6 +4384,12 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         renderEvents();
       } else {
         renderEventsQuality();
+        renderEventsPresentation();
+        document.getElementById('eventsPage').textContent = 'Paused page (not refreshed); ' + events.length + ' events currently retained.';
+        // Drop expired mounted rows as well: pausing must not extend payload retention.
+        for (const row of Array.from(eventsBody.children)) {
+          if (!events.some(item => item === row.eventObservation)) row.remove();
+        }
       }
       vscode.postMessage({ type: 'ackEventBatch', sessionId: message.sessionId, batchId: message.batchId });
     }
@@ -4305,11 +4399,14 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       events.length = 0;
       eventsRetainedBytes = 0;
       selectedEvent = undefined;
+      selectedEventEvicted = false;
       eventsPageIndex = 0;
+      eventsPausedArrivals = eventsPausedEvictions = 0;
       renderEvents();
     });
     eventsFollowButton.addEventListener('click', () => {
       eventsFollowing = !eventsFollowing;
+      eventsPausedArrivals = eventsPausedEvictions = 0;
       eventsFollowButton.textContent = eventsFollowing ? 'Pause following' : 'Follow latest';
       if (eventsFollowing) eventsPageIndex = 0;
       renderEvents();
@@ -4321,6 +4418,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     });
     document.getElementById('eventsNext').addEventListener('click', () => {
       eventsPageIndex++;
+      if (eventsFollowing) eventsPausedArrivals = eventsPausedEvictions = 0;
       eventsFollowing = false;
       eventsFollowButton.textContent = 'Follow latest';
       renderEvents();
@@ -4669,10 +4767,28 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     let selectedKey = '';
     let lastSequence = 0;
     let sequenceGaps = 0;
+    let counterSessionId;
+    let counterSessionNumber = 0;
+    let counterSegment = 0;
     let seriesLimitReached = false;
     let gcPauseCount = 0;
     let gcTotalPauseMs = 0;
-    const liveTimeNavigation = installLiveTimeNavigation(canvas, () => counters.get(selectedKey)?.points || [], gcRows, draw);
+    const formatCounterValue = value => new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(value)
+      + (counters.get(selectedKey)?.unit ? ' ' + counters.get(selectedKey).unit : '');
+    const liveTimeNavigation = installLiveTimeNavigation(canvas, () => counters.get(selectedKey)?.points || [], gcRows, draw, formatCounterValue);
+
+    function beginCounterSession(sessionId) {
+      if (sessionId === counterSessionId) return;
+      counterSessionId = sessionId;
+      counterSessionNumber++;
+      counterSegment++;
+      lastSequence = 0;
+      sequenceGaps = 0;
+      qualityElement.textContent = seriesLimitReached ? 'Panel chart limit reached: additional series omitted.' : '';
+      document.getElementById('counterSession').textContent = 'Counter session ' + counterSessionNumber
+        + ' started ' + new Date().toLocaleTimeString() + ' · PID ${target.processId}'
+        + '. Earlier retained sessions remain visible; collection is not continuous across restarts.';
+    }
 
     function updateButtons(running) {
       startButton.disabled = running;
@@ -4693,6 +4809,10 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       context.clearRect(0, 0, width, height);
       liveTimeNavigation.update();
       const series = counters.get(selectedKey);
+      document.getElementById('counterIdentity').textContent = series
+        ? selectedKey + ' · ' + series.kind + ' · ' + (series.unit || 'unit not reported') : '';
+      document.getElementById('chartTimeStart').textContent = '';
+      document.getElementById('chartTimeEnd').textContent = '';
       if (!series || series.points.length === 0) return;
       const points = liveTimeNavigation.filter(series.points);
       const values = points.map(point => point.value).filter(Number.isFinite);
@@ -4709,13 +4829,48 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       points.forEach((point, index) => {
         const x = left + (right - left) * (timeSpan > 0 ? (point.receivedAtMs - firstTime) / timeSpan : 1);
         const y = bottom - ((point.value - min) / range) * (bottom - top);
-        if (index === 0) context.moveTo(x, y); else context.lineTo(x, y);
+        if (index === 0 || point.segment !== points[index - 1].segment) context.moveTo(x, y); else context.lineTo(x, y);
       });
       context.stroke();
       context.fillStyle = getComputedStyle(document.body).color;
       context.font = '12px ' + getComputedStyle(document.body).fontFamily;
       context.fillText(max.toPrecision(4), 2, top + 4);
       context.fillText(min.toPrecision(4), 2, bottom);
+      let lastBoundaryLabelEnd = left;
+      points.forEach((point, index) => {
+        if (!index || point.segment === points[index - 1].segment) return;
+        const x = left + (right - left) * (timeSpan > 0 ? (point.receivedAtMs - firstTime) / timeSpan : 1);
+        context.beginPath();
+        context.moveTo(x, bottom - 4);
+        context.lineTo(x, bottom + 4);
+        context.stroke();
+        const label = point.session !== points[index - 1].session ? 'Session ' + point.session : 'Sequence gap';
+        const labelWidth = context.measureText(label).width;
+        const labelX = Math.max(left, Math.min(x, right - labelWidth));
+        if (labelX >= lastBoundaryLabelEnd) {
+          context.fillText(label, labelX, bottom + 18);
+          lastBoundaryLabelEnd = labelX + labelWidth + 8;
+        }
+      });
+      document.getElementById('chartTimeStart').textContent = 'Receipt ' + new Date(firstTime).toLocaleTimeString();
+      document.getElementById('chartTimeEnd').textContent = new Date(firstTime + timeSpan).toLocaleTimeString()
+        + ' · ' + (timeSpan / 1000).toFixed(1) + ' s shown';
+      const inspected = liveTimeNavigation.selected();
+      if (inspected) {
+        const x = left + (right - left) * (timeSpan > 0 ? (inspected.receivedAtMs - firstTime) / timeSpan : 1);
+        const y = bottom - ((inspected.value - min) / range) * (bottom - top);
+        context.beginPath();
+        context.moveTo(x, top);
+        context.lineTo(x, bottom);
+        context.stroke();
+        context.beginPath();
+        context.arc(x, y, 4, 0, Math.PI * 2);
+        context.fill();
+      }
+      const sessions = [...new Set(points.map(point => point.session))];
+      document.getElementById('chartNote').textContent = 'Auto-scaled value axis (' + (series.unit || 'unit not reported')
+        + '), not necessarily zero-based. Retained counter sessions: ' + sessions.join(', ')
+        + '. Lines break at session boundaries and observed sequence gaps; gaps are not zero values.';
     }
 
     // Drops points older than the rolling history window so it keeps sliding even if observations
@@ -4759,7 +4914,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           qualityElement.textContent = 'Chart limit reached: additional counter series are omitted.';
           return;
         }
-        series = { label: counter.displayName || counter.name, unit: counter.unit || '', points: [] };
+        series = { label: counter.displayName || counter.name, unit: counter.unit || '', kind: counter.kind || 'kind not reported', points: [] };
         counters.set(key, series);
         const option = document.createElement('option');
         option.value = key;
@@ -4770,7 +4925,8 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           metricSelect.value = key;
         }
       }
-      series.points.push({ value: counter.value, timestamp: message.timestamp, receivedAtMs: monotonicNow() });
+      series.points.push({ value: counter.value, timestamp: message.timestamp, receivedAtMs: monotonicNow(),
+        session: counterSessionNumber, segment: counterSegment });
       evictOldPoints(series);
       if (key === selectedKey) {
         valueElement.textContent = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(counter.value) +
@@ -4786,10 +4942,12 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       if (!Number.isFinite(sequence)) return;
       if (sequence > lastSequence + 1 && lastSequence > 0) {
         sequenceGaps += sequence - lastSequence - 1;
+        counterSegment++;
       }
       lastSequence = Math.max(lastSequence, sequence);
       if (sequenceGaps > 0) {
-        qualityElement.textContent = sequenceGaps + ' observations missing (sequence gaps); gaps are not zero values.';
+        qualityElement.textContent = 'This counter session: ' + sequenceGaps + ' observations missing (sequence gaps); gaps are not zero values.'
+          + (seriesLimitReached ? ' Panel chart limit reached: additional series omitted.' : '');
       }
     }
 
@@ -4829,6 +4987,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         row.appendChild(cell);
       });
       gcBody.insertBefore(row, gcBody.firstChild);
+      row.title = 'Counter session ' + counterSessionNumber + ' · source time ' + collection.timestamp;
       gcRows.unshift({ element: row, receivedAtMs: monotonicNow() });
       evictOldGcRows();
       gcHeadline.textContent = gcPauseCount + ' pause(s) observed · last ' +
@@ -5000,7 +5159,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         }
       }
       if (message.type === 'eventsStatus') {
-        setEventsStatus(message.state, message.message, message.sessionId);
+        setEventsStatus(message.state, message.message, message.sessionId, message.subscription);
         return;
       }
       if (message.type === 'eventsBatch') {
@@ -5031,6 +5190,8 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           workspaceLoadView.textContent = profileCaptureBusy.cpu ? 'Capture in progress…'
             : workspaceLoadView.disabled ? 'Retained profile unavailable' : 'Load view';
         }
+      } else if (message.type === 'session') {
+        beginCounterSession(message.sessionId);
       } else if (message.type === 'status') {
         const liveStatus = message.message || message.state;
         statusElement.textContent = liveStatus.startsWith('Live counters') ? liveStatus : 'Live counters: ' + liveStatus;
@@ -5365,7 +5526,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         const dropped = typeof message.droppedObservations === 'number'
           ? message.droppedObservations + ' observations dropped by the bounded queue'
           : 'dropped-observation count unavailable';
-        qualityElement.textContent = [
+        qualityElement.textContent = 'This counter session: ' + [
           loss,
           dropped,
           sequenceGaps ? sequenceGaps + ' sequence gaps' : 'no sequence gaps reported',

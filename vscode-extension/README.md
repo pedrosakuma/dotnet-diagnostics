@@ -45,6 +45,28 @@ contains separate **Live counters & GC pauses** and **Live Events** views. Switc
 does not start or stop either stream, collect or reopen evidence, or change event acknowledgements.
 Each stream keeps its own lifecycle, status, retained buffer and controls. Expand an action-tree
 group to browse; only selecting an action enters its existing capture/consent flow.
+Counter history remains bounded across Stop/Start. The panel identifies the current counter
+session and retained session numbers; chart lines break at session boundaries and observed
+sequence gaps rather than imply continuous collection. Sequence-gap counts belong to the current
+counter/GC session, while the chart-series cap and GC totals remain panel-wide. The counter
+identity includes its provider/name, reported kind and unit; the value axis auto-scales and is not
+necessarily zero-based. Chart bounds and window controls use receipt time, not target time.
+Click or use Left/Right/Home/End to mark the nearest retained observation without interpolation.
+**Pause following** freezes the receipt-time selection, not collection or retention. **Follow
+latest** resumes following. Window choices only select retained data, never extend retention;
+the receipt-time disclosure exposes exact bounds and custom start/end sliders. Expired paused
+selections can become empty, which is not a zero measurement.
+
+Live Events configuration uses explicit provider names, a named EventSource level and a signed
+decimal keyword mask; it does not guess provider presets. The panel keeps the requested PID,
+providers, level and exact keyword value visible. **Waiting for first event** remains until a
+non-empty event batch arrives, including after a restart; an empty stream does not establish
+target inactivity. Newest rows appear first. Pausing shows arrivals and retention evictions while
+acknowledgements continue; expired mounted rows and selected payload details are removed.
+Quality distinguishes current-stream source/delivery counts from panel-lifetime UI evictions
+and truncations. Nonzero counts and unknown source loss remain prominent, with every layer
+available in the quality disclosure. **Clear** only removes retained rows and selection; it
+does not reset quality accounting, the subscription or whether the stream has observed an event.
 **Capture Diagnostics** remains the searchable expert catalog for all ten capture kinds. Its
 generic results appear in their canonical **Workspace** domain; allocations keep their dedicated
 profile and query path.

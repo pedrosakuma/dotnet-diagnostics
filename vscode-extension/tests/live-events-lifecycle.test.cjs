@@ -171,3 +171,40 @@ for (const action of ["targetExit", "unexpectedEof", "stdinEof", "dispose"]) {
         } finally { await f.cleanup(); }
     });
 }
+
+test("native Events choices preserve the exact configured subscription in the start frame and panel identity", { timeout: 10_000 }, async () => {
+    // Native prompts and the CLI are test doubles; no VS Code host, real consent or target attach.
+    const vscode = require("./stubs/vscode-stub.js");
+    const original = { input: vscode.window.showInputBox, pick: vscode.window.showQuickPick,
+        warning: vscode.window.showWarningMessage };
+    const f = fixture("normal");
+    const inputs = ["Fixture.Provider, Other.Provider", "-9223372036854775808"];
+    let warning, frame;
+    vscode.window.showInputBox = async () => inputs.shift();
+    vscode.window.showQuickPick = async choices => {
+        assert.deepEqual(choices.map(item => item.level).sort(), [0, 1, 2, 3, 4, 5]);
+        return choices.find(item => item.level === 5);
+    };
+    vscode.window.showWarningMessage = async message => { warning = message; return "Acknowledge and Start"; };
+    f.controller.selectedTarget = { processId: 4242, managedEntrypointAssemblyName: "Synthetic" };
+    const writeFrame = f.controller.writeFrame.bind(f.controller);
+    f.controller.writeFrame = (session, value) => { if (value.type === "start") frame = value; writeFrame(session, value); };
+    try {
+        await f.controller.startEventsCore();
+        assert.match(warning, /PID 4242 \(Synthetic\).*Fixture.Provider, Other.Provider; level 5; keyword mask -9223372036854775808/);
+        assert.deepEqual(frame.kinds[0].providers, ["Fixture.Provider", "Other.Provider"].map(name =>
+            ({ name, eventLevel: 5, keywords: "-9223372036854775808" })));
+        const identity = f.messages.find(message => message.subscription)?.subscription;
+        assert.deepEqual(identity, { processId: frame.processId, providers: frame.kinds[0].providers.map(provider => provider.name),
+            eventLevel: 5, keywords: "-9223372036854775808" });
+        assert.ok(f.messages.some(message => message.state === "running" && /Waiting for first event/.test(message.message)));
+        assert.ok(!f.messages.some(message => /are arriving/.test(message.message || "")));
+        await f.controller.closeChild(f.controller.eventsChild);
+        await f.assertExited();
+    } finally {
+        vscode.window.showInputBox = original.input;
+        vscode.window.showQuickPick = original.pick;
+        vscode.window.showWarningMessage = original.warning;
+        await f.cleanup();
+    }
+});

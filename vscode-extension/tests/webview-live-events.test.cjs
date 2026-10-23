@@ -100,7 +100,8 @@ function eventsDocument() {
             tag, children: [], attributes: {}, value: "", disabled: false, ownText: "",
             get textContent() { return this.ownText + this.children.map(child => child.textContent).join("\n"); },
             set textContent(value) { this.ownText = String(value); this.children = []; },
-            appendChild(child) { this.children.push(child); },
+            appendChild(child) { child.parent = this; this.children.push(child); },
+            remove() { if (this.parent) this.parent.children = this.parent.children.filter(child => child !== this); },
             replaceChildren(...children) { this.ownText = ""; this.children = children; },
             setAttribute(name, value) { this.attributes[name] = value; },
             addEventListener(type, callback) { listeners.set(type, callback); },
@@ -180,6 +181,8 @@ test("Events executes pause/follow/filter/clear and local details without diagno
     ui.batch([event(3)]);
     assert.equal(ui.snapshot().count, 3, "presentation pause continues bounded ingestion");
     assert.equal(body.textContent, pausedText, "presentation remains frozen");
+    assert.match(ui.get("eventsPresentation").textContent, /Paused presentation: 1 new arrivals; 0 evicted/);
+    assert.match(ui.get("eventsPage").textContent, /Paused page \(not refreshed\); 3 events currently retained/);
     assert.equal(ui.messages.at(-1).type, "ackEventBatch", "pause is not a missing-ACK consumer");
     ui.get("eventsFollow").dispatch("click");
     assert.match(body.textContent, /Event3/);
@@ -217,7 +220,9 @@ test("Events evicts a selected event while paused without replay history and pre
     assert.equal(ui.snapshot().count, 2000);
     assert.equal(ui.snapshot().evicted, 100);
     assert.equal(ui.snapshot().selected, undefined);
-    assert.match(ui.get("eventDetails").textContent, /Select an event/);
+    assert.match(ui.get("eventDetails").textContent, /selected event expired/);
+    assert.match(ui.get("eventsPresentation").textContent, /2099 new arrivals; 100 evicted/);
+    assert.equal(ui.get("eventsBody").children.length, 0, "expired payloads cannot linger in paused DOM rows");
     ui.get("eventsFollow").dispatch("click");
     assert.equal(ui.get("eventsBody").children.length, 100);
     assert.match(ui.get("eventsBody").textContent, /Event2100/);
@@ -228,10 +233,33 @@ test("Events evicts a selected event while paused without replay history and pre
     assert.match(ui.get("eventsQuality").textContent, /source loss count unknown/);
     assert.match(ui.get("eventsQuality").textContent, /17 Core queue drops/);
     assert.match(ui.get("eventsQuality").textContent, /100 UI-window evictions/);
+    assert.match(ui.get("eventsQuality").textContent, /Panel lifetime \(including earlier streams and Clear\)/);
     const before = ui.messages.length;
     ui.batch([event(9999)], quality, "stale-session");
     assert.equal(ui.snapshot().count, 0);
     assert.equal(ui.messages.length, before, "stale sessions cannot update or ACK this window");
+});
+
+test("Events waits for an actual observation and shows the exact requested subscription without affecting counter state", () => {
+    const ui = eventsDocument();
+    const subscription = { processId: 42, providers: ["<provider>", "Other"], eventLevel: 5, keywords: "-9223372036854775808" };
+    ui.setEventsStatus("starting", "Starting", undefined, subscription);
+    assert.match(ui.get("eventsSubscription").textContent, /PID 42.*<provider>, Other.*level: 5.*-9223372036854775808 \(signed decimal\)/);
+    ui.setEventsStatus("running", "Running", "events-1");
+    assert.match(ui.get("eventsStatus").textContent, /Waiting for first event/);
+    ui.batch([]);
+    assert.match(ui.get("eventsStatus").textContent, /Waiting for first event/);
+    ui.batch([event(1)]);
+    assert.match(ui.get("eventsStatus").textContent, /events observed/);
+    ui.setEventsStatus("running", "Running", "events-1");
+    assert.match(ui.get("eventsStatus").textContent, /events observed/);
+    ui.get("eventsClear").dispatch("click");
+    assert.match(ui.get("eventsStatus").textContent, /events observed/, "Clear does not reset stream observation state");
+    ui.setEventsStatus("stopped", "Stopped");
+    ui.setEventsStatus("starting", "Starting", undefined, subscription);
+    ui.setEventsStatus("running", "Running", "events-2");
+    assert.match(ui.get("eventsStatus").textContent, /Waiting for first event/, "a restart cannot inherit first-event evidence");
+    assert.deepEqual(ui.messages.map(message => message.type), ["ackEventBatch", "ackEventBatch"]);
 });
 
 test("Events executes schema-gated details and generic fallback with inert original bounded payload", { timeout: 10_000 }, () => {
