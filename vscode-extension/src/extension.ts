@@ -16,7 +16,7 @@ import { isJointCapture, isJointRelatedQuery, parseJointSources, supportsRequest
     type JointCapture, type JointQuery, type RelatedActivity } from "./requestActivities";
 import { REQUEST_ACTIVITIES_SCRIPT } from "./requestActivitiesView";
 import { CPU_PROFILE_SCRIPT, CPU_PROFILE_STYLES } from "./cpuProfileViewer";
-import { WEBVIEW_FIELD_STYLES } from "./webviewFields";
+import { WEBVIEW_BUTTON_STYLES, WEBVIEW_FIELD_STYLES } from "./webviewFields";
 import { LIVE_TIME_NAVIGATION_SCRIPT } from "./liveTimeNavigation";
 import { LiveReadConsent, LIVE_READ_CONSENT_HTML, LIVE_READ_CONSENT_SCRIPT } from "./liveReadConsent";
 import { ACTION_AVAILABILITY_SCRIPT, ACTION_AVAILABILITY_STYLES, PROFILE_ACTIONS_SCRIPT } from "./actionAvailability";
@@ -3636,9 +3636,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     #workspaceLoadView[hidden] { display:none; }
     #resultThreads.workspace-thread-snapshot .evidence-view-switcher, #resultThreads .statics-form[hidden] { display:none; }
     .cpu-export-actions { border:1px solid var(--vscode-panel-border); border-radius:4px; padding:.4rem .6rem; }
-    button { color:var(--vscode-button-foreground); background:var(--vscode-button-background); border:0; border-radius:2px; padding:.45rem .75rem; }
-    button:hover { background:var(--vscode-button-hoverBackground); }
-    button:disabled { opacity:.55; }
+    ${WEBVIEW_BUTTON_STYLES}
     .export-controls { margin:.6rem 0; }
     ${ACTION_AVAILABILITY_STYLES}
     .result-tabs, .monitoring-tabs { display:flex; gap:.2rem; overflow-x:auto; padding:.45rem 0; background:var(--vscode-editor-background); border-bottom:1px solid var(--vscode-panel-border); }
@@ -5961,6 +5959,7 @@ export function renderDumpAnalysisHtml(dumpFileName: string, nonce: string): str
     .empty { display:none; }
     .statics-form { margin:.5rem 0; display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; }
     .statics-error { color: var(--vscode-errorForeground); }
+    ${WEBVIEW_BUTTON_STYLES}
     ${QUERY_VIEW_STYLES}
     ${WEBVIEW_FIELD_STYLES}
     .status { color:var(--vscode-descriptionForeground); margin:.3rem 0; }

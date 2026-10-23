@@ -7,7 +7,7 @@ Module._resolveFilename = function (request, ...rest) {
     return request === "vscode" ? path.join(__dirname, "stubs", "vscode-stub.js")
         : resolve.call(this, request, ...rest);
 };
-const { WEBVIEW_FIELD_STYLES } = require("../out/webviewFields.js");
+const { WEBVIEW_BUTTON_STYLES, WEBVIEW_FIELD_STYLES } = require("../out/webviewFields.js");
 const { renderHtml, renderDumpAnalysisHtml } = require("../out/extension.js");
 const { renderHistoryHtml } = require("../out/captureHistoryPanel.js");
 
@@ -19,6 +19,24 @@ const panels = {
         artifacts: [{ artifactId: "b".repeat(32), name: "Heap", kind: "heap-snapshot", supportedViews: ["top-types"] }],
     }),
 };
+
+for (const name of ["live", "dump"]) {
+    test(`${name} panel uses shared themed buttons before specialized evidence controls`, () => {
+        const css = panels[name].match(/<style nonce="fields">([\s\S]*?)<\/style>/)?.[1];
+        assert.ok(css?.includes(WEBVIEW_BUTTON_STYLES));
+        assert.ok(css.indexOf(WEBVIEW_BUTTON_STYLES) < css.indexOf(".evidence-sort"));
+        assert.ok(css.indexOf(WEBVIEW_BUTTON_STYLES) < css.indexOf(".evidence-tabs"));
+        assert.ok(css.indexOf(WEBVIEW_BUTTON_STYLES) < css.indexOf(".heap-type-link"));
+    });
+}
+
+test("shared buttons preserve incumbent theme, hover and disabled rules", () => {
+    assert.match(WEBVIEW_BUTTON_STYLES, /color:var\(--vscode-button-foreground\)/);
+    assert.match(WEBVIEW_BUTTON_STYLES, /background:var\(--vscode-button-background\)/);
+    assert.match(WEBVIEW_BUTTON_STYLES, /button:hover \{ background:var\(--vscode-button-hoverBackground\)/);
+    assert.match(WEBVIEW_BUTTON_STYLES, /button:disabled \{ opacity:\.55/);
+    assert.doesNotMatch(WEBVIEW_BUTTON_STYLES, /!important|outline\s*:\s*(?:0|none)/);
+});
 
 for (const [name, html] of Object.entries(panels)) {
     test(`${name} panel embeds shared field styles inside its nonce-protected style block`, () => {
