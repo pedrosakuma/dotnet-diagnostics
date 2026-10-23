@@ -3423,13 +3423,20 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     .joint-request-table th:last-child { width:22%; }
     .joint-request-table td:last-child { white-space:nowrap; }
     .joint-request-table .joint-request-details-row > td { padding:.5rem .35rem .8rem; white-space:normal; min-width:0; }
+    .query-view-table.joint-activity-table { width:100%; min-width:0; table-layout:fixed; margin:0; }
+    .joint-activity-head { position:absolute; width:1px; height:1px; padding:0; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
+    .joint-activity-table td:first-child { width:78%; }
+    .joint-activity-table td:last-child { width:22%; }
+    .joint-activity-table .joint-activity-details > td { width:auto; white-space:normal; }
+    .joint-activity-table .joint-activity-name { padding-left:1.5rem; white-space:normal; overflow-wrap:anywhere; }
+    .joint-activity-name .joint-request-toggle { margin-left:0; vertical-align:middle; }
+    .joint-activity-details p { white-space:normal; overflow-wrap:anywhere; margin:.3rem .5rem .3rem 3rem; }
+    .joint-inflight-marker, .joint-link-marker { display:inline-block; font-size:.85em; margin-left:.5rem; color:var(--vscode-descriptionForeground); }
+    .joint-link-marker { color:var(--vscode-editorWarning-foreground); }
+    .joint-activity-details[hidden] { display:none; }
     .joint-request-details-row section { min-width:0; }
     .joint-request-details-row h4, .joint-activity-operation { overflow-wrap:break-word; word-break:normal; }
     .joint-request-details-row p, .joint-technical-details p, .joint-activity-identity p { overflow-wrap:anywhere; }
-    .joint-activity-list { list-style:none; margin:.45rem 0; padding:0; }
-    .joint-activity-item { min-width:0; margin:.4rem 0; padding:.45rem .2rem; border-bottom:1px solid var(--vscode-panel-border); }
-    .joint-activity-item h5 { margin:.1rem 0 .3rem; font-size:1rem; font-weight:600; }
-    .joint-activity-item p { margin:.2rem 0; }
     .joint-quality-alert { color:var(--vscode-editorWarning-foreground); margin:.4rem 0; padding-left:1.4rem; }
     .joint-stale { color:var(--vscode-descriptionForeground); }
     .joint-technical-details { margin-top:.55rem; }

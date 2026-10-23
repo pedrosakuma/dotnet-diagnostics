@@ -88,6 +88,12 @@ the process, and starts no new capture. Collapse/reopen of the same row is local
 replaces the sole cached response. The request's trace/span identifiers and start time remain
 accessible in its inline disclosure after Activities load. Structural direct-child/descendant/shared-trace basis is separate
 from verified/withheld status; finished durations are not a critical path or proof of exclusive delay.
+Associated Activities use compact operation/time rows aligned with the request's time column.
+Requests carry an **In flight** marker: their time is elapsed at window close, while Activity times
+are finished durations. Flat indentation groups associations, not a call tree. **Weak link** marks
+same-trace-only evidence; **Unverified** remains visible where verification is withheld.
+Expand an Activity locally for source, timing, identifiers, relationship basis and withheld reason;
+this performs no additional CLI query or collection.
 The joint result replaces the shared generic slot.
 CLI evidence expires after ten minutes, disconnect or another capture; loaded displays then say
 retained-only and further reads are disabled. Only completed Activity Stop records are supported,

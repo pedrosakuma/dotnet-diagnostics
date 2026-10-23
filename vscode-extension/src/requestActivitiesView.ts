@@ -69,27 +69,69 @@ function createRequestActivitiesView(container: HTMLElement, send: (message: obj
             : `Unverified: ${activity.verificationWithheldReason ?? "verification unavailable"}`}`;
     };
     const renderActivityRows = (query: JointQuery<RelatedActivity>, parent: HTMLElement): void => {
-        const list = el("ul");
-        list.className = "joint-activity-list";
-        list.setAttribute("aria-label", "Completed Activity evidence");
-        for (const row of query.rows) {
-            const item = el("li");
-            item.className = "joint-activity-item";
-            const heading = el("h5", row.activity.operation);
-            heading.className = "joint-activity-operation";
-            item.appendChild(heading);
-            item.appendChild(el("p", `Finished duration: ${row.activity.durationMs} ms`));
-            item.appendChild(el("p", relationLabel(row)));
-            const identity = document.createElement("details");
-            identity.className = "joint-activity-identity";
-            identity.appendChild(el("summary", "Activity source, identifiers and timing"));
+        const table = el("table");
+        table.className = "query-view-table joint-activity-table";
+        table.setAttribute("aria-label", "Associated completed Activities; flat associations, not a call tree");
+        const head = el("thead");
+        const header = el("tr");
+        for (const label of ["Associated operation", "Finished duration (ms)"]) {
+            const column = el("th", label);
+            column.setAttribute("scope", "col");
+            header.appendChild(column);
+        }
+        head.className = "joint-activity-head";
+        head.appendChild(header);
+        table.appendChild(head);
+        const body = el("tbody");
+        for (const [index, row] of query.rows.entries()) {
+            const item = el("tr");
+            const name = el("td");
+            name.className = "joint-activity-name";
+            const toggle = document.createElement("button");
+            toggle.type = "button";
+            toggle.className = "joint-request-toggle joint-activity-toggle";
+            toggle.appendChild(el("span", "›"));
+            toggle.setAttribute("aria-label", `Details for ${row.activity.operation}; local retained evidence only`);
+            toggle.setAttribute("aria-expanded", "false");
+            const detailRow = el("tr");
+            detailRow.className = "joint-activity-details";
+            detailRow.id = `joint-activity-${expandedRowId}-${index}`;
+            detailRow.hidden = true;
+            toggle.setAttribute("aria-controls", detailRow.id);
+            toggle.addEventListener("click", () => {
+                detailRow.hidden = !detailRow.hidden;
+                toggle.setAttribute("aria-expanded", String(!detailRow.hidden));
+            });
+            name.appendChild(toggle);
+            name.appendChild(el("span", row.activity.operation));
+            if (row.relationship === "same-trace-only") {
+                const weak = el("span", "Weak link");
+                weak.className = "joint-link-marker";
+                name.appendChild(weak);
+            }
+            if (!row.verified) {
+                const unverified = el("span", "Unverified");
+                unverified.className = "joint-link-marker";
+                unverified.setAttribute("title", row.verificationWithheldReason ?? "Verification unavailable");
+                name.appendChild(unverified);
+            }
+            item.appendChild(name);
+            const duration = el("td", String(row.activity.durationMs));
+            duration.setAttribute("aria-label", `Finished duration: ${row.activity.durationMs} ms`);
+            item.appendChild(duration);
+            body.appendChild(item);
+            const identity = el("td");
+            identity.setAttribute("colspan", "2");
+            identity.appendChild(el("p", relationLabel(row)));
             identity.appendChild(el("p", `Source: ${row.activity.source}`));
             identity.appendChild(el("p", `Started: ${row.activity.startedAt} · Stopped: ${row.activity.stoppedAt}`));
+            identity.appendChild(el("p", `Trace ID: ${row.activity.traceId}`));
             identity.appendChild(el("p", `Span ID: ${row.activity.spanId} · Parent span ID: ${row.activity.parentSpanId ?? "unknown"}`));
-            item.appendChild(identity);
-            list.appendChild(item);
+            detailRow.appendChild(identity);
+            body.appendChild(detailRow);
         }
-        parent.appendChild(list);
+        table.appendChild(body);
+        parent.appendChild(table);
     };
     const setDisclosure = (entry: { request: JointRequest; button: HTMLButtonElement; details: HTMLTableRowElement },
         expanded: boolean): void => {
@@ -237,7 +279,7 @@ function createRequestActivitiesView(container: HTMLElement, send: (message: obj
             table.appendChild(el("caption", `Requests pending at window close (${q.rows.length} of ${q.totalRows} retained shown)`));
             const head = el("thead");
             const header = el("tr");
-            for (const column of ["Request", "Elapsed (ms)"]) {
+            for (const column of ["Request / associated operation", "Time (ms)"]) {
                 const th = el("th", column);
                 th.setAttribute("scope", "col");
                 header.appendChild(th);
@@ -260,6 +302,9 @@ function createRequestActivitiesView(container: HTMLElement, send: (message: obj
                 const identity = el("span", `${request.method} ${request.path}`);
                 identity.className = "joint-request-identity";
                 requestCell.appendChild(identity);
+                const marker = el("span", "In flight");
+                marker.className = "joint-inflight-marker";
+                requestCell.appendChild(marker);
                 row.appendChild(requestCell);
                 row.appendChild(el("td", String(request.elapsedMs)));
                 body.appendChild(row);
@@ -294,6 +339,7 @@ function createRequestActivitiesView(container: HTMLElement, send: (message: obj
                 });
             });
             main.appendChild(el("p", "Long-running is a local UI threshold (≥ 1,000 ms), not a collector classification. Filters apply only to returned rows."));
+            main.appendChild(el("p", "In flight: request time is elapsed at window close, not a finished duration. Associated Activity times are finished durations. Indentation groups retained associations, not a call tree; Weak link means same trace only, not proven parentage. Expand an Activity locally for its relationship basis and any withheld-verification reason."));
             main.appendChild(el("p", "Only first-accepted requests still pending at close and completed Activity Stop records are retained. There is no oldest-request guarantee, open-operation inventory, full trace or historical recovery. Expand a row to query the retained CLI capture; no new capture or process read starts. New evidence requires an explicit EventPipe reproduction with exact ActivitySource names."));
             main.appendChild(el("p", "Relationship basis and verification are separate. Finished operation durations are observed wall-clock spans, not exclusive delay, causality or a critical path. Do not sum concurrent durations. Instrumentation, enabled source coverage and loss may be unknown."));
             appendTechnicalDetails(q, main, result);

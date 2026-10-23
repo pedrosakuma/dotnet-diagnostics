@@ -444,6 +444,33 @@ test("switching rows discards late responses and offers an explicit retry withou
     d.view.receive("e1", "r2", related(), currentToken);
     assert.match(d.container.textContent, /Verified identifier relationship/);
 });
+test("Activity disclosures are local aligned flat associations with weak/unverified markers", () => {
+    const d = dom(); d.view.capture("e1", capture());
+    d.disclosure("r1").listeners.click();
+    const result = related();
+    result.rows[0].relationship = "same-trace-only";
+    result.rows[0].verified = false;
+    result.rows[0].verificationWithheldReason = "Parent chain missing.";
+    d.view.receive("e1", "r1", result, d.messages.at(-1).queryToken);
+    assert.match(d.container.textContent, /In flight/);
+    assert.match(d.container.textContent, /Weak linkUnverified/);
+    const table = d.container.querySelectorAll("table").find(node => node.className.includes("joint-activity-table"));
+    assert.match(table.attributes["aria-label"], /flat associations, not a call tree/);
+    assert.deepEqual(table.querySelectorAll("th").map(node => [node.textContent, node.attributes.scope]),
+        [["Associated operation", "col"], ["Finished duration (ms)", "col"]]);
+    const toggle = table.querySelectorAll("button")[0];
+    const details = table.querySelectorAll("tr").find(node => node.className === "joint-activity-details");
+    assert.equal(details.hidden, true);
+    toggle.listeners.click();
+    assert.equal(details.hidden, false);
+    assert.equal(toggle.attributes["aria-expanded"], "true");
+    assert.match(details.textContent, /Parent chain missing/);
+    assert.match(details.textContent, new RegExp(`Trace ID: ${trace}`));
+    toggle.listeners.click();
+    assert.equal(details.hidden, true);
+    assert.equal(d.messages.length, 1, "Activity details never query or collect");
+    assert.match(d.container.textContent, /request time is elapsed at window close, not a finished duration/);
+});
 test("query failure stays inline and retry preserves disclosure focus without an automatic retry", () => {
     const d = dom(); d.view.capture("e1", capture());
     const toggle = d.disclosure("r1"); toggle.listeners.click();
