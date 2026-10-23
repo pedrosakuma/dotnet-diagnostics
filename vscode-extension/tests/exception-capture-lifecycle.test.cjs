@@ -194,6 +194,7 @@ test("integrated target selection and panel disposal invalidate exception acquis
             return panel;
         };
         controller.panel = undefined;
+        controller.targetGeneration = 1;
         controller.exporter = { clear() {} };
         controller.liveReadConsent = { clear() {} };
         controller.targetChanged = target => targets.push(target?.processId);
@@ -212,6 +213,7 @@ test("integrated target selection and panel disposal invalidate exception acquis
         try {
             controller.openPanel(controller.selectedTarget);
             const initialGeneration = controller.panelGeneration;
+            const initialTargetGeneration = controller.targetGeneration;
             const capture = controller.captureExceptions();
             await acquiring;
             if (transition === "select") {
@@ -227,6 +229,8 @@ test("integrated target selection and panel disposal invalidate exception acquis
                 assert.equal(controller.selectedTarget, undefined);
             }
             assert.ok(controller.panelGeneration > initialGeneration);
+            assert.ok(controller.targetGeneration > initialTargetGeneration,
+                "tree selection and current-panel disposal must also invalidate Memory/Threads consent ownership");
             releaseAcquire();
             await capture;
             assert.deepEqual(frames, [], "stale exception preparation must never dispatch to the old PID");

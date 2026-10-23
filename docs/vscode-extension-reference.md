@@ -215,7 +215,7 @@ reopen and confirmed CLI-managed deletion. It survives extension and CLI process
 ordinary panel results and ephemeral handles are not history entries. On a process, choose
 **Capture and Save Snapshot** to collect a **new** live heap, gcdump or thread snapshot, rather
 than converting an older panel result. Saving requires explicit high-risk acknowledgement
-suspension risk for live heap/threads, a blocking Gen2 GC for gcdump). Saved evidence can contain
+(suspension risk for live heap/threads, a blocking Gen2 GC for gcdump). Saved evidence can contain
 sensitive data and remains on disk until deleted.
 The view explicitly labels the catalog on this extension host, not workspace-local history.
 Rows expose artifact kinds; tooltips include reported producer PID, runtime, and capture start
