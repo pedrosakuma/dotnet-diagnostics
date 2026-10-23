@@ -71,6 +71,10 @@ class ElementStub {
         (this.listeners ??= {})[type] = listener;
     }
 
+    click() {
+        this.listeners?.click?.({});
+    }
+
     append(...children) {
         for (const child of children) this.appendChild(child);
     }
@@ -127,6 +131,7 @@ function createDocumentStub() {
         createElementNS(_namespace, tagName) {
             return new ElementStub(tagName);
         },
+        querySelector() { return null; },
         querySelectorAll(selector) {
             const attribute = /^\[([^\]]+)\]$/.exec(selector)?.[1];
             if (!attribute) return [];
@@ -155,14 +160,15 @@ function createDocumentStub() {
     return { document, makeContainer };
 }
 
-function loadRenderer() {
+function loadRenderer(selectThreadSnapshotView) {
     const { document, makeContainer } = createDocumentStub();
     // eslint-disable-next-line no-new-func -- exercises the exact script emitted into the webview.
     const api = new Function(
-        "document", "window",
+        "document", "window", "selectThreadSnapshotView",
         `${QUERY_VIEW_RENDERER_SCRIPT}\nreturn { renderQueryView, enhanceEvidenceTable, resetEvidenceTable,
-            renderHeapTypeNavigation, navigateHeapDetails, updateThreadNavigation, renderExceptionNavigation };`,
-    )(document, {scrollY:13, scrollTo(){}});
+            renderHeapTypeNavigation, navigateHeapDetails, updateThreadNavigation, renderExceptionNavigation,
+            navigateThreadTo };`,
+    )(document, {scrollY:13, scrollTo(){}}, selectThreadSnapshotView);
     return { ...api, makeContainer, document };
 }
 
@@ -183,6 +189,47 @@ test("live and dump webviews include the specialized renderer and styles", () =>
         assert.match(html, /query-view-metrics/);
         assert.doesNotMatch(script, /JSON\.stringify\(resultOrMessage/);
     }
+});
+
+test("thread Workspace summary exposes deadlock and query availability without opening legacy tabs", () => {
+    const html = renderHtml(target, "nonce", 120);
+    const script = extractInlineScript(html);
+    assert.match(html, /id="workspaceThreadViewStatus" role="status"/);
+    assert.match(script, /'thread-explorer': 'Thread explorer'/);
+    assert.match(script, /threadQueryStatusSummary\(\)/);
+    assert.match(script, /state === 'unavailable' \? base \+ ' \(unavailable\)'/);
+
+    const state = /    const threadQueryStates = \{[\s\S]*?\n    \};/.exec(script);
+    const summary = /    function threadQueryStatusSummary\(\) \{[\s\S]*?\n    \}/.exec(script);
+    const presentation = /    function refreshThreadQueryPresentation\(\) \{[\s\S]*?\n    \}/.exec(script);
+    assert.ok(state && summary && presentation, "thread status projection should be emitted in the Workspace script");
+    const source = [state[0], summary[0], presentation[0]].join("\n");
+    const labels = {
+        deadlocks: "Inferred deadlock candidates",
+        "unique-stacks": "Grouped snapshot stacks",
+        "wait-chains": "Snapshot wait chains",
+        threadpool: "Snapshot thread-pool query",
+    };
+    const options = Object.keys(labels).map(value => ({ value, textContent: "" }));
+    // eslint-disable-next-line no-new-func -- executes the actual emitted status summary.
+    const api = new Function("threadSnapshotViewLabels", "workspaceView", `
+        let threadSnapshotQueryAvailable = true;
+        let threadSnapshotEvidenceId = "thread-evidence";
+        ${source}
+        return {threadQueryStates, threadQueryStatusSummary, refreshThreadQueryPresentation};
+    `)(labels, { options });
+    api.threadQueryStates.deadlocks.state = "returned";
+    api.threadQueryStates.deadlocks.count = 2;
+    api.threadQueryStates["unique-stacks"].state = "unavailable";
+    api.threadQueryStates["wait-chains"].state = "pending";
+    api.refreshThreadQueryPresentation();
+    assert.match(api.threadQueryStatusSummary(), /2 inferred deadlock candidate\(s\) returned/);
+    assert.match(api.threadQueryStatusSummary(), /Queries still pending: Snapshot wait chains/);
+    assert.match(api.threadQueryStatusSummary(), /Unavailable query views: Grouped snapshot stacks/);
+    assert.equal(options.find(option => option.value === "deadlocks").textContent,
+        "Inferred deadlock candidates - 2 found (inferred)");
+    assert.equal(options.find(option => option.value === "unique-stacks").textContent,
+        "Grouped snapshot stacks (unavailable)");
 });
 
 test("every generic capture kind has one canonical Workspace domain and no Diagnostics fallback", () => {
@@ -299,8 +346,12 @@ test("domain return restores CPU view and filter without a request; new captures
       let genericCaptureKind;
       let activeResultTab;
       const selectResultTab = name => { activeResultTab = name; };
-      const threadSnapshotViewLabels = {snapshot:'Snapshot summary',deadlocks:'Deadlocks','unique-stacks':'Grouped stacks',
+      const threadSnapshotViewLabels = {snapshot:'Inline thread summary','thread-explorer':'Thread explorer',
+        deadlocks:'Inferred deadlock candidates','unique-stacks':'Grouped snapshot stacks',
         'wait-chains':'Wait chains',threadpool:'Snapshot thread-pool query','thread-statics':'Thread statics'};
+      const threadQueryStates = {
+        deadlocks:{state:'not-requested',count:0},'unique-stacks':{state:'not-requested'},
+        'wait-chains':{state:'not-requested'},threadpool:{state:'not-requested'}};
       let threadSnapshotEvidenceId = "thread-1";
       let threadSnapshotQueryAvailable = true;
       let threadSnapshotView = 'snapshot';
@@ -1332,7 +1383,8 @@ test("unique stacks show frame display names and fractional shares as percentage
         }],
     }, false);
 
-    assert.match(container.textContent, /Sample\.Run\(\)\s+→\s+Sample\.Main\(\)/);
+    assert.match(container.textContent, /Top of stack first/);
+    assert.match(container.textContent, /Sample\.Run\(\).*Sample\.Main\(\)/);
     assert.match(container.textContent, /50%/);
 });
 
@@ -1696,6 +1748,33 @@ test("thread explorer connects groups, full inline stacks and wait-chain owners,
     assert.match(root.textContent, /1 of 2 returned threads match/);
     updateThreadNavigation("snapshot", { threads: [] });
     assert.doesNotMatch(root.textContent, /App.Owner|Thread 99|App.Block/);
+});
+
+test("direct wait-chain thread links synchronize Workspace navigation and return to their source view", () => {
+    let selectedView;
+    const { makeContainer, document, updateThreadNavigation, renderQueryView } = loadRenderer(view => { selectedView = view; });
+    const root = makeContainer("captureThreadResult");
+    const workspaceView = makeContainer("workspaceView");
+    updateThreadNavigation("snapshot", { threads: [
+        { managedThreadId: 1, state: "Wait", frames: ["App.Waiter"] },
+        { managedThreadId: 2, state: "Running", frames: ["App.Owner"] },
+    ] });
+    const queries = makeContainer("threadQueryViews");
+    root.appendChild(queries);
+    renderQueryView("threadQueryViews", "wait-chains", { waitChains: { chains: [{
+        rootThreadId: 1, terminalKind: "Owner", links: [
+            { waitingThreadId: 1, ownerThreadId: 2, targetLabel: "Monitor", confidence: "medium" },
+        ],
+    }] } }, false);
+
+    click(queries, "Thread 2");
+    assert.equal(selectedView, "thread-explorer");
+    assert.equal(workspaceView.value, "thread-explorer");
+    const explorer = document.getElementById("threadExplorer");
+    assert.match(explorer.querySelector(".evidence-selection").textContent, /App.Owner/);
+    click(explorer.querySelector(".evidence-selection"), "Back to wait chains");
+    assert.equal(selectedView, "wait-chains");
+    assert.equal(workspaceView.value, "wait-chains");
 });
 
 test("exception type and message filters select retained occurrences without changing observed totals", () => {

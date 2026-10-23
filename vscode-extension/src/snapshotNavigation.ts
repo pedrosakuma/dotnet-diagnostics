@@ -1,4 +1,43 @@
 declare function updateEvidenceViewSwitcher(container: HTMLElement): void;
+declare function selectThreadSnapshotView(view: string): void;
+
+function setThreadWorkspaceView(view: string): void {
+    const workspaceView = document.getElementById("workspaceView") as HTMLSelectElement | null;
+    if (workspaceView) workspaceView.value = view;
+    if (typeof selectThreadSnapshotView === "function") {
+        selectThreadSnapshotView(view);
+        return;
+    }
+    const summary = document.getElementById("captureThreadHeadline");
+    const table = document.getElementById("captureThreadTable")?.closest("details") as HTMLElement | null;
+    const statics = document.querySelector("#resultThreads .statics-form") as HTMLElement | null;
+    const queries = document.getElementById("threadQueryViews");
+    const isSummary = view === "snapshot";
+    if (summary) summary.hidden = !isSummary;
+    if (table) table.hidden = !isSummary;
+    if (statics) statics.hidden = view !== "thread-statics";
+    if (queries) {
+        queries.hidden = isSummary;
+        const panelId = view === "thread-explorer" ? "threadExplorer" : "threadQueryViews-" + view;
+        const switcher = queries.querySelector<HTMLElement>(".evidence-view-switcher");
+        const tab = Array.from(switcher?.querySelectorAll<HTMLButtonElement>("button") ?? [])
+            .find(button => button.dataset.panel === panelId);
+        tab?.click();
+    }
+}
+
+function navigateThreadTo(id: number, returnPanel?: string): void {
+    const explorer = document.getElementById("threadExplorer") as (HTMLElement & {
+        threadState?: { selected?: unknown; mode?: string; returnPanel?: string };
+    }) | null;
+    if (!explorer?.threadState) return;
+    explorer.threadState.selected = id;
+    explorer.threadState.mode = "threads";
+    explorer.threadState.returnPanel = returnPanel;
+    updateThreadNavigation("selection", {});
+    setThreadWorkspaceView("thread-explorer");
+    explorer.querySelector<HTMLElement>(".evidence-selection")?.focus({ preventScroll: true });
+}
 
 function navigateHeapDetails(details: boolean): void {
     const workspace = document.getElementById("heapWorkspace") as (HTMLElement & {
@@ -8,21 +47,7 @@ function navigateHeapDetails(details: boolean): void {
 }
 
 function navigateThreadFromGroup(id: number): void {
-    const explorer = document.getElementById("threadExplorer") as (HTMLElement & {
-        threadState?: { selected?: unknown; mode?: string; fromGroup?: boolean };
-    }) | null;
-    if (!explorer?.threadState) return;
-    explorer.threadState.selected = id;
-    explorer.threadState.mode = "threads";
-    explorer.threadState.fromGroup = true;
-    updateThreadNavigation("selection", {});
-    const queries = document.getElementById("threadQueryViews");
-    const switcher = queries?.querySelector<HTMLElement>(".evidence-view-switcher");
-    if (queries && switcher) {
-        switcher.dataset.active = "threadExplorer";
-        updateEvidenceViewSwitcher(queries);
-    }
-    explorer.querySelector<HTMLElement>(".evidence-selection")?.focus({ preventScroll: true });
+    navigateThreadTo(id, "threadQueryViews-unique-stacks");
 }
 
 function renderHeapTypeNavigation(types: Array<Record<string, unknown>>): void {
@@ -167,7 +192,7 @@ function updateThreadNavigation(view: string, result: Record<string, unknown>): 
         selected?: unknown;
         search: string;
         mode?: string;
-        fromGroup?: boolean;
+        returnPanel?: string;
     };
     const host = explorer as HTMLElement & { threadState?: ThreadState };
     if (view === "snapshot") host.threadState = {
@@ -262,18 +287,22 @@ function updateThreadNavigation(view: string, result: Record<string, unknown>): 
     };
     function drawDetails(): void {
         details.replaceChildren();
-        if (state.fromGroup) {
+        if (state.returnPanel) {
             const back = document.createElement("button");
             back.type = "button";
-            back.textContent = "Back to grouped stacks";
+            const panelView = state.returnPanel.replace("threadQueryViews-", "");
+            const returnLabels: Record<string, string> = {
+                snapshot: "inline thread summary",
+                deadlocks: "inferred deadlock candidates",
+                "unique-stacks": "grouped stacks",
+                "wait-chains": "wait chains",
+                threadpool: "thread-pool query",
+            };
+            back.textContent = "Back to " + (returnLabels[panelView] ?? "thread evidence");
             back.addEventListener("click", () => {
-                const queries = document.getElementById("threadQueryViews");
-                const switcher = queries?.querySelector<HTMLElement>(".evidence-view-switcher");
-                if (queries && switcher) {
-                    switcher.dataset.active = "threadQueryViews-unique-stacks";
-                    updateEvidenceViewSwitcher(queries);
-                    document.getElementById("tab-threadQueryViews-unique-stacks")?.focus({ preventScroll: true });
-                }
+                const returnView = state.returnPanel === "snapshot" ? "snapshot" : panelView;
+                setThreadWorkspaceView(returnView);
+                document.getElementById("tab-" + state.returnPanel)?.focus({ preventScroll: true });
             });
             details.appendChild(back);
         }
@@ -314,7 +343,31 @@ function updateThreadNavigation(view: string, result: Record<string, unknown>): 
         const matches = state.threads.filter(thread => JSON.stringify(thread).toLowerCase().includes(term));
         if (mode.value === "threads") {
             text(listing, matches.length + " of " + state.threads.length + " returned threads match.");
-            for (const thread of matches) pick(listing, thread.managedThreadId);
+            for (const thread of matches) {
+                if (typeof thread.managedThreadId !== "number") continue;
+                const row = document.createElement("div");
+                row.className = "thread-explorer-row";
+                const topFrame = Array.isArray(thread.frames) && thread.frames.length
+                    ? (typeof thread.frames[0] === "string" ? thread.frames[0] : String(thread.frames[0]?.displayName ?? "Unavailable"))
+                    : "Unavailable";
+                const button = document.createElement("button");
+                button.type = "button";
+                button.textContent = "Thread " + thread.managedThreadId;
+                button.setAttribute("aria-label", button.textContent + " | " + String(thread.state ?? "state unavailable")
+                    + " | " + topFrame);
+                button.addEventListener("click", () => {
+                    state.selected = thread.managedThreadId;
+                    drawDetails();
+                    details.focus({ preventScroll: true });
+                    details.scrollIntoView({ block: "nearest" });
+                });
+                row.appendChild(button);
+                const context = document.createElement("span");
+                context.className = "thread-explorer-row-context";
+                context.textContent = String(thread.state ?? "state unavailable") + " | " + topFrame;
+                row.appendChild(context);
+                listing.appendChild(row);
+            }
         }
         if (mode.value === "cycles") text(listing, state.deadlocks === undefined
             ? "Cycle evidence has not been returned; check Deadlock candidates for availability."
@@ -362,4 +415,5 @@ function updateThreadNavigation(view: string, result: Record<string, unknown>): 
 }
 
 export const SNAPSHOT_NAVIGATION_SCRIPT = navigateHeapDetails.toString() + "\n" + renderHeapTypeNavigation.toString() + "\n"
-    + applyHeapTypeFocus.toString() + "\n" + navigateThreadFromGroup.toString() + "\n" + updateThreadNavigation.toString();
+    + applyHeapTypeFocus.toString() + "\n" + setThreadWorkspaceView.toString() + "\n" + navigateThreadTo.toString()
+    + "\n" + navigateThreadFromGroup.toString() + "\n" + updateThreadNavigation.toString();

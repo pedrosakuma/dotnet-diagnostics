@@ -208,11 +208,13 @@ test("each kind completes through the compiled controller and actual frame valid
 test("live thread snapshot capture and eager queries share one evidence identity", async () => {
     const controller = Object.create(Controller.prototype);
     const messages = [], frames = [];
+    const target = { processId: 4242, managedEntrypointAssemblyName: "Sample" };
     const session = {
         pendingCaptures: new Map(), pendingQueries: new Map(), startInFlight: false, closing: false,
         process: { exitCode: null, signalCode: null },
     };
-    controller.selectedTarget = { processId: 4242 };
+    controller.selectedTarget = target;
+    controller.targetGeneration = 1;
     controller.disposed = false;
     controller.output = { appendLine() {} };
     controller.postMessage = message => messages.push(message);
@@ -228,11 +230,20 @@ test("live thread snapshot capture and eager queries share one evidence identity
             } },
         }));
     };
-    vscode.window.showWarningMessage = async () => "Acknowledge and Capture";
+    let confirmation;
+    vscode.window.showWarningMessage = async message => {
+        confirmation = message;
+        return "Acknowledge and Capture";
+    };
 
     await controller.captureThreadSnapshotCore();
 
     const capture = messages.find(message => message.type === "capture" && message.kind === "thread-snapshot");
+    assert.match(confirmation, /Sample \(PID 4242\)/);
+    assert.match(confirmation, /platform-specific privileged ClrMD attach/);
+    assert.match(confirmation, /cannot be stopped from this extension/);
+    assert.match(confirmation, /frontend limit/);
+    assert.doesNotMatch(confirmation, /ptrace/);
     assert.ok(capture.evidenceId);
     assert.equal(capture.retainedHandleAvailable, true);
     assert.equal(frames[0].requestId, capture.evidenceId);
@@ -247,6 +258,108 @@ test("live thread snapshot capture and eager queries share one evidence identity
     const doneStatusIndex = messages.findIndex(message => message.type === "captureStatus" && message.state === "done");
     assert.ok(doneStatusIndex > lastQueryIndex, "capture status remains active until eager snapshot views finish");
     assert.equal(session.pendingCaptures.size, 0);
+});
+
+test("heap confirmation names its target, source and selected enrichments without dispatch on cancellation", async () => {
+    const controller = Object.create(Controller.prototype);
+    const target = { processId: 4242, managedEntrypointAssemblyName: "Sample" };
+    const frames = [];
+    controller.selectedTarget = target;
+    controller.targetGeneration = 1;
+    controller.disposed = false;
+    controller.output = { appendLine() {} };
+    controller.postMessage = () => {};
+    controller.acquireChild = () => { throw new Error("cancellation must precede connection acquisition"); };
+    controller.writeFrame = (_session, frame) => frames.push(frame);
+    let picker = 0;
+    vscode.window.showQuickPick = async items => {
+        picker++;
+        return picker === 1 ? items[0] : [items[0], items[2]];
+    };
+    let confirmation;
+    vscode.window.showWarningMessage = async message => {
+        confirmation = message;
+        return "Cancel";
+    };
+
+    await controller.captureHeapCore();
+
+    assert.match(confirmation, /Sample \(PID 4242\)/);
+    assert.match(confirmation, /Source: Live \(ClrMD\)/);
+    assert.match(confirmation, /Static fields, Retention paths/);
+    assert.match(confirmation, /platform-specific privileged ClrMD attach/);
+    assert.match(confirmation, /cannot be stopped from this extension/);
+    assert.match(confirmation, /frontend limit/);
+    assert.doesNotMatch(confirmation, /ptrace/);
+    assert.deepEqual(frames, []);
+});
+
+test("heap and thread confirmation do not dispatch when the selected target changes", async () => {
+    const target = { processId: 4242, managedEntrypointAssemblyName: "Sample" };
+    for (const kind of ["heap", "thread-snapshot"]) {
+        const controller = Object.create(Controller.prototype);
+        const frames = [], messages = [];
+        controller.selectedTarget = target;
+        controller.targetGeneration = 1;
+        controller.disposed = false;
+        controller.output = { appendLine() {} };
+        controller.postMessage = message => messages.push(message);
+        controller.acquireChild = () => { throw new Error("stale confirmation must not acquire a CLI"); };
+        controller.writeFrame = (_session, frame) => frames.push(frame);
+        if (kind === "heap") {
+            let picker = 0;
+            vscode.window.showQuickPick = async items => {
+                picker++;
+                return picker === 1 ? items[0] : [];
+            };
+        }
+        vscode.window.showWarningMessage = async () => {
+            controller.selectedTarget = { processId: 5252, managedEntrypointAssemblyName: "Other" };
+            return "Acknowledge and Capture";
+        };
+
+        if (kind === "heap") await controller.captureHeapCore();
+        else await controller.captureThreadSnapshotCore();
+
+        assert.deepEqual(frames, [], kind + " must not dispatch against the previously confirmed target");
+        assert.equal(messages.some(message => message.type === "capture"), false);
+    }
+});
+
+test("heap and thread captures revalidate target ownership after asynchronous CLI acquisition", async () => {
+    const target = { processId: 4242, managedEntrypointAssemblyName: "Sample" };
+    for (const kind of ["heap", "thread-snapshot"]) {
+        const controller = Object.create(Controller.prototype);
+        const frames = [], messages = [];
+        const session = { pendingCaptures: new Map(), pendingQueries: new Map(), startInFlight: false };
+        let closed = 0;
+        controller.selectedTarget = target;
+        controller.targetGeneration = 1;
+        controller.disposed = false;
+        controller.output = { appendLine() {} };
+        controller.postMessage = message => messages.push(message);
+        controller.acquireChild = async () => {
+            controller.selectedTarget = { processId: 5252, managedEntrypointAssemblyName: "Other" };
+            return { session, owns: true };
+        };
+        controller.closeChild = async () => { closed++; };
+        controller.writeFrame = (_session, frame) => frames.push(frame);
+        if (kind === "heap") {
+            let picker = 0;
+            vscode.window.showQuickPick = async items => {
+                picker++;
+                return picker === 1 ? items[0] : [];
+            };
+        }
+        vscode.window.showWarningMessage = async () => "Acknowledge and Capture";
+
+        if (kind === "heap") await controller.captureHeapCore();
+        else await controller.captureThreadSnapshotCore();
+
+        assert.deepEqual(frames, [], kind + " must revalidate ownership before writing a capture frame");
+        assert.equal(closed, 1, kind + " must close its newly acquired idle CLI after the target changes");
+        assert.ok(messages.some(message => message.state === "error"));
+    }
 });
 test("late thread snapshot query results cannot cross evidence replacement", async () => {
     const controller = Object.create(Controller.prototype);

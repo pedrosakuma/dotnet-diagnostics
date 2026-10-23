@@ -234,6 +234,7 @@ class CounterPanelController implements vscode.Disposable {
     private eventsGeneration = 0;
     private readonly statusBar: vscode.StatusBarItem;
     private disposed = false;
+    private targetGeneration = 0;
     private shutdownTask?: Promise<void>;
     private childDisposalTask?: Promise<void>;
     private startCommandTask?: Promise<void>;
@@ -526,6 +527,7 @@ class CounterPanelController implements vscode.Disposable {
             runtimeVersion: entry.runtimeVersion, managedEntrypointAssemblyName: entry.entrypoint,
         };
         this.selectedTarget = target;
+        this.targetGeneration++;
         this.targetChanged?.(target);
         this.openPanel(target);
         await this.waitForPanelReady();
@@ -1059,12 +1061,17 @@ class CounterPanelController implements vscode.Disposable {
         if (!target || this.disposed) {
             return;
         }
+        const targetGeneration = this.targetGeneration;
+        if (!this.isCaptureContextCurrent(target, targetGeneration)) {
+            this.reportCaptureTargetChanged();
+            return;
+        }
 
         const sourcePick = await vscode.window.showQuickPick(
             [
                 {
-                    label: "Live (ClrMD via ptrace)",
-                    description: "Attaches via ptrace and suspends the target",
+                    label: "Live (ClrMD)",
+                    description: "Privileged live attach; may suspend the target while reading heap metadata",
                     source: "live" as HeapCaptureSource,
                 },
                 {
@@ -1076,6 +1083,10 @@ class CounterPanelController implements vscode.Disposable {
             { placeHolder: "Select a heap snapshot source" },
         );
         if (!sourcePick || this.disposed) {
+            return;
+        }
+        if (!this.isCaptureContextCurrent(target, targetGeneration)) {
+            this.reportCaptureTargetChanged();
             return;
         }
 
@@ -1092,14 +1103,22 @@ class CounterPanelController implements vscode.Disposable {
         if (!queryOptIns || this.disposed) {
             return;
         }
+        if (!this.isCaptureContextCurrent(target, targetGeneration)) {
+            this.reportCaptureTargetChanged();
+            return;
+        }
 
         const acknowledged = await vscode.window.showWarningMessage(
-            describeHeapCaptureRisk(sourcePick.source, sourcePick.label),
+            describeHeapCaptureRisk(sourcePick.source, sourcePick.label, target, queryOptIns),
             { modal: true },
             "Acknowledge and Capture",
             "Cancel",
         );
         if (acknowledged !== "Acknowledge and Capture" || this.disposed) {
+            return;
+        }
+        if (!this.isCaptureContextCurrent(target, targetGeneration)) {
+            this.reportCaptureTargetChanged();
             return;
         }
 
@@ -1108,8 +1127,8 @@ class CounterPanelController implements vscode.Disposable {
             type: "captureStatus",
             kind: "heap",
             evidenceId: requestId,
-            state: "running",
-            message: `Capturing heap snapshot (${sourcePick.label})…`,
+            state: "starting",
+            message: `Preparing heap snapshot (${sourcePick.label})…`,
         });
 
         let session: StreamChild;
@@ -1122,15 +1141,35 @@ class CounterPanelController implements vscode.Disposable {
                 kind: "heap",
                 evidenceId: requestId,
                 state: "error",
-                message: withRuntimeGuidance(errorMessage(error)),
+                message: captureWaitErrorMessage(error),
             });
             return;
         }
+        if (!this.isCaptureContextCurrent(target, targetGeneration)) {
+            this.postMessage({
+                type: "captureStatus", kind: "heap", evidenceId: requestId, state: "error",
+                message: "The selected target changed before dispatch. No heap capture was sent; choose the current target and start again.",
+            });
+            if (ownsSession && !session.sessionId && !session.startInFlight
+                && session.pendingCaptures.size === 0 && session.pendingQueries.size === 0) {
+                session.expectedShutdown = true;
+                await this.closeChild(session);
+            }
+            return;
+        }
 
-        const pending: PendingCapture = { kind: "heap", evidenceId: requestId, deferred: deferred<HeapCaptureResult>() };
-        session.pendingCaptures.set(requestId, pending);
         this.heapSnapshot = undefined;
         this.liveReadConsent.clear();
+        this.postMessage({
+            type: "captureStatus",
+            kind: "heap",
+            evidenceId: requestId,
+            state: "running",
+            retainedEvidenceInvalidated: true,
+            message: `Capture dispatched (${sourcePick.label}). It cannot be stopped from this extension; waiting for a result…`,
+        });
+        const pending: PendingCapture = { kind: "heap", evidenceId: requestId, deferred: deferred<HeapCaptureResult>() };
+        session.pendingCaptures.set(requestId, pending);
         let keepSession = false;
         try {
             this.writeFrame(session, {
@@ -1155,7 +1194,10 @@ class CounterPanelController implements vscode.Disposable {
                 this.heapSnapshot = { session, handle, evidenceId: requestId };
                 keepSession = true;
             }
-            this.postMessage({ type: "capture", kind: "heap", evidenceId: requestId, source: sourcePick.source, result });
+            this.postMessage({
+                type: "capture", kind: "heap", evidenceId: requestId, source: sourcePick.source,
+                retainedHandleAvailable: Boolean(handle && sourcePick.source !== "gcdump"), result,
+            });
             this.postMessage({
                 type: "captureStatus",
                 kind: "heap",
@@ -1177,7 +1219,7 @@ class CounterPanelController implements vscode.Disposable {
                 kind: "heap",
                 evidenceId: requestId,
                 state: "error",
-                message: withRuntimeGuidance(errorMessage(error)),
+                message: captureWaitErrorMessage(error),
             });
             this.output.appendLine(`Heap snapshot capture failed: ${errorMessage(error)}`);
         } finally {
@@ -1229,9 +1271,12 @@ class CounterPanelController implements vscode.Disposable {
         return {
             currentHeapHandle: () => {
                 const snapshot = this.heapSnapshot;
-                return snapshot && !snapshot.session.closing && snapshot.session.process.exitCode === null && snapshot.session.process.signalCode === null
-                    ? snapshot.handle
-                    : undefined;
+                if (!snapshot) return undefined;
+                if (snapshot.session.closing || snapshot.session.process.exitCode !== null || snapshot.session.process.signalCode !== null) {
+                    this.invalidateRetainedSnapshotsFor(snapshot.session);
+                    return undefined;
+                }
+                return snapshot.handle;
             },
             acknowledge: async (view, address) => this.liveReadConsent.acknowledge(view, () => {
                 const snapshot = this.heapSnapshot;
@@ -1418,6 +1463,8 @@ class CounterPanelController implements vscode.Disposable {
         const view = "thread-statics";
         if (!snapshot || snapshot.evidenceId !== evidenceId || snapshot.session.closing
             || snapshot.session.process.exitCode !== null || snapshot.session.process.signalCode !== null) {
+            if (snapshot && (snapshot.session.closing || snapshot.session.process.exitCode !== null || snapshot.session.process.signalCode !== null))
+                this.invalidateRetainedSnapshotsFor(snapshot.session);
             this.postMessage({
                 type: "queryError", kind: "thread-snapshot", evidenceId, view,
                 message: "This thread snapshot was replaced or is no longer available. Capture a thread snapshot first.",
@@ -1461,14 +1508,23 @@ class CounterPanelController implements vscode.Disposable {
         if (!target || this.disposed) {
             return;
         }
+        const targetGeneration = this.targetGeneration;
+        if (!this.isCaptureContextCurrent(target, targetGeneration)) {
+            this.reportCaptureTargetChanged();
+            return;
+        }
 
         const acknowledged = await vscode.window.showWarningMessage(
-            describeThreadCaptureRisk(),
+            describeThreadCaptureRisk(target),
             { modal: true },
             "Acknowledge and Capture",
             "Cancel",
         );
         if (acknowledged !== "Acknowledge and Capture" || this.disposed) {
+            return;
+        }
+        if (!this.isCaptureContextCurrent(target, targetGeneration)) {
+            this.reportCaptureTargetChanged();
             return;
         }
 
@@ -1488,11 +1544,20 @@ class CounterPanelController implements vscode.Disposable {
             status("error", withRuntimeGuidance(errorMessage(error)));
             return;
         }
+        if (!this.isCaptureContextCurrent(target, targetGeneration)) {
+            status("error", "The selected target changed before dispatch. No thread snapshot was sent; choose the current target and start again.", true);
+            if (ownsSession && !session.sessionId && !session.startInFlight
+                && session.pendingCaptures.size === 0 && session.pendingQueries.size === 0) {
+                session.expectedShutdown = true;
+                await this.closeChild(session);
+            }
+            return;
+        }
 
         const pending: PendingCapture = { kind: "thread-snapshot", deferred: deferred<ThreadCaptureResult>() };
         session.pendingCaptures.set(evidenceId, pending);
         this.threadSnapshot = undefined;
-        status("running", "Capturing thread snapshot…", true);
+        status("running", "Thread snapshot dispatched. It cannot be stopped from this extension; waiting for a result…", true);
         let keepSession = false;
         try {
             this.writeFrame(session, {
@@ -1520,7 +1585,7 @@ class CounterPanelController implements vscode.Disposable {
             if (handle) await this.runThreadQueries(session, handle, evidenceId);
             status("done", "Thread snapshot capture complete.");
         } catch (error) {
-            status("error", withRuntimeGuidance(errorMessage(error)), true);
+            status("error", captureWaitErrorMessage(error), true);
             this.output.appendLine(`Thread snapshot capture failed: ${errorMessage(error)}`);
         } finally {
             session.pendingCaptures.delete(evidenceId);
@@ -1576,10 +1641,21 @@ class CounterPanelController implements vscode.Disposable {
         }
 
         this.selectedTarget = selected.target;
+        this.targetGeneration++;
         this.targetChanged?.(selected.target);
         this.openPanel(selected.target);
         await this.waitForPanelReady();
         return selected.target;
+    }
+
+    private isCaptureContextCurrent(target: TargetProcess, generation: number): boolean {
+        return !this.disposed && this.selectedTarget === target && this.targetGeneration === generation;
+    }
+
+    private reportCaptureTargetChanged(): void {
+        const message = "The selected target changed while capture confirmation was open. No capture was sent; select the intended target and start again.";
+        this.output.appendLine(message);
+        void vscode.window.showWarningMessage(message);
     }
 
     public async stopCounters(): Promise<void> {
@@ -1761,6 +1837,7 @@ class CounterPanelController implements vscode.Disposable {
             this.resetEventsDeliveryState();
             this.panel = undefined;
             this.panelGeneration++;
+            this.targetGeneration++;
             this.liveReadConsent.clear();
             this.exporter.clear();
             this.selectedTarget = undefined;
@@ -2006,6 +2083,7 @@ class CounterPanelController implements vscode.Disposable {
             for (const pending of this.pendingExports.values()) {
                 if (pending.session === session) pending.deferred.reject(new Error("The CLI connection closed before the export completed."));
             }
+            this.invalidateRetainedSnapshotsFor(session);
             if (this.cpuExport?.session === session) this.cpuExport = undefined;
             if (this.allocationProfile?.session === session) this.allocationProfile = undefined;
             this.postMessage({ type: "profileAvailability" });
@@ -2529,7 +2607,7 @@ class CounterPanelController implements vscode.Disposable {
         if (this.joint?.session === session
             || !session.eventsConnection && [...session.pendingCaptures.values()].some(pending => pending.kind === "request-activities")) this.jointGeneration++;
         if (this.joint?.session === session) this.invalidateJoint("Disconnected: retained display only; further CLI queries are unavailable.");
-        if (this.heapSnapshot?.session === session) this.liveReadConsent.clear();
+        this.invalidateRetainedSnapshotsFor(session);
         if (this.cpuExport?.session === session) this.cpuExport = undefined;
         if (this.allocationProfile?.session === session) this.allocationProfile = undefined;
         this.postMessage({ type: "profileAvailability" });
@@ -2551,6 +2629,7 @@ class CounterPanelController implements vscode.Disposable {
                     this.output.appendLine("CLI child did not exit after cancellation and was forcibly terminated.");
                 }
             }
+
         }
         session.lines.close();
         if (this.activeChild === session) {
@@ -2558,6 +2637,30 @@ class CounterPanelController implements vscode.Disposable {
         }
         if (this.eventsChild === session) {
             this.eventsChild = undefined;
+        }
+    }
+
+    private invalidateRetainedSnapshotsFor(session: StreamChild): void {
+        if (this.threadSnapshot?.session === session) {
+            const evidenceId = this.threadSnapshot.evidenceId;
+            this.threadSnapshot = undefined;
+            this.postMessage({
+                type: "threadSnapshotAvailability",
+                evidenceId,
+                available: false,
+                message: "The owning CLI connection closed. The rendered snapshot remains available for inspection.",
+            });
+        }
+        if (this.heapSnapshot?.session === session) {
+            const evidenceId = this.heapSnapshot.evidenceId;
+            this.heapSnapshot = undefined;
+            this.liveReadConsent.clear();
+            this.postMessage({
+                type: "heapSnapshotAvailability",
+                evidenceId,
+                available: false,
+                message: "The owning CLI connection closed. The rendered snapshot remains available for inspection.",
+            });
         }
     }
 
@@ -3732,7 +3835,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
   <section id="resultHeap" class="result-tab-panel" role="tabpanel" aria-labelledby="resultTabHeap" hidden>
     ${LIVE_READ_CONSENT_HTML}
     <div class="panel-actions"><button id="captureHeap" type="button">Capture heap snapshot…</button></div>
-    <div id="captureHeapStatus"></div>
+    <div id="captureHeapStatus" role="status" aria-live="polite"></div>
     <div id="captureHeapResult" class="empty">
       <div id="captureHeapHeadline"></div>
       <div id="heapWorkspace" class="heap-workspace" data-focused="false">
@@ -3752,7 +3855,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
   </section>
   <section id="resultThreads" hidden>
     <div class="panel-actions"><button id="captureThreadSnapshot" type="button">Capture thread snapshot…</button></div>
-    <div id="captureThreadStatus"></div>
+    <div id="captureThreadStatus" role="status" aria-live="polite"></div>
     <div id="captureThreadResult" class="empty">
       <div id="captureThreadHeadline"></div>
       <details><summary>Inline thread summary</summary>
@@ -3886,7 +3989,8 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       workspaceCanvas.appendChild(panel);
     }
     const threadSnapshotViewLabels = {
-      snapshot: 'Snapshot summary',
+      snapshot: 'Inline thread summary',
+      'thread-explorer': 'Thread explorer',
       deadlocks: 'Inferred deadlock candidates',
       'unique-stacks': 'Grouped snapshot stacks',
       'wait-chains': 'Snapshot wait chains',
@@ -3914,6 +4018,12 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     let threadSnapshotQueryAvailable = false;
     let pendingThreadSnapshotEvidenceId;
     let threadSnapshotView = 'snapshot';
+    const threadQueryStates = {
+      deadlocks: { state: 'not-requested', count: 0 },
+      'unique-stacks': { state: 'not-requested' },
+      'wait-chains': { state: 'not-requested' },
+      threadpool: { state: 'not-requested' },
+    };
     workspaceGcCapture.removeAttribute('hidden');
     workspaceCanvas.appendChild(workspaceGcCapture);
     let selectedWorkspaceEvidence = 'cpu';
@@ -3945,6 +4055,30 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       workspaceEvidenceStatusByKind.set(statusKind, message);
       if (selectedWorkspaceEvidence === statusKind || selectedWorkspaceEvidence === 'gc-activities' && statusKind === 'gc') {
         workspaceEvidenceStatus.textContent = message;
+      }
+    }
+    function threadQueryStatusSummary() {
+      const pending = Object.entries(threadQueryStates).filter(([, item]) => item.state === 'pending').map(([view]) => threadSnapshotViewLabels[view]);
+      const unavailable = Object.entries(threadQueryStates).filter(([, item]) => item.state === 'unavailable').map(([view]) => threadSnapshotViewLabels[view]);
+      const candidates = threadQueryStates.deadlocks.state === 'returned' ? threadQueryStates.deadlocks.count : 0;
+      const notices = [];
+      if (candidates > 0) notices.push(candidates + ' inferred deadlock candidate(s) returned; validate the wait-for edges.');
+      if (pending.length) notices.push('Queries still pending: ' + pending.join(', ') + '.');
+      if (unavailable.length) notices.push('Unavailable query views: ' + unavailable.join(', ') + '.');
+      if (!threadSnapshotQueryAvailable && threadSnapshotEvidenceId)
+        notices.push('No retained query handle is available; the snapshot is display-only.');
+      return notices.join(' ');
+    }
+    function refreshThreadQueryPresentation() {
+      for (const option of Array.from(workspaceView.options || [])) {
+        const view = option.value;
+        if (!Object.prototype.hasOwnProperty.call(threadQueryStates, view)) continue;
+        const state = threadQueryStates[view];
+        const base = threadSnapshotViewLabels[view];
+        option.textContent = view === 'deadlocks' && state.state === 'returned' && state.count > 0
+          ? base + ' - ' + state.count + ' found (inferred)'
+          : state.state === 'unavailable' ? base + ' (unavailable)'
+            : state.state === 'pending' ? base + ' (pending)' : base;
       }
     }
     function setWorkspaceEvidence(kind) {
@@ -4023,6 +4157,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           option.textContent = label;
           workspaceView.appendChild(option);
         }
+        refreshThreadQueryPresentation();
         workspaceView.value = threadSnapshotView;
         selectThreadSnapshotView(threadSnapshotView);
       } else if (usesWorkspaceForGenericCapture(kind)) {
@@ -4048,23 +4183,39 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     }
     function selectThreadSnapshotView(view) {
       threadSnapshotView = view;
+      workspaceView.value = view;
       const queryViews = document.getElementById('threadQueryViews');
       const staticsForm = document.querySelector('#resultThreads .statics-form');
       const inlineSummary = document.getElementById('captureThreadHeadline');
       const inlineTable = document.getElementById('captureThreadTable')?.closest('details');
       const isSnapshot = view === 'snapshot';
+      const isExplorer = view === 'thread-explorer';
       const isStatics = view === 'thread-statics';
       inlineSummary.hidden = !isSnapshot;
       if (inlineTable) inlineTable.hidden = !isSnapshot;
       staticsForm.hidden = !isStatics;
-      const panelId = 'threadQueryViews-' + view;
+      const panelId = isExplorer ? 'threadExplorer' : 'threadQueryViews-' + view;
       const panel = document.getElementById(panelId);
       queryViews.hidden = isSnapshot || !panel;
       if (!isSnapshot && panel) {
         const switcher = queryViews.querySelector('.evidence-view-switcher');
         const tab = switcher?.querySelector('[data-panel="' + panelId + '"]');
         if (tab) tab.click();
-        workspaceThreadViewStatus.textContent = '';
+        if (isExplorer) workspaceThreadViewStatus.textContent =
+          'Thread explorer shows only returned thread IDs and inline frames. Missing participants or frames are not inferred. '
+          + threadQueryStatusSummary();
+        else if (isStatics) workspaceThreadViewStatus.textContent = threadSnapshotQueryAvailable
+          ? 'Enter an exact type name and explicitly query this snapshot. Selecting this view does not run a query or reattach. '
+            + threadQueryStatusSummary()
+          : 'This snapshot has no retained query handle; thread statics are unavailable. ' + threadQueryStatusSummary();
+        else {
+          const state = threadQueryStates[view]?.state;
+          workspaceThreadViewStatus.textContent = state === 'pending'
+            ? 'This snapshot query is still pending. ' + threadQueryStatusSummary()
+            : state === 'unavailable'
+              ? 'This query did not return; the snapshot may still be displayed, but this view is unavailable. ' + threadQueryStatusSummary()
+              : 'Thread query evidence is a point-in-time projection. ' + threadQueryStatusSummary();
+        }
       } else if (isStatics) {
         workspaceThreadViewStatus.textContent = threadSnapshotQueryAvailable
           ? 'Enter an exact type name and explicitly query this snapshot. Selecting this view does not run a query or reattach.'
@@ -4075,7 +4226,8 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           : 'Capture a thread snapshot before exploring its views.';
       } else {
         workspaceThreadViewStatus.textContent = threadSnapshotEvidenceId
-          ? 'Point-in-time thread snapshot. Thread-pool query evidence is separate from Thread-pool event captures.'
+          ? 'Point-in-time thread snapshot. Thread-pool query evidence is separate from Thread-pool event captures. '
+            + threadQueryStatusSummary()
           : 'Capture a thread snapshot to explore returned threads, locks and waits.';
       }
     }
@@ -5139,16 +5291,25 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       const threads = (data && data.threads) || [];
       threads.slice(0, MAX_THREAD_ROWS).forEach(thread => {
         const row = document.createElement('tr');
-        const topFrame = Array.isArray(thread.frames) && thread.frames.length > 0 ? thread.frames[0] : '';
+        const firstFrame = Array.isArray(thread.frames) && thread.frames.length > 0 ? thread.frames[0] : '';
+        const topFrame = typeof firstFrame === 'string' ? firstFrame
+          : firstFrame && typeof firstFrame.displayName === 'string' ? firstFrame.displayName : '';
         const cells = [
           String(thread.managedThreadId),
           String(thread.state || '') + (thread.isLikelyBlocked ? ' (blocked)' : ''),
           String(thread.inferredWaitReason || ''),
           String(topFrame),
         ];
-        cells.forEach(text => {
+        cells.forEach((text, index) => {
           const cell = document.createElement('td');
-          cell.textContent = text;
+          if (index === 0 && Number.isSafeInteger(thread.managedThreadId) && thread.managedThreadId >= 0) {
+            const link = document.createElement('button');
+            link.type = 'button';
+            link.className = 'heap-type-link';
+            link.textContent = 'Thread ' + thread.managedThreadId;
+            link.addEventListener('click', () => navigateThreadTo(thread.managedThreadId, 'snapshot'));
+            cell.appendChild(link);
+          } else cell.textContent = text;
           row.appendChild(cell);
         });
         captureThreadBody.appendChild(row);
@@ -5406,18 +5567,15 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         if (typeof message.evidenceId === 'string') pendingHeapEvidenceId = message.evidenceId;
         if (message.state === 'starting') activateCaptureTab('heap');
         captureHeapStatusElement.textContent = message.message || message.state || '';
-        if (message.state === 'running') {
+        if (message.retainedEvidenceInvalidated === true) {
+          setAddressLiveQueriesAvailable(false);
           setWorkspaceStatus('heap', 'Heap recapture in progress. A prior visual may remain; query availability and consent follow the current retained owner.');
+          document.getElementById('heapQueryViews').replaceChildren();
+          resetAddressNavigation();
         } else if (message.state === 'error') {
           setWorkspaceStatus('heap', 'Heap recapture failed. A prior visual may remain; queryability is not inferred from that display.');
         }
-        captureHeapButton.disabled = message.state === 'running';
-        if (message.state === 'running') {
-          // Clear any query-view sections left over from a previous capture so a stale
-          // opt-in/gcdump-origin section can't be mistaken for data from the capture in flight.
-          document.getElementById('heapQueryViews').innerHTML = '';
-          resetAddressNavigation();
-        }
+        captureHeapButton.disabled = message.state === 'running' || message.state === 'starting';
       } else if (message.type === 'captureStatus' && message.kind === 'thread-snapshot') {
         if (typeof message.evidenceId !== 'string') return;
         if (message.state === 'starting') pendingThreadSnapshotEvidenceId = message.evidenceId;
@@ -5430,15 +5588,27 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           threadSnapshotQueryAvailable = false;
           setThreadStaticsBusy(false);
           threadSnapshotView = 'snapshot';
+          for (const state of Object.values(threadQueryStates)) { state.state = 'pending'; state.count = 0; }
           if (selectedWorkspaceEvidence === 'thread-snapshot') workspaceView.value = 'snapshot';
           setWorkspaceStatus('thread-snapshot',
             'The previous thread snapshot handle was invalidated when recapture began; any remaining summary is display-only.');
           if (selectedWorkspaceEvidence === 'thread-snapshot') selectThreadSnapshotView('snapshot');
         } else if (message.state === 'error') {
+          if (message.retainedEvidenceInvalidated === true || !threadSnapshotEvidenceId) {
+            for (const state of Object.values(threadQueryStates)) {
+              if (state.state === 'pending' || state.state === 'not-requested') state.state = 'unavailable';
+            }
+          }
           setWorkspaceStatus('thread-snapshot', threadSnapshotEvidenceId
             ? 'Thread snapshot capture failed before invalidating the current retained snapshot.'
             : 'Thread snapshot capture failed; no current retained snapshot is available.');
+        } else if (message.state === 'done') {
+          for (const state of Object.values(threadQueryStates)) {
+            if (state.state === 'pending') state.state = 'unavailable';
+          }
         }
+        refreshThreadQueryPresentation();
+        if (message.state === 'error' || message.state === 'done') selectThreadSnapshotView(threadSnapshotView);
         if (message.state === 'running') {
           document.getElementById('threadQueryViews').innerHTML = '';
           document.getElementById('threadExplorer')?.remove();
@@ -5467,20 +5637,44 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         if (message.evidenceId !== pendingHeapEvidenceId) return;
         heapEvidenceSource = message.source;
         heapEvidenceId = typeof message.evidenceId === 'string' ? message.evidenceId : undefined;
+        setAddressLiveQueriesAvailable(message.retainedHandleAvailable === true);
         renderHeapCapture(message.source, message.result);
-        setWorkspaceStatus('heap', 'Current displayed evidence: heap snapshot (' + String(message.source || 'source unavailable')
-          + '). Retained live-query availability is governed by the snapshot owner and consent state.');
+        setWorkspaceStatus('heap', message.retainedHandleAvailable === true
+          ? 'Current evidence: heap snapshot (' + String(message.source || 'source unavailable') + '). Live follow-up reads require separate consent.'
+          : 'Current evidence is display-only: heap snapshot (' + String(message.source || 'source unavailable')
+            + ') has no retained live-query handle.');
       } else if (message.type === 'capture' && message.kind === 'thread-snapshot') {
         if (message.evidenceId !== pendingThreadSnapshotEvidenceId) return;
         threadSnapshotEvidenceId = message.evidenceId;
         threadSnapshotQueryAvailable = message.retainedHandleAvailable === true;
+        for (const state of Object.values(threadQueryStates)) {
+          state.state = threadSnapshotQueryAvailable ? 'pending' : 'unavailable';
+          state.count = 0;
+        }
         setThreadStaticsBusy(false);
-        threadSnapshotView = 'snapshot';
+        threadSnapshotView = 'thread-explorer';
         renderThreadCapture(message.result);
         setWorkspaceStatus('thread-snapshot', threadSnapshotQueryAvailable
           ? 'Current evidence: point-in-time thread snapshot. Snapshot thread-pool query evidence is separate from thread-pool event captures.'
           : 'Current evidence: point-in-time thread snapshot; no retained query handle is available. Snapshot thread-pool query evidence is separate from thread-pool event captures.');
-        selectThreadSnapshotView('snapshot');
+        refreshThreadQueryPresentation();
+        selectThreadSnapshotView('thread-explorer');
+      } else if (message.type === 'threadSnapshotAvailability') {
+        if (message.evidenceId !== threadSnapshotEvidenceId || message.available !== false) return;
+        threadSnapshotQueryAvailable = false;
+        setThreadStaticsBusy(false);
+        for (const state of Object.values(threadQueryStates)) {
+          if (state.state === 'pending') state.state = 'unavailable';
+        }
+        refreshThreadQueryPresentation();
+        const detail = typeof message.message === 'string' ? message.message : 'The retained CLI connection closed.';
+        setWorkspaceStatus('thread-snapshot', 'Current evidence is display-only: ' + detail + ' Returned views remain available; live thread statics queries are disabled.');
+        if (selectedWorkspaceEvidence === 'thread-snapshot') selectThreadSnapshotView(threadSnapshotView);
+      } else if (message.type === 'heapSnapshotAvailability') {
+        if (message.evidenceId !== heapEvidenceId || message.available !== false) return;
+        const detail = typeof message.message === 'string' ? message.message : 'The retained CLI connection closed.';
+        setWorkspaceStatus('heap', 'Current heap evidence is display-only: ' + detail + ' Live object and GC-root follow-up reads are disabled.');
+        setAddressLiveQueriesAvailable(false);
       } else if (message.type === 'capture') {
         if (message.evidenceId !== pendingCpuEvidenceId) return;
         profileCaptureBusy.cpu = false;
@@ -5535,16 +5729,24 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       } else if (message.type === 'query' && message.kind === 'thread-snapshot') {
         if (message.evidenceId !== threadSnapshotEvidenceId) return;
         renderQueryView('threadQueryViews', message.view, message.result, false);
-        if (selectedWorkspaceEvidence === 'thread-snapshot' && threadSnapshotView === message.view)
-          selectThreadSnapshotView(message.view);
+        if (Object.prototype.hasOwnProperty.call(threadQueryStates, message.view)) {
+          threadQueryStates[message.view].state = 'returned';
+          if (message.view === 'deadlocks') threadQueryStates.deadlocks.count =
+            Array.isArray(message.result?.deadlocks) ? message.result.deadlocks.length : 0;
+          refreshThreadQueryPresentation();
+          if (selectedWorkspaceEvidence === 'thread-snapshot') selectThreadSnapshotView(threadSnapshotView);
+        }
       } else if (message.type === 'queryError' && message.kind === 'heap') {
         if (message.evidenceId !== heapEvidenceId) return;
         renderQueryView('heapQueryViews', message.view, message.message, true);
       } else if (message.type === 'queryError' && message.kind === 'thread-snapshot') {
         if (message.evidenceId !== threadSnapshotEvidenceId) return;
         renderQueryView('threadQueryViews', message.view, message.message, true);
-        if (selectedWorkspaceEvidence === 'thread-snapshot' && threadSnapshotView === message.view)
-          selectThreadSnapshotView(message.view);
+        if (Object.prototype.hasOwnProperty.call(threadQueryStates, message.view)) {
+          threadQueryStates[message.view].state = 'unavailable';
+          refreshThreadQueryPresentation();
+          if (selectedWorkspaceEvidence === 'thread-snapshot') selectThreadSnapshotView(threadSnapshotView);
+        }
       } else if (message.type === 'historyDuration') {
         if (typeof message.seconds === 'number' && Number.isFinite(message.seconds) && message.seconds > 0) {
           historyDurationMs = message.seconds * 1000;
@@ -5694,7 +5896,7 @@ export function renderDumpAnalysisHtml(dumpFileName: string, nonce: string): str
 
   <section class="panel">
     <h3>Heap snapshot</h3>
-    <div id="captureHeapStatus" class="status"></div>
+    <div id="captureHeapStatus" class="status" role="status" aria-live="polite"></div>
     <div id="captureHeapResult" class="empty">
       <div id="captureHeapHeadline"></div>
       <div id="heapWorkspace" class="heap-workspace" data-focused="false">
@@ -5716,7 +5918,7 @@ export function renderDumpAnalysisHtml(dumpFileName: string, nonce: string): str
 
   <section class="panel">
     <h3>Thread snapshot</h3>
-    <div id="captureThreadStatus" class="status"></div>
+    <div id="captureThreadStatus" class="status" role="status" aria-live="polite"></div>
     <div id="captureThreadResult" class="empty">
       <div id="captureThreadHeadline"></div>
       <details><summary>Inline thread summary</summary>
@@ -5951,11 +6153,20 @@ function isCancellationMessage(message: string): boolean {
  * `inspect-heap --source live`/`--source gcdump` (both High risk / Acknowledge, unlike CPU
  * sampling's Moderate risk) so CLI/MCP users see consistent risk framing in the extension.
  */
-function describeHeapCaptureRisk(source: HeapCaptureSource, label: string): string {
+function describeHeapCaptureRisk(
+    source: HeapCaptureSource,
+    label: string,
+    target: TargetProcess,
+    options: HeapQueryOptIns,
+): string {
     const impact = source === "live"
-        ? "A live ClrMD heap walk attaches with ptrace, suspends the target, and exposes heap type and object-graph metadata. This may expose possibly confidential data."
+        ? "A platform-specific privileged ClrMD attach may briefly suspend the target while reading its heap and exposes heap type and object-graph metadata. This may expose possibly confidential data."
         : "GC dump capture induces a managed GC and exposes aggregate heap type metadata. This may expose possibly confidential data.";
-    return `Capture heap snapshot (${label})? ${impact} This is a high-risk operation that requires explicit acknowledgement before it runs against the selected process.`;
+    const selectedOptions = HEAP_QUERY_OPT_IN_PICKS
+        .filter(item => options[item.key])
+        .map(item => item.label);
+    const optionSummary = selectedOptions.length ? selectedOptions.join(", ") : "none";
+    return `Capture heap snapshot for ${target.managedEntrypointAssemblyName ?? "Unknown .NET application"} (PID ${target.processId})? Source: ${label}. Optional additional heap data: ${optionSummary}. ${impact} This operation cannot be stopped from this extension after dispatch. The 120-second wait timeout is a frontend limit, not a guarantee that target-side work has stopped.`;
 }
 
 async function promptCaptureParams(spec: CaptureKindSpec): Promise<CaptureParams | undefined> {
@@ -5996,10 +6207,19 @@ async function promptCaptureParams(spec: CaptureKindSpec): Promise<CaptureParams
     return params;
 }
 
-function describeThreadCaptureRisk(): string {
-    return "Capture thread snapshot? A live ClrMD thread walk attaches with ptrace, briefly suspends the target, "
-        + "and exposes stack, type, and method names. This may expose possibly confidential data. This is a "
-        + "high-risk operation that requires explicit acknowledgement before it runs against the selected process.";
+function describeThreadCaptureRisk(target: TargetProcess): string {
+    return `Capture thread snapshot for ${target.managedEntrypointAssemblyName ?? "Unknown .NET application"} (PID ${target.processId})? `
+        + "A platform-specific privileged ClrMD attach may briefly suspend the target and exposes stack, type, and method names. "
+        + "This may expose possibly confidential data. This operation cannot be stopped from this extension after dispatch. "
+        + "The 120-second wait timeout is a frontend limit, not a guarantee that target-side work has stopped.";
+}
+
+function captureWaitErrorMessage(error: unknown): string {
+    const message = errorMessage(error);
+    if (/Operation timed out after 120000ms\./.test(message)) {
+        return `${message} The extension stopped waiting; it cannot confirm that target-side work stopped. Treat the result as unavailable and verify the target before retrying.`;
+    }
+    return withRuntimeGuidance(message);
 }
 
 function withRuntimeGuidance(message: string): string {

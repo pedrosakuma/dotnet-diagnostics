@@ -188,6 +188,7 @@ const addressNavigationState = { entries: [], index: -1, sequence: 0 };
 let addressInspectorClosed = false;
 let addressInspectorOpener;
 let revealedObject;
+let addressLiveQueriesAvailable = true;
 
 function isValidAddress(value) {
   return typeof value === 'string' && /^0x[0-9a-fA-F]{1,16}$/.test(value) && /[1-9a-fA-F]/.test(value.slice(2));
@@ -195,6 +196,27 @@ function isValidAddress(value) {
 
 function postAddressMessage(message) {
   if (typeof vscode !== 'undefined' && vscode) vscode.postMessage(message);
+}
+
+function setAddressLiveQueriesAvailable(available) {
+  addressLiveQueriesAvailable = available;
+  for (const containerId of ['heapQueryViews', 'addressQueryViews', 'addressNavigation']) {
+    const container = document.getElementById(containerId);
+    if (!container) continue;
+    for (const control of [...container.querySelectorAll('button'), ...container.querySelectorAll('input')]) {
+      const addressLink = control.classList.contains('address-link');
+      const followUp = control.hasAttribute('data-live-follow-up');
+      if (!addressLink && !followUp) continue;
+      control.disabled = !available;
+      control.title = available
+        ? addressLink ? 'Inspect the object at ' + control.textContent : ''
+        : 'Live heap connection unavailable; this snapshot is display-only.';
+    }
+  }
+  if (!available) {
+    const status = document.getElementById('addressNavStatus');
+    if (status) status.textContent = 'Display-only: the owning CLI connection is closed. Live object and GC-root reads are disabled.';
+  }
 }
 
 function appendAddressValue(parent, value, containerId) {
@@ -210,7 +232,9 @@ function appendAddressValue(parent, value, containerId) {
     link.type = 'button';
     link.className = 'address-link';
     link.textContent = value;
-    link.title = 'Inspect the object at ' + value;
+    link.disabled = !addressLiveQueriesAvailable;
+    link.title = addressLiveQueriesAvailable ? 'Inspect the object at ' + value
+      : 'Live heap connection unavailable; this snapshot is display-only.';
     link.setAttribute('aria-label', 'Inspect the object at ' + value);
     link.addEventListener('click', () => navigateToAddress(value, 'object'));
     wrapper.appendChild(link);
@@ -232,6 +256,11 @@ function appendAddressValue(parent, value, containerId) {
 
 function navigateToAddress(address, view, includeSensitiveValues = false, arrayStartIndex, arrayCount) {
   if (!isValidAddress(address) || !addressViewLabels[view]) return;
+  if (!addressLiveQueriesAvailable) {
+    const status = document.getElementById('addressNavStatus');
+    if (status) status.textContent = 'The owning CLI connection is closed. This snapshot is display-only; live follow-up reads are unavailable.';
+    return;
+  }
   address = address.toLowerCase();
   const state = addressNavigationState;
   revealedObject = undefined;
@@ -330,7 +359,9 @@ function renderAddressNavigation() {
         if (view === entry.view) continue;
         const button = document.createElement('button');
         button.type = 'button';
+        button.setAttribute('data-live-follow-up', 'true');
         button.textContent = addressViewLabels[view];
+        button.disabled = !addressLiveQueriesAvailable;
         button.addEventListener('click', () => navigateToAddress(entry.address, view));
         actions.appendChild(button);
       }
@@ -339,9 +370,12 @@ function renderAddressNavigation() {
 
   const status = document.getElementById('addressNavStatus');
   if (status) {
-    status.textContent = !entry ? '' : entry.status === 'loading'
+    const detail = !entry ? '' : entry.status === 'loading'
       ? 'Looking up ' + entry.address + '…'
       : entry.status === 'error' ? '' : addressViewLabels[entry.view] + ' for ' + entry.address;
+    status.textContent = !addressLiveQueriesAvailable && entry
+      ? 'Display-only: the owning CLI connection is closed. ' + detail
+      : detail;
   }
 
   const results = document.getElementById('addressQueryViews');
@@ -374,7 +408,8 @@ function renderAddressNavigation() {
       const revealed = revealedObject?.navigationId === entry.navigationId;
       reveal.textContent = revealed ? 'Hide values' : 'Reveal values of this object';
       reveal.title = 'Applies to string, field and array previews of this object, within read limits. Requires separate sensitive-data consent.';
-      reveal.disabled = entry.status === 'loading';
+      reveal.setAttribute('data-live-follow-up', 'true');
+      reveal.disabled = !addressLiveQueriesAvailable || entry.status === 'loading';
       reveal.addEventListener('click', () => {
         if (revealed) { revealedObject = undefined; renderAddressNavigation(); }
         else navigateToAddress(entry.address, 'object', true, entry.arrayStartIndex, entry.arrayCount);

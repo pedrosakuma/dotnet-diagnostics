@@ -8,7 +8,9 @@ declare function renderExceptionNavigation(parent: HTMLElement, events: Array<Re
 declare function applyHeapTypeFocus(): void;
 declare function updateThreadNavigation(view: string, result: Record<string, unknown>): void;
 declare function navigateThreadFromGroup(id: number): void;
+declare function navigateThreadTo(id: number, returnPanel?: string): void;
 declare function updateEvidenceViewSwitcher(container: HTMLElement): void;
+declare let addressLiveQueriesAvailable: boolean;
 
 // Provided by the address-navigation script that is emitted next to this renderer in the webview.
 declare function appendAddressValue(parent: HTMLElement, value: unknown, containerId: string): void;
@@ -107,6 +109,16 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
     const fillCell = (cell: HTMLElement, columnName: string, value: unknown) => {
         if (/address$/i.test(columnName)) {
             appendAddressValue(cell, value, containerId);
+        } else if (containerId === "threadQueryViews" && document.getElementById("threadExplorer")
+            && /^(?:managed|waiting|owner) thread$/i.test(columnName)
+            && typeof value === "number" && Number.isSafeInteger(value) && value >= 0) {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "heap-type-link";
+            button.textContent = "Thread " + value;
+            button.addEventListener("click", () => navigateThreadTo(value,
+                containerId === "threadQueryViews" ? "threadQueryViews-" + view : undefined));
+            cell.appendChild(button);
         } else {
             cell.textContent = formatValue(value);
         }
@@ -398,8 +410,9 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
                         ] as Array<[string, number, boolean]>) {
                             const button = document.createElement("button");
                             button.type = "button";
+                            button.setAttribute("data-live-follow-up", "true");
                             button.textContent = label;
-                            button.disabled = disabled;
+                            button.disabled = disabled || !addressLiveQueriesAvailable;
                             button.addEventListener("click", () => read(index));
                             controls.appendChild(button);
                         }
@@ -411,11 +424,15 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
                         indexInput.max = String(length - 1);
                         indexInput.step = "1";
                         indexInput.value = String(start);
+                        indexInput.setAttribute("data-live-follow-up", "true");
+                        indexInput.disabled = !addressLiveQueriesAvailable;
                         label.appendChild(indexInput);
                         controls.appendChild(label);
                         const go = document.createElement("button");
                         go.type = "button";
+                        go.setAttribute("data-live-follow-up", "true");
                         go.textContent = "Read array range";
+                        go.disabled = !addressLiveQueriesAvailable;
                         const readIndex = () => {
                             const value = indexInput.value.trim();
                             const index = Number(value);
@@ -680,10 +697,21 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
                         appendMessage(body, "No managed stack frames were returned for this group. The capture does not specify why; "
                             + "this does not mean these threads have no stack or share the same execution path.", "query-view-note");
                     }
-                    appendMessage(body, frames.map(frame => {
+                    const stack = document.createElement("ol");
+                    stack.className = "query-view-stack-frames";
+                    for (const frame of frames) {
                         const item = frame && typeof frame === "object" ? frame as Record<string, unknown> : {};
-                        return typeof item.displayName === "string" && item.displayName ? item.displayName : formatValue(item);
-                    }).join("  →  "), "query-view-chain");
+                        const frameNode = document.createElement("li");
+                        frameNode.textContent = typeof item.displayName === "string" && item.displayName
+                            ? item.displayName : formatValue(item);
+                        stack.appendChild(frameNode);
+                    }
+                    if (frames.length) {
+                        const order = document.createElement("p");
+                        order.className = "query-view-note";
+                        order.textContent = "Top of stack first.";
+                        body.append(order, stack);
+                    }
                 },
                 "No stack groups matched the requested threshold.");
             break;
@@ -706,11 +734,14 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
                         ["Inferred cycle candidate", row.isInferredCycleCandidate],
                         ["Confidence", row.inferenceConfidence],
                     ], body);
+                    fieldTable(body, "Root thread", [{ managedThreadId: row.rootThreadId }], [
+                        ["Managed thread", link => link.managedThreadId],
+                    ], "No root thread ID was returned.");
                     fieldTable(body, "Wait chain", row.links, [
                         ["Waiting thread", link => link.waitingThreadId],
                         ["Wait reason", link => link.waitReason],
                         ["Target", link => [link.targetKind, link.targetLabel].filter(Boolean).join(" · ")],
-                        ["Owner", link => link.ownerThreadId],
+                        ["Owner thread", link => link.ownerThreadId],
                         ["Confidence", link => link.confidence],
                     ], "No wait links were recorded.");
                     notes("Chain caveats", row.notes);
@@ -1000,9 +1031,13 @@ export const QUERY_VIEW_STYLES = `
     details.query-view-nested > summary { cursor:pointer; font-weight:500; }
     .query-view-nested-body { padding:.35rem 0 .2rem .7rem; }
     .query-view-chain { font-family:var(--vscode-editor-font-family); overflow-wrap:anywhere; }
+    .query-view-stack-frames { padding-left:1.5rem; }
+    .query-view-stack-frames li { margin:.15rem 0; overflow-wrap:anywhere; }
+    .thread-explorer-row { display:grid; grid-template-columns:max-content minmax(0,1fr); gap:.4rem; align-items:start; margin:.2rem 0; }
+    .thread-explorer-row-context { min-width:0; overflow-wrap:anywhere; color:var(--vscode-descriptionForeground); }
     .reference-path { list-style:none; padding-left:.8rem; border-left:1px solid var(--vscode-panel-border); }
     .reference-path summary { cursor:pointer; overflow-wrap:anywhere; }
-    .query-view-notes { border-left:3px solid var(--vscode-editorWarning-foreground); padding:.25rem .65rem; margin:.6rem 0; }
+    .query-view-notes { border:1px solid var(--vscode-editorWarning-foreground); padding:.25rem .65rem; margin:.6rem 0; }
     .query-view-notes ul { margin:.25rem 0; padding-left:1.2rem; }
     .query-view-deadlocks { border-color:var(--vscode-editorWarning-foreground)!important; border-width:2px!important; }
     .query-view-deadlocks > summary { color:var(--vscode-editorWarning-foreground); }

@@ -62,7 +62,15 @@ function loadRenderThreadCapture(script) {
                 const cells = [];
                 return { tagName: "tr", appendChild(cell) { cells.push(cell); }, get _cells() { return cells; } };
             }
-            return { tagName, set textContent(value) { this._textContent = value; }, get textContent() { return this._textContent; } };
+            return {
+                tagName,
+                set textContent(value) { this._textContent = value; },
+                get textContent() {
+                    return (this._textContent ?? "") + (this.children ?? []).map(child => child.textContent ?? "").join("");
+                },
+                appendChild(child) { (this.children ??= []).push(child); },
+                addEventListener() {},
+            };
         },
     };
 
@@ -121,7 +129,7 @@ test("renderThreadCapture formats a thread snapshot's headline and per-thread ta
                     currentExceptionType: null,
                     isLikelyBlocked: true,
                     inferredWaitReason: "Monitor.Enter",
-                    frames: ["System.Threading.Monitor.Enter()"],
+                    frames: [{ displayName: "System.Threading.Monitor.Enter()" }],
                 },
             ],
             locks: [
@@ -137,11 +145,11 @@ test("renderThreadCapture formats a thread snapshot's headline and per-thread ta
     assert.equal(captureThreadBody._rows.length, 2);
     assert.deepEqual(
         captureThreadBody._rows[0]._cells.map(cell => cell.textContent),
-        ["1", "Running", "", "Sample.Program.Main()"],
+        ["Thread 1", "Running", "", "Sample.Program.Main()"],
     );
     assert.deepEqual(
         captureThreadBody._rows[1]._cells.map(cell => cell.textContent),
-        ["2", "Wait (blocked)", "Monitor.Enter", "System.Threading.Monitor.Enter()"],
+        ["Thread 2", "Wait (blocked)", "Monitor.Enter", "System.Threading.Monitor.Enter()"],
     );
 });
 

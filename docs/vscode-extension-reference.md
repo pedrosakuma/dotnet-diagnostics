@@ -215,7 +215,7 @@ reopen and confirmed CLI-managed deletion. It survives extension and CLI process
 ordinary panel results and ephemeral handles are not history entries. On a process, choose
 **Capture and Save Snapshot** to collect a **new** live heap, gcdump or thread snapshot, rather
 than converting an older panel result. Saving requires explicit high-risk acknowledgement
-(ptrace/suspension for live heap/threads, a blocking Gen2 GC for gcdump). Saved evidence can contain
+suspension risk for live heap/threads, a blocking Gen2 GC for gcdump). Saved evidence can contain
 sensitive data and remains on disk until deleted.
 The view explicitly labels the catalog on this extension host, not workspace-local history.
 Rows expose artifact kinds; tooltips include reported producer PID, runtime, and capture start
@@ -329,7 +329,10 @@ Types and stacks are independent aggregates: choosing a type does not filter the
 Capture totals include ticks without stacks; the profile reports its attributed share rather than
 redistributing missing bytes. Subtree queries still use the highest-ranked method-name match.
 Allocation profiles have separate state from CPU profiles, retain their owning CLI connection and
-never recollect on navigation. A new allocation capture replaces the displayed profile.
+never recollect on navigation. A new allocation capture replaces the displayed profile. If no
+allocation call tree is returned, the panel says that the response does not identify why attribution
+is unavailable and suggests checking capture quality/retrying under representative allocation
+activity; it does not claim a cause or diagnosis.
 
 This is not exact object instrumentation or per-object lifetime tracking: `GCAllocationTick` fires
 roughly per 100 KB allocated and names the most recent object. Counts are ticks, not objects;
@@ -459,16 +462,19 @@ the #1166 JSONL extension; older protocol-v2 CLIs report the kind as unsupported
 
 Use **Capture Heap Snapshot** (tree-view action or Command Palette command
 `dotnetDiagnostics.captureHeap`) to take a single point-in-time heap snapshot. Unlike CPU sampling,
-this capture requires choosing a **source**: **Live** (ClrMD via `ptrace`) or **GC Dump** (EventPipe).
-Both sources are classified High risk / Acknowledge in Core's invocation-safety registry (CPU
-sampling is only Moderate), so after picking a source the extension shows a native modal describing
-its impact — a live walk attaches with `ptrace`, suspends the target, and exposes heap type and
+this capture requires choosing a **source**: **Live** (ClrMD) or **GC Dump** (EventPipe). Both
+sources are classified High risk / Acknowledge in Core's invocation-safety registry (CPU sampling
+is only Moderate), so after picking a source and any optional enrichments the extension shows a
+native modal naming the application and PID, source, selected extra heap data, and impact. A live
+walk uses a platform-specific privileged attach, may suspend the target, and exposes heap type and
 object-graph metadata; a GC dump induces a managed GC and exposes aggregate heap type metadata; both
-may expose possibly confidential data — and only sends the capture request once you select
-**Acknowledge and Capture**. The result panel shows the top types by total bytes (type, instance
+may expose possibly confidential data. The extension cannot stop a dispatched capture. Its
+120-second result-wait timeout is a frontend limit, not a guarantee that target-side work has
+stopped. The request is sent only after you select **Acknowledge and Capture**. The result panel
+shows the top types by total bytes (type, instance
 count, bytes), the suspend duration for `live` captures, and any concerning GC-dump completion flags
 (e.g. timed out, reader failed) for `gcdump` captures; each capture replaces the previous rendering.
-A live heap walk needs the same `ptrace`/`CAP_SYS_PTRACE` access as other live memory readers (see
+A live heap walk requires the host's corresponding privileged attach access (on Linux, see
 AGENTS.md's "🪪 `CAP_SYS_PTRACE` for live memory readers" section) and fails with an actionable
 permission-denied message when that access is unavailable. A GC dump instead goes through the
 diagnostic IPC channel but induces a blocking Gen2 GC pause on the target while it runs.
@@ -484,33 +490,45 @@ Use **Capture Thread Snapshot** (tree-view action or Command Palette command
 process's managed threads. Unlike heap capture, there is only one source: a live ClrMD attach (the
 CLI's offline `--dump-file` option does not apply to a live VS Code panel), so no source QuickPick is
 shown. It is classified High risk / Acknowledge in Core's invocation-safety registry, the same tier
-as heap's `live` source, so the extension shows a native modal before sending the request —
-explaining that a live thread snapshot attaches with `ptrace`, briefly suspends the target, and
-exposes stack, type, and method names, some of which may be confidential — and only sends the
-capture request once you select **Acknowledge and Capture**. The result panel shows each thread's
+as heap's `live` source, so the extension shows a native modal naming the application and PID
+before sending the request. It explains that a platform-specific privileged ClrMD attach may
+briefly suspend the target and exposes stack, type, and method names, some of which may be
+confidential. The extension cannot stop a dispatched capture; its 120-second result-wait timeout
+does not bound suspension or guarantee target-side cancellation. The request is sent only after
+you select **Acknowledge and Capture**. The result panel shows each thread's
 managed thread id, state (flagged when likely blocked), inferred wait reason, and its top stack
 frame, bounded to a summary-first table; each capture replaces the previous rendering. A live thread
-snapshot needs the same `ptrace`/`CAP_SYS_PTRACE` access as the heap capture's `live` source (see
-AGENTS.md's "🪪 `CAP_SYS_PTRACE` for live memory readers" section) and fails with an actionable
+snapshot needs the host's corresponding privileged attach access (on Linux, see AGENTS.md's
+"🪪 `CAP_SYS_PTRACE` for live memory readers" section) and fails with an actionable
 permission-denied message when that access is unavailable.
 
+In **Workspace > Threads & waits**, **Thread explorer** is the default after a successful snapshot
+and is also directly selectable in **View**. Its returned-thread list shows state and top frame for
+scanability; selecting an item shows the returned inline frames in top-of-stack-first order. The
+inline summary and each returned thread ID in related evidence link directly into the explorer.
 The **Thread explorer** connects searchable returned threads, expandable stack groups,
 representative group member IDs, inferred cycle participants and wait-chain owners. Selecting
 a thread shows all its returned inline frames and related wait edges; selecting an owner moves
 to that participant. A participant omitted from the inline list is explicitly unavailable, not
 invented from another thread's stack. Group counts may exceed the representative IDs returned.
 All of this is snapshot navigation, not a scheduler timeline; a new snapshot resets selections.
-Its mode selector switches between **Returned threads**, **Grouped stacks**, **Wait chains**
-and **Inferred cycle candidates**, preserving the selected thread. The original inline table
-remains available under **Inline thread summary**.
+Its mode selector switches between **Returned threads**, **Wait chains** and **Inferred cycle
+candidates**, preserving the selected thread. Grouped stack evidence remains available from
+**View**. The original inline table remains available under **Inline thread summary**. The Workspace
+view selector and status identify inferred deadlock candidates and unavailable/pending snapshot
+queries; a terminal capture or query failure is shown as unavailable rather than left pending. If
+the owning CLI connection closes, returned evidence remains display-only and live thread-statics
+queries are disabled.
 
 **Follow-up drilldown views.** After a heap or thread capture succeeds, the extension issues
 follow-up `query` requests against the capture's handle (sequentially, over the same streaming
-connection). Heap and thread results have an **Evidence views** switcher instead of stacking
-all sections vertically. Switching displays one result at a time and preserves its controls and
-selection, without querying again; new results do not steal the selected view. Unavailable views
-are labelled in the switcher, whose always-visible status also reports failures and inferred
-deadlock warnings. Thread explorer is the default thread view; the detailed query responses remain
+connection). Heap and saved/dump thread results have an **Evidence views** switcher instead of stacking all
+sections vertically. Switching displays one result at a time and preserves its controls and
+selection, without querying again; new results do not steal the selected view. In the live thread
+snapshot Workspace, the **View** selector labels pending/unavailable queries and returned inferred
+cycle candidates, while its visible status reports failures and warnings. Heap snapshots whose
+retained connection closes remain display-only, and live object/GC-root address follow-ups are
+disabled. Thread explorer is the default live thread view; detailed query responses remain
 available as alternatives, including their metadata, limitations and errors.
 
 - **Heap** (7 always queried): `roots-by-kind`, `finalizer-queue`, `fragmentation`, `gchandles`,
@@ -571,7 +589,8 @@ is open cancels that pending acknowledgement; it cannot interrupt a read already
 Captures, raw traces and exports keep their separate acknowledgements. Dump reads do not acquire
 live-read grants. The bounded history records operation/decision/time, not addresses or values.
 **Object** and **GC root path** are read on demand through the CLI's `query` request with
-`address`. For a live panel that read re-attaches via ptrace and suspends the target (High risk), so
+`address`. For a live panel that read uses the host's privileged attach mechanism and may suspend
+the target (High risk; Linux uses ptrace), so
 the extension asks for an explicit modal acknowledgement unless that operation has an active
 snapshot-session grant, and shows the result as read
 live, not part of the captured snapshot; Back/Forward use cached results and never read again. In a

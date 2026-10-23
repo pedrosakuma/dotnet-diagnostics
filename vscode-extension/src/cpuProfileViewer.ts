@@ -73,7 +73,9 @@ function renderCpuProfile(
     let focus = atPath(state.focus) ?? entries[0];
     let selected = state.selected ? atPath(state.selected) : undefined;
     if (!focus) {
-        container.textContent = "No call tree was available for this sample.";
+        container.textContent = allocation
+            ? "No call tree was returned for this allocation profile. The response does not identify why attribution is unavailable. Check capture quality and retry during representative allocation activity before drawing conclusions."
+            : "No call tree was returned for this sample. The response does not identify why the profile is unavailable.";
         return;
     }
     const method = (node: CpuTreeNode) => node.frame?.method || "Unknown method";
