@@ -222,6 +222,8 @@ The connection is retained while the panel owns a CPU export or allocation-explo
 The capture renders its own top-hotspot table (module, method, inclusive/exclusive sample
 counts) that is replaced by the next capture rather than appended to a history. A capture does not
 start or stop the live counters/GC session, and it is not compared against any baseline.
+The current CPU profile cannot be saved or compared in the extension; the CLI's separate retained-artifact
+CPU comparison workflow and its limits are documented in [Historical comparisons](./historical-comparisons.md#supported-matrix).
 The live panel keeps CPU, allocation and heap evidence within the **Workspace** domain/evidence
 selectors; other existing tabs remain available for their current result surfaces. Starting or
 completing an explicit capture selects its corresponding domain or result tab. CPU

@@ -614,7 +614,7 @@ function cpuNode(method, inclusiveSamples, exclusiveSamples, children = []) {
 
 function selectCpuPath(container, path) {
     const row = elements(container, e => e.attributes["data-node-path"] === path)[0];
-    row.listeners.keydown({key:"Enter",target:row,preventDefault(){}});
+    row.querySelector(".cpu-profile-method").listeners.click();
 }
 
 test("CPU call tree renders a semantic table with disclosures and selected-method queries", () => {
@@ -638,6 +638,33 @@ test("CPU call tree renders a semantic table with disclosures and selected-metho
         view: "caller-callee",
         rootMethodFilter: "App.Main()",
     }]);
+});
+
+test("CPU visualization follows essential controls and keeps active partial-data warnings prominent", () => {
+    const { renderCpuQuery, container } = cpuRenderer();
+    renderCpuQuery("call-tree", { data: { totalSamples: 100, truncated: true,
+        root: cpuNode("Root", 100, 10, [cpuNode("Work", 90, 90)]),
+    } }, false);
+
+    const all = elements(container, () => true);
+    const indexOf = predicate => all.findIndex(predicate);
+    const visualization = indexOf(element => element.className === "cpu-profile-visualization");
+    const search = indexOf(element => element.tagName === "input");
+    const warning = indexOf(element => element.className === "cpu-profile-warning");
+    const selection = indexOf(element => element.className === "cpu-profile-selection");
+    const guidance = indexOf(element => element.className === "cpu-profile-guidance");
+    assert.ok(search < warning && warning < visualization,
+        "search and any active partial-projection warning precede the data");
+    assert.equal(all[warning].getAttribute("role"), "alert");
+    assert.ok(visualization < selection && visualization < guidance,
+        "the call tree precedes secondary actions and visible technical guidance");
+    assert.match(all[guidance].textContent, /inclusive sample counts, not elapsed time or measured CPU utilization/);
+    assert.match(all[guidance].textContent, /cannot be saved or compared in the extension/);
+    const comparisonLink = elements(all[guidance], element => element.tagName === "a")[0];
+    assert.equal(comparisonLink.getAttribute("href"),
+        "https://github.com/pedrosakuma/dotnet-diagnostics/blob/main/docs/historical-comparisons.md#supported-matrix");
+    assert.equal(comparisonLink.getAttribute("target"), "_blank");
+    assert.equal(comparisonLink.getAttribute("rel"), "noopener noreferrer");
 });
 
 test("CPU flame widths preserve self and omitted samples instead of renormalizing children", () => {
@@ -714,6 +741,10 @@ test("CPU focus uses exact local paths across modes, preserves capture denominat
     assert.deepEqual(state.focus, [1]);
     assert.equal(elements(container, e => e.attributes["data-node-path"] === "1.0")[0].hidden, false,
         "focusing a collapsed branch opens its loaded children");
+    const focusedMethod = elements(container, e => e.className === "cpu-profile-method" && e.focused)[0];
+    assert.equal(focusedMethod, elements(container, e => e.attributes["data-node-path"] === "1")[0]
+        .querySelector(".cpu-profile-method"),
+        "focus returns to the focused branch's method button rather than a row or disclosure control");
     assert.match(container.querySelector(".cpu-profile-selection").textContent, /40.0% of capture; 100.0% of focus/);
     click(container, "Flame graph (icicle)");
     assert.match(container.querySelector("svg").textContent, /Second/);
@@ -892,15 +923,19 @@ test("CPU contextual actions select exact occurrences by mouse and keyboard with
     assert.equal(context.querySelector("button").disabled,true);
     assert.equal(elements(container,e=>e.textContent==="Callers / callees").length,0);
     const rows=elements(container,e=>e.attributes["data-node-path"]!==undefined);
+    assert.ok(rows.every(row => row.attributes.tabindex === undefined),
+        "semantic table rows do not add a redundant keyboard tab stop");
     assert.equal(elements(container.querySelector(".cpu-call-tree"),e=>e.textContent==="Focus"||e.textContent==="Hotpath").length,0);
     const expanded=[...state.expanded ?? [""]];
-    rows[1].listeners.click({target:rows[1]});
+    const firstMethod = rows[1].querySelector(".cpu-profile-method");
+    assert.equal(firstMethod.tagName, "button", "the method action remains natively keyboard-activatable");
+    firstMethod.listeners.click();
     assert.deepEqual(state.selected,[0]);
     assert.equal(rows[1].getAttribute("aria-selected"),"true");
     assert.match(context.textContent,/Selected branch: Same.Name/);
     assert.equal(context.querySelector(".cpu-profile-selected-name").title,"Same.Name");
     const second=rows[3];
-    second.listeners.keydown({key:" ",target:second,preventDefault(){}});
+    second.querySelector(".cpu-profile-method").listeners.click();
     assert.deepEqual(state.selected,[1],"same-name occurrence has its own path identity");
     assert.equal(rows[1].getAttribute("aria-selected"),"false");
     assert.equal(second.getAttribute("aria-selected"),"true");
