@@ -86,7 +86,18 @@
         }
       ]
     },
+    "viewsWelcome": [
+      {
+        "view": "dotnetDiagnostics.processes",
+        "contents": "No discoverable .NET processes. Start a .NET application on this extension host, then refresh its diagnostic endpoints.\n[Open Getting Started](command:dotnetDiagnostics.openGettingStarted)\n[Check Environment](command:dotnetDiagnostics.checkEnvironment)\n[Refresh Processes](command:dotnetDiagnostics.refreshProcesses)"
+      }
+    ],
     "commands": [
+      {
+        "command": "dotnetDiagnostics.clearProcessFilter",
+        "title": ".NET Diagnostics: Clear Process Filter",
+        "icon": "$(clear-all)"
+      },
       {
         "command": "dotnetDiagnostics.selectProcess",
         "title": ".NET Diagnostics: Select Process"
@@ -178,6 +189,16 @@
     ],
     "menus": {
       "view/title": [
+        {
+          "command": "dotnetDiagnostics.openGettingStarted",
+          "when": "view == dotnetDiagnostics.processes",
+          "group": "help"
+        },
+        {
+          "command": "dotnetDiagnostics.checkEnvironment",
+          "when": "view == dotnetDiagnostics.processes",
+          "group": "help"
+        },
         {
           "command": "dotnetDiagnostics.refreshProcesses",
           "when": "view == dotnetDiagnostics.processes",

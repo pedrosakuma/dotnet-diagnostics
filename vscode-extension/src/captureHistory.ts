@@ -34,8 +34,17 @@ export class CaptureHistory implements vscode.TreeDataProvider<HistoryRow>, vsco
         }
         const c = row.capture;
         const item = new vscode.TreeItem(c.name || c.captureId, vscode.TreeItemCollapsibleState.None);
-        item.description = `${c.createdUtc} - ${c.state}`;
-        item.tooltip = `Saved capture ${c.captureId}; ${c.artifacts.length} artifact(s). Offline evidence only.`;
+        const kinds = [...new Set(c.artifacts.map(a => a.kind))].join(", ") || "No artifacts";
+        item.description = `${c.createdUtc} - ${c.state} - ${kinds}`;
+        const origins = c.artifacts.map(a => {
+            const p = a.provenance;
+            return `${a.name} (${a.kind}): ${p?.processId ? `PID ${p.processId}` : "process not reported"}`
+                + `${p?.runtimeName ? `; ${p.runtimeName}` : ""}${p?.runtimeVersion ? ` ${p.runtimeVersion}` : ""}`
+                + `${p?.startedAt ? `; capture started ${p.startedAt}` : ""}`;
+        });
+        item.tooltip = [`Saved capture ${c.captureId}; ${c.artifacts.length} artifact(s). Offline evidence only.`,
+            "CLI capture catalog on this extension host; not workspace-local. Origin workspace is not reported.",
+            ...origins].join("\n");
         item.contextValue = "dotnetDiagnostics.savedCapture";
         item.iconPath = new vscode.ThemeIcon("history");
         item.command = { command: "dotnetDiagnostics.openCapture", title: "Open saved capture", arguments: [row] };

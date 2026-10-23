@@ -203,6 +203,7 @@ class CounterPanelController implements vscode.Disposable {
     private readonly exporter = new ResultExporter();
     private cpuExport?: { session: StreamChild; handle: string; evidenceId: string; trace?: boolean };
     public liveCountersChanged?: (active: boolean) => void;
+    public targetChanged?: (target: TargetProcess | undefined) => void;
     private allocationProfile?: { session: StreamChild; handle: string; evidenceId: string };
     private readonly pendingExports = new Map<string, { session: StreamChild; deferred: Deferred<unknown> }>();
     private exporting = false;
@@ -525,6 +526,7 @@ class CounterPanelController implements vscode.Disposable {
             runtimeVersion: entry.runtimeVersion, managedEntrypointAssemblyName: entry.entrypoint,
         };
         this.selectedTarget = target;
+        this.targetChanged?.(target);
         this.openPanel(target);
         await this.waitForPanelReady();
     }
@@ -1574,6 +1576,7 @@ class CounterPanelController implements vscode.Disposable {
         }
 
         this.selectedTarget = selected.target;
+        this.targetChanged?.(selected.target);
         this.openPanel(selected.target);
         await this.waitForPanelReady();
         return selected.target;
@@ -1695,7 +1698,12 @@ class CounterPanelController implements vscode.Disposable {
             } else if (message.type === "captureExceptions") {
                 void this.captureExceptions();
             } else if (message.type === "captureDiagnostics") {
-                void this.captureDiagnostics();
+                if (message.kind === undefined || typeof message.kind === "string" && isCaptureViewKind(message.kind)) {
+                    void this.captureDiagnostics(message.kind);
+                } else this.postMessage({
+                    type: "captureStatus", kind: "diagnostics", state: "error",
+                    message: "Choose a supported diagnostic capture kind.",
+                });
             } else if (message.type === "captureRequestActivities") {
                 void this.captureRequestActivities();
             } else if (message.type === "queryRequestActivities"
@@ -1756,6 +1764,7 @@ class CounterPanelController implements vscode.Disposable {
             this.liveReadConsent.clear();
             this.exporter.clear();
             this.selectedTarget = undefined;
+            this.targetChanged?.(undefined);
             this.panelReady?.resolve();
             this.panelReady = undefined;
             void this.disposeChild();
@@ -3275,11 +3284,25 @@ export function activate(context: vscode.ExtensionContext): void {
     const processCommand = (row: ProcessRow | undefined, action: ProcessAction, fallback: () => Promise<void>): Promise<void> =>
         row ? guarded(() => processes.invoke(row, action)) : fallback();
     const actions = new DiagnosticsActionsProvider();
+    controller.targetChanged = target => {
+        void guarded(() => processes.setActiveTarget(target ? {
+            processId: target.processId,
+            entrypoint: target.managedEntrypointAssemblyName ?? null,
+            runtimeVersion: target.runtimeVersion,
+            platform: `${target.operatingSystem}/${target.processArchitecture}`,
+            identity: [target.managedEntrypointAssemblyName ?? "", target.runtimeVersion,
+                `${target.operatingSystem}/${target.processArchitecture}`].join("|"),
+        } : undefined));
+    };
     controller.liveCountersChanged = active => actions.setLiveCountersActive(active);
     const actionsView = vscode.window.createTreeView("dotnetDiagnostics.actions", {
         treeDataProvider: actions,
         showCollapseAll: false,
     });
+    const processView = vscode.window.createTreeView("dotnetDiagnostics.processes", { treeDataProvider: processes });
+    const historyView = vscode.window.createTreeView("dotnetDiagnostics.history", { treeDataProvider: history });
+    historyView.message = "CLI capture catalog on this extension host; not workspace-local.";
+    const processViewState = processes.onDidChangeTreeData(() => { processView.message = processes.message; });
     context.subscriptions.push(
         output,
         controller,
@@ -3287,11 +3310,13 @@ export function activate(context: vscode.ExtensionContext): void {
         actions,
         processes,
         history,
-        vscode.window.createTreeView("dotnetDiagnostics.processes", { treeDataProvider: processes }),
-        vscode.window.createTreeView("dotnetDiagnostics.history", { treeDataProvider: history }),
+        processView,
+        processViewState,
+        historyView,
         vscode.commands.registerCommand("dotnetDiagnostics.selectProcess", (row: ProcessRow) => guarded(() => processes.invoke(row, "select"))),
         vscode.commands.registerCommand("dotnetDiagnostics.refreshProcesses", () => guarded(() => processes.refresh())),
         vscode.commands.registerCommand("dotnetDiagnostics.filterProcesses", () => guarded(() => processes.setFilter())),
+        vscode.commands.registerCommand("dotnetDiagnostics.clearProcessFilter", () => guarded(() => processes.clearFilter())),
         vscode.commands.registerCommand("dotnetDiagnostics.refreshHistory", (row?: HistoryRow) => guarded(() => history.refresh(row && "more" in row ? row.more : undefined))),
         vscode.commands.registerCommand("dotnetDiagnostics.openCapture", (row: HistoryRow) => guarded(() => history.open(row))),
         vscode.commands.registerCommand("dotnetDiagnostics.deleteCapture", (row: HistoryRow) => guarded(() => history.delete(row))),
@@ -3606,6 +3631,10 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       <div id="workspaceGcStatus" role="status"></div>
     </div>
     <div id="workspaceCaptureStatus" role="status"></div>
+    <div id="workspaceRequestCapture" hidden>
+      <button id="captureRequestEvidence" type="button">Capture</button>
+      <p>Live capture, not saved. A successful capture replaces the shared generic result, including evidence from other domains. Names, paths and SQL may contain sensitive data. Ordinary captures cannot be cancelled here.</p>
+    </div>
     <div id="jointReproduction" hidden>
       <button id="captureRequestActivities" type="button" aria-label="Capture requests and completed Activities">Capture</button>
       <button id="cancelRequestActivities" type="button" disabled>Cancel reproduction</button>
@@ -3944,7 +3973,10 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         workspaceEvidenceKind.appendChild(option);
       }
       workspaceEvidenceKind.value = kind;
-      document.getElementById('jointReproduction').hidden = workspaceDomain.value !== 'requests';
+      document.getElementById('jointReproduction').hidden = kind !== 'request-activities';
+      const ordinaryRequestCapture = ['requests', 'kestrel', 'db', 'networking'].includes(kind);
+      document.getElementById('workspaceRequestCapture').hidden = !ordinaryRequestCapture;
+      document.getElementById('captureRequestEvidence').setAttribute('aria-label', 'Capture ' + (genericCaptureLabels[kind] || kind));
       workspaceEvidenceKind.disabled = kind === 'exceptions';
       for (const [panelKind, panel] of Object.entries(workspacePanels)) panel.hidden = panelKind !== kind;
       const sharedGcEvidence = kind === 'gc' || kind === 'gc-activities';
@@ -3954,7 +3986,8 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       workspaceCaptureStatus.textContent = '';
       const statusKind = kind === 'gc-activities' ? 'gc' : kind;
       workspaceEvidenceStatus.textContent = workspaceEvidenceStatusByKind.get(statusKind)
-        || 'No completed evidence is displayed for this kind.';
+        || (ordinaryRequestCapture ? 'No completed evidence. Select Capture to collect ' + genericCaptureLabels[kind] + '.'
+          : 'No completed evidence is displayed for this kind.');
       workspaceEvidenceStatus.hidden = kind === 'request-activities' && genericCaptureKind === kind;
       workspaceThreadViewStatus.textContent = '';
       if (usesWorkspaceForGenericCapture(kind)) {
@@ -5340,6 +5373,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           return;
         }
         diagnosticsRequestId = message.evidenceId;
+        document.getElementById('captureRequestEvidence').disabled = message.state === 'running' || message.state === 'starting';
         const gcCapture = captureKind === 'gc' || captureKind === 'gc-activities';
         if (message.state === 'starting') activateCaptureTab(captureKind);
         const status = message.message || message.state || '';
@@ -5556,6 +5590,10 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     document.getElementById('captureGc').addEventListener('click', () => vscode.postMessage({
       type: 'captureGc', kind: selectedWorkspaceEvidence,
     }));
+    document.getElementById('captureRequestEvidence').addEventListener('click', () => {
+      if (!['requests', 'kestrel', 'db', 'networking'].includes(selectedWorkspaceEvidence)) return;
+      vscode.postMessage({ type: 'captureDiagnostics', kind: selectedWorkspaceEvidence });
+    });
     captureExceptionsButton.addEventListener('click', () => vscode.postMessage({ type: 'captureExceptions' }));
     document.getElementById('captureAllocation').addEventListener('click', () => vscode.postMessage({ type: 'captureAllocation' }));
     captureHeapButton.addEventListener('click', () => vscode.postMessage({ type: 'captureHeap' }));
@@ -5922,7 +5960,9 @@ function describeHeapCaptureRisk(source: HeapCaptureSource, label: string): stri
 
 async function promptCaptureParams(spec: CaptureKindSpec): Promise<CaptureParams | undefined> {
     const duration = await vscode.window.showInputBox({
-        prompt: `${spec.label}: capture duration in seconds (1-300)`, value: "10",
+        prompt: `${spec.label}: capture duration in seconds (1-300)`
+            + (spec.kind === "allocation" ? "" : ". Success replaces the shared generic result; not saved."),
+        value: "10",
         validateInput: value => validateInteger(value, 1, 300, "Duration"),
     });
     if (duration === undefined) return undefined;

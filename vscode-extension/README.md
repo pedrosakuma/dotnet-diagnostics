@@ -39,6 +39,13 @@ reveal and array-range navigation require 0.31.0 or later. CLI 0.30.0 supports t
    your app in **.NET Processes**.
 3. Choose **Start Live Counters**, or capture a snapshot while reproducing the problem.
 
+The empty **.NET Processes** view links to **Open Getting Started**, **Check Environment**,
+and **Refresh Processes**. A filter with no matches offers **Clear Filter**, distinct from
+no discoverable diagnostic endpoints. **Active target** identifies the current panel target
+for both tree and picker selection; a **remembered hint** never means an active attachment.
+**Saved Captures** labels the CLI catalog on this extension host, not workspace-local history;
+row tooltips include available artifact kinds and producer provenance, without assuming a workspace.
+
 The **Live Diagnostics** action tree groups captures under **CPU**, **Memory & GC**,
 **Threads & waits**, **Requests & networking**, and **Exceptions**. **Monitoring**
 contains separate **Live counters & GC pauses** and **Live Events** views. Switching views
@@ -76,7 +83,10 @@ off-CPU/contention/thread-pool captures share their domain's presentation withou
 ownership: the snapshot handle is independent from the single replaceable generic-capture result.
 Standalone requests, Kestrel, database, and networking captures share the Requests & networking workspace and
 the existing single replaceable generic-capture result; its **Capture result** view is descriptive,
-not a retained-handle query. In-flight request results lead with the capture-window summary and
+not a retained-handle query. Select the ordinary kind under **Evidence**, then **Capture** in the
+Workspace to use its existing parameter prompts. Replacement and sensitive-data guidance is
+visible before capture; ordinary captures cannot be cancelled here. Nonzero quality/loss notes
+precede the returned data, while stable table guidance follows it. In-flight request results lead with the capture-window summary and
 retained request rows; state filters and search apply only to returned rows, with truncation and
 capture-quality notes kept visible. Managed-exception and crash-guard results use a separate
 single replaceable exception result, keep the selected mode and live EventPipe target visible, and

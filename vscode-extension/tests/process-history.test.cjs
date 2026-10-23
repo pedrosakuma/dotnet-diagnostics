@@ -78,3 +78,73 @@ test("process tree revalidates before context actions without a quick-pick and r
         await assert.rejects(tree.invoke(items[0], "heap"), /no longer available/);
     } finally { h.runHistoryCli = original; tree.dispose(); }
 });
+test("native welcome and filtered-empty recovery distinguish discovery failure and no endpoints", async () => {
+    const original = h.runHistoryCli;
+    let data = [];
+    const tree = new ProcessTree({ get() {}, async update() {} }, () => "cli", async () => {}, { appendLine() {} });
+    const manifest = require("../package.json");
+    const welcome = manifest.contributes.viewsWelcome.find(view => view.view === "dotnetDiagnostics.processes").contents;
+    for (const command of ["openGettingStarted", "checkEnvironment", "refreshProcesses"])
+        assert.ok(welcome.includes(`command:dotnetDiagnostics.${command}`));
+    assert.match(welcome, /No discoverable .NET processes/);
+    h.runHistoryCli = async () => envelope(data);
+    try {
+        assert.deepEqual(await tree.getChildren(), []);
+        assert.equal(tree.message, undefined, "TreeView.message suppresses native viewsWelcome content");
+        data = [row(42, "App")];
+        vscode.window.showInputBox = async () => "missing";
+        await tree.setFilter();
+        const empty = (await tree.getChildren())[0];
+        assert.match(empty.message, /No processes match/);
+        assert.equal(tree.getTreeItem(empty).command.command, "dotnetDiagnostics.clearProcessFilter");
+        await tree.clearFilter();
+        assert.equal((await tree.getChildren())[0].process.processId, 42);
+        assert.equal(tree.message, undefined);
+        h.runHistoryCli = async () => { throw Error("CLI missing"); };
+        await assert.rejects(tree.refresh(), /CLI missing/);
+        const recovery = await tree.getChildren();
+        assert.deepEqual(recovery.map(row => tree.getTreeItem(row).command.command),
+            ["dotnetDiagnostics.checkEnvironment", "dotnetDiagnostics.openGettingStarted"]);
+        assert.match(tree.message, /Cannot list processes: CLI missing/);
+    } finally { h.runHistoryCli = original; tree.dispose(); }
+});
+test("active target comes only from controller state, not remembered PID, and clears on panel close", async () => {
+    const original = h.runHistoryCli;
+    const data = h.parseProcessInventory(envelope([row(42, "App"), row(43, "Other")])).processes;
+    let stored = data[0];
+    const tree = new ProcessTree({ get: () => stored, update: async (_key, p) => { stored = p; } },
+        () => "cli", async () => {}, { appendLine() {} });
+    h.runHistoryCli = async () => envelope([row(42, "App"), row(43, "Other")]);
+    try {
+        const rows = await tree.getChildren();
+        assert.match(tree.getTreeItem(rows[0]).description, /remembered hint/);
+        assert.doesNotMatch(tree.getTreeItem(rows[0]).description, /active target/);
+        await tree.setActiveTarget(data[1]);
+        assert.match(tree.getTreeItem(rows[1]).description, /active target/);
+        assert.doesNotMatch(tree.getTreeItem(rows[0]).description, /active target/);
+        assert.equal(stored, data[1]);
+        await tree.setActiveTarget(undefined);
+        assert.match(tree.getTreeItem(rows[1]).description, /remembered hint/);
+        assert.doesNotMatch(tree.getTreeItem(rows[1]).description, /active target/);
+        await tree.setActiveTarget({ ...data[1], identity: "different" });
+        assert.doesNotMatch(tree.getTreeItem(rows[1]).description, /active target/);
+    } finally { h.runHistoryCli = original; tree.dispose(); }
+});
+test("catalog rows expose only reported artifact provenance and explicitly deny workspace scope", () => {
+    const { CaptureHistory } = require("../out/captureHistory.js");
+    const history = new CaptureHistory(() => "cli", { appendLine() {} });
+    try {
+        const detail = h.parseCaptureShow(JSON.stringify({ capture: { ...capture, artifacts: [{
+            ...artifact, provenance: { processId: 42, runtimeName: "CoreCLR", runtimeVersion: "10", startedAt: "2026-10-14T00:00:00Z" },
+        }] } }));
+        const item = history.getTreeItem({ capture: detail });
+        assert.match(item.description, /heap/);
+        assert.match(item.tooltip, /PID 42; CoreCLR 10; capture started/);
+        assert.match(item.tooltip, /not workspace-local/);
+        assert.match(item.tooltip, /Origin workspace is not reported/);
+        assert.match(history.getTreeItem({ capture: h.parseCaptureShow(JSON.stringify({ capture })) }).tooltip, /process not reported/);
+        assert.throws(() => h.parseCaptureShow(JSON.stringify({ capture: { ...capture, artifacts: [{
+            ...artifact, provenance: { processId: -1 },
+        }] } })), /invalid provenance process ID/);
+    } finally { history.dispose(); }
+});

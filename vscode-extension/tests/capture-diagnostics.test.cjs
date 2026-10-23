@@ -108,6 +108,47 @@ test("each grouped leaf skips only the kind picker and uses the canonical captur
         assert.equal(frames[0].acknowledgeRisk, spec.risk === "high" ? "high" : undefined);
     }
 });
+test("ordinary capture prompts disclose shared replacement before dispatch and preserve cancellation", async () => {
+    for (const kind of ["requests", "kestrel", "db", "networking"]) {
+        const { controller, frames } = fixture();
+        let prompted = false;
+        vscode.window.showInputBox = async options => {
+            assert.equal(frames.length, 0);
+            assert.match(options.prompt, /Success replaces the shared generic result; not saved/);
+            prompted = true;
+            return undefined;
+        };
+        await controller.captureDiagnostics(kind);
+        assert.equal(prompted, true);
+        assert.equal(frames.length, 0);
+    }
+});
+test("Workspace Capture dispatches only the selected ordinary kind through the existing host route", () => {
+    const html = extensionRequire(extensionPath).renderHtml({
+        processId: 42, managedEntrypointAssemblyName: "Synthetic", runtimeVersion: "10",
+        operatingSystem: "Windows", processArchitecture: "X64",
+    }, "nonce", 120);
+    const click = /document.getElementById\('captureRequestEvidence'\).addEventListener\('click', \(\) => \{([\s\S]*?)\n    \}\);/.exec(html);
+    assert.ok(click);
+    assert.match(html, /successful capture replaces the shared generic result/);
+    const messages = [];
+    const run = new Function("selectedWorkspaceEvidence", "vscode", click[1]);
+    for (const kind of ["requests", "kestrel", "db", "networking", "cpu", "request-activities"])
+        run(kind, { postMessage: message => messages.push(message) });
+    assert.deepEqual(messages, ["requests", "kestrel", "db", "networking"].map(kind => ({ type: "captureDiagnostics", kind })));
+    const source = fs.readFileSync(extensionPath, "utf8");
+    const start = source.indexOf('else if (message.type === "captureDiagnostics")');
+    const end = source.indexOf('else if (message.type === "captureRequestActivities")', start);
+    assert.ok(start >= 0 && end > start);
+    const route = source.slice(start + "else ".length, end).trim();
+    const calls = [], errors = [];
+    const host = { captureDiagnostics: kind => calls.push(kind), postMessage: message => errors.push(message) };
+    const handle = new Function("message", "captureKinds_1", route);
+    for (const kind of ["requests", "kestrel", "db", "networking", undefined, "unsupported", null])
+        handle.call(host, { type: "captureDiagnostics", kind }, kinds);
+    assert.deepEqual(calls, ["requests", "kestrel", "db", "networking", undefined]);
+    assert.equal(errors.length, 2);
+});
 test("grouped off-CPU entry still requires consent before connecting", async () => {
     const { controller, frames } = fixture(kinds.CAPTURE_KIND_SPECS[1]);
     vscode.window.showQuickPick = () => { throw new Error("leaf already selected a kind"); };
@@ -358,6 +399,24 @@ test("every kind uses structured text-only tables, quality and explicit unavaila
     const container = node("div");
     const render = new Function("document", `${CAPTURE_VIEW_RENDERER_SCRIPT}\nreturn renderCaptureView;`)({
         getElementById: () => container, createElement: node,
+    });
+    test("ordinary request-family quality and nonzero loss precede data; technical guidance follows", () => {
+        const container = node("div");
+        const render = new Function("document", `${CAPTURE_VIEW_RENDERER_SCRIPT}\nreturn renderCaptureView;`)({
+            getElementById: () => container, createElement: node,
+        });
+        for (const kind of ["requests", "kestrel", "db", "networking"]) {
+            const result = view(kind);
+            result.evidence = { source: "collector", conclusions: {
+                retainedPositive: "available", absenceOrExhaustive: "withheld", healthyControl: "withheld",
+            }, limitations: [{ category: "loss", scope: "window", affectedCount: 7, detail: "Seven events lost" }] };
+            render("views", result);
+            const output = text(container);
+            assert.ok(output.indexOf("Seven events lost") < output.indexOf("Metrics"));
+            assert.ok(output.indexOf("cap-note") < output.indexOf("Metrics"));
+            assert.ok(output.indexOf("Absence/exhaustive counts: withheld") < output.indexOf("Metrics"));
+            assert.ok(output.indexOf("Search, sorting and row details") > output.indexOf("Sites"));
+        }
     });
     for (const spec of kinds.CAPTURE_KIND_SPECS) {
         render("views", view(spec.kind));

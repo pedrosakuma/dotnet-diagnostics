@@ -8,7 +8,10 @@ export interface ProcessEntry {
     identity: string;
 }
 export interface ProcessInventory { processes: ProcessEntry[]; total: number; truncated: boolean }
-export interface CaptureArtifact { artifactId: string; kind: string; name: string; supportedViews: string[] }
+export interface CaptureArtifact {
+    artifactId: string; kind: string; name: string; supportedViews: string[];
+    provenance?: { processId?: number; runtimeName?: string; runtimeVersion?: string; startedAt?: string };
+}
 export interface CaptureSummary {
     captureId: string; name: string; createdUtc: string;
     state: "recording" | "sealed" | "interrupted";
@@ -100,8 +103,24 @@ function capture(value: unknown): CaptureSummary {
         const views = a.supportedViews;
         if (views !== undefined && (!Array.isArray(views) || !views.every(v => typeof v === "string")))
             throw new Error("The CLI returned invalid supported capture views.");
+        let provenance: CaptureArtifact["provenance"];
+        if (a.provenance != null) {
+            if (!record(a.provenance)) throw new Error("The CLI returned invalid artifact provenance.");
+            const p = a.provenance;
+            if (p.processId != null && (!Number.isSafeInteger(p.processId) || Number(p.processId) <= 0))
+                throw new Error("The CLI returned an invalid provenance process ID.");
+            for (const key of ["runtimeName", "runtimeVersion", "startedAt"])
+                if (p[key] != null && typeof p[key] !== "string")
+                    throw new Error(`The CLI returned invalid provenance ${key}.`);
+            provenance = {
+                processId: p.processId == null ? undefined : Number(p.processId),
+                runtimeName: typeof p.runtimeName === "string" ? p.runtimeName : undefined,
+                runtimeVersion: typeof p.runtimeVersion === "string" ? p.runtimeVersion : undefined,
+                startedAt: typeof p.startedAt === "string" ? p.startedAt : undefined,
+            };
+        }
         return { artifactId: a.artifactId, kind: a.kind, name: typeof a.name === "string" ? a.name : a.kind,
-            supportedViews: views ?? [] };
+            supportedViews: views ?? [], provenance };
     });
     return { captureId: value.captureId, name: typeof value.name === "string" ? value.name : "Capture",
         createdUtc: typeof value.createdUtc === "string" ? value.createdUtc : "", state, artifacts };

@@ -16,6 +16,7 @@ function renderCaptureView(containerId: string, result: unknown): void {
     const cell = (value: unknown): string => value === null || value === undefined ? "Unavailable"
         : typeof value === "number" && !Number.isInteger(value) ? value.toFixed(2) : String(value);
     const view = result as CaptureViewResult;
+    const ordinaryRequestCapture = ["requests", "kestrel", "db", "networking"].includes(view.kind);
     const requestTable = view.kind === "requests" && view.tables.length === 1 && view.tables[0].id === "requests"
         ? view.tables[0]
         : undefined;
@@ -77,18 +78,32 @@ function renderCaptureView(containerId: string, result: unknown): void {
     ].filter(Boolean).join(" ");
     container.appendChild(el("h4", useRequestLayout ? "In-flight requests" : view.title));
     container.appendChild(el("p", useRequestLayout && requestSummary ? requestSummary : view.summary));
-    if (!useRequestLayout) {
-        container.appendChild(el("p", "Search, sorting and row details operate on returned rows only. "
+    const guidance = (): HTMLElement => el("p", "Search, sorting and row details operate on returned rows only. "
             + "These tables do not establish a complete event timeline or request parent/child relationships. "
             + (view.kind === "allocation" ? "Allocation figures are sampled estimates, not a retained-heap inventory."
                 : view.kind === "off_cpu" ? "Off-CPU evidence describes blocking, not CPU execution time."
-                    : view.kind === "contention" ? "Contention observations are not proof of a deadlock." : "")));
-    }
+                    : view.kind === "contention" ? "Contention observations are not proof of a deadlock." : ""));
+    if (!useRequestLayout && !ordinaryRequestCapture) container.appendChild(guidance());
     const p = view.provenance;
     container.appendChild(el("p", useRequestLayout
         ? `PID ${p.processId} · ${p.requestedDurationSeconds}s window · Live capture, not saved`
         : `Live capture, not saved - pid ${p.processId} - requested ${p.requestedDurationSeconds}s`));
-    if (useRequestLayout) {
+    const quality = (): void => {
+        const e = view.evidence;
+        container.appendChild(el("p", e.source === "not-reported"
+            ? "Evidence quality: not reported by this collector." : `Evidence quality (${e.source})`));
+        if (e.conclusions) {
+            const c = e.conclusions;
+            if (!ordinaryRequestCapture)
+                container.appendChild(el("p", `Positive evidence: ${c.retainedPositive}; absence/exhaustive counts: ${c.absenceOrExhaustive}; healthy control: ${c.healthyControl}`));
+            else for (const [label, value] of [
+                ["Positive evidence", c.retainedPositive], ["Absence/exhaustive counts", c.absenceOrExhaustive],
+                ["Healthy control", c.healthyControl],
+            ]) container.appendChild(el("p", `${label}: ${value}`));
+        }
+    };
+    if (ordinaryRequestCapture) quality();
+    if (useRequestLayout || ordinaryRequestCapture) {
         if (view.notes.length) {
             const notes = el("ul");
             notes.className = "diagnostic-capture-notes";
@@ -159,7 +174,7 @@ function renderCaptureView(containerId: string, result: unknown): void {
         filterLabel.className = "diagnostic-request-filter";
         const stateFilter = document.createElement("select");
         stateFilter.id = "inFlightRequestsStateFilter";
-        stateFilter.setAttribute("aria-label", "Show in-flight requests");
+        stateFilter.setAttribute("aria-label", "Show requests");
         const allOption = document.createElement("option");
         allOption.value = "all";
         allOption.textContent = `All in-flight (${requestTable.rows.length} shown)`;
@@ -214,21 +229,16 @@ function renderCaptureView(containerId: string, result: unknown): void {
         selector.addEventListener("change", () => panels.forEach((panel, index) => { panel.hidden = String(index) !== selector.value; }));
         if (!view.tables.length) label.hidden = true;
     }
-    const e = view.evidence;
-    container.appendChild(el("p", e.source === "not-reported"
-        ? "Evidence quality: not reported by this collector." : `Evidence quality (${e.source})`));
-    if (e.conclusions) {
-        const c = e.conclusions;
-        container.appendChild(el("p", `Positive evidence: ${c.retainedPositive}; absence/exhaustive counts: ${c.absenceOrExhaustive}; healthy control: ${c.healthyControl}`));
-    }
-    if (!useRequestLayout) {
-        for (const l of e.limitations)
+    if (!ordinaryRequestCapture) quality();
+    if (!useRequestLayout && !ordinaryRequestCapture) {
+        for (const l of view.evidence.limitations)
             container.appendChild(el("p", `${l.category} (${l.scope}${l.affectedCount != null ? `, ${l.affectedCount}` : ""}): ${l.detail}`));
         const notes = el("ul");
         notes.className = "diagnostic-capture-notes";
         for (const note of view.notes) notes.appendChild(el("li", note));
         container.appendChild(notes);
     }
+    if (ordinaryRequestCapture && !useRequestLayout) container.appendChild(guidance());
     enhanceEvidenceTables(container);
 }
 

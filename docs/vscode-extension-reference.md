@@ -151,6 +151,11 @@ as a hint, never automatically attached after restart. Actions refresh and valid
 first. The CLI does not expose process start time, so PID reuse with identical metadata cannot be
 distinguished. Process command lines are not retained in the tree or workspace state.
 The view displays at most 500 processes and explicitly reports an inventory cap.
+The native empty view links to **Open Getting Started**, **Check Environment**, and
+**Refresh Processes**. No discoverable endpoints and no filter matches are distinct states;
+the latter has a **Clear Filter** action. The tree labels the current controller-selected panel
+target **active target**, including selections made through the quick picker. Persisted selections
+are only **remembered hints**, never active targets after restart. Selection is not collection.
 
 After selecting a process, browse the **Live Diagnostics** action tree:
 
@@ -196,6 +201,14 @@ required. **Saved Captures** remains a sibling view; **Capture and Save Snapshot
 process context menu and explicitly collects a new heap/GC dump/thread snapshot. Grouping does not
 add persistence for other captures or convert current results into saved evidence.
 
+For ordinary Requests, Kestrel, Database, and Networking captures, choose the kind in
+**Workspace → Requests & networking → Evidence** and select **Capture**. The existing duration,
+row-count, and applicable threshold prompts still apply; merely navigating never captures.
+The Workspace and duration prompt disclose successful replacement of the shared generic result
+before dispatch. No extra history or cache is retained, and ordinary captures have no verified
+backend cancellation control here. Quality, loss limitations and notes precede returned tables;
+stable search/sort/relationship guidance remains below the data.
+
 **Saved Captures** lists the CLI's durable capture catalog, 50 entries per page (up to 500 loaded,
 with an explicit cap notice), with refresh,
 reopen and confirmed CLI-managed deletion. It survives extension and CLI process restarts;
@@ -204,6 +217,10 @@ ordinary panel results and ephemeral handles are not history entries. On a proce
 than converting an older panel result. Saving requires explicit high-risk acknowledgement
 (ptrace/suspension for live heap/threads, a blocking Gen2 GC for gcdump). Saved evidence can contain
 sensitive data and remains on disk until deleted.
+The view explicitly labels the catalog on this extension host, not workspace-local history.
+Rows expose artifact kinds; tooltips include reported producer PID, runtime, and capture start
+when supplied by the CLI. Missing provenance is labelled as unreported. Origin workspace is
+not reported and is never inferred from the current folder or process selection.
 
 Reopened panels query only advertised offline views by capture/artifact IDs, never contact the
 original process, and reuse the shared drilldown renderer. Heap types, thread summaries and GC

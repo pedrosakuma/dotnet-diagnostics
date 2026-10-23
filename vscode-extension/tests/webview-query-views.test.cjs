@@ -282,7 +282,8 @@ test("domain return restores CPU view and filter without a request; new captures
         "openHeapDetails", "backToHeapTypes", "captureGc", "resultCpu", "resultAllocation", "resultHeap",
         "resultThreads", "cpuSamplingDisclaimer", "workspaceCanvas", "workspaceCaptureStatus",
         "workspaceThreadViewStatus", "genericCaptureViews", "captureThreadHeadline", "captureThreadTable",
-        "threadQueryViews", "threadDetails", "threadStaticsForm", "jointReproduction"];
+        "threadQueryViews", "threadDetails", "threadStaticsForm", "jointReproduction",
+        "workspaceRequestCapture", "captureRequestEvidence"];
     const nodes = Object.fromEntries(names.map(id => [id, makeContainer(id)]));
     nodes.captureThreadTable.closest = () => nodes.threadDetails;
     document.querySelector = selector => selector === "#resultThreads .statics-form" ? nodes.threadStaticsForm : null;
@@ -294,6 +295,7 @@ test("domain return restores CPU view and filter without a request; new captures
       const isRequestCapture = kind => ['requests','kestrel','db','networking'].includes(kind);
       const usesWorkspaceForGenericCapture = kind => ['gc','gc-activities'].includes(kind)
         || isThreadCapture(kind) || isRequestCapture(kind);
+      const genericCaptureLabels = {requests:'In-flight requests',kestrel:'Kestrel',db:'Database',networking:'Networking'};
       let genericCaptureKind;
       let activeResultTab;
       const selectResultTab = name => { activeResultTab = name; };
@@ -356,7 +358,13 @@ test("domain return restores CPU view and filter without a request; new captures
         assert.equal(nodes.workspaceView.disabled, true, "generic results have no retained query view");
         assert.equal(nodes.workspaceLoadView.hidden, true, "navigation has no synthetic load action");
         assert.match(nodes.workspaceEvidenceStatus.textContent, /No completed evidence/);
+        assert.equal(nodes.workspaceRequestCapture.hidden, false);
+        assert.equal(nodes.jointReproduction.hidden, true);
+        assert.match(nodes.captureRequestEvidence.attributes["aria-label"], /^Capture /);
     }
+    api.setWorkspaceEvidence("request-activities");
+    assert.equal(nodes.workspaceRequestCapture.hidden, true);
+    assert.equal(nodes.jointReproduction.hidden, false, "the existing joint reproduction remains available in its evidence context");
     assert.deepEqual(requests, [{type:"queryCpu",evidenceId:"cpu-1",view:"top-methods"}],
         "request-family navigation performs no CLI work");
 });
@@ -1930,7 +1938,7 @@ test("in-flight request rows lead the result and state filters compose with retu
     assert.match(root.textContent, /1 retained row\(s\) omitted/);
     assert.match(root.textContent, /Capture window \(requests\): The snapshot is partial/);
     const selector = document.getElementById("inFlightRequestsStateFilter");
-    assert.equal(selector.getAttribute("aria-label"), "Show in-flight requests");
+    assert.equal(selector.getAttribute("aria-label"), "Show requests");
     const table = document.getElementById("inFlightRequestsTable");
     const disclaimer = root.querySelector(".diagnostic-request-disclaimer");
     assert.ok(disclaimer, "full capture limitations appear as a readable disclaimer");
