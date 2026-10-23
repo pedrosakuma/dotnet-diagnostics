@@ -954,6 +954,7 @@ class CounterPanelController implements vscode.Disposable {
         if (this.disposed) return;
         const target = this.selectedTarget ?? await this.ensureTargetAndPanel();
         if (!target || this.disposed) return;
+        const targetGeneration = this.targetGeneration;
         const choices: Array<vscode.QuickPickItem & { spec?: CaptureKindSpec }> = [];
         for (const group of CAPTURE_GROUPS) {
             if (!group.kinds.length) continue;
@@ -967,6 +968,10 @@ class CounterPanelController implements vscode.Disposable {
             choices,
             { placeHolder: "All diagnostic captures; names, paths and SQL may contain sensitive data", matchOnDescription: true });
         if (!selection?.spec || this.disposed) return;
+        if (!this.isCaptureContextCurrent(target, targetGeneration)) {
+            this.reportCaptureTargetChanged();
+            return;
+        }
         const spec = selection.spec;
         if (spec.kind === "allocation" && this.cpuQueryGuard.inFlight) {
             vscode.window.showWarningMessage("Wait for the current profile query to finish before capturing allocations.");
@@ -974,12 +979,20 @@ class CounterPanelController implements vscode.Disposable {
         }
         const params = await promptCaptureParams(spec);
         if (!params || this.disposed) return;
+        if (!this.isCaptureContextCurrent(target, targetGeneration)) {
+            this.reportCaptureTargetChanged();
+            return;
+        }
         if (spec.risk === "high") {
             const acknowledged = await vscode.window.showWarningMessage(
                 "Off-CPU capture uses high-risk kernel scheduler tracing (perf on Linux, ETW on Windows). "
                 + "It requires elevated tracing permissions and can expose stack, symbol and method names.",
                 { modal: true }, "Acknowledge and Capture", "Cancel");
             if (acknowledged !== "Acknowledge and Capture" || this.disposed) return;
+            if (!this.isCaptureContextCurrent(target, targetGeneration)) {
+                this.reportCaptureTargetChanged();
+                return;
+            }
         }
         const requestId = randomBytes(12).toString("hex");
         const status = (state: string, message: string): void =>
@@ -998,6 +1011,17 @@ class CounterPanelController implements vscode.Disposable {
             ({ session, owns: ownsSession } = await this.acquireChild());
         } catch (error) {
             status("error", withRuntimeGuidance(errorMessage(error)));
+            return;
+        }
+        if (!this.isCaptureContextCurrent(target, targetGeneration)) {
+            if (ownsSession && !session.sessionId && !session.startInFlight
+                && session.pendingCaptures.size === 0 && session.pendingQueries.size === 0
+                && !session.pendingJointQueries?.size && !this.hasRetainedProfileFor(session)) {
+                session.expectedShutdown = true;
+                await this.closeChild(session);
+            }
+            status("error", "The selected target changed during setup. No capture was sent; select the intended target and start again.");
+            this.reportCaptureTargetChanged();
             return;
         }
         if (session.pendingCaptures.size > 0 || session.pendingQueries.size > 0 || session.startInFlight) {

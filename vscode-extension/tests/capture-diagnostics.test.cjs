@@ -36,6 +36,7 @@ function fixture(spec = kinds.CAPTURE_KIND_SPECS[0], overrides = {}) {
     const session = { pendingCaptures: new Map(), pendingQueries: new Map(), startInFlight: false, ...overrides };
     const controller = Object.create(Controller.prototype);
     controller.selectedTarget = { processId: 4242 };
+    controller.targetGeneration = 1;
     controller.output = { appendLine() {} };
     controller.pendingExports = new Map();
     controller.cpuQueryGuard = new SingleFlightGuard();
@@ -156,6 +157,43 @@ test("grouped off-CPU entry still requires consent before connecting", async () 
     controller.acquireChild = () => { throw new Error("must not connect without consent"); };
     await controller.captureDiagnostics("off_cpu");
     assert.equal(frames.length, 0);
+});
+test("diagnostic setup rejects target changes at picker, parameters, consent and connection boundaries", async () => {
+    for (const boundary of ["picker", "parameters", "consent", "connection"]) {
+        const spec = kinds.CAPTURE_KIND_SPECS.find(item => item.kind === "off_cpu");
+        const { controller, frames, messages, session } = fixture(spec);
+        const changeTarget = () => {
+            controller.selectedTarget = { processId: 5252 };
+            controller.targetGeneration++;
+        };
+        let acquired = false, closed = 0;
+        vscode.window.showQuickPick = async () => {
+            if (boundary === "picker") changeTarget();
+            return { spec };
+        };
+        vscode.window.showInputBox = async options => {
+            if (boundary === "parameters") changeTarget();
+            return options.value ?? "";
+        };
+        vscode.window.showWarningMessage = async (_message, options) => {
+            if (options?.modal && boundary === "consent") changeTarget();
+            return "Acknowledge and Capture";
+        };
+        controller.acquireChild = async () => {
+            acquired = true;
+            if (boundary === "connection") changeTarget();
+            return { session, owns: true };
+        };
+        controller.closeChild = async () => { closed++; };
+        await controller.captureDiagnostics();
+        assert.deepEqual(frames, [], boundary + " must not dispatch to the old PID");
+        assert.equal(acquired, boundary === "connection");
+        assert.equal(closed, boundary === "connection" ? 1 : 0);
+        if (boundary === "connection") {
+            assert.equal(messages.at(-1).state, "error", "starting status must settle to an error");
+            assert.equal(session.expectedShutdown, true);
+        }
+    }
 });
 test("parameters reject invalid input and forward only applicable options", () => {
     for (const invalid of ["0", "301", "1.5", "-1", "abc", ""])

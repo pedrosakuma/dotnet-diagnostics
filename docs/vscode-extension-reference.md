@@ -208,6 +208,9 @@ The Workspace and duration prompt disclose successful replacement of the shared 
 before dispatch. No extra history or cache is retained, and ordinary captures have no verified
 backend cancellation control here. Quality, loss limitations and notes precede returned tables;
 stable search/sort/relationship guidance remains below the data.
+Diagnostic capture setup is bound to the selected target. If the selection changes during
+the picker, parameter prompts, acknowledgement or CLI acquisition, no capture is dispatched;
+select the intended target and start again.
 
 **Saved Captures** lists the CLI's durable capture catalog, 50 entries per page (up to 500 loaded,
 with an explicit cap notice), with refresh,
