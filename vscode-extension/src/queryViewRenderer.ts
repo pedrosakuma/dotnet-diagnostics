@@ -797,6 +797,16 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
             const recent = Array.isArray(data.recent) ? data.recent.map(asRecord) : [];
             const startedAt = typeof data.startedAt === "string" ? data.startedAt : undefined;
             const startedAtDate = startedAt ? new Date(startedAt) : undefined;
+            const scope = document.createElement("details");
+            scope.className = "exception-capture-scope";
+            const scopeLabel = document.createElement("summary");
+            scopeLabel.textContent = "Capture totals and scope";
+            scope.appendChild(scopeLabel);
+            const headline = document.createElement("p");
+            headline.className = "exception-capture-summary";
+            headline.textContent = formatValue(data.totalExceptions) + " observed · " + recent.length + " retained";
+            content.appendChild(headline);
+            const beforeMetadata = new Set(Array.from(content.children));
             metrics([
                 ["Observed exceptions", data.totalExceptions],
                 ["Retained events", recent.length],
@@ -850,8 +860,25 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
             for (const child of Array.from(content.children))
                 if (child.classList.contains("query-view-section")) aggregates.appendChild(child);
             content.appendChild(aggregates);
-            notes("Capture notes and retention limits", result.notes);
+            for (const child of Array.from(content.children))
+                if (!beforeMetadata.has(child)) scope.appendChild(child);
+            const notRetained = typeof data.totalExceptions === "number" && Number.isFinite(data.totalExceptions)
+                ? Math.max(0, data.totalExceptions - recent.length) : 0;
+            const captureNotes = Array.isArray(result.notes) ? result.notes : [];
+            if (notRetained > 0 || captureNotes.length) {
+                const alert = document.createElement("details");
+                alert.className = "exception-capture-notes";
+                const caption = document.createElement("summary");
+                caption.textContent = [
+                    notRetained > 0 ? notRetained + " observations not retained" : "",
+                    captureNotes.length ? captureNotes.length + " collection / retention note(s)" : "",
+                ].filter(Boolean).join(" · ");
+                alert.appendChild(caption);
+                for (const note of captureNotes) appendMessage(alert, String(note), "query-view-note");
+                content.appendChild(alert);
+            }
             renderExceptionNavigation(content, recent);
+            content.appendChild(scope);
             break;
         }
         case "thread-statics": {

@@ -76,42 +76,58 @@ function renderCaptureView(containerId: string, result: unknown): void {
         requestSummaryParts.length ? `Window: ${requestSummaryParts.join(" · ")}.` : "",
         closeSummaryParts.length ? `At close: ${closeSummaryParts.join(" · ")}.` : "",
     ].filter(Boolean).join(" ");
-    container.appendChild(el("h4", useRequestLayout ? "In-flight requests" : view.title));
-    container.appendChild(el("p", useRequestLayout && requestSummary ? requestSummary : view.summary));
+    const summary = el("p", useRequestLayout && requestSummary ? requestSummary : view.summary);
+    summary.className = "capture-summary";
+    container.appendChild(summary);
     const guidance = (): HTMLElement => el("p", "Search, sorting and row details operate on returned rows only. "
             + "These tables do not establish a complete event timeline or request parent/child relationships. "
             + (view.kind === "allocation" ? "Allocation figures are sampled estimates, not a retained-heap inventory."
                 : view.kind === "off_cpu" ? "Off-CPU evidence describes blocking, not CPU execution time."
                     : view.kind === "contention" ? "Contention observations are not proof of a deadlock." : ""));
-    if (!useRequestLayout && !ordinaryRequestCapture) container.appendChild(guidance());
     const p = view.provenance;
-    container.appendChild(el("p", useRequestLayout
+    const provenance = el("p", useRequestLayout
         ? `PID ${p.processId} · ${p.requestedDurationSeconds}s window · Live capture, not saved`
-        : `Live capture, not saved - pid ${p.processId} - requested ${p.requestedDurationSeconds}s`));
+        : `Live capture, not saved - pid ${p.processId} - requested ${p.requestedDurationSeconds}s`);
+    const qualityDetails = el("details");
+    qualityDetails.className = "diagnostic-quality-details";
+    qualityDetails.appendChild(el("summary", "Capture quality and scope"));
+    qualityDetails.appendChild(provenance);
     const quality = (): void => {
         const e = view.evidence;
-        container.appendChild(el("p", e.source === "not-reported"
+        qualityDetails.appendChild(el("p", e.source === "not-reported"
             ? "Evidence quality: not reported by this collector." : `Evidence quality (${e.source})`));
         if (e.conclusions) {
             const c = e.conclusions;
             if (!ordinaryRequestCapture)
-                container.appendChild(el("p", `Positive evidence: ${c.retainedPositive}; absence/exhaustive counts: ${c.absenceOrExhaustive}; healthy control: ${c.healthyControl}`));
+                qualityDetails.appendChild(el("p", `Positive evidence: ${c.retainedPositive}; absence/exhaustive counts: ${c.absenceOrExhaustive}; healthy control: ${c.healthyControl}`));
             else for (const [label, value] of [
                 ["Positive evidence", c.retainedPositive], ["Absence/exhaustive counts", c.absenceOrExhaustive],
                 ["Healthy control", c.healthyControl],
-            ]) container.appendChild(el("p", `${label}: ${value}`));
+            ]) qualityDetails.appendChild(el("p", `${label}: ${value}`));
         }
     };
-    if (ordinaryRequestCapture) quality();
-    if (useRequestLayout || ordinaryRequestCapture) {
+    quality();
+    const active = view.evidence.limitations.map(l => `${l.category}${l.affectedCount != null ? `: ${l.affectedCount}` : ""}`);
+    if (view.evidence.source === "not-reported") active.unshift("quality not reported");
+    const withheld = view.evidence.conclusions;
+    if (withheld?.absenceOrExhaustive === "withheld") active.push("exhaustive conclusions withheld");
+    if (withheld?.retainedPositive === "withheld") active.push("positive evidence withheld");
+    if (withheld?.healthyControl === "withheld") active.push("healthy control withheld");
+    if (view.notes.length) active.push(`${view.notes.length} capture note(s)`);
+    if (active.length) {
+        const alert = el("details");
+        alert.className = "diagnostic-active-quality";
+        alert.setAttribute("role", "status");
+        alert.appendChild(el("summary", active.join(" · ")));
         if (view.notes.length) {
             const notes = el("ul");
             notes.className = "diagnostic-capture-notes";
             for (const note of view.notes) notes.appendChild(el("li", note));
-            container.appendChild(notes);
+            alert.appendChild(notes);
         }
         for (const limitation of view.evidence.limitations)
-            container.appendChild(el("p", `${limitation.category} (${limitation.scope}${limitation.affectedCount != null ? `, ${limitation.affectedCount}` : ""}): ${limitation.detail}`));
+            alert.appendChild(el("p", `${limitation.category} (${limitation.scope}${limitation.affectedCount != null ? `, ${limitation.affectedCount}` : ""}): ${limitation.detail}`));
+        container.appendChild(alert);
     }
     const table = (
         title: string,
@@ -169,7 +185,6 @@ function renderCaptureView(containerId: string, result: unknown): void {
     };
     if (useRequestLayout && requestTable) {
         const longRunningRows = requestTable.rows.filter(row => row[requestStateColumnIndex] === true).length;
-        container.appendChild(el("p", "In flight at window close · Filters apply to shown rows."));
         const filterLabel = el("label", "Show requests");
         filterLabel.className = "diagnostic-request-filter";
         const stateFilter = document.createElement("select");
@@ -203,7 +218,7 @@ function renderCaptureView(containerId: string, result: unknown): void {
         disclaimer.className = "diagnostic-request-disclaimer";
         container.appendChild(disclaimer);
     } else {
-        table("Metrics", ["Metric", "Value", "Note"], view.metrics.map(m => [m.label, m.value, m.note ?? ""]));
+        table("Metrics", ["Metric", "Value", "Note"], view.metrics.map(m => [m.label, m.value, m.note ?? ""]), qualityDetails);
         const label = el("label", "Evidence table ");
         label.className = "diagnostic-evidence-table-label";
         const selector = document.createElement("select");
@@ -229,16 +244,8 @@ function renderCaptureView(containerId: string, result: unknown): void {
         selector.addEventListener("change", () => panels.forEach((panel, index) => { panel.hidden = String(index) !== selector.value; }));
         if (!view.tables.length) label.hidden = true;
     }
-    if (!ordinaryRequestCapture) quality();
-    if (!useRequestLayout && !ordinaryRequestCapture) {
-        for (const l of view.evidence.limitations)
-            container.appendChild(el("p", `${l.category} (${l.scope}${l.affectedCount != null ? `, ${l.affectedCount}` : ""}): ${l.detail}`));
-        const notes = el("ul");
-        notes.className = "diagnostic-capture-notes";
-        for (const note of view.notes) notes.appendChild(el("li", note));
-        container.appendChild(notes);
-    }
-    if (ordinaryRequestCapture && !useRequestLayout) container.appendChild(guidance());
+    container.appendChild(qualityDetails);
+    if (!useRequestLayout) container.appendChild(guidance());
     enhanceEvidenceTables(container);
 }
 

@@ -109,14 +109,11 @@ function installLiveTimeNavigation(
         end.value = percent(selectedEnd, 100);
         start.setAttribute("aria-valuetext", `${start.value}% of retained receipt time; selected start ${startTime}`);
         end.setAttribute("aria-valuetext", `${end.value}% of retained receipt time; selected end ${endTime}`);
-        status.textContent = !range ? "Following latest: " + visible.length + " of " + points.length + " retained observations in this metric."
-            : "Paused: " + visible.length + " of " + points.length
-                + " retained observations in this metric.";
-        status.textContent += selected ? ` Receipt time: ${new Date(selected.start).toLocaleTimeString()} to ${new Date(selected.end).toLocaleTimeString()}.` : "";
+        status.textContent = !range ? "" : "Paused · " + visible.length + " of " + points.length + " observations";
         status.title = `Selected receipt-time bounds: ${startTime} to ${endTime}.`;
         if (range) status.textContent += !retained || range.start < retained.start
             ? " Selected data has expired from retention; empty is not zero."
-            : " Collection continues; selected data can expire.";
+            : "";
     }
     function select(): void {
         const retained = bounds();
@@ -176,8 +173,12 @@ function installLiveTimeNavigation(
         inspect(position);
     });
     explanation.append(explanationTitle, label, startLabel, endLabel);
-    controls.append(windowLabel, reset, status, detail, explanation);
+    controls.append(windowLabel, reset, status);
     canvas.parentElement?.insertBefore(controls, canvas);
+    const details = document.createElement("section");
+    details.className = "monitoring-time-details";
+    details.append(detail, explanation);
+    canvas.parentElement?.insertBefore(details, canvas.nextSibling);
     update();
     return { filter, update, selected: () => inspected };
 }

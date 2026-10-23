@@ -402,7 +402,7 @@ function updateThreadNavigation(view: string, result: Record<string, unknown>): 
         }
     }
     search.addEventListener("input", () => { state.search = search.value; drawList(); });
-    explorer.append(heading, note, modes, search, listing, details);
+    explorer.append(modes, search, listing, details, note);
     selectMode(mode.value);
     drawDetails();
     if (hadSearchFocus) search.focus({ preventScroll: true });

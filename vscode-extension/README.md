@@ -85,8 +85,8 @@ Standalone requests, Kestrel, database, and networking captures share the Reques
 the existing single replaceable generic-capture result; its **Capture result** view is descriptive,
 not a retained-handle query. Select the ordinary kind under **Evidence**, then **Capture** in the
 Workspace to use its existing parameter prompts. Replacement and sensitive-data guidance is
-visible before capture; ordinary captures cannot be cancelled here. Nonzero quality/loss notes
-precede the returned data, while stable table guidance follows it. In-flight request results lead with the capture-window summary and
+visible before capture; ordinary captures cannot be cancelled here. A compact active-quality alert precedes the returned data, with full reasons
+available at the alert. Metrics, full quality scope and stable table guidance follow the rows. In-flight request results lead with the capture-window summary and
 retained request rows; state filters and search apply only to returned rows, with truncation and
 capture-quality notes kept visible. Managed-exception and crash-guard results use a separate
 single replaceable exception result, keep the selected mode and live EventPipe target visible, and

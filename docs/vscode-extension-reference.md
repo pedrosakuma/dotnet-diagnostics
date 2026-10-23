@@ -175,10 +175,17 @@ searchable ten-kind picker uses matching domain headings. Allocations there and 
 Memory & GC use the same capture and Allocations result, not separate products.
 GC/activity overlap remains overlap evidence, not a causal latency diagnosis.
 
-The live panel keeps **Live**, **Workspace**, **Diagnostics**, and **Events** as its result tabs.
+The live panel has **Monitoring** and **Workspace** tabs. Monitoring contains independent
+**Live counters & GC pauses** and **Live Events** subviews.
 The Workspace domain selector includes **CPU**, **Memory & GC**, **Threads & waits**,
 **Requests & networking**, and **Exceptions**. Its compact **Domain → Evidence → View** controls
 navigate one content panel.
+Captured charts, rows, stacks and occurrences lead each result. Quantitative summaries use
+small secondary text, while active loss, withheld verification, stale/unavailable evidence and
+inferred candidates remain visible in compact alerts. Full reasons stay inspectable beside
+those alerts. Static scope, retention guidance, export explanations and complete metrics follow
+the data or use keyboard-operable disclosures. Sensitive-data and replacement warnings stay
+at the capture action; native consent still presents the full policy before dispatch.
 Thread snapshots and off-CPU, contention, and thread-pool captures appear under Threads & waits;
 the point-in-time snapshot and the generic event capture remain separate evidence kinds.
 Those three generic kinds share the same single replaceable result slot used by GC and the other
@@ -206,8 +213,9 @@ For ordinary Requests, Kestrel, Database, and Networking captures, choose the ki
 row-count, and applicable threshold prompts still apply; merely navigating never captures.
 The Workspace and duration prompt disclose successful replacement of the shared generic result
 before dispatch. No extra history or cache is retained, and ordinary captures have no verified
-backend cancellation control here. Quality, loss limitations and notes precede returned tables;
-stable search/sort/relationship guidance remains below the data.
+backend cancellation control here. One compact active-quality alert precedes returned tables; expand it for full loss
+limitations and notes. The complete quality matrix, metrics and stable
+search/sort/relationship guidance follow the captured rows.
 Diagnostic capture setup is bound to the selected target. If the selection changes during
 the picker, parameter prompts, acknowledgement or CLI acquisition, no capture is dispatched;
 select the intended target and start again.
@@ -233,7 +241,7 @@ must be recovered with the CLI first. CPU/exception persistence is not exposed b
 History calls inherit the CLI artifact root (including `MCP_ARTIFACT_ROOT`), have a 60-second
 deadline and a combined 8388608-character output cap; failures are explicit, not partial JSON.
 
-Open **Workspace**, choose **CPU** under **Domain**, and select **Capture CPU sample** (also available as the tree-view action or
+Open **Workspace**, choose **CPU** under **Domain**, and select **Capture** (also available as the **Capture CPU sample** tree-view action or
 Command Palette command `dotnetDiagnostics.captureCpu`) to take a single point-in-time CPU sample
 of the selected process.
 Unlike the counters/GC timeline, a capture is a one-shot snapshot: it reuses the panel's active

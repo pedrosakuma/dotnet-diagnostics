@@ -72,7 +72,7 @@ test("counter restart A -> B tracks B gaps from sequence 1 and retains bounded h
     assert.match(ui.get("quality").textContent, /This counter session: 4 observations missing/);
     assert.equal(ui.state().counters.get("System.Runtime/cpu-usage").points.length, 205);
     assert.ok(ui.state().counterSegment > originalSegment);
-    assert.match(ui.get("counterSession").textContent, /session 2.*PID 42.*not continuous/);
+    assert.match(ui.get("counterSession").textContent, /session 2 ·/);
     assert.match(ui.get("counterIdentity").textContent, /System.Runtime\/cpu-usage.*Metric.*%/);
     ui.drawing.length = 0;
     ui.draw();

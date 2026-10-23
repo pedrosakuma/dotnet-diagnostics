@@ -131,7 +131,7 @@ test("Workspace Capture dispatches only the selected ordinary kind through the e
     }, "nonce", 120);
     const click = /document.getElementById\('captureRequestEvidence'\).addEventListener\('click', \(\) => \{([\s\S]*?)\n    \}\);/.exec(html);
     assert.ok(click);
-    assert.match(html, /successful capture replaces the shared generic result/);
+    assert.match(html, /Replaces the current result · May contain sensitive data/);
     const messages = [];
     const run = new Function("selectedWorkspaceEvidence", "vscode", click[1]);
     for (const kind of ["requests", "kestrel", "db", "networking", "cpu", "request-activities"])
@@ -551,7 +551,7 @@ test("every kind uses structured text-only tables, quality and explicit unavaila
     const render = new Function("document", `${CAPTURE_VIEW_RENDERER_SCRIPT}\nreturn renderCaptureView;`)({
         getElementById: () => container, createElement: node,
     });
-    test("ordinary request-family quality and nonzero loss precede data; technical guidance follows", () => {
+    test("ordinary quality has one compact active alert before data and full scope after data", () => {
         const container = node("div");
         const render = new Function("document", `${CAPTURE_VIEW_RENDERER_SCRIPT}\nreturn renderCaptureView;`)({
             getElementById: () => container, createElement: node,
@@ -565,7 +565,9 @@ test("every kind uses structured text-only tables, quality and explicit unavaila
             const output = text(container);
             assert.ok(output.indexOf("Seven events lost") < output.indexOf("Metrics"));
             assert.ok(output.indexOf("cap-note") < output.indexOf("Metrics"));
-            assert.ok(output.indexOf("Absence/exhaustive counts: withheld") < output.indexOf("Metrics"));
+            assert.ok(output.indexOf("loss: 7 · exhaustive conclusions withheld") < output.indexOf("Metrics"));
+            assert.ok(output.indexOf("Absence/exhaustive counts: withheld") > output.indexOf("Sites"));
+            assert.equal(container.children.filter(n => n.className === "diagnostic-active-quality").length, 1);
             assert.ok(output.indexOf("Search, sorting and row details") > output.indexOf("Sites"));
         }
     });
@@ -576,7 +578,7 @@ test("every kind uses structured text-only tables, quality and explicit unavaila
         assert.match(text(container), /4 retained row\(s\) omitted/);
         assert.match(text(container), /Evidence quality: not reported/);
         assert.match(text(container), /cap-note/);
-        assert.ok(container.children.some(n => n.className === "query-view-table-wrap"
-            && n.children.some(child => child.tag === "table")));
+        assert.ok(container.children.some(n => n.className === "diagnostic-table-view"
+            && n.children.some(child => child.className === "query-view-table-wrap")));
     }
 });

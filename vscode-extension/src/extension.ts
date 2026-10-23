@@ -3721,6 +3721,13 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     #resultEvents #eventsSearch { min-width:0; max-width:100%; }
     #eventDetails { margin:.75rem 0; padding:.75rem; border:1px solid var(--vscode-panel-border); border-radius:4px; }
     #eventDetails pre { white-space:pre-wrap; overflow-wrap:anywhere; }
+    #workspaceEvidenceStatus:empty, #workspaceThreadViewStatus:empty, #eventsStatus:empty,
+    #eventsPresentation:empty, #quality:empty { display:none; }
+    .diagnostic-active-quality { margin:.4rem 0; color:var(--vscode-editorWarning-foreground); }
+    .capture-summary, .exception-capture-summary, #captureHeadline, #captureHeapHeadline,
+    #counterSession, #status, #gcHeadline { font-size:.85rem; color:var(--vscode-descriptionForeground); margin:.3rem 0; }
+    #value { font-size:1rem; font-weight:400; margin:.3rem 0; }
+    #exceptionCaptureViews > details > summary { display:none; }
     ${QUERY_VIEW_STYLES}
     ${WEBVIEW_FIELD_STYLES}
   </style>
@@ -3760,7 +3767,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     <div id="workspaceCaptureStatus" role="status"></div>
     <div id="workspaceRequestCapture" hidden>
       <button id="captureRequestEvidence" type="button">Capture</button>
-      <p>Live capture, not saved. A successful capture replaces the shared generic result, including evidence from other domains. Names, paths and SQL may contain sensitive data. Ordinary captures cannot be cancelled here.</p>
+      <small>Replaces the current result · May contain sensitive data</small>
     </div>
     <div id="jointReproduction" hidden>
       <button id="captureRequestActivities" type="button" aria-label="Capture requests and completed Activities">Capture</button>
@@ -3777,19 +3784,19 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     </nav>
     <section id="monitoringLive" class="monitoring-view" role="tabpanel" aria-labelledby="monitoringTabLive">
   <section id="resultLive">
-    <div id="status" role="status">Live counters are ready. Select Start to begin collection; other captures run only when requested.</div>
+    <div id="status" role="status">Ready</div>
     <div class="panel-actions">
       <label for="metric">Counter</label><select id="metric" aria-label="Select counter"></select>
       <button id="start">Start</button><button id="stop" disabled>Stop</button>
     </div>
     <div id="value">Waiting for first observation</div>
-    <div id="counterIdentity"></div>
     <div id="counterSession" role="status">No counter session started.</div>
+    <div id="quality"></div>
+    <div id="error" role="alert"></div>
     <canvas id="chart" aria-label="Selected counter time series"></canvas>
     <div id="chartTime"><span id="chartTimeStart"></span><span id="chartTimeEnd"></span></div>
     <p id="chartNote">Auto-scaled value axis, not necessarily zero-based. Lines break at session boundaries and observed sequence gaps; gaps are not zero values.</p>
-    <div id="quality"></div>
-    <div id="error" role="alert"></div>
+    <div id="counterIdentity"></div>
     <section class="panel">
       <h3>GC pauses</h3>
       <div id="gcHeadline">No GC pauses observed yet.</div>
@@ -3802,25 +3809,13 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     </section>
   <section id="resultCpu" class="result-tab-panel" role="tabpanel" aria-labelledby="resultTabWorkspace" data-export-kind="cpu" data-evidence-id="" hidden>
     <div class="panel-actions">
-      <button id="captureCpu" type="button">Capture CPU sample</button>
-      <details class="cpu-export-actions">
-        <summary>CPU exports</summary>
-        <div class="controls export-controls">
-          <button id="captureCpuTrace" type="button">Capture CPU + raw trace</button>
-          <button id="exportSummary" type="button">Export redacted investigation summary</button>
-          <button id="exportTrace" type="button">Export raw trace locally</button>
-        </div>
-      </details>
+      <button id="captureCpu" type="button" aria-label="Capture CPU sample">Capture</button>
     </div>
     <div id="captureStatus" role="status"></div>
-    <p id="cpuEvidencePrerequisite" role="status">Capture CPU to enable measurement exports.</p>
-    ${RESULT_EXPORT_BUTTONS}
-    <p id="cpuSamplingDisclaimer" class="query-view-provenance">
-      CPU percentages are shares of captured stack samples, not measured CPU time or utilization.
-      Total includes descendants; Self excludes descendants. Percentages use the full captured-sample denominator and do not change with focus or search.
-    </p>
     <div id="captureResult" class="empty">
       <div id="captureHeadline"></div>
+      <div id="cpuQueryStatus" role="status"></div>
+      <div id="cpuQueryViews" class="query-views"></div>
       <details id="cpuHotspotSummary">
       <summary>Capture hotspot summary</summary>
       <table id="captureTable">
@@ -3828,37 +3823,49 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         <tbody id="captureBody"></tbody>
       </table>
       </details>
-      <div id="cpuQueryStatus" role="status"></div>
-      <div id="cpuQueryViews" class="query-views"></div>
+      <p id="cpuSamplingDisclaimer" class="query-view-provenance">
+        CPU percentages are shares of captured stack samples, not measured CPU time or utilization.
+        Total includes descendants; Self excludes descendants. Percentages use the full captured-sample denominator and do not change with focus or search.
+      </p>
     </div>
+    <details class="cpu-export-actions">
+      <summary>CPU exports</summary>
+      <p id="cpuEvidencePrerequisite" role="status">Capture CPU to enable measurement exports.</p>
+      ${RESULT_EXPORT_BUTTONS}
+      <div class="controls export-controls">
+        <button id="captureCpuTrace" type="button">Capture CPU + raw trace</button>
+        <button id="exportSummary" type="button">Export redacted investigation summary</button>
+        <button id="exportTrace" type="button">Export raw trace locally</button>
+      </div>
+    </details>
   </section>
   <section id="resultAllocation" class="result-tab-panel" role="tabpanel" aria-labelledby="resultTabAllocation" hidden>
-    <div class="panel-actions"><button id="captureAllocation" type="button">Capture allocations…</button></div>
-    <p class="query-view-provenance">Sampled allocation traffic, not a heap snapshot or exact object tracker.
-      Start with a short capture: collection, runtime rundown and trace conversion can be expensive.
-      Navigation reuses this capture without collecting again. All types are combined in the profile.</p>
+    <div class="panel-actions"><button id="captureAllocation" type="button" aria-label="Capture allocations">Capture</button></div>
     <div id="captureAllocationStatus" role="status"></div>
-    <details><summary>Allocation types, sites and capture quality</summary><div id="allocationCaptureViews"></div></details>
     <p id="allocationEvidencePrerequisite" role="status">Capture allocations to enable profile exploration.</p>
     <div id="allocationExplorer" hidden>
     <div id="allocationQueryStatus" role="status"></div>
     <div id="allocationQueryViews" class="query-views"></div>
     </div>
+    <details><summary>Allocation types, sites and capture quality</summary><div id="allocationCaptureViews"></div></details>
+    <p class="query-view-provenance">Sampled allocation traffic, not a heap snapshot or exact object tracker.
+      Start with a short capture: collection, runtime rundown and trace conversion can be expensive.
+      Navigation reuses this capture without collecting again. All types are combined in the profile.</p>
   </section>
   <section id="resultExceptions" hidden>
-    <div class="panel-actions"><button id="captureExceptions" type="button">Capture exceptions…</button></div>
-    <p class="query-view-provenance">Exception results are temporary and are not saved. Sending a capture clears the current result; if collection then fails, it cannot be restored. Messages may contain sensitive application data.</p>
+    <div class="panel-actions"><button id="captureExceptions" type="button" aria-label="Capture exceptions">Capture</button>
+      <small>Replaces the current result · Messages may contain sensitive data</small></div>
     <div id="captureExceptionsStatus" role="status"></div>
     <p id="exceptionEvidenceIdentity" class="workspace-evidence-status" role="status">No exception evidence has been captured.</p>
     <div id="exceptionCaptureViews" class="query-views"></div>
+    <p class="query-view-provenance">Exception results are temporary and are not saved. Sending a capture clears the current result; if collection then fails, it cannot be restored.</p>
     <p class="query-view-provenance">
       Managed exceptions retain bounded messages without stack frames; crash guard includes available stacks.
       A process exit alone is not proof of an unhandled exception.
     </p>
   </section>
   <section id="resultHeap" class="result-tab-panel" role="tabpanel" aria-labelledby="resultTabHeap" hidden>
-    ${LIVE_READ_CONSENT_HTML}
-    <div class="panel-actions"><button id="captureHeap" type="button">Capture heap snapshot…</button></div>
+    <div class="panel-actions"><button id="captureHeap" type="button" aria-label="Capture heap snapshot">Capture</button></div>
     <div id="captureHeapStatus" role="status" aria-live="polite"></div>
     <div id="captureHeapResult" class="empty">
       <div id="captureHeapHeadline"></div>
@@ -3876,9 +3883,10 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       </section>
       </div>
     </div>
+    ${LIVE_READ_CONSENT_HTML}
   </section>
   <section id="resultThreads" hidden>
-    <div class="panel-actions"><button id="captureThreadSnapshot" type="button">Capture thread snapshot…</button></div>
+    <div class="panel-actions"><button id="captureThreadSnapshot" type="button" aria-label="Capture thread snapshot">Capture</button></div>
     <div id="captureThreadStatus" role="status" aria-live="polite"></div>
     <div id="captureThreadResult" class="empty">
       <div id="captureThreadHeadline"></div>
@@ -3898,7 +3906,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
   </section>
     <section id="monitoringEvents" class="monitoring-view" role="tabpanel" aria-labelledby="monitoringTabEvents" hidden>
   <section id="resultEvents">
-    <div class="events-warning" role="note">Event payloads may contain secrets or personal data. They are held only in bounded in-memory windows and are not automatically saved or logged. Native Windows ETW is not collected.</div>
+    <small>Event payloads may contain sensitive data</small>
     <div class="events-controls">
       <button id="startEvents" type="button">Start Live Events…</button>
       <button id="stopEvents" type="button" disabled>Stop</button>
@@ -3907,7 +3915,6 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       <label for="eventsSearch">Search</label><input id="eventsSearch" type="search" maxlength="${LIVE_EVENT_SEARCH_MAX_CHARS}" placeholder="Search retained events" />
     </div>
     <div id="eventsStatus" role="status">Not running.</div>
-    <div id="eventsSubscription">Start Live Events to choose explicit provider names, level and keyword mask.</div>
     <div id="eventsPresentation" role="status">Following latest. Newest events appear first.</div>
     <p id="eventsEmpty">No retained events. Start a stream with the provider, level and keywords documented by your application; zero matches does not confirm target inactivity.</p>
     <div id="eventsQuality" role="status"></div>
@@ -3922,7 +3929,12 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         <tbody id="eventsBody"></tbody>
       </table>
     </div>
+    <div id="eventsQualityDetail"></div>
     <section id="eventDetails" aria-label="Selected event details"><p>Select an event to inspect its bounded payload.</p></section>
+    <div id="eventsSubscription">Start Live Events to choose explicit provider names, level and keyword mask.</div>
+    <p class="query-view-provenance">Events are retained only in bounded memory, not automatically saved or logged.
+      Native Windows ETW is not collected. Pausing does not stop collection or acknowledgements.
+      Retained rows can include earlier streams; keyword masks are signed decimal.</p>
   </section>
     </section>
   </section>
@@ -4076,9 +4088,11 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     };
     function setWorkspaceStatus(kind, message) {
       const statusKind = kind === 'gc-activities' ? 'gc' : kind;
-      workspaceEvidenceStatusByKind.set(statusKind, message);
+      const compact = message.includes('display-only') ? 'Display-only · Live follow-up reads unavailable'
+        : /^(Current evidence:|Current result:|Current generic capture result:)/.test(message) ? '' : message;
+      workspaceEvidenceStatusByKind.set(statusKind, compact);
       if (selectedWorkspaceEvidence === statusKind || selectedWorkspaceEvidence === 'gc-activities' && statusKind === 'gc') {
-        workspaceEvidenceStatus.textContent = message;
+        workspaceEvidenceStatus.textContent = compact;
       }
     }
     function threadQueryStatusSummary() {
@@ -4086,12 +4100,12 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       const unavailable = Object.entries(threadQueryStates).filter(([, item]) => item.state === 'unavailable').map(([view]) => threadSnapshotViewLabels[view]);
       const candidates = threadQueryStates.deadlocks.state === 'returned' ? threadQueryStates.deadlocks.count : 0;
       const notices = [];
-      if (candidates > 0) notices.push(candidates + ' inferred deadlock candidate(s) returned; validate the wait-for edges.');
-      if (pending.length) notices.push('Queries still pending: ' + pending.join(', ') + '.');
-      if (unavailable.length) notices.push('Unavailable query views: ' + unavailable.join(', ') + '.');
+      if (candidates > 0) notices.push(candidates + ' inferred deadlock candidate(s)');
+      if (pending.length) notices.push(pending.length + ' views pending');
+      if (unavailable.length) notices.push(unavailable.length + ' views unavailable');
       if (!threadSnapshotQueryAvailable && threadSnapshotEvidenceId)
-        notices.push('No retained query handle is available; the snapshot is display-only.');
-      return notices.join(' ');
+        notices.push('Display-only');
+      return notices.join(' · ');
     }
     function refreshThreadQueryPresentation() {
       for (const option of Array.from(workspaceView.options || [])) {
@@ -4144,7 +4158,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       workspaceCaptureStatus.textContent = '';
       const statusKind = kind === 'gc-activities' ? 'gc' : kind;
       workspaceEvidenceStatus.textContent = workspaceEvidenceStatusByKind.get(statusKind)
-        || (ordinaryRequestCapture ? 'No completed evidence. Select Capture to collect ' + genericCaptureLabels[kind] + '.'
+        ?? (ordinaryRequestCapture ? 'No completed evidence. Select Capture to collect ' + genericCaptureLabels[kind] + '.'
           : 'No completed evidence is displayed for this kind.');
       workspaceEvidenceStatus.hidden = kind === 'request-activities' && genericCaptureKind === kind;
       workspaceThreadViewStatus.textContent = '';
@@ -4225,9 +4239,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         const switcher = queryViews.querySelector('.evidence-view-switcher');
         const tab = switcher?.querySelector('[data-panel="' + panelId + '"]');
         if (tab) tab.click();
-        if (isExplorer) workspaceThreadViewStatus.textContent =
-          'Thread explorer shows only returned thread IDs and inline frames. Missing participants or frames are not inferred. '
-          + threadQueryStatusSummary();
+        if (isExplorer) workspaceThreadViewStatus.textContent = threadQueryStatusSummary();
         else if (isStatics) workspaceThreadViewStatus.textContent = threadSnapshotQueryAvailable
           ? 'Enter an exact type name and explicitly query this snapshot. Selecting this view does not run a query or reattach. '
             + threadQueryStatusSummary()
@@ -4238,7 +4250,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
             ? 'This snapshot query is still pending. ' + threadQueryStatusSummary()
             : state === 'unavailable'
               ? 'This query did not return; the snapshot may still be displayed, but this view is unavailable. ' + threadQueryStatusSummary()
-              : 'Thread query evidence is a point-in-time projection. ' + threadQueryStatusSummary();
+              : threadQueryStatusSummary();
         }
       } else if (isStatics) {
         workspaceThreadViewStatus.textContent = threadSnapshotQueryAvailable
@@ -4250,8 +4262,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           : 'Capture a thread snapshot before exploring its views.';
       } else {
         workspaceThreadViewStatus.textContent = threadSnapshotEvidenceId
-          ? 'Point-in-time thread snapshot. Thread-pool query evidence is separate from Thread-pool event captures. '
-            + threadQueryStatusSummary()
+          ? threadQueryStatusSummary()
           : 'Capture a thread snapshot to explore returned threads, locks and waits.';
       }
     }
@@ -4342,7 +4353,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     eventsQualityDetails.appendChild(eventsQualityCounts);
     eventsQualityDetails.hidden = true;
     eventsQualityElement.appendChild(eventsQualitySummary);
-    eventsQualityElement.appendChild(eventsQualityDetails);
+    document.getElementById('eventsQualityDetail').appendChild(eventsQualityDetails);
     const eventsBody = document.getElementById('eventsBody');
     const eventDetails = document.getElementById('eventDetails');
     const eventsStartButton = document.getElementById('startEvents');
@@ -4384,11 +4395,11 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         if (subscription) {
           document.getElementById('eventsSubscription').textContent = 'Requested subscription: PID ' + subscription.processId
             + ' · providers: ' + subscription.providers.join(', ') + ' · level: ' + subscription.eventLevel
-            + ' · keywords: ' + subscription.keywords + ' (signed decimal). Retained rows may include earlier streams.';
+            + ' · keywords: ' + subscription.keywords;
         }
       }
       eventsStatusElement.textContent = state === 'running'
-        ? eventsObserved ? 'Live Events: events observed.' : 'Waiting for first event. Only configured provider, level and keyword matches can appear.'
+        ? eventsObserved ? '' : 'Waiting for first event'
         : text || state || '';
       const running = state === 'running' || state === 'starting' || state === 'stopping';
       eventsStartButton.disabled = running;
@@ -4403,9 +4414,9 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     }
     function renderEventsPresentation() {
       document.getElementById('eventsPresentation').textContent = eventsFollowing
-        ? 'Following latest. Newest events appear first.'
+        ? ''
         : 'Paused presentation: ' + eventsPausedArrivals + ' new arrivals; ' + eventsPausedEvictions
-          + ' evicted from retention since pausing. Collection and acknowledgements continue; displayed rows can expire. Follow latest to refresh.';
+          + ' evicted since pausing';
     }
     function eventSize(event) {
       return eventsEncoder.encode(JSON.stringify(event)).length * 2 + 1024;
@@ -4562,7 +4573,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       eventsSessionId = message.sessionId;
       if (message.events.length) {
         eventsObserved = true;
-        if (eventsRunning) eventsStatusElement.textContent = 'Live Events: events observed.';
+        if (eventsRunning) eventsStatusElement.textContent = '';
         if (!eventsFollowing) eventsPausedArrivals = Math.min(Number.MAX_SAFE_INTEGER, eventsPausedArrivals + message.events.length);
       }
       for (const item of message.events) {
@@ -4698,7 +4709,6 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       section.className = isError ? 'query-view query-view-error' : 'query-view';
       const heading = document.createElement('h3');
       heading.textContent = cpuQueryLabels[view] || view;
-      section.appendChild(heading);
       if ((view !== 'call-tree' || isError) && profileResult) {
         const back = document.createElement('button');
         back.type = 'button';
@@ -4720,13 +4730,12 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         return;
       }
       const data = result && result.data && typeof result.data === 'object' ? result.data : {};
+      const summary = document.createElement('p');
       if (typeof result.summary === 'string') {
-        const summary = document.createElement('p');
         summary.className = 'query-view-provenance';
         summary.textContent = view === 'call-tree'
           ? result.summary.replace('The handle retains the full tree.', 'Only loaded nodes are displayed here.')
           : result.summary;
-        section.appendChild(summary);
       }
       function table(title, rows, columns, action) {
         const wrapper = document.createElement('section');
@@ -4868,6 +4877,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           });
         }, profileState, allocation ? 'allocation-tick-estimated-bytes' : 'samples');
       }
+      section.appendChild(summary);
       target.replaceChildren(section);
     }
     function cpuQueryColumnClass(label) {
@@ -4995,8 +5005,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       sequenceGaps = 0;
       qualityElement.textContent = seriesLimitReached ? 'Panel chart limit reached: additional series omitted.' : '';
       document.getElementById('counterSession').textContent = 'Counter session ' + counterSessionNumber
-        + ' started ' + new Date().toLocaleTimeString() + ' · PID ${target.processId}'
-        + '. Earlier retained sessions remain visible; collection is not continuous across restarts.';
+        + ' · ' + new Date().toLocaleTimeString();
     }
 
     function updateButtons(running) {
@@ -5367,6 +5376,11 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     window.addEventListener('message', event => {
       const message = event.data;
       if (!message || typeof message.type !== 'string') return;
+      if (message.type === 'captureStatus') {
+        const statusId = {exceptions:'captureExceptionsStatus',heap:'captureHeapStatus',
+          'thread-snapshot':'captureThreadStatus',allocation:'captureAllocationStatus'}[message.kind] || 'captureStatus';
+        document.getElementById(statusId).hidden = message.state === 'done';
+      }
       if (message.profiles && typeof message.profiles === 'object') {
         profileAvailability.cpu = message.profiles.cpu === true;
         profileAvailability.allocation = message.profiles.allocation === true;
@@ -5561,7 +5575,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         document.getElementById('captureRequestEvidence').disabled = message.state === 'running' || message.state === 'starting';
         const gcCapture = captureKind === 'gc' || captureKind === 'gc-activities';
         if (message.state === 'starting') activateCaptureTab(captureKind);
-        const status = message.message || message.state || '';
+        const status = message.state === 'done' ? '' : message.message || message.state || '';
         setWorkspaceStatus(captureKind, message.state === 'error' && genericCaptureKind === captureKind
           ? status + ' The previous result remains current.'
           : status);
@@ -5649,9 +5663,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         exceptionPanel.dataset.evidenceId = exceptionEvidenceId;
         exceptionPanel.dataset.captureKind = exceptionEvidenceMode;
         const exceptionData = message.result?.data || {};
-        document.getElementById('exceptionEvidenceIdentity').textContent =
-          exceptionCaptureModes[exceptionEvidenceMode] + ' · Live EventPipe · PID '
-          + String(exceptionData.processId ?? 'unavailable') + ' · ' + String(exceptionData.duration ?? 'duration unavailable');
+        document.getElementById('exceptionEvidenceIdentity').textContent = '';
         setWorkspaceStatus('exceptions', 'Current evidence: ' + exceptionCaptureModes[exceptionEvidenceMode]
           + ' · Live EventPipe · PID ' + String(exceptionData.processId ?? 'unavailable') + '.');
         if (selectedWorkspaceEvidence === 'exceptions') setWorkspaceEvidence('exceptions');

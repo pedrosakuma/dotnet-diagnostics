@@ -191,6 +191,44 @@ test("live and dump webviews include the specialized renderer and styles", () =>
     }
 });
 
+test("captured data precedes static scope and quantitative summaries stay secondary", () => {
+    const html = renderHtml(target, "nonce123", 120);
+    assert.ok(html.indexOf('id="chart"') < html.indexOf('id="counterIdentity"'));
+    assert.ok(html.indexOf('id="chart"') < html.indexOf('id="chartNote"'));
+    assert.ok(html.indexOf('id="quality"') < html.indexOf('id="chart"'), "active chart loss stays visible before data");
+    assert.ok(html.indexOf('id="cpuQueryViews"') < html.indexOf('id="cpuSamplingDisclaimer"'));
+    assert.ok(html.indexOf('id="cpuQueryViews"') < html.indexOf('id="cpuEvidencePrerequisite"'));
+    assert.ok(html.indexOf('id="captureHeapTable"') < html.indexOf("Remembered permissions apply"));
+    assert.ok(html.indexOf('id="eventsTable"') < html.indexOf('id="eventsSubscription"'));
+    assert.match(html, /\.capture-summary, \.exception-capture-summary[\s\S]*?font-size:\.85rem/);
+    for (const id of ["captureCpu", "captureAllocation", "captureHeap", "captureThreadSnapshot", "captureExceptions"])
+        assert.match(html, new RegExp(`id="${id}"[^>]*aria-label="[^"]+">Capture</button>`));
+
+    const { renderQueryView, makeContainer, document, updateThreadNavigation } = loadRenderer();
+    const exceptions = makeContainer("exceptionCaptureViews");
+    renderQueryView("exceptionCaptureViews", "exceptions", {
+        data: {totalExceptions: 5, recentCap: 1, recent: [
+            {exceptionType: "Fixture.Exception", exceptionMessage: "Captured message", threadId: 1},
+        ], byType: []}, notes: ["maxRecent=1; 4 events omitted"],
+    }, false);
+    const explorer = exceptions.querySelector(".exception-explorer");
+    const scope = exceptions.querySelector(".exception-capture-scope");
+    assert.equal(scope._parent, explorer._parent);
+    assert.ok(scope._parent.children.indexOf(scope) > scope._parent.children.indexOf(explorer));
+    assert.match(exceptions.querySelector(".exception-capture-notes").textContent, /4 events omitted/);
+    assert.match(exceptions.querySelector(".exception-capture-notes").children[0].textContent, /4 observations not retained/);
+    assert.equal(exceptions.querySelector(".exception-capture-summary").textContent, "5 observed · 1 retained");
+
+    const threads = makeContainer("threadQueryViews");
+    makeContainer("captureThreadResult").appendChild(threads);
+    updateThreadNavigation("snapshot", {threads: [{managedThreadId: 1, state: "Running", frames: ["Fixture.Work()"]}]});
+    const list = document.getElementById("threadModePanel");
+    assert.ok(threads.textContent.includes("Fixture.Work()"));
+    const threadExplorer = document.getElementById("threadExplorer");
+    assert.ok(threadExplorer.children.indexOf(list) < threadExplorer.children.findIndex(node =>
+        node.textContent.startsWith("Point-in-time snapshot")));
+});
+
 test("thread Workspace summary exposes deadlock and query availability without opening legacy tabs", () => {
     const html = renderHtml(target, "nonce", 120);
     const script = extractInlineScript(html);
@@ -223,9 +261,9 @@ test("thread Workspace summary exposes deadlock and query availability without o
     api.threadQueryStates["unique-stacks"].state = "unavailable";
     api.threadQueryStates["wait-chains"].state = "pending";
     api.refreshThreadQueryPresentation();
-    assert.match(api.threadQueryStatusSummary(), /2 inferred deadlock candidate\(s\) returned/);
-    assert.match(api.threadQueryStatusSummary(), /Queries still pending: Snapshot wait chains/);
-    assert.match(api.threadQueryStatusSummary(), /Unavailable query views: Grouped snapshot stacks/);
+    assert.match(api.threadQueryStatusSummary(), /2 inferred deadlock candidate\(s\)/);
+    assert.match(api.threadQueryStatusSummary(), /1 views pending/);
+    assert.match(api.threadQueryStatusSummary(), /1 views unavailable/);
     assert.equal(options.find(option => option.value === "deadlocks").textContent,
         "Inferred deadlock candidates - 2 found (inferred)");
     assert.equal(options.find(option => option.value === "unique-stacks").textContent,
@@ -282,8 +320,8 @@ test("live panel exposes the compact evidence workspace and keeps other result r
     assert.doesNotMatch(dumpHtml, /workspace-thread-snapshot/);
     assert.match(html, /id="captureGc" type="button">Capture GC evidence…/);
     assert.match(html, /id="cpuSamplingDisclaimer"/);
-    assert.match(html, /<section id="resultCpu"[^>]*data-export-kind="cpu"[\s\S]*?<button id="captureCpu" type="button">/);
-    assert.match(html, /<section id="resultHeap"[\s\S]*?<button id="captureHeap" type="button">/);
+    assert.match(html, /<section id="resultCpu"[^>]*data-export-kind="cpu"[\s\S]*?<button id="captureCpu" type="button" aria-label="Capture CPU sample">Capture/);
+    assert.match(html, /<section id="resultHeap"[\s\S]*?<button id="captureHeap" type="button" aria-label="Capture heap snapshot">Capture/);
     assert.match(script, /function selectResultTab\(selected\)/);
     assert.match(script, /event\.key === 'ArrowRight'/);
     assert.match(script, /function selectProfileView\(kind, view, rootMethodFilter\)/);
@@ -658,7 +696,7 @@ test("CPU and allocation profile tables preserve method symbols independently", 
         && element.className === "cpu-query-action")[0].querySelector("button"));
     renderCpuQuery("by-module", { data: {} }, false, "allocation");
     assert.match(allocationContainer.textContent, /Modules/);
-    assert.match(container.textContent, /Top methods/);
+    assert.match(container.textContent, /Methods ranked by sampled time/);
 });
 
 function elements(root, predicate) {
@@ -1278,7 +1316,7 @@ test("exception result ownership stays dedicated, mode-specific and request-corr
     assert.equal(state.exceptionEvidenceId, "request-2");
     assert.equal(state.exceptionEvidenceMode, "crash-guard");
     assert.deepEqual(panel.dataset, { evidenceId: "request-2", captureKind: "crash-guard" });
-    assert.match(identity.textContent, /Crash guard · Live EventPipe · PID 4242 · 00:00:10/);
+    assert.equal(identity.textContent, "", "selectors and target header already identify this evidence");
     assert.equal(rendered[0][0], "exceptionCaptureViews", "exceptions never render into the generic capture slot");
     assert.deepEqual(statuses, [["exceptions", "Current evidence: Crash guard · Live EventPipe · PID 4242."]]);
     assert.equal(details.open, true);
@@ -1886,14 +1924,14 @@ test("live time selection filters only retained observations and GC receipt time
     points = [{ receivedAtMs: 1000, timestamp: "later", value: 123 }];
     gcRows.forEach(row => { row.receivedAtMs += 1000; });
     nav.update();
-    assert.match(root.textContent, /0 of 1 retained observations/);
+    assert.match(root.textContent, /0 of 1 observations/);
     assert.equal(nav.selected(), undefined);
     assert.match(root.textContent, /Selected data has expired/);
     assert.equal(start.value, "0", "thumbs reflect clipped current retention, not stale percentages");
     assert.equal(nav.filter(points).length, 0, "fixed selections must not silently follow incoming data");
     click(root, "Follow latest");
     assert.equal(nav.filter(points).length, 1);
-    assert.match(root.textContent, /Following latest/);
+    assert.equal(root.querySelector("button").textContent, "Pause following");
     assert.ok(gcRows.every(row => !row.element.hidden));
     assert.equal(redraws, 3);
     const reset = root.querySelector("button");
@@ -1960,15 +1998,31 @@ test("all diagnostic kinds provide sortable selectable returned rows without fab
         assert.match(root.textContent, /do not establish a complete event timeline/);
         assert.match(root.textContent, /1 retained row\(s\) omitted/);
         const tables = root.querySelectorAll("table");
-        assert.equal(tables[1].querySelector(".evidence-pick"), null);
-        assert.equal(tables[1].querySelector("tbody").children[0].children[1].textContent, "0");
-        assert.match(tables[1].textContent, /<script>operation<\/script>/);
+        assert.equal(tables[0].querySelector(".evidence-pick"), null);
+        assert.equal(tables[0].querySelector("tbody").children[0].children[1].textContent, "0");
+        assert.match(tables[0].textContent, /<script>operation<\/script>/);
+        assert.equal(tables[1]._parent._parent, root.querySelector(".diagnostic-quality-details"));
         assert.ok(root.querySelector(".diagnostic-evidence-table-label"));
         assert.ok(root.querySelector(".diagnostic-capture-notes"));
         assert.equal(tables.every(table => table._parent.className === "query-view-table-wrap"), true,
             "each captured table keeps horizontal scrolling inside its own bounded wrapper");
         assert.equal(root.querySelector("script"), null);
     }
+});
+
+test("unreported capture quality remains visible before rows without notes or limitations", () => {
+    const { document, makeContainer } = createDocumentStub();
+    const root = makeContainer("diagnostics");
+    const { CAPTURE_VIEW_RENDERER_SCRIPT } = require("../out/captureViewRenderer.js");
+    const render = new Function("document", CAPTURE_VIEW_RENDERER_SCRIPT + ";return renderCaptureView;")(document);
+    render("diagnostics", {
+        kind: "db", summary: "Fixture", provenance: {processId: 1, requestedDurationSeconds: 10},
+        metrics: [], tables: [{title: "Commands", columns: ["Name"], rows: [["Query"]]}],
+        notes: [], evidence: {source: "not-reported", limitations: []},
+    });
+    const alert = root.querySelector(".diagnostic-active-quality");
+    assert.equal(alert.children[0].textContent, "quality not reported");
+    assert.ok(root.children.indexOf(alert) < root.children.indexOf(root.querySelector(".diagnostic-table-view")));
 });
 
 test("in-flight request rows lead the result and state filters compose with returned-row search", () => {
@@ -2011,10 +2065,9 @@ test("in-flight request rows lead the result and state filters compose with retu
     assert.match(root.textContent, /PID 42 · 10s window · Live capture, not saved/);
     assert.doesNotMatch(root.textContent, /An unparsed fallback summary|requests\n/);
     assert.doesNotMatch(root.textContent, /Metrics/);
-    assert.match(root.textContent, /In flight at window close · Filters apply to shown rows/);
-    const conciseSummary = root.children.find(child =>
-        child.textContent === "In flight at window close · Filters apply to shown rows.");
-    assert.ok(conciseSummary, "the short result scope stays visible above the table");
+    assert.doesNotMatch(root.textContent, /In flight at window close · Filters apply to shown rows/);
+    assert.equal(root.children.filter(child => child.tagName === "p"
+        && child.textContent.startsWith("Window:")).length, 1, "one capture summary precedes data");
     assert.match(root.textContent, /All in-flight \(4 shown\)/);
     assert.match(root.textContent, /At or above 750 ms \(2 shown\)/,
         "filter count comes from returned rows, not the capture-wide long-running metric");
@@ -2033,9 +2086,9 @@ test("in-flight request rows lead the result and state filters compose with retu
     assert.match(disclaimer.textContent, /repeated starts replace the tracked entry/);
     assert.ok(root.children.indexOf(disclaimer) > root.children.indexOf(table._parent),
         "the disclaimer follows the request table");
-    assert.equal(root.querySelector("details"), null, "the full explanation is no longer hidden behind disclosure");
+    assert.ok(root.querySelector(".diagnostic-active-quality"), "active quality has a compact visible summary");
     const notes = root.querySelector(".diagnostic-capture-notes");
-    assert.equal(notes._parent, root, "collector warnings remain visible before the request table");
+    assert.equal(notes._parent.className, "diagnostic-active-quality", "full reasons remain at the active alert");
     assert.match(notes.textContent, /Dropped 2 newer starts/);
     assert.ok(root.children.some(child => child.textContent.includes("Capture window (requests): The snapshot is partial")),
         "evidence limitations remain visible before the request table");

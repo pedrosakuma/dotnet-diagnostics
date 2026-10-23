@@ -89,7 +89,7 @@ function renderExceptionNavigation(parent: HTMLElement, events: Array<Record<str
     const title = document.createElement("h4");
     title.textContent = "Explore retained occurrences";
     const help = document.createElement("p");
-    help.textContent = "Filters below apply only to retained events. All-observed type counts above do not change.";
+    help.textContent = "Filters apply only to retained events. All-observed type counts do not change.";
     const type = document.createElement("select");
     type.setAttribute("aria-label", "Exception type");
     const message = document.createElement("select");
@@ -240,7 +240,7 @@ function renderExceptionNavigation(parent: HTMLElement, events: Array<Record<str
         selectedOccurrenceButton?.focus({ preventScroll: true });
         selectedOccurrenceButton?.scrollIntoView({ block: "nearest" });
     });
-    section.append(title, help, type, message, reset, status, layout);
+    section.append(type, message, reset, status, layout, help);
     parent.appendChild(section);
     draw();
 }
