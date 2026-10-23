@@ -522,6 +522,12 @@ function cpuRenderer() {
     assert.ok(start >= 0 && end > start, "CPU renderer source should be present");
     const source = script.slice(start, end);
     const { document, makeContainer } = createDocumentStub();
+    const createElement = document.createElement;
+    document.createElement = tagName => {
+        const element = createElement(tagName);
+        if (tagName === "tr") element.tagName = "TR";
+        return element;
+    };
     const cpuQueryViews = makeContainer("cpuQueryViews");
     const allocationContainer = makeContainer("allocationQueryViews");
     const requests = [];

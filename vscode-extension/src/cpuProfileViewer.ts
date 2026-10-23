@@ -217,7 +217,7 @@ function renderCpuProfile(
         state.expanded = [...expanded];
         state.focus = entry.path; state.selected = entry.path; redraw();
         const methodButton = Array.from(visualization.querySelectorAll<HTMLElement>("[data-node-path]"))
-            .find(row => row.tagName === "tr" && row.getAttribute("data-node-path") === pathKey(entry.path))
+            .find(row => row.tagName === "TR" && row.getAttribute("data-node-path") === pathKey(entry.path))
             ?.querySelector<HTMLButtonElement>(".cpu-profile-method");
         (methodButton ?? visualization.querySelector<HTMLElement>("button, summary, [tabindex]"))?.focus();
     }
