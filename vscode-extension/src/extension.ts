@@ -5980,7 +5980,6 @@ export function renderDumpAnalysisHtml(dumpFileName: string, nonce: string): str
       <div id="captureHeapHeadline"></div>
       <div id="heapWorkspace" class="heap-workspace" data-focused="false">
       <div id="heapTypeList" class="heap-type-list">
-      <button id="openHeapDetails" type="button">Explore heap details</button>
       <table id="captureHeapTable">
         <thead><tr><th>Type</th><th>Instances</th><th>Bytes</th></tr></thead>
         <tbody id="captureHeapBody"></tbody>

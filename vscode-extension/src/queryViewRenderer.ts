@@ -1025,13 +1025,10 @@ export const QUERY_VIEW_STYLES = `
     .heap-detail-pane { border:1px solid var(--vscode-panel-border); padding:.6rem; }
     .heap-type-list td:first-child { overflow-wrap:anywhere; }
     .heap-type-list button[aria-current="true"] { font-weight:700; text-decoration:underline; }
-    #openHeapDetails { margin-bottom:.5rem; }
     #backToHeapTypes { display:none; }
     @container (max-width: 850px) {
         .heap-workspace { display:block; }
         .heap-type-list, .heap-detail-pane { max-height:none; overflow:visible; }
-        .heap-workspace[data-focused="true"] .heap-type-list { display:none; }
-        .heap-workspace[data-focused="false"] .heap-detail-pane { display:none; }
         #backToHeapTypes { display:inline-block; }
     }
     .query-views { margin-top:.8rem; }

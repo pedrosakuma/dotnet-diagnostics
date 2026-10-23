@@ -1583,15 +1583,17 @@ test("live and dump heap layouts keep types and details in separate responsive p
         assert.match(html, /id="backToHeapTypes" type="button">Back to types/);
         assert.match(html, /id="heapDetailPane"[\s\S]*?id="heapQueryViews"[\s\S]*?id="addressNavigation"/);
         assert.match(html, /@container \(max-width: 850px\)/);
+        assert.doesNotMatch(html, /id="openHeapDetails"|Explore heap details/);
+        assert.doesNotMatch(html, /\.heap-workspace\[data-focused="(?:true|false)"\][^{]+\{ display:none; \}/);
         assert.match(html, /workspace\.dataset\.focused = "true"/);
         assert.match(html, /window\.scrollTo\(\{ top: overviewScroll \}\)/);
     }
 });
 
-test("workspace heap View navigation replaces only the duplicate live shortcut and preserves legacy navigation", () => {
+test("heap navigation needs no Explore shortcut and restores keyboard focus in live and dump panels", () => {
     const live=renderHtml(target,"nonce",120),dump=renderDumpAnalysisHtml("fixture.dmp","nonce");
     assert.doesNotMatch(live, /id="openHeapDetails"/);
-    assert.match(dump,/id="openHeapDetails" type="button">Explore heap details/);
+    assert.doesNotMatch(dump,/id="openHeapDetails"/);
     assert.match(extractInlineScript(live),/navigateHeapDetails\(workspaceView.value === 'details'\)/);
     const {makeContainer,document,renderHeapTypeNavigation,navigateHeapDetails}=loadRenderer();
     const workspace=makeContainer("heapWorkspace");
@@ -1617,13 +1619,15 @@ test("workspace heap View navigation replaces only the duplicate live shortcut a
     back.onclick();
     assert.equal(workspace.dataset.focused,"false");
     assert.equal(view.value,"snapshot");
-    const open=document.createElement("button");open.id="openHeapDetails";types.appendChild(open);
+    const getElementById=document.getElementById.bind(document);
+    document.getElementById=id=>id==="workspaceView"?null:getElementById(id);
     renderHeapTypeNavigation([{typeFullName:"App.Cache",instanceCount:2,totalBytes:100}]);
-    open.onclick();
-    assert.equal(workspace.dataset.focused,"true","legacy dump shortcut still navigates");
+    navigateHeapDetails(true);
+    assert.equal(workspace.dataset.focused,"true");
     back.onclick();
     assert.equal(workspace.dataset.focused,"false");
-    assert.equal(open.focused,true);
+    assert.equal(table.focused,true,"dump without a workspace selector restores focus to its type table");
+    assert.equal(table.tabIndex,-1);
     assert.equal(views.children.length,0,"all navigation is local; no evidence was manufactured");
 });
 

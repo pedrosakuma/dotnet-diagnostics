@@ -68,7 +68,6 @@ function renderHeapTypeNavigation(types: Array<Record<string, unknown>>): void {
     }) | null;
     const pane = document.getElementById("heapDetailPane");
     const back = document.getElementById("backToHeapTypes");
-    const open = document.getElementById("openHeapDetails");
     let selectedButton: HTMLButtonElement | undefined;
     let overviewScroll = 0;
     const showDetails = (): void => {
@@ -88,12 +87,12 @@ function renderHeapTypeNavigation(types: Array<Record<string, unknown>>): void {
                 workspace.dataset.focused = "false";
                 const view = document.getElementById("workspaceView") as HTMLSelectElement | null;
                 if (view) view.value = "snapshot";
-                (selectedButton ?? open ?? view)?.focus({ preventScroll: true });
+                (selectedButton ?? view ?? table)?.focus({ preventScroll: true });
                 window.scrollTo({ top: overviewScroll });
             }
         };
     }
-    if (open) open.onclick = showDetails;
+    table.tabIndex = -1;
     if (back) back.onclick = () => {
         navigateHeapDetails(false);
     };

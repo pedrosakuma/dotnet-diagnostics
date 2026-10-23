@@ -289,11 +289,12 @@ the string; the separate one-request sensitive-data consent remains required.
 
 Heap type exploration uses an adjacent details pane in wide panels, with independent scrolling
 for the returned type list and details. Selecting a type no longer opens its details below the
-whole table. At widths of 850 px or less, the same pane replaces the list; **Back to types**
-restores the existing list, filters, sort and page scroll position. In the domain workspace,
+whole table. At widths of 850 px or less, details follow the type list in a single flow, so
+all captured breakdowns remain accessible without an extra navigation button. **Back to types**
+returns focus to the selected type or type table and preserves filters, sort and page scroll position. In the domain workspace,
 **View → Heap details** navigates to the captured details without choosing a type; **Snapshot totals**
-returns to the type list. The separate dump-analysis surface retains **Explore heap details**.
-Both routes use the same responsive pane and start no additional diagnostic reads.
+returns to the type list. Neither live nor dump analysis has an **Explore heap details** button.
+Navigation uses the same responsive pane and starts no additional diagnostic reads.
 
 The **Call tree** view has linked tree-table and **Flame graph (icicle)** modes.
 The tree-table aligns method/call path, **Total %** (including descendants) and **Self %**
