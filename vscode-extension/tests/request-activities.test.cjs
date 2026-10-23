@@ -350,6 +350,8 @@ class Element {
     set textContent(value) { this._text = String(value); this.children = []; }
     get textContent() { return (this._text ?? "") + this.children.map(c => c.textContent).join(""); }
     appendChild(child) { child.parentElement = this; this.children.push(child); return child; }
+    insertBefore(child, before) { child.parentElement = this; this.children.splice(this.children.indexOf(before), 0, child); return child; }
+    remove() { if (this.parentElement) this.parentElement.children.splice(this.parentElement.children.indexOf(this), 1); }
     replaceChildren(...children) { this.children = children; for (const child of children) child.parentElement = this; this._text = ""; }
     setAttribute(key, value) { this.attributes[key] = value; }
     addEventListener(key, fn) { this.listeners[key] = fn; }
@@ -451,14 +453,18 @@ test("Activity disclosures are local aligned flat associations with weak/unverif
     result.rows[0].relationship = "same-trace-only";
     result.rows[0].verified = false;
     result.rows[0].verificationWithheldReason = "Parent chain missing.";
+    result.rows[0].activity.durationMs = null;
     d.view.receive("e1", "r1", result, d.messages.at(-1).queryToken);
     assert.match(d.container.textContent, /In flight/);
     assert.match(d.container.textContent, /Weak linkUnverified/);
-    const table = d.container.querySelectorAll("table").find(node => node.className.includes("joint-activity-table"));
-    assert.match(table.attributes["aria-label"], /flat associations, not a call tree/);
+    const table = d.container.querySelectorAll("table")[0];
+    assert.equal(d.container.querySelectorAll("table").length, 1, "Activities share the request table columns");
+    assert.equal(d.container.querySelectorAll("colgroup").length, 1);
+    assert.ok(table.querySelectorAll("td").some(node => node.textContent === "Unknown"
+        && node.attributes["aria-label"] === "Finished duration unavailable"));
     assert.deepEqual(table.querySelectorAll("th").map(node => [node.textContent, node.attributes.scope]),
-        [["Associated operation", "col"], ["Finished duration (ms)", "col"]]);
-    const toggle = table.querySelectorAll("button")[0];
+        [["Request / associated operation", "col"], ["Time (ms)", "col"]]);
+    const toggle = table.querySelectorAll("button").find(node => node.className.includes("joint-activity-toggle"));
     const details = table.querySelectorAll("tr").find(node => node.className === "joint-activity-details");
     assert.equal(details.hidden, true);
     toggle.listeners.click();
@@ -469,6 +475,11 @@ test("Activity disclosures are local aligned flat associations with weak/unverif
     toggle.listeners.click();
     assert.equal(details.hidden, true);
     assert.equal(d.messages.length, 1, "Activity details never query or collect");
+    d.disclosure("r1").listeners.click();
+    assert.equal(d.container.querySelectorAll("tr").filter(node => node.className === "joint-activity-row").length, 0);
+    d.disclosure("r1").listeners.click();
+    assert.equal(d.messages.length, 1);
+    assert.equal(d.container.querySelectorAll("tr").filter(node => node.className === "joint-activity-row").length, 1);
     assert.match(d.container.textContent, /request time is elapsed at window close, not a finished duration/);
 });
 test("query failure stays inline and retry preserves disclosure focus without an automatic retry", () => {

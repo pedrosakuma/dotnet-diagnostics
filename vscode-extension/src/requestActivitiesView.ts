@@ -11,6 +11,7 @@ function createRequestActivitiesView(container: HTMLElement, send: (message: obj
     let available = false;
     let unavailableReason = "";
     let status: HTMLElement;
+    let activityRows: HTMLElement[] = [];
     const requestRows = new Map<string, { request: JointRequest; row: HTMLTableRowElement; button: HTMLButtonElement; details: HTMLTableRowElement; region: HTMLElement }>();
     const el = (tag: string, text?: string): HTMLElement => {
         const node = document.createElement(tag);
@@ -68,23 +69,15 @@ function createRequestActivitiesView(container: HTMLElement, send: (message: obj
         return `${relation} · ${activity.verified ? "Verified identifier relationship"
             : `Unverified: ${activity.verificationWithheldReason ?? "verification unavailable"}`}`;
     };
-    const renderActivityRows = (query: JointQuery<RelatedActivity>, parent: HTMLElement): void => {
-        const table = el("table");
-        table.className = "query-view-table joint-activity-table";
-        table.setAttribute("aria-label", "Associated completed Activities; flat associations, not a call tree");
-        const head = el("thead");
-        const header = el("tr");
-        for (const label of ["Associated operation", "Finished duration (ms)"]) {
-            const column = el("th", label);
-            column.setAttribute("scope", "col");
-            header.appendChild(column);
-        }
-        head.className = "joint-activity-head";
-        head.appendChild(header);
-        table.appendChild(head);
-        const body = el("tbody");
+    const renderActivityRows = (query: JointQuery<RelatedActivity>, before: HTMLTableRowElement): void => {
+        const append = (row: HTMLElement): void => {
+            before.parentElement!.insertBefore(row, before);
+            activityRows.push(row);
+        };
         for (const [index, row] of query.rows.entries()) {
             const item = el("tr");
+            item.className = "joint-activity-row";
+            item.id = `joint-operation-${expandedRowId}-${index}`;
             const name = el("td");
             name.className = "joint-activity-name";
             const toggle = document.createElement("button");
@@ -116,10 +109,11 @@ function createRequestActivitiesView(container: HTMLElement, send: (message: obj
                 name.appendChild(unverified);
             }
             item.appendChild(name);
-            const duration = el("td", String(row.activity.durationMs));
-            duration.setAttribute("aria-label", `Finished duration: ${row.activity.durationMs} ms`);
+            const duration = el("td", row.activity.durationMs === null ? "Unknown" : String(row.activity.durationMs));
+            duration.setAttribute("aria-label", row.activity.durationMs === null
+                ? "Finished duration unavailable" : `Finished duration: ${row.activity.durationMs} ms`);
             item.appendChild(duration);
-            body.appendChild(item);
+            append(item);
             const identity = el("td");
             identity.setAttribute("colspan", "2");
             identity.appendChild(el("p", relationLabel(row)));
@@ -128,14 +122,15 @@ function createRequestActivitiesView(container: HTMLElement, send: (message: obj
             identity.appendChild(el("p", `Trace ID: ${row.activity.traceId}`));
             identity.appendChild(el("p", `Span ID: ${row.activity.spanId} · Parent span ID: ${row.activity.parentSpanId ?? "unknown"}`));
             detailRow.appendChild(identity);
-            body.appendChild(detailRow);
+            append(detailRow);
         }
-        table.appendChild(body);
-        parent.appendChild(table);
+        requestRows.get(expandedRowId!)?.button.setAttribute("aria-controls",
+            [before.id, ...activityRows.map(row => row.id)].join(" "));
     };
     const setDisclosure = (entry: { request: JointRequest; button: HTMLButtonElement; details: HTMLTableRowElement },
         expanded: boolean): void => {
         entry.button.setAttribute("aria-expanded", String(expanded));
+        if (!expanded) entry.button.setAttribute("aria-controls", entry.details.id);
         entry.button.setAttribute("aria-label", expanded
             ? `Collapse completed Activities for ${entry.request.method} ${entry.request.path}, request row ${entry.request.rowId}`
             : `Show completed Activities for ${entry.request.method} ${entry.request.path}, request row ${entry.request.rowId}. `
@@ -146,23 +141,32 @@ function createRequestActivitiesView(container: HTMLElement, send: (message: obj
         const entry = requestRows.get(rowId);
         if (!entry || !owner || expandedRowId !== rowId) return;
         const { region, request } = entry;
+        for (const row of activityRows) row.remove();
+        activityRows = [];
         region.replaceChildren();
         region.setAttribute("aria-busy", String(inFlight?.rowId === rowId));
         region.setAttribute("role", "region");
-        region.appendChild(el("h4", `${request.method} ${request.path} · Request row ${request.rowId}`));
         const appendRequestIdentity = (): void => {
             const identity = document.createElement("details");
             identity.appendChild(el("summary", "Request identifiers and timing"));
+            identity.appendChild(el("p", `${request.method} ${request.path} · Request row ${request.rowId}`));
             identity.appendChild(el("p", `Elapsed at window close: ${request.elapsedMs} ms · Started: ${request.startedAt} · `
                 + `Trace ID: ${request.traceId ?? "unknown"} · Span ID: ${request.spanId ?? "unknown"}`));
+            if (loaded?.rowId === rowId) identity.appendChild(el("p",
+                `${loaded.result.rows.length} shown / ${loaded.result.totalRows} associated retained Activities; ${loaded.result.omittedRows} omitted.`));
             region.appendChild(identity);
         };
 
         if (loaded?.rowId === rowId) {
             const result = loaded.result;
             appendWarnings(result, region);
-            region.appendChild(el("p", `${result.rows.length} shown / ${result.totalRows} associated retained Activities; ${result.omittedRows} omitted.`));
-            if (result.rows.length) renderActivityRows(result, region);
+            if (result.omittedRows > 0) {
+                const omission = el("p", `${result.rows.length} of ${result.totalRows} associated Activities shown; ${result.omittedRows} omitted.`);
+                omission.className = "joint-quality-alert";
+                omission.setAttribute("role", "alert");
+                region.appendChild(omission);
+            }
+            if (result.rows.length) renderActivityRows(result, entry.details);
             else region.appendChild(el("p", "No retained completed Activities matched this request in the observation window. Open operations are not retained. Instrumentation, enabled source coverage and loss may be unknown; this does not mean no work occurred."));
             appendRequestIdentity();
             appendTechnicalDetails(result, region, owner.result);
@@ -200,6 +204,10 @@ function createRequestActivitiesView(container: HTMLElement, send: (message: obj
         appendRequestIdentity();
     };
     const renderExpanded = (): void => {
+        if (!expandedRowId) {
+            for (const row of activityRows) row.remove();
+            activityRows = [];
+        }
         for (const [rowId, entry] of requestRows) {
             const expanded = rowId === expandedRowId;
             setDisclosure(entry, expanded);
@@ -240,6 +248,7 @@ function createRequestActivitiesView(container: HTMLElement, send: (message: obj
         retryRowId = undefined;
         available = false;
         requestRows.clear();
+        activityRows = [];
         container.replaceChildren();
     };
     return {
@@ -277,6 +286,12 @@ function createRequestActivitiesView(container: HTMLElement, send: (message: obj
             const table = el("table");
             table.className = "query-view-table joint-request-table";
             table.appendChild(el("caption", `Requests pending at window close (${q.rows.length} of ${q.totalRows} retained shown)`));
+            const columns = el("colgroup");
+            const operationColumn = el("col");
+            operationColumn.className = "joint-operation-column";
+            columns.appendChild(operationColumn);
+            columns.appendChild(el("col"));
+            table.appendChild(columns);
             const head = el("thead");
             const header = el("tr");
             for (const column of ["Request / associated operation", "Time (ms)"]) {

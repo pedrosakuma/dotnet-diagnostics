@@ -3419,16 +3419,11 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     .joint-request-cell { display:flex; align-items:flex-start; min-width:0; }
     .joint-request-identity { min-width:0; overflow-wrap:anywhere; word-break:normal; }
     .query-view-table.joint-request-table { min-width:0; width:100%; table-layout:fixed; }
-    .joint-request-table th:first-child { width:78%; }
-    .joint-request-table th:last-child { width:22%; }
     .joint-request-table td:last-child { white-space:nowrap; }
-    .joint-request-table .joint-request-details-row > td { padding:.5rem .35rem .8rem; white-space:normal; min-width:0; }
-    .query-view-table.joint-activity-table { width:100%; min-width:0; table-layout:fixed; margin:0; }
-    .joint-activity-head { position:absolute; width:1px; height:1px; padding:0; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
-    .joint-activity-table td:first-child { width:78%; }
-    .joint-activity-table td:last-child { width:22%; }
-    .joint-activity-table .joint-activity-details > td { width:auto; white-space:normal; }
-    .joint-activity-table .joint-activity-name { padding-left:1.5rem; white-space:normal; overflow-wrap:anywhere; }
+    .joint-request-table .joint-request-details-row > td { padding:.5rem 0 .8rem; white-space:normal; min-width:0; }
+    .joint-request-table .joint-operation-column { width:78%; }
+    .joint-request-table .joint-activity-details > td { width:auto; white-space:normal; }
+    .joint-request-table .joint-activity-name { padding-left:1.5rem; white-space:normal; overflow-wrap:anywhere; }
     .joint-activity-name .joint-request-toggle { margin-left:0; vertical-align:middle; }
     .joint-activity-details p { white-space:normal; overflow-wrap:anywhere; margin:.3rem .5rem .3rem 3rem; }
     .joint-inflight-marker, .joint-link-marker { display:inline-block; font-size:.85em; margin-left:.5rem; color:var(--vscode-descriptionForeground); }
