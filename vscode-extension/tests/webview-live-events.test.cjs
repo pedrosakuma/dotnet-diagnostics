@@ -132,7 +132,7 @@ function eventsDocument() {
         document, { postMessage: message => messages.push(message) }, TextEncoder,
         callback => { timers.set(++nextTimer, callback); return nextTimer; },
         id => timers.delete(id),
-        { now: () => now },
+        { now: () => now, parse: Date.parse },
     );
     let batchId = 0;
     return {
@@ -160,6 +160,87 @@ function event(sequence, overrides = {}) {
         ...overrides,
     };
 }
+
+test("Events sorts all retained matches before bounded pages and resumes newest source-time order explicitly", () => {
+    const ui = eventsDocument();
+    for (let first = 1; first <= 240; first += 60) {
+        ui.batch(Array.from({ length: 60 }, (_, index) => {
+            const sequence = first + index;
+            return event(sequence, { provider: sequence % 2 ? "Z.Provider" : "A.Provider",
+                level: sequence % 2 ? "Verbose" : "Error" });
+        }));
+    }
+    const body = ui.get("eventsBody");
+    assert.equal(body.children.length, 100);
+    assert.equal(body.children[0].eventObservation.sequence, 240);
+    assert.equal(ui.get("eventsPagination").hidden, false);
+    assert.equal(ui.get("eventsPrevious").disabled, true);
+    assert.equal(ui.get("eventsNext").disabled, false);
+    ui.get("eventsNext").dispatch("click");
+    assert.equal(body.children[0].eventObservation.sequence, 140);
+    assert.equal(ui.get("eventsPrevious").disabled, false);
+    ui.get("eventsNext").dispatch("click");
+    assert.equal(body.children.length, 40);
+    assert.equal(ui.get("eventsNext").disabled, true);
+    ui.get("eventsPrevious").dispatch("click");
+    assert.equal(body.children[0].eventObservation.sequence, 140);
+    body.children[0].dispatch("click");
+    const selected = ui.snapshot().selected;
+    ui.get("eventsSort1").dispatch("click");
+    assert.equal(ui.snapshot().following, false);
+    assert.equal(ui.get("eventsHeader1").attributes["aria-sort"], "ascending");
+    assert.ok(body.children.every(row => row.eventObservation.provider === "A.Provider"),
+        "provider sort considers retained rows outside the formerly mounted page");
+    assert.equal(ui.snapshot().selected, selected, "sorting preserves exact selected observation");
+    ui.get("eventsNext").dispatch("click");
+    assert.equal(body.children.filter(row => row.eventObservation.provider === "A.Provider").length, 20);
+    ui.get("eventsSearch").value = "Z.Provider";
+    ui.get("eventsSearch").dispatch("input");
+    assert.equal(body.children.length, 100);
+    assert.ok(body.children.every(row => row.eventObservation.provider === "Z.Provider"));
+    ui.get("eventsNext").dispatch("click");
+    assert.equal(body.children.length, 20);
+    ui.get("eventsSort3").dispatch("click");
+    assert.equal(ui.get("eventsHeader3").attributes["aria-sort"], "ascending");
+    ui.get("eventsSearch").value = "";
+    ui.get("eventsSearch").dispatch("input");
+    assert.ok(body.children.every(row => row.eventObservation.level === "Error"));
+    ui.get("eventsFollow").dispatch("click");
+    assert.equal(ui.snapshot().following, true);
+    assert.equal(ui.get("eventsHeader0").attributes["aria-sort"], "descending");
+    assert.equal(ui.get("eventsHeader3").attributes["aria-sort"], "none");
+    assert.equal(body.children[0].eventObservation.sequence, 240);
+    ui.get("eventsSearch").value = "item240";
+    ui.get("eventsSearch").dispatch("input");
+    assert.equal(ui.get("eventsPagination").hidden, true);
+    assert.equal(ui.get("eventsPrevious").disabled, true);
+    assert.equal(ui.get("eventsNext").disabled, true);
+    assert.ok(ui.messages.every(message => message.type === "ackEventBatch"));
+});
+
+test("Events source-time, numeric level and text sorting retain deterministic ties across eviction", () => {
+    const ui = eventsDocument();
+    ui.batch([event(1, {timestamp: "2026-01-01T01:00:00+01:00", level: "Verbose"}),
+        event(2, {timestamp: "2026-01-01T00:00:01Z", level: "Critical"}),
+        event(3, {timestamp: "2026-01-01T00:00:00Z", level: "Error"})]);
+    const body = ui.get("eventsBody");
+    assert.equal(body.children[0].eventObservation.sequence, 2);
+    ui.get("eventsSort3").dispatch("click");
+    assert.deepEqual(body.children.map(row => row.eventObservation.sequence), [2, 3, 1]);
+    ui.get("eventsSort3").dispatch("click");
+    assert.deepEqual(body.children.map(row => row.eventObservation.sequence), [1, 3, 2]);
+    body.children[0].dispatch("click");
+    for (let first = 4; first <= 2050; first += 64)
+        ui.batch(Array.from({length: Math.min(64, 2051-first)}, (_, index) => event(first+index)));
+    assert.equal(ui.snapshot().count, 2000);
+    assert.equal(ui.snapshot().selected, undefined);
+    assert.ok(body.children.length <= 100);
+    ui.get("eventsSort4").dispatch("click");
+    assert.equal(ui.get("eventsHeader4").attributes["aria-sort"], "ascending");
+    ui.get("eventsClear").dispatch("click");
+    assert.equal(ui.get("eventsPagination").hidden, true);
+    assert.equal(body.children.length, 0);
+});
 
 test("Events executes pause/follow/filter/clear and local details without diagnostic requests", { timeout: 10_000 }, () => {
     const ui = eventsDocument();

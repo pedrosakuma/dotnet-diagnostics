@@ -76,9 +76,11 @@ function renderCaptureView(containerId: string, result: unknown): void {
         requestSummaryParts.length ? `Window: ${requestSummaryParts.join(" · ")}.` : "",
         closeSummaryParts.length ? `At close: ${closeSummaryParts.join(" · ")}.` : "",
     ].filter(Boolean).join(" ");
-    const summary = el("p", useRequestLayout && requestSummary ? requestSummary : view.summary);
-    summary.className = "capture-summary";
-    container.appendChild(summary);
+    if (view.kind !== "networking") {
+        const summary = el("p", useRequestLayout && requestSummary ? requestSummary : view.summary);
+        summary.className = "capture-summary";
+        container.appendChild(summary);
+    }
     const guidance = (): HTMLElement => el("p", "Search, sorting and row details operate on returned rows only. "
             + "These tables do not establish a complete event timeline or request parent/child relationships. "
             + (view.kind === "allocation" ? "Allocation figures are sampled estimates, not a retained-heap inventory."
@@ -92,6 +94,7 @@ function renderCaptureView(containerId: string, result: unknown): void {
     qualityDetails.className = "diagnostic-quality-details";
     qualityDetails.appendChild(el("summary", "Capture quality and scope"));
     qualityDetails.appendChild(provenance);
+    if (view.kind === "networking") qualityDetails.appendChild(el("p", view.summary));
     const quality = (): void => {
         const e = view.evidence;
         qualityDetails.appendChild(el("p", e.source === "not-reported"
@@ -107,28 +110,58 @@ function renderCaptureView(containerId: string, result: unknown): void {
         }
     };
     quality();
-    const active = view.evidence.limitations.map(l => `${l.category}${l.affectedCount != null ? `: ${l.affectedCount}` : ""}`);
+    // The legacy networking projection includes acquisition facts even for normal captures.
+    const networkingWindowWarnings = (limitation: CaptureViewResult["evidence"]["limitations"][number]): string[] | undefined => {
+        if (view.kind !== "networking" || view.evidence.source !== "networking"
+            || limitation.category !== "captureWindow" || limitation.scope !== "capture") return undefined;
+        const facts = /^Completion=(normal|early|source-failure|unknown); transport events lost=(\d+|unknown); parse errors=(\d+)\. Stream read duration is not proof of target coverage\.$/.exec(limitation.detail);
+        if (!facts || (facts[2] === "unknown" ? limitation.affectedCount != null
+            : Number(facts[2]) !== limitation.affectedCount)) return undefined;
+        const warnings: string[] = [];
+        if (facts[1] !== "normal") warnings.push(facts[1] === "early" ? "capture ended early"
+            : facts[1] === "source-failure" ? "capture source failed" : "capture completion unknown");
+        if (facts[2] === "unknown") warnings.push("source loss count unknown");
+        else if (Number(facts[2]) > 0) warnings.push(`${facts[2]} transport events lost`);
+        if (Number(facts[3]) > 0) warnings.push(`${facts[3]} parse errors`);
+        return warnings;
+    };
+    const normalNetworkingWindow = (limitation: CaptureViewResult["evidence"]["limitations"][number]): boolean =>
+        networkingWindowWarnings(limitation)?.length === 0;
+    const activeLimitations = view.evidence.limitations.filter(l => !normalNetworkingWindow(l));
+    const contextualNetworkingNote = (note: string): boolean => view.kind === "networking" && (
+        note === "Capture completion=normal; transport events lost=0; parse errors=0. Duration is requested time; stream-read elapsed is not proof of target coverage."
+        || note === "Latency population v2: all accepted Start/Stop completions, including failed operations; paired is the sample count and pairedFailed/pairedWithoutFailure partition it. No observed failure is not proof of success. HTTP status errors are responses, not RequestFailed; failure events include cancellation/timeouts but do not reliably identify their cause. Missing/ambiguous/unfinished lifecycles have no latency sample; zero samples means unavailable, not measured zero."
+        || /^(?:http|queue|dns|tls) latency is unavailable \(not-observed\); see Correlation counts and CaptureQuality\. Scalar zero is not a measurement without accepted samples\.$/.test(note)
+        || note === "Missing latency is unavailable, not zero. Hosts and paths can contain sensitive application data."
+    );
+    const activeNotes = view.notes.filter(note => !contextualNetworkingNote(note));
+    const active = activeLimitations.flatMap(l => networkingWindowWarnings(l)
+        ?? [`${l.category}${l.affectedCount != null ? `: ${l.affectedCount}` : ""}`]);
     if (view.evidence.source === "not-reported") active.unshift("quality not reported");
     const withheld = view.evidence.conclusions;
     if (withheld?.absenceOrExhaustive === "withheld") active.push("exhaustive conclusions withheld");
     if (withheld?.retainedPositive === "withheld") active.push("positive evidence withheld");
     if (withheld?.healthyControl === "withheld") active.push("healthy control withheld");
-    if (view.notes.length) active.push(`${view.notes.length} capture note(s)`);
+    if (activeNotes.length) active.push(`${activeNotes.length} capture note(s)`);
     if (active.length) {
         const alert = el("details");
         alert.className = "diagnostic-active-quality";
         alert.setAttribute("role", "status");
         alert.appendChild(el("summary", active.join(" · ")));
-        if (view.notes.length) {
+        if (activeNotes.length) {
             const notes = el("ul");
             notes.className = "diagnostic-capture-notes";
-            for (const note of view.notes) notes.appendChild(el("li", note));
+            for (const note of activeNotes) notes.appendChild(el("li", note));
             alert.appendChild(notes);
         }
-        for (const limitation of view.evidence.limitations)
+        for (const limitation of activeLimitations)
             alert.appendChild(el("p", `${limitation.category} (${limitation.scope}${limitation.affectedCount != null ? `, ${limitation.affectedCount}` : ""}): ${limitation.detail}`));
         container.appendChild(alert);
     }
+    for (const limitation of view.evidence.limitations.filter(normalNetworkingWindow))
+        qualityDetails.appendChild(el("p", limitation.detail));
+    for (const note of view.notes.filter(contextualNetworkingNote))
+        qualityDetails.appendChild(el("p", note));
     const table = (
         title: string,
         columns: string[],

@@ -2088,6 +2088,53 @@ test("unreported capture quality remains visible before rows without notes or li
     assert.ok(root.children.indexOf(alert) < root.children.indexOf(root.querySelector(".diagnostic-table-view")));
 });
 
+test("actual long networking summary and normal zero-count scope do not precede captured rows", () => {
+        const { document, makeContainer } = createDocumentStub();
+        const root = makeContainer("networking");
+        const { CAPTURE_VIEW_RENDERER_SCRIPT } = require("../out/captureViewRenderer.js");
+        const render = new Function("document", CAPTURE_VIEW_RENDERER_SCRIPT + ";return renderCaptureView;")(document);
+        const summary = "Captured 63 HTTP request(s) (0 failure events, including cancellation/timeouts), requested 10s. DNS: 0 lookup(s), 0 failure events. TLS: 0 handshake(s), 0 failure events. Sockets: 0 connect(s), 0 failed. Request p95=3.1ms, time-in-queue p95=unavailable (not-observed), DNS p95=unavailable (not-observed), TLS p95=unavailable (not-observed). Percentile samples retained/accepted: HTTP 63/63, queue 0/0, DNS 0/0, TLS 0/0. Fewer retained samples means reservoir approximation, independent of pairing/capture gaps; max uses all accepted samples. Capture completion=normal; transport events lost=0; parse errors=0. Duration is requested time; stream-read elapsed is not proof of target coverage. Latencies cover accepted observed pairs only: HTTP 63/63, DNS 0/0, TLS 0/0. See correlation accounting for exclusions; this does not establish acquisition completeness. Latency population v2 includes failed completions: HTTP 0 failed/63 without observed failure, DNS 0/0, TLS 0/0. HTTP status-error responses=0; these are not transport failure events. Zero accepted pairs means latency unavailable; no observed failure is not proof of success.";
+        const result = {
+            kind: "networking", summary, provenance: { processId: 40416, requestedDurationSeconds: 10 },
+            metrics: [{label: "Transport events lost", value: 0}, {label: "Capture completion", value: "normal"}],
+            tables: [{id: "operations",title: "HTTP operations",columns: ["Host", "Path", "Count", "P95 (ms)", "Latency availability"],
+                rows: [["http://127.0.0.1:53225", "/weatherforecast", 63, 3.13, "measured"]],
+                totalRows: 1, omittedRows: 0}],
+            notes: ["Capture completion=normal; transport events lost=0; parse errors=0. Duration is requested time; stream-read elapsed is not proof of target coverage.",
+                "dns latency is unavailable (not-observed); see Correlation counts and CaptureQuality. Scalar zero is not a measurement without accepted samples.",
+                "Missing latency is unavailable, not zero. Hosts and paths can contain sensitive application data."],
+            evidence: {source: "networking", limitations: [{category: "captureWindow", scope: "capture", affectedCount: 0,
+                detail: "Completion=normal; transport events lost=0; parse errors=0. Stream read duration is not proof of target coverage."}]},
+        };
+        render("networking", result);
+        assert.equal(root.querySelector(".capture-summary"), null);
+        assert.equal(root.querySelector(".diagnostic-active-quality"), null, "known normal acquisition and contextual notes are not warning conditions");
+        const details = root.querySelector(".diagnostic-quality-details");
+        assert.ok(root.children.indexOf(details) > root.children.indexOf(root.querySelector(".diagnostic-table-view")));
+        assert.match(details.textContent, /Captured 63 HTTP request/);
+        assert.match(details.textContent, /not proof of target coverage/);
+        assert.match(details.textContent, /dns latency is unavailable/);
+        assert.equal(details.open, false, "full raw summary is not automatically expanded");
+        for (const limitation of [
+            {category: "captureWindow", scope: "capture", affectedCount: 0, detail: "Completion=early; transport events lost=0; parse errors=0. Stream read duration is not proof of target coverage."},
+            {category: "captureWindow", scope: "capture", affectedCount: null, detail: "Completion=normal; transport events lost=unknown; parse errors=0. Stream read duration is not proof of target coverage."},
+            {category: "captureWindow", scope: "capture", affectedCount: 0, detail: "Completion=normal; transport events lost=0; parse errors=3. Stream read duration is not proof of target coverage."},
+            {category: "outputProjection", scope: "rows", affectedCount: 0, detail: "Coverage of this projection is unknown."},
+        ]) {
+            result.evidence.limitations = [limitation];
+            result.notes = ["Queue latency rejected 3 RequestLeftQueue payload(s); only valid nonnegative durations are sampled."];
+            render("networking", result);
+            const alert = root.querySelector(".diagnostic-active-quality");
+            assert.ok(alert, "zero is never a universal suppression rule");
+            assert.match(alert.textContent, /Queue latency rejected 3/);
+            assert.ok(alert.textContent.includes(limitation.detail));
+        }
+        result.evidence = {source: "not-reported", limitations: []};
+        result.notes = [];
+        render("networking", result);
+        assert.match(root.querySelector(".diagnostic-active-quality").textContent, /quality not reported/);
+});
+
 test("in-flight request rows lead the result and state filters compose with returned-row search", () => {
     const { document, makeContainer } = createDocumentStub();
     const root = makeContainer("diagnostics");

@@ -130,7 +130,12 @@ counters/GC stream is stopped or active. It asks for 1–8 explicit provider nam
 payloads can contain secrets or personal data. It does not use native Windows ETW, wildcard
 providers, the MCP server, or persistent storage. Pause following freezes the visible page while
 collection and bounded retention continue; Clear removes the retained UI events without stopping
-the stream. The table supports bounded search, paging and one selected event detail view. Managed
+the stream. Sortable headers cover source time, provider, event, numeric level and summary across
+all retained search matches before slicing bounded 100-row pages. **Previous / Next** and the
+shown range appear only when multiple pages exist. Sorting or paging pauses presentation without
+stopping ingestion or acknowledgements; **Follow latest** explicitly restores descending source-time
+order and the first page. Selection remains tied to the exact observation until retention evicts it.
+The table supports bounded search and one selected event detail view. Managed
 exception details are labeled only for the runtime provider's schema-verified
 runtime exception event (provider `Microsoft-Windows-DotNETRuntime`, ID 80, version 1, exact
 `ExceptionType`, `ExceptionMessage`, `ExceptionEIP`, `ExceptionHRESULT`, `ExceptionFlags`, and
@@ -216,6 +221,11 @@ before dispatch. No extra history or cache is retained, and ordinary captures ha
 backend cancellation control here. One compact active-quality alert precedes returned tables; expand it for full loss
 limitations and notes. The complete quality matrix, metrics and stable
 search/sort/relationship guidance follow the captured rows.
+Networking does not repeat the collector's long narrative before the operation table; the raw
+summary remains in **Capture quality and scope**. Known normal acquisition facts (normal drain,
+zero reported transport loss and zero parse errors) and static latency definitions stay there,
+not in a warning. Unknown loss, early/failed completion, parse errors, unrecognized notes and
+other limitations still have a visible compact alert; zero-valued counts alone never hide a limitation.
 Diagnostic capture setup is bound to the selected target. If the selection changes during
 the picker, parameter prompts, acknowledgement or CLI acquisition, no capture is dispatched;
 select the intended target and start again.

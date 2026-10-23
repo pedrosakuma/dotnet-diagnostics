@@ -3918,17 +3918,18 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     <div id="eventsPresentation" role="status">Following latest. Newest events appear first.</div>
     <p id="eventsEmpty">No retained events. Start a stream with the provider, level and keywords documented by your application; zero matches does not confirm target inactivity.</p>
     <div id="eventsQuality" role="status"></div>
-    <div class="events-controls">
-      <button id="eventsPrevious" type="button" disabled>Newer</button>
+    <div id="eventsPagination" class="events-controls" hidden>
+      <button id="eventsPrevious" type="button" disabled>Previous</button>
       <span id="eventsPage" aria-live="polite">No events</span>
-      <button id="eventsNext" type="button" disabled>Older</button>
+      <button id="eventsNext" type="button" disabled>Next</button>
     </div>
     <div class="events-table-wrap">
       <table id="eventsTable">
-        <thead><tr><th>Source time (UTC)</th><th>Provider</th><th>Event</th><th>Level</th><th>Summary</th></tr></thead>
+        <thead><tr><th id="eventsHeader0" aria-sort="descending"><button id="eventsSort0" class="evidence-sort" type="button" aria-label="Sort by source time">Source time (UTC)</button></th><th id="eventsHeader1"><button id="eventsSort1" class="evidence-sort" type="button" aria-label="Sort by provider">Provider</button></th><th id="eventsHeader2"><button id="eventsSort2" class="evidence-sort" type="button" aria-label="Sort by event">Event</button></th><th id="eventsHeader3"><button id="eventsSort3" class="evidence-sort" type="button" aria-label="Sort by level">Level</button></th><th id="eventsHeader4"><button id="eventsSort4" class="evidence-sort" type="button" aria-label="Sort by summary">Summary</button></th></tr></thead>
         <tbody id="eventsBody"></tbody>
       </table>
     </div>
+    <small>Search and sorting cover retained events only, before pagination.</small>
     <div id="eventsQualityDetail"></div>
     <section id="eventDetails" aria-label="Selected event details"><p>Select an event to inspect its bounded payload.</p></section>
     <div id="eventsSubscription">Start Live Events to choose explicit provider names, level and keyword mask.</div>
@@ -4373,6 +4374,9 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     let eventsSessionId;
     let selectedEvent;
     let eventsPageIndex = 0;
+    let eventsSortIndex = 0;
+    let eventsSortDescending = true;
+    const eventsCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
     let eventsFollowing = true;
     let eventsRunning = false;
     let eventsObserved = false;
@@ -4424,6 +4428,31 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     function eventSearchText(event) {
       return [event.provider, event.eventName, event.level, ...Object.entries(event.payload).flat()].join(' ').toLocaleLowerCase();
     }
+    function eventSummary(event) {
+      return Object.entries(event.payload).slice(0, 2).map(([name, value]) => name + ': ' + value).join(' · ')
+        || (event.payloadTruncated ? 'Payload fields omitted' : '');
+    }
+    function compareEvents(left, right) {
+      const levels = { LogAlways: 0, Critical: 1, Error: 2, Warning: 3, Informational: 4, Verbose: 5 };
+      const values = event => [
+        event.timestamp, event.provider, event.eventName + ' (' + event.eventId + ')',
+        Object.prototype.hasOwnProperty.call(levels, event.level) ? levels[event.level] : event.level,
+        eventSummary(event),
+      ];
+      const a = values(left)[eventsSortIndex], b = values(right)[eventsSortIndex];
+      let order;
+      if (eventsSortIndex === 0 && Number.isFinite(Date.parse(a)) && Number.isFinite(Date.parse(b)))
+        order = Date.parse(a) - Date.parse(b) || eventsCollator.compare(a, b);
+      else order = typeof a === 'number' && typeof b === 'number' ? a - b : eventsCollator.compare(String(a), String(b));
+      order = order || eventsCollator.compare(left.sessionId, right.sessionId) || left.sequence - right.sequence;
+      return eventsSortDescending ? -order : order;
+    }
+    function renderEventSortHeaders() {
+      for (let index = 0; index < 5; index++) {
+        const header = document.getElementById('eventsHeader' + index);
+        header.setAttribute('aria-sort', index === eventsSortIndex ? eventsSortDescending ? 'descending' : 'ascending' : 'none');
+      }
+    }
     function renderEventDetails(event) {
       eventDetails.replaceChildren();
       if (!event) {
@@ -4472,12 +4501,13 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     }
     function renderEvents() {
       const search = eventsSearch.value.slice(0, ${LIVE_EVENT_SEARCH_MAX_CHARS}).trim().toLocaleLowerCase();
-      const filtered = search ? events.filter(item => eventSearchText(item).includes(search)) : events;
+      const filtered = (search ? events.filter(item => eventSearchText(item).includes(search)) : events.slice()).sort(compareEvents);
       const pageCount = Math.max(1, Math.ceil(filtered.length / eventsPageSize));
       eventsPageIndex = Math.min(eventsPageIndex, pageCount - 1);
-      const end = Math.max(0, filtered.length - eventsPageIndex * eventsPageSize);
-      const start = Math.max(0, end - eventsPageSize);
-      const page = filtered.slice(start, end).reverse();
+      const start = eventsPageIndex * eventsPageSize;
+      const end = Math.min(filtered.length, start + eventsPageSize);
+      const page = filtered.slice(start, end);
+      document.getElementById('eventsPagination').hidden = pageCount <= 1;
       document.getElementById('eventsEmpty').hidden = filtered.length > 0;
       document.getElementById('eventsEmpty').textContent = events.length
         ? 'No retained events match this search. Clear the search to see retained events.'
@@ -4488,9 +4518,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         row.eventObservation = item;
         row.tabIndex = 0;
         row.setAttribute('aria-current', String(item === selectedEvent));
-        const cells = [item.timestamp, item.provider, item.eventName + ' (' + item.eventId + ')', item.level,
-          Object.entries(item.payload).slice(0, 2).map(([name, value]) => name + ': ' + value).join(' · ')
-          || (item.payloadTruncated ? 'Payload fields omitted' : '')];
+        const cells = [item.timestamp, item.provider, item.eventName + ' (' + item.eventId + ')', item.level, eventSummary(item)];
         for (const text of cells) {
           const cell = document.createElement('td');
           cell.textContent = text;
@@ -4520,6 +4548,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       renderEventDetails(selectedEvent);
       renderEventsQuality();
       renderEventsPresentation();
+      renderEventSortHeaders();
     }
     function renderEventsQuality() {
       const clear = document.getElementById('eventsClear');
@@ -4628,9 +4657,24 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       eventsFollowing = !eventsFollowing;
       eventsPausedArrivals = eventsPausedEvictions = 0;
       eventsFollowButton.textContent = eventsFollowing ? 'Pause following' : 'Follow latest';
-      if (eventsFollowing) eventsPageIndex = 0;
+      if (eventsFollowing) {
+        eventsPageIndex = 0;
+        eventsSortIndex = 0;
+        eventsSortDescending = true;
+      }
       renderEvents();
     });
+    for (let index = 0; index < 5; index++) {
+      document.getElementById('eventsSort' + index).addEventListener('click', () => {
+        eventsSortDescending = eventsSortIndex === index ? !eventsSortDescending : false;
+        eventsSortIndex = index;
+        eventsPageIndex = 0;
+        eventsFollowing = false;
+        eventsPausedArrivals = eventsPausedEvictions = 0;
+        eventsFollowButton.textContent = 'Follow latest';
+        renderEvents();
+      });
+    }
     eventsSearch.addEventListener('input', () => { eventsPageIndex = 0; renderEvents(); });
     document.getElementById('eventsPrevious').addEventListener('click', () => {
       eventsPageIndex = Math.max(0, eventsPageIndex - 1);
