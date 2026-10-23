@@ -14,6 +14,7 @@ Module._resolveFilename = function (request, ...rest) {
 const extensionPath = path.join(__dirname, "..", "out", "extension.js");
 const extensionRequire = createRequire(extensionPath);
 const vscode = require("./stubs/vscode-stub.js");
+vscode.workspace = { onDidChangeConfiguration: () => ({ dispose() {} }) };
 const Controller = new Function("require", "exports",
     fs.readFileSync(extensionPath, "utf8") + "\nreturn CounterPanelController;")(
     name => name === "vscode" ? vscode : extensionRequire(name), {},
@@ -175,4 +176,65 @@ test("replacing the panel during CLI acquisition aborts even when the selected p
     assert.equal(messages.at(-1).state, "error");
     assert.equal(messages.at(-1).preflight, true);
     assert.match(messages.at(-1).message, /selected process or diagnostics panel changed.*No exception capture was sent/i);
+});
+
+test("integrated target selection and panel disposal invalidate exception acquisition and release only its idle child", async () => {
+    for (const transition of ["select", "dispose"]) {
+        const { controller, frames, session } = fixture();
+        const targets = [], closed = [], panels = [];
+        const previousCreatePanel = vscode.window.createWebviewPanel;
+        vscode.window.createWebviewPanel = () => {
+            let onDispose;
+            const panel = {
+                webview: { onDidReceiveMessage() {} },
+                onDidDispose: callback => { onDispose = callback; },
+                dispose: () => onDispose(),
+            };
+            panels.push(panel);
+            return panel;
+        };
+        controller.panel = undefined;
+        controller.exporter = { clear() {} };
+        controller.liveReadConsent = { clear() {} };
+        controller.targetChanged = target => targets.push(target?.processId);
+        controller.getHistoryDurationSeconds = () => 120;
+        controller.waitForPanelReady = async () => {};
+        controller.stopCounters = controller.stopEvents = async () => {};
+        controller.disposeChild = controller.disposeEventsChild = async () => {};
+        controller.resetEventsDeliveryState = () => {};
+        controller.closeChild = async child => closed.push(child);
+        let releaseAcquire, acquired;
+        const acquiring = new Promise(resolve => { acquired = resolve; });
+        controller.acquireChild = () => new Promise(resolve => {
+            releaseAcquire = () => resolve({ session, owns: true });
+            acquired();
+        });
+        try {
+            controller.openPanel(controller.selectedTarget);
+            const initialGeneration = controller.panelGeneration;
+            const capture = controller.captureExceptions();
+            await acquiring;
+            if (transition === "select") {
+                await controller.selectProcess({
+                    processId: 2222, entrypoint: "AppB", runtimeVersion: "10.0.0",
+                    platform: "Windows/X64", identity: "AppB|10.0.0|Windows/X64",
+                });
+                assert.deepEqual(targets, [2222], "disposing the superseded panel must not clear the new tree target");
+                assert.equal(controller.selectedTarget.processId, 2222);
+            } else {
+                panels[0].dispose();
+                assert.deepEqual(targets, [undefined], "closing the active panel must clear the tree target");
+                assert.equal(controller.selectedTarget, undefined);
+            }
+            assert.ok(controller.panelGeneration > initialGeneration);
+            releaseAcquire();
+            await capture;
+            assert.deepEqual(frames, [], "stale exception preparation must never dispatch to the old PID");
+            assert.deepEqual(closed, [session], "the newly acquired idle child must be released");
+            assert.equal(session.expectedShutdown, true);
+            assert.equal(session.pendingCaptures.size, 0);
+        } finally {
+            vscode.window.createWebviewPanel = previousCreatePanel;
+        }
+    }
 });
