@@ -3422,7 +3422,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     .joint-request-table th:first-child { width:78%; }
     .joint-request-table th:last-child { width:22%; }
     .joint-request-table td:last-child { white-space:nowrap; }
-    .joint-request-details-row > td { padding:.5rem .35rem .8rem; }
+    .joint-request-table .joint-request-details-row > td { padding:.5rem .35rem .8rem; white-space:normal; min-width:0; }
     .joint-request-details-row section { min-width:0; }
     .joint-request-details-row h4, .joint-activity-operation { overflow-wrap:break-word; word-break:normal; }
     .joint-request-details-row p, .joint-technical-details p, .joint-activity-identity p { overflow-wrap:anywhere; }
