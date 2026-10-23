@@ -3550,7 +3550,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     </div>
     <div id="workspaceCaptureStatus" role="status"></div>
     <div id="jointReproduction" hidden>
-      <button id="captureRequestActivities" type="button">New request + completed Activities reproduction…</button>
+      <button id="captureRequestActivities" type="button" aria-label="Capture requests and completed Activities">Capture</button>
       <button id="cancelRequestActivities" type="button" disabled>Cancel reproduction</button>
       <p>Explicit EventPipe capture with exact ActivitySource names. Cannot recover operations from an earlier request capture.</p>
       <div id="jointCaptureStatus" role="status"></div>

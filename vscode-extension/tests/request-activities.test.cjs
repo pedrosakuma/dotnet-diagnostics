@@ -67,6 +67,10 @@ function retained(f) {
     return result;
 }
 
+test("joint capture button uses a concise visible label with accessible scope", () => {
+    assert.match(source, /<button id="captureRequestActivities" type="button" aria-label="Capture requests and completed Activities">Capture<\/button>/);
+});
+
 test("joint capability requires actual compatible hello contract, not a CLI version", () => {
     assert.equal(joint.supportsRequestActivities(capability), true);
     for (const invalid of [undefined, null, {}, { cliVersion: "0.31.0" }, { ...capability, version: 2 },
