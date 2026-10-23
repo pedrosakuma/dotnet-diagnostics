@@ -3552,7 +3552,6 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     <div id="jointReproduction" hidden>
       <button id="captureRequestActivities" type="button" aria-label="Capture requests and completed Activities">Capture</button>
       <button id="cancelRequestActivities" type="button" disabled>Cancel reproduction</button>
-      <p>Explicit EventPipe capture with exact ActivitySource names. Cannot recover operations from an earlier request capture.</p>
       <div id="jointCaptureStatus" role="status"></div>
     </div>
     <div id="workspaceThreadViewStatus" role="status"></div>
@@ -3891,6 +3890,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       const statusKind = kind === 'gc-activities' ? 'gc' : kind;
       workspaceEvidenceStatus.textContent = workspaceEvidenceStatusByKind.get(statusKind)
         || 'No completed evidence is displayed for this kind.';
+      workspaceEvidenceStatus.hidden = kind === 'request-activities' && genericCaptureKind === kind;
       workspaceThreadViewStatus.textContent = '';
       if (usesWorkspaceForGenericCapture(kind)) {
         if (genericCaptureKind === kind) workspaceCanvas.appendChild(genericCaptureViews);
@@ -5096,7 +5096,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       } else if (message.type === 'jointStatus') {
         if (message.state === 'checking') jointPendingId = message.evidenceId;
         if (jointPendingId && message.evidenceId !== jointPendingId) return;
-        jointCaptureStatus.textContent = message.message;
+        jointCaptureStatus.textContent = message.state === 'done' ? '' : message.message;
         const busy = message.state === 'checking' || message.state === 'configuring'
           || message.state === 'starting' || message.state === 'running';
         document.getElementById('captureRequestActivities').disabled = busy;
@@ -5111,16 +5111,15 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         activateCaptureTab('request-activities');
         jointCaptureStatus.textContent = message.message;
         document.getElementById('cancelRequestActivities').disabled = false;
-        setWorkspaceStatus('request-activities', message.message);
       } else if (message.type === 'jointCapture') {
         if (message.evidenceId !== jointPendingId) return;
         setGenericCaptureOwner('request-activities', message.evidenceId);
         activateCaptureTab('request-activities');
+        jointCaptureStatus.textContent = '';
         jointView.capture(message.evidenceId, message.result);
       } else if (message.type === 'jointUnavailable') {
         if (genericCaptureKind !== 'request-activities' || genericCaptureViews.dataset.evidenceId !== message.evidenceId) return;
         jointView.unavailable(message.evidenceId, message.message);
-        setWorkspaceStatus('request-activities', message.message);
       } else if (message.type === 'jointQueryStarted') {
         if (typeof message.queryToken !== 'string') return;
         jointView.queryStarted(message.evidenceId, message.requestRowId, message.queryToken);

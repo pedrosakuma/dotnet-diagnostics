@@ -78,11 +78,15 @@ Dispatch acknowledges the request, not EventPipe readiness.
 Start capture before reproducing; it cannot recover operations from an earlier request.
 
 The request table shows only first-accepted requests still pending at window close.
+The **Capture** action keeps scope in the Evidence selector. A compact result summary shows
+retained counts and the requested duration; retention, coverage and duration-interpretation
+guidance follows the data. Active partial/loss/unavailable warnings remain next to the results.
 Its All / Long-running filter uses a clearly labelled **local ≥ 1,000 ms threshold**, not the
 standalone collector's classification. Expand a request row with the keyboard-operable chevron;
 the first expansion queries completed Activities already retained by the exact CLI capture, not
 the process, and starts no new capture. Collapse/reopen of the same row is local. A different row
-replaces the sole cached response. Structural direct-child/descendant/shared-trace basis is separate
+replaces the sole cached response. The request's trace/span identifiers and start time remain
+accessible in its inline disclosure after Activities load. Structural direct-child/descendant/shared-trace basis is separate
 from verified/withheld status; finished durations are not a critical path or proof of exclusive delay.
 The joint result replaces the shared generic slot.
 CLI evidence expires after ten minutes, disconnect or another capture; loaded displays then say

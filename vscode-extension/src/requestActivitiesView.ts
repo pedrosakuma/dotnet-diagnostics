@@ -108,7 +108,13 @@ function createRequestActivitiesView(container: HTMLElement, send: (message: obj
         region.setAttribute("aria-busy", String(inFlight?.rowId === rowId));
         region.setAttribute("role", "region");
         region.appendChild(el("h4", `${request.method} ${request.path} · Request row ${request.rowId}`));
-        region.appendChild(el("p", `Elapsed at window close: ${request.elapsedMs} ms. The request was still in flight when this capture window closed.`));
+        const appendRequestIdentity = (): void => {
+            const identity = document.createElement("details");
+            identity.appendChild(el("summary", "Request identifiers and timing"));
+            identity.appendChild(el("p", `Elapsed at window close: ${request.elapsedMs} ms · Started: ${request.startedAt} · `
+                + `Trace ID: ${request.traceId ?? "unknown"} · Span ID: ${request.spanId ?? "unknown"}`));
+            region.appendChild(identity);
+        };
 
         if (loaded?.rowId === rowId) {
             const result = loaded.result;
@@ -116,7 +122,7 @@ function createRequestActivitiesView(container: HTMLElement, send: (message: obj
             region.appendChild(el("p", `${result.rows.length} shown / ${result.totalRows} associated retained Activities; ${result.omittedRows} omitted.`));
             if (result.rows.length) renderActivityRows(result, region);
             else region.appendChild(el("p", "No retained completed Activities matched this request in the observation window. Open operations are not retained. Instrumentation, enabled source coverage and loss may be unknown; this does not mean no work occurred."));
-            region.appendChild(el("p", "Relationship basis and verification are separate. Finished operation durations are observed wall-clock spans, not exclusive delay, causality or a critical path. Do not sum concurrent durations."));
+            appendRequestIdentity();
             appendTechnicalDetails(result, region, owner.result);
             if (!available) {
                 const stale = el("p", `Retained display only; no further CLI query is available. ${unavailableReason}`);
@@ -149,12 +155,7 @@ function createRequestActivitiesView(container: HTMLElement, send: (message: obj
             });
             region.appendChild(retry);
         }
-        if (request.traceId || request.spanId || request.startedAt) {
-            const identity = document.createElement("details");
-            identity.appendChild(el("summary", "Request identifiers and timing"));
-            identity.appendChild(el("p", `Started: ${request.startedAt} · Trace ID: ${request.traceId ?? "unknown"} · Span ID: ${request.spanId ?? "unknown"}`));
-            region.appendChild(identity);
-        }
+        appendRequestIdentity();
     };
     const renderExpanded = (): void => {
         for (const [rowId, entry] of requestRows) {
@@ -210,11 +211,8 @@ function createRequestActivitiesView(container: HTMLElement, send: (message: obj
             const main = el("section");
             main.setAttribute("aria-label", "Requests and completed Activities evidence");
             container.appendChild(main);
-            main.appendChild(el("h4", "Requests + completed Activities"));
             const q = result.requests;
-            const summary = q.quality.completion === "normal" ? "Reproduction complete"
-                : `Partial reproduction · ${q.quality.completion}`;
-            main.appendChild(el("p", `${summary} · ${q.rows.length} retained in-flight requests · ${q.retainedActivities} completed Activities retained · ${result.requestedDurationSeconds}s requested.`));
+            main.appendChild(el("p", `${q.rows.length} in-flight requests · ${q.retainedActivities} completed Activities · ${result.requestedDurationSeconds} s requested`));
             appendWarnings(q, main);
             const filterLabel = el("label", "Show requests ");
             filterLabel.className = "diagnostic-request-filter";
@@ -231,7 +229,6 @@ function createRequestActivitiesView(container: HTMLElement, send: (message: obj
             filter.value = "all";
             filterLabel.appendChild(filter);
             main.appendChild(filterLabel);
-            main.appendChild(el("p", "Long-running is a local UI threshold (≥ 1,000 ms), not a collector classification. Filters apply only to returned rows."));
 
             const wrap = el("div");
             wrap.className = "query-view-table-wrap joint-request-table-wrap";
@@ -285,7 +282,6 @@ function createRequestActivitiesView(container: HTMLElement, send: (message: obj
             wrap.appendChild(table);
             main.appendChild(wrap);
             if (!q.rows.length) main.appendChild(el("p", "No identifiable request was retained pending at window close. This is not completed-request history or proof of no requests."));
-            status.textContent = `${q.quality.completion === "normal" ? "Complete" : "Partial"} reproduction. Expand a request row to query its completed Activities from the retained CLI capture; no new capture starts.`;
             filter.addEventListener("change", () => {
                 q.rows.forEach(request => {
                     const entry = requestRows.get(request.rowId);
@@ -297,7 +293,10 @@ function createRequestActivitiesView(container: HTMLElement, send: (message: obj
                     }
                 });
             });
-            main.appendChild(el("p", "Only first-accepted requests still pending at close and completed Activity Stop records are retained. There is no oldest-request guarantee, open-operation inventory, full trace, historical recovery or automatic new collection. A separate explicit reproduction is required for new evidence."));
+            main.appendChild(el("p", "Long-running is a local UI threshold (≥ 1,000 ms), not a collector classification. Filters apply only to returned rows."));
+            main.appendChild(el("p", "Only first-accepted requests still pending at close and completed Activity Stop records are retained. There is no oldest-request guarantee, open-operation inventory, full trace or historical recovery. Expand a row to query the retained CLI capture; no new capture or process read starts. New evidence requires an explicit EventPipe reproduction with exact ActivitySource names."));
+            main.appendChild(el("p", "Relationship basis and verification are separate. Finished operation durations are observed wall-clock spans, not exclusive delay, causality or a critical path. Do not sum concurrent durations. Instrumentation, enabled source coverage and loss may be unknown."));
+            appendTechnicalDetails(q, main, result);
         },
         reset,
         unavailable(evidenceId: string, message: string): void {
@@ -319,7 +318,6 @@ function createRequestActivitiesView(container: HTMLElement, send: (message: obj
             if (expandedRowId === rowId) {
                 loaded = { rowId, result };
                 retryRowId = undefined;
-                status.textContent = "Completed Activity evidence loaded from the retained CLI capture.";
                 renderDetails(rowId);
             } else if (expandedRowId) {
                 retryRowId = expandedRowId;
@@ -332,7 +330,6 @@ function createRequestActivitiesView(container: HTMLElement, send: (message: obj
             inFlight = undefined;
             if (expandedRowId === rowId) {
                 retryRowId = rowId;
-                status.textContent = message;
                 const error = el("p", `${message} You can retry this retained-evidence lookup.`);
                 error.className = "query-view-error";
                 error.setAttribute("role", "alert");

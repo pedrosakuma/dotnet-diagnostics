@@ -69,6 +69,8 @@ function retained(f) {
 
 test("joint capture button uses a concise visible label with accessible scope", () => {
     assert.match(source, /<button id="captureRequestActivities" type="button" aria-label="Capture requests and completed Activities">Capture<\/button>/);
+    assert.match(source, /jointCaptureStatus\.textContent = message\.state === 'done' \? '' : message\.message/);
+    assert.match(source, /workspaceEvidenceStatus\.hidden = kind === 'request-activities' && genericCaptureKind === kind/);
 });
 
 test("joint capability requires actual compatible hello contract, not a CLI version", () => {
@@ -372,6 +374,24 @@ function dom() {
         button.className === "joint-request-toggle" && button.attributes["aria-label"]?.includes(`request row ${rowId}`));
     return { container, view, messages, click, disclosure };
 }
+test("joint summary is compact and stable explanations follow the data", () => {
+    const d = dom(); d.view.capture("e1", capture());
+    const section = d.container.querySelectorAll("section")[0];
+    assert.equal(section.children[0].textContent, "2 in-flight requests · 2 completed Activities · 10 s requested");
+    const tableIndex = section.children.findIndex(node => node.className === "query-view-table-wrap joint-request-table-wrap");
+    const thresholdIndex = section.children.findIndex(node => node.textContent.startsWith("Long-running is"));
+    assert.ok(tableIndex < thresholdIndex);
+    assert.equal(d.container.children[0].textContent, "", "no obsolete terminal success status");
+    assert.match(d.container.textContent, /not exclusive delay, causality or a critical path/);
+    assert.match(d.container.textContent, /Do not sum concurrent durations/);
+    d.disclosure("r1").listeners.click();
+    d.view.receive("e1", "r1", related(), d.messages.at(-1).queryToken);
+    const details = d.container.querySelectorAll("tr").find(node => node.className === "joint-request-details-row");
+    assert.match(details.textContent, /Request identifiers and timing/);
+    assert.match(details.textContent, new RegExp(`Trace ID: ${trace} · Span ID: ${span}`));
+    assert.match(details.textContent, new RegExp(`Started: ${now}`));
+    assert.equal(d.container.children[0].textContent, "", "no stacked query success status");
+});
 test("inline disclosure queries exact row once, reopens locally, and replaces its one-response cache", () => {
     const d = dom(); d.view.capture("e1", capture());
     assert.equal(d.messages.length, 0);
@@ -441,7 +461,7 @@ test("renderer preserves incomplete/lost structural evidence, empty meaning and 
     const d = dom(); const c = capture();
     c.requests.quality.completion = "cancelled"; c.requests.quality.eventsLost = 5;
     c.requests.quality.droppedActivities = 3; d.view.capture("e1", c);
-    assert.match(d.container.textContent, /Partial reproduction · cancelled/);
+    assert.match(d.container.textContent, /Capture is partial: cancelled/);
     assert.match(d.container.textContent, /Source event loss: 5/);
     d.disclosure("r1").listeners.click();
     const r = related(); r.rows[0].verified = false; r.rows[0].verificationWithheldReason = "Incomplete stream";

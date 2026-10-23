@@ -11,6 +11,8 @@ versioned independently from the CLI and the .NET packages.
   EventPipe privacy/cost notice precede collection; no automatic discovery or historical recovery.
   Check the CLI capability before configuration. Expand an exact retained request row to query
   related completed Activities inline, with a compact summary and narrow-pane-friendly evidence.
+  Use a concise **Capture** action, clear completed progress messages, and place stable explanations
+  below the data while keeping active warnings visible. Preserve parent request identifiers after load.
   Show structural relationship separately from verification/withheld reasons, window, source,
   loss and omissions; durations are not causality, exclusive delay or a critical path.
   Use the shared replaceable generic result and only one loaded selected-request response.
