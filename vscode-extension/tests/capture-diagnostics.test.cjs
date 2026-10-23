@@ -36,6 +36,7 @@ function fixture(spec = kinds.CAPTURE_KIND_SPECS[0], overrides = {}) {
     const session = { pendingCaptures: new Map(), pendingQueries: new Map(), startInFlight: false, ...overrides };
     const controller = Object.create(Controller.prototype);
     controller.selectedTarget = { processId: 4242 };
+    controller.targetGeneration = 1;
     controller.output = { appendLine() {} };
     controller.pendingExports = new Map();
     controller.cpuQueryGuard = new SingleFlightGuard();
@@ -108,6 +109,47 @@ test("each grouped leaf skips only the kind picker and uses the canonical captur
         assert.equal(frames[0].acknowledgeRisk, spec.risk === "high" ? "high" : undefined);
     }
 });
+test("ordinary capture prompts disclose shared replacement before dispatch and preserve cancellation", async () => {
+    for (const kind of ["requests", "kestrel", "db", "networking"]) {
+        const { controller, frames } = fixture();
+        let prompted = false;
+        vscode.window.showInputBox = async options => {
+            assert.equal(frames.length, 0);
+            assert.match(options.prompt, /Success replaces the shared generic result; not saved/);
+            prompted = true;
+            return undefined;
+        };
+        await controller.captureDiagnostics(kind);
+        assert.equal(prompted, true);
+        assert.equal(frames.length, 0);
+    }
+});
+test("Workspace Capture dispatches only the selected ordinary kind through the existing host route", () => {
+    const html = extensionRequire(extensionPath).renderHtml({
+        processId: 42, managedEntrypointAssemblyName: "Synthetic", runtimeVersion: "10",
+        operatingSystem: "Windows", processArchitecture: "X64",
+    }, "nonce", 120);
+    const click = /document.getElementById\('captureRequestEvidence'\).addEventListener\('click', \(\) => \{([\s\S]*?)\n    \}\);/.exec(html);
+    assert.ok(click);
+    assert.match(html, /Replaces the current result · May contain sensitive data/);
+    const messages = [];
+    const run = new Function("selectedWorkspaceEvidence", "vscode", click[1]);
+    for (const kind of ["requests", "kestrel", "db", "networking", "cpu", "request-activities"])
+        run(kind, { postMessage: message => messages.push(message) });
+    assert.deepEqual(messages, ["requests", "kestrel", "db", "networking"].map(kind => ({ type: "captureDiagnostics", kind })));
+    const source = fs.readFileSync(extensionPath, "utf8");
+    const start = source.indexOf('else if (message.type === "captureDiagnostics")');
+    const end = source.indexOf('else if (message.type === "captureRequestActivities")', start);
+    assert.ok(start >= 0 && end > start);
+    const route = source.slice(start + "else ".length, end).trim();
+    const calls = [], errors = [];
+    const host = { captureDiagnostics: kind => calls.push(kind), postMessage: message => errors.push(message) };
+    const handle = new Function("message", "captureKinds_1", route);
+    for (const kind of ["requests", "kestrel", "db", "networking", undefined, "unsupported", null])
+        handle.call(host, { type: "captureDiagnostics", kind }, kinds);
+    assert.deepEqual(calls, ["requests", "kestrel", "db", "networking", undefined]);
+    assert.equal(errors.length, 2);
+});
 test("grouped off-CPU entry still requires consent before connecting", async () => {
     const { controller, frames } = fixture(kinds.CAPTURE_KIND_SPECS[1]);
     vscode.window.showQuickPick = () => { throw new Error("leaf already selected a kind"); };
@@ -115,6 +157,43 @@ test("grouped off-CPU entry still requires consent before connecting", async () 
     controller.acquireChild = () => { throw new Error("must not connect without consent"); };
     await controller.captureDiagnostics("off_cpu");
     assert.equal(frames.length, 0);
+});
+test("diagnostic setup rejects target changes at picker, parameters, consent and connection boundaries", async () => {
+    for (const boundary of ["picker", "parameters", "consent", "connection"]) {
+        const spec = kinds.CAPTURE_KIND_SPECS.find(item => item.kind === "off_cpu");
+        const { controller, frames, messages, session } = fixture(spec);
+        const changeTarget = () => {
+            controller.selectedTarget = { processId: 5252 };
+            controller.targetGeneration++;
+        };
+        let acquired = false, closed = 0;
+        vscode.window.showQuickPick = async () => {
+            if (boundary === "picker") changeTarget();
+            return { spec };
+        };
+        vscode.window.showInputBox = async options => {
+            if (boundary === "parameters") changeTarget();
+            return options.value ?? "";
+        };
+        vscode.window.showWarningMessage = async (_message, options) => {
+            if (options?.modal && boundary === "consent") changeTarget();
+            return "Acknowledge and Capture";
+        };
+        controller.acquireChild = async () => {
+            acquired = true;
+            if (boundary === "connection") changeTarget();
+            return { session, owns: true };
+        };
+        controller.closeChild = async () => { closed++; };
+        await controller.captureDiagnostics();
+        assert.deepEqual(frames, [], boundary + " must not dispatch to the old PID");
+        assert.equal(acquired, boundary === "connection");
+        assert.equal(closed, boundary === "connection" ? 1 : 0);
+        if (boundary === "connection") {
+            assert.equal(messages.at(-1).state, "error", "starting status must settle to an error");
+            assert.equal(session.expectedShutdown, true);
+        }
+    }
 });
 test("parameters reject invalid input and forward only applicable options", () => {
     for (const invalid of ["0", "301", "1.5", "-1", "abc", ""])
@@ -167,11 +246,13 @@ test("each kind completes through the compiled controller and actual frame valid
 test("live thread snapshot capture and eager queries share one evidence identity", async () => {
     const controller = Object.create(Controller.prototype);
     const messages = [], frames = [];
+    const target = { processId: 4242, managedEntrypointAssemblyName: "Sample" };
     const session = {
         pendingCaptures: new Map(), pendingQueries: new Map(), startInFlight: false, closing: false,
         process: { exitCode: null, signalCode: null },
     };
-    controller.selectedTarget = { processId: 4242 };
+    controller.selectedTarget = target;
+    controller.targetGeneration = 1;
     controller.disposed = false;
     controller.output = { appendLine() {} };
     controller.postMessage = message => messages.push(message);
@@ -187,11 +268,20 @@ test("live thread snapshot capture and eager queries share one evidence identity
             } },
         }));
     };
-    vscode.window.showWarningMessage = async () => "Acknowledge and Capture";
+    let confirmation;
+    vscode.window.showWarningMessage = async message => {
+        confirmation = message;
+        return "Acknowledge and Capture";
+    };
 
     await controller.captureThreadSnapshotCore();
 
     const capture = messages.find(message => message.type === "capture" && message.kind === "thread-snapshot");
+    assert.match(confirmation, /Sample \(PID 4242\)/);
+    assert.match(confirmation, /platform-specific privileged ClrMD attach/);
+    assert.match(confirmation, /cannot be stopped from this extension/);
+    assert.match(confirmation, /frontend limit/);
+    assert.doesNotMatch(confirmation, /ptrace/);
     assert.ok(capture.evidenceId);
     assert.equal(capture.retainedHandleAvailable, true);
     assert.equal(frames[0].requestId, capture.evidenceId);
@@ -206,6 +296,108 @@ test("live thread snapshot capture and eager queries share one evidence identity
     const doneStatusIndex = messages.findIndex(message => message.type === "captureStatus" && message.state === "done");
     assert.ok(doneStatusIndex > lastQueryIndex, "capture status remains active until eager snapshot views finish");
     assert.equal(session.pendingCaptures.size, 0);
+});
+
+test("heap confirmation names its target, source and selected enrichments without dispatch on cancellation", async () => {
+    const controller = Object.create(Controller.prototype);
+    const target = { processId: 4242, managedEntrypointAssemblyName: "Sample" };
+    const frames = [];
+    controller.selectedTarget = target;
+    controller.targetGeneration = 1;
+    controller.disposed = false;
+    controller.output = { appendLine() {} };
+    controller.postMessage = () => {};
+    controller.acquireChild = () => { throw new Error("cancellation must precede connection acquisition"); };
+    controller.writeFrame = (_session, frame) => frames.push(frame);
+    let picker = 0;
+    vscode.window.showQuickPick = async items => {
+        picker++;
+        return picker === 1 ? items[0] : [items[0], items[2]];
+    };
+    let confirmation;
+    vscode.window.showWarningMessage = async message => {
+        confirmation = message;
+        return "Cancel";
+    };
+
+    await controller.captureHeapCore();
+
+    assert.match(confirmation, /Sample \(PID 4242\)/);
+    assert.match(confirmation, /Source: Live \(ClrMD\)/);
+    assert.match(confirmation, /Static fields, Retention paths/);
+    assert.match(confirmation, /platform-specific privileged ClrMD attach/);
+    assert.match(confirmation, /cannot be stopped from this extension/);
+    assert.match(confirmation, /frontend limit/);
+    assert.doesNotMatch(confirmation, /ptrace/);
+    assert.deepEqual(frames, []);
+});
+
+test("heap and thread confirmation do not dispatch when the selected target changes", async () => {
+    const target = { processId: 4242, managedEntrypointAssemblyName: "Sample" };
+    for (const kind of ["heap", "thread-snapshot"]) {
+        const controller = Object.create(Controller.prototype);
+        const frames = [], messages = [];
+        controller.selectedTarget = target;
+        controller.targetGeneration = 1;
+        controller.disposed = false;
+        controller.output = { appendLine() {} };
+        controller.postMessage = message => messages.push(message);
+        controller.acquireChild = () => { throw new Error("stale confirmation must not acquire a CLI"); };
+        controller.writeFrame = (_session, frame) => frames.push(frame);
+        if (kind === "heap") {
+            let picker = 0;
+            vscode.window.showQuickPick = async items => {
+                picker++;
+                return picker === 1 ? items[0] : [];
+            };
+        }
+        vscode.window.showWarningMessage = async () => {
+            controller.selectedTarget = { processId: 5252, managedEntrypointAssemblyName: "Other" };
+            return "Acknowledge and Capture";
+        };
+
+        if (kind === "heap") await controller.captureHeapCore();
+        else await controller.captureThreadSnapshotCore();
+
+        assert.deepEqual(frames, [], kind + " must not dispatch against the previously confirmed target");
+        assert.equal(messages.some(message => message.type === "capture"), false);
+    }
+});
+
+test("heap and thread captures revalidate target ownership after asynchronous CLI acquisition", async () => {
+    const target = { processId: 4242, managedEntrypointAssemblyName: "Sample" };
+    for (const kind of ["heap", "thread-snapshot"]) {
+        const controller = Object.create(Controller.prototype);
+        const frames = [], messages = [];
+        const session = { pendingCaptures: new Map(), pendingQueries: new Map(), startInFlight: false };
+        let closed = 0;
+        controller.selectedTarget = target;
+        controller.targetGeneration = 1;
+        controller.disposed = false;
+        controller.output = { appendLine() {} };
+        controller.postMessage = message => messages.push(message);
+        controller.acquireChild = async () => {
+            controller.selectedTarget = { processId: 5252, managedEntrypointAssemblyName: "Other" };
+            return { session, owns: true };
+        };
+        controller.closeChild = async () => { closed++; };
+        controller.writeFrame = (_session, frame) => frames.push(frame);
+        if (kind === "heap") {
+            let picker = 0;
+            vscode.window.showQuickPick = async items => {
+                picker++;
+                return picker === 1 ? items[0] : [];
+            };
+        }
+        vscode.window.showWarningMessage = async () => "Acknowledge and Capture";
+
+        if (kind === "heap") await controller.captureHeapCore();
+        else await controller.captureThreadSnapshotCore();
+
+        assert.deepEqual(frames, [], kind + " must revalidate ownership before writing a capture frame");
+        assert.equal(closed, 1, kind + " must close its newly acquired idle CLI after the target changes");
+        assert.ok(messages.some(message => message.state === "error"));
+    }
 });
 test("late thread snapshot query results cannot cross evidence replacement", async () => {
     const controller = Object.create(Controller.prototype);
@@ -359,6 +551,26 @@ test("every kind uses structured text-only tables, quality and explicit unavaila
     const render = new Function("document", `${CAPTURE_VIEW_RENDERER_SCRIPT}\nreturn renderCaptureView;`)({
         getElementById: () => container, createElement: node,
     });
+    test("ordinary quality has one compact active alert before data and full scope after data", () => {
+        const container = node("div");
+        const render = new Function("document", `${CAPTURE_VIEW_RENDERER_SCRIPT}\nreturn renderCaptureView;`)({
+            getElementById: () => container, createElement: node,
+        });
+        for (const kind of ["requests", "kestrel", "db", "networking"]) {
+            const result = view(kind);
+            result.evidence = { source: "collector", conclusions: {
+                retainedPositive: "available", absenceOrExhaustive: "withheld", healthyControl: "withheld",
+            }, limitations: [{ category: "loss", scope: "window", affectedCount: 7, detail: "Seven events lost" }] };
+            render("views", result);
+            const output = text(container);
+            assert.ok(output.indexOf("Seven events lost") < output.indexOf("Metrics"));
+            assert.ok(output.indexOf("cap-note") < output.indexOf("Metrics"));
+            assert.ok(output.indexOf("loss: 7 · exhaustive conclusions withheld") < output.indexOf("Metrics"));
+            assert.ok(output.indexOf("Absence/exhaustive counts: withheld") > output.indexOf("Sites"));
+            assert.equal(container.children.filter(n => n.className === "diagnostic-active-quality").length, 1);
+            assert.ok(output.indexOf("Search, sorting and row details") > output.indexOf("Sites"));
+        }
+    });
     for (const spec of kinds.CAPTURE_KIND_SPECS) {
         render("views", view(spec.kind));
         assert.match(text(container), /P95\nUnavailable/);
@@ -366,7 +578,7 @@ test("every kind uses structured text-only tables, quality and explicit unavaila
         assert.match(text(container), /4 retained row\(s\) omitted/);
         assert.match(text(container), /Evidence quality: not reported/);
         assert.match(text(container), /cap-note/);
-        assert.ok(container.children.some(n => n.className === "query-view-table-wrap"
-            && n.children.some(child => child.tag === "table")));
+        assert.ok(container.children.some(n => n.className === "diagnostic-table-view"
+            && n.children.some(child => child.className === "query-view-table-wrap")));
     }
 });

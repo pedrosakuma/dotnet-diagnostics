@@ -130,7 +130,12 @@ counters/GC stream is stopped or active. It asks for 1–8 explicit provider nam
 payloads can contain secrets or personal data. It does not use native Windows ETW, wildcard
 providers, the MCP server, or persistent storage. Pause following freezes the visible page while
 collection and bounded retention continue; Clear removes the retained UI events without stopping
-the stream. The table supports bounded search, paging and one selected event detail view. Managed
+the stream. Sortable headers cover source time, provider, event, numeric level and summary across
+all retained search matches before slicing bounded 100-row pages. **Previous / Next** and the
+shown range appear only when multiple pages exist. Sorting or paging pauses presentation without
+stopping ingestion or acknowledgements; **Follow latest** explicitly restores descending source-time
+order and the first page. Selection remains tied to the exact observation until retention evicts it.
+The table supports bounded search and one selected event detail view. Managed
 exception details are labeled only for the runtime provider's schema-verified
 runtime exception event (provider `Microsoft-Windows-DotNETRuntime`, ID 80, version 1, exact
 `ExceptionType`, `ExceptionMessage`, `ExceptionEIP`, `ExceptionHRESULT`, `ExceptionFlags`, and
@@ -151,6 +156,11 @@ as a hint, never automatically attached after restart. Actions refresh and valid
 first. The CLI does not expose process start time, so PID reuse with identical metadata cannot be
 distinguished. Process command lines are not retained in the tree or workspace state.
 The view displays at most 500 processes and explicitly reports an inventory cap.
+The native empty view links to **Open Getting Started**, **Check Environment**, and
+**Refresh Processes**. No discoverable endpoints and no filter matches are distinct states;
+the latter has a **Clear Filter** action. The tree labels the current controller-selected panel
+target **active target**, including selections made through the quick picker. Persisted selections
+are only **remembered hints**, never active targets after restart. Selection is not collection.
 
 After selecting a process, browse the **Live Diagnostics** action tree:
 
@@ -170,10 +180,17 @@ searchable ten-kind picker uses matching domain headings. Allocations there and 
 Memory & GC use the same capture and Allocations result, not separate products.
 GC/activity overlap remains overlap evidence, not a causal latency diagnosis.
 
-The live panel keeps **Live**, **Workspace**, **Diagnostics**, and **Events** as its result tabs.
+The live panel has **Monitoring** and **Workspace** tabs. Monitoring contains independent
+**Live counters & GC pauses** and **Live Events** subviews.
 The Workspace domain selector includes **CPU**, **Memory & GC**, **Threads & waits**,
 **Requests & networking**, and **Exceptions**. Its compact **Domain → Evidence → View** controls
 navigate one content panel.
+Captured charts, rows, stacks and occurrences lead each result. Quantitative summaries use
+small secondary text, while active loss, withheld verification, stale/unavailable evidence and
+inferred candidates remain visible in compact alerts. Full reasons stay inspectable beside
+those alerts. Static scope, retention guidance, export explanations and complete metrics follow
+the data or use keyboard-operable disclosures. Sensitive-data and replacement warnings stay
+at the capture action; native consent still presents the full policy before dispatch.
 Thread snapshots and off-CPU, contention, and thread-pool captures appear under Threads & waits;
 the point-in-time snapshot and the generic event capture remain separate evidence kinds.
 Those three generic kinds share the same single replaceable result slot used by GC and the other
@@ -196,14 +213,35 @@ required. **Saved Captures** remains a sibling view; **Capture and Save Snapshot
 process context menu and explicitly collects a new heap/GC dump/thread snapshot. Grouping does not
 add persistence for other captures or convert current results into saved evidence.
 
+For ordinary Requests, Kestrel, Database, and Networking captures, choose the kind in
+**Workspace → Requests & networking → Evidence** and select **Capture**. The existing duration,
+row-count, and applicable threshold prompts still apply; merely navigating never captures.
+The Workspace and duration prompt disclose successful replacement of the shared generic result
+before dispatch. No extra history or cache is retained, and ordinary captures have no verified
+backend cancellation control here. One compact active-quality alert precedes returned tables; expand it for full loss
+limitations and notes. The complete quality matrix, metrics and stable
+search/sort/relationship guidance follow the captured rows.
+Networking does not repeat the collector's long narrative before the operation table; the raw
+summary remains in **Capture quality and scope**. Known normal acquisition facts (normal drain,
+zero reported transport loss and zero parse errors) and static latency definitions stay there,
+not in a warning. Unknown loss, early/failed completion, parse errors, unrecognized notes and
+other limitations still have a visible compact alert; zero-valued counts alone never hide a limitation.
+Diagnostic capture setup is bound to the selected target. If the selection changes during
+the picker, parameter prompts, acknowledgement or CLI acquisition, no capture is dispatched;
+select the intended target and start again.
+
 **Saved Captures** lists the CLI's durable capture catalog, 50 entries per page (up to 500 loaded,
 with an explicit cap notice), with refresh,
 reopen and confirmed CLI-managed deletion. It survives extension and CLI process restarts;
 ordinary panel results and ephemeral handles are not history entries. On a process, choose
 **Capture and Save Snapshot** to collect a **new** live heap, gcdump or thread snapshot, rather
 than converting an older panel result. Saving requires explicit high-risk acknowledgement
-(ptrace/suspension for live heap/threads, a blocking Gen2 GC for gcdump). Saved evidence can contain
+(suspension risk for live heap/threads, a blocking Gen2 GC for gcdump). Saved evidence can contain
 sensitive data and remains on disk until deleted.
+The view explicitly labels the catalog on this extension host, not workspace-local history.
+Rows expose artifact kinds; tooltips include reported producer PID, runtime, and capture start
+when supplied by the CLI. Missing provenance is labelled as unreported. Origin workspace is
+not reported and is never inferred from the current folder or process selection.
 
 Reopened panels query only advertised offline views by capture/artifact IDs, never contact the
 original process, and reuse the shared drilldown renderer. Heap types, thread summaries and GC
@@ -213,7 +251,7 @@ must be recovered with the CLI first. CPU/exception persistence is not exposed b
 History calls inherit the CLI artifact root (including `MCP_ARTIFACT_ROOT`), have a 60-second
 deadline and a combined 8388608-character output cap; failures are explicit, not partial JSON.
 
-Open **Workspace**, choose **CPU** under **Domain**, and select **Capture CPU sample** (also available as the tree-view action or
+Open **Workspace**, choose **CPU** under **Domain**, and select **Capture** (also available as the **Capture CPU sample** tree-view action or
 Command Palette command `dotnetDiagnostics.captureCpu`) to take a single point-in-time CPU sample
 of the selected process.
 Unlike the counters/GC timeline, a capture is a one-shot snapshot: it reuses the panel's active
@@ -222,6 +260,8 @@ The connection is retained while the panel owns a CPU export or allocation-explo
 The capture renders its own top-hotspot table (module, method, inclusive/exclusive sample
 counts) that is replaced by the next capture rather than appended to a history. A capture does not
 start or stop the live counters/GC session, and it is not compared against any baseline.
+The current CPU profile cannot be saved or compared in the extension; the CLI's separate retained-artifact
+CPU comparison workflow and its limits are documented in [Historical comparisons](./historical-comparisons.md#supported-matrix).
 The live panel keeps CPU, allocation and heap evidence within the **Workspace** domain/evidence
 selectors; other existing tabs remain available for their current result surfaces. Starting or
 completing an explicit capture selects its corresponding domain or result tab. CPU
@@ -249,11 +289,12 @@ the string; the separate one-request sensitive-data consent remains required.
 
 Heap type exploration uses an adjacent details pane in wide panels, with independent scrolling
 for the returned type list and details. Selecting a type no longer opens its details below the
-whole table. At widths of 850 px or less, the same pane replaces the list; **Back to types**
-restores the existing list, filters, sort and page scroll position. In the domain workspace,
+whole table. At widths of 850 px or less, details follow the type list in a single flow, so
+all captured breakdowns remain accessible without an extra navigation button. **Back to types**
+returns focus to the selected type or type table and preserves filters, sort and page scroll position. In the domain workspace,
 **View → Heap details** navigates to the captured details without choosing a type; **Snapshot totals**
-returns to the type list. The separate dump-analysis surface retains **Explore heap details**.
-Both routes use the same responsive pane and start no additional diagnostic reads.
+returns to the type list. Neither live nor dump analysis has an **Explore heap details** button.
+Navigation uses the same responsive pane and starts no additional diagnostic reads.
 
 The **Call tree** view has linked tree-table and **Flame graph (icicle)** modes.
 The tree-table aligns method/call path, **Total %** (including descendants) and **Self %**
@@ -310,7 +351,10 @@ Types and stacks are independent aggregates: choosing a type does not filter the
 Capture totals include ticks without stacks; the profile reports its attributed share rather than
 redistributing missing bytes. Subtree queries still use the highest-ranked method-name match.
 Allocation profiles have separate state from CPU profiles, retain their owning CLI connection and
-never recollect on navigation. A new allocation capture replaces the displayed profile.
+never recollect on navigation. A new allocation capture replaces the displayed profile. If no
+allocation call tree is returned, the panel says that the response does not identify why attribution
+is unavailable and suggests checking capture quality/retrying under representative allocation
+activity; it does not claim a cause or diagnosis.
 
 This is not exact object instrumentation or per-object lifetime tracking: `GCAllocationTick` fires
 roughly per 100 KB allocated and names the most recent object. Counts are ticks, not objects;
@@ -349,7 +393,7 @@ that table's filter and sort without another request.
 explicit reproduction action under **Requests & networking**, also present in that Workspace
 domain and the Command Palette. It does not alter the standalone in-flight request capture.
 The CLI must actually advertise `hello.requestActivities` version 1, its two query views and
-bounded limits. The source capability is unreleased; the general CLI 0.31.0 feature floor
+bounded limits. The capability is available in CLI 0.32.1; the general CLI 0.31.0 feature floor
 does not imply support. CLI 0.32.1 includes this capability, but the extension checks the actual
 hello contract. Unsupported/missing capabilities produce actionable guidance before configuration
 and without dispatching a capture. Communication remains extension → CLI → Core only.
@@ -428,25 +472,31 @@ from **All retained messages**.
 Type/message aggregate tables are retained under **Type counts and retained-message aggregates**
 rather than always stacked above the occurrence explorer.
 
-Start capture **before** load: after the request, the panel says to allow EventPipe about a
-second to start and then **reproduce the problem now**. This is timing guidance, not an
-armed-session acknowledgement. A busy connection rejects exception capture with retry guidance
-instead of queueing it behind an earlier capture, query or session startup. Captures
-do not start/stop the live counters session. These capture kinds require a CLI build containing
+Start capture **before** the workload. The extension confirms when it sends the request, but the
+protocol does not report when EventPipe is ready. A one-time failure may therefore happen before
+the capture window; keep the workload running or repeat the problem throughout a new capture rather
+than relying on a fixed startup delay. Sending a capture clears the current exception result; if
+collection then fails, it cannot be restored. Results are temporary and are not saved by this
+panel. A busy connection rejects exception capture with retry guidance instead of queueing it behind an earlier
+capture, query or session startup. Captures do not start/stop the live counters session. These
+capture kinds require a CLI build containing
 the #1166 JSONL extension; older protocol-v2 CLIs report the kind as unsupported with update guidance.
 
 Use **Capture Heap Snapshot** (tree-view action or Command Palette command
 `dotnetDiagnostics.captureHeap`) to take a single point-in-time heap snapshot. Unlike CPU sampling,
-this capture requires choosing a **source**: **Live** (ClrMD via `ptrace`) or **GC Dump** (EventPipe).
-Both sources are classified High risk / Acknowledge in Core's invocation-safety registry (CPU
-sampling is only Moderate), so after picking a source the extension shows a native modal describing
-its impact — a live walk attaches with `ptrace`, suspends the target, and exposes heap type and
+this capture requires choosing a **source**: **Live** (ClrMD) or **GC Dump** (EventPipe). Both
+sources are classified High risk / Acknowledge in Core's invocation-safety registry (CPU sampling
+is only Moderate), so after picking a source and any optional enrichments the extension shows a
+native modal naming the application and PID, source, selected extra heap data, and impact. A live
+walk uses a platform-specific privileged attach, may suspend the target, and exposes heap type and
 object-graph metadata; a GC dump induces a managed GC and exposes aggregate heap type metadata; both
-may expose possibly confidential data — and only sends the capture request once you select
-**Acknowledge and Capture**. The result panel shows the top types by total bytes (type, instance
+may expose possibly confidential data. The extension cannot stop a dispatched capture. Its
+120-second result-wait timeout is a frontend limit, not a guarantee that target-side work has
+stopped. The request is sent only after you select **Acknowledge and Capture**. The result panel
+shows the top types by total bytes (type, instance
 count, bytes), the suspend duration for `live` captures, and any concerning GC-dump completion flags
 (e.g. timed out, reader failed) for `gcdump` captures; each capture replaces the previous rendering.
-A live heap walk needs the same `ptrace`/`CAP_SYS_PTRACE` access as other live memory readers (see
+A live heap walk requires the host's corresponding privileged attach access (on Linux, see
 AGENTS.md's "🪪 `CAP_SYS_PTRACE` for live memory readers" section) and fails with an actionable
 permission-denied message when that access is unavailable. A GC dump instead goes through the
 diagnostic IPC channel but induces a blocking Gen2 GC pause on the target while it runs.
@@ -462,33 +512,54 @@ Use **Capture Thread Snapshot** (tree-view action or Command Palette command
 process's managed threads. Unlike heap capture, there is only one source: a live ClrMD attach (the
 CLI's offline `--dump-file` option does not apply to a live VS Code panel), so no source QuickPick is
 shown. It is classified High risk / Acknowledge in Core's invocation-safety registry, the same tier
-as heap's `live` source, so the extension shows a native modal before sending the request —
-explaining that a live thread snapshot attaches with `ptrace`, briefly suspends the target, and
-exposes stack, type, and method names, some of which may be confidential — and only sends the
-capture request once you select **Acknowledge and Capture**. The result panel shows each thread's
+as heap's `live` source, so the extension shows a native modal naming the application and PID
+before sending the request. It explains that a platform-specific privileged ClrMD attach may
+briefly suspend the target and exposes stack, type, and method names, some of which may be
+confidential. The extension cannot stop a dispatched capture; its 120-second result-wait timeout
+does not bound suspension or guarantee target-side cancellation. The request is sent only after
+you select **Acknowledge and Capture**. The result panel shows each thread's
 managed thread id, state (flagged when likely blocked), inferred wait reason, and its top stack
 frame, bounded to a summary-first table; each capture replaces the previous rendering. A live thread
-snapshot needs the same `ptrace`/`CAP_SYS_PTRACE` access as the heap capture's `live` source (see
-AGENTS.md's "🪪 `CAP_SYS_PTRACE` for live memory readers" section) and fails with an actionable
+snapshot needs the host's corresponding privileged attach access (on Linux, see AGENTS.md's
+"🪪 `CAP_SYS_PTRACE` for live memory readers" section) and fails with an actionable
 permission-denied message when that access is unavailable.
 
+In **Workspace > Threads & waits**, **Thread explorer** is the default after a successful snapshot
+and is also directly selectable in **View**. Its compact table aligns **Thread**, **State** and
+**Top frame**. Each thread's chevron expands its stack immediately below that row, in
+top-of-stack-first order; several stacks can remain open. Native buttons support Enter/Space,
+and top-frame previews wrap to two lines while expanded stacks preserve the full frame text.
+Right/Left arrows expand/collapse, and Escape from a stack collapses it and returns focus to
+its thread. The labeled filter searches returned thread fields and frames only; expansion is
+preserved by managed thread ID while filtering or receiving related evidence. A new snapshot
+resets it. Raw numeric runtime flags are shown as **Not decoded**, not guessed as running or
+waiting; **Technical details** retains the exact reported state, OS ID and inferred wait reason.
+Missing frames remain explicitly **Unavailable**. The
+inline summary and each returned thread ID in related evidence link directly into the expanded
+row; returning to related evidence restores focus to the originating link.
 The **Thread explorer** connects searchable returned threads, expandable stack groups,
 representative group member IDs, inferred cycle participants and wait-chain owners. Selecting
 a thread shows all its returned inline frames and related wait edges; selecting an owner moves
 to that participant. A participant omitted from the inline list is explicitly unavailable, not
 invented from another thread's stack. Group counts may exceed the representative IDs returned.
 All of this is snapshot navigation, not a scheduler timeline; a new snapshot resets selections.
-Its mode selector switches between **Returned threads**, **Grouped stacks**, **Wait chains**
-and **Inferred cycle candidates**, preserving the selected thread. The original inline table
-remains available under **Inline thread summary**.
+Its mode selector switches between **Returned threads**, **Wait chains** and **Inferred cycle
+candidates**, preserving the selected thread. Grouped stack evidence remains available from
+**View**. The original inline table remains available under **Inline thread summary**. The Workspace
+view selector and status identify inferred deadlock candidates and unavailable/pending snapshot
+queries; a terminal capture or query failure is shown as unavailable rather than left pending. If
+the owning CLI connection closes, returned evidence remains display-only and live thread-statics
+queries are disabled.
 
 **Follow-up drilldown views.** After a heap or thread capture succeeds, the extension issues
 follow-up `query` requests against the capture's handle (sequentially, over the same streaming
-connection). Heap and thread results have an **Evidence views** switcher instead of stacking
-all sections vertically. Switching displays one result at a time and preserves its controls and
-selection, without querying again; new results do not steal the selected view. Unavailable views
-are labelled in the switcher, whose always-visible status also reports failures and inferred
-deadlock warnings. Thread explorer is the default thread view; the detailed query responses remain
+connection). Heap and saved/dump thread results have an **Evidence views** switcher instead of stacking all
+sections vertically. Switching displays one result at a time and preserves its controls and
+selection, without querying again; new results do not steal the selected view. In the live thread
+snapshot Workspace, the **View** selector labels pending/unavailable queries and returned inferred
+cycle candidates, while its visible status reports failures and warnings. Heap snapshots whose
+retained connection closes remain display-only, and live object/GC-root address follow-ups are
+disabled. Thread explorer is the default live thread view; detailed query responses remain
 available as alternatives, including their metadata, limitations and errors.
 
 - **Heap** (7 always queried): `roots-by-kind`, `finalizer-queue`, `fragmentation`, `gchandles`,
@@ -549,7 +620,8 @@ is open cancels that pending acknowledgement; it cannot interrupt a read already
 Captures, raw traces and exports keep their separate acknowledgements. Dump reads do not acquire
 live-read grants. The bounded history records operation/decision/time, not addresses or values.
 **Object** and **GC root path** are read on demand through the CLI's `query` request with
-`address`. For a live panel that read re-attaches via ptrace and suspends the target (High risk), so
+`address`. For a live panel that read uses the host's privileged attach mechanism and may suspend
+the target (High risk; Linux uses ptrace), so
 the extension asks for an explicit modal acknowledgement unless that operation has an active
 snapshot-session grant, and shows the result as read
 live, not part of the captured snapshot; Back/Forward use cached results and never read again. In a
@@ -679,6 +751,40 @@ Visual Studio Marketplace. A matching tag push therefore publishes; do not creat
 part of release preparation. Configure the repository Actions secret `VSCE_PAT` with a publisher
 token that has Marketplace management/publish access. The normal CI workflow continues to test
 extension changes on pushes to `main` and pull requests; it does not publish from those builds.
+
+### 0.5.0 preparation evidence and limits
+
+The latest installed layout-smoke source is `f1a2105f3f522da2ec5e90896c2584ead57b3ef5`.
+Release preparation subsequently corrected terminal thread-query failure state and
+cross-domain View ownership, with emitted-webview regression coverage.
+The extension suite passed 317 tests with three skips (320 total), and independent
+integration and focused follow-up reviews were completed. The Windows smoke used an
+isolated, instrumented installed VS Code 1.143 host and the official CLI 0.32.1 release,
+with release checksums and attestation verified. A separate development-loaded command
+bridge invoked the installed candidate; this is not an uninstrumented-host or
+assistive-technology certification.
+
+Installed candidates returned populated CPU, allocation, exception, counter/GC,
+thread, request, Kestrel, database, Networking and Live Events evidence. A separately
+confirmed joint reproduction returned two requests and four completed Activities,
+with two associated rows in a retained request query; an earlier empty reproduction
+remains inconclusive. The frozen batch used `645ab937`; Networking and Live Events
+fixes were rechecked on `6ed1327`, and subsequent dump layout changes were checked on
+`a16b1aa` and `f1a2105`. The whole matrix was not repeated at each revision or against
+the versioned release package. Package identity changes require separate integrity
+verification; these source smokes are not an exact release-VSIX capture certification.
+
+Live Events initially exposed 158 rows and drained to 159 before stopping; source
+loss availability remained unknown, not an inferred one-event loss. Exception
+collection observed 640 occurrences and retained 100: the difference is a retention
+omission, not necessarily EventPipe loss. An explicitly approved owned sample dump
+was generated locally and reopened read-only, without optional enrichments, for
+populated heap/thread analysis and local root-category navigation. No sensitive dump
+or local smoke profile is part of the release. Optional object values, complete
+type-to-instance navigation, off-CPU/elevated paths, every interaction permutation,
+and assistive-technology behavior were not certified. An extremely narrow dump
+viewport retained horizontal overflow. Bounded synthetic normal/narrow renderer
+checks supplement, but do not replace, installed-host evidence.
 
 ### 0.4.0 preparation evidence and limits
 

@@ -39,12 +39,41 @@ reveal and array-range navigation require 0.31.0 or later. CLI 0.30.0 supports t
    your app in **.NET Processes**.
 3. Choose **Start Live Counters**, or capture a snapshot while reproducing the problem.
 
+The empty **.NET Processes** view links to **Open Getting Started**, **Check Environment**,
+and **Refresh Processes**. A filter with no matches offers **Clear Filter**, distinct from
+no discoverable diagnostic endpoints. **Active target** identifies the current panel target
+for both tree and picker selection; a **remembered hint** never means an active attachment.
+**Saved Captures** labels the CLI catalog on this extension host, not workspace-local history;
+row tooltips include available artifact kinds and producer provenance, without assuming a workspace.
+
 The **Live Diagnostics** action tree groups captures under **CPU**, **Memory & GC**,
 **Threads & waits**, **Requests & networking**, and **Exceptions**. **Monitoring**
 contains separate **Live counters & GC pauses** and **Live Events** views. Switching views
 does not start or stop either stream, collect or reopen evidence, or change event acknowledgements.
 Each stream keeps its own lifecycle, status, retained buffer and controls. Expand an action-tree
 group to browse; only selecting an action enters its existing capture/consent flow.
+Counter history remains bounded across Stop/Start. The panel identifies the current counter
+session and retained session numbers; chart lines break at session boundaries and observed
+sequence gaps rather than imply continuous collection. Sequence-gap counts belong to the current
+counter/GC session, while the chart-series cap and GC totals remain panel-wide. The counter
+identity includes its provider/name, reported kind and unit; the value axis auto-scales and is not
+necessarily zero-based. Chart bounds and window controls use receipt time, not target time.
+Click or use Left/Right/Home/End to mark the nearest retained observation without interpolation.
+**Pause following** freezes the receipt-time selection, not collection or retention. **Follow
+latest** resumes following. Window choices only select retained data, never extend retention;
+the receipt-time disclosure exposes exact bounds and custom start/end sliders. Expired paused
+selections can become empty, which is not a zero measurement.
+
+Live Events configuration uses explicit provider names, a named EventSource level and a signed
+decimal keyword mask; it does not guess provider presets. The panel keeps the requested PID,
+providers, level and exact keyword value visible. **Waiting for first event** remains until a
+non-empty event batch arrives, including after a restart; an empty stream does not establish
+target inactivity. Newest rows appear first. Pausing shows arrivals and retention evictions while
+acknowledgements continue; expired mounted rows and selected payload details are removed.
+Quality distinguishes current-stream source/delivery counts from panel-lifetime UI evictions
+and truncations. Nonzero counts and unknown source loss remain prominent, with every layer
+available in the quality disclosure. **Clear** only removes retained rows and selection; it
+does not reset quality accounting, the subscription or whether the stream has observed an event.
 **Capture Diagnostics** remains the searchable expert catalog for all ten capture kinds. Its
 generic results appear in their canonical **Workspace** domain; allocations keep their dedicated
 profile and query path.
@@ -54,15 +83,19 @@ off-CPU/contention/thread-pool captures share their domain's presentation withou
 ownership: the snapshot handle is independent from the single replaceable generic-capture result.
 Standalone requests, Kestrel, database, and networking captures share the Requests & networking workspace and
 the existing single replaceable generic-capture result; its **Capture result** view is descriptive,
-not a retained-handle query. In-flight request results lead with the capture-window summary and
+not a retained-handle query. Select the ordinary kind under **Evidence**, then **Capture** in the
+Workspace to use its existing parameter prompts. Replacement and sensitive-data guidance is
+visible before capture; ordinary captures cannot be cancelled here. A compact active-quality alert precedes the returned data, with full reasons
+available at the alert. Metrics, full quality scope and stable table guidance follow the rows. In-flight request results lead with the capture-window summary and
 retained request rows; state filters and search apply only to returned rows, with truncation and
 capture-quality notes kept visible. Managed-exception and crash-guard results use a separate
 single replaceable exception result, keep the selected mode and live EventPipe target visible, and
-do not become history or queryable evidence by navigating. Exception messages can contain
-sensitive application data; a process exit alone does not prove an unhandled exception. Started
-timestamps display in UTC; the original ISO value remains available to assistive technology and in
-the timestamp tooltip. Monitoring, dump analysis, and saved evidence keep their source-specific
-result surfaces.
+do not become history or queryable evidence by navigating. Results are temporary and are not saved;
+sending a capture clears the current exception result; if collection then fails, it cannot be restored.
+Exception messages can contain sensitive application data; a process exit alone does not prove an
+unhandled exception. Started timestamps display in UTC; the original ISO value remains available
+to assistive technology and in the timestamp tooltip. Monitoring, dump analysis, and saved evidence
+keep their source-specific result surfaces.
 **Analyze Dump File** and **Saved Captures** remain separate offline entry points.
 
 **Requests + completed Activities** is a separate explicit reproduction action in Requests &

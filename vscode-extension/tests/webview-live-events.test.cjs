@@ -27,7 +27,7 @@ test("Live Events panel exposes bounded controls and clear sensitive-data framin
     assert.match(html, /id="startEvents"/);
     assert.match(html, /id="stopEvents"/);
     assert.match(html, /id="eventsSearch"[^>]*maxlength="256"/);
-    assert.match(html, /bounded in-memory windows and are not automatically saved or logged/);
+    assert.match(html, /bounded memory, not automatically saved or logged/);
     assert.match(html, /Native Windows ETW is not collected/);
     assert.match(html, /const eventsMaxCount = 2000;/);
     assert.match(html, /const eventsMaxBytes = 8388608;/);
@@ -100,7 +100,8 @@ function eventsDocument() {
             tag, children: [], attributes: {}, value: "", disabled: false, ownText: "",
             get textContent() { return this.ownText + this.children.map(child => child.textContent).join("\n"); },
             set textContent(value) { this.ownText = String(value); this.children = []; },
-            appendChild(child) { this.children.push(child); },
+            appendChild(child) { child.parent = this; this.children.push(child); },
+            remove() { if (this.parent) this.parent.children = this.parent.children.filter(child => child !== this); },
             replaceChildren(...children) { this.ownText = ""; this.children = children; },
             setAttribute(name, value) { this.attributes[name] = value; },
             addEventListener(type, callback) { listeners.set(type, callback); },
@@ -131,7 +132,7 @@ function eventsDocument() {
         document, { postMessage: message => messages.push(message) }, TextEncoder,
         callback => { timers.set(++nextTimer, callback); return nextTimer; },
         id => timers.delete(id),
-        { now: () => now },
+        { now: () => now, parse: Date.parse },
     );
     let batchId = 0;
     return {
@@ -160,6 +161,87 @@ function event(sequence, overrides = {}) {
     };
 }
 
+test("Events sorts all retained matches before bounded pages and resumes newest source-time order explicitly", () => {
+    const ui = eventsDocument();
+    for (let first = 1; first <= 240; first += 60) {
+        ui.batch(Array.from({ length: 60 }, (_, index) => {
+            const sequence = first + index;
+            return event(sequence, { provider: sequence % 2 ? "Z.Provider" : "A.Provider",
+                level: sequence % 2 ? "Verbose" : "Error" });
+        }));
+    }
+    const body = ui.get("eventsBody");
+    assert.equal(body.children.length, 100);
+    assert.equal(body.children[0].eventObservation.sequence, 240);
+    assert.equal(ui.get("eventsPagination").hidden, false);
+    assert.equal(ui.get("eventsPrevious").disabled, true);
+    assert.equal(ui.get("eventsNext").disabled, false);
+    ui.get("eventsNext").dispatch("click");
+    assert.equal(body.children[0].eventObservation.sequence, 140);
+    assert.equal(ui.get("eventsPrevious").disabled, false);
+    ui.get("eventsNext").dispatch("click");
+    assert.equal(body.children.length, 40);
+    assert.equal(ui.get("eventsNext").disabled, true);
+    ui.get("eventsPrevious").dispatch("click");
+    assert.equal(body.children[0].eventObservation.sequence, 140);
+    body.children[0].dispatch("click");
+    const selected = ui.snapshot().selected;
+    ui.get("eventsSort1").dispatch("click");
+    assert.equal(ui.snapshot().following, false);
+    assert.equal(ui.get("eventsHeader1").attributes["aria-sort"], "ascending");
+    assert.ok(body.children.every(row => row.eventObservation.provider === "A.Provider"),
+        "provider sort considers retained rows outside the formerly mounted page");
+    assert.equal(ui.snapshot().selected, selected, "sorting preserves exact selected observation");
+    ui.get("eventsNext").dispatch("click");
+    assert.equal(body.children.filter(row => row.eventObservation.provider === "A.Provider").length, 20);
+    ui.get("eventsSearch").value = "Z.Provider";
+    ui.get("eventsSearch").dispatch("input");
+    assert.equal(body.children.length, 100);
+    assert.ok(body.children.every(row => row.eventObservation.provider === "Z.Provider"));
+    ui.get("eventsNext").dispatch("click");
+    assert.equal(body.children.length, 20);
+    ui.get("eventsSort3").dispatch("click");
+    assert.equal(ui.get("eventsHeader3").attributes["aria-sort"], "ascending");
+    ui.get("eventsSearch").value = "";
+    ui.get("eventsSearch").dispatch("input");
+    assert.ok(body.children.every(row => row.eventObservation.level === "Error"));
+    ui.get("eventsFollow").dispatch("click");
+    assert.equal(ui.snapshot().following, true);
+    assert.equal(ui.get("eventsHeader0").attributes["aria-sort"], "descending");
+    assert.equal(ui.get("eventsHeader3").attributes["aria-sort"], "none");
+    assert.equal(body.children[0].eventObservation.sequence, 240);
+    ui.get("eventsSearch").value = "item240";
+    ui.get("eventsSearch").dispatch("input");
+    assert.equal(ui.get("eventsPagination").hidden, true);
+    assert.equal(ui.get("eventsPrevious").disabled, true);
+    assert.equal(ui.get("eventsNext").disabled, true);
+    assert.ok(ui.messages.every(message => message.type === "ackEventBatch"));
+});
+
+test("Events source-time, numeric level and text sorting retain deterministic ties across eviction", () => {
+    const ui = eventsDocument();
+    ui.batch([event(1, {timestamp: "2026-01-01T01:00:00+01:00", level: "Verbose"}),
+        event(2, {timestamp: "2026-01-01T00:00:01Z", level: "Critical"}),
+        event(3, {timestamp: "2026-01-01T00:00:00Z", level: "Error"})]);
+    const body = ui.get("eventsBody");
+    assert.equal(body.children[0].eventObservation.sequence, 2);
+    ui.get("eventsSort3").dispatch("click");
+    assert.deepEqual(body.children.map(row => row.eventObservation.sequence), [2, 3, 1]);
+    ui.get("eventsSort3").dispatch("click");
+    assert.deepEqual(body.children.map(row => row.eventObservation.sequence), [1, 3, 2]);
+    body.children[0].dispatch("click");
+    for (let first = 4; first <= 2050; first += 64)
+        ui.batch(Array.from({length: Math.min(64, 2051-first)}, (_, index) => event(first+index)));
+    assert.equal(ui.snapshot().count, 2000);
+    assert.equal(ui.snapshot().selected, undefined);
+    assert.ok(body.children.length <= 100);
+    ui.get("eventsSort4").dispatch("click");
+    assert.equal(ui.get("eventsHeader4").attributes["aria-sort"], "ascending");
+    ui.get("eventsClear").dispatch("click");
+    assert.equal(ui.get("eventsPagination").hidden, true);
+    assert.equal(body.children.length, 0);
+});
+
 test("Events executes pause/follow/filter/clear and local details without diagnostic requests", { timeout: 10_000 }, () => {
     const ui = eventsDocument();
     assert.equal(ui.get("eventsClear").attributes["aria-disabled"], "true");
@@ -180,6 +262,8 @@ test("Events executes pause/follow/filter/clear and local details without diagno
     ui.batch([event(3)]);
     assert.equal(ui.snapshot().count, 3, "presentation pause continues bounded ingestion");
     assert.equal(body.textContent, pausedText, "presentation remains frozen");
+    assert.match(ui.get("eventsPresentation").textContent, /Paused presentation: 1 new arrivals; 0 evicted/);
+    assert.match(ui.get("eventsPage").textContent, /Paused page \(not refreshed\); 3 events currently retained/);
     assert.equal(ui.messages.at(-1).type, "ackEventBatch", "pause is not a missing-ACK consumer");
     ui.get("eventsFollow").dispatch("click");
     assert.match(body.textContent, /Event3/);
@@ -217,7 +301,9 @@ test("Events evicts a selected event while paused without replay history and pre
     assert.equal(ui.snapshot().count, 2000);
     assert.equal(ui.snapshot().evicted, 100);
     assert.equal(ui.snapshot().selected, undefined);
-    assert.match(ui.get("eventDetails").textContent, /Select an event/);
+    assert.match(ui.get("eventDetails").textContent, /selected event expired/);
+    assert.match(ui.get("eventsPresentation").textContent, /2099 new arrivals; 100 evicted/);
+    assert.equal(ui.get("eventsBody").children.length, 0, "expired payloads cannot linger in paused DOM rows");
     ui.get("eventsFollow").dispatch("click");
     assert.equal(ui.get("eventsBody").children.length, 100);
     assert.match(ui.get("eventsBody").textContent, /Event2100/);
@@ -228,10 +314,34 @@ test("Events evicts a selected event while paused without replay history and pre
     assert.match(ui.get("eventsQuality").textContent, /source loss count unknown/);
     assert.match(ui.get("eventsQuality").textContent, /17 Core queue drops/);
     assert.match(ui.get("eventsQuality").textContent, /100 UI-window evictions/);
+    assert.match(ui.get("eventsQualityDetail").textContent, /Panel lifetime \(including earlier streams and Clear\)/);
+    assert.match(ui.get("eventsQualityDetail").textContent, /100 UI-window evictions/);
     const before = ui.messages.length;
     ui.batch([event(9999)], quality, "stale-session");
     assert.equal(ui.snapshot().count, 0);
     assert.equal(ui.messages.length, before, "stale sessions cannot update or ACK this window");
+});
+
+test("Events waits for an actual observation and shows the exact requested subscription without affecting counter state", () => {
+    const ui = eventsDocument();
+    const subscription = { processId: 42, providers: ["<provider>", "Other"], eventLevel: 5, keywords: "-9223372036854775808" };
+    ui.setEventsStatus("starting", "Starting", undefined, subscription);
+    assert.match(ui.get("eventsSubscription").textContent, /PID 42.*<provider>, Other.*level: 5.*-9223372036854775808/);
+    ui.setEventsStatus("running", "Running", "events-1");
+    assert.match(ui.get("eventsStatus").textContent, /Waiting for first event/);
+    ui.batch([]);
+    assert.match(ui.get("eventsStatus").textContent, /Waiting for first event/);
+    ui.batch([event(1)]);
+    assert.equal(ui.get("eventsStatus").textContent, "");
+    ui.setEventsStatus("running", "Running", "events-1");
+    assert.equal(ui.get("eventsStatus").textContent, "");
+    ui.get("eventsClear").dispatch("click");
+    assert.equal(ui.get("eventsStatus").textContent, "", "Clear does not reset stream observation state");
+    ui.setEventsStatus("stopped", "Stopped");
+    ui.setEventsStatus("starting", "Starting", undefined, subscription);
+    ui.setEventsStatus("running", "Running", "events-2");
+    assert.match(ui.get("eventsStatus").textContent, /Waiting for first event/, "a restart cannot inherit first-event evidence");
+    assert.deepEqual(ui.messages.map(message => message.type), ["ackEventBatch", "ackEventBatch"]);
 });
 
 test("Events executes schema-gated details and generic fallback with inert original bounded payload", { timeout: 10_000 }, () => {

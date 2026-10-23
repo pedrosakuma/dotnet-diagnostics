@@ -16,7 +16,7 @@ import { isJointCapture, isJointRelatedQuery, parseJointSources, supportsRequest
     type JointCapture, type JointQuery, type RelatedActivity } from "./requestActivities";
 import { REQUEST_ACTIVITIES_SCRIPT } from "./requestActivitiesView";
 import { CPU_PROFILE_SCRIPT, CPU_PROFILE_STYLES } from "./cpuProfileViewer";
-import { WEBVIEW_FIELD_STYLES } from "./webviewFields";
+import { WEBVIEW_BUTTON_STYLES, WEBVIEW_FIELD_STYLES } from "./webviewFields";
 import { LIVE_TIME_NAVIGATION_SCRIPT } from "./liveTimeNavigation";
 import { LiveReadConsent, LIVE_READ_CONSENT_HTML, LIVE_READ_CONSENT_SCRIPT } from "./liveReadConsent";
 import { ACTION_AVAILABILITY_SCRIPT, ACTION_AVAILABILITY_STYLES, PROFILE_ACTIONS_SCRIPT } from "./actionAvailability";
@@ -203,10 +203,12 @@ class CounterPanelController implements vscode.Disposable {
     private readonly exporter = new ResultExporter();
     private cpuExport?: { session: StreamChild; handle: string; evidenceId: string; trace?: boolean };
     public liveCountersChanged?: (active: boolean) => void;
+    public targetChanged?: (target: TargetProcess | undefined) => void;
     private allocationProfile?: { session: StreamChild; handle: string; evidenceId: string };
     private readonly pendingExports = new Map<string, { session: StreamChild; deferred: Deferred<unknown> }>();
     private exporting = false;
     private panel?: vscode.WebviewPanel;
+    private panelGeneration = 0;
     private panelReady?: Deferred<void>;
     private selectedTarget?: TargetProcess;
     private activeChild?: StreamChild;
@@ -232,6 +234,7 @@ class CounterPanelController implements vscode.Disposable {
     private eventsGeneration = 0;
     private readonly statusBar: vscode.StatusBarItem;
     private disposed = false;
+    private targetGeneration = 0;
     private shutdownTask?: Promise<void>;
     private childDisposalTask?: Promise<void>;
     private startCommandTask?: Promise<void>;
@@ -299,6 +302,7 @@ class CounterPanelController implements vscode.Disposable {
         if (!target || this.disposed) return;
 
         const providersInput = await vscode.window.showInputBox({
+            title: "Live Events - 1 of 3: providers",
             prompt: "Explicit EventSource provider names, comma-separated (1-8; provider and keyword choices affect event volume)",
             value: "System.Runtime",
             ignoreFocusOut: true,
@@ -313,16 +317,23 @@ class CounterPanelController implements vscode.Disposable {
             return;
         }
 
-        const levelInput = await vscode.window.showInputBox({
-            prompt: "EventSource level 0-5 (4 = Informational)",
-            value: "4",
-            validateInput: value => /^[0-5]$/.test(value) ? undefined : "Enter an integer from 0 to 5.",
+        const levelInput = await vscode.window.showQuickPick([
+            { label: "4 - Informational", level: 4, description: "Includes Critical, Error and Warning" },
+            { label: "0 - LogAlways", level: 0 },
+            { label: "1 - Critical", level: 1 },
+            { label: "2 - Error", level: 2 },
+            { label: "3 - Warning", level: 3 },
+            { label: "5 - Verbose", level: 5, description: "Can increase event volume" },
+        ], {
+            title: "Live Events - 2 of 3: level",
+            placeHolder: "Choose the EventSource level sent to every selected provider",
             ignoreFocusOut: true,
         });
         if (levelInput === undefined || !this.isEventsStartCurrent(generation)) return;
-        const eventLevel = Number(levelInput);
+        const eventLevel = levelInput.level;
 
         const keywords = await vscode.window.showInputBox({
+            title: "Live Events - 3 of 3: keywords",
             prompt: "Signed 64-bit decimal keyword mask (0 enables no keyword bits; -1 can enable high-volume events)",
             value: "0",
             validateInput: value => isSignedInt64(value)
@@ -333,7 +344,9 @@ class CounterPanelController implements vscode.Disposable {
         if (keywords === undefined || !this.isEventsStartCurrent(generation)) return;
 
         const acknowledged = await vscode.window.showWarningMessage(
-            "Live Events opens a continuous EventPipe/EventSource stream for the selected providers. "
+            `Start Live Events for PID ${target.processId} (${target.managedEntrypointAssemblyName || "selected process"})? `
+            + `Providers: ${providers.join(", ")}; level ${eventLevel}; keyword mask ${keywords} (decimal). `
+            + "Live Events opens a continuous EventPipe/EventSource stream for the selected providers. "
             + "Event payloads and exception messages may contain secrets or personal data. They remain "
             + "in bounded in-memory windows and are not automatically saved or logged. Native Windows ETW "
             + "and system-wide providers are not included. Broader providers or keyword masks can increase "
@@ -371,7 +384,8 @@ class CounterPanelController implements vscode.Disposable {
         this.eventsInFlightQualityRevision = undefined;
         this.eventsLastQualityAt = 0;
         this.eventsQualityFinal = false;
-        this.postEventsMessage({ type: "eventsStatus", state: "starting", message: "Starting EventPipe EventSource stream…" });
+        this.postEventsMessage({ type: "eventsStatus", state: "starting", message: "Starting EventPipe EventSource stream…",
+            subscription: { processId: target.processId, providers, eventLevel, keywords } });
 
         let session: StreamChild;
         try {
@@ -404,7 +418,6 @@ class CounterPanelController implements vscode.Disposable {
             });
             await withTimeout(session.started.promise, 30_000);
             if (!this.isEventsStartCurrent(generation)) return;
-            this.postEventsMessage({ type: "eventsStatus", state: "running", message: "Live EventPipe events are arriving." });
         } catch (error) {
             if (!this.isEventsStartCurrent(generation)) return;
             const message = withRuntimeGuidance(errorMessage(error));
@@ -514,6 +527,8 @@ class CounterPanelController implements vscode.Disposable {
             runtimeVersion: entry.runtimeVersion, managedEntrypointAssemblyName: entry.entrypoint,
         };
         this.selectedTarget = target;
+        this.targetGeneration++;
+        this.targetChanged?.(target);
         this.openPanel(target);
         await this.waitForPanelReady();
     }
@@ -633,26 +648,57 @@ class CounterPanelController implements vscode.Disposable {
         if (this.disposed) return;
         const target = this.selectedTarget ?? await this.ensureTargetAndPanel();
         if (!target || this.disposed) return;
+        const panel = this.panel;
+        const panelGeneration = this.panelGeneration;
+        const isCurrentPreflight = (): boolean => !this.disposed
+            && this.selectedTarget === target
+            && this.panel === panel
+            && this.panelGeneration === panelGeneration;
         const selection = await vscode.window.showQuickPick([
             { label: "Managed exceptions", description: "Types, counts and retained messages (no stack frames)", captureKind: "exceptions" as const },
             { label: "Crash guard", description: "Exceptions and available stacks; process exit is not proof of an unhandled exception", captureKind: "crash-guard" as const },
-        ], { placeHolder: "Capture exceptions for 10 seconds; messages can contain sensitive application data" });
+        ], { placeHolder: "Sending a capture clears the current result; if it fails, the result cannot be restored. Results are temporary and not saved." });
         if (!selection || this.disposed) return;
         const kind = selection.captureKind;
         const requestId = randomBytes(12).toString("hex");
-        const postExceptionStatus = (state: string, message: string): void => {
+        const postExceptionStatus = (state: string, message: string, preflight = false): void => {
             this.postMessage({
                 type: "captureStatus", kind: "exceptions", evidenceId: requestId,
-                captureKind: kind, state, message,
+                captureKind: kind, state, message, preflight,
             });
         };
+        const abortChangedTarget = (): void => {
+            postExceptionStatus("starting", "Preparing exception capture…");
+            postExceptionStatus("error",
+                "The selected process or diagnostics panel changed during setup. No exception capture was sent. Select the intended process and capture again.",
+                true);
+        };
+        if (!isCurrentPreflight()) {
+            abortChangedTarget();
+            return;
+        }
         postExceptionStatus("starting", "Preparing exception capture…");
         let session: StreamChild;
         let ownsSession: boolean;
         try {
             ({ session, owns: ownsSession } = await this.acquireChild());
         } catch (error) {
+            if (!isCurrentPreflight()) {
+                abortChangedTarget();
+                return;
+            }
             postExceptionStatus("error", withRuntimeGuidance(errorMessage(error)));
+            return;
+        }
+
+        if (!isCurrentPreflight()) {
+            if (ownsSession && !session.sessionId && !session.startInFlight
+                && session.pendingCaptures.size === 0 && session.pendingQueries.size === 0
+                && !session.pendingJointQueries?.size) {
+                session.expectedShutdown = true;
+                await this.closeChild(session);
+            }
+            abortChangedTarget();
             return;
         }
 
@@ -672,7 +718,7 @@ class CounterPanelController implements vscode.Disposable {
             this.postMessage({
                 type: "captureStatus", kind: "exceptions", state: "running",
                 evidenceId: requestId, captureKind: kind,
-                message: "Exception capture requested (10 seconds after startup). Allow EventPipe ~1 second to start, then reproduce the problem now.",
+                message: "Exception capture request sent. EventPipe readiness is not reported, so a one-time failure may happen outside the capture window. Keep the workload running or repeat the problem throughout the capture.",
             });
             const result = await withTimeout(pending.deferred.promise, 60_000);
             this.postMessage({ type: "capture", kind: "exceptions", evidenceId: requestId, captureKind: kind, result });
@@ -908,6 +954,7 @@ class CounterPanelController implements vscode.Disposable {
         if (this.disposed) return;
         const target = this.selectedTarget ?? await this.ensureTargetAndPanel();
         if (!target || this.disposed) return;
+        const targetGeneration = this.targetGeneration;
         const choices: Array<vscode.QuickPickItem & { spec?: CaptureKindSpec }> = [];
         for (const group of CAPTURE_GROUPS) {
             if (!group.kinds.length) continue;
@@ -921,6 +968,10 @@ class CounterPanelController implements vscode.Disposable {
             choices,
             { placeHolder: "All diagnostic captures; names, paths and SQL may contain sensitive data", matchOnDescription: true });
         if (!selection?.spec || this.disposed) return;
+        if (!this.isCaptureContextCurrent(target, targetGeneration)) {
+            this.reportCaptureTargetChanged();
+            return;
+        }
         const spec = selection.spec;
         if (spec.kind === "allocation" && this.cpuQueryGuard.inFlight) {
             vscode.window.showWarningMessage("Wait for the current profile query to finish before capturing allocations.");
@@ -928,12 +979,20 @@ class CounterPanelController implements vscode.Disposable {
         }
         const params = await promptCaptureParams(spec);
         if (!params || this.disposed) return;
+        if (!this.isCaptureContextCurrent(target, targetGeneration)) {
+            this.reportCaptureTargetChanged();
+            return;
+        }
         if (spec.risk === "high") {
             const acknowledged = await vscode.window.showWarningMessage(
                 "Off-CPU capture uses high-risk kernel scheduler tracing (perf on Linux, ETW on Windows). "
                 + "It requires elevated tracing permissions and can expose stack, symbol and method names.",
                 { modal: true }, "Acknowledge and Capture", "Cancel");
             if (acknowledged !== "Acknowledge and Capture" || this.disposed) return;
+            if (!this.isCaptureContextCurrent(target, targetGeneration)) {
+                this.reportCaptureTargetChanged();
+                return;
+            }
         }
         const requestId = randomBytes(12).toString("hex");
         const status = (state: string, message: string): void =>
@@ -952,6 +1011,17 @@ class CounterPanelController implements vscode.Disposable {
             ({ session, owns: ownsSession } = await this.acquireChild());
         } catch (error) {
             status("error", withRuntimeGuidance(errorMessage(error)));
+            return;
+        }
+        if (!this.isCaptureContextCurrent(target, targetGeneration)) {
+            if (ownsSession && !session.sessionId && !session.startInFlight
+                && session.pendingCaptures.size === 0 && session.pendingQueries.size === 0
+                && !session.pendingJointQueries?.size && !this.hasRetainedProfileFor(session)) {
+                session.expectedShutdown = true;
+                await this.closeChild(session);
+            }
+            status("error", "The selected target changed during setup. No capture was sent; select the intended target and start again.");
+            this.reportCaptureTargetChanged();
             return;
         }
         if (session.pendingCaptures.size > 0 || session.pendingQueries.size > 0 || session.startInFlight) {
@@ -1015,12 +1085,17 @@ class CounterPanelController implements vscode.Disposable {
         if (!target || this.disposed) {
             return;
         }
+        const targetGeneration = this.targetGeneration;
+        if (!this.isCaptureContextCurrent(target, targetGeneration)) {
+            this.reportCaptureTargetChanged();
+            return;
+        }
 
         const sourcePick = await vscode.window.showQuickPick(
             [
                 {
-                    label: "Live (ClrMD via ptrace)",
-                    description: "Attaches via ptrace and suspends the target",
+                    label: "Live (ClrMD)",
+                    description: "Privileged live attach; may suspend the target while reading heap metadata",
                     source: "live" as HeapCaptureSource,
                 },
                 {
@@ -1032,6 +1107,10 @@ class CounterPanelController implements vscode.Disposable {
             { placeHolder: "Select a heap snapshot source" },
         );
         if (!sourcePick || this.disposed) {
+            return;
+        }
+        if (!this.isCaptureContextCurrent(target, targetGeneration)) {
+            this.reportCaptureTargetChanged();
             return;
         }
 
@@ -1048,14 +1127,22 @@ class CounterPanelController implements vscode.Disposable {
         if (!queryOptIns || this.disposed) {
             return;
         }
+        if (!this.isCaptureContextCurrent(target, targetGeneration)) {
+            this.reportCaptureTargetChanged();
+            return;
+        }
 
         const acknowledged = await vscode.window.showWarningMessage(
-            describeHeapCaptureRisk(sourcePick.source, sourcePick.label),
+            describeHeapCaptureRisk(sourcePick.source, sourcePick.label, target, queryOptIns),
             { modal: true },
             "Acknowledge and Capture",
             "Cancel",
         );
         if (acknowledged !== "Acknowledge and Capture" || this.disposed) {
+            return;
+        }
+        if (!this.isCaptureContextCurrent(target, targetGeneration)) {
+            this.reportCaptureTargetChanged();
             return;
         }
 
@@ -1064,8 +1151,8 @@ class CounterPanelController implements vscode.Disposable {
             type: "captureStatus",
             kind: "heap",
             evidenceId: requestId,
-            state: "running",
-            message: `Capturing heap snapshot (${sourcePick.label})…`,
+            state: "starting",
+            message: `Preparing heap snapshot (${sourcePick.label})…`,
         });
 
         let session: StreamChild;
@@ -1078,15 +1165,35 @@ class CounterPanelController implements vscode.Disposable {
                 kind: "heap",
                 evidenceId: requestId,
                 state: "error",
-                message: withRuntimeGuidance(errorMessage(error)),
+                message: captureWaitErrorMessage(error),
             });
             return;
         }
+        if (!this.isCaptureContextCurrent(target, targetGeneration)) {
+            this.postMessage({
+                type: "captureStatus", kind: "heap", evidenceId: requestId, state: "error",
+                message: "The selected target changed before dispatch. No heap capture was sent; choose the current target and start again.",
+            });
+            if (ownsSession && !session.sessionId && !session.startInFlight
+                && session.pendingCaptures.size === 0 && session.pendingQueries.size === 0) {
+                session.expectedShutdown = true;
+                await this.closeChild(session);
+            }
+            return;
+        }
 
-        const pending: PendingCapture = { kind: "heap", evidenceId: requestId, deferred: deferred<HeapCaptureResult>() };
-        session.pendingCaptures.set(requestId, pending);
         this.heapSnapshot = undefined;
         this.liveReadConsent.clear();
+        this.postMessage({
+            type: "captureStatus",
+            kind: "heap",
+            evidenceId: requestId,
+            state: "running",
+            retainedEvidenceInvalidated: true,
+            message: `Capture dispatched (${sourcePick.label}). It cannot be stopped from this extension; waiting for a result…`,
+        });
+        const pending: PendingCapture = { kind: "heap", evidenceId: requestId, deferred: deferred<HeapCaptureResult>() };
+        session.pendingCaptures.set(requestId, pending);
         let keepSession = false;
         try {
             this.writeFrame(session, {
@@ -1111,7 +1218,10 @@ class CounterPanelController implements vscode.Disposable {
                 this.heapSnapshot = { session, handle, evidenceId: requestId };
                 keepSession = true;
             }
-            this.postMessage({ type: "capture", kind: "heap", evidenceId: requestId, source: sourcePick.source, result });
+            this.postMessage({
+                type: "capture", kind: "heap", evidenceId: requestId, source: sourcePick.source,
+                retainedHandleAvailable: Boolean(handle && sourcePick.source !== "gcdump"), result,
+            });
             this.postMessage({
                 type: "captureStatus",
                 kind: "heap",
@@ -1133,7 +1243,7 @@ class CounterPanelController implements vscode.Disposable {
                 kind: "heap",
                 evidenceId: requestId,
                 state: "error",
-                message: withRuntimeGuidance(errorMessage(error)),
+                message: captureWaitErrorMessage(error),
             });
             this.output.appendLine(`Heap snapshot capture failed: ${errorMessage(error)}`);
         } finally {
@@ -1185,9 +1295,12 @@ class CounterPanelController implements vscode.Disposable {
         return {
             currentHeapHandle: () => {
                 const snapshot = this.heapSnapshot;
-                return snapshot && !snapshot.session.closing && snapshot.session.process.exitCode === null && snapshot.session.process.signalCode === null
-                    ? snapshot.handle
-                    : undefined;
+                if (!snapshot) return undefined;
+                if (snapshot.session.closing || snapshot.session.process.exitCode !== null || snapshot.session.process.signalCode !== null) {
+                    this.invalidateRetainedSnapshotsFor(snapshot.session);
+                    return undefined;
+                }
+                return snapshot.handle;
             },
             acknowledge: async (view, address) => this.liveReadConsent.acknowledge(view, () => {
                 const snapshot = this.heapSnapshot;
@@ -1374,6 +1487,8 @@ class CounterPanelController implements vscode.Disposable {
         const view = "thread-statics";
         if (!snapshot || snapshot.evidenceId !== evidenceId || snapshot.session.closing
             || snapshot.session.process.exitCode !== null || snapshot.session.process.signalCode !== null) {
+            if (snapshot && (snapshot.session.closing || snapshot.session.process.exitCode !== null || snapshot.session.process.signalCode !== null))
+                this.invalidateRetainedSnapshotsFor(snapshot.session);
             this.postMessage({
                 type: "queryError", kind: "thread-snapshot", evidenceId, view,
                 message: "This thread snapshot was replaced or is no longer available. Capture a thread snapshot first.",
@@ -1417,14 +1532,23 @@ class CounterPanelController implements vscode.Disposable {
         if (!target || this.disposed) {
             return;
         }
+        const targetGeneration = this.targetGeneration;
+        if (!this.isCaptureContextCurrent(target, targetGeneration)) {
+            this.reportCaptureTargetChanged();
+            return;
+        }
 
         const acknowledged = await vscode.window.showWarningMessage(
-            describeThreadCaptureRisk(),
+            describeThreadCaptureRisk(target),
             { modal: true },
             "Acknowledge and Capture",
             "Cancel",
         );
         if (acknowledged !== "Acknowledge and Capture" || this.disposed) {
+            return;
+        }
+        if (!this.isCaptureContextCurrent(target, targetGeneration)) {
+            this.reportCaptureTargetChanged();
             return;
         }
 
@@ -1444,11 +1568,20 @@ class CounterPanelController implements vscode.Disposable {
             status("error", withRuntimeGuidance(errorMessage(error)));
             return;
         }
+        if (!this.isCaptureContextCurrent(target, targetGeneration)) {
+            status("error", "The selected target changed before dispatch. No thread snapshot was sent; choose the current target and start again.", true);
+            if (ownsSession && !session.sessionId && !session.startInFlight
+                && session.pendingCaptures.size === 0 && session.pendingQueries.size === 0) {
+                session.expectedShutdown = true;
+                await this.closeChild(session);
+            }
+            return;
+        }
 
         const pending: PendingCapture = { kind: "thread-snapshot", deferred: deferred<ThreadCaptureResult>() };
         session.pendingCaptures.set(evidenceId, pending);
         this.threadSnapshot = undefined;
-        status("running", "Capturing thread snapshot…", true);
+        status("running", "Thread snapshot dispatched. It cannot be stopped from this extension; waiting for a result…", true);
         let keepSession = false;
         try {
             this.writeFrame(session, {
@@ -1476,7 +1609,7 @@ class CounterPanelController implements vscode.Disposable {
             if (handle) await this.runThreadQueries(session, handle, evidenceId);
             status("done", "Thread snapshot capture complete.");
         } catch (error) {
-            status("error", withRuntimeGuidance(errorMessage(error)), true);
+            status("error", captureWaitErrorMessage(error), true);
             this.output.appendLine(`Thread snapshot capture failed: ${errorMessage(error)}`);
         } finally {
             session.pendingCaptures.delete(evidenceId);
@@ -1532,9 +1665,21 @@ class CounterPanelController implements vscode.Disposable {
         }
 
         this.selectedTarget = selected.target;
+        this.targetGeneration++;
+        this.targetChanged?.(selected.target);
         this.openPanel(selected.target);
         await this.waitForPanelReady();
         return selected.target;
+    }
+
+    private isCaptureContextCurrent(target: TargetProcess, generation: number): boolean {
+        return !this.disposed && this.selectedTarget === target && this.targetGeneration === generation;
+    }
+
+    private reportCaptureTargetChanged(): void {
+        const message = "The selected target changed while capture confirmation was open. No capture was sent; select the intended target and start again.";
+        this.output.appendLine(message);
+        void vscode.window.showWarningMessage(message);
     }
 
     public async stopCounters(): Promise<void> {
@@ -1610,6 +1755,7 @@ class CounterPanelController implements vscode.Disposable {
                 localResourceRoots: [],
             },
         );
+        this.panelGeneration++;
         this.panel = panel;
         this.panelReady = deferred<void>();
         panel.webview.html = renderHtml(target, randomBytes(18).toString("base64url"), this.getHistoryDurationSeconds());
@@ -1652,7 +1798,12 @@ class CounterPanelController implements vscode.Disposable {
             } else if (message.type === "captureExceptions") {
                 void this.captureExceptions();
             } else if (message.type === "captureDiagnostics") {
-                void this.captureDiagnostics();
+                if (message.kind === undefined || typeof message.kind === "string" && isCaptureViewKind(message.kind)) {
+                    void this.captureDiagnostics(message.kind);
+                } else this.postMessage({
+                    type: "captureStatus", kind: "diagnostics", state: "error",
+                    message: "Choose a supported diagnostic capture kind.",
+                });
             } else if (message.type === "captureRequestActivities") {
                 void this.captureRequestActivities();
             } else if (message.type === "queryRequestActivities"
@@ -1709,9 +1860,12 @@ class CounterPanelController implements vscode.Disposable {
             this.eventsGeneration++;
             this.resetEventsDeliveryState();
             this.panel = undefined;
+            this.panelGeneration++;
+            this.targetGeneration++;
             this.liveReadConsent.clear();
             this.exporter.clear();
             this.selectedTarget = undefined;
+            this.targetChanged?.(undefined);
             this.panelReady?.resolve();
             this.panelReady = undefined;
             void this.disposeChild();
@@ -1953,6 +2107,7 @@ class CounterPanelController implements vscode.Disposable {
             for (const pending of this.pendingExports.values()) {
                 if (pending.session === session) pending.deferred.reject(new Error("The CLI connection closed before the export completed."));
             }
+            this.invalidateRetainedSnapshotsFor(session);
             if (this.cpuExport?.session === session) this.cpuExport = undefined;
             if (this.allocationProfile?.session === session) this.allocationProfile = undefined;
             this.postMessage({ type: "profileAvailability" });
@@ -2059,7 +2214,7 @@ class CounterPanelController implements vscode.Disposable {
                         type: "eventsStatus",
                         state: "running",
                         sessionId: frame.sessionId,
-                        message: "Live EventPipe events are arriving.",
+                        message: "Waiting for first event. Only events emitted by the configured providers, level and keywords can appear.",
                     });
                 } else {
                     this.postMessage({
@@ -2476,7 +2631,7 @@ class CounterPanelController implements vscode.Disposable {
         if (this.joint?.session === session
             || !session.eventsConnection && [...session.pendingCaptures.values()].some(pending => pending.kind === "request-activities")) this.jointGeneration++;
         if (this.joint?.session === session) this.invalidateJoint("Disconnected: retained display only; further CLI queries are unavailable.");
-        if (this.heapSnapshot?.session === session) this.liveReadConsent.clear();
+        this.invalidateRetainedSnapshotsFor(session);
         if (this.cpuExport?.session === session) this.cpuExport = undefined;
         if (this.allocationProfile?.session === session) this.allocationProfile = undefined;
         this.postMessage({ type: "profileAvailability" });
@@ -2498,6 +2653,7 @@ class CounterPanelController implements vscode.Disposable {
                     this.output.appendLine("CLI child did not exit after cancellation and was forcibly terminated.");
                 }
             }
+
         }
         session.lines.close();
         if (this.activeChild === session) {
@@ -2505,6 +2661,30 @@ class CounterPanelController implements vscode.Disposable {
         }
         if (this.eventsChild === session) {
             this.eventsChild = undefined;
+        }
+    }
+
+    private invalidateRetainedSnapshotsFor(session: StreamChild): void {
+        if (this.threadSnapshot?.session === session) {
+            const evidenceId = this.threadSnapshot.evidenceId;
+            this.threadSnapshot = undefined;
+            this.postMessage({
+                type: "threadSnapshotAvailability",
+                evidenceId,
+                available: false,
+                message: "The owning CLI connection closed. The rendered snapshot remains available for inspection.",
+            });
+        }
+        if (this.heapSnapshot?.session === session) {
+            const evidenceId = this.heapSnapshot.evidenceId;
+            this.heapSnapshot = undefined;
+            this.liveReadConsent.clear();
+            this.postMessage({
+                type: "heapSnapshotAvailability",
+                evidenceId,
+                available: false,
+                message: "The owning CLI connection closed. The rendered snapshot remains available for inspection.",
+            });
         }
     }
 
@@ -3231,11 +3411,25 @@ export function activate(context: vscode.ExtensionContext): void {
     const processCommand = (row: ProcessRow | undefined, action: ProcessAction, fallback: () => Promise<void>): Promise<void> =>
         row ? guarded(() => processes.invoke(row, action)) : fallback();
     const actions = new DiagnosticsActionsProvider();
+    controller.targetChanged = target => {
+        void guarded(() => processes.setActiveTarget(target ? {
+            processId: target.processId,
+            entrypoint: target.managedEntrypointAssemblyName ?? null,
+            runtimeVersion: target.runtimeVersion,
+            platform: `${target.operatingSystem}/${target.processArchitecture}`,
+            identity: [target.managedEntrypointAssemblyName ?? "", target.runtimeVersion,
+                `${target.operatingSystem}/${target.processArchitecture}`].join("|"),
+        } : undefined));
+    };
     controller.liveCountersChanged = active => actions.setLiveCountersActive(active);
     const actionsView = vscode.window.createTreeView("dotnetDiagnostics.actions", {
         treeDataProvider: actions,
         showCollapseAll: false,
     });
+    const processView = vscode.window.createTreeView("dotnetDiagnostics.processes", { treeDataProvider: processes });
+    const historyView = vscode.window.createTreeView("dotnetDiagnostics.history", { treeDataProvider: history });
+    historyView.message = "CLI capture catalog on this extension host; not workspace-local.";
+    const processViewState = processes.onDidChangeTreeData(() => { processView.message = processes.message; });
     context.subscriptions.push(
         output,
         controller,
@@ -3243,11 +3437,13 @@ export function activate(context: vscode.ExtensionContext): void {
         actions,
         processes,
         history,
-        vscode.window.createTreeView("dotnetDiagnostics.processes", { treeDataProvider: processes }),
-        vscode.window.createTreeView("dotnetDiagnostics.history", { treeDataProvider: history }),
+        processView,
+        processViewState,
+        historyView,
         vscode.commands.registerCommand("dotnetDiagnostics.selectProcess", (row: ProcessRow) => guarded(() => processes.invoke(row, "select"))),
         vscode.commands.registerCommand("dotnetDiagnostics.refreshProcesses", () => guarded(() => processes.refresh())),
         vscode.commands.registerCommand("dotnetDiagnostics.filterProcesses", () => guarded(() => processes.setFilter())),
+        vscode.commands.registerCommand("dotnetDiagnostics.clearProcessFilter", () => guarded(() => processes.clearFilter())),
         vscode.commands.registerCommand("dotnetDiagnostics.refreshHistory", (row?: HistoryRow) => guarded(() => history.refresh(row && "more" in row ? row.more : undefined))),
         vscode.commands.registerCommand("dotnetDiagnostics.openCapture", (row: HistoryRow) => guarded(() => history.open(row))),
         vscode.commands.registerCommand("dotnetDiagnostics.deleteCapture", (row: HistoryRow) => guarded(() => history.delete(row))),
@@ -3440,9 +3636,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     #workspaceLoadView[hidden] { display:none; }
     #resultThreads.workspace-thread-snapshot .evidence-view-switcher, #resultThreads .statics-form[hidden] { display:none; }
     .cpu-export-actions { border:1px solid var(--vscode-panel-border); border-radius:4px; padding:.4rem .6rem; }
-    button { color:var(--vscode-button-foreground); background:var(--vscode-button-background); border:0; border-radius:2px; padding:.45rem .75rem; }
-    button:hover { background:var(--vscode-button-hoverBackground); }
-    button:disabled { opacity:.55; }
+    ${WEBVIEW_BUTTON_STYLES}
     .export-controls { margin:.6rem 0; }
     ${ACTION_AVAILABILITY_STYLES}
     .result-tabs, .monitoring-tabs { display:flex; gap:.2rem; overflow-x:auto; padding:.45rem 0; background:var(--vscode-editor-background); border-bottom:1px solid var(--vscode-panel-border); }
@@ -3502,7 +3696,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     .empty { display:none; }
     .statics-form { margin:.5rem 0; display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; }
     .statics-error { color: var(--vscode-errorForeground); }
-    .events-warning { border-left:3px solid var(--vscode-editorWarning-foreground); padding:.4rem .7rem; margin:.6rem 0; }
+    #resultEvents .events-warning { border:1px solid var(--vscode-editorWarning-foreground); padding:.4rem .7rem; margin:.6rem 0; }
     .events-controls { display:flex; gap:.45rem; align-items:center; flex-wrap:wrap; margin:.7rem 0; }
     .events-table-wrap { max-height:32rem; overflow:auto; border:1px solid var(--vscode-panel-border); }
     #eventsTable { table-layout:fixed; }
@@ -3512,8 +3706,26 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     #eventsTable td { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     #eventsTable tr[aria-selected="true"] { background:var(--vscode-list-activeSelectionBackground); color:var(--vscode-list-activeSelectionForeground); }
     #eventsQuality, #eventsStatus { color:var(--vscode-descriptionForeground); margin:.5rem 0; }
+    #monitoringLive .monitoring-time-controls { display:flex; flex-wrap:wrap; gap:.5rem; align-items:center; margin:.5rem 0; }
+    #monitoringLive .monitoring-time-controls > p, #monitoringLive .monitoring-time-controls > details { flex-basis:100%; margin:.2rem 0; overflow-wrap:anywhere; }
+    #monitoringLive .monitoring-time-controls details label { display:flex; flex-wrap:wrap; gap:.4rem; margin:.4rem 0; }
+    #monitoringLive .panel-actions select { min-width:0; max-width:100%; }
+    #monitoringLive #counterIdentity, #monitoringLive #counterSession, #eventsSubscription, #eventsPresentation { overflow-wrap:anywhere; margin:.4rem 0; }
+    #monitoringLive #chartTime { display:flex; justify-content:space-between; gap:1rem; flex-wrap:wrap; font-size:.85rem; }
+    #monitoringLive #chartNote { color:var(--vscode-descriptionForeground); margin:.4rem 0; }
+    #resultEvents #eventsTable { min-width:42rem; }
+    #resultEvents tr[aria-current="true"] { background:var(--vscode-list-activeSelectionBackground); color:var(--vscode-list-activeSelectionForeground); }
+    #resultEvents #eventsQuality[data-warning="true"] { color:var(--vscode-editorWarning-foreground); }
+    #resultEvents #eventsSearch { min-width:0; max-width:100%; }
     #eventDetails { margin:.75rem 0; padding:.75rem; border:1px solid var(--vscode-panel-border); border-radius:4px; }
     #eventDetails pre { white-space:pre-wrap; overflow-wrap:anywhere; }
+    #workspaceEvidenceStatus:empty, #workspaceThreadViewStatus:empty, #eventsStatus:empty,
+    #eventsPresentation:empty, #quality:empty { display:none; }
+    .diagnostic-active-quality { margin:.4rem 0; color:var(--vscode-editorWarning-foreground); }
+    .capture-summary, .exception-capture-summary, #captureHeadline, #captureHeapHeadline,
+    #counterSession, #status, #gcHeadline { font-size:.85rem; color:var(--vscode-descriptionForeground); margin:.3rem 0; }
+    #value { font-size:1rem; font-weight:400; margin:.3rem 0; }
+    #exceptionCaptureViews > details > summary { display:none; }
     ${QUERY_VIEW_STYLES}
     ${WEBVIEW_FIELD_STYLES}
   </style>
@@ -3551,6 +3763,10 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       <div id="workspaceGcStatus" role="status"></div>
     </div>
     <div id="workspaceCaptureStatus" role="status"></div>
+    <div id="workspaceRequestCapture" hidden>
+      <button id="captureRequestEvidence" type="button">Capture</button>
+      <small>Replaces the current result · May contain sensitive data</small>
+    </div>
     <div id="jointReproduction" hidden>
       <button id="captureRequestActivities" type="button" aria-label="Capture requests and completed Activities">Capture</button>
       <button id="cancelRequestActivities" type="button" disabled>Cancel reproduction</button>
@@ -3566,15 +3782,19 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     </nav>
     <section id="monitoringLive" class="monitoring-view" role="tabpanel" aria-labelledby="monitoringTabLive">
   <section id="resultLive">
-    <div id="status" role="status">Live counters are ready. Select Start to begin collection; other captures run only when requested.</div>
+    <div id="status" role="status">Ready</div>
     <div class="panel-actions">
       <label for="metric">Counter</label><select id="metric" aria-label="Select counter"></select>
       <button id="start">Start</button><button id="stop" disabled>Stop</button>
     </div>
     <div id="value">Waiting for first observation</div>
-    <canvas id="chart" aria-label="Selected counter time series"></canvas>
+    <div id="counterSession" role="status">No counter session started.</div>
     <div id="quality"></div>
     <div id="error" role="alert"></div>
+    <canvas id="chart" aria-label="Selected counter time series"></canvas>
+    <div id="chartTime"><span id="chartTimeStart"></span><span id="chartTimeEnd"></span></div>
+    <p id="chartNote">Auto-scaled value axis, not necessarily zero-based. Lines break at session boundaries and observed sequence gaps; gaps are not zero values.</p>
+    <div id="counterIdentity"></div>
     <section class="panel">
       <h3>GC pauses</h3>
       <div id="gcHeadline">No GC pauses observed yet.</div>
@@ -3587,25 +3807,13 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     </section>
   <section id="resultCpu" class="result-tab-panel" role="tabpanel" aria-labelledby="resultTabWorkspace" data-export-kind="cpu" data-evidence-id="" hidden>
     <div class="panel-actions">
-      <button id="captureCpu" type="button">Capture CPU sample</button>
-      <details class="cpu-export-actions">
-        <summary>CPU exports</summary>
-        <div class="controls export-controls">
-          <button id="captureCpuTrace" type="button">Capture CPU + raw trace</button>
-          <button id="exportSummary" type="button">Export redacted investigation summary</button>
-          <button id="exportTrace" type="button">Export raw trace locally</button>
-        </div>
-      </details>
+      <button id="captureCpu" type="button" aria-label="Capture CPU sample">Capture</button>
     </div>
     <div id="captureStatus" role="status"></div>
-    <p id="cpuEvidencePrerequisite" role="status">Capture CPU to enable measurement exports.</p>
-    ${RESULT_EXPORT_BUTTONS}
-    <p id="cpuSamplingDisclaimer" class="query-view-provenance">
-      CPU percentages are shares of captured stack samples, not measured CPU time or utilization.
-      Total includes descendants; Self excludes descendants. Percentages use the full captured-sample denominator and do not change with focus or search.
-    </p>
     <div id="captureResult" class="empty">
       <div id="captureHeadline"></div>
+      <div id="cpuQueryStatus" role="status"></div>
+      <div id="cpuQueryViews" class="query-views"></div>
       <details id="cpuHotspotSummary">
       <summary>Capture hotspot summary</summary>
       <table id="captureTable">
@@ -3613,37 +3821,50 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         <tbody id="captureBody"></tbody>
       </table>
       </details>
-      <div id="cpuQueryStatus" role="status"></div>
-      <div id="cpuQueryViews" class="query-views"></div>
+      <p id="cpuSamplingDisclaimer" class="query-view-provenance">
+        CPU percentages are shares of captured stack samples, not measured CPU time or utilization.
+        Total includes descendants; Self excludes descendants. Percentages use the full captured-sample denominator and do not change with focus or search.
+      </p>
     </div>
+    <details class="cpu-export-actions">
+      <summary>CPU exports</summary>
+      <p id="cpuEvidencePrerequisite" role="status">Capture CPU to enable measurement exports.</p>
+      ${RESULT_EXPORT_BUTTONS}
+      <div class="controls export-controls">
+        <button id="captureCpuTrace" type="button">Capture CPU + raw trace</button>
+        <button id="exportSummary" type="button">Export redacted investigation summary</button>
+        <button id="exportTrace" type="button">Export raw trace locally</button>
+      </div>
+    </details>
   </section>
   <section id="resultAllocation" class="result-tab-panel" role="tabpanel" aria-labelledby="resultTabAllocation" hidden>
-    <div class="panel-actions"><button id="captureAllocation" type="button">Capture allocations…</button></div>
-    <p class="query-view-provenance">Sampled allocation traffic, not a heap snapshot or exact object tracker.
-      Start with a short capture: collection, runtime rundown and trace conversion can be expensive.
-      Navigation reuses this capture without collecting again. All types are combined in the profile.</p>
+    <div class="panel-actions"><button id="captureAllocation" type="button" aria-label="Capture allocations">Capture</button></div>
     <div id="captureAllocationStatus" role="status"></div>
-    <details><summary>Allocation types, sites and capture quality</summary><div id="allocationCaptureViews"></div></details>
     <p id="allocationEvidencePrerequisite" role="status">Capture allocations to enable profile exploration.</p>
     <div id="allocationExplorer" hidden>
     <div id="allocationQueryStatus" role="status"></div>
     <div id="allocationQueryViews" class="query-views"></div>
     </div>
+    <details><summary>Allocation types, sites and capture quality</summary><div id="allocationCaptureViews"></div></details>
+    <p class="query-view-provenance">Sampled allocation traffic, not a heap snapshot or exact object tracker.
+      Start with a short capture: collection, runtime rundown and trace conversion can be expensive.
+      Navigation reuses this capture without collecting again. All types are combined in the profile.</p>
   </section>
   <section id="resultExceptions" hidden>
-    <div class="panel-actions"><button id="captureExceptions" type="button">Capture exceptions…</button></div>
+    <div class="panel-actions"><button id="captureExceptions" type="button" aria-label="Capture exceptions">Capture</button>
+      <small>Replaces the current result · Messages may contain sensitive data</small></div>
     <div id="captureExceptionsStatus" role="status"></div>
     <p id="exceptionEvidenceIdentity" class="workspace-evidence-status" role="status">No exception evidence has been captured.</p>
     <div id="exceptionCaptureViews" class="query-views"></div>
+    <p class="query-view-provenance">Exception results are temporary and are not saved. Sending a capture clears the current result; if collection then fails, it cannot be restored.</p>
     <p class="query-view-provenance">
       Managed exceptions retain bounded messages without stack frames; crash guard includes available stacks.
-      Exception messages can contain sensitive application data. A process exit alone is not proof of an unhandled exception.
+      A process exit alone is not proof of an unhandled exception.
     </p>
   </section>
   <section id="resultHeap" class="result-tab-panel" role="tabpanel" aria-labelledby="resultTabHeap" hidden>
-    ${LIVE_READ_CONSENT_HTML}
-    <div class="panel-actions"><button id="captureHeap" type="button">Capture heap snapshot…</button></div>
-    <div id="captureHeapStatus"></div>
+    <div class="panel-actions"><button id="captureHeap" type="button" aria-label="Capture heap snapshot">Capture</button></div>
+    <div id="captureHeapStatus" role="status" aria-live="polite"></div>
     <div id="captureHeapResult" class="empty">
       <div id="captureHeapHeadline"></div>
       <div id="heapWorkspace" class="heap-workspace" data-focused="false">
@@ -3660,10 +3881,11 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       </section>
       </div>
     </div>
+    ${LIVE_READ_CONSENT_HTML}
   </section>
   <section id="resultThreads" hidden>
-    <div class="panel-actions"><button id="captureThreadSnapshot" type="button">Capture thread snapshot…</button></div>
-    <div id="captureThreadStatus"></div>
+    <div class="panel-actions"><button id="captureThreadSnapshot" type="button" aria-label="Capture thread snapshot">Capture</button></div>
+    <div id="captureThreadStatus" role="status" aria-live="polite"></div>
     <div id="captureThreadResult" class="empty">
       <div id="captureThreadHeadline"></div>
       <details><summary>Inline thread summary</summary>
@@ -3682,7 +3904,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
   </section>
     <section id="monitoringEvents" class="monitoring-view" role="tabpanel" aria-labelledby="monitoringTabEvents" hidden>
   <section id="resultEvents">
-    <div class="events-warning" role="note">Event payloads may contain secrets or personal data. They are held only in bounded in-memory windows and are not automatically saved or logged. Native Windows ETW is not collected.</div>
+    <small>Event payloads may contain sensitive data</small>
     <div class="events-controls">
       <button id="startEvents" type="button">Start Live Events…</button>
       <button id="stopEvents" type="button" disabled>Stop</button>
@@ -3691,19 +3913,27 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       <label for="eventsSearch">Search</label><input id="eventsSearch" type="search" maxlength="${LIVE_EVENT_SEARCH_MAX_CHARS}" placeholder="Search retained events" />
     </div>
     <div id="eventsStatus" role="status">Not running.</div>
+    <div id="eventsPresentation" role="status">Following latest. Newest events appear first.</div>
+    <p id="eventsEmpty">No retained events. Start a stream with the provider, level and keywords documented by your application; zero matches does not confirm target inactivity.</p>
     <div id="eventsQuality" role="status"></div>
-    <div class="events-controls">
-      <button id="eventsPrevious" type="button" disabled>Newer</button>
+    <div id="eventsPagination" class="events-controls" hidden>
+      <button id="eventsPrevious" type="button" disabled>Previous</button>
       <span id="eventsPage" aria-live="polite">No events</span>
-      <button id="eventsNext" type="button" disabled>Older</button>
+      <button id="eventsNext" type="button" disabled>Next</button>
     </div>
     <div class="events-table-wrap">
       <table id="eventsTable">
-        <thead><tr><th>Source time (UTC)</th><th>Provider</th><th>Event</th><th>Level</th><th>Summary</th></tr></thead>
+        <thead><tr><th id="eventsHeader0" aria-sort="descending"><button id="eventsSort0" class="evidence-sort" type="button" aria-label="Sort by source time">Source time (UTC)</button></th><th id="eventsHeader1"><button id="eventsSort1" class="evidence-sort" type="button" aria-label="Sort by provider">Provider</button></th><th id="eventsHeader2"><button id="eventsSort2" class="evidence-sort" type="button" aria-label="Sort by event">Event</button></th><th id="eventsHeader3"><button id="eventsSort3" class="evidence-sort" type="button" aria-label="Sort by level">Level</button></th><th id="eventsHeader4"><button id="eventsSort4" class="evidence-sort" type="button" aria-label="Sort by summary">Summary</button></th></tr></thead>
         <tbody id="eventsBody"></tbody>
       </table>
     </div>
+    <small>Search and sorting cover retained events only, before pagination.</small>
+    <div id="eventsQualityDetail"></div>
     <section id="eventDetails" aria-label="Selected event details"><p>Select an event to inspect its bounded payload.</p></section>
+    <div id="eventsSubscription">Start Live Events to choose explicit provider names, level and keyword mask.</div>
+    <p class="query-view-provenance">Events are retained only in bounded memory, not automatically saved or logged.
+      Native Windows ETW is not collected. Pausing does not stop collection or acknowledgements.
+      Retained rows can include earlier streams; keyword masks are signed decimal.</p>
   </section>
     </section>
   </section>
@@ -3794,7 +4024,8 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       workspaceCanvas.appendChild(panel);
     }
     const threadSnapshotViewLabels = {
-      snapshot: 'Snapshot summary',
+      snapshot: 'Inline thread summary',
+      'thread-explorer': 'Thread explorer',
       deadlocks: 'Inferred deadlock candidates',
       'unique-stacks': 'Grouped snapshot stacks',
       'wait-chains': 'Snapshot wait chains',
@@ -3822,6 +4053,12 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     let threadSnapshotQueryAvailable = false;
     let pendingThreadSnapshotEvidenceId;
     let threadSnapshotView = 'snapshot';
+    const threadQueryStates = {
+      deadlocks: { state: 'not-requested', count: 0 },
+      'unique-stacks': { state: 'not-requested' },
+      'wait-chains': { state: 'not-requested' },
+      threadpool: { state: 'not-requested' },
+    };
     workspaceGcCapture.removeAttribute('hidden');
     workspaceCanvas.appendChild(workspaceGcCapture);
     let selectedWorkspaceEvidence = 'cpu';
@@ -3850,9 +4087,35 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     };
     function setWorkspaceStatus(kind, message) {
       const statusKind = kind === 'gc-activities' ? 'gc' : kind;
-      workspaceEvidenceStatusByKind.set(statusKind, message);
+      const compact = message.includes('display-only') ? 'Display-only · Live follow-up reads unavailable'
+        : /^(Current evidence:|Current result:|Current generic capture result:)/.test(message) ? '' : message;
+      workspaceEvidenceStatusByKind.set(statusKind, compact);
       if (selectedWorkspaceEvidence === statusKind || selectedWorkspaceEvidence === 'gc-activities' && statusKind === 'gc') {
-        workspaceEvidenceStatus.textContent = message;
+        workspaceEvidenceStatus.textContent = compact;
+      }
+    }
+    function threadQueryStatusSummary() {
+      const pending = Object.entries(threadQueryStates).filter(([, item]) => item.state === 'pending').map(([view]) => threadSnapshotViewLabels[view]);
+      const unavailable = Object.entries(threadQueryStates).filter(([, item]) => item.state === 'unavailable').map(([view]) => threadSnapshotViewLabels[view]);
+      const candidates = threadQueryStates.deadlocks.state === 'returned' ? threadQueryStates.deadlocks.count : 0;
+      const notices = [];
+      if (candidates > 0) notices.push(candidates + ' inferred deadlock candidate(s)');
+      if (pending.length) notices.push(pending.length + ' views pending');
+      if (unavailable.length) notices.push(unavailable.length + ' views unavailable');
+      if (!threadSnapshotQueryAvailable && threadSnapshotEvidenceId)
+        notices.push('Display-only');
+      return notices.join(' · ');
+    }
+    function refreshThreadQueryPresentation() {
+      for (const option of Array.from(workspaceView.options || [])) {
+        const view = option.value;
+        if (!Object.prototype.hasOwnProperty.call(threadQueryStates, view)) continue;
+        const state = threadQueryStates[view];
+        const base = threadSnapshotViewLabels[view];
+        option.textContent = view === 'deadlocks' && state.state === 'returned' && state.count > 0
+          ? base + ' - ' + state.count + ' found (inferred)'
+          : state.state === 'unavailable' ? base + ' (unavailable)'
+            : state.state === 'pending' ? base + ' (pending)' : base;
       }
     }
     function setWorkspaceEvidence(kind) {
@@ -3881,7 +4144,10 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         workspaceEvidenceKind.appendChild(option);
       }
       workspaceEvidenceKind.value = kind;
-      document.getElementById('jointReproduction').hidden = workspaceDomain.value !== 'requests';
+      document.getElementById('jointReproduction').hidden = kind !== 'request-activities';
+      const ordinaryRequestCapture = ['requests', 'kestrel', 'db', 'networking'].includes(kind);
+      document.getElementById('workspaceRequestCapture').hidden = !ordinaryRequestCapture;
+      document.getElementById('captureRequestEvidence').setAttribute('aria-label', 'Capture ' + (genericCaptureLabels[kind] || kind));
       workspaceEvidenceKind.disabled = kind === 'exceptions';
       for (const [panelKind, panel] of Object.entries(workspacePanels)) panel.hidden = panelKind !== kind;
       const sharedGcEvidence = kind === 'gc' || kind === 'gc-activities';
@@ -3891,7 +4157,8 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       workspaceCaptureStatus.textContent = '';
       const statusKind = kind === 'gc-activities' ? 'gc' : kind;
       workspaceEvidenceStatus.textContent = workspaceEvidenceStatusByKind.get(statusKind)
-        || 'No completed evidence is displayed for this kind.';
+        ?? (ordinaryRequestCapture ? 'No completed evidence. Select Capture to collect ' + genericCaptureLabels[kind] + '.'
+          : 'No completed evidence is displayed for this kind.');
       workspaceEvidenceStatus.hidden = kind === 'request-activities' && genericCaptureKind === kind;
       workspaceThreadViewStatus.textContent = '';
       if (usesWorkspaceForGenericCapture(kind)) {
@@ -3927,6 +4194,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           option.textContent = label;
           workspaceView.appendChild(option);
         }
+        refreshThreadQueryPresentation();
         workspaceView.value = threadSnapshotView;
         selectThreadSnapshotView(threadSnapshotView);
       } else if (usesWorkspaceForGenericCapture(kind)) {
@@ -3952,23 +4220,38 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     }
     function selectThreadSnapshotView(view) {
       threadSnapshotView = view;
+      if (selectedWorkspaceEvidence !== 'thread-snapshot') return;
+      workspaceView.value = view;
       const queryViews = document.getElementById('threadQueryViews');
       const staticsForm = document.querySelector('#resultThreads .statics-form');
       const inlineSummary = document.getElementById('captureThreadHeadline');
       const inlineTable = document.getElementById('captureThreadTable')?.closest('details');
       const isSnapshot = view === 'snapshot';
+      const isExplorer = view === 'thread-explorer';
       const isStatics = view === 'thread-statics';
       inlineSummary.hidden = !isSnapshot;
       if (inlineTable) inlineTable.hidden = !isSnapshot;
       staticsForm.hidden = !isStatics;
-      const panelId = 'threadQueryViews-' + view;
+      const panelId = isExplorer ? 'threadExplorer' : 'threadQueryViews-' + view;
       const panel = document.getElementById(panelId);
       queryViews.hidden = isSnapshot || !panel;
       if (!isSnapshot && panel) {
         const switcher = queryViews.querySelector('.evidence-view-switcher');
         const tab = switcher?.querySelector('[data-panel="' + panelId + '"]');
         if (tab) tab.click();
-        workspaceThreadViewStatus.textContent = '';
+        if (isExplorer) workspaceThreadViewStatus.textContent = threadQueryStatusSummary();
+        else if (isStatics) workspaceThreadViewStatus.textContent = threadSnapshotQueryAvailable
+          ? 'Enter an exact type name and explicitly query this snapshot. Selecting this view does not run a query or reattach. '
+            + threadQueryStatusSummary()
+          : 'This snapshot has no retained query handle; thread statics are unavailable. ' + threadQueryStatusSummary();
+        else {
+          const state = threadQueryStates[view]?.state;
+          workspaceThreadViewStatus.textContent = state === 'pending'
+            ? 'This snapshot query is still pending. ' + threadQueryStatusSummary()
+            : state === 'unavailable'
+              ? 'This query did not return; the snapshot may still be displayed, but this view is unavailable. ' + threadQueryStatusSummary()
+              : threadQueryStatusSummary();
+        }
       } else if (isStatics) {
         workspaceThreadViewStatus.textContent = threadSnapshotQueryAvailable
           ? 'Enter an exact type name and explicitly query this snapshot. Selecting this view does not run a query or reattach.'
@@ -3979,7 +4262,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           : 'Capture a thread snapshot before exploring its views.';
       } else {
         workspaceThreadViewStatus.textContent = threadSnapshotEvidenceId
-          ? 'Point-in-time thread snapshot. Thread-pool query evidence is separate from Thread-pool event captures.'
+          ? threadQueryStatusSummary()
           : 'Capture a thread snapshot to explore returned threads, locks and waits.';
       }
     }
@@ -4061,6 +4344,16 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     }
     const eventsStatusElement = document.getElementById('eventsStatus');
     const eventsQualityElement = document.getElementById('eventsQuality');
+    const eventsQualitySummary = document.createElement('p');
+    const eventsQualityDetails = document.createElement('details');
+    const eventsQualityCaption = document.createElement('summary');
+    eventsQualityCaption.textContent = 'All quality counters and scope';
+    const eventsQualityCounts = document.createElement('p');
+    eventsQualityDetails.appendChild(eventsQualityCaption);
+    eventsQualityDetails.appendChild(eventsQualityCounts);
+    eventsQualityDetails.hidden = true;
+    eventsQualityElement.appendChild(eventsQualitySummary);
+    document.getElementById('eventsQualityDetail').appendChild(eventsQualityDetails);
     const eventsBody = document.getElementById('eventsBody');
     const eventDetails = document.getElementById('eventDetails');
     const eventsStartButton = document.getElementById('startEvents');
@@ -4080,17 +4373,37 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     let eventsSessionId;
     let selectedEvent;
     let eventsPageIndex = 0;
+    let eventsSortIndex = 0;
+    let eventsSortDescending = true;
+    const eventsCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
     let eventsFollowing = true;
+    let eventsRunning = false;
+    let eventsObserved = false;
+    let eventsPausedArrivals = 0;
+    let eventsPausedEvictions = 0;
+    let selectedEventEvicted = false;
     let eventsQuality = null;
     let lastEventsQualityRenderAt = 0;
     let eventsQualityRenderTimer;
-    function setEventsStatus(state, text, sessionId) {
-      eventsStatusElement.textContent = text || state || '';
+    function setEventsStatus(state, text, sessionId, subscription) {
+      eventsRunning = state === 'running';
       if (state === 'starting') {
+        eventsObserved = false;
         eventsSessionId = undefined;
         eventsQuality = null;
-        eventsQualityElement.textContent = '';
+        eventsQualityDetails.hidden = true;
+        eventsQualitySummary.textContent = 'This stream: quality not received yet. Panel lifetime: '
+          + eventsUiEvicted + ' UI-window evictions · ' + payloadTruncatedEvents + ' payload-truncated events · '
+          + metadataTruncatedEvents + ' metadata-truncated events.';
+        if (subscription) {
+          document.getElementById('eventsSubscription').textContent = 'Requested subscription: PID ' + subscription.processId
+            + ' · providers: ' + subscription.providers.join(', ') + ' · level: ' + subscription.eventLevel
+            + ' · keywords: ' + subscription.keywords;
+        }
       }
+      eventsStatusElement.textContent = state === 'running'
+        ? eventsObserved ? '' : 'Waiting for first event'
+        : text || state || '';
       const running = state === 'running' || state === 'starting' || state === 'stopping';
       eventsStartButton.disabled = running;
       eventsStopButton.disabled = state !== 'running';
@@ -4102,17 +4415,50 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         eventsFollowButton.disabled = true;
       }
     }
+    function renderEventsPresentation() {
+      document.getElementById('eventsPresentation').textContent = eventsFollowing
+        ? ''
+        : 'Paused presentation: ' + eventsPausedArrivals + ' new arrivals; ' + eventsPausedEvictions
+          + ' evicted since pausing';
+    }
     function eventSize(event) {
       return eventsEncoder.encode(JSON.stringify(event)).length * 2 + 1024;
     }
     function eventSearchText(event) {
       return [event.provider, event.eventName, event.level, ...Object.entries(event.payload).flat()].join(' ').toLocaleLowerCase();
     }
+    function eventSummary(event) {
+      return Object.entries(event.payload).slice(0, 2).map(([name, value]) => name + ': ' + value).join(' · ')
+        || (event.payloadTruncated ? 'Payload fields omitted' : '');
+    }
+    function compareEvents(left, right) {
+      const levels = { LogAlways: 0, Critical: 1, Error: 2, Warning: 3, Informational: 4, Verbose: 5 };
+      const values = event => [
+        event.timestamp, event.provider, event.eventName + ' (' + event.eventId + ')',
+        Object.prototype.hasOwnProperty.call(levels, event.level) ? levels[event.level] : event.level,
+        eventSummary(event),
+      ];
+      const a = values(left)[eventsSortIndex], b = values(right)[eventsSortIndex];
+      let order;
+      if (eventsSortIndex === 0 && Number.isFinite(Date.parse(a)) && Number.isFinite(Date.parse(b)))
+        order = Date.parse(a) - Date.parse(b) || eventsCollator.compare(a, b);
+      else order = typeof a === 'number' && typeof b === 'number' ? a - b : eventsCollator.compare(String(a), String(b));
+      order = order || eventsCollator.compare(left.sessionId, right.sessionId) || left.sequence - right.sequence;
+      return eventsSortDescending ? -order : order;
+    }
+    function renderEventSortHeaders() {
+      for (let index = 0; index < 5; index++) {
+        const header = document.getElementById('eventsHeader' + index);
+        header.setAttribute('aria-sort', index === eventsSortIndex ? eventsSortDescending ? 'descending' : 'ascending' : 'none');
+      }
+    }
     function renderEventDetails(event) {
       eventDetails.replaceChildren();
       if (!event) {
         const empty = document.createElement('p');
-        empty.textContent = 'Select an event to inspect its bounded payload.';
+        empty.textContent = selectedEventEvicted
+          ? 'The selected event expired from the retained window. Select an event to inspect its bounded payload.'
+          : 'Select an event to inspect its bounded payload.';
         eventDetails.appendChild(empty);
         return;
       }
@@ -4121,7 +4467,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       eventDetails.appendChild(heading);
       const timing = document.createElement('p');
       timing.textContent = 'Source: ' + event.timestamp + ' · Received: ' + event.receivedAt
-        + (event.threadId === null ? '' : ' · Thread ' + event.threadId);
+        + (event.threadId === null ? '' : ' · Thread ' + event.threadId) + ' · Stream: ' + event.sessionId;
       eventDetails.appendChild(timing);
       const exceptionFields = ['ExceptionType', 'ExceptionMessage', 'ExceptionEIP', 'ExceptionHRESULT', 'ExceptionFlags', 'ClrInstanceID'];
       const payloadNames = Object.keys(event.payload).sort();
@@ -4154,20 +4500,24 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     }
     function renderEvents() {
       const search = eventsSearch.value.slice(0, ${LIVE_EVENT_SEARCH_MAX_CHARS}).trim().toLocaleLowerCase();
-      const filtered = search ? events.filter(item => eventSearchText(item).includes(search)) : events;
+      const filtered = (search ? events.filter(item => eventSearchText(item).includes(search)) : events.slice()).sort(compareEvents);
       const pageCount = Math.max(1, Math.ceil(filtered.length / eventsPageSize));
       eventsPageIndex = Math.min(eventsPageIndex, pageCount - 1);
-      const end = Math.max(0, filtered.length - eventsPageIndex * eventsPageSize);
-      const start = Math.max(0, end - eventsPageSize);
-      const page = filtered.slice(start, end).reverse();
+      const start = eventsPageIndex * eventsPageSize;
+      const end = Math.min(filtered.length, start + eventsPageSize);
+      const page = filtered.slice(start, end);
+      document.getElementById('eventsPagination').hidden = pageCount <= 1;
+      document.getElementById('eventsEmpty').hidden = filtered.length > 0;
+      document.getElementById('eventsEmpty').textContent = events.length
+        ? 'No retained events match this search. Clear the search to see retained events.'
+        : 'No retained events. Only configured provider, level and keyword matches can appear; zero matches does not confirm target inactivity.';
       eventsBody.replaceChildren();
       for (const item of page) {
         const row = document.createElement('tr');
+        row.eventObservation = item;
         row.tabIndex = 0;
-        row.setAttribute('aria-selected', String(item === selectedEvent));
-        const cells = [item.timestamp, item.provider, item.eventName + ' (' + item.eventId + ')', item.level,
-          Object.entries(item.payload).slice(0, 2).map(([name, value]) => name + ': ' + value).join(' · ')
-          || (item.payloadTruncated ? 'Payload fields omitted' : '')];
+        row.setAttribute('aria-current', String(item === selectedEvent));
+        const cells = [item.timestamp, item.provider, item.eventName + ' (' + item.eventId + ')', item.level, eventSummary(item)];
         for (const text of cells) {
           const cell = document.createElement('td');
           cell.textContent = text;
@@ -4175,12 +4525,14 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         }
         row.addEventListener('click', () => {
           selectedEvent = item;
+          selectedEventEvicted = false;
           renderEvents();
         });
         row.addEventListener('keydown', event => {
           if (event.key === 'Enter' || event.key === ' ') {
             event.preventDefault();
             selectedEvent = item;
+            selectedEventEvicted = false;
             renderEvents();
           }
         });
@@ -4194,10 +4546,13 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       document.getElementById('eventsNext').disabled = end >= filtered.length;
       renderEventDetails(selectedEvent);
       renderEventsQuality();
+      renderEventsPresentation();
+      renderEventSortHeaders();
     }
     function renderEventsQuality() {
       const clear = document.getElementById('eventsClear');
       clear.setAttribute('aria-disabled', String(events.length === 0));
+      clear.disabled = events.length === 0;
       clear.title = events.length === 0 ? 'No retained events to clear.' : '';
       if (!eventsQuality) return;
       const now = Date.now();
@@ -4216,17 +4571,27 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         eventsQualityRenderTimer = undefined;
       }
       lastEventsQualityRenderAt = now;
-        eventsQualityElement.textContent = [
+        const layers = [
           eventsQuality.eventPipeLossAvailable
             ? eventsQuality.eventPipeEventsLost + ' EventPipe source events lost'
             : 'EventPipe source loss count unknown',
           eventsQuality.coreQueueDropped + ' Core queue drops',
           eventsQuality.cliDispatchQueueDropped + ' CLI dispatch drops',
           eventsQuality.hostDeliveryDropped + ' extension host delivery drops',
-          eventsUiEvicted + ' UI-window evictions',
-          payloadTruncatedEvents + ' payload-truncated events',
-          metadataTruncatedEvents + ' metadata-truncated events',
-        ].join(' · ') + ' (layer counts are separate, not a sum).';
+        ];
+        const panel = [eventsUiEvicted + ' UI-window evictions',
+          payloadTruncatedEvents + ' payload-truncated events', metadataTruncatedEvents + ' metadata-truncated events'];
+        const streamWarnings = layers.filter(text => !text.startsWith('0 '));
+        const panelWarnings = panel.filter(text => !text.startsWith('0 '));
+        const warnings = [...streamWarnings, ...panelWarnings];
+        eventsQualityElement.setAttribute('data-warning', String(warnings.length > 0));
+        eventsQualitySummary.textContent = warnings.length ? [
+          streamWarnings.length ? 'This stream: ' + streamWarnings.join(' · ') : '',
+          panelWarnings.length ? 'Panel lifetime: ' + panelWarnings.join(' · ') : '',
+        ].filter(Boolean).join('. ') : 'No loss or truncation reported.';
+        eventsQualityCounts.textContent = 'This stream: ' + layers.join(' · ') + '. Panel lifetime (including earlier streams and Clear): '
+          + panel.join(' · ') + '. Layer counts are separate, not a sum. Retention eviction is not source loss.';
+        eventsQualityDetails.hidden = false;
     }
     function receiveEventsBatch(message) {
       if (typeof message.sessionId !== 'string' || !Number.isSafeInteger(message.batchId)
@@ -4234,6 +4599,11 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       if (eventsSessionId && eventsSessionId !== message.sessionId) return;
       if (eventsEncoder.encode(JSON.stringify(message)).length > eventsBatchMaxBytes) return;
       eventsSessionId = message.sessionId;
+      if (message.events.length) {
+        eventsObserved = true;
+        if (eventsRunning) eventsStatusElement.textContent = '';
+        if (!eventsFollowing) eventsPausedArrivals = Math.min(Number.MAX_SAFE_INTEGER, eventsPausedArrivals + message.events.length);
+      }
       for (const item of message.events) {
         if (item.payloadTruncated) payloadTruncatedEvents = Math.min(Number.MAX_SAFE_INTEGER, payloadTruncatedEvents + 1);
         if (item.metadataTruncated) metadataTruncatedEvents = Math.min(Number.MAX_SAFE_INTEGER, metadataTruncatedEvents + 1);
@@ -4252,7 +4622,8 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       while (events.length > eventsMaxCount || eventsRetainedBytes > eventsMaxBytes) {
         const removed = events.shift();
         eventsUiEvicted = Math.min(Number.MAX_SAFE_INTEGER, eventsUiEvicted + 1);
-        if (removed === selectedEvent) selectedEvent = undefined;
+        if (!eventsFollowing) eventsPausedEvictions = Math.min(Number.MAX_SAFE_INTEGER, eventsPausedEvictions + 1);
+        if (removed === selectedEvent) { selectedEvent = undefined; selectedEventEvicted = true; }
         eventsRetainedBytes -= eventSize(removed);
       }
       if (!selectedEvent) renderEventDetails(undefined);
@@ -4261,6 +4632,12 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         renderEvents();
       } else {
         renderEventsQuality();
+        renderEventsPresentation();
+        document.getElementById('eventsPage').textContent = 'Paused page (not refreshed); ' + events.length + ' events currently retained.';
+        // Drop expired mounted rows as well: pausing must not extend payload retention.
+        for (const row of Array.from(eventsBody.children)) {
+          if (!events.some(item => item === row.eventObservation)) row.remove();
+        }
       }
       vscode.postMessage({ type: 'ackEventBatch', sessionId: message.sessionId, batchId: message.batchId });
     }
@@ -4270,15 +4647,33 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       events.length = 0;
       eventsRetainedBytes = 0;
       selectedEvent = undefined;
+      selectedEventEvicted = false;
       eventsPageIndex = 0;
+      eventsPausedArrivals = eventsPausedEvictions = 0;
       renderEvents();
     });
     eventsFollowButton.addEventListener('click', () => {
       eventsFollowing = !eventsFollowing;
+      eventsPausedArrivals = eventsPausedEvictions = 0;
       eventsFollowButton.textContent = eventsFollowing ? 'Pause following' : 'Follow latest';
-      if (eventsFollowing) eventsPageIndex = 0;
+      if (eventsFollowing) {
+        eventsPageIndex = 0;
+        eventsSortIndex = 0;
+        eventsSortDescending = true;
+      }
       renderEvents();
     });
+    for (let index = 0; index < 5; index++) {
+      document.getElementById('eventsSort' + index).addEventListener('click', () => {
+        eventsSortDescending = eventsSortIndex === index ? !eventsSortDescending : false;
+        eventsSortIndex = index;
+        eventsPageIndex = 0;
+        eventsFollowing = false;
+        eventsPausedArrivals = eventsPausedEvictions = 0;
+        eventsFollowButton.textContent = 'Follow latest';
+        renderEvents();
+      });
+    }
     eventsSearch.addEventListener('input', () => { eventsPageIndex = 0; renderEvents(); });
     document.getElementById('eventsPrevious').addEventListener('click', () => {
       eventsPageIndex = Math.max(0, eventsPageIndex - 1);
@@ -4286,6 +4681,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     });
     document.getElementById('eventsNext').addEventListener('click', () => {
       eventsPageIndex++;
+      if (eventsFollowing) eventsPausedArrivals = eventsPausedEvictions = 0;
       eventsFollowing = false;
       eventsFollowButton.textContent = 'Follow latest';
       renderEvents();
@@ -4356,7 +4752,6 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       section.className = isError ? 'query-view query-view-error' : 'query-view';
       const heading = document.createElement('h3');
       heading.textContent = cpuQueryLabels[view] || view;
-      section.appendChild(heading);
       if ((view !== 'call-tree' || isError) && profileResult) {
         const back = document.createElement('button');
         back.type = 'button';
@@ -4378,13 +4773,12 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         return;
       }
       const data = result && result.data && typeof result.data === 'object' ? result.data : {};
+      const summary = document.createElement('p');
       if (typeof result.summary === 'string') {
-        const summary = document.createElement('p');
         summary.className = 'query-view-provenance';
         summary.textContent = view === 'call-tree'
           ? result.summary.replace('The handle retains the full tree.', 'Only loaded nodes are displayed here.')
           : result.summary;
-        section.appendChild(summary);
       }
       function table(title, rows, columns, action) {
         const wrapper = document.createElement('section');
@@ -4526,6 +4920,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           });
         }, profileState, allocation ? 'allocation-tick-estimated-bytes' : 'samples');
       }
+      section.appendChild(summary);
       target.replaceChildren(section);
     }
     function cpuQueryColumnClass(label) {
@@ -4634,10 +5029,27 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     let selectedKey = '';
     let lastSequence = 0;
     let sequenceGaps = 0;
+    let counterSessionId;
+    let counterSessionNumber = 0;
+    let counterSegment = 0;
     let seriesLimitReached = false;
     let gcPauseCount = 0;
     let gcTotalPauseMs = 0;
-    const liveTimeNavigation = installLiveTimeNavigation(canvas, () => counters.get(selectedKey)?.points || [], gcRows, draw);
+    const formatCounterValue = value => new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(value)
+      + (counters.get(selectedKey)?.unit ? ' ' + counters.get(selectedKey).unit : '');
+    const liveTimeNavigation = installLiveTimeNavigation(canvas, () => counters.get(selectedKey)?.points || [], gcRows, draw, formatCounterValue);
+
+    function beginCounterSession(sessionId) {
+      if (sessionId === counterSessionId) return;
+      counterSessionId = sessionId;
+      counterSessionNumber++;
+      counterSegment++;
+      lastSequence = 0;
+      sequenceGaps = 0;
+      qualityElement.textContent = seriesLimitReached ? 'Panel chart limit reached: additional series omitted.' : '';
+      document.getElementById('counterSession').textContent = 'Counter session ' + counterSessionNumber
+        + ' · ' + new Date().toLocaleTimeString();
+    }
 
     function updateButtons(running) {
       startButton.disabled = running;
@@ -4658,6 +5070,10 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       context.clearRect(0, 0, width, height);
       liveTimeNavigation.update();
       const series = counters.get(selectedKey);
+      document.getElementById('counterIdentity').textContent = series
+        ? selectedKey + ' · ' + series.kind + ' · ' + (series.unit || 'unit not reported') : '';
+      document.getElementById('chartTimeStart').textContent = '';
+      document.getElementById('chartTimeEnd').textContent = '';
       if (!series || series.points.length === 0) return;
       const points = liveTimeNavigation.filter(series.points);
       const values = points.map(point => point.value).filter(Number.isFinite);
@@ -4674,13 +5090,48 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       points.forEach((point, index) => {
         const x = left + (right - left) * (timeSpan > 0 ? (point.receivedAtMs - firstTime) / timeSpan : 1);
         const y = bottom - ((point.value - min) / range) * (bottom - top);
-        if (index === 0) context.moveTo(x, y); else context.lineTo(x, y);
+        if (index === 0 || point.segment !== points[index - 1].segment) context.moveTo(x, y); else context.lineTo(x, y);
       });
       context.stroke();
       context.fillStyle = getComputedStyle(document.body).color;
       context.font = '12px ' + getComputedStyle(document.body).fontFamily;
       context.fillText(max.toPrecision(4), 2, top + 4);
       context.fillText(min.toPrecision(4), 2, bottom);
+      let lastBoundaryLabelEnd = left;
+      points.forEach((point, index) => {
+        if (!index || point.segment === points[index - 1].segment) return;
+        const x = left + (right - left) * (timeSpan > 0 ? (point.receivedAtMs - firstTime) / timeSpan : 1);
+        context.beginPath();
+        context.moveTo(x, bottom - 4);
+        context.lineTo(x, bottom + 4);
+        context.stroke();
+        const label = point.session !== points[index - 1].session ? 'Session ' + point.session : 'Sequence gap';
+        const labelWidth = context.measureText(label).width;
+        const labelX = Math.max(left, Math.min(x, right - labelWidth));
+        if (labelX >= lastBoundaryLabelEnd) {
+          context.fillText(label, labelX, bottom + 18);
+          lastBoundaryLabelEnd = labelX + labelWidth + 8;
+        }
+      });
+      document.getElementById('chartTimeStart').textContent = 'Receipt ' + new Date(firstTime).toLocaleTimeString();
+      document.getElementById('chartTimeEnd').textContent = new Date(firstTime + timeSpan).toLocaleTimeString()
+        + ' · ' + (timeSpan / 1000).toFixed(1) + ' s shown';
+      const inspected = liveTimeNavigation.selected();
+      if (inspected) {
+        const x = left + (right - left) * (timeSpan > 0 ? (inspected.receivedAtMs - firstTime) / timeSpan : 1);
+        const y = bottom - ((inspected.value - min) / range) * (bottom - top);
+        context.beginPath();
+        context.moveTo(x, top);
+        context.lineTo(x, bottom);
+        context.stroke();
+        context.beginPath();
+        context.arc(x, y, 4, 0, Math.PI * 2);
+        context.fill();
+      }
+      const sessions = [...new Set(points.map(point => point.session))];
+      document.getElementById('chartNote').textContent = 'Auto-scaled value axis (' + (series.unit || 'unit not reported')
+        + '), not necessarily zero-based. Retained counter sessions: ' + sessions.join(', ')
+        + '. Lines break at session boundaries and observed sequence gaps; gaps are not zero values.';
     }
 
     // Drops points older than the rolling history window so it keeps sliding even if observations
@@ -4724,7 +5175,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           qualityElement.textContent = 'Chart limit reached: additional counter series are omitted.';
           return;
         }
-        series = { label: counter.displayName || counter.name, unit: counter.unit || '', points: [] };
+        series = { label: counter.displayName || counter.name, unit: counter.unit || '', kind: counter.kind || 'kind not reported', points: [] };
         counters.set(key, series);
         const option = document.createElement('option');
         option.value = key;
@@ -4735,7 +5186,8 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           metricSelect.value = key;
         }
       }
-      series.points.push({ value: counter.value, timestamp: message.timestamp, receivedAtMs: monotonicNow() });
+      series.points.push({ value: counter.value, timestamp: message.timestamp, receivedAtMs: monotonicNow(),
+        session: counterSessionNumber, segment: counterSegment });
       evictOldPoints(series);
       if (key === selectedKey) {
         valueElement.textContent = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(counter.value) +
@@ -4751,10 +5203,12 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       if (!Number.isFinite(sequence)) return;
       if (sequence > lastSequence + 1 && lastSequence > 0) {
         sequenceGaps += sequence - lastSequence - 1;
+        counterSegment++;
       }
       lastSequence = Math.max(lastSequence, sequence);
       if (sequenceGaps > 0) {
-        qualityElement.textContent = sequenceGaps + ' observations missing (sequence gaps); gaps are not zero values.';
+        qualityElement.textContent = 'This counter session: ' + sequenceGaps + ' observations missing (sequence gaps); gaps are not zero values.'
+          + (seriesLimitReached ? ' Panel chart limit reached: additional series omitted.' : '');
       }
     }
 
@@ -4794,6 +5248,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         row.appendChild(cell);
       });
       gcBody.insertBefore(row, gcBody.firstChild);
+      row.title = 'Counter session ' + counterSessionNumber + ' · source time ' + collection.timestamp;
       gcRows.unshift({ element: row, receivedAtMs: monotonicNow() });
       evictOldGcRows();
       gcHeadline.textContent = gcPauseCount + ' pause(s) observed · last ' +
@@ -4912,16 +5367,25 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       const threads = (data && data.threads) || [];
       threads.slice(0, MAX_THREAD_ROWS).forEach(thread => {
         const row = document.createElement('tr');
-        const topFrame = Array.isArray(thread.frames) && thread.frames.length > 0 ? thread.frames[0] : '';
+        const firstFrame = Array.isArray(thread.frames) && thread.frames.length > 0 ? thread.frames[0] : '';
+        const topFrame = typeof firstFrame === 'string' ? firstFrame
+          : firstFrame && typeof firstFrame.displayName === 'string' ? firstFrame.displayName : '';
         const cells = [
           String(thread.managedThreadId),
           String(thread.state || '') + (thread.isLikelyBlocked ? ' (blocked)' : ''),
           String(thread.inferredWaitReason || ''),
           String(topFrame),
         ];
-        cells.forEach(text => {
+        cells.forEach((text, index) => {
           const cell = document.createElement('td');
-          cell.textContent = text;
+          if (index === 0 && Number.isSafeInteger(thread.managedThreadId) && thread.managedThreadId >= 0) {
+            const link = document.createElement('button');
+            link.type = 'button';
+            link.className = 'heap-type-link';
+            link.textContent = 'Thread ' + thread.managedThreadId;
+            link.addEventListener('click', () => navigateThreadTo(thread.managedThreadId, 'snapshot'));
+            cell.appendChild(link);
+          } else cell.textContent = text;
           row.appendChild(cell);
         });
         captureThreadBody.appendChild(row);
@@ -4955,6 +5419,11 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     window.addEventListener('message', event => {
       const message = event.data;
       if (!message || typeof message.type !== 'string') return;
+      if (message.type === 'captureStatus') {
+        const statusId = {exceptions:'captureExceptionsStatus',heap:'captureHeapStatus',
+          'thread-snapshot':'captureThreadStatus',allocation:'captureAllocationStatus'}[message.kind] || 'captureStatus';
+        document.getElementById(statusId).hidden = message.state === 'done';
+      }
       if (message.profiles && typeof message.profiles === 'object') {
         profileAvailability.cpu = message.profiles.cpu === true;
         profileAvailability.allocation = message.profiles.allocation === true;
@@ -4965,7 +5434,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         }
       }
       if (message.type === 'eventsStatus') {
-        setEventsStatus(message.state, message.message, message.sessionId);
+        setEventsStatus(message.state, message.message, message.sessionId, message.subscription);
         return;
       }
       if (message.type === 'eventsBatch') {
@@ -4996,6 +5465,8 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           workspaceLoadView.textContent = profileCaptureBusy.cpu ? 'Capture in progress…'
             : workspaceLoadView.disabled ? 'Retained profile unavailable' : 'Load view';
         }
+      } else if (message.type === 'session') {
+        beginCounterSession(message.sessionId);
       } else if (message.type === 'status') {
         const liveStatus = message.message || message.state;
         statusElement.textContent = liveStatus.startsWith('Live counters') ? liveStatus : 'Live counters: ' + liveStatus;
@@ -5074,7 +5545,8 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         }
       } else if (message.type === 'captureStatus' && message.kind === 'exceptions') {
         if (typeof message.evidenceId !== 'string' || !exceptionCaptureModes[message.captureKind]) return;
-        if (message.state === 'starting') pendingExceptionEvidenceId = message.evidenceId;
+        if (message.state === 'starting' || (message.state === 'error' && message.preflight === true))
+          pendingExceptionEvidenceId = message.evidenceId;
         if (message.evidenceId !== pendingExceptionEvidenceId) return;
         captureExceptionsStatus.textContent = message.message || message.state || '';
         captureExceptionsButton.disabled = message.state === 'running' || message.state === 'starting';
@@ -5087,7 +5559,8 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           exceptionPanel.dataset.captureKind = '';
           document.getElementById('exceptionCaptureViews').replaceChildren();
           document.getElementById('exceptionEvidenceIdentity').textContent =
-            'Capture in progress: ' + exceptionCaptureModes[message.captureKind] + ' · Live EventPipe.';
+            'Capture in progress: ' + exceptionCaptureModes[message.captureKind]
+            + ' · Live EventPipe. The previous exception result is no longer available.';
           setWorkspaceStatus('exceptions', 'The previous exception result was replaced when this capture started.');
           if (selectedWorkspaceEvidence === 'exceptions') setWorkspaceEvidence('exceptions');
         } else if (message.state === 'error') {
@@ -5142,9 +5615,10 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           return;
         }
         diagnosticsRequestId = message.evidenceId;
+        document.getElementById('captureRequestEvidence').disabled = message.state === 'running' || message.state === 'starting';
         const gcCapture = captureKind === 'gc' || captureKind === 'gc-activities';
         if (message.state === 'starting') activateCaptureTab(captureKind);
-        const status = message.message || message.state || '';
+        const status = message.state === 'done' ? '' : message.message || message.state || '';
         setWorkspaceStatus(captureKind, message.state === 'error' && genericCaptureKind === captureKind
           ? status + ' The previous result remains current.'
           : status);
@@ -5174,18 +5648,15 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         if (typeof message.evidenceId === 'string') pendingHeapEvidenceId = message.evidenceId;
         if (message.state === 'starting') activateCaptureTab('heap');
         captureHeapStatusElement.textContent = message.message || message.state || '';
-        if (message.state === 'running') {
+        if (message.retainedEvidenceInvalidated === true) {
+          setAddressLiveQueriesAvailable(false);
           setWorkspaceStatus('heap', 'Heap recapture in progress. A prior visual may remain; query availability and consent follow the current retained owner.');
+          document.getElementById('heapQueryViews').replaceChildren();
+          resetAddressNavigation();
         } else if (message.state === 'error') {
           setWorkspaceStatus('heap', 'Heap recapture failed. A prior visual may remain; queryability is not inferred from that display.');
         }
-        captureHeapButton.disabled = message.state === 'running';
-        if (message.state === 'running') {
-          // Clear any query-view sections left over from a previous capture so a stale
-          // opt-in/gcdump-origin section can't be mistaken for data from the capture in flight.
-          document.getElementById('heapQueryViews').innerHTML = '';
-          resetAddressNavigation();
-        }
+        captureHeapButton.disabled = message.state === 'running' || message.state === 'starting';
       } else if (message.type === 'captureStatus' && message.kind === 'thread-snapshot') {
         if (typeof message.evidenceId !== 'string') return;
         if (message.state === 'starting') pendingThreadSnapshotEvidenceId = message.evidenceId;
@@ -5198,19 +5669,33 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           threadSnapshotQueryAvailable = false;
           setThreadStaticsBusy(false);
           threadSnapshotView = 'snapshot';
+          for (const state of Object.values(threadQueryStates)) { state.state = 'pending'; state.count = 0; }
           if (selectedWorkspaceEvidence === 'thread-snapshot') workspaceView.value = 'snapshot';
           setWorkspaceStatus('thread-snapshot',
             'The previous thread snapshot handle was invalidated when recapture began; any remaining summary is display-only.');
           if (selectedWorkspaceEvidence === 'thread-snapshot') selectThreadSnapshotView('snapshot');
-        } else if (message.state === 'error') {
+        }
+        if (message.state === 'error') {
+          if (message.retainedEvidenceInvalidated === true || !threadSnapshotEvidenceId) {
+            for (const state of Object.values(threadQueryStates)) {
+              if (state.state === 'pending' || state.state === 'not-requested') state.state = 'unavailable';
+            }
+          }
           setWorkspaceStatus('thread-snapshot', threadSnapshotEvidenceId
             ? 'Thread snapshot capture failed before invalidating the current retained snapshot.'
             : 'Thread snapshot capture failed; no current retained snapshot is available.');
+        } else if (message.state === 'done') {
+          for (const state of Object.values(threadQueryStates)) {
+            if (state.state === 'pending') state.state = 'unavailable';
+          }
         }
+        refreshThreadQueryPresentation();
+        if (message.state === 'error' || message.state === 'done') selectThreadSnapshotView(threadSnapshotView);
         if (message.state === 'running') {
           document.getElementById('threadQueryViews').innerHTML = '';
           document.getElementById('threadExplorer')?.remove();
-          workspaceThreadViewStatus.textContent = 'Snapshot recapture invalidated prior query views; waiting for the new snapshot.';
+          if (selectedWorkspaceEvidence === 'thread-snapshot')
+            workspaceThreadViewStatus.textContent = 'Snapshot recapture invalidated prior query views; waiting for the new snapshot.';
         }
       } else if (message.type === 'captureStatus') {
         captureStatusElement.textContent = message.message || message.state || '';
@@ -5223,9 +5708,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         exceptionPanel.dataset.evidenceId = exceptionEvidenceId;
         exceptionPanel.dataset.captureKind = exceptionEvidenceMode;
         const exceptionData = message.result?.data || {};
-        document.getElementById('exceptionEvidenceIdentity').textContent =
-          exceptionCaptureModes[exceptionEvidenceMode] + ' · Live EventPipe · PID '
-          + String(exceptionData.processId ?? 'unavailable') + ' · ' + String(exceptionData.duration ?? 'duration unavailable');
+        document.getElementById('exceptionEvidenceIdentity').textContent = '';
         setWorkspaceStatus('exceptions', 'Current evidence: ' + exceptionCaptureModes[exceptionEvidenceMode]
           + ' · Live EventPipe · PID ' + String(exceptionData.processId ?? 'unavailable') + '.');
         if (selectedWorkspaceEvidence === 'exceptions') setWorkspaceEvidence('exceptions');
@@ -5235,20 +5718,44 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         if (message.evidenceId !== pendingHeapEvidenceId) return;
         heapEvidenceSource = message.source;
         heapEvidenceId = typeof message.evidenceId === 'string' ? message.evidenceId : undefined;
+        setAddressLiveQueriesAvailable(message.retainedHandleAvailable === true);
         renderHeapCapture(message.source, message.result);
-        setWorkspaceStatus('heap', 'Current displayed evidence: heap snapshot (' + String(message.source || 'source unavailable')
-          + '). Retained live-query availability is governed by the snapshot owner and consent state.');
+        setWorkspaceStatus('heap', message.retainedHandleAvailable === true
+          ? 'Current evidence: heap snapshot (' + String(message.source || 'source unavailable') + '). Live follow-up reads require separate consent.'
+          : 'Current evidence is display-only: heap snapshot (' + String(message.source || 'source unavailable')
+            + ') has no retained live-query handle.');
       } else if (message.type === 'capture' && message.kind === 'thread-snapshot') {
         if (message.evidenceId !== pendingThreadSnapshotEvidenceId) return;
         threadSnapshotEvidenceId = message.evidenceId;
         threadSnapshotQueryAvailable = message.retainedHandleAvailable === true;
+        for (const state of Object.values(threadQueryStates)) {
+          state.state = threadSnapshotQueryAvailable ? 'pending' : 'unavailable';
+          state.count = 0;
+        }
         setThreadStaticsBusy(false);
-        threadSnapshotView = 'snapshot';
+        threadSnapshotView = 'thread-explorer';
         renderThreadCapture(message.result);
         setWorkspaceStatus('thread-snapshot', threadSnapshotQueryAvailable
           ? 'Current evidence: point-in-time thread snapshot. Snapshot thread-pool query evidence is separate from thread-pool event captures.'
           : 'Current evidence: point-in-time thread snapshot; no retained query handle is available. Snapshot thread-pool query evidence is separate from thread-pool event captures.');
-        selectThreadSnapshotView('snapshot');
+        refreshThreadQueryPresentation();
+        selectThreadSnapshotView('thread-explorer');
+      } else if (message.type === 'threadSnapshotAvailability') {
+        if (message.evidenceId !== threadSnapshotEvidenceId || message.available !== false) return;
+        threadSnapshotQueryAvailable = false;
+        setThreadStaticsBusy(false);
+        for (const state of Object.values(threadQueryStates)) {
+          if (state.state === 'pending') state.state = 'unavailable';
+        }
+        refreshThreadQueryPresentation();
+        const detail = typeof message.message === 'string' ? message.message : 'The retained CLI connection closed.';
+        setWorkspaceStatus('thread-snapshot', 'Current evidence is display-only: ' + detail + ' Returned views remain available; live thread statics queries are disabled.');
+        if (selectedWorkspaceEvidence === 'thread-snapshot') selectThreadSnapshotView(threadSnapshotView);
+      } else if (message.type === 'heapSnapshotAvailability') {
+        if (message.evidenceId !== heapEvidenceId || message.available !== false) return;
+        const detail = typeof message.message === 'string' ? message.message : 'The retained CLI connection closed.';
+        setWorkspaceStatus('heap', 'Current heap evidence is display-only: ' + detail + ' Live object and GC-root follow-up reads are disabled.');
+        setAddressLiveQueriesAvailable(false);
       } else if (message.type === 'capture') {
         if (message.evidenceId !== pendingCpuEvidenceId) return;
         profileCaptureBusy.cpu = false;
@@ -5303,16 +5810,24 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       } else if (message.type === 'query' && message.kind === 'thread-snapshot') {
         if (message.evidenceId !== threadSnapshotEvidenceId) return;
         renderQueryView('threadQueryViews', message.view, message.result, false);
-        if (selectedWorkspaceEvidence === 'thread-snapshot' && threadSnapshotView === message.view)
-          selectThreadSnapshotView(message.view);
+        if (Object.prototype.hasOwnProperty.call(threadQueryStates, message.view)) {
+          threadQueryStates[message.view].state = 'returned';
+          if (message.view === 'deadlocks') threadQueryStates.deadlocks.count =
+            Array.isArray(message.result?.deadlocks) ? message.result.deadlocks.length : 0;
+          refreshThreadQueryPresentation();
+          if (selectedWorkspaceEvidence === 'thread-snapshot') selectThreadSnapshotView(threadSnapshotView);
+        }
       } else if (message.type === 'queryError' && message.kind === 'heap') {
         if (message.evidenceId !== heapEvidenceId) return;
         renderQueryView('heapQueryViews', message.view, message.message, true);
       } else if (message.type === 'queryError' && message.kind === 'thread-snapshot') {
         if (message.evidenceId !== threadSnapshotEvidenceId) return;
         renderQueryView('threadQueryViews', message.view, message.message, true);
-        if (selectedWorkspaceEvidence === 'thread-snapshot' && threadSnapshotView === message.view)
-          selectThreadSnapshotView(message.view);
+        if (Object.prototype.hasOwnProperty.call(threadQueryStates, message.view)) {
+          threadQueryStates[message.view].state = 'unavailable';
+          refreshThreadQueryPresentation();
+          if (selectedWorkspaceEvidence === 'thread-snapshot') selectThreadSnapshotView(threadSnapshotView);
+        }
       } else if (message.type === 'historyDuration') {
         if (typeof message.seconds === 'number' && Number.isFinite(message.seconds) && message.seconds > 0) {
           historyDurationMs = message.seconds * 1000;
@@ -5328,7 +5843,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         const dropped = typeof message.droppedObservations === 'number'
           ? message.droppedObservations + ' observations dropped by the bounded queue'
           : 'dropped-observation count unavailable';
-        qualityElement.textContent = [
+        qualityElement.textContent = 'This counter session: ' + [
           loss,
           dropped,
           sequenceGaps ? sequenceGaps + ' sequence gaps' : 'no sequence gaps reported',
@@ -5358,6 +5873,10 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     document.getElementById('captureGc').addEventListener('click', () => vscode.postMessage({
       type: 'captureGc', kind: selectedWorkspaceEvidence,
     }));
+    document.getElementById('captureRequestEvidence').addEventListener('click', () => {
+      if (!['requests', 'kestrel', 'db', 'networking'].includes(selectedWorkspaceEvidence)) return;
+      vscode.postMessage({ type: 'captureDiagnostics', kind: selectedWorkspaceEvidence });
+    });
     captureExceptionsButton.addEventListener('click', () => vscode.postMessage({ type: 'captureExceptions' }));
     document.getElementById('captureAllocation').addEventListener('click', () => vscode.postMessage({ type: 'captureAllocation' }));
     captureHeapButton.addEventListener('click', () => vscode.postMessage({ type: 'captureHeap' }));
@@ -5443,6 +5962,7 @@ export function renderDumpAnalysisHtml(dumpFileName: string, nonce: string): str
     .empty { display:none; }
     .statics-form { margin:.5rem 0; display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; }
     .statics-error { color: var(--vscode-errorForeground); }
+    ${WEBVIEW_BUTTON_STYLES}
     ${QUERY_VIEW_STYLES}
     ${WEBVIEW_FIELD_STYLES}
     .status { color:var(--vscode-descriptionForeground); margin:.3rem 0; }
@@ -5458,12 +5978,11 @@ export function renderDumpAnalysisHtml(dumpFileName: string, nonce: string): str
 
   <section class="panel">
     <h3>Heap snapshot</h3>
-    <div id="captureHeapStatus" class="status"></div>
+    <div id="captureHeapStatus" class="status" role="status" aria-live="polite"></div>
     <div id="captureHeapResult" class="empty">
       <div id="captureHeapHeadline"></div>
       <div id="heapWorkspace" class="heap-workspace" data-focused="false">
       <div id="heapTypeList" class="heap-type-list">
-      <button id="openHeapDetails" type="button">Explore heap details</button>
       <table id="captureHeapTable">
         <thead><tr><th>Type</th><th>Instances</th><th>Bytes</th></tr></thead>
         <tbody id="captureHeapBody"></tbody>
@@ -5480,7 +5999,7 @@ export function renderDumpAnalysisHtml(dumpFileName: string, nonce: string): str
 
   <section class="panel">
     <h3>Thread snapshot</h3>
-    <div id="captureThreadStatus" class="status"></div>
+    <div id="captureThreadStatus" class="status" role="status" aria-live="polite"></div>
     <div id="captureThreadResult" class="empty">
       <div id="captureThreadHeadline"></div>
       <details><summary>Inline thread summary</summary>
@@ -5715,16 +6234,27 @@ function isCancellationMessage(message: string): boolean {
  * `inspect-heap --source live`/`--source gcdump` (both High risk / Acknowledge, unlike CPU
  * sampling's Moderate risk) so CLI/MCP users see consistent risk framing in the extension.
  */
-function describeHeapCaptureRisk(source: HeapCaptureSource, label: string): string {
+function describeHeapCaptureRisk(
+    source: HeapCaptureSource,
+    label: string,
+    target: TargetProcess,
+    options: HeapQueryOptIns,
+): string {
     const impact = source === "live"
-        ? "A live ClrMD heap walk attaches with ptrace, suspends the target, and exposes heap type and object-graph metadata. This may expose possibly confidential data."
+        ? "A platform-specific privileged ClrMD attach may briefly suspend the target while reading its heap and exposes heap type and object-graph metadata. This may expose possibly confidential data."
         : "GC dump capture induces a managed GC and exposes aggregate heap type metadata. This may expose possibly confidential data.";
-    return `Capture heap snapshot (${label})? ${impact} This is a high-risk operation that requires explicit acknowledgement before it runs against the selected process.`;
+    const selectedOptions = HEAP_QUERY_OPT_IN_PICKS
+        .filter(item => options[item.key])
+        .map(item => item.label);
+    const optionSummary = selectedOptions.length ? selectedOptions.join(", ") : "none";
+    return `Capture heap snapshot for ${target.managedEntrypointAssemblyName ?? "Unknown .NET application"} (PID ${target.processId})? Source: ${label}. Optional additional heap data: ${optionSummary}. ${impact} This operation cannot be stopped from this extension after dispatch. The 120-second wait timeout is a frontend limit, not a guarantee that target-side work has stopped.`;
 }
 
 async function promptCaptureParams(spec: CaptureKindSpec): Promise<CaptureParams | undefined> {
     const duration = await vscode.window.showInputBox({
-        prompt: `${spec.label}: capture duration in seconds (1-300)`, value: "10",
+        prompt: `${spec.label}: capture duration in seconds (1-300)`
+            + (spec.kind === "allocation" ? "" : ". Success replaces the shared generic result; not saved."),
+        value: "10",
         validateInput: value => validateInteger(value, 1, 300, "Duration"),
     });
     if (duration === undefined) return undefined;
@@ -5758,10 +6288,19 @@ async function promptCaptureParams(spec: CaptureKindSpec): Promise<CaptureParams
     return params;
 }
 
-function describeThreadCaptureRisk(): string {
-    return "Capture thread snapshot? A live ClrMD thread walk attaches with ptrace, briefly suspends the target, "
-        + "and exposes stack, type, and method names. This may expose possibly confidential data. This is a "
-        + "high-risk operation that requires explicit acknowledgement before it runs against the selected process.";
+function describeThreadCaptureRisk(target: TargetProcess): string {
+    return `Capture thread snapshot for ${target.managedEntrypointAssemblyName ?? "Unknown .NET application"} (PID ${target.processId})? `
+        + "A platform-specific privileged ClrMD attach may briefly suspend the target and exposes stack, type, and method names. "
+        + "This may expose possibly confidential data. This operation cannot be stopped from this extension after dispatch. "
+        + "The 120-second wait timeout is a frontend limit, not a guarantee that target-side work has stopped.";
+}
+
+function captureWaitErrorMessage(error: unknown): string {
+    const message = errorMessage(error);
+    if (/Operation timed out after 120000ms\./.test(message)) {
+        return `${message} The extension stopped waiting; it cannot confirm that target-side work stopped. Treat the result as unavailable and verify the target before retrying.`;
+    }
+    return withRuntimeGuidance(message);
 }
 
 function withRuntimeGuidance(message: string): string {

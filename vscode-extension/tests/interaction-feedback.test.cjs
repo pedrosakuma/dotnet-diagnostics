@@ -89,8 +89,8 @@ test("result tabs navigate in rendered order and preserve focus and selection st
 
 test("initial status describes a ready selected process and live status remains counter-scoped", () => {
     const html = renderHtml(target, "nonce", 120);
-    assert.match(html, /id="status" role="status">Live counters are ready\./);
-    assert.match(html, /<section id="monitoringLive"[\s\S]*?<div id="status" role="status">Live counters are ready\./);
+    assert.match(html, /id="status" role="status">Ready</);
+    assert.match(html, /<section id="monitoringLive"[\s\S]*?<div id="status" role="status">Ready</);
     assert.ok(html.indexOf('id="status"') > html.indexOf('<section id="resultLive"'),
         "the live-counter status stays inside Monitoring's counter view");
     assert.doesNotMatch(html, /Connecting to CLI/);

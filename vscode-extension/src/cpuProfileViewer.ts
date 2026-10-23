@@ -73,7 +73,9 @@ function renderCpuProfile(
     let focus = atPath(state.focus) ?? entries[0];
     let selected = state.selected ? atPath(state.selected) : undefined;
     if (!focus) {
-        container.textContent = "No call tree was available for this sample.";
+        container.textContent = allocation
+            ? "No call tree was returned for this allocation profile. The response does not identify why attribution is unavailable. Check capture quality and retry during representative allocation activity before drawing conclusions."
+            : "No call tree was returned for this sample. The response does not identify why the profile is unavailable.";
         return;
     }
     const method = (node: CpuTreeNode) => node.frame?.method || "Unknown method";
@@ -137,30 +139,43 @@ function renderCpuProfile(
     container.appendChild(label);
     const searchStatus = text(container, "", "query-view-provenance");
     searchStatus.setAttribute("role", "status");
-    text(container, "Hotpath marks the largest known loaded branch, not a global diagnosis. "
+    const profileGuidance = document.createElement("section");
+    profileGuidance.className = "cpu-profile-guidance";
+    profileGuidance.setAttribute("aria-label", "Profile measurement and retention details");
+    text(profileGuidance, "Hotpath marks the largest known loaded branch, not a global diagnosis. "
         + "Expansion is local; omitted descendants require an explicit retained-capture query.", "query-view-provenance");
-    const retention = text(container, retentionText(
+    const retention = text(profileGuidance, retentionText(
         container.closest("[data-profile-retained]")?.getAttribute("data-profile-retained") !== "false"), "query-view-provenance");
     retention.setAttribute("data-profile-retention-note", "");
-    text(container, (allocation
+    text(profileGuidance, (allocation
         ? "Widths show estimated allocation bytes attributed to sampled stacks, not object counts, retained bytes or CPU time. "
         : "Widths show inclusive sample counts, not elapsed time or measured CPU utilization. ")
         + "Search highlights loaded nodes only; it never filters or renormalizes the " + unit + " totals. "
         + "Gray blocks represent self " + unit + " or explicitly labelled omitted / unattributed descendants.", "query-view-provenance");
     if (allocation) {
         const stacked = data.root?.inclusiveSamples ?? 0;
-        text(container, "Displayed root: " + stacked + " of " + captureTotal + " estimated bytes ("
+        text(profileGuidance, "Displayed root: " + stacked + " of " + captureTotal + " estimated bytes ("
             + percent(stacked, captureTotal) + "). Remaining bytes are outside this root or have no captured stack. "
             + "Types and sites are independent aggregates, not a type-to-stack correlation.", "query-view-provenance");
+    } else {
+        const comparisonNote = text(profileGuidance,
+            "This CPU profile is temporary and cannot be saved or compared in the extension. "
+            + "The CLI has a separate retained-artifact comparison workflow; see ", "query-view-provenance");
+        const comparisonLink = document.createElement("a");
+        comparisonLink.textContent = "CPU comparison limits";
+        comparisonLink.setAttribute("href", "https://github.com/pedrosakuma/dotnet-diagnostics/blob/main/docs/historical-comparisons.md#supported-matrix");
+        comparisonLink.setAttribute("target", "_blank");
+        comparisonLink.setAttribute("rel", "noopener noreferrer");
+        comparisonNote.appendChild(comparisonLink);
     }
     if (data.truncated || data.traversalLimitReached || limited) {
-        text(container, "Partial projection (up to 64 nodes / depth 8). Omitted descendants remain counted in their parent. "
+        const warning = text(container, "Partial projection (up to 64 nodes / depth 8). Omitted descendants remain counted in their parent. "
             + "Use Query subtree by method to retrieve another bounded view from the same capture.", "cpu-profile-warning");
+        warning.setAttribute("role", "alert");
     }
     const breadcrumb = document.createElement("nav");
     breadcrumb.setAttribute("aria-label", allocation ? "Allocation focus path" : "CPU focus path");
     breadcrumb.className = "cpu-profile-controls";
-    container.appendChild(breadcrumb);
     const queries = document.createElement("details");
     queries.className = "cpu-profile-queries";
     const querySummary = document.createElement("summary");
@@ -171,7 +186,6 @@ function renderCpuProfile(
     queries.appendChild(methodQueries);
     text(queries, "Queries match the highest-ranked occurrence containing the method name, not necessarily "
         + "the selected call path. They read the retained capture, without sampling again.", "query-view-provenance");
-    container.appendChild(queries);
     const selection = document.createElement("section");
     selection.setAttribute("aria-label", "Local branch actions");
     selection.className = "cpu-profile-selection";
@@ -184,10 +198,10 @@ function renderCpuProfile(
     const focusBranch = button("Focus branch", () => { if (selected) setFocus(selected); });
     localActions.append(focusBranch, expandHotpath);
     selection.appendChild(localActions);
-    container.appendChild(selection);
     const visualization = document.createElement("div");
     visualization.className = "cpu-profile-visualization";
     container.appendChild(visualization);
+    container.append(breadcrumb, selection, queries, profileGuidance);
     const info = (node: CpuTreeNode) =>
         method(node) + " | " + moduleName(node) + " | inclusive " + node.inclusiveSamples
         + " (" + percent(node.inclusiveSamples, captureTotal) + " of capture; "
@@ -204,7 +218,10 @@ function renderCpuProfile(
         expanded.add(pathKey(entry.path));
         state.expanded = [...expanded];
         state.focus = entry.path; state.selected = entry.path; redraw();
-        visualization.querySelector<HTMLElement>("button, summary, [tabindex]")?.focus();
+        const methodButton = Array.from(visualization.querySelectorAll<HTMLElement>("[data-node-path]"))
+            .find(row => row.tagName === "TR" && row.getAttribute("data-node-path") === pathKey(entry.path))
+            ?.querySelector<HTMLButtonElement>(".cpu-profile-method");
+        (methodButton ?? visualization.querySelector<HTMLElement>("button, summary, [tabindex]"))?.focus();
     }
     function drawSelection(): void {
         selectedName.textContent = selected ? "Selected branch: " + method(selected.node)
@@ -263,16 +280,6 @@ function renderCpuProfile(
             row.setAttribute("data-node-path", pathKey(entry.path));
             row.className = (matches(entry.node) ? "cpu-profile-match " : "")
                 + (loadedHotpath.has(pathKey(entry.path)) ? "cpu-profile-hotpath" : "");
-            row.tabIndex = 0;
-            row.addEventListener("click", event => {
-                if (!(event.target as Element).closest(".cpu-profile-disclosure")) select(entry);
-            });
-            row.addEventListener("keydown", event => {
-                if (event.target === row && (event.key === "Enter" || event.key === " ")) {
-                    event.preventDefault();
-                    select(entry);
-                }
-            });
             const cell = document.createElement("td");
             const name = document.createElement("div");
             name.className = "cpu-profile-row";
@@ -472,7 +479,7 @@ export const CPU_PROFILE_STYLES = `
     .cpu-profile-row { display:flex; gap:.35rem; align-items:center; min-width:0; }
     .cpu-profile-method { flex:1; min-width:0; text-align:left; background:transparent; color:var(--vscode-textLink-foreground); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .cpu-profile-match { outline:2px solid var(--vscode-editor-findMatchHighlightBorder, var(--vscode-focusBorder)); }
-    .cpu-profile-warning { border-left:3px solid var(--vscode-editorWarning-foreground); padding:.5rem; }
+    .cpu-profile-warning { border:1px solid var(--vscode-editorWarning-foreground); padding:.5rem; font-weight:600; }
     .cpu-call-tree { width:100%; min-width:34rem; table-layout:fixed; border-collapse:collapse; }
     .cpu-call-tree caption { text-align:left; margin:.5rem 0; }
     .cpu-call-tree th:first-child { width:auto; text-align:left; }

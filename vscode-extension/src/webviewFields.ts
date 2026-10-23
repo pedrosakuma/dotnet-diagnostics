@@ -1,3 +1,9 @@
+export const WEBVIEW_BUTTON_STYLES = `
+    button { color:var(--vscode-button-foreground); background:var(--vscode-button-background); border:0; border-radius:2px; padding:.45rem .75rem; }
+    button:hover { background:var(--vscode-button-hoverBackground); }
+    button:disabled { opacity:.55; }
+`;
+
 export const WEBVIEW_FIELD_STYLES = `
     input[type="text"], input[type="search"], select {
         box-sizing:border-box; min-width:0; max-width:100%; font:inherit;

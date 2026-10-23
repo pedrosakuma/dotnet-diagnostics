@@ -7,8 +7,10 @@ declare function enhanceEvidenceTables(parent: HTMLElement): void;
 declare function renderExceptionNavigation(parent: HTMLElement, events: Array<Record<string, unknown>>): void;
 declare function applyHeapTypeFocus(): void;
 declare function updateThreadNavigation(view: string, result: Record<string, unknown>): void;
-declare function navigateThreadFromGroup(id: number): void;
+declare function navigateThreadFromGroup(id: number, returnFocus?: HTMLElement): void;
+declare function navigateThreadTo(id: number, returnPanel?: string, returnFocus?: HTMLElement): void;
 declare function updateEvidenceViewSwitcher(container: HTMLElement): void;
+declare let addressLiveQueriesAvailable: boolean;
 
 // Provided by the address-navigation script that is emitted next to this renderer in the webview.
 declare function appendAddressValue(parent: HTMLElement, value: unknown, containerId: string): void;
@@ -107,6 +109,16 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
     const fillCell = (cell: HTMLElement, columnName: string, value: unknown) => {
         if (/address$/i.test(columnName)) {
             appendAddressValue(cell, value, containerId);
+        } else if (containerId === "threadQueryViews" && document.getElementById("threadExplorer")
+            && /^(?:managed|waiting|owner) thread$/i.test(columnName)
+            && typeof value === "number" && Number.isSafeInteger(value) && value >= 0) {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "heap-type-link";
+            button.textContent = "Thread " + value;
+            button.addEventListener("click", () => navigateThreadTo(value,
+                containerId === "threadQueryViews" ? "threadQueryViews-" + view : undefined, button));
+            cell.appendChild(button);
         } else {
             cell.textContent = formatValue(value);
         }
@@ -398,8 +410,9 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
                         ] as Array<[string, number, boolean]>) {
                             const button = document.createElement("button");
                             button.type = "button";
+                            button.setAttribute("data-live-follow-up", "true");
                             button.textContent = label;
-                            button.disabled = disabled;
+                            button.disabled = disabled || !addressLiveQueriesAvailable;
                             button.addEventListener("click", () => read(index));
                             controls.appendChild(button);
                         }
@@ -411,11 +424,15 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
                         indexInput.max = String(length - 1);
                         indexInput.step = "1";
                         indexInput.value = String(start);
+                        indexInput.setAttribute("data-live-follow-up", "true");
+                        indexInput.disabled = !addressLiveQueriesAvailable;
                         label.appendChild(indexInput);
                         controls.appendChild(label);
                         const go = document.createElement("button");
                         go.type = "button";
+                        go.setAttribute("data-live-follow-up", "true");
                         go.textContent = "Read array range";
+                        go.disabled = !addressLiveQueriesAvailable;
                         const readIndex = () => {
                             const value = indexInput.value.trim();
                             const index = Number(value);
@@ -672,7 +689,7 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
                         button.type = "button";
                         button.className = "heap-type-link";
                         button.textContent = "Thread " + id;
-                        button.addEventListener("click", () => navigateThreadFromGroup(id));
+                        button.addEventListener("click", () => navigateThreadFromGroup(id, button));
                         cell.replaceChildren(button);
                     });
                     const frames = Array.isArray(row.canonicalFrames) ? row.canonicalFrames : [];
@@ -680,10 +697,21 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
                         appendMessage(body, "No managed stack frames were returned for this group. The capture does not specify why; "
                             + "this does not mean these threads have no stack or share the same execution path.", "query-view-note");
                     }
-                    appendMessage(body, frames.map(frame => {
+                    const stack = document.createElement("ol");
+                    stack.className = "query-view-stack-frames";
+                    for (const frame of frames) {
                         const item = frame && typeof frame === "object" ? frame as Record<string, unknown> : {};
-                        return typeof item.displayName === "string" && item.displayName ? item.displayName : formatValue(item);
-                    }).join("  →  "), "query-view-chain");
+                        const frameNode = document.createElement("li");
+                        frameNode.textContent = typeof item.displayName === "string" && item.displayName
+                            ? item.displayName : formatValue(item);
+                        stack.appendChild(frameNode);
+                    }
+                    if (frames.length) {
+                        const order = document.createElement("p");
+                        order.className = "query-view-note";
+                        order.textContent = "Top of stack first.";
+                        body.append(order, stack);
+                    }
                 },
                 "No stack groups matched the requested threshold.");
             break;
@@ -706,11 +734,14 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
                         ["Inferred cycle candidate", row.isInferredCycleCandidate],
                         ["Confidence", row.inferenceConfidence],
                     ], body);
+                    fieldTable(body, "Root thread", [{ managedThreadId: row.rootThreadId }], [
+                        ["Managed thread", link => link.managedThreadId],
+                    ], "No root thread ID was returned.");
                     fieldTable(body, "Wait chain", row.links, [
                         ["Waiting thread", link => link.waitingThreadId],
                         ["Wait reason", link => link.waitReason],
                         ["Target", link => [link.targetKind, link.targetLabel].filter(Boolean).join(" · ")],
-                        ["Owner", link => link.ownerThreadId],
+                        ["Owner thread", link => link.ownerThreadId],
                         ["Confidence", link => link.confidence],
                     ], "No wait links were recorded.");
                     notes("Chain caveats", row.notes);
@@ -766,6 +797,16 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
             const recent = Array.isArray(data.recent) ? data.recent.map(asRecord) : [];
             const startedAt = typeof data.startedAt === "string" ? data.startedAt : undefined;
             const startedAtDate = startedAt ? new Date(startedAt) : undefined;
+            const scope = document.createElement("details");
+            scope.className = "exception-capture-scope";
+            const scopeLabel = document.createElement("summary");
+            scopeLabel.textContent = "Capture totals and scope";
+            scope.appendChild(scopeLabel);
+            const headline = document.createElement("p");
+            headline.className = "exception-capture-summary";
+            headline.textContent = formatValue(data.totalExceptions) + " observed · " + recent.length + " retained";
+            content.appendChild(headline);
+            const beforeMetadata = new Set(Array.from(content.children));
             metrics([
                 ["Observed exceptions", data.totalExceptions],
                 ["Retained events", recent.length],
@@ -791,7 +832,7 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
             table("Exception types (all observed events)", data.byType, [
                 ["Exception type", row => row.exceptionType],
                 ["Count", row => row.count],
-            ], "No managed exceptions were observed. Start capture before reproducing the problem.");
+            ], "No managed exceptions were observed. EventPipe readiness is not reported, so a one-time failure may have happened outside the capture window. Keep the workload running or repeat the problem throughout a new capture.");
             const messages = new Map<string, Record<string, unknown>>();
             for (const event of recent) {
                 const key = JSON.stringify([event.exceptionType, event.exceptionMessage]);
@@ -819,8 +860,25 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
             for (const child of Array.from(content.children))
                 if (child.classList.contains("query-view-section")) aggregates.appendChild(child);
             content.appendChild(aggregates);
-            notes("Capture notes and retention limits", result.notes);
+            for (const child of Array.from(content.children))
+                if (!beforeMetadata.has(child)) scope.appendChild(child);
+            const notRetained = typeof data.totalExceptions === "number" && Number.isFinite(data.totalExceptions)
+                ? Math.max(0, data.totalExceptions - recent.length) : 0;
+            const captureNotes = Array.isArray(result.notes) ? result.notes : [];
+            if (notRetained > 0 || captureNotes.length) {
+                const alert = document.createElement("details");
+                alert.className = "exception-capture-notes";
+                const caption = document.createElement("summary");
+                caption.textContent = [
+                    notRetained > 0 ? notRetained + " observations not retained" : "",
+                    captureNotes.length ? captureNotes.length + " collection / retention note(s)" : "",
+                ].filter(Boolean).join(" · ");
+                alert.appendChild(caption);
+                for (const note of captureNotes) appendMessage(alert, String(note), "query-view-note");
+                content.appendChild(alert);
+            }
             renderExceptionNavigation(content, recent);
+            content.appendChild(scope);
             break;
         }
         case "thread-statics": {
@@ -967,13 +1025,10 @@ export const QUERY_VIEW_STYLES = `
     .heap-detail-pane { border:1px solid var(--vscode-panel-border); padding:.6rem; }
     .heap-type-list td:first-child { overflow-wrap:anywhere; }
     .heap-type-list button[aria-current="true"] { font-weight:700; text-decoration:underline; }
-    #openHeapDetails { margin-bottom:.5rem; }
     #backToHeapTypes { display:none; }
     @container (max-width: 850px) {
         .heap-workspace { display:block; }
         .heap-type-list, .heap-detail-pane { max-height:none; overflow:visible; }
-        .heap-workspace[data-focused="true"] .heap-type-list { display:none; }
-        .heap-workspace[data-focused="false"] .heap-detail-pane { display:none; }
         #backToHeapTypes { display:inline-block; }
     }
     .query-views { margin-top:.8rem; }
@@ -1000,9 +1055,34 @@ export const QUERY_VIEW_STYLES = `
     details.query-view-nested > summary { cursor:pointer; font-weight:500; }
     .query-view-nested-body { padding:.35rem 0 .2rem .7rem; }
     .query-view-chain { font-family:var(--vscode-editor-font-family); overflow-wrap:anywhere; }
+    .query-view-stack-frames { padding-left:1.5rem; }
+    .query-view-stack-frames li { margin:.15rem 0; overflow-wrap:anywhere; }
+    .thread-search { display:flex; flex-wrap:wrap; align-items:center; gap:.4rem; color:var(--vscode-descriptionForeground); }
+    .thread-search input { flex:1 1 12rem; min-width:0; }
+    .thread-secondary { font-size:.85em; color:var(--vscode-descriptionForeground); }
+    .thread-explorer-table { width:100%; table-layout:fixed; border-collapse:collapse; margin:.5rem 0; }
+    .thread-explorer-table th:first-child { width:7rem; }
+    .thread-explorer-table th:nth-child(2) { width:7rem; }
+    .thread-explorer-table th, .thread-explorer-table td { text-align:left; vertical-align:top; padding:.4rem; overflow-wrap:anywhere; }
+    .thread-top-frame, .thread-stack { font-family:var(--vscode-editor-font-family,monospace); font-size:.9em; }
+    .thread-top-frame-preview { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; overflow-wrap:anywhere; }
+    .thread-disclosure { background:none; border:none; color:var(--vscode-foreground); padding:0; font:inherit; text-align:left; }
+    .thread-disclosure::before { content:'\\25B8'; display:inline-block; width:1em; }
+    .thread-disclosure[aria-expanded="true"]::before { content:'\\25BE'; }
+    .thread-disclosure:hover { background:var(--vscode-list-hoverBackground); }
+    .thread-disclosure:focus-visible { outline:1px solid var(--vscode-focusBorder); outline-offset:2px; }
+    .thread-expanded { background:var(--vscode-list-inactiveSelectionBackground); }
+    .thread-inline-stack { padding:.2rem .4rem .6rem; border-bottom:1px solid var(--vscode-panel-border); min-width:0; }
+    .thread-stack { padding-left:2rem; }
+    .thread-stack li { white-space:pre-wrap; overflow-wrap:anywhere; margin:.35rem 0; }
+    .thread-technical { font-size:.85em; color:var(--vscode-descriptionForeground); margin-top:.5rem; }
+    @media(max-width:600px) {
+      .thread-explorer-table th:first-child { width:5.5rem; }
+      .thread-explorer-table th:nth-child(2) { width:5rem; }
+    }
     .reference-path { list-style:none; padding-left:.8rem; border-left:1px solid var(--vscode-panel-border); }
     .reference-path summary { cursor:pointer; overflow-wrap:anywhere; }
-    .query-view-notes { border-left:3px solid var(--vscode-editorWarning-foreground); padding:.25rem .65rem; margin:.6rem 0; }
+    .query-view-notes { border:1px solid var(--vscode-editorWarning-foreground); padding:.25rem .65rem; margin:.6rem 0; }
     .query-view-notes ul { margin:.25rem 0; padding-left:1.2rem; }
     .query-view-deadlocks { border-color:var(--vscode-editorWarning-foreground)!important; border-width:2px!important; }
     .query-view-deadlocks > summary { color:var(--vscode-editorWarning-foreground); }

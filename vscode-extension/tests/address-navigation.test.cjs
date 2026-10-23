@@ -50,6 +50,7 @@ class ElementStub {
     set textContent(value) { this._text = String(value); this.children = []; }
     get textContent() { return this._text + this.children.map(child => child.textContent).join(""); }
     setAttribute(name, value) { this.attributes[name] = String(value); }
+    hasAttribute(name) { return Object.hasOwn(this.attributes, name); }
     addEventListener(type, listener) { this.listeners[type] = listener; }
     click() { assert.ok(!this.disabled, "disabled controls cannot be clicked"); this.listeners.click(); }
     focus() { this.focused = true; }
@@ -108,7 +109,7 @@ function loadPage() {
     // eslint-disable-next-line no-new-func -- evaluates the exact script emitted into the webview.
     const api = new Function("document", "vscode", `${QUERY_VIEW_RENDERER_SCRIPT}
         return { renderQueryView, navigateToAddress, handleAddressNavigationMessage, resetAddressNavigation,
-                 moveAddressHistory, addressNavigationState, addressLinkContainers };`)(document, vscode);
+                 moveAddressHistory, setAddressLiveQueriesAvailable, addressNavigationState, addressLinkContainers };`)(document, vscode);
     return { ...api, document, heap, threads, nav, back, forward, close, posted };
 }
 
@@ -194,6 +195,30 @@ async function pump(page, controller, seen = { count: 0 }) {
 const links = container => container.findAll(node => node.classes.has("address-link"));
 const copies = container => container.findAll(node => node.classes.has("address-copy"));
 const crumbs = page => page.document.getElementById("addressBreadcrumb").findAll(node => node.tagName === "button");
+
+test("lost live heap connection disables every follow-up while retaining local address actions", async () => {
+    const page = loadPage();
+    const { controller } = makeHost(page, { array: true });
+    const seen = { count: 0 };
+    page.navigateToAddress(TARGET, "object");
+    await pump(page, controller, seen);
+
+    const results = page.document.getElementById("addressQueryViews");
+    assert.equal(results.findAll(node => node.textContent === "Next array range")[0].disabled, false);
+    assert.equal(links(results).length > 0, true);
+    page.setAddressLiveQueriesAvailable(false);
+
+    for (const container of [page.heap, results, page.nav]) {
+        assert.ok(container.findAll(node => node.classes.has("address-link")).every(node => node.disabled));
+        assert.ok(container.findAll(node => node.hasAttribute("data-live-follow-up")).every(node => node.disabled));
+    }
+    assert.ok(results.findAll(node => node.hasAttribute("data-live-follow-up")).every(node => node.disabled));
+    assert.ok(copies(results).every(node => !node.disabled), "copying a displayed address is local");
+    assert.match(page.document.getElementById("addressNavStatus").textContent, /Display-only: the owning CLI connection is closed/);
+    const postedCount = page.posted.length;
+    page.navigateToAddress(FIELD, "object");
+    assert.equal(page.posted.length, postedCount, "a display-only snapshot cannot start another live read");
+});
 
 test("struct array fields expand in place, follow actual references and page without carrying sensitive consent", async () => {
     const page = loadPage();

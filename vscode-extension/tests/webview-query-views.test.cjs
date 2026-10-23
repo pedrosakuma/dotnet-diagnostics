@@ -71,6 +71,10 @@ class ElementStub {
         (this.listeners ??= {})[type] = listener;
     }
 
+    click() {
+        this.listeners?.click?.({});
+    }
+
     append(...children) {
         for (const child of children) this.appendChild(child);
     }
@@ -127,6 +131,7 @@ function createDocumentStub() {
         createElementNS(_namespace, tagName) {
             return new ElementStub(tagName);
         },
+        querySelector() { return null; },
         querySelectorAll(selector) {
             const attribute = /^\[([^\]]+)\]$/.exec(selector)?.[1];
             if (!attribute) return [];
@@ -155,14 +160,15 @@ function createDocumentStub() {
     return { document, makeContainer };
 }
 
-function loadRenderer() {
+function loadRenderer(selectThreadSnapshotView) {
     const { document, makeContainer } = createDocumentStub();
     // eslint-disable-next-line no-new-func -- exercises the exact script emitted into the webview.
     const api = new Function(
-        "document", "window",
+        "document", "window", "selectThreadSnapshotView",
         `${QUERY_VIEW_RENDERER_SCRIPT}\nreturn { renderQueryView, enhanceEvidenceTable, resetEvidenceTable,
-            renderHeapTypeNavigation, navigateHeapDetails, updateThreadNavigation, renderExceptionNavigation };`,
-    )(document, {scrollY:13, scrollTo(){}});
+            renderHeapTypeNavigation, navigateHeapDetails, updateThreadNavigation, renderExceptionNavigation,
+            navigateThreadTo };`,
+    )(document, {scrollY:13, scrollTo(){}}, selectThreadSnapshotView);
     return { ...api, makeContainer, document };
 }
 
@@ -183,6 +189,85 @@ test("live and dump webviews include the specialized renderer and styles", () =>
         assert.match(html, /query-view-metrics/);
         assert.doesNotMatch(script, /JSON\.stringify\(resultOrMessage/);
     }
+});
+
+test("captured data precedes static scope and quantitative summaries stay secondary", () => {
+    const html = renderHtml(target, "nonce123", 120);
+    assert.ok(html.indexOf('id="chart"') < html.indexOf('id="counterIdentity"'));
+    assert.ok(html.indexOf('id="chart"') < html.indexOf('id="chartNote"'));
+    assert.ok(html.indexOf('id="quality"') < html.indexOf('id="chart"'), "active chart loss stays visible before data");
+    assert.ok(html.indexOf('id="cpuQueryViews"') < html.indexOf('id="cpuSamplingDisclaimer"'));
+    assert.ok(html.indexOf('id="cpuQueryViews"') < html.indexOf('id="cpuEvidencePrerequisite"'));
+    assert.ok(html.indexOf('id="captureHeapTable"') < html.indexOf("Remembered permissions apply"));
+    assert.ok(html.indexOf('id="eventsTable"') < html.indexOf('id="eventsSubscription"'));
+    assert.match(html, /\.capture-summary, \.exception-capture-summary[\s\S]*?font-size:\.85rem/);
+    for (const id of ["captureCpu", "captureAllocation", "captureHeap", "captureThreadSnapshot", "captureExceptions"])
+        assert.match(html, new RegExp(`id="${id}"[^>]*aria-label="[^"]+">Capture</button>`));
+
+    const { renderQueryView, makeContainer, document, updateThreadNavigation } = loadRenderer();
+    const exceptions = makeContainer("exceptionCaptureViews");
+    renderQueryView("exceptionCaptureViews", "exceptions", {
+        data: {totalExceptions: 5, recentCap: 1, recent: [
+            {exceptionType: "Fixture.Exception", exceptionMessage: "Captured message", threadId: 1},
+        ], byType: []}, notes: ["maxRecent=1; 4 events omitted"],
+    }, false);
+    const explorer = exceptions.querySelector(".exception-explorer");
+    const scope = exceptions.querySelector(".exception-capture-scope");
+    assert.equal(scope._parent, explorer._parent);
+    assert.ok(scope._parent.children.indexOf(scope) > scope._parent.children.indexOf(explorer));
+    assert.match(exceptions.querySelector(".exception-capture-notes").textContent, /4 events omitted/);
+    assert.match(exceptions.querySelector(".exception-capture-notes").children[0].textContent, /4 observations not retained/);
+    assert.equal(exceptions.querySelector(".exception-capture-summary").textContent, "5 observed · 1 retained");
+
+    const threads = makeContainer("threadQueryViews");
+    makeContainer("captureThreadResult").appendChild(threads);
+    updateThreadNavigation("snapshot", {threads: [{managedThreadId: 1, state: "Running", frames: ["Fixture.Work()"]}]});
+    const list = document.getElementById("threadModePanel");
+    assert.ok(threads.textContent.includes("Fixture.Work()"));
+    const threadExplorer = document.getElementById("threadExplorer");
+    assert.ok(threadExplorer.children.indexOf(list) < threadExplorer.children.findIndex(node =>
+        node.textContent.startsWith("Point-in-time snapshot")));
+});
+
+test("thread Workspace summary exposes deadlock and query availability without opening legacy tabs", () => {
+    const html = renderHtml(target, "nonce", 120);
+    const script = extractInlineScript(html);
+    assert.match(html, /id="workspaceThreadViewStatus" role="status"/);
+    assert.match(script, /'thread-explorer': 'Thread explorer'/);
+    assert.match(script, /threadQueryStatusSummary\(\)/);
+    assert.match(script, /state === 'unavailable' \? base \+ ' \(unavailable\)'/);
+
+    const state = /    const threadQueryStates = \{[\s\S]*?\n    \};/.exec(script);
+    const summary = /    function threadQueryStatusSummary\(\) \{[\s\S]*?\n    \}/.exec(script);
+    const presentation = /    function refreshThreadQueryPresentation\(\) \{[\s\S]*?\n    \}/.exec(script);
+    assert.ok(state && summary && presentation, "thread status projection should be emitted in the Workspace script");
+    const source = [state[0], summary[0], presentation[0]].join("\n");
+    const labels = {
+        deadlocks: "Inferred deadlock candidates",
+        "unique-stacks": "Grouped snapshot stacks",
+        "wait-chains": "Snapshot wait chains",
+        threadpool: "Snapshot thread-pool query",
+    };
+    const options = Object.keys(labels).map(value => ({ value, textContent: "" }));
+    // eslint-disable-next-line no-new-func -- executes the actual emitted status summary.
+    const api = new Function("threadSnapshotViewLabels", "workspaceView", `
+        let threadSnapshotQueryAvailable = true;
+        let threadSnapshotEvidenceId = "thread-evidence";
+        ${source}
+        return {threadQueryStates, threadQueryStatusSummary, refreshThreadQueryPresentation};
+    `)(labels, { options });
+    api.threadQueryStates.deadlocks.state = "returned";
+    api.threadQueryStates.deadlocks.count = 2;
+    api.threadQueryStates["unique-stacks"].state = "unavailable";
+    api.threadQueryStates["wait-chains"].state = "pending";
+    api.refreshThreadQueryPresentation();
+    assert.match(api.threadQueryStatusSummary(), /2 inferred deadlock candidate\(s\)/);
+    assert.match(api.threadQueryStatusSummary(), /1 views pending/);
+    assert.match(api.threadQueryStatusSummary(), /1 views unavailable/);
+    assert.equal(options.find(option => option.value === "deadlocks").textContent,
+        "Inferred deadlock candidates - 2 found (inferred)");
+    assert.equal(options.find(option => option.value === "unique-stacks").textContent,
+        "Grouped snapshot stacks (unavailable)");
 });
 
 test("every generic capture kind has one canonical Workspace domain and no Diagnostics fallback", () => {
@@ -235,8 +320,8 @@ test("live panel exposes the compact evidence workspace and keeps other result r
     assert.doesNotMatch(dumpHtml, /workspace-thread-snapshot/);
     assert.match(html, /id="captureGc" type="button">Capture GC evidence…/);
     assert.match(html, /id="cpuSamplingDisclaimer"/);
-    assert.match(html, /<section id="resultCpu"[^>]*data-export-kind="cpu"[\s\S]*?<button id="captureCpu" type="button">/);
-    assert.match(html, /<section id="resultHeap"[\s\S]*?<button id="captureHeap" type="button">/);
+    assert.match(html, /<section id="resultCpu"[^>]*data-export-kind="cpu"[\s\S]*?<button id="captureCpu" type="button" aria-label="Capture CPU sample">Capture/);
+    assert.match(html, /<section id="resultHeap"[\s\S]*?<button id="captureHeap" type="button" aria-label="Capture heap snapshot">Capture/);
     assert.match(script, /function selectResultTab\(selected\)/);
     assert.match(script, /event\.key === 'ArrowRight'/);
     assert.match(script, /function selectProfileView\(kind, view, rootMethodFilter\)/);
@@ -264,6 +349,42 @@ test("live panel exposes the compact evidence workspace and keeps other result r
     assert.match(script, /renderCpuQuery\(message\.view, message\.result, false\)/);
 });
 
+test("terminal thread capture status resolves pending queries without overwriting another workspace", () => {
+    const script = extractInlineScript(renderHtml(target, "nonce", 120));
+    const marker = "} else if (message.type === 'captureStatus' && message.kind === 'thread-snapshot') {";
+    const start = script.indexOf(marker) + marker.length;
+    const handler = script.slice(start, script.indexOf("      } else if (message.type === 'captureStatus')", start));
+    const selectStart = script.indexOf("    function selectThreadSnapshotView(view) {");
+    const select = script.slice(selectStart, script.indexOf("    workspaceDomain.addEventListener", selectStart));
+    const create = new Function("selectedWorkspaceEvidence", `
+        const workspaceView = {value:'call-tree'};
+        const workspaceThreadViewStatus = {textContent:'unchanged'};
+        const captureThreadStatusElement = {}, captureThreadSnapshotButton = {};
+        let pendingThreadSnapshotEvidenceId='thread-current', threadSnapshotEvidenceId='thread-prior';
+        let threadSnapshotQueryAvailable=true, threadSnapshotView='thread-explorer';
+        const threadQueryStates=Object.fromEntries(['deadlocks','unique-stacks','wait-chains','threadpool']
+            .map(view=>[view,{state:'pending',count:0}]));
+        const setThreadStaticsBusy=()=>{}, setWorkspaceStatus=()=>{}, refreshThreadQueryPresentation=()=>{};
+        const document={getElementById:()=>({innerHTML:'',remove(){}})};
+        ${select}
+        return {receive(message){${handler}},workspaceView,workspaceThreadViewStatus,threadQueryStates,
+            selectedView:()=>threadSnapshotView,selectThreadSnapshotView};
+    `);
+    for (const domain of ["cpu", "allocation"]) {
+        for (const state of ["error", "done"]) {
+            const api = create(domain);
+            api.receive({evidenceId:"thread-current",state,retainedEvidenceInvalidated:state==="error"});
+            assert.ok(Object.values(api.threadQueryStates).every(item=>item.state==="unavailable"));
+            assert.equal(api.workspaceView.value,"call-tree");
+            assert.equal(api.workspaceThreadViewStatus.textContent,"unchanged");
+        }
+        const api = create(domain);
+        api.selectThreadSnapshotView("thread-explorer");
+        assert.equal(api.selectedView(),"thread-explorer","retained thread navigation state still updates");
+        assert.equal(api.workspaceView.value,"call-tree");
+    }
+});
+
 test("domain return restores CPU view and filter without a request; new captures discard that selection and cache", () => {
     const script = extractInlineScript(renderHtml(target, "nonce", 120));
     const navigation = script.slice(script.indexOf("let selectedWorkspaceEvidence ="),
@@ -282,7 +403,8 @@ test("domain return restores CPU view and filter without a request; new captures
         "openHeapDetails", "backToHeapTypes", "captureGc", "resultCpu", "resultAllocation", "resultHeap",
         "resultThreads", "cpuSamplingDisclaimer", "workspaceCanvas", "workspaceCaptureStatus",
         "workspaceThreadViewStatus", "genericCaptureViews", "captureThreadHeadline", "captureThreadTable",
-        "threadQueryViews", "threadDetails", "threadStaticsForm", "jointReproduction"];
+        "threadQueryViews", "threadDetails", "threadStaticsForm", "jointReproduction",
+        "workspaceRequestCapture", "captureRequestEvidence"];
     const nodes = Object.fromEntries(names.map(id => [id, makeContainer(id)]));
     nodes.captureThreadTable.closest = () => nodes.threadDetails;
     document.querySelector = selector => selector === "#resultThreads .statics-form" ? nodes.threadStaticsForm : null;
@@ -294,11 +416,16 @@ test("domain return restores CPU view and filter without a request; new captures
       const isRequestCapture = kind => ['requests','kestrel','db','networking'].includes(kind);
       const usesWorkspaceForGenericCapture = kind => ['gc','gc-activities'].includes(kind)
         || isThreadCapture(kind) || isRequestCapture(kind);
+      const genericCaptureLabels = {requests:'In-flight requests',kestrel:'Kestrel',db:'Database',networking:'Networking'};
       let genericCaptureKind;
       let activeResultTab;
       const selectResultTab = name => { activeResultTab = name; };
-      const threadSnapshotViewLabels = {snapshot:'Snapshot summary',deadlocks:'Deadlocks','unique-stacks':'Grouped stacks',
+      const threadSnapshotViewLabels = {snapshot:'Inline thread summary','thread-explorer':'Thread explorer',
+        deadlocks:'Inferred deadlock candidates','unique-stacks':'Grouped snapshot stacks',
         'wait-chains':'Wait chains',threadpool:'Snapshot thread-pool query','thread-statics':'Thread statics'};
+      const threadQueryStates = {
+        deadlocks:{state:'not-requested',count:0},'unique-stacks':{state:'not-requested'},
+        'wait-chains':{state:'not-requested'},threadpool:{state:'not-requested'}};
       let threadSnapshotEvidenceId = "thread-1";
       let threadSnapshotQueryAvailable = true;
       let threadSnapshotView = 'snapshot';
@@ -356,7 +483,13 @@ test("domain return restores CPU view and filter without a request; new captures
         assert.equal(nodes.workspaceView.disabled, true, "generic results have no retained query view");
         assert.equal(nodes.workspaceLoadView.hidden, true, "navigation has no synthetic load action");
         assert.match(nodes.workspaceEvidenceStatus.textContent, /No completed evidence/);
+        assert.equal(nodes.workspaceRequestCapture.hidden, false);
+        assert.equal(nodes.jointReproduction.hidden, true);
+        assert.match(nodes.captureRequestEvidence.attributes["aria-label"], /^Capture /);
     }
+    api.setWorkspaceEvidence("request-activities");
+    assert.equal(nodes.workspaceRequestCapture.hidden, true);
+    assert.equal(nodes.jointReproduction.hidden, false, "the existing joint reproduction remains available in its evidence context");
     assert.deepEqual(requests, [{type:"queryCpu",evidenceId:"cpu-1",view:"top-methods"}],
         "request-family navigation performs no CLI work");
 });
@@ -514,6 +647,12 @@ function cpuRenderer() {
     assert.ok(start >= 0 && end > start, "CPU renderer source should be present");
     const source = script.slice(start, end);
     const { document, makeContainer } = createDocumentStub();
+    const createElement = document.createElement;
+    document.createElement = tagName => {
+        const element = createElement(tagName);
+        if (tagName === "tr") element.tagName = "TR";
+        return element;
+    };
     const cpuQueryViews = makeContainer("cpuQueryViews");
     const allocationContainer = makeContainer("allocationQueryViews");
     const requests = [];
@@ -593,7 +732,7 @@ test("CPU and allocation profile tables preserve method symbols independently", 
         && element.className === "cpu-query-action")[0].querySelector("button"));
     renderCpuQuery("by-module", { data: {} }, false, "allocation");
     assert.match(allocationContainer.textContent, /Modules/);
-    assert.match(container.textContent, /Top methods/);
+    assert.match(container.textContent, /Methods ranked by sampled time/);
 });
 
 function elements(root, predicate) {
@@ -608,13 +747,19 @@ function click(root, caption, index = 0) {
     button.listeners.click({});
 }
 
+function clickByLabel(root, label) {
+    const button = elements(root, child => child.tagName === "button" && child.getAttribute("aria-label") === label)[0];
+    assert.ok(button, `button with accessible name ${label} must exist`);
+    button.listeners.click({});
+}
+
 function cpuNode(method, inclusiveSamples, exclusiveSamples, children = []) {
     return { frame: { method, module: "App" }, inclusiveSamples, exclusiveSamples, children };
 }
 
 function selectCpuPath(container, path) {
     const row = elements(container, e => e.attributes["data-node-path"] === path)[0];
-    row.listeners.keydown({key:"Enter",target:row,preventDefault(){}});
+    row.querySelector(".cpu-profile-method").listeners.click();
 }
 
 test("CPU call tree renders a semantic table with disclosures and selected-method queries", () => {
@@ -638,6 +783,33 @@ test("CPU call tree renders a semantic table with disclosures and selected-metho
         view: "caller-callee",
         rootMethodFilter: "App.Main()",
     }]);
+});
+
+test("CPU visualization follows essential controls and keeps active partial-data warnings prominent", () => {
+    const { renderCpuQuery, container } = cpuRenderer();
+    renderCpuQuery("call-tree", { data: { totalSamples: 100, truncated: true,
+        root: cpuNode("Root", 100, 10, [cpuNode("Work", 90, 90)]),
+    } }, false);
+
+    const all = elements(container, () => true);
+    const indexOf = predicate => all.findIndex(predicate);
+    const visualization = indexOf(element => element.className === "cpu-profile-visualization");
+    const search = indexOf(element => element.tagName === "input");
+    const warning = indexOf(element => element.className === "cpu-profile-warning");
+    const selection = indexOf(element => element.className === "cpu-profile-selection");
+    const guidance = indexOf(element => element.className === "cpu-profile-guidance");
+    assert.ok(search < warning && warning < visualization,
+        "search and any active partial-projection warning precede the data");
+    assert.equal(all[warning].getAttribute("role"), "alert");
+    assert.ok(visualization < selection && visualization < guidance,
+        "the call tree precedes secondary actions and visible technical guidance");
+    assert.match(all[guidance].textContent, /inclusive sample counts, not elapsed time or measured CPU utilization/);
+    assert.match(all[guidance].textContent, /cannot be saved or compared in the extension/);
+    const comparisonLink = elements(all[guidance], element => element.tagName === "a")[0];
+    assert.equal(comparisonLink.getAttribute("href"),
+        "https://github.com/pedrosakuma/dotnet-diagnostics/blob/main/docs/historical-comparisons.md#supported-matrix");
+    assert.equal(comparisonLink.getAttribute("target"), "_blank");
+    assert.equal(comparisonLink.getAttribute("rel"), "noopener noreferrer");
 });
 
 test("CPU flame widths preserve self and omitted samples instead of renormalizing children", () => {
@@ -714,6 +886,10 @@ test("CPU focus uses exact local paths across modes, preserves capture denominat
     assert.deepEqual(state.focus, [1]);
     assert.equal(elements(container, e => e.attributes["data-node-path"] === "1.0")[0].hidden, false,
         "focusing a collapsed branch opens its loaded children");
+    const focusedMethod = elements(container, e => e.className === "cpu-profile-method" && e.focused)[0];
+    assert.equal(focusedMethod, elements(container, e => e.attributes["data-node-path"] === "1")[0]
+        .querySelector(".cpu-profile-method"),
+        "focus returns to the focused branch's method button rather than a row or disclosure control");
     assert.match(container.querySelector(".cpu-profile-selection").textContent, /40.0% of capture; 100.0% of focus/);
     click(container, "Flame graph (icicle)");
     assert.match(container.querySelector("svg").textContent, /Second/);
@@ -892,15 +1068,19 @@ test("CPU contextual actions select exact occurrences by mouse and keyboard with
     assert.equal(context.querySelector("button").disabled,true);
     assert.equal(elements(container,e=>e.textContent==="Callers / callees").length,0);
     const rows=elements(container,e=>e.attributes["data-node-path"]!==undefined);
+    assert.ok(rows.every(row => row.attributes.tabindex === undefined),
+        "semantic table rows do not add a redundant keyboard tab stop");
     assert.equal(elements(container.querySelector(".cpu-call-tree"),e=>e.textContent==="Focus"||e.textContent==="Hotpath").length,0);
     const expanded=[...state.expanded ?? [""]];
-    rows[1].listeners.click({target:rows[1]});
+    const firstMethod = rows[1].querySelector(".cpu-profile-method");
+    assert.equal(firstMethod.tagName, "button", "the method action remains natively keyboard-activatable");
+    firstMethod.listeners.click();
     assert.deepEqual(state.selected,[0]);
     assert.equal(rows[1].getAttribute("aria-selected"),"true");
     assert.match(context.textContent,/Selected branch: Same.Name/);
     assert.equal(context.querySelector(".cpu-profile-selected-name").title,"Same.Name");
     const second=rows[3];
-    second.listeners.keydown({key:" ",target:second,preventDefault(){}});
+    second.querySelector(".cpu-profile-method").listeners.click();
     assert.deepEqual(state.selected,[1],"same-name occurrence has its own path identity");
     assert.equal(rows[1].getAttribute("aria-selected"),"false");
     assert.equal(second.getAttribute("aria-selected"),"true");
@@ -1000,9 +1180,9 @@ test("exception captures render counts, retained messages and stacks as text wit
     assert.match(container.textContent, /2026-10-14T00:00:01Z/);
     assert.match(container.textContent, /2026-10-14T00:00:02Z/);
     assert.ok(container.textContent.includes(message));
-    click(container, "2026-10-14T00:00:01Z | System.Exception | thread 1");
+    clickByLabel(container, "2026-10-14T00:00:01Z | System.Exception | thread 1");
     assert.match(container.textContent, /Sample.Throw\(\)/);
-    click(container, "2026-10-14T00:00:02Z | System.Exception | thread 1");
+    clickByLabel(container, "2026-10-14T00:00:02Z | System.Exception | thread 1");
     assert.match(container.textContent, /No managed stack was captured/);
     assert.match(container.textContent, /5 event\(s\) omitted/);
     assert.match(container.textContent, /collector-note/);
@@ -1019,7 +1199,8 @@ test("exception captures render counts, retained messages and stacks as text wit
     renderQueryView("exceptionCaptureViews", "exceptions", {
         summary: "No exceptions", data: { totalExceptions: 0, byType: [], recent: [] }, notes: [],
     }, false);
-    assert.match(container.textContent, /Start capture before reproducing/);
+    assert.match(container.textContent, /EventPipe readiness is not reported/);
+    assert.match(container.textContent, /repeat the problem throughout a new capture/);
     assert.ok(!container.textContent.includes(message), "new results replace old sensitive messages");
 });
 
@@ -1027,6 +1208,8 @@ test("live webview wires exception evidence into the workspace without a duplica
     const html = renderHtml(target, "nonce123", 120);
     const script = extractInlineScript(html);
     assert.match(html, /id="captureExceptions"/);
+    assert.match(html, /Sending a capture clears the current result; if collection then fails, it cannot be restored/);
+    assert.match(html, /Exception results are temporary and are not saved/);
     assert.match(html, /id="captureExceptionsStatus" role="status"/);
     assert.match(html, /id="exceptionEvidenceIdentity" class="workspace-evidence-status" role="status"/);
     assert.match(script, /captureExceptionsButton\.addEventListener\('click', \(\) => vscode\.postMessage\(\{ type: 'captureExceptions' \}\)\)/);
@@ -1109,6 +1292,15 @@ test("live webview wires exception evidence into the workspace without a duplica
     assert.equal(running.panel.dataset.evidenceId, "");
     assert.match(running.identity.textContent, /Managed exceptions · Live EventPipe/);
     assert.deepEqual(running.activated, [], "running status after navigation does not reclaim focus");
+
+    const changedTarget = statusHarness({ pendingExceptionEvidenceId: "old-request" });
+    changedTarget.dispatch({
+        state: "error", preflight: true, evidenceId: "new-request",
+        captureKind: "exceptions", message: "The selected process changed during setup.",
+    }, changedTarget.state, changedTarget.deps);
+    assert.equal(changedTarget.state.pendingExceptionEvidenceId, "new-request");
+    assert.equal(changedTarget.views.clears, 0, "preflight abort must preserve current evidence");
+    assert.match(changedTarget.elements.get("captureExceptionsStatus").textContent, /selected process changed/);
 });
 
 test("exception result ownership stays dedicated, mode-specific and request-correlated", () => {
@@ -1160,7 +1352,7 @@ test("exception result ownership stays dedicated, mode-specific and request-corr
     assert.equal(state.exceptionEvidenceId, "request-2");
     assert.equal(state.exceptionEvidenceMode, "crash-guard");
     assert.deepEqual(panel.dataset, { evidenceId: "request-2", captureKind: "crash-guard" });
-    assert.match(identity.textContent, /Crash guard · Live EventPipe · PID 4242 · 00:00:10/);
+    assert.equal(identity.textContent, "", "selectors and target header already identify this evidence");
     assert.equal(rendered[0][0], "exceptionCaptureViews", "exceptions never render into the generic capture slot");
     assert.deepEqual(statuses, [["exceptions", "Current evidence: Crash guard · Live EventPipe · PID 4242."]]);
     assert.equal(details.open, true);
@@ -1265,7 +1457,8 @@ test("unique stacks show frame display names and fractional shares as percentage
         }],
     }, false);
 
-    assert.match(container.textContent, /Sample\.Run\(\)\s+→\s+Sample\.Main\(\)/);
+    assert.match(container.textContent, /Top of stack first/);
+    assert.match(container.textContent, /Sample\.Run\(\).*Sample\.Main\(\)/);
     assert.match(container.textContent, /50%/);
 });
 
@@ -1426,15 +1619,17 @@ test("live and dump heap layouts keep types and details in separate responsive p
         assert.match(html, /id="backToHeapTypes" type="button">Back to types/);
         assert.match(html, /id="heapDetailPane"[\s\S]*?id="heapQueryViews"[\s\S]*?id="addressNavigation"/);
         assert.match(html, /@container \(max-width: 850px\)/);
+        assert.doesNotMatch(html, /id="openHeapDetails"|Explore heap details/);
+        assert.doesNotMatch(html, /\.heap-workspace\[data-focused="(?:true|false)"\][^{]+\{ display:none; \}/);
         assert.match(html, /workspace\.dataset\.focused = "true"/);
         assert.match(html, /window\.scrollTo\(\{ top: overviewScroll \}\)/);
     }
 });
 
-test("workspace heap View navigation replaces only the duplicate live shortcut and preserves legacy navigation", () => {
+test("heap navigation needs no Explore shortcut and restores keyboard focus in live and dump panels", () => {
     const live=renderHtml(target,"nonce",120),dump=renderDumpAnalysisHtml("fixture.dmp","nonce");
     assert.doesNotMatch(live, /id="openHeapDetails"/);
-    assert.match(dump,/id="openHeapDetails" type="button">Explore heap details/);
+    assert.doesNotMatch(dump,/id="openHeapDetails"/);
     assert.match(extractInlineScript(live),/navigateHeapDetails\(workspaceView.value === 'details'\)/);
     const {makeContainer,document,renderHeapTypeNavigation,navigateHeapDetails}=loadRenderer();
     const workspace=makeContainer("heapWorkspace");
@@ -1460,13 +1655,15 @@ test("workspace heap View navigation replaces only the duplicate live shortcut a
     back.onclick();
     assert.equal(workspace.dataset.focused,"false");
     assert.equal(view.value,"snapshot");
-    const open=document.createElement("button");open.id="openHeapDetails";types.appendChild(open);
+    const getElementById=document.getElementById.bind(document);
+    document.getElementById=id=>id==="workspaceView"?null:getElementById(id);
     renderHeapTypeNavigation([{typeFullName:"App.Cache",instanceCount:2,totalBytes:100}]);
-    open.onclick();
-    assert.equal(workspace.dataset.focused,"true","legacy dump shortcut still navigates");
+    navigateHeapDetails(true);
+    assert.equal(workspace.dataset.focused,"true");
     back.onclick();
     assert.equal(workspace.dataset.focused,"false");
-    assert.equal(open.focused,true);
+    assert.equal(table.focused,true,"dump without a workspace selector restores focus to its type table");
+    assert.equal(table.tabIndex,-1);
     assert.equal(views.children.length,0,"all navigation is local; no evidence was manufactured");
 });
 
@@ -1534,7 +1731,7 @@ test("thread tabs support roving keyboard navigation and retain filters, selecti
     key(modes[2], "ArrowRight");
     assert.equal(modes[0].attributes["aria-selected"], "true");
     assert.equal(input.value, "Work");
-    assert.match(explorer.querySelector(".evidence-selection").textContent, /Managed thread 1/);
+    assert.equal(document.getElementById("thread-inline-1").parentElement.parentElement.hidden, false);
     key(modes[0], "ArrowLeft");
     key(modes[2], "Home");
     assert.equal(document.getElementById("threadModePanel").attributes["aria-labelledby"], modes[0].id);
@@ -1556,7 +1753,64 @@ test("thread tabs support roving keyboard navigation and retain filters, selecti
     key(refreshed[1], "Home");
     assert.equal(explorer.hidden, false);
     assert.equal(explorer.querySelector("input").value, "Work");
-    assert.match(explorer.querySelector(".evidence-selection").textContent, /Managed thread 1/);
+    assert.equal(document.getElementById("thread-inline-1").parentElement.parentElement.hidden, false);
+});
+
+test("thread explorer uses aligned inline disclosures without guessing numeric runtime state", () => {
+    const {makeContainer, document, updateThreadNavigation} = loadRenderer();
+    const root = makeContainer("captureThreadResult");
+    const longFrame = "App.Generic.Work<" + "LongNamespace.".repeat(30) + "Type>()";
+    updateThreadNavigation("snapshot", {threads: [
+        {managedThreadId: 4, osThreadId: 24192, state: "16953888", frames: ["App.Poll()", longFrame]},
+        {managedThreadId: 5, osThreadId: 200, state: 131616, frames: []},
+        {managedThreadId: 2, state: "Background, WaitSleepJoin", frames: [{displayName: "<script>App.Wait()</script>"}]},
+    ]});
+    const table = root.querySelector(".thread-explorer-table");
+    assert.deepEqual(table.querySelectorAll("th").map(x => x.textContent), ["Thread", "State", "Top frame"]);
+    const rows = table.querySelectorAll(".thread-explorer-row");
+    assert.deepEqual(rows.map(x => x.children[1].textContent), ["Not decoded", "Not decoded", "Background, WaitSleepJoin"]);
+    assert.equal(rows[1].children[2].textContent, "Unavailable");
+    assert.equal(rows[0].querySelector(".thread-top-frame-preview").textContent, "App.Poll()");
+    assert.equal(root.querySelector(".evidence-selection"), null, "no separate selected stack panel");
+    assert.equal(table.querySelectorAll(".thread-inline-row").every(x => x.hidden), true);
+    assert.equal(root.querySelector("label").htmlFor, "threadExplorerSearch");
+    assert.equal(root.querySelector("input").placeholder, "Thread ID, state or stack method");
+
+    const buttons = table.querySelectorAll(".thread-disclosure");
+    const first = buttons[0];
+    assert.equal(first.tagName.toLowerCase(), "button", "native Enter/Space activation");
+    assert.equal(first.attributes["aria-controls"], "thread-inline-4");
+    first.listeners.keydown({key: "ArrowRight", preventDefault() {}});
+    assert.equal(first.attributes["aria-expanded"], "true");
+    const details = document.getElementById("thread-inline-4");
+    assert.equal(details.parentElement.parentElement, rows[0].nextElementSibling);
+    assert.equal(rows[0].nextElementSibling.hidden, false);
+    assert.deepEqual(details.querySelectorAll("li").map(x => x.textContent), ["App.Poll()", longFrame]);
+    assert.match(details.querySelector(".thread-technical").textContent, /Reported state: 16953888.*OS thread: 24192/);
+    assert.equal(details.querySelector(".thread-technical").open, false, "raw flags stay in a closed native disclosure");
+    click(root, "Thread 5");
+    assert.equal(buttons[1].attributes["aria-expanded"], "true");
+    assert.match(document.getElementById("thread-inline-5").textContent, /Unavailable: no inline stack/);
+    assert.equal(first.attributes["aria-expanded"], "true", "more than one stack may be inspected");
+    details.listeners.keydown({key:"Escape",preventDefault(){},stopPropagation(){}});
+    assert.equal(first.attributes["aria-expanded"], "false");
+    assert.equal(first.focused, true);
+    assert.equal(buttons[1].attributes["aria-expanded"], "true");
+
+    const input=root.querySelector("input");
+    input.value="App.Wait"; input.listeners.input();
+    assert.equal(root.querySelectorAll(".thread-explorer-row").length, 1);
+    click(root, "Thread 2");
+    assert.equal(root.querySelector("script"), null);
+    input.value=""; input.listeners.input();
+    assert.equal(root.querySelectorAll(".thread-explorer-row").length, 3);
+    const restored=root.querySelectorAll(".thread-disclosure").find(x=>x.dataset.threadId==="5");
+    assert.equal(restored.attributes["aria-expanded"], "true", "filtering keeps expansion by stable thread ID");
+    updateThreadNavigation("wait-chains", {waitChains:{chains:[]}});
+    assert.equal(root.querySelectorAll(".thread-disclosure").find(x=>x.dataset.threadId==="5").attributes["aria-expanded"], "true");
+    updateThreadNavigation("snapshot", {threads:[]});
+    assert.match(root.textContent,/No threads were returned/);
+    assert.equal(root.querySelectorAll(".thread-disclosure").length,0);
 });
 
 test("single grouped-stacks tab links representative threads and returns without rebuilding groups", () => {
@@ -1584,20 +1838,23 @@ test("single grouped-stacks tab links representative threads and returns without
     const explorer = document.getElementById("threadExplorer");
     assert.equal(explorer.hidden, false);
     assert.equal(groups.hidden, true);
-    assert.match(explorer.querySelector(".evidence-selection").textContent, /App.Work/);
+    assert.match(document.getElementById("thread-inline-1").textContent, /App.Work/);
+    const sourceLink = groups.querySelectorAll("button").find(button => button.textContent === "Thread 1");
+    assert.equal(document.getElementById("thread-inline-1").parentElement.parentElement.hidden, false);
     click(explorer, "Back to grouped stacks");
     assert.equal(groups.hidden, false);
     assert.equal(input.value, "Thread 1");
     assert.equal(disclosure.open, true);
+    assert.equal(sourceLink.focused, true, "return restores focus to the originating grouped thread link");
     input.value = ""; input.listeners.input();
     click(groups, "Thread 99");
-    assert.match(explorer.querySelector(".evidence-selection").textContent, /not included in the returned inline thread list/);
+    assert.match(document.getElementById("thread-inline-99").textContent, /not included in the returned inline thread list/);
     click(explorer, "Back to grouped stacks");
     assert.equal(groups.hidden, false);
 });
 
 test("thread explorer connects groups, full inline stacks and wait-chain owners, including omitted participants", () => {
-    const { makeContainer, updateThreadNavigation } = loadRenderer();
+    const { makeContainer, document, updateThreadNavigation } = loadRenderer();
     const root = makeContainer("captureThreadResult");
     updateThreadNavigation("snapshot", { threads: [
         { managedThreadId: 1, state: "Wait", frames: ["App.Entry", "<script>App.Block</script>"] },
@@ -1614,14 +1871,16 @@ test("thread explorer connects groups, full inline stacks and wait-chain owners,
         ],
     }] } });
     click(root, "Thread 1");
-    const details = root.querySelector(".evidence-selection");
+    let details = document.getElementById("thread-inline-1");
     assert.match(details.textContent, /App.Entry/);
     assert.match(details.textContent, /<script>App.Block<\/script>/);
     assert.equal(details.querySelector("script"), null);
     assert.match(details.textContent, /confidence: medium/);
     click(details, "Thread 2");
+    details = document.getElementById("thread-inline-2");
     assert.match(details.textContent, /App.Owner/);
     click(details, "Thread 99");
+    details = document.getElementById("thread-inline-99");
     assert.match(details.textContent, /not included in the returned inline thread list/);
     const search = root.querySelector("input");
     search.value = "App.Owner";
@@ -1629,6 +1888,34 @@ test("thread explorer connects groups, full inline stacks and wait-chain owners,
     assert.match(root.textContent, /1 of 2 returned threads match/);
     updateThreadNavigation("snapshot", { threads: [] });
     assert.doesNotMatch(root.textContent, /App.Owner|Thread 99|App.Block/);
+});
+
+test("direct wait-chain thread links synchronize Workspace navigation and return to their source view", () => {
+    let selectedView;
+    const { makeContainer, document, updateThreadNavigation, renderQueryView } = loadRenderer(view => { selectedView = view; });
+    const root = makeContainer("captureThreadResult");
+    const workspaceView = makeContainer("workspaceView");
+    updateThreadNavigation("snapshot", { threads: [
+        { managedThreadId: 1, state: "Wait", frames: ["App.Waiter"] },
+        { managedThreadId: 2, state: "Running", frames: ["App.Owner"] },
+    ] });
+    const queries = makeContainer("threadQueryViews");
+    root.appendChild(queries);
+    renderQueryView("threadQueryViews", "wait-chains", { waitChains: { chains: [{
+        rootThreadId: 1, terminalKind: "Owner", links: [
+            { waitingThreadId: 1, ownerThreadId: 2, targetLabel: "Monitor", confidence: "medium" },
+        ],
+    }] } }, false);
+
+    click(queries, "Thread 2");
+    assert.equal(selectedView, "thread-explorer");
+    assert.equal(workspaceView.value, "thread-explorer");
+    const explorer = document.getElementById("threadExplorer");
+    assert.match(document.getElementById("thread-inline-2").textContent, /App.Owner/);
+    assert.equal(document.getElementById("thread-inline-2").parentElement.parentElement.hidden, false);
+    click(document.getElementById("thread-inline-2"), "Back to wait chains");
+    assert.equal(selectedView, "wait-chains");
+    assert.equal(workspaceView.value, "wait-chains");
 });
 
 test("exception type and message filters select retained occurrences without changing observed totals", () => {
@@ -1662,6 +1949,52 @@ test("exception type and message filters select retained occurrences without cha
     assert.match(root.textContent, /3 of 3 retained occurrences/);
 });
 
+test("exception occurrence detail keeps selection, keyboard return and bounded navigation in wide and narrow fixtures", () => {
+    const { renderHtml } = require("../out/extension.js");
+    const html = renderHtml(target, "nonce123", 120);
+    assert.match(html, /\.exception-navigation-layout \{ display:grid; grid-template-columns:minmax\(12rem, 1fr\) minmax\(0, 1\.5fr\)/);
+    assert.match(html, /@media \(max-width:640px\) \{\s*\.exception-navigation-layout \{ grid-template-columns:minmax\(0, 1fr\); \}/);
+
+    for (const viewportWidth of [1280, 360]) {
+        const { makeContainer, renderExceptionNavigation } = loadRenderer();
+        const root = makeContainer("exceptions-" + viewportWidth);
+        root.clientWidth = viewportWidth;
+        const events = Array.from({ length: 100 }, (_, index) => ({
+            timestamp: new Date(Date.UTC(2026, 9, 14, 0, 0, index)).toISOString(),
+            exceptionType: index === 0 ? "Very.Long." + "GenericType".repeat(12) : "System.Exception",
+            exceptionMessage: index === 0 ? "<script>long message</script>" : "Failure " + index,
+            threadId: index + 1,
+            managedStack: index === 0 ? ["Sample.Throw()"] : [],
+        }));
+        renderExceptionNavigation(root, events);
+
+        const list = root.querySelector(".exception-occurrences");
+        assert.equal(list.tagName, "ol", "occurrences use a native ordered-list structure");
+        assert.equal(list.getAttribute("aria-label"), "Retained exception occurrences");
+        assert.equal(list.children.length, 100, "all bounded retained events remain available");
+        const first = list.children[0].querySelector("button");
+        assert.match(first.textContent, /Very\.Long\./);
+        assert.match(first.getAttribute("aria-label"), /2026-10-14T00:00:00\.000Z/,
+            "the exact timestamp remains available to assistive technology");
+        first.listeners.click({});
+        assert.equal(first.getAttribute("aria-pressed"), "true");
+        assert.match(root.textContent, /Occurrence 1 of 100 selected/);
+        const detail = root.querySelector(".evidence-selection");
+        const actions = detail.querySelectorAll("button");
+        assert.equal(actions[0].disabled, true);
+        assert.equal(actions[1].textContent, "Next occurrence");
+        actions[1].listeners.click({});
+        assert.equal(first.getAttribute("aria-pressed"), "false");
+        const second = list.children[1].querySelector("button");
+        assert.equal(second.getAttribute("aria-pressed"), "true");
+        assert.match(root.textContent, /Occurrence 2 of 100 selected/);
+        actions[2].listeners.click({});
+        assert.equal(second.focused, true, "Back returns focus to the selected occurrence");
+        assert.equal(second.scrolledIntoView, true);
+        assert.equal(root.querySelector("script"), null, "exception text is rendered without markup");
+    }
+});
+
 test("live time selection filters only retained observations and GC receipt times and supports reset/inspection", () => {
     const { document, makeContainer } = createDocumentStub();
     const root = makeContainer("live");
@@ -1673,7 +2006,7 @@ test("live time selection filters only retained observations and GC receipt time
     let points = [0, 100, 200, 300].map(receivedAtMs => ({ receivedAtMs, timestamp: "target-" + receivedAtMs, value: receivedAtMs / 10 }));
     const gcRows = [50, 250].map(receivedAtMs => ({ receivedAtMs, element: document.createElement("tr") }));
     let redraws = 0;
-    const nav = install(canvas, () => points, gcRows, () => redraws++);
+    const nav = install(canvas, () => points, gcRows, () => redraws++, value => value + " MB");
     const [start, end] = root.querySelectorAll("input");
     assert.match(root.textContent, /Start of selected receipt time/);
     assert.match(root.textContent, /End of selected receipt time/);
@@ -1682,28 +2015,70 @@ test("live time selection filters only retained observations and GC receipt time
     start.value = "25"; end.value = "75"; start.listeners.input();
     assert.deepEqual(nav.filter(points).map(point => point.receivedAtMs), [100, 200]);
     assert.ok(gcRows.every(row => row.element.hidden));
-    assert.match(root.textContent, /Selected receipt-time bounds: 1970-01-01T00:00:00\.075Z to 1970-01-01T00:00:00\.225Z/);
+    assert.match(root.querySelectorAll("p").find(node => node.attributes.role === "status").title,
+        /Selected receipt-time bounds: 1970-01-01T00:00:00\.075Z to 1970-01-01T00:00:00\.225Z/);
     assert.match(start.attributes["aria-valuetext"], /selected start 1970-01-01T00:00:00\.075Z/);
     canvas.listeners.keydown({ key: "Home", preventDefault() {} });
-    assert.match(root.textContent, /Observed value: 10 \| target timestamp: target-100/);
+    assert.match(root.textContent, /Observed value: 10 MB \| target timestamp: target-100/);
+    assert.equal(nav.selected(), points[1], "inspection exposes the exact point for the canvas marker");
+    const detail = root.querySelectorAll("p").find(node => node.attributes["aria-label"] === "Selected counter observation");
+    assert.equal(detail.getAttribute("role"), "status", "inspection and expiry are announced without moving chart focus");
+    assert.equal(detail.getAttribute("aria-atomic"), "true");
     points = [{ receivedAtMs: 1000, timestamp: "later", value: 123 }];
+    gcRows.forEach(row => { row.receivedAtMs += 1000; });
     nav.update();
-    assert.match(root.textContent, /0 of 1 retained observations/);
+    assert.match(root.textContent, /0 of 1 observations/);
+    assert.equal(nav.selected(), undefined);
+    assert.match(root.textContent, /Selected data has expired/);
+    assert.equal(start.value, "0", "thumbs reflect clipped current retention, not stale percentages");
     assert.equal(nav.filter(points).length, 0, "fixed selections must not silently follow incoming data");
-    click(root, "Follow live / reset zoom");
+    click(root, "Follow latest");
     assert.equal(nav.filter(points).length, 1);
-    assert.match(root.textContent, /Following live.*Selected receipt-time bounds: 1970-01-01T00:00:01\.000Z to 1970-01-01T00:00:01\.000Z/);
+    assert.equal(root.querySelector("button").textContent, "Pause following");
     assert.ok(gcRows.every(row => !row.element.hidden));
-    assert.equal(redraws, 2);
+    assert.equal(redraws, 3);
     const reset = root.querySelector("button");
     points = [];
     gcRows.length = 0;
     nav.update();
     assert.equal(reset.getAttribute("aria-disabled"), "true");
+    assert.equal(reset.disabled, true);
     assert.match(reset.title, /Wait for retained/);
     gcRows.push({ receivedAtMs: 2000, element: document.createElement("tr") });
     nav.update();
     assert.equal(reset.getAttribute("aria-disabled"), "false", "retained GC rows are sufficient to reset their time selection");
+});
+
+test("monitoring window choices remain local and paused absolute bounds survive new arrivals and retention expiry", () => {
+    const { document, makeContainer } = createDocumentStub();
+    const root = makeContainer("live-window");
+    const canvas = document.createElement("canvas");
+    root.appendChild(canvas);
+    const { LIVE_TIME_NAVIGATION_SCRIPT } = require("../out/liveTimeNavigation.js");
+    const install = new Function("document", LIVE_TIME_NAVIGATION_SCRIPT + ";return installLiveTimeNavigation;")(document);
+    let points = [1000, 32000, 62000].map(receivedAtMs => ({ receivedAtMs, timestamp: "target", value: 1 }));
+    const nav = install(canvas, () => points, [], () => {});
+    const window = root.querySelector("select");
+    window.value = "30";
+    window.listeners.change();
+    assert.deepEqual(nav.filter(points).map(point => point.receivedAtMs), [32000, 62000]);
+    click(root, "Pause following");
+    points.push({ receivedAtMs: 92000, timestamp: "later", value: 2 });
+    nav.update();
+    assert.deepEqual(nav.filter(points).map(point => point.receivedAtMs), [32000, 62000], "pause freezes absolute bounds");
+    const [start, end] = root.querySelectorAll("input");
+    assert.equal(start.value, "34");
+    assert.equal(end.value, "67", "slider thumbs track the new retained extent rather than stale input percentages");
+    points = points.slice(-1);
+    nav.update();
+    assert.equal(nav.filter(points).length, 0);
+    assert.match(root.textContent, /Selected data has expired.*empty is not zero/);
+    points = [];
+    nav.update();
+    assert.match(root.textContent, /Selected data has expired/);
+    assert.equal(root.querySelector("button").disabled, false, "Follow latest stays available to leave an expired selection");
+    click(root, "Follow latest");
+    assert.equal(root.querySelector("button").disabled, true, "empty following state is truly disabled");
 });
 
 test("all diagnostic kinds provide sortable selectable returned rows without fabricating a timeline", () => {
@@ -1726,15 +2101,78 @@ test("all diagnostic kinds provide sortable selectable returned rows without fab
         assert.match(root.textContent, /do not establish a complete event timeline/);
         assert.match(root.textContent, /1 retained row\(s\) omitted/);
         const tables = root.querySelectorAll("table");
-        assert.equal(tables[1].querySelector(".evidence-pick"), null);
-        assert.equal(tables[1].querySelector("tbody").children[0].children[1].textContent, "0");
-        assert.match(tables[1].textContent, /<script>operation<\/script>/);
+        assert.equal(tables[0].querySelector(".evidence-pick"), null);
+        assert.equal(tables[0].querySelector("tbody").children[0].children[1].textContent, "0");
+        assert.match(tables[0].textContent, /<script>operation<\/script>/);
+        assert.equal(tables[1]._parent._parent, root.querySelector(".diagnostic-quality-details"));
         assert.ok(root.querySelector(".diagnostic-evidence-table-label"));
         assert.ok(root.querySelector(".diagnostic-capture-notes"));
         assert.equal(tables.every(table => table._parent.className === "query-view-table-wrap"), true,
             "each captured table keeps horizontal scrolling inside its own bounded wrapper");
         assert.equal(root.querySelector("script"), null);
     }
+});
+
+test("unreported capture quality remains visible before rows without notes or limitations", () => {
+    const { document, makeContainer } = createDocumentStub();
+    const root = makeContainer("diagnostics");
+    const { CAPTURE_VIEW_RENDERER_SCRIPT } = require("../out/captureViewRenderer.js");
+    const render = new Function("document", CAPTURE_VIEW_RENDERER_SCRIPT + ";return renderCaptureView;")(document);
+    render("diagnostics", {
+        kind: "db", summary: "Fixture", provenance: {processId: 1, requestedDurationSeconds: 10},
+        metrics: [], tables: [{title: "Commands", columns: ["Name"], rows: [["Query"]]}],
+        notes: [], evidence: {source: "not-reported", limitations: []},
+    });
+    const alert = root.querySelector(".diagnostic-active-quality");
+    assert.equal(alert.children[0].textContent, "quality not reported");
+    assert.ok(root.children.indexOf(alert) < root.children.indexOf(root.querySelector(".diagnostic-table-view")));
+});
+
+test("actual long networking summary and normal zero-count scope do not precede captured rows", () => {
+        const { document, makeContainer } = createDocumentStub();
+        const root = makeContainer("networking");
+        const { CAPTURE_VIEW_RENDERER_SCRIPT } = require("../out/captureViewRenderer.js");
+        const render = new Function("document", CAPTURE_VIEW_RENDERER_SCRIPT + ";return renderCaptureView;")(document);
+        const summary = "Captured 63 HTTP request(s) (0 failure events, including cancellation/timeouts), requested 10s. DNS: 0 lookup(s), 0 failure events. TLS: 0 handshake(s), 0 failure events. Sockets: 0 connect(s), 0 failed. Request p95=3.1ms, time-in-queue p95=unavailable (not-observed), DNS p95=unavailable (not-observed), TLS p95=unavailable (not-observed). Percentile samples retained/accepted: HTTP 63/63, queue 0/0, DNS 0/0, TLS 0/0. Fewer retained samples means reservoir approximation, independent of pairing/capture gaps; max uses all accepted samples. Capture completion=normal; transport events lost=0; parse errors=0. Duration is requested time; stream-read elapsed is not proof of target coverage. Latencies cover accepted observed pairs only: HTTP 63/63, DNS 0/0, TLS 0/0. See correlation accounting for exclusions; this does not establish acquisition completeness. Latency population v2 includes failed completions: HTTP 0 failed/63 without observed failure, DNS 0/0, TLS 0/0. HTTP status-error responses=0; these are not transport failure events. Zero accepted pairs means latency unavailable; no observed failure is not proof of success.";
+        const result = {
+            kind: "networking", summary, provenance: { processId: 40416, requestedDurationSeconds: 10 },
+            metrics: [{label: "Transport events lost", value: 0}, {label: "Capture completion", value: "normal"}],
+            tables: [{id: "operations",title: "HTTP operations",columns: ["Host", "Path", "Count", "P95 (ms)", "Latency availability"],
+                rows: [["http://127.0.0.1:53225", "/weatherforecast", 63, 3.13, "measured"]],
+                totalRows: 1, omittedRows: 0}],
+            notes: ["Capture completion=normal; transport events lost=0; parse errors=0. Duration is requested time; stream-read elapsed is not proof of target coverage.",
+                "dns latency is unavailable (not-observed); see Correlation counts and CaptureQuality. Scalar zero is not a measurement without accepted samples.",
+                "Missing latency is unavailable, not zero. Hosts and paths can contain sensitive application data."],
+            evidence: {source: "networking", limitations: [{category: "captureWindow", scope: "capture", affectedCount: 0,
+                detail: "Completion=normal; transport events lost=0; parse errors=0. Stream read duration is not proof of target coverage."}]},
+        };
+        render("networking", result);
+        assert.equal(root.querySelector(".capture-summary"), null);
+        assert.equal(root.querySelector(".diagnostic-active-quality"), null, "known normal acquisition and contextual notes are not warning conditions");
+        const details = root.querySelector(".diagnostic-quality-details");
+        assert.ok(root.children.indexOf(details) > root.children.indexOf(root.querySelector(".diagnostic-table-view")));
+        assert.match(details.textContent, /Captured 63 HTTP request/);
+        assert.match(details.textContent, /not proof of target coverage/);
+        assert.match(details.textContent, /dns latency is unavailable/);
+        assert.equal(details.open, false, "full raw summary is not automatically expanded");
+        for (const limitation of [
+            {category: "captureWindow", scope: "capture", affectedCount: 0, detail: "Completion=early; transport events lost=0; parse errors=0. Stream read duration is not proof of target coverage."},
+            {category: "captureWindow", scope: "capture", affectedCount: null, detail: "Completion=normal; transport events lost=unknown; parse errors=0. Stream read duration is not proof of target coverage."},
+            {category: "captureWindow", scope: "capture", affectedCount: 0, detail: "Completion=normal; transport events lost=0; parse errors=3. Stream read duration is not proof of target coverage."},
+            {category: "outputProjection", scope: "rows", affectedCount: 0, detail: "Coverage of this projection is unknown."},
+        ]) {
+            result.evidence.limitations = [limitation];
+            result.notes = ["Queue latency rejected 3 RequestLeftQueue payload(s); only valid nonnegative durations are sampled."];
+            render("networking", result);
+            const alert = root.querySelector(".diagnostic-active-quality");
+            assert.ok(alert, "zero is never a universal suppression rule");
+            assert.match(alert.textContent, /Queue latency rejected 3/);
+            assert.ok(alert.textContent.includes(limitation.detail));
+        }
+        result.evidence = {source: "not-reported", limitations: []};
+        result.notes = [];
+        render("networking", result);
+        assert.match(root.querySelector(".diagnostic-active-quality").textContent, /quality not reported/);
 });
 
 test("in-flight request rows lead the result and state filters compose with returned-row search", () => {
@@ -1777,10 +2215,9 @@ test("in-flight request rows lead the result and state filters compose with retu
     assert.match(root.textContent, /PID 42 · 10s window · Live capture, not saved/);
     assert.doesNotMatch(root.textContent, /An unparsed fallback summary|requests\n/);
     assert.doesNotMatch(root.textContent, /Metrics/);
-    assert.match(root.textContent, /In flight at window close · Filters apply to shown rows/);
-    const conciseSummary = root.children.find(child =>
-        child.textContent === "In flight at window close · Filters apply to shown rows.");
-    assert.ok(conciseSummary, "the short result scope stays visible above the table");
+    assert.doesNotMatch(root.textContent, /In flight at window close · Filters apply to shown rows/);
+    assert.equal(root.children.filter(child => child.tagName === "p"
+        && child.textContent.startsWith("Window:")).length, 1, "one capture summary precedes data");
     assert.match(root.textContent, /All in-flight \(4 shown\)/);
     assert.match(root.textContent, /At or above 750 ms \(2 shown\)/,
         "filter count comes from returned rows, not the capture-wide long-running metric");
@@ -1789,7 +2226,7 @@ test("in-flight request rows lead the result and state filters compose with retu
     assert.match(root.textContent, /1 retained row\(s\) omitted/);
     assert.match(root.textContent, /Capture window \(requests\): The snapshot is partial/);
     const selector = document.getElementById("inFlightRequestsStateFilter");
-    assert.equal(selector.getAttribute("aria-label"), "Show in-flight requests");
+    assert.equal(selector.getAttribute("aria-label"), "Show requests");
     const table = document.getElementById("inFlightRequestsTable");
     const disclaimer = root.querySelector(".diagnostic-request-disclaimer");
     assert.ok(disclaimer, "full capture limitations appear as a readable disclaimer");
@@ -1799,9 +2236,9 @@ test("in-flight request rows lead the result and state filters compose with retu
     assert.match(disclaimer.textContent, /repeated starts replace the tracked entry/);
     assert.ok(root.children.indexOf(disclaimer) > root.children.indexOf(table._parent),
         "the disclaimer follows the request table");
-    assert.equal(root.querySelector("details"), null, "the full explanation is no longer hidden behind disclosure");
+    assert.ok(root.querySelector(".diagnostic-active-quality"), "active quality has a compact visible summary");
     const notes = root.querySelector(".diagnostic-capture-notes");
-    assert.equal(notes._parent, root, "collector warnings remain visible before the request table");
+    assert.equal(notes._parent.className, "diagnostic-active-quality", "full reasons remain at the active alert");
     assert.match(notes.textContent, /Dropped 2 newer starts/);
     assert.ok(root.children.some(child => child.textContent.includes("Capture window (requests): The snapshot is partial")),
         "evidence limitations remain visible before the request table");
@@ -1947,7 +2384,7 @@ test("heap view switching retains table filters and selection, surfaces hidden f
                 threadCount: 4, sampleThreads: [{ managedThreadId: 1 }], canonicalFrames: [{ displayName: "App.Wait" }],
             }] }, false);
             assert.equal(document.getElementById("threadMode-threads").attributes["aria-selected"], "true");
-            assert.match(explorer.querySelector(".evidence-selection").textContent, /Managed thread 1/);
+            assert.equal(document.getElementById("thread-inline-1").parentElement.parentElement.hidden, false);
             assert.equal(explorer.hidden, false);
             assert.equal(document.getElementById("threadQueryViews-unique-stacks").hidden, true);
             assert.match(document.getElementById("threadQueryViews-unique-stacks").textContent, /4 thread/);

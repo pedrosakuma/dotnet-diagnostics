@@ -46,7 +46,7 @@ function extendDom(Element) {
         const matches = (element, part) => part.startsWith(".")
             ? element.classList.contains(part.slice(1))
             : part.startsWith("[") ? Object.hasOwn(element.attributes, part.slice(1, -1))
-            : element.tagName === part;
+            : element.tagName?.toLowerCase() === part.toLowerCase();
         const result = [];
         function visit(parent) {
             for (const child of parent.children) {

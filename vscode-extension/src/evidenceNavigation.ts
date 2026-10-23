@@ -89,23 +89,58 @@ function renderExceptionNavigation(parent: HTMLElement, events: Array<Record<str
     const title = document.createElement("h4");
     title.textContent = "Explore retained occurrences";
     const help = document.createElement("p");
-    help.textContent = "Filters below apply only to retained events. All-observed type counts above do not change.";
+    help.textContent = "Filters apply only to retained events. All-observed type counts do not change.";
     const type = document.createElement("select");
     type.setAttribute("aria-label", "Exception type");
     const message = document.createElement("select");
     message.setAttribute("aria-label", "Exception message");
-    const occurrences = document.createElement("div");
+    const occurrences = document.createElement("ol");
+    occurrences.className = "exception-occurrences";
+    occurrences.setAttribute("aria-label", "Retained exception occurrences");
     const detail = document.createElement("section");
     detail.className = "evidence-selection";
     detail.tabIndex = -1;
     detail.setAttribute("aria-label", "Selected exception occurrence");
+    detail.hidden = true;
+    const detailTitle = document.createElement("h5");
+    detailTitle.textContent = "Selected occurrence";
+    const detailPosition = document.createElement("p");
+    const detailSummary = document.createElement("p");
+    const detailMessage = document.createElement("p");
+    const stack = document.createElement("pre");
+    const detailActions = document.createElement("div");
+    detailActions.className = "exception-occurrence-actions";
+    const previous = document.createElement("button");
+    previous.type = "button";
+    previous.textContent = "Previous occurrence";
+    const next = document.createElement("button");
+    next.type = "button";
+    next.textContent = "Next occurrence";
+    const back = document.createElement("button");
+    back.type = "button";
+    back.textContent = "Back to occurrences";
+    detailActions.append(previous, next, back);
+    detail.append(detailTitle, detailPosition, detailSummary, detailMessage, stack, detailActions);
+    const layout = document.createElement("div");
+    layout.className = "exception-navigation-layout";
+    layout.append(occurrences, detail);
     const status = document.createElement("p");
     status.setAttribute("role", "status");
     const reset = document.createElement("button");
     reset.type = "button";
     reset.textContent = "Reset exception filters";
+    let filteredEvents: Array<Record<string, unknown>> = [];
+    let selectedEvent: Record<string, unknown> | undefined;
+    let selectedOccurrenceButton: HTMLButtonElement | undefined;
     const value = (event: Record<string, unknown>, field: string) =>
         typeof event[field] === "string" ? String(event[field]) : "(unavailable)";
+    function displayTimestamp(event: Record<string, unknown>): string {
+        const timestamp = value(event, "timestamp");
+        const parsed = Date.parse(timestamp);
+        return Number.isFinite(parsed)
+            ? new Intl.DateTimeFormat(undefined, { dateStyle: "short", timeStyle: "medium" }).format(parsed)
+            : timestamp;
+    }
     function options(select: HTMLSelectElement, values: string[], all: string): void {
         select.replaceChildren();
         const option = document.createElement("option");
@@ -124,30 +159,67 @@ function renderExceptionNavigation(parent: HTMLElement, events: Array<Record<str
     }
     const selectedValue = (select: HTMLSelectElement, entry: string) =>
         select.value === "" || select.value === JSON.stringify(entry);
-    function draw(): void {
-        occurrences.replaceChildren();
-        detail.replaceChildren();
-        const filtered = events.filter(event => selectedValue(type, value(event, "exceptionType"))
-            && selectedValue(message, value(event, "exceptionMessage")));
-        status.textContent = filtered.length + " of " + events.length + " retained occurrences.";
-        for (const event of filtered) {
-            const button = document.createElement("button");
-            button.type = "button";
-            button.textContent = value(event, "timestamp") + " | " + value(event, "exceptionType")
+    function updateSelection(focusDetail: boolean): void {
+        let selectedIndex = selectedEvent ? filteredEvents.indexOf(selectedEvent) : -1;
+        if (selectedIndex < 0) selectedEvent = undefined;
+        const buttons = Array.from(occurrences.querySelectorAll("button")) as HTMLButtonElement[];
+        selectedOccurrenceButton = undefined;
+        buttons.forEach((button, index) => {
+            const selected = filteredEvents[index] === selectedEvent;
+            button.setAttribute("aria-pressed", String(selected));
+            if (selected) selectedOccurrenceButton = button;
+        });
+        selectedIndex = selectedEvent ? filteredEvents.indexOf(selectedEvent) : -1;
+        detail.hidden = selectedIndex < 0;
+        previous.disabled = selectedIndex <= 0;
+        next.disabled = selectedIndex < 0 || selectedIndex >= filteredEvents.length - 1;
+        if (selectedIndex >= 0) {
+            const event = filteredEvents[selectedIndex];
+            detailPosition.textContent = "Occurrence " + (selectedIndex + 1) + " of " + filteredEvents.length;
+            detailSummary.textContent = value(event, "timestamp") + " | " + value(event, "exceptionType")
                 + " | thread " + String(event.threadId ?? "Unavailable");
-            button.addEventListener("click", () => {
-                detail.replaceChildren();
-                const description = document.createElement("p");
-                description.textContent = button.textContent + "\n" + value(event, "exceptionMessage");
-                const stack = document.createElement("pre");
-                stack.textContent = Array.isArray(event.managedStack) && event.managedStack.length
-                    ? event.managedStack.map(String).join("\n") : "No managed stack was captured for this event.";
-                detail.append(description, stack);
+            detailMessage.textContent = "Message: " + value(event, "exceptionMessage");
+            stack.textContent = Array.isArray(event.managedStack) && event.managedStack.length
+                ? event.managedStack.map(String).join("\n") : "No managed stack was captured for this event.";
+            status.textContent = filteredEvents.length + " of " + events.length + " retained occurrences. "
+                + "Occurrence " + (selectedIndex + 1) + " of " + filteredEvents.length + " selected.";
+            if (focusDetail) {
                 detail.focus({ preventScroll: true });
                 detail.scrollIntoView({ block: "nearest" });
-            });
-            occurrences.appendChild(button);
+            }
+        } else {
+            detailPosition.textContent = "";
+            detailSummary.textContent = "";
+            detailMessage.textContent = "";
+            stack.textContent = "";
+            status.textContent = filteredEvents.length + " of " + events.length + " retained occurrences.";
         }
+    }
+    function selectOccurrence(index: number): void {
+        if (index < 0 || index >= filteredEvents.length) return;
+        selectedEvent = filteredEvents[index];
+        updateSelection(true);
+    }
+    function draw(): void {
+        occurrences.replaceChildren();
+        filteredEvents = events.filter(event => selectedValue(type, value(event, "exceptionType"))
+            && selectedValue(message, value(event, "exceptionMessage")));
+        for (const event of filteredEvents) {
+            const row = document.createElement("li");
+            const button = document.createElement("button");
+            button.type = "button";
+            button.textContent = displayTimestamp(event) + " | " + value(event, "exceptionType")
+                + " | thread " + String(event.threadId ?? "Unavailable");
+            button.setAttribute("aria-label", value(event, "timestamp") + " | " + value(event, "exceptionType")
+                + " | thread " + String(event.threadId ?? "Unavailable"));
+            button.setAttribute("aria-pressed", "false");
+            button.addEventListener("click", () => {
+                selectOccurrence(filteredEvents.indexOf(event));
+            });
+            row.appendChild(button);
+            occurrences.appendChild(row);
+        }
+        updateSelection(false);
     }
     function messages(): void {
         options(message, events.filter(event => selectedValue(type, value(event, "exceptionType")))
@@ -158,7 +230,17 @@ function renderExceptionNavigation(parent: HTMLElement, events: Array<Record<str
     type.addEventListener("change", () => { messages(); draw(); });
     message.addEventListener("change", draw);
     reset.addEventListener("click", () => { type.value = ""; messages(); draw(); });
-    section.append(title, help, type, message, reset, status, occurrences, detail);
+    previous.addEventListener("click", () => {
+        if (selectedEvent) selectOccurrence(filteredEvents.indexOf(selectedEvent) - 1);
+    });
+    next.addEventListener("click", () => {
+        if (selectedEvent) selectOccurrence(filteredEvents.indexOf(selectedEvent) + 1);
+    });
+    back.addEventListener("click", () => {
+        selectedOccurrenceButton?.focus({ preventScroll: true });
+        selectedOccurrenceButton?.scrollIntoView({ block: "nearest" });
+    });
+    section.append(type, message, reset, status, layout, help);
     parent.appendChild(section);
     draw();
 }
@@ -193,5 +275,16 @@ export const EVIDENCE_NAVIGATION_STYLES = `
     button.heap-type-link:hover { background:transparent; color:var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground)); }
     button.heap-type-link:focus-visible { outline:1px solid var(--vscode-focusBorder); outline-offset:3px; }
     .exception-explorer button, .exception-explorer select { margin:.25rem; }
-    .exception-explorer pre { white-space:pre-wrap; overflow-wrap:anywhere; }
+    .exception-navigation-layout { display:grid; grid-template-columns:minmax(12rem, 1fr) minmax(0, 1.5fr); gap:.75rem; align-items:start; }
+    .exception-occurrences { display:flex; flex-direction:column; gap:.2rem; max-height:45vh; overflow:auto; min-width:0; list-style:none; margin:0; padding:0; }
+    .exception-occurrences li { min-width:0; }
+    .exception-occurrences button { text-align:left; white-space:normal; overflow-wrap:anywhere; }
+    .exception-occurrences button[aria-pressed="true"] { background:var(--vscode-list-activeSelectionBackground); color:var(--vscode-list-activeSelectionForeground); }
+    .exception-occurrence-actions { display:flex; flex-wrap:wrap; gap:.25rem; }
+    .exception-explorer .evidence-selection { border:1px solid var(--vscode-panel-border); border-radius:2px; }
+    .exception-explorer pre, .exception-explorer .evidence-selection p { white-space:pre-wrap; overflow-wrap:anywhere; }
+    @media (max-width:640px) {
+        .exception-navigation-layout { grid-template-columns:minmax(0, 1fr); }
+        .exception-occurrences { max-height:16rem; }
+    }
 `;
