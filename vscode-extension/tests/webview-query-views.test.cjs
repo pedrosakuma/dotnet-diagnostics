@@ -608,6 +608,12 @@ function click(root, caption, index = 0) {
     button.listeners.click({});
 }
 
+function clickByLabel(root, label) {
+    const button = elements(root, child => child.tagName === "button" && child.getAttribute("aria-label") === label)[0];
+    assert.ok(button, `button with accessible name ${label} must exist`);
+    button.listeners.click({});
+}
+
 function cpuNode(method, inclusiveSamples, exclusiveSamples, children = []) {
     return { frame: { method, module: "App" }, inclusiveSamples, exclusiveSamples, children };
 }
@@ -1035,9 +1041,9 @@ test("exception captures render counts, retained messages and stacks as text wit
     assert.match(container.textContent, /2026-10-14T00:00:01Z/);
     assert.match(container.textContent, /2026-10-14T00:00:02Z/);
     assert.ok(container.textContent.includes(message));
-    click(container, "2026-10-14T00:00:01Z | System.Exception | thread 1");
+    clickByLabel(container, "2026-10-14T00:00:01Z | System.Exception | thread 1");
     assert.match(container.textContent, /Sample.Throw\(\)/);
-    click(container, "2026-10-14T00:00:02Z | System.Exception | thread 1");
+    clickByLabel(container, "2026-10-14T00:00:02Z | System.Exception | thread 1");
     assert.match(container.textContent, /No managed stack was captured/);
     assert.match(container.textContent, /5 event\(s\) omitted/);
     assert.match(container.textContent, /collector-note/);
@@ -1054,7 +1060,8 @@ test("exception captures render counts, retained messages and stacks as text wit
     renderQueryView("exceptionCaptureViews", "exceptions", {
         summary: "No exceptions", data: { totalExceptions: 0, byType: [], recent: [] }, notes: [],
     }, false);
-    assert.match(container.textContent, /Start capture before reproducing/);
+    assert.match(container.textContent, /EventPipe readiness is not reported/);
+    assert.match(container.textContent, /repeat the problem throughout a new capture/);
     assert.ok(!container.textContent.includes(message), "new results replace old sensitive messages");
 });
 
@@ -1062,6 +1069,8 @@ test("live webview wires exception evidence into the workspace without a duplica
     const html = renderHtml(target, "nonce123", 120);
     const script = extractInlineScript(html);
     assert.match(html, /id="captureExceptions"/);
+    assert.match(html, /Sending a capture clears the current result; if collection then fails, it cannot be restored/);
+    assert.match(html, /Exception results are temporary and are not saved/);
     assert.match(html, /id="captureExceptionsStatus" role="status"/);
     assert.match(html, /id="exceptionEvidenceIdentity" class="workspace-evidence-status" role="status"/);
     assert.match(script, /captureExceptionsButton\.addEventListener\('click', \(\) => vscode\.postMessage\(\{ type: 'captureExceptions' \}\)\)/);
@@ -1144,6 +1153,15 @@ test("live webview wires exception evidence into the workspace without a duplica
     assert.equal(running.panel.dataset.evidenceId, "");
     assert.match(running.identity.textContent, /Managed exceptions · Live EventPipe/);
     assert.deepEqual(running.activated, [], "running status after navigation does not reclaim focus");
+
+    const changedTarget = statusHarness({ pendingExceptionEvidenceId: "old-request" });
+    changedTarget.dispatch({
+        state: "error", preflight: true, evidenceId: "new-request",
+        captureKind: "exceptions", message: "The selected process changed during setup.",
+    }, changedTarget.state, changedTarget.deps);
+    assert.equal(changedTarget.state.pendingExceptionEvidenceId, "new-request");
+    assert.equal(changedTarget.views.clears, 0, "preflight abort must preserve current evidence");
+    assert.match(changedTarget.elements.get("captureExceptionsStatus").textContent, /selected process changed/);
 });
 
 test("exception result ownership stays dedicated, mode-specific and request-correlated", () => {
@@ -1695,6 +1713,52 @@ test("exception type and message filters select retained occurrences without cha
     assert.doesNotMatch(root.querySelector("section").textContent, /Throw\(\)/);
     click(root, "Reset exception filters");
     assert.match(root.textContent, /3 of 3 retained occurrences/);
+});
+
+test("exception occurrence detail keeps selection, keyboard return and bounded navigation in wide and narrow fixtures", () => {
+    const { renderHtml } = require("../out/extension.js");
+    const html = renderHtml(target, "nonce123", 120);
+    assert.match(html, /\.exception-navigation-layout \{ display:grid; grid-template-columns:minmax\(12rem, 1fr\) minmax\(0, 1\.5fr\)/);
+    assert.match(html, /@media \(max-width:640px\) \{\s*\.exception-navigation-layout \{ grid-template-columns:minmax\(0, 1fr\); \}/);
+
+    for (const viewportWidth of [1280, 360]) {
+        const { makeContainer, renderExceptionNavigation } = loadRenderer();
+        const root = makeContainer("exceptions-" + viewportWidth);
+        root.clientWidth = viewportWidth;
+        const events = Array.from({ length: 100 }, (_, index) => ({
+            timestamp: new Date(Date.UTC(2026, 9, 14, 0, 0, index)).toISOString(),
+            exceptionType: index === 0 ? "Very.Long." + "GenericType".repeat(12) : "System.Exception",
+            exceptionMessage: index === 0 ? "<script>long message</script>" : "Failure " + index,
+            threadId: index + 1,
+            managedStack: index === 0 ? ["Sample.Throw()"] : [],
+        }));
+        renderExceptionNavigation(root, events);
+
+        const list = root.querySelector(".exception-occurrences");
+        assert.equal(list.tagName, "ol", "occurrences use a native ordered-list structure");
+        assert.equal(list.getAttribute("aria-label"), "Retained exception occurrences");
+        assert.equal(list.children.length, 100, "all bounded retained events remain available");
+        const first = list.children[0].querySelector("button");
+        assert.match(first.textContent, /Very\.Long\./);
+        assert.match(first.getAttribute("aria-label"), /2026-10-14T00:00:00\.000Z/,
+            "the exact timestamp remains available to assistive technology");
+        first.listeners.click({});
+        assert.equal(first.getAttribute("aria-pressed"), "true");
+        assert.match(root.textContent, /Occurrence 1 of 100 selected/);
+        const detail = root.querySelector(".evidence-selection");
+        const actions = detail.querySelectorAll("button");
+        assert.equal(actions[0].disabled, true);
+        assert.equal(actions[1].textContent, "Next occurrence");
+        actions[1].listeners.click({});
+        assert.equal(first.getAttribute("aria-pressed"), "false");
+        const second = list.children[1].querySelector("button");
+        assert.equal(second.getAttribute("aria-pressed"), "true");
+        assert.match(root.textContent, /Occurrence 2 of 100 selected/);
+        actions[2].listeners.click({});
+        assert.equal(second.focused, true, "Back returns focus to the selected occurrence");
+        assert.equal(second.scrolledIntoView, true);
+        assert.equal(root.querySelector("script"), null, "exception text is rendered without markup");
+    }
 });
 
 test("live time selection filters only retained observations and GC receipt times and supports reset/inspection", () => {

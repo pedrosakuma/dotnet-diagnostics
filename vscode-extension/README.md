@@ -58,11 +58,12 @@ not a retained-handle query. In-flight request results lead with the capture-win
 retained request rows; state filters and search apply only to returned rows, with truncation and
 capture-quality notes kept visible. Managed-exception and crash-guard results use a separate
 single replaceable exception result, keep the selected mode and live EventPipe target visible, and
-do not become history or queryable evidence by navigating. Exception messages can contain
-sensitive application data; a process exit alone does not prove an unhandled exception. Started
-timestamps display in UTC; the original ISO value remains available to assistive technology and in
-the timestamp tooltip. Monitoring, dump analysis, and saved evidence keep their source-specific
-result surfaces.
+do not become history or queryable evidence by navigating. Results are temporary and are not saved;
+sending a capture clears the current exception result; if collection then fails, it cannot be restored.
+Exception messages can contain sensitive application data; a process exit alone does not prove an
+unhandled exception. Started timestamps display in UTC; the original ISO value remains available
+to assistive technology and in the timestamp tooltip. Monitoring, dump analysis, and saved evidence
+keep their source-specific result surfaces.
 **Analyze Dump File** and **Saved Captures** remain separate offline entry points.
 
 **Requests + completed Activities** is a separate explicit reproduction action in Requests &

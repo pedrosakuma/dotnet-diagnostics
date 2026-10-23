@@ -430,11 +430,14 @@ from **All retained messages**.
 Type/message aggregate tables are retained under **Type counts and retained-message aggregates**
 rather than always stacked above the occurrence explorer.
 
-Start capture **before** load: after the request, the panel says to allow EventPipe about a
-second to start and then **reproduce the problem now**. This is timing guidance, not an
-armed-session acknowledgement. A busy connection rejects exception capture with retry guidance
-instead of queueing it behind an earlier capture, query or session startup. Captures
-do not start/stop the live counters session. These capture kinds require a CLI build containing
+Start capture **before** the workload. The extension confirms when it sends the request, but the
+protocol does not report when EventPipe is ready. A one-time failure may therefore happen before
+the capture window; keep the workload running or repeat the problem throughout a new capture rather
+than relying on a fixed startup delay. Sending a capture clears the current exception result; if
+collection then fails, it cannot be restored. Results are temporary and are not saved by this
+panel. A busy connection rejects exception capture with retry guidance instead of queueing it behind an earlier
+capture, query or session startup. Captures do not start/stop the live counters session. These
+capture kinds require a CLI build containing
 the #1166 JSONL extension; older protocol-v2 CLIs report the kind as unsupported with update guidance.
 
 Use **Capture Heap Snapshot** (tree-view action or Command Palette command

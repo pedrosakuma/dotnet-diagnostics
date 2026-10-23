@@ -207,6 +207,7 @@ class CounterPanelController implements vscode.Disposable {
     private readonly pendingExports = new Map<string, { session: StreamChild; deferred: Deferred<unknown> }>();
     private exporting = false;
     private panel?: vscode.WebviewPanel;
+    private panelGeneration = 0;
     private panelReady?: Deferred<void>;
     private selectedTarget?: TargetProcess;
     private activeChild?: StreamChild;
@@ -633,26 +634,57 @@ class CounterPanelController implements vscode.Disposable {
         if (this.disposed) return;
         const target = this.selectedTarget ?? await this.ensureTargetAndPanel();
         if (!target || this.disposed) return;
+        const panel = this.panel;
+        const panelGeneration = this.panelGeneration;
+        const isCurrentPreflight = (): boolean => !this.disposed
+            && this.selectedTarget === target
+            && this.panel === panel
+            && this.panelGeneration === panelGeneration;
         const selection = await vscode.window.showQuickPick([
             { label: "Managed exceptions", description: "Types, counts and retained messages (no stack frames)", captureKind: "exceptions" as const },
             { label: "Crash guard", description: "Exceptions and available stacks; process exit is not proof of an unhandled exception", captureKind: "crash-guard" as const },
-        ], { placeHolder: "Capture exceptions for 10 seconds; messages can contain sensitive application data" });
+        ], { placeHolder: "Sending a capture clears the current result; if it fails, the result cannot be restored. Results are temporary and not saved." });
         if (!selection || this.disposed) return;
         const kind = selection.captureKind;
         const requestId = randomBytes(12).toString("hex");
-        const postExceptionStatus = (state: string, message: string): void => {
+        const postExceptionStatus = (state: string, message: string, preflight = false): void => {
             this.postMessage({
                 type: "captureStatus", kind: "exceptions", evidenceId: requestId,
-                captureKind: kind, state, message,
+                captureKind: kind, state, message, preflight,
             });
         };
+        const abortChangedTarget = (): void => {
+            postExceptionStatus("starting", "Preparing exception capture…");
+            postExceptionStatus("error",
+                "The selected process or diagnostics panel changed during setup. No exception capture was sent. Select the intended process and capture again.",
+                true);
+        };
+        if (!isCurrentPreflight()) {
+            abortChangedTarget();
+            return;
+        }
         postExceptionStatus("starting", "Preparing exception capture…");
         let session: StreamChild;
         let ownsSession: boolean;
         try {
             ({ session, owns: ownsSession } = await this.acquireChild());
         } catch (error) {
+            if (!isCurrentPreflight()) {
+                abortChangedTarget();
+                return;
+            }
             postExceptionStatus("error", withRuntimeGuidance(errorMessage(error)));
+            return;
+        }
+
+        if (!isCurrentPreflight()) {
+            if (ownsSession && !session.sessionId && !session.startInFlight
+                && session.pendingCaptures.size === 0 && session.pendingQueries.size === 0
+                && !session.pendingJointQueries?.size) {
+                session.expectedShutdown = true;
+                await this.closeChild(session);
+            }
+            abortChangedTarget();
             return;
         }
 
@@ -672,7 +704,7 @@ class CounterPanelController implements vscode.Disposable {
             this.postMessage({
                 type: "captureStatus", kind: "exceptions", state: "running",
                 evidenceId: requestId, captureKind: kind,
-                message: "Exception capture requested (10 seconds after startup). Allow EventPipe ~1 second to start, then reproduce the problem now.",
+                message: "Exception capture request sent. EventPipe readiness is not reported, so a one-time failure may happen outside the capture window. Keep the workload running or repeat the problem throughout the capture.",
             });
             const result = await withTimeout(pending.deferred.promise, 60_000);
             this.postMessage({ type: "capture", kind: "exceptions", evidenceId: requestId, captureKind: kind, result });
@@ -1610,6 +1642,7 @@ class CounterPanelController implements vscode.Disposable {
                 localResourceRoots: [],
             },
         );
+        this.panelGeneration++;
         this.panel = panel;
         this.panelReady = deferred<void>();
         panel.webview.html = renderHtml(target, randomBytes(18).toString("base64url"), this.getHistoryDurationSeconds());
@@ -1709,6 +1742,7 @@ class CounterPanelController implements vscode.Disposable {
             this.eventsGeneration++;
             this.resetEventsDeliveryState();
             this.panel = undefined;
+            this.panelGeneration++;
             this.liveReadConsent.clear();
             this.exporter.clear();
             this.selectedTarget = undefined;
@@ -3632,12 +3666,13 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
   </section>
   <section id="resultExceptions" hidden>
     <div class="panel-actions"><button id="captureExceptions" type="button">Capture exceptions…</button></div>
+    <p class="query-view-provenance">Exception results are temporary and are not saved. Sending a capture clears the current result; if collection then fails, it cannot be restored. Messages may contain sensitive application data.</p>
     <div id="captureExceptionsStatus" role="status"></div>
     <p id="exceptionEvidenceIdentity" class="workspace-evidence-status" role="status">No exception evidence has been captured.</p>
     <div id="exceptionCaptureViews" class="query-views"></div>
     <p class="query-view-provenance">
       Managed exceptions retain bounded messages without stack frames; crash guard includes available stacks.
-      Exception messages can contain sensitive application data. A process exit alone is not proof of an unhandled exception.
+      A process exit alone is not proof of an unhandled exception.
     </p>
   </section>
   <section id="resultHeap" class="result-tab-panel" role="tabpanel" aria-labelledby="resultTabHeap" hidden>
@@ -5074,7 +5109,8 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         }
       } else if (message.type === 'captureStatus' && message.kind === 'exceptions') {
         if (typeof message.evidenceId !== 'string' || !exceptionCaptureModes[message.captureKind]) return;
-        if (message.state === 'starting') pendingExceptionEvidenceId = message.evidenceId;
+        if (message.state === 'starting' || (message.state === 'error' && message.preflight === true))
+          pendingExceptionEvidenceId = message.evidenceId;
         if (message.evidenceId !== pendingExceptionEvidenceId) return;
         captureExceptionsStatus.textContent = message.message || message.state || '';
         captureExceptionsButton.disabled = message.state === 'running' || message.state === 'starting';
@@ -5087,7 +5123,8 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           exceptionPanel.dataset.captureKind = '';
           document.getElementById('exceptionCaptureViews').replaceChildren();
           document.getElementById('exceptionEvidenceIdentity').textContent =
-            'Capture in progress: ' + exceptionCaptureModes[message.captureKind] + ' · Live EventPipe.';
+            'Capture in progress: ' + exceptionCaptureModes[message.captureKind]
+            + ' · Live EventPipe. The previous exception result is no longer available.';
           setWorkspaceStatus('exceptions', 'The previous exception result was replaced when this capture started.');
           if (selectedWorkspaceEvidence === 'exceptions') setWorkspaceEvidence('exceptions');
         } else if (message.state === 'error') {

@@ -791,7 +791,7 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
             table("Exception types (all observed events)", data.byType, [
                 ["Exception type", row => row.exceptionType],
                 ["Count", row => row.count],
-            ], "No managed exceptions were observed. Start capture before reproducing the problem.");
+            ], "No managed exceptions were observed. EventPipe readiness is not reported, so a one-time failure may have happened outside the capture window. Keep the workload running or repeat the problem throughout a new capture.");
             const messages = new Map<string, Record<string, unknown>>();
             for (const event of recent) {
                 const key = JSON.stringify([event.exceptionType, event.exceptionMessage]);
