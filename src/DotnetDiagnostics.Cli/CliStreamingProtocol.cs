@@ -255,6 +255,7 @@ internal static partial class CliStreamingProtocol
         var services = host.Services;
         using var writer = new ProtocolWriter(stdout);
         await using var joint = new JointCaptureSlot(services, writer, stderr);
+        var cpuHandleWindow = new CliStreamingCpuHandleWindow();
         ActiveSession? activeSession = null;
         var negotiated = false;
 
@@ -344,6 +345,14 @@ internal static partial class CliStreamingProtocol
                                 queryViews = JointQueryViews,
                                 maxRequests = 100, maxActivities = 200, maxQueryRows = 100,
                             },
+                            cpuHandleComparison = new
+                            {
+                                version = 1,
+                                queryView = "diff",
+                                baselineHandleField = "baselineHandle",
+                                retainedHandleLimit = CliStreamingCpuHandleWindow.RetainedHandleLimit,
+                                maxTopMovers = CpuSampleHandleComparison.MaxTopMovers,
+                            },
                         }, cancellationToken).ConfigureAwait(false);
                         continue;
                     }
@@ -393,7 +402,9 @@ internal static partial class CliStreamingProtocol
                                 break;
                             }
                             await joint.ClearAsync().ConfigureAwait(false);
-                            await HandleCaptureAsync(document.RootElement, services, writer, stdin, stdout, stderr, cancellationToken)
+                            await HandleCaptureAsync(
+                                document.RootElement, services, writer, cpuHandleWindow,
+                                stdin, stdout, stderr, cancellationToken)
                                 .ConfigureAwait(false);
                             break;
 
@@ -585,6 +596,7 @@ internal static partial class CliStreamingProtocol
         JsonElement root,
         IServiceProvider services,
         ProtocolWriter writer,
+        CliStreamingCpuHandleWindow cpuHandleWindow,
         TextReader stdin,
         TextWriter stdout,
         TextWriter stderr,
@@ -1003,9 +1015,11 @@ internal static partial class CliStreamingProtocol
                 topN,
                 exportTrace: exportTrace,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
-            var exportHandle = services.GetRequiredService<IDiagnosticHandleStore>().RegisterWithMetadata(
+            var handles = services.GetRequiredService<IDiagnosticHandleStore>();
+            var exportHandle = handles.RegisterWithMetadata(
                 processId.Value, "cpu-sample", result.Artifact, TimeSpan.FromMinutes(20),
                 evictWhenProcessExits: false, origin: HandleOrigin.Live, producingTool: "collect_sample");
+            cpuHandleWindow.Track(handles, exportHandle.Id);
             await writer.WriteAsync(new
             {
                 type = "capture",
@@ -1335,6 +1349,7 @@ internal static partial class CliStreamingProtocol
 
         var normalizedView = view.Trim().ToLowerInvariant();
         var isHeapGrowth = normalizedView == HeapGrowthView;
+        var isCpuDiff = normalizedView == "diff";
         string? baselineHandle = null;
         var hasBaselineHandle = root.TryGetProperty("baselineHandle", out var baselineElement)
             && baselineElement.ValueKind != JsonValueKind.Null;
@@ -1356,26 +1371,28 @@ internal static partial class CliStreamingProtocol
             baselineHandle = baselineElement.GetString();
         }
 
-        if (isHeapGrowth && baselineHandle is null)
+        if ((isHeapGrowth || isCpuDiff) && baselineHandle is null)
         {
             await writer.WriteAsync(new
             {
                 type = "error",
                 requestId,
                 code = "invalid_query",
-                message = "View 'growth' requires a non-empty 'baselineHandle' naming the earlier heap snapshot.",
+                message = isHeapGrowth
+                    ? "View 'growth' requires a non-empty 'baselineHandle' naming the earlier heap snapshot."
+                    : "CPU view 'diff' requires a non-empty string 'baselineHandle'.",
             }, CancellationToken.None).ConfigureAwait(false);
             return;
         }
 
-        if (!isHeapGrowth && baselineHandle is not null)
+        if (!isHeapGrowth && !isCpuDiff && baselineHandle is not null)
         {
             await writer.WriteAsync(new
             {
                 type = "error",
                 requestId,
                 code = "invalid_query",
-                message = "'baselineHandle' is supported only for view 'growth'.",
+                message = "'baselineHandle' is supported only for views 'growth' and 'diff'.",
             }, CancellationToken.None).ConfigureAwait(false);
             return;
         }
@@ -1431,6 +1448,18 @@ internal static partial class CliStreamingProtocol
                 requestId,
                 code = "invalid_query",
                 message = "'topN' must be between 1 and 500.",
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+
+        if (normalizedView == "diff" && topN > CpuSampleHandleComparison.MaxTopMovers)
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId,
+                code = "invalid_query",
+                message = $"'topN' must be between 1 and {CpuSampleHandleComparison.MaxTopMovers} for CPU view 'diff'.",
             }, CancellationToken.None).ConfigureAwait(false);
             return;
         }
@@ -1534,16 +1563,97 @@ internal static partial class CliStreamingProtocol
                     handle,
                     "current",
                     lookup.Status).ConfigureAwait(false);
+            }
+            else if (isCpuDiff)
+            {
+                await WriteHandleUnavailableAsync(
+                    writer, requestId, "Current", handle, lookup, CancellationToken.None).ConfigureAwait(false);
+            }
+            else
+            {
+                await writer.WriteAsync(new
+                {
+                    type = "error",
+                    requestId,
+                    code = "unknown_handle",
+                    message = $"Handle '{handle}' is unknown, expired, or was evicted. Capture a fresh snapshot and retry.",
+                }, CancellationToken.None).ConfigureAwait(false);
+            }
+            return;
+        }
+
+        if (isCpuDiff)
+        {
+            if (addressStatus == CliStreamingQueryNavigation.AddressStatus.Valid
+                || includeSensitiveValues
+                || objectOptions is not null)
+            {
+                await writer.WriteAsync(new
+                {
+                    type = "error",
+                    requestId,
+                    code = "invalid_query",
+                    message = "CPU view 'diff' does not accept heap address or object-value options.",
+                }, CancellationToken.None).ConfigureAwait(false);
+                return;
+            }
+
+            var baselineLookup = handles.LookupWithKind(baselineHandle!);
+            if (baselineLookup.Status != DiagnosticHandleLookupStatus.Found
+                || baselineLookup.Lookup is not { } baselineFound)
+            {
+                await WriteHandleUnavailableAsync(
+                    writer, requestId, "Baseline", baselineHandle!, baselineLookup, CancellationToken.None).ConfigureAwait(false);
+                return;
+            }
+
+            if (found.Artifact is not CpuSampleTraceArtifact currentCpu
+                || baselineFound.Artifact is not CpuSampleTraceArtifact baselineCpu)
+            {
+                await writer.WriteAsync(new
+                {
+                    type = "error",
+                    requestId,
+                    code = "invalid_query",
+                    message = $"CPU view 'diff' requires two 'cpu-sample' artifacts (got '{baselineFound.Kind}' and '{found.Kind}').",
+                }, CancellationToken.None).ConfigureAwait(false);
+                return;
+            }
+
+            var comparison = CpuSampleHandleComparison.Compare(
+                baselineFound.Handle,
+                baselineCpu,
+                found.Handle,
+                currentCpu,
+                topN);
+            if (comparison.IsError)
+            {
+                await writer.WriteAsync(new
+                {
+                    type = "error",
+                    requestId,
+                    code = "invalid_query",
+                    message = comparison.Error!.Message,
+                }, CancellationToken.None).ConfigureAwait(false);
                 return;
             }
 
             await writer.WriteAsync(new
             {
-                type = "error",
+                type = "query",
                 requestId,
-                code = "unknown_handle",
-                message = $"Handle '{handle}' is unknown, expired, or was evicted. Capture a fresh snapshot and retry.",
-            }, CancellationToken.None).ConfigureAwait(false);
+                handle,
+                baselineHandle,
+                view = normalizedView,
+                result = new
+                {
+                    handle,
+                    baselineHandle,
+                    view = normalizedView,
+                    summary = comparison.Summary,
+                    data = comparison.Data,
+                },
+            }, cancellationToken).ConfigureAwait(false);
             return;
         }
 
@@ -2396,6 +2506,35 @@ internal static partial class CliStreamingProtocol
 
     private static string FormatAddress(ulong address) =>
         "0x" + address.ToString("x", CultureInfo.InvariantCulture);
+
+    private static Task WriteHandleUnavailableAsync(
+        ProtocolWriter writer,
+        string requestId,
+        string side,
+        string handle,
+        DiagnosticHandleLookupResult lookup,
+        CancellationToken cancellationToken)
+    {
+        var code = lookup.Status switch
+        {
+            DiagnosticHandleLookupStatus.Expired => "expired_handle",
+            DiagnosticHandleLookupStatus.CapacityEvicted => "evicted_handle",
+            _ => "unknown_handle",
+        };
+        var reason = lookup.Status switch
+        {
+            DiagnosticHandleLookupStatus.Expired => "expired",
+            DiagnosticHandleLookupStatus.CapacityEvicted => "was capacity-evicted",
+            _ => "is unknown or was explicitly released",
+        };
+        return writer.WriteAsync(new
+        {
+            type = "error",
+            requestId,
+            code,
+            message = $"{side} handle '{handle}' {reason}. Capture a fresh CPU pair and retry.",
+        }, cancellationToken);
+    }
 
     /// <summary>
     /// Converts a Core <see cref="DiagnosticError.Kind"/> (PascalCase, e.g. <c>"ViewNotCaptured"</c>)

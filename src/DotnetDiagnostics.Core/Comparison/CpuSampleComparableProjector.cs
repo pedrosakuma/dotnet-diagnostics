@@ -303,7 +303,7 @@ public static class CpuSampleComparableProjection
         };
     }
 
-    private static bool IsUnresolved(string? name)
+    internal static bool IsUnresolved(string? name)
         => string.IsNullOrEmpty(name)
             || string.Equals(name, "[unknown]", StringComparison.Ordinal)
             || name.StartsWith("0x", StringComparison.OrdinalIgnoreCase);

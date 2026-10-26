@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Bounded CPU handle comparison in the CLI JSONL stream (#1263).** The additive
+  `hello.cpuHandleComparison` capability advertises `query` view `diff`, which accepts
+  a current CPU `handle` plus `baselineHandle` and returns objective sample-population,
+  duration, unresolved-symbol and bounded top-mover deltas. The contract preserves
+  per-side quality, backend, provenance, units and denominators; missing or incompatible
+  observations stay null/unavailable and zero baselines do not fabricate relative
+  deltas. It emits no improvement/regression verdict. Each stream retains only its two
+  newest CPU handles; a third capture releases the oldest.
+
 ## [0.32.1] — 2026-10-22
 
 This is the first published release with the changes below. The `v0.32.0` tag was created
