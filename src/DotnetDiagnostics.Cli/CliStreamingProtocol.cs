@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Collection;
+using DotnetDiagnostics.Core.Comparison;
 using DotnetDiagnostics.Core.Counters;
 using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Drilldown;
@@ -35,6 +36,7 @@ namespace DotnetDiagnostics.Cli;
 internal static partial class CliStreamingProtocol
 {
     private const int ProtocolVersion = 2;
+    private const string HeapGrowthView = "growth";
     private const int MaxControlLineBytes = 64 * 1024;
     private static readonly string CliVersion =
         typeof(CliStreamingProtocol).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
@@ -335,6 +337,7 @@ internal static partial class CliStreamingProtocol
                             protocolVersion = ProtocolVersion,
                             cliVersion = CliVersion,
                             supportedLiveKinds = LiveKinds.Keys.Order(StringComparer.Ordinal).ToArray(),
+                            heapGrowth = ProjectHeapGrowthCapability(services),
                             requestActivities = new
                             {
                                 version = 1, captureKind = "request-activities",
@@ -1330,7 +1333,94 @@ internal static partial class CliStreamingProtocol
             return;
         }
 
-        var topN = 50;
+        var normalizedView = view.Trim().ToLowerInvariant();
+        var isHeapGrowth = normalizedView == HeapGrowthView;
+        string? baselineHandle = null;
+        var hasBaselineHandle = root.TryGetProperty("baselineHandle", out var baselineElement)
+            && baselineElement.ValueKind != JsonValueKind.Null;
+        if (hasBaselineHandle)
+        {
+            if (baselineElement.ValueKind != JsonValueKind.String
+                || !IsValidProtocolHandle(baselineElement.GetString()))
+            {
+                await writer.WriteAsync(new
+                {
+                    type = "error",
+                    requestId,
+                    code = "invalid_query",
+                    message = "'baselineHandle' must be a non-empty string of at most 256 characters without control characters.",
+                }, CancellationToken.None).ConfigureAwait(false);
+                return;
+            }
+
+            baselineHandle = baselineElement.GetString();
+        }
+
+        if (isHeapGrowth && baselineHandle is null)
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId,
+                code = "invalid_query",
+                message = "View 'growth' requires a non-empty 'baselineHandle' naming the earlier heap snapshot.",
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+
+        if (!isHeapGrowth && baselineHandle is not null)
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId,
+                code = "invalid_query",
+                message = "'baselineHandle' is supported only for view 'growth'.",
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+
+        var growthRankBy = HeapGrowthDiff.RankByBytes;
+        if (isHeapGrowth && root.TryGetProperty("rankBy", out var rankByElement)
+            && rankByElement.ValueKind != JsonValueKind.Null)
+        {
+            var requestedRank = rankByElement.ValueKind == JsonValueKind.String
+                ? rankByElement.GetString()?.Trim().ToLowerInvariant()
+                : null;
+            if (rankByElement.ValueKind != JsonValueKind.String
+                || requestedRank is not (HeapGrowthDiff.RankByBytes or HeapGrowthDiff.RankByInstances))
+            {
+                await writer.WriteAsync(new
+                {
+                    type = "error",
+                    requestId,
+                    code = "invalid_query",
+                    message = "'rankBy' must be 'bytes' or 'instances' for view 'growth'.",
+                }, CancellationToken.None).ConfigureAwait(false);
+                return;
+            }
+
+            growthRankBy = requestedRank;
+        }
+
+        var minDeltaPct = 5.0;
+        if (isHeapGrowth && root.TryGetProperty("minDeltaPct", out var minDeltaElement)
+            && minDeltaElement.ValueKind != JsonValueKind.Null
+            && (!minDeltaElement.TryGetDouble(out minDeltaPct)
+                || !double.IsFinite(minDeltaPct)
+                || minDeltaPct < 0))
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId,
+                code = "invalid_query",
+                message = "'minDeltaPct' must be a finite number greater than or equal to zero for view 'growth'.",
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+
+        var topN = isHeapGrowth ? 25 : 50;
         if (root.TryGetProperty("topN", out var topNElement)
             && topNElement.ValueKind != JsonValueKind.Null
             && (!topNElement.TryGetInt32(out topN) || topN is < 1 or > 500))
@@ -1436,6 +1526,17 @@ internal static partial class CliStreamingProtocol
         var lookup = handles.LookupWithKind(handle);
         if (lookup.Status != DiagnosticHandleLookupStatus.Found || lookup.Lookup is not { } found)
         {
+            if (isHeapGrowth)
+            {
+                await WriteGrowthHandleUnavailableAsync(
+                    writer,
+                    requestId,
+                    handle,
+                    "current",
+                    lookup.Status).ConfigureAwait(false);
+                return;
+            }
+
             await writer.WriteAsync(new
             {
                 type = "error",
@@ -1443,6 +1544,45 @@ internal static partial class CliStreamingProtocol
                 code = "unknown_handle",
                 message = $"Handle '{handle}' is unknown, expired, or was evicted. Capture a fresh snapshot and retry.",
             }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+
+        if (isHeapGrowth)
+        {
+            if (found.Kind != HeapInspectionUseCases.HeapSnapshotKind)
+            {
+                await WriteGrowthUnsupportedHandleKindAsync(
+                    writer,
+                    requestId,
+                    handle,
+                    "current",
+                    found.Kind).ConfigureAwait(false);
+                return;
+            }
+
+            if (addressStatus == CliStreamingQueryNavigation.AddressStatus.Valid)
+            {
+                await writer.WriteAsync(new
+                {
+                    type = "error",
+                    requestId,
+                    code = "invalid_query",
+                    message = "'address' is not supported for view 'growth'.",
+                }, CancellationToken.None).ConfigureAwait(false);
+                return;
+            }
+
+            await HandleHeapGrowthQueryAsync(
+                requestId,
+                writer,
+                handles,
+                handle,
+                found,
+                baselineHandle!,
+                growthRankBy,
+                minDeltaPct,
+                topN,
+                cancellationToken).ConfigureAwait(false);
             return;
         }
 
@@ -1522,6 +1662,11 @@ internal static partial class CliStreamingProtocol
             message = $"Handle '{handle}' was captured as '{found.Kind}', which has no `query` views defined.",
         }, CancellationToken.None).ConfigureAwait(false);
     }
+
+    private static bool IsValidProtocolHandle(string? handle) =>
+        !string.IsNullOrWhiteSpace(handle)
+        && handle.Length <= 256
+        && !handle.Any(char.IsControl);
 
     private static async Task HandleCpuQueryAsync(
         string requestId,
@@ -2738,6 +2883,18 @@ fragmentation, gchandles, async, timers, alc, static-fields, delegate-targets, r
 retained-exceptions; thread-snapshot views are deadlocks, unique-stacks, wait-chains, threadpool and
 thread-statics. The optional "typeFilter" string is the exact full type name that thread-statics
 requires (otherwise error code "invalid_query"); it is ignored by every other view.
+If hello advertises heapGrowth.version=1 and heapGrowth.available=true, compare two same-process
+heap handles with
+{"type":"query","requestId":...,"handle":"<current>","baselineHandle":"<earlier>","view":"growth",
+"rankBy":"bytes"|"instances","minDeltaPct":5,"topN":25}. The captures must have matching
+live/dump/gcdump provenance and chronological order. heapGrowth.storeCapacity reports the effective
+shared handle-store capacity; growth requires heapGrowth.minimumStoreCapacity=2. Both remain
+ordinary bounded in-memory
+entries in the shared configured MemoryDiagnosticHandleStore: this is neither an unbounded history
+nor a dedicated two-slot/pinned pair. Handles are not persisted and can expire, be capacity-evicted,
+or become unavailable when a live target exits. At query time, live/gcdump pairs require the target
+PID to still exist and its current process lifetime to include both capture timestamps; dump pairs
+remain offline and do not perform a live-process check.
 Heap handles also accept the address views object and gcroot (#1168), which require "address" and
 re-open the snapshot origin with ClrMD (a live attach suspends the target). Live reads are High
 risk/Acknowledge like query --view object, so a live request is rejected with code

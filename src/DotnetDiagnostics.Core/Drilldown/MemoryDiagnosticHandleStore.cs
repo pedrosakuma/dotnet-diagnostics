@@ -60,6 +60,9 @@ public sealed class MemoryDiagnosticHandleStore : IDiagnosticHandleStore
         _logger = logger ?? NullLogger<MemoryDiagnosticHandleStore>.Instance;
     }
 
+    /// <summary>Maximum number of artifacts that can coexist in this store.</summary>
+    public int Capacity => _maxEntries;
+
     public DiagnosticHandle Register(
         int processId,
         string kind,

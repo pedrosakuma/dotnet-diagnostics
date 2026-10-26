@@ -90,6 +90,23 @@ command to emit the raw `DiagnosticResult` envelope for scripting. Run `dotnet-d
 For the full command catalog, flags, and examples, see
 [`docs/cli-reference.md`](https://github.com/pedrosakuma/dotnet-diagnostics/blob/main/docs/cli-reference.md).
 
+### Machine streaming
+
+`dotnet-diagnostics-cli stream --protocol jsonl` exposes the Core-only versioned JSONL protocol used
+by local clients. Its `hello` response advertises versioned optional capabilities. Clients require
+both `heapGrowth.version` `1` and `heapGrowth.available:true`; the capability also reports the
+effective `storeCapacity` and `minimumStoreCapacity:2`, so a one-entry store does not claim that two
+handles can coexist. Growth queries use a current heap handle plus an earlier `baselineHandle`; the
+CLI reuses Core `HeapGrowthDiff` and does not expose a separate `diff` view. Both same-process,
+same-provenance artifacts remain ordinary bounded in-memory handle-store entries in the shared
+configured `MemoryDiagnosticHandleStore`, preserving existing client behavior. It is not an
+unbounded history or a dedicated two-slot/pinned pair: there is no release protocol, persistence, or
+automatic recollection, and either handle can expire or be capacity-evicted. Streaming does not run
+proactive dead-process eviction; live/gcdump growth queries validate target liveness and the current
+process lifetime at query time, while dump-origin comparisons remain offline. See the
+[machine streaming protocol](https://github.com/pedrosakuma/dotnet-diagnostics/blob/main/docs/cli-reference.md#machine-streaming-protocol)
+for the exact request, response, validation, and quality contract.
+
 ## The `session` REPL
 
 One-shot commands build the diagnostic host, run, and exit — so a drill-down `query` has nothing to query.
