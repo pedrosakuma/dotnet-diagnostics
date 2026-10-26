@@ -86,6 +86,12 @@ import {
     supportsInvestigationEvidence,
     type InvestigationAvailabilityReason,
 } from "./investigationEvidence";
+import {
+    buildInvestigationLensModel,
+    INVESTIGATION_LENS_HTML,
+    INVESTIGATION_LENS_SCRIPT,
+    INVESTIGATION_LENS_STYLES,
+} from "./investigationLens";
 
 /**
  * The 7 heap query views available unconditionally once any heap snapshot is captured, plus the 3
@@ -238,7 +244,8 @@ class CounterPanelController implements vscode.Disposable {
     private jointCaptureTask?: Promise<void>;
     private jointQueryTask?: Promise<void>;
     private jointGeneration = 0;
-    private investigationEvidence: InvestigationEvidenceStore | undefined = new InvestigationEvidenceStore();
+    private investigationEvidence: InvestigationEvidenceStore | undefined =
+        new InvestigationEvidenceStore(() => this.publishInvestigationLens());
     private readonly exporter = new ResultExporter();
     private cpuExport?: RetainedCpuProfile;
     private cpuBaseline?: RetainedCpuProfile;
@@ -313,8 +320,16 @@ class CounterPanelController implements vscode.Disposable {
     }
 
     private getInvestigationEvidence(): InvestigationEvidenceStore {
-        this.investigationEvidence ??= new InvestigationEvidenceStore();
+        this.investigationEvidence ??= new InvestigationEvidenceStore(() => this.publishInvestigationLens());
         return this.investigationEvidence;
+    }
+
+    private publishInvestigationLens(): void {
+        if (!this.panel || !this.investigationEvidence) return;
+        this.postMessage({
+            type: "investigationLens",
+            model: buildInvestigationLensModel(this.investigationEvidence.snapshot()),
+        });
     }
 
     public startCounters(): Promise<void> {
@@ -1979,6 +1994,9 @@ class CounterPanelController implements vscode.Disposable {
                 void this.startEvents();
             } else if (message.type === "stopEvents") {
                 void this.stopEvents();
+            } else if (message.type === "clearInvestigationEvidence") {
+                this.getInvestigationEvidence().clear();
+                this.getInvestigationEvidence().open(this.targetGeneration);
             } else if (message.type === "ackEventBatch") {
                 this.acknowledgeEventBatch(message.sessionId, message.batchId);
             } else if (message.type === "captureCpu") {
@@ -2409,6 +2427,10 @@ class CounterPanelController implements vscode.Disposable {
                     ? frame.cpuHandleComparison : undefined;
                 session.investigationEvidence = isRecord(frame.capabilities)
                     && supportsInvestigationEvidence(frame.capabilities.investigationEvidence);
+                this.postMessage({
+                    type: "investigationEvidenceCapability",
+                    supported: session.investigationEvidence,
+                });
                 session.handshake.resolve();
                 break;
 
@@ -3906,6 +3928,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     .export-controls { margin:.6rem 0; }
     ${ACTION_AVAILABILITY_STYLES}
     ${MEMORY_OVERVIEW_STYLES}
+    ${INVESTIGATION_LENS_STYLES}
     .result-tabs, .monitoring-tabs { display:flex; gap:.2rem; overflow-x:auto; padding:.45rem 0; background:var(--vscode-editor-background); border-bottom:1px solid var(--vscode-panel-border); }
     .result-tabs { position:sticky; top:0; z-index:2; }
     .result-tabs button, .monitoring-tabs button { flex:0 0 auto; background:transparent; color:var(--vscode-foreground); border-bottom:2px solid transparent; }
@@ -4007,7 +4030,9 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
   <nav class="result-tabs" role="tablist" aria-label="Evidence areas">
     <button id="resultTabMonitoring" role="tab" aria-selected="true" aria-controls="resultMonitoring">Monitoring</button>
     <button id="resultTabWorkspace" role="tab" aria-selected="false" aria-controls="resultWorkspace">Workspace</button>
+    <button id="resultTabInvestigation" role="tab" aria-selected="false" aria-controls="resultInvestigation" hidden>Investigation</button>
   </nav>
+  ${INVESTIGATION_LENS_HTML}
   <section id="resultWorkspace" class="result-tab-panel" role="tabpanel" aria-labelledby="resultTabWorkspace" hidden>
     <div class="workspace-controls">
       <label for="workspaceDomain">Domain</label>
@@ -4021,7 +4046,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       <label for="workspaceEvidenceKind">Evidence</label>
       <select id="workspaceEvidenceKind" aria-label="Select current evidence kind"></select>
     </div>
-    <div id="workspaceEvidenceStatus" class="workspace-evidence-status" role="status">No evidence selected.</div>
+    <div id="workspaceEvidenceStatus" class="workspace-evidence-status" role="status" tabindex="-1">No evidence selected.</div>
     <div class="workspace-view-controls">
       <label for="workspaceView">View</label>
       <select id="workspaceView" aria-label="Select a view"></select>
@@ -4259,6 +4284,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     ${LIVE_TIME_NAVIGATION_SCRIPT}
     ${MEMORY_OVERVIEW_SCRIPT}
     ${LIVE_READ_CONSENT_SCRIPT}
+    ${INVESTIGATION_LENS_SCRIPT}
     let cpuProfileResult;
     let cpuBaselineProfileResult;
     let cpuCaptureSummary;
@@ -4586,16 +4612,18 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       }
     }
     selectResultTab(resultTabs[0]);
-    for (const [index, tab] of resultTabs.entries()) {
+    for (const tab of resultTabs) {
       tab.addEventListener('click', () => selectResultTab(tab));
       tab.addEventListener('keydown', event => {
-        const next = event.key === 'ArrowRight' ? (index + 1) % resultTabs.length
-          : event.key === 'ArrowLeft' ? (index + resultTabs.length - 1) % resultTabs.length
+        const visibleTabs = resultTabs.filter(button => !button.hidden);
+        const index = visibleTabs.indexOf(tab);
+        const next = event.key === 'ArrowRight' ? (index + 1) % visibleTabs.length
+          : event.key === 'ArrowLeft' ? (index + visibleTabs.length - 1) % visibleTabs.length
           : event.key === 'Home' ? 0
-          : event.key === 'End' ? resultTabs.length - 1 : -1;
+          : event.key === 'End' ? visibleTabs.length - 1 : -1;
         if (next < 0) return;
         event.preventDefault();
-        const nextTab = resultTabs[next];
+        const nextTab = visibleTabs[next];
         selectResultTab(nextTab);
         nextTab.focus();
       });
@@ -5821,6 +5849,16 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     window.addEventListener('message', event => {
       const message = event.data;
       if (!message || typeof message.type !== 'string') return;
+      if (message.type === 'investigationEvidenceCapability') {
+        investigationTab.hidden = message.supported !== true;
+        if (investigationTab.hidden && investigationTab.getAttribute('aria-selected') === 'true')
+          selectResultTab('Workspace');
+        return;
+      }
+      if (message.type === 'investigationLens') {
+        renderInvestigationLens(message.model);
+        return;
+      }
       if (message.type === 'captureStatus') {
         const statusId = {exceptions:'captureExceptionsStatus',heap:'captureHeapStatus',
           'thread-snapshot':'captureThreadStatus',allocation:'captureAllocationStatus'}[message.kind] || 'captureStatus';

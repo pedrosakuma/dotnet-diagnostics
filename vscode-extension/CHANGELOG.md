@@ -33,6 +33,12 @@ versioned independently from the CLI and the .NET packages.
   family-mismatch choices using existing metadata while leaving full compatibility to the CLI.
   Show baseline/candidate identities, collection quality and structured CLI reasons without adding
   performance verdicts or workload-equivalence heuristics.
+- Add an optional bounded **Investigation** lens for the seven capability-versioned evidence kinds.
+  Keep source captures independently owned and expose only reported temporal relations, explicit
+  observed/inferred/unavailable states, collector coexistence limits and direct navigation to
+  existing specialist workspaces. The minimum sync-over-async scenario corroborates recurring
+  ThreadPool/long-request symptoms only when retained evidence supports them and otherwise abstains;
+  it never auto-captures, persists, exports, scores or assigns causality.
 
 ## 0.5.0 - 2026-10-23
 

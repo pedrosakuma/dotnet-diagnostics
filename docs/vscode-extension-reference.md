@@ -16,8 +16,9 @@ in-memory context containing independent `cpu`, `allocation`, `off_cpu`, `conten
 `threadpool`, `gc`, and `requests` results. This implements the descriptor and reducer foundation
 approved by the conditional GO in the
 [bounded multi-evidence spike at commit `d66bc8d`](https://github.com/pedrosakuma/dotnet-diagnostics/blob/d66bc8d1828a224461ac77c71e8435fb78c7ccd6/docs/research/bounded-multi-evidence-investigation-context.md).
-It does **not** implement the future investigation lens, automatically collect evidence, add
-history, persist or export the context, or use an MCP tool.
+The optional **Investigation** tab renders that context without automatically collecting evidence,
+adding history, persisting/exporting the context, or using an MCP tool. It remains hidden when the
+CLI does not advertise the exact capability.
 
 The reducer enforces all limits before insertion:
 
@@ -49,6 +50,23 @@ allowed temporal outcomes are `reported-intersection`, `adjacent`, `none`, and `
 `observed-overlap` is intentionally impossible. Comparison requires verified matching process
 identity and a compatible CLI clock instance. No outcome establishes causality or uninterrupted
 provider/target coverage.
+
+The lens shows one objective headline, a per-kind observed/unavailable inventory, explicit
+inferences or abstention, reported temporal relations and direct actions into the existing
+specialist workspaces. It adds a compact relationship visualization only when retained positive
+ThreadPool-starvation and long-request signals change the next diagnostic decision. The minimum
+sync-over-async scenario says that recurring symptoms were observed in separate windows and
+recommends a controlled, better-aligned repeat; it never says that starvation caused request
+latency. Missing positive signals, unverified target identity or incomparable clocks produce an
+explicit abstention instead.
+
+Coexistence limitations remain visible in the lens: independent EventPipe sessions have
+startup/stop skew and no shared readiness point; Windows kernel ETW captures are sequential;
+Linux perf CPU/off-CPU captures are sequential while JIT-map ownership is shared; and request
+Activities remain exclusive with the extension live session. Specialist actions only select an
+already existing workspace/result and never start a capture. **Clear investigation lens** releases
+the extension-owned copies for the current target generation without touching source captures or
+borrowed CLI handles.
 
 Older CLIs remain compatible: without the exact capability the normal single-capture UI continues
 unchanged and no multi-evidence item is admitted. Older extensions ignore the additive capability

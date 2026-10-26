@@ -171,6 +171,9 @@ export class InvestigationEvidenceStore {
     private readonly itemsByKind = new Map<InvestigationEvidenceKind, InvestigationEvidenceItem>();
     private readonly expiryTimersByKind = new Map<InvestigationEvidenceKind, NodeJS.Timeout>();
 
+    public constructor(private readonly changed?: () => void) {
+    }
+
     public open(targetGeneration: number): void {
         if (this.generation === targetGeneration) return;
         this.clear();
@@ -178,11 +181,13 @@ export class InvestigationEvidenceStore {
     }
 
     public clear(): void {
+        const hadItems = this.itemsByKind.size > 0;
         for (const timer of this.expiryTimersByKind.values()) clearTimeout(timer);
         this.expiryTimersByKind.clear();
         this.itemsByKind.clear();
         this.retainedBytes = 0;
         this.generation = undefined;
+        if (hadItems) this.changed?.();
     }
 
     public snapshot(): readonly InvestigationEvidenceItem[] {
@@ -219,6 +224,7 @@ export class InvestigationEvidenceStore {
         this.retainedBytes = nextTotal;
         this.scheduleExpiry(descriptor.kind, descriptor.evidenceId,
             descriptor.retention.drilldown.expiresNoLaterThan);
+        this.changed?.();
         return {
             admitted: true,
             item,
@@ -245,6 +251,7 @@ export class InvestigationEvidenceStore {
             const timer = this.expiryTimersByKind.get(itemKind);
             if (timer) clearTimeout(timer);
             this.expiryTimersByKind.delete(itemKind);
+            this.changed?.();
             return true;
         }
         return false;
