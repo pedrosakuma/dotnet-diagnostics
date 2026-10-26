@@ -254,7 +254,8 @@ internal static partial class CliStreamingProtocol
         using var host = buildHost();
         var services = host.Services;
         using var writer = new ProtocolWriter(stdout);
-        await using var joint = new JointCaptureSlot(services, writer, stderr);
+        var investigationEvidence = new CliInvestigationEvidence();
+        await using var joint = new JointCaptureSlot(services, writer, stderr, investigationEvidence);
         var cpuHandleWindow = new CliStreamingCpuHandleWindow();
         ActiveSession? activeSession = null;
         var negotiated = false;
@@ -353,6 +354,10 @@ internal static partial class CliStreamingProtocol
                                 retainedHandleLimit = CliStreamingCpuHandleWindow.RetainedHandleLimit,
                                 maxTopMovers = CpuSampleHandleComparison.MaxTopMovers,
                             },
+                            capabilities = new
+                            {
+                                investigationEvidence = investigationEvidence.Capability,
+                            },
                         }, cancellationToken).ConfigureAwait(false);
                         continue;
                     }
@@ -404,7 +409,7 @@ internal static partial class CliStreamingProtocol
                             await joint.ClearAsync().ConfigureAwait(false);
                             await HandleCaptureAsync(
                                 document.RootElement, services, writer, cpuHandleWindow,
-                                stdin, stdout, stderr, cancellationToken)
+                                stdin, stdout, stderr, investigationEvidence, cancellationToken)
                                 .ConfigureAwait(false);
                             break;
 
@@ -600,6 +605,7 @@ internal static partial class CliStreamingProtocol
         TextReader stdin,
         TextWriter stdout,
         TextWriter stderr,
+        CliInvestigationEvidence investigationEvidence,
         CancellationToken cancellationToken)
     {
         if (!TryGetString(root, "requestId", out var requestId) || string.IsNullOrWhiteSpace(requestId))
@@ -961,6 +967,9 @@ internal static partial class CliStreamingProtocol
 
         try
         {
+            var processStartedAtBefore = processId is { } liveProcessId
+                ? CliInvestigationEvidence.ReadProcessStart(liveProcessId)
+                : null;
             if (kind is "exceptions" or "crash-guard")
             {
                 await HandleExceptionCaptureAsync(
@@ -1000,11 +1009,39 @@ internal static partial class CliStreamingProtocol
                     }, CancellationToken.None).ConfigureAwait(false);
                     return;
                 }
-                await writer.WriteAsync(new
+                var view = CliStreamingCaptureViews.Project(capture, structuredOptions);
+                var descriptor = investigationEvidence.Create(
+                    kind,
+                    processId!.Value,
+                    processStartedAtBefore,
+                    CliInvestigationEvidence.ReadProcessStart(processId.Value),
+                    view.Provenance.StartedAt,
+                    view.Provenance.StartedAt is { } startedAt && view.Provenance.ReportedDurationSeconds is { } reportedDuration
+                        ? startedAt.AddSeconds(reportedDuration)
+                        : null,
+                    view.Provenance.StartedAt is not null && view.Provenance.ReportedDurationSeconds is not null
+                        ? "reported"
+                        : "requested",
+                    "normal",
+                    view.Backend,
+                    view.Evidence.Source,
+                    view.Evidence.Limitations.Select(static limitation => limitation.Detail).ToArray(),
+                    view.Handle,
+                    view.HandleExpiresAt);
+                var frame = new Dictionary<string, object?>
                 {
-                    type = "capture", requestId, kind, processId,
-                    result = CliStreamingCaptureViews.Project(capture, structuredOptions),
-                }, cancellationToken).ConfigureAwait(false);
+                    ["type"] = "capture",
+                    ["requestId"] = requestId,
+                    ["kind"] = kind,
+                    ["processId"] = processId,
+                    ["result"] = view,
+                };
+                if (descriptor is not null)
+                {
+                    frame["investigationEvidence"] = descriptor;
+                }
+                await writer.WriteAsync(new
+                    Dictionary<string, object?>(frame), cancellationToken).ConfigureAwait(false);
                 return;
             }
 
@@ -1020,6 +1057,23 @@ internal static partial class CliStreamingProtocol
                 processId.Value, "cpu-sample", result.Artifact, TimeSpan.FromMinutes(20),
                 evictWhenProcessExits: false, origin: HandleOrigin.Live, producingTool: "collect_sample");
             cpuHandleWindow.Track(handles, exportHandle.Id);
+            var cpuDescriptor = investigationEvidence.Create(
+                kind,
+                processId.Value,
+                processStartedAtBefore,
+                CliInvestigationEvidence.ReadProcessStart(processId.Value),
+                result.Summary.StartedAt,
+                result.Summary.StartedAt + result.Summary.Duration,
+                "reported",
+                "normal",
+                "eventpipe",
+                "cpu-sampler",
+                [
+                    "CPU sample windows use host UTC start plus configured duration; they do not prove provider readiness or uninterrupted target coverage.",
+                    "Stack, module, method, and source-path data can contain sensitive application information.",
+                ],
+                exportHandle.Id,
+                exportHandle.ExpiresAt);
             await writer.WriteAsync(new
             {
                 type = "capture",
@@ -1028,6 +1082,7 @@ internal static partial class CliStreamingProtocol
                 processId,
                 result = result.Summary,
                 exportHandle = exportHandle.Id,
+                investigationEvidence = cpuDescriptor,
             }, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

@@ -79,6 +79,13 @@ import {
     type CpuComparisonQueryResult,
     type CpuHandleComparisonCapability,
 } from "./cpuComparison";
+import {
+    INVESTIGATION_EVIDENCE_KINDS,
+    InvestigationEvidenceStore,
+    parseInvestigationEvidenceDescriptor,
+    supportsInvestigationEvidence,
+    type InvestigationAvailabilityReason,
+} from "./investigationEvidence";
 
 /**
  * The 7 heap query views available unconditionally once any heap snapshot is captured, plus the 3
@@ -156,12 +163,12 @@ interface Deferred<T> {
  * payloads.
  */
 type PendingCapture =
-    | { kind: "request-activities"; generation: number; processId: number; sources: string[]; durationSeconds: number; deferred: Deferred<JointCapture> }
-    | { kind: "cpu"; evidenceId: string; exportTrace?: boolean; deferred: Deferred<CpuSampleSummary> }
+    | { kind: "request-activities"; generation: number; targetGeneration: number; processId: number; sources: string[]; durationSeconds: number; investigationEvidenceId?: string; deferred: Deferred<JointCapture> }
+    | { kind: "cpu"; evidenceId: string; targetGeneration: number; processId: number; exportTrace?: boolean; investigationEvidenceId?: string; deferred: Deferred<CpuSampleSummary> }
     | { kind: "exceptions" | "crash-guard"; deferred: Deferred<ExceptionCaptureResult> }
     | { kind: "heap"; evidenceId: string; deferred: Deferred<HeapCaptureResult> }
     | { kind: "thread-snapshot"; deferred: Deferred<ThreadCaptureResult> }
-    | { kind: "diagnostics"; captureKind: CaptureViewKind; deferred: Deferred<CaptureViewResult> };
+    | { kind: "diagnostics"; captureKind: CaptureViewKind; targetGeneration: number; processId: number; investigationEvidenceId?: string; deferred: Deferred<CaptureViewResult> };
 
 /** Heap snapshot source the user selects before a "Capture Heap Snapshot" request (see #1110). */
 type HeapCaptureSource = "live" | "gcdump";
@@ -207,6 +214,8 @@ interface StreamChild {
     supportedLiveKinds?: string[];
     requestActivities?: boolean;
     cpuHandleComparison?: CpuHandleComparisonCapability;
+    investigationEvidence?: boolean;
+    investigationConnectionId?: string;
     pendingJointQueries?: Map<string, Deferred<JointQuery<RelatedActivity>>>;
 }
 
@@ -219,10 +228,17 @@ interface RetainedCpuProfile {
 }
 
 class CounterPanelController implements vscode.Disposable {
-    private joint?: { session: StreamChild; evidenceId: string; result: JointCapture; timer: NodeJS.Timeout };
+    private joint?: {
+        session: StreamChild;
+        evidenceId: string;
+        investigationEvidenceId?: string;
+        result: JointCapture;
+        timer: NodeJS.Timeout;
+    };
     private jointCaptureTask?: Promise<void>;
     private jointQueryTask?: Promise<void>;
     private jointGeneration = 0;
+    private investigationEvidence: InvestigationEvidenceStore | undefined = new InvestigationEvidenceStore();
     private readonly exporter = new ResultExporter();
     private cpuExport?: RetainedCpuProfile;
     private cpuBaseline?: RetainedCpuProfile;
@@ -294,6 +310,11 @@ class CounterPanelController implements vscode.Disposable {
         this.statusBar.text = "$(pulse) .NET Counters";
         this.statusBar.tooltip = "Start a live .NET runtime counters panel";
         this.statusBar.show();
+    }
+
+    private getInvestigationEvidence(): InvestigationEvidenceStore {
+        this.investigationEvidence ??= new InvestigationEvidenceStore();
+        return this.investigationEvidence;
     }
 
     public startCounters(): Promise<void> {
@@ -553,6 +574,7 @@ class CounterPanelController implements vscode.Disposable {
         };
         this.selectedTarget = target;
         this.targetGeneration++;
+        this.getInvestigationEvidence().open(this.targetGeneration);
         this.targetChanged?.(target);
         this.openPanel(target);
         await this.waitForPanelReady();
@@ -610,7 +632,14 @@ class CounterPanelController implements vscode.Disposable {
             return;
         }
 
-        const pending: PendingCapture = { kind: "cpu", evidenceId: requestId, exportTrace, deferred: deferred<CpuSampleSummary>() };
+        const pending: PendingCapture = {
+            kind: "cpu",
+            evidenceId: requestId,
+            targetGeneration: this.targetGeneration,
+            processId: target.processId,
+            exportTrace,
+            deferred: deferred<CpuSampleSummary>(),
+        };
         session.pendingCaptures.set(requestId, pending);
         try {
             this.writeFrame(session, {
@@ -794,11 +823,13 @@ class CounterPanelController implements vscode.Disposable {
         return this.jointCaptureTask;
     }
 
-    private invalidateJoint(message: string): void {
+    private invalidateJoint(message: string, reason?: InvestigationAvailabilityReason): void {
         const previous = this.joint;
         if (!previous) return;
         clearTimeout(previous.timer);
         this.joint = undefined;
+        if (reason && previous.investigationEvidenceId)
+            this.getInvestigationEvidence().markUnavailable(previous.investigationEvidenceId, reason);
         this.postMessage({ type: "jointUnavailable", evidenceId: previous.evidenceId, message });
     }
 
@@ -901,7 +932,8 @@ class CounterPanelController implements vscode.Disposable {
                 throw new Error("Stop this CLI's live counters before this reproduction capture.");
             if (session.pendingCaptures.size || session.pendingQueries.size || session.pendingJointQueries?.size)
                 throw new Error("Wait for the current CLI capture or query to finish.");
-            const pending: PendingCapture = { kind: "request-activities", generation: ++this.jointGeneration, processId: target.processId,
+            const pending: PendingCapture = { kind: "request-activities", generation: ++this.jointGeneration,
+                targetGeneration: this.targetGeneration, processId: target.processId,
                 sources, durationSeconds, deferred: deferred<JointCapture>() };
             session.pendingCaptures.set(evidenceId, pending);
             try {
@@ -911,11 +943,18 @@ class CounterPanelController implements vscode.Disposable {
                 if (this.disposed || session.closing || session.process.exitCode !== null || session.process.signalCode !== null
                     || this.selectedTarget !== target || pending.generation !== this.jointGeneration)
                     throw new Error("Joint evidence owner changed, target changed or CLI disconnected before display; no artifact is available.");
-                this.invalidateJoint("Replaced by a new reproduction capture.");
+                this.invalidateJoint("Replaced by a new reproduction capture.", "owner-replaced");
                 const timer = setTimeout(() => {
-                    if (this.joint?.evidenceId === evidenceId) this.invalidateJoint("Expired: retained display only; further CLI queries are unavailable.");
+                    if (this.joint?.evidenceId === evidenceId)
+                        this.invalidateJoint("Expired: retained display only; further CLI queries are unavailable.", "expired");
                 }, Math.max(0, Date.parse(result.handleExpiresAt) - Date.now()));
-                this.joint = { session, evidenceId, result, timer };
+                this.joint = {
+                    session,
+                    evidenceId,
+                    investigationEvidenceId: pending.investigationEvidenceId,
+                    result,
+                    timer,
+                };
                 this.postMessage({ type: "jointCapture", evidenceId, result });
                 status("done", "Reproduction capture returned. Only requests pending at close and completed Activities were retained.");
             } catch (error) {
@@ -954,12 +993,12 @@ class CounterPanelController implements vscode.Disposable {
         if (!saved || saved.evidenceId !== evidenceId) { fail("Joint evidence unavailable: replaced, expired or disconnected."); return; }
         const { session, result } = saved;
         if (Date.now() >= Date.parse(result.handleExpiresAt)) {
-            this.invalidateJoint("Expired: retained display only; further CLI queries are unavailable.");
+            this.invalidateJoint("Expired: retained display only; further CLI queries are unavailable.", "expired");
             fail("Joint evidence has expired."); return;
         }
         if (!result.requests.rows.some(row => row.rowId === requestRowId)) { fail("Select an exact retained request row."); return; }
         if (session.closing || session.process.exitCode !== null || session.process.signalCode !== null) {
-            this.invalidateJoint("Disconnected: retained display only; further CLI queries are unavailable.");
+            this.invalidateJoint("Disconnected: retained display only; further CLI queries are unavailable.", "connection-closed");
             fail("The owning CLI connection is closed."); return;
         }
         if (session.pendingCaptures.size || session.pendingQueries.size || session.pendingJointQueries?.size || session.startInFlight) {
@@ -984,7 +1023,7 @@ class CounterPanelController implements vscode.Disposable {
         } catch (error) {
             if (this.joint !== saved) return;
             if (isRecord(error) && error.code === "handle_unavailable")
-                this.invalidateJoint("CLI evidence unavailable: replaced or expired; retained display only.");
+                this.invalidateJoint("CLI evidence unavailable: replaced or expired; retained display only.", "unknown");
             fail(errorMessage(error));
         } finally { session.pendingJointQueries.delete(requestId); }
     }
@@ -1067,7 +1106,13 @@ class CounterPanelController implements vscode.Disposable {
             status("error", "The CLI connection is busy. Wait for the current capture, query or session startup to finish.");
             return;
         }
-        const pending: PendingCapture = { kind: "diagnostics", captureKind: spec.kind, deferred: deferred<CaptureViewResult>() };
+        const pending: PendingCapture = {
+            kind: "diagnostics",
+            captureKind: spec.kind,
+            targetGeneration,
+            processId: target.processId,
+            deferred: deferred<CaptureViewResult>(),
+        };
         session.pendingCaptures.set(requestId, pending);
         try {
             this.writeFrame(session, buildCaptureRequest(requestId, spec, target.processId, params));
@@ -1809,6 +1854,7 @@ class CounterPanelController implements vscode.Disposable {
 
         this.selectedTarget = selected.target;
         this.targetGeneration++;
+        this.getInvestigationEvidence().open(this.targetGeneration);
         this.targetChanged?.(selected.target);
         this.openPanel(selected.target);
         await this.waitForPanelReady();
@@ -1863,6 +1909,7 @@ class CounterPanelController implements vscode.Disposable {
             return this.shutdownTask;
         }
         this.disposed = true;
+        this.getInvestigationEvidence().clear();
         this.eventsGeneration++;
         this.resetEventsDeliveryState();
         this.statusBar.dispose();
@@ -2016,6 +2063,7 @@ class CounterPanelController implements vscode.Disposable {
             this.panel = undefined;
             this.panelGeneration++;
             this.targetGeneration++;
+            this.getInvestigationEvidence().clear();
             this.liveReadConsent.clear();
             this.exporter.clear();
             this.selectedTarget = undefined;
@@ -2222,7 +2270,10 @@ class CounterPanelController implements vscode.Disposable {
             this.failPending(session, error);
         });
         child.once("close", (code, signal) => {
-            if (this.joint?.session === session) this.invalidateJoint("Disconnected: retained display only; further CLI queries are unavailable.");
+            if (session.investigationConnectionId)
+                this.getInvestigationEvidence().markConnectionClosed(session.investigationConnectionId);
+            if (this.joint?.session === session)
+                this.invalidateJoint("Disconnected: retained display only; further CLI queries are unavailable.", "connection-closed");
             for (const pending of session.pendingJointQueries?.values() ?? []) pending.reject(new Error("The owning CLI connection closed."));
             session.pendingJointQueries?.clear();
             if (this.heapSnapshot?.session === session) this.liveReadConsent.clear();
@@ -2299,7 +2350,7 @@ class CounterPanelController implements vscode.Disposable {
             const error = new Error("The CLI joint evidence frame exceeded the 1 MiB protocol budget.");
             for (const pending of session.pendingCaptures.values()) pending.deferred.reject(error);
             for (const pending of session.pendingJointQueries?.values() ?? []) pending.reject(error);
-            if (this.joint?.session === session) this.invalidateJoint(error.message);
+            if (this.joint?.session === session) this.invalidateJoint(error.message, "connection-closed");
             this.output.appendLine(error.message);
             session.process.kill();
             return;
@@ -2356,6 +2407,8 @@ class CounterPanelController implements vscode.Disposable {
                 session.requestActivities = supportsRequestActivities(frame.requestActivities);
                 session.cpuHandleComparison = supportsCpuHandleComparison(frame.cpuHandleComparison)
                     ? frame.cpuHandleComparison : undefined;
+                session.investigationEvidence = isRecord(frame.capabilities)
+                    && supportsInvestigationEvidence(frame.capabilities.investigationEvidence);
                 session.handshake.resolve();
                 break;
 
@@ -2479,7 +2532,7 @@ class CounterPanelController implements vscode.Disposable {
                 const pending = typeof frame.requestId === "string" ? session.pendingCaptures.get(frame.requestId) : undefined;
                 if (pending?.kind === "request-activities" && pending.generation === this.jointGeneration
                     && frame.kind === "request-activities" && frame.processId === pending.processId) {
-                    this.invalidateJoint("Replaced by an acknowledged reproduction capture.");
+                    this.invalidateJoint("Replaced by an acknowledged reproduction capture.", "owner-replaced");
                     this.postMessage({ type: "jointDispatched", evidenceId: frame.requestId,
                         message: "Dispatched, not readiness: allow EventPipe startup before reproducing. Waiting for bounded drain and result." });
                 }
@@ -2499,9 +2552,11 @@ class CounterPanelController implements vscode.Disposable {
                     && isJointCapture(frame.result) && frame.result.requests.processId === pending.processId
                     && frame.result.requestedDurationSeconds === pending.durationSeconds
                     && JSON.stringify(frame.result.sources) === JSON.stringify(pending.sources)) {
+                    this.admitInvestigationEvidence(session, pending, frame.investigationEvidence, frame.result);
                     pending.deferred.resolve(frame.result);
                 } else if (pending.kind === "diagnostics" && frame.kind === pending.captureKind
                     && isCaptureViewResult(frame.result) && frame.result.kind === pending.captureKind) {
+                    this.admitInvestigationEvidence(session, pending, frame.investigationEvidence, frame.result);
                     pending.deferred.resolve(frame.result);
                 } else if (pending.kind === "cpu" && isCpuSampleSummary(frame.result)) {
                     const previous = this.cpuExport;
@@ -2517,6 +2572,7 @@ class CounterPanelController implements vscode.Disposable {
                     this.cpuBaseline = current && previous?.session === session && session.cpuHandleComparison
                         ? previous : undefined;
                     this.cpuExport = current;
+                    this.admitInvestigationEvidence(session, pending, frame.investigationEvidence, frame.result);
                     pending.deferred.resolve(frame.result);
                 } else if ((pending.kind === "exceptions" || pending.kind === "crash-guard")
                     && isExceptionCaptureResult(frame.result)) {
@@ -2627,6 +2683,33 @@ class CounterPanelController implements vscode.Disposable {
         }
     }
 
+    private admitInvestigationEvidence(
+        session: StreamChild,
+        pending: Extract<PendingCapture, { kind: "cpu" | "diagnostics" | "request-activities" }>,
+        descriptorValue: unknown,
+        projection: unknown,
+    ): void {
+        if (!session.investigationEvidence) return;
+        const descriptor = parseInvestigationEvidenceDescriptor(descriptorValue);
+        const expectedKind = pending.kind === "cpu" ? "cpu"
+            : pending.kind === "request-activities" ? "requests"
+            : (INVESTIGATION_EVIDENCE_KINDS as readonly string[]).includes(pending.captureKind)
+                ? pending.captureKind
+                : undefined;
+        if (!descriptor || expectedKind === undefined || descriptor.kind !== expectedKind
+            || descriptor.target.processId !== pending.processId) {
+            this.output.appendLine("Investigation evidence descriptor was unavailable, malformed, or mismatched; the canonical capture remains usable.");
+            return;
+        }
+        const admission = this.getInvestigationEvidence().admit(pending.targetGeneration, descriptor, projection);
+        if (admission.admitted) {
+            session.investigationConnectionId = descriptor.retention.connection.instanceId;
+            pending.investigationEvidenceId = descriptor.evidenceId;
+        } else {
+            this.output.appendLine(`Investigation evidence was not retained (${admission.reason}); the canonical capture remains usable.`);
+        }
+    }
+
     private writeFrame(session: StreamChild, frame: object): void {
         if (!session.eventsConnection && isRecord(frame) && ["capture", "start"].includes(String(frame.type))) {
             if ([...session.pendingCaptures.values()].some(pending => pending.kind === "request-activities")
@@ -2645,7 +2728,10 @@ class CounterPanelController implements vscode.Disposable {
         if (isRecord(frame) && frame.type === "capture" && frame.kind !== "request-activities") {
             this.jointGeneration++;
             if (this.joint?.session === session)
-                this.invalidateJoint("Replaced by another capture: retained display only; further CLI queries are unavailable.");
+                this.invalidateJoint(
+                    "Replaced by another capture: retained display only; further CLI queries are unavailable.",
+                    "owner-replaced",
+                );
         }
     }
 
@@ -2804,7 +2890,10 @@ class CounterPanelController implements vscode.Disposable {
     private async closeChild(session: StreamChild): Promise<void> {
         if (this.joint?.session === session
             || !session.eventsConnection && [...session.pendingCaptures.values()].some(pending => pending.kind === "request-activities")) this.jointGeneration++;
-        if (this.joint?.session === session) this.invalidateJoint("Disconnected: retained display only; further CLI queries are unavailable.");
+        if (session.investigationConnectionId)
+            this.getInvestigationEvidence().markConnectionClosed(session.investigationConnectionId);
+        if (this.joint?.session === session)
+            this.invalidateJoint("Disconnected: retained display only; further CLI queries are unavailable.", "connection-closed");
         this.invalidateRetainedSnapshotsFor(session);
         if (this.cpuExport?.session === session) {
             this.cpuExport = undefined;

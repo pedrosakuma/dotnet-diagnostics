@@ -43,7 +43,20 @@ public sealed class CliRequestActivitiesTests
         (await client.ReadAsync()).GetProperty("type").GetString().Should().Be("capture-started");
         var frame = await client.ReadAsync();
         var result = frame.GetProperty("result");
+        var evidence = frame.GetProperty("investigationEvidence");
+        evidence.GetProperty("version").GetInt32().Should().Be(1);
+        evidence.GetProperty("kind").GetString().Should().Be("requests");
+        evidence.GetProperty("collectorKind").GetString().Should().Be("request-activities");
+        evidence.GetProperty("target").GetProperty("processId").GetInt32().Should().Be(42);
+        evidence.GetProperty("window").GetProperty("clock").GetProperty("comparison").GetString()
+            .Should().Be("reported-only");
+        var retention = evidence.GetProperty("retention");
+        retention.GetProperty("connection").GetProperty("instanceId").GetString().Should()
+            .Be(retention.GetProperty("drilldown").GetProperty("connectionId").GetString());
+        retention.GetProperty("connection").GetProperty("storeId").GetString().Should()
+            .Be(retention.GetProperty("drilldown").GetProperty("storeId").GetString());
         var handle = result.GetProperty("handle").GetString();
+        retention.GetProperty("drilldown").GetProperty("handle").GetString().Should().Be(handle);
         var captureId = result.GetProperty("captureId").GetString();
         var rowId = result.GetProperty("requests").GetProperty("rows")[0].GetProperty("rowId").GetString();
         await client.SendAsync(new { type = "query", requestId = "related", handle, captureId, view = "related-activities", requestRowId = rowId, topN = 1 });
