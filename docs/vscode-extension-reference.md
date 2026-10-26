@@ -118,6 +118,16 @@ zero. Counter points are spaced by receipt time, not sample index. Click the cha
 Left/Right/Home/End to inspect a nearest retained observation (no interpolation); select a GC row
 with click or Enter/Space for event details. Target timestamps remain visible in details but are
 not assumed to share a clock with the webview. Capture-wide GC totals remain capture-wide.
+An evidence-first **Memory & GC overview** uses the same retained observations and selection. It
+shows compact tracks for managed heap, committed memory, allocation rate, observed Gen2
+collections, and RSS only when `working-set` is available. Its headline reports only whether the
+observed post-Gen2 managed-heap floor stayed stable/lower, rose, or cannot be assessed. Sequence
+gaps, missing counters, earlier sessions, expired selection data, EventPipe loss availability and
+bounded-queue drops are limitations, not zero values. Expand **Quality, provenance and limits** for
+the full receipt-time and retention scope. The contextual action navigates to existing allocation
+or heap evidence, or explicitly opens the existing heap-capture flow; opening the overview and
+navigating never collect. This is not heap comparison, type-instance enumeration, a leak verdict,
+or a persistent multi-evidence investigation.
 The extension runs `dotnet-diagnostics-cli processes --json` for discovery and starts
 `dotnet-diagnostics-cli stream --protocol jsonl` for live samples. Stdout is parsed only as protocol
 frames. The CLI path can be set in the machine-scoped `dotnetDiagnostics.cliPath` setting; the

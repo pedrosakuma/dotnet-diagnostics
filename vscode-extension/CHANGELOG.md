@@ -5,6 +5,17 @@ versioned independently from the CLI and the .NET packages.
 
 ## Unreleased
 
+- Add an evidence-first **Memory & GC overview** to the existing live counters panel. It uses only
+  retained `System.Runtime` counters and observed GC pauses to show compact receipt-time tracks for
+  managed heap, committed memory, allocation rate, observed Gen2 collections, and RSS when present.
+  The headline reports only whether the observed post-Gen2 managed-heap floor was stable/lower,
+  rising, or not assessable. Sequence gaps, missing counters, expired selections, session
+  boundaries, EventPipe loss availability, and bounded-queue drops remain explicit rather than
+  becoming zero or a continuous timeline. The contextual action either navigates to existing
+  allocation/heap evidence or explicitly starts the existing heap-capture flow; opening the
+  overview never collects. No heap comparison, type-instance enumeration, region map, persistent
+  investigation context, leak verdict, or new CLI protocol field is introduced.
+
 ## 0.5.0 - 2026-10-23
 
 The full existing feature set uses CLI **0.31.0 or later**; **Requests + completed
