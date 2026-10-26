@@ -36,7 +36,7 @@ turn naming conventions into facts.
 | `src/DotnetDiagnostics.Core/CpuSampling/CpuSampleViews.cs` — `CpuSampleAnalytics.MethodKey`, `ModuleOf`, `NamespaceOf` | Groups exact managed methods by MVID/token when available and exposes module/namespace projections. | Grouping keys and display namespaces are not category attestations. |
 | `src/DotnetDiagnostics.Core/Symbols/NativeAddressResolver.cs` — `NativeAddressLocation`, `NativeAddressClassifier` | Classifies addresses as managed, module-backed native, mapped non-module, or unmapped/not captured, with module path, RVA, build ID, and optional managed identity. | A native module may be application code, a framework component, a runtime helper, or a third-party dependency. |
 | `src/DotnetDiagnostics.Core/CpuSampling/PerfScriptFrameParser.cs` — `PerfJitFrameSymbolizer` | Resolves captured CoreCLR JIT ranges to `MethodIdentity`; unmatched candidates remain raw and are counted in notes. | Resolution does not add ownership. |
-| `src/DotnetDiagnostics.Core/CpuSampling/NativeAotMethodMap.cs` — `NativeAotMethodMap` | An optional ILC map authoritatively distinguishes genuine managed `MethodCode` symbols from helpers/stubs for NativeAOT. | It has no application-versus-framework origin, MVID/token identity, or GC-internal taxonomy. |
+| `src/DotnetDiagnostics.Core/CpuSampling/NativeAotMethodMap.cs` — `NativeAotMethodMap` | An optional ILC map distinguishes listed managed `MethodCode` symbol names from helpers/stubs for NativeAOT when the caller supplies the matching publish output. | The lookup is name-only and does not verify the map against the sampled image; it also has no application-versus-framework origin, MVID/token identity, or GC-internal taxonomy. |
 | `src/DotnetDiagnostics.Core/Threads/WellKnownWaitFrameClassifier.cs` — `WellKnownWaitFrameClassifier` | Name-based wait/park hints used conservatively for scheduler-state presentation. | Wait reason is orthogonal to ownership and cannot be repurposed as runtime/GC provenance. |
 
 No trusted runtime-module inventory, shared-framework ownership manifest, or equivalent
@@ -68,9 +68,10 @@ No ownership rule currently chooses among those frames.
 ## Required limitations
 
 - **NativeAOT:** automatic CPU sampling uses perf or ETW, not EventPipe. NativeAOT commonly lacks
-  IL metadata identity; the optional ILC map identifies managed method bodies but not their
-  application/framework origin. A single native image can contain application, framework, and
-  runtime-generated code.
+  IL metadata identity; the optional ILC map identifies managed method symbol names but is not
+  validated against the sampled image, so callers must supply the matching publish output. Even
+  then it does not identify application/framework origin. A single native image can contain
+  application, framework, and runtime-generated code.
 - **Mixed stacks:** managed/native is a frame property, not a mutually exclusive stack owner.
   Leaf-only attribution loses caller context; inclusive attribution double-counts categories.
 - **Missing symbols:** stripped binaries, unavailable/rejected PDBs, unmatched JIT ranges,
@@ -98,17 +99,22 @@ No ownership rule currently chooses among those frames.
 
 ## What could turn this into GO
 
-The projection needs trusted, versioned provenance, for example:
+The projection first needs a mutually exclusive taxonomy. It must define whether third-party
+managed code belongs to `application-managed` or a separate category, and whether
+`GC/runtime internals` is a subset of or separate from `framework/runtime`. It then needs trusted,
+versioned provenance at the method or native address-range level where one module can contain
+multiple categories, for example:
 
-- a runtime-supplied module inventory or ownership manifest keyed by exact module identity
-  (preferably MVID plus assembly/image identity), explicitly distinguishing application,
-  shared framework/runtime, and runtime-internal/GC code; or
+- a runtime-supplied ownership manifest keyed by exact method identity or native image/range
+  identity, explicitly covering application, third-party, shared framework, and
+  runtime-internal/GC code under that taxonomy; or
 - an equivalent sampler/runtime/compiler contract that tags each resolved frame with those
   ownership categories, including NativeAOT-generated methods and native runtime helpers.
 
-That contract must define self-contained and single-file behavior, mixed-stack attribution,
-unknown handling, symbol-loss behavior, backend parity, and denominator/reconciliation rules.
-Only then should fixtures validate every category and degraded case.
+That contract must bind NativeAOT maps or compiler metadata to the exact sampled image and define
+self-contained and single-file behavior, mixed-stack attribution, unknown handling, symbol-loss
+behavior, backend parity, and denominator/reconciliation rules. Only then should fixtures validate
+every mutually exclusive category and degraded case.
 
 ## Surface and validation consequence
 
