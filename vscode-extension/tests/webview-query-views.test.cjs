@@ -18,6 +18,7 @@ const {
     CPU_INVESTIGATION_OVERVIEW_SCRIPT,
     CPU_INVESTIGATION_OVERVIEW_STYLES,
 } = require("../out/cpuInvestigationOverview.js");
+const { CPU_COMPARISON_SCRIPT } = require("../out/cpuComparison.js");
 const { CAPTURE_GROUPS, CAPTURE_KIND_SPECS } = require("../out/captureKinds.js");
 
 const target = {
@@ -338,7 +339,8 @@ test("live panel exposes the compact evidence workspace and keeps other result r
     assert.doesNotMatch(script, /workspaceGcResults/);
     assert.match(script, /evidenceId,\s*view,/);
     assert.doesNotMatch(script, /vscode\.postMessage\(\{ type: 'queryCpu', view \}\)/);
-    assert.match(script, /evidenceId: allocation \? allocationEvidenceId : cpuEvidenceId/);
+    assert.match(script, /profileRole === 'baseline' \? cpuBaselineEvidenceId : cpuEvidenceId/);
+    assert.match(script, /type: 'queryCpuComparison', evidenceId/);
     assert.match(html, /\.cpu-query-table \.cpu-query-number \{ width:6\.5rem; \}/);
     assert.match(html, /\.cpu-query-table \.cpu-query-action \{ width:9rem; \}/);
     assert.match(html, /\.query-view-table\.cpu-query-table \{ min-width:48rem; table-layout:fixed; \}/);
@@ -350,7 +352,7 @@ test("live panel exposes the compact evidence workspace and keeps other result r
     assert.match(html, /\.cpu-query-table \.cpu-query-symbol span, \.cpu-query-table \.cpu-query-module span \{ display:inline-block; white-space:nowrap; overflow-wrap:normal; \}/);
     assert.match(html, /\.cpu-query-summary-table \.cpu-query-category \{ width:56%; overflow-wrap:anywhere; word-break:normal; \}/);
     assert.match(script, /message\.type === 'query' && message\.kind === 'cpu'/);
-    assert.match(script, /renderCpuQuery\(message\.view, message\.result, false\)/);
+    assert.match(script, /renderCpuQuery\(message\.view, message\.result, false, 'cpu', role\)/);
 });
 
 test("terminal thread capture status resolves pending queries without overwriting another workspace", () => {
@@ -434,8 +436,8 @@ test("domain return restores CPU view and filter without a request; new captures
       let threadSnapshotQueryAvailable = true;
       let threadSnapshotView = 'snapshot';
       const cpuQueryLabels = {'caller-callee':'Callers / callees'};
-      const cpuProfileState = {}, allocationProfileState = {};
-      let cpuProfileResult;
+      const cpuProfileState = {}, cpuBaselineProfileState = {}, allocationProfileState = {};
+      let cpuProfileResult, cpuBaselineProfileResult, cpuBaselineCaptureSummary, cpuComparisonResult;
       const renderCapture = () => {};
       const renderCpuQuery = (...args) => renders.push(args);
       ${navigation}
@@ -664,13 +666,21 @@ function cpuRenderer() {
     const { renderCpuQuery, state } = new Function("document", "cpuQueryViews", "vscode",
         `${CPU_PROFILE_SCRIPT}
         ${CPU_INVESTIGATION_OVERVIEW_SCRIPT}
+        ${CPU_COMPARISON_SCRIPT}
         let cpuProfileResult;
+        let cpuBaselineProfileResult;
+        let cpuComparisonResult;
         const cpuProfileState = { mode: 'tree', search: '', focus: [], selected: undefined };
+        const cpuBaselineProfileState = { mode: 'tree', search: '', focus: [], selected: undefined };
         let cpuCaptureSummary;
+        let cpuBaselineCaptureSummary;
         let allocationProfileResult;
         const allocationProfileState = { mode: 'tree', search: '', focus: [], selected: undefined };
         let cpuEvidenceId;
+        let cpuBaselineEvidenceId;
+        let activeCpuProfileRole = 'current';
         let allocationEvidenceId;
+        const openCpuProfile = () => {};
         const activeProfileViews = { cpu: 'triage', allocation: 'call-tree' };
         const activeProfileFilters = { cpu: undefined, allocation: undefined };
         const profileResultFilters = { cpu: undefined, allocation: undefined };
@@ -697,6 +707,78 @@ function cpuOverviewRenderer(result, capture) {
     });
     return { container, profileViews, evidence };
 }
+
+function cpuComparisonRenderer(result) {
+    const { document, makeContainer } = createDocumentStub();
+    const container = makeContainer("cpuComparison");
+    const profiles = [];
+    let reset = 0;
+    // eslint-disable-next-line no-new-func -- exercises the exact script emitted into the webview.
+    const render = new Function("document",
+        `${CPU_COMPARISON_SCRIPT}; return renderCpuComparison;`)(document);
+    render(container, result, {
+        openProfile: (role, view, method) => profiles.push({ role, view, method }),
+        useCurrentAsNextBaseline: () => { reset++; },
+    });
+    return { container, profiles, reset: () => reset };
+}
+
+test("CPU comparison exposes roles, evidence limits, bounded movers and specialist return actions", () => {
+    const capture = (handle, startedAt) => ({
+        handle, processId: 42, startedAt, durationSeconds: 10, totalSamples: 100,
+        backend: "EventPipeSampleProfiler", evidenceKind: "StackFrequencyWithHeuristicWaits",
+        origin: "live", producingTool: "collect_sample", expiresAt: "2026-10-26T14:00:00Z",
+        unresolvedExclusiveSamples: 5, unresolvedExclusivePercent: 5,
+        quality: { schema: "dotnet-diagnostics/evidence-quality/v1",
+            limitations: [{ category: "Sampling", scope: "capture", message: "Sampled stacks only." }] },
+    });
+    const result = {
+        handle: "current", baselineHandle: "baseline", view: "diff",
+        data: {
+            schema: "dotnet-diagnostics/cpu-sample-handle-comparison/v1",
+            baseline: capture("baseline", "2026-10-26T12:00:00Z"),
+            current: capture("current", "2026-10-26T12:01:00Z"),
+            compatibility: { status: "qualified", reasons: [] },
+            metrics: [{ name: "samplePopulation", population: "retained-samples", aggregation: "total",
+                normalization: "none", delta: { baselineValue: 100, currentValue: 120, unit: "samples",
+                    deltaAbs: 20, relativeDelta: .2, betterDirection: "neutral", outcome: "up" } }],
+            topMovers: [
+                { displayName: "Orders.Price()", baselineExclusiveSamples: 20, currentExclusiveSamples: 30,
+                    baselineTotalSamples: 100, currentTotalSamples: 120, unresolved: false,
+                    exclusiveShare: { baselineValue: 20, currentValue: 25, unit: "%", deltaAbs: 5,
+                        relativeDelta: .25, betterDirection: "neutral", outcome: "up",
+                        baselineDenominator: 100, currentDenominator: 120, deltaUnit: "percentage-points" } },
+                { displayName: "Orders.NewPath()", baselineExclusiveSamples: null, currentExclusiveSamples: 10,
+                    baselineTotalSamples: 100, currentTotalSamples: 120, unresolved: false,
+                    exclusiveShare: { baselineValue: null, currentValue: 8.3333, unit: "%", deltaAbs: null,
+                        relativeDelta: null, betterDirection: "neutral", outcome: "unavailable",
+                        unavailableReason: "MissingBaselineObservation", baselineDenominator: 100,
+                        currentDenominator: 120, deltaUnit: "percentage-points" } },
+            ],
+            notes: ["Workload equivalence and causation are not established."],
+        },
+    };
+    const rendered = cpuComparisonRenderer(result);
+    const heading = elements(rendered.container, element => element.tagName === "h3")[0];
+    assert.equal(heading.tabIndex, -1);
+    assert.match(rendered.container.textContent, /Baseline \(earlier\).*Current \(later\)/);
+    assert.match(rendered.container.textContent, /BackendEventPipeSampleProfiler/);
+    assert.match(rendered.container.textContent, /EvidenceStackFrequencyWithHeuristicWaits/);
+    assert.match(rendered.container.textContent, /20 samples \/ 20 % of 100/);
+    assert.match(rendered.container.textContent, /Added to current retained projection/);
+    assert.match(rendered.container.textContent, /MissingBaselineObservation/);
+    assert.match(rendered.container.textContent, /distinct from durable saved-capture comparison/);
+    assert.doesNotMatch(rendered.container.textContent, /improved|regressed|application time|runtime time/i);
+
+    click(rendered.container, "Baseline callers / callees");
+    click(rendered.container, "Open current call tree");
+    click(rendered.container, "Use current as baseline for the next capture");
+    assert.deepEqual(rendered.profiles, [
+        { role: "baseline", view: "caller-callee", method: "Orders.Price()" },
+        { role: "current", view: "call-tree", method: undefined },
+    ]);
+    assert.equal(rendered.reset(), 1);
+});
 
 test("CPU overview distinguishes OS on-CPU evidence and keeps profile actions navigational", () => {
     const { container, profileViews, evidence } = cpuOverviewRenderer({
@@ -915,7 +997,8 @@ test("CPU visualization follows essential controls and keeps active partial-data
     assert.ok(visualization < selection && visualization < guidance,
         "the call tree precedes secondary actions and visible technical guidance");
     assert.match(all[guidance].textContent, /inclusive sample counts, not elapsed time or measured CPU utilization/);
-    assert.match(all[guidance].textContent, /cannot be saved or compared in the extension/);
+    assert.match(all[guidance].textContent, /live baseline\/current comparison is available only while/);
+    assert.match(all[guidance].textContent, /durable saved-capture comparison remains separate/);
     const comparisonLink = elements(all[guidance], element => element.tagName === "a")[0];
     assert.equal(comparisonLink.getAttribute("href"),
         "https://github.com/pedrosakuma/dotnet-diagnostics/blob/main/docs/historical-comparisons.md#supported-matrix");

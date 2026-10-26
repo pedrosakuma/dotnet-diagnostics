@@ -59,6 +59,7 @@ import {
     parseProcessList,
     parseTypeFilter,
     SingleFlightGuard,
+    buildCpuComparisonFrame,
     parseProtocolFrame,
     type CounterValue,
     type CpuSampleSummary,
@@ -70,6 +71,14 @@ import {
     type ProtocolFrame,
     type TargetProcess,
 } from "./protocol";
+import {
+    CPU_COMPARISON_SCRIPT,
+    CPU_COMPARISON_STYLES,
+    isCpuComparisonQueryResult,
+    supportsCpuHandleComparison,
+    type CpuComparisonQueryResult,
+    type CpuHandleComparisonCapability,
+} from "./cpuComparison";
 
 /**
  * The 7 heap query views available unconditionally once any heap snapshot is captured, plus the 3
@@ -197,7 +206,16 @@ interface StreamChild {
     eventsConnection: boolean;
     supportedLiveKinds?: string[];
     requestActivities?: boolean;
+    cpuHandleComparison?: CpuHandleComparisonCapability;
     pendingJointQueries?: Map<string, Deferred<JointQuery<RelatedActivity>>>;
+}
+
+interface RetainedCpuProfile {
+    session: StreamChild;
+    handle: string;
+    evidenceId: string;
+    summary: CpuSampleSummary;
+    trace?: boolean;
 }
 
 class CounterPanelController implements vscode.Disposable {
@@ -206,7 +224,8 @@ class CounterPanelController implements vscode.Disposable {
     private jointQueryTask?: Promise<void>;
     private jointGeneration = 0;
     private readonly exporter = new ResultExporter();
-    private cpuExport?: { session: StreamChild; handle: string; evidenceId: string; trace?: boolean };
+    private cpuExport?: RetainedCpuProfile;
+    private cpuBaseline?: RetainedCpuProfile;
     public liveCountersChanged?: (active: boolean) => void;
     public targetChanged?: (target: TargetProcess | undefined) => void;
     private allocationProfile?: { session: StreamChild; handle: string; evidenceId: string };
@@ -521,6 +540,7 @@ class CounterPanelController implements vscode.Disposable {
             this.panel = undefined;
             this.exporter.clear();
             this.cpuExport = undefined;
+            this.cpuBaseline = undefined;
             this.panelReady?.resolve();
             this.panelReady = undefined;
             previous?.dispose();
@@ -603,14 +623,28 @@ class CounterPanelController implements vscode.Disposable {
                 ...(exportTrace ? { exportTrace: true } : {}),
             });
             const summary = await withTimeout(pending.deferred.promise, 60_000);
-            this.postMessage({ type: "capture", kind: "cpu", evidenceId: requestId, summary });
+            this.postMessage({
+                type: "capture",
+                kind: "cpu",
+                evidenceId: requestId,
+                summary,
+                comparisonBaseline: this.cpuBaseline ? {
+                    evidenceId: this.cpuBaseline.evidenceId,
+                    summary: this.cpuBaseline.summary,
+                } : undefined,
+                comparisonSupported: session.cpuHandleComparison !== undefined,
+            });
             this.postMessage({
                 type: "captureStatus", kind: "cpu", evidenceId: requestId,
                 state: "done", message: "CPU capture complete.",
             });
             const currentExport = this.cpuExport;
             if (currentExport?.session === session && currentExport.evidenceId === requestId) {
-                void this.queryCpu("triage", undefined, "cpu", requestId);
+                if (this.cpuBaseline?.session === session) {
+                    void this.queryCpuComparison(requestId);
+                } else {
+                    void this.queryCpu("triage", undefined, "cpu", requestId);
+                }
             }
         } catch (error) {
             this.postMessage({
@@ -1296,6 +1330,28 @@ class CounterPanelController implements vscode.Disposable {
         }
     }
 
+    private async sendCpuComparisonQuery(
+        session: StreamChild,
+        currentHandle: string,
+        baselineHandle: string,
+        topN: number,
+    ): Promise<CpuComparisonQueryResult> {
+        const requestId = randomBytes(12).toString("hex");
+        const pending = deferred<QueryResult>();
+        session.pendingQueries.set(requestId, pending);
+        try {
+            this.writeFrame(session, buildCpuComparisonFrame(requestId, currentHandle, baselineHandle, topN));
+            const result = await withTimeout(pending.promise, 60_000);
+            if (!isCpuComparisonQueryResult(result)
+                || result.handle !== currentHandle || result.baselineHandle !== baselineHandle) {
+                throw new Error("The CLI returned an unsupported or mismatched CPU comparison.");
+            }
+            return result;
+        } finally {
+            session.pendingQueries.delete(requestId);
+        }
+    }
+
     private createAddressNavigationHost(): AddressNavigationHost {
         return {
             currentHeapHandle: () => {
@@ -1405,6 +1461,7 @@ class CounterPanelController implements vscode.Disposable {
         rootMethodFilter?: string,
         kind: "cpu" | "allocation" = "cpu",
         expectedEvidenceId?: string,
+        profileRole: "baseline" | "current" = "current",
     ): Promise<void> {
         if (!CPU_QUERY_VIEWS.has(view) || (kind === "allocation" && view === "triage")) {
             this.postMessage({ type: "queryError", kind, evidenceId: expectedEvidenceId, view, message: "Unsupported profile query view." });
@@ -1420,11 +1477,14 @@ class CounterPanelController implements vscode.Disposable {
         }
 
         const outcome = await this.cpuQueryGuard.run(async () => {
-            const saved = kind === "allocation" ? this.allocationProfile : this.cpuExport;
+            const saved = kind === "allocation"
+                ? this.allocationProfile
+                : profileRole === "baseline" ? this.cpuBaseline : this.cpuExport;
             const evidenceId = expectedEvidenceId ?? saved?.evidenceId;
             this.postMessage({
                 type: kind === "cpu" ? "cpuQueryState" : "allocationQueryState",
                 evidenceId,
+                profileRole,
                 state: "running",
             });
             try {
@@ -1435,7 +1495,9 @@ class CounterPanelController implements vscode.Disposable {
                     throw new Error(`Capture ${kind} first. Drilldown requires this panel's retained CLI connection.`);
                 }
                 const result = await this.sendQuery(saved.session, saved.handle, view, undefined, undefined, rootMethodFilter);
-                const current = kind === "allocation" ? this.allocationProfile : this.cpuExport;
+                const current = kind === "allocation"
+                    ? this.allocationProfile
+                    : profileRole === "baseline" ? this.cpuBaseline : this.cpuExport;
                 if (current !== saved || saved.session.closing || saved.session.process.exitCode !== null || saved.session.process.signalCode !== null) {
                     throw new Error("This profile was replaced or disconnected while the view was loading. Select current evidence and retry.");
                 }
@@ -1443,19 +1505,26 @@ class CounterPanelController implements vscode.Disposable {
                     if (this.allocationProfile === saved) this.allocationProfile = undefined;
                     throw new Error("The CLI did not confirm allocation-byte weighting; update the CLI before exploring this profile.");
                 }
-                this.postMessage({ type: "query", kind, evidenceId: saved.evidenceId, rootMethodFilter, view, result });
+                this.postMessage({
+                    type: "query", kind, evidenceId: saved.evidenceId, profileRole,
+                    rootMethodFilter, view, result,
+                });
             } catch (error) {
                 if (isRecord(error) && error.code === "unknown_handle") {
-                    if (kind === "cpu" && this.cpuExport === saved) this.cpuExport = undefined;
+                    if (kind === "cpu" && (this.cpuExport === saved || this.cpuBaseline === saved)) {
+                        this.cpuExport = undefined;
+                        this.cpuBaseline = undefined;
+                    }
                     if (kind === "allocation" && this.allocationProfile === saved) this.allocationProfile = undefined;
                 }
                 const message = errorMessage(error);
-                this.postMessage({ type: "queryError", kind, evidenceId, rootMethodFilter, view, message });
+                this.postMessage({ type: "queryError", kind, evidenceId, profileRole, rootMethodFilter, view, message });
                 this.output.appendLine(`${kind} query view '${view}' failed: ${message}`);
             } finally {
                 this.postMessage({
                     type: kind === "cpu" ? "cpuQueryState" : "allocationQueryState",
                     evidenceId,
+                    profileRole,
                     state: "idle",
                 });
             }
@@ -1463,6 +1532,75 @@ class CounterPanelController implements vscode.Disposable {
         if (!outcome.started) {
             this.output.appendLine("Ignored a duplicate CPU query while one is already in flight.");
         }
+    }
+
+    private async queryCpuComparison(expectedCurrentEvidenceId: string): Promise<void> {
+        const outcome = await this.cpuQueryGuard.run(async () => {
+            const baseline = this.cpuBaseline;
+            const current = this.cpuExport;
+            this.postMessage({
+                type: "cpuComparisonState",
+                evidenceId: expectedCurrentEvidenceId,
+                state: "running",
+            });
+            try {
+                if (!baseline || !current || current.evidenceId !== expectedCurrentEvidenceId
+                    || baseline.session !== current.session
+                    || !current.session.cpuHandleComparison) {
+                    throw new Error("Capture two CPU profiles with a CLI that advertises bounded handle comparison.");
+                }
+                if (current.session.closing || current.session.process.exitCode !== null
+                    || current.session.process.signalCode !== null) {
+                    throw new Error("The CLI connection retaining the CPU pair is unavailable.");
+                }
+                const result = await this.sendCpuComparisonQuery(
+                    current.session,
+                    current.handle,
+                    baseline.handle,
+                    Math.min(25, current.session.cpuHandleComparison.maxTopMovers),
+                );
+                if (this.cpuBaseline !== baseline || this.cpuExport !== current) {
+                    throw new Error("The retained CPU pair changed while comparison was loading.");
+                }
+                this.postMessage({
+                    type: "cpuComparison",
+                    evidenceId: current.evidenceId,
+                    baselineEvidenceId: baseline.evidenceId,
+                    result,
+                });
+            } catch (error) {
+                if (isRecord(error) && ["unknown_handle", "expired_handle", "evicted_handle"].includes(String(error.code))) {
+                    this.cpuBaseline = undefined;
+                }
+                const message = errorMessage(error);
+                this.postMessage({
+                    type: "cpuComparisonError",
+                    evidenceId: expectedCurrentEvidenceId,
+                    message,
+                });
+                this.output.appendLine(`CPU comparison failed: ${message}`);
+            } finally {
+                this.postMessage({
+                    type: "cpuComparisonState",
+                    evidenceId: expectedCurrentEvidenceId,
+                    state: "idle",
+                });
+            }
+        });
+        if (!outcome.started) {
+            this.output.appendLine("Ignored a duplicate CPU comparison while another CPU query is in flight.");
+        }
+    }
+
+    private useCurrentCpuAsNextBaseline(expectedCurrentEvidenceId: string): void {
+        if (this.cpuExport?.evidenceId !== expectedCurrentEvidenceId) return;
+        this.cpuBaseline = undefined;
+        this.postMessage({
+            type: "cpuComparisonAvailability",
+            evidenceId: expectedCurrentEvidenceId,
+            available: false,
+            message: "Current CPU evidence will become the baseline after the next successful CPU capture.",
+        });
     }
 
     private hasRetainedProfileFor(session: StreamChild): boolean {
@@ -1851,7 +1989,18 @@ class CounterPanelController implements vscode.Disposable {
                     ? undefined
                     : typeof message.rootMethodFilter === "string" ? message.rootMethodFilter.trim() : "";
                 const evidenceId = typeof message.evidenceId === "string" ? message.evidenceId : undefined;
-                void this.queryCpu(view, rootMethodFilter, message.type === "queryAllocation" ? "allocation" : "cpu", evidenceId);
+                const profileRole = message.profileRole === "baseline" ? "baseline" : "current";
+                void this.queryCpu(
+                    view,
+                    rootMethodFilter,
+                    message.type === "queryAllocation" ? "allocation" : "cpu",
+                    evidenceId,
+                    profileRole,
+                );
+            } else if (message.type === "queryCpuComparison" && typeof message.evidenceId === "string") {
+                void this.queryCpuComparison(message.evidenceId);
+            } else if (message.type === "useCurrentCpuAsNextBaseline" && typeof message.evidenceId === "string") {
+                this.useCurrentCpuAsNextBaseline(message.evidenceId);
             } else if (message.type === "navigationSelection") {
                 void this.exporter.handle(message);
             } else if (message.type === "copyAddress" || message.type === "navigateAddress") {
@@ -2113,7 +2262,10 @@ class CounterPanelController implements vscode.Disposable {
                 if (pending.session === session) pending.deferred.reject(new Error("The CLI connection closed before the export completed."));
             }
             this.invalidateRetainedSnapshotsFor(session);
-            if (this.cpuExport?.session === session) this.cpuExport = undefined;
+            if (this.cpuExport?.session === session) {
+                this.cpuExport = undefined;
+                this.cpuBaseline = undefined;
+            }
             if (this.allocationProfile?.session === session) this.allocationProfile = undefined;
             this.postMessage({ type: "profileAvailability" });
             if (this.activeChild === session) {
@@ -2202,6 +2354,8 @@ class CounterPanelController implements vscode.Disposable {
                 }
                 session.protocolReady = true;
                 session.requestActivities = supportsRequestActivities(frame.requestActivities);
+                session.cpuHandleComparison = supportsCpuHandleComparison(frame.cpuHandleComparison)
+                    ? frame.cpuHandleComparison : undefined;
                 session.handshake.resolve();
                 break;
 
@@ -2350,8 +2504,19 @@ class CounterPanelController implements vscode.Disposable {
                     && isCaptureViewResult(frame.result) && frame.result.kind === pending.captureKind) {
                     pending.deferred.resolve(frame.result);
                 } else if (pending.kind === "cpu" && isCpuSampleSummary(frame.result)) {
-                    this.cpuExport = typeof frame.exportHandle === "string" && frame.exportHandle.length > 0 && frame.exportHandle.length <= 128
-                        ? { session, handle: frame.exportHandle, evidenceId: pending.evidenceId, trace: pending.exportTrace === true } : undefined;
+                    const previous = this.cpuExport;
+                    const current = typeof frame.exportHandle === "string"
+                        && frame.exportHandle.length > 0 && frame.exportHandle.length <= 128
+                        ? {
+                            session,
+                            handle: frame.exportHandle,
+                            evidenceId: pending.evidenceId,
+                            summary: frame.result,
+                            trace: pending.exportTrace === true,
+                        } : undefined;
+                    this.cpuBaseline = current && previous?.session === session && session.cpuHandleComparison
+                        ? previous : undefined;
+                    this.cpuExport = current;
                     pending.deferred.resolve(frame.result);
                 } else if ((pending.kind === "exceptions" || pending.kind === "crash-guard")
                     && isExceptionCaptureResult(frame.result)) {
@@ -2495,6 +2660,8 @@ class CounterPanelController implements vscode.Disposable {
         void this.panel?.webview.postMessage({ ...message, profiles: {
             cpu: retained(this.cpuExport), trace: retained(this.cpuExport) && this.cpuExport?.trace === true,
             allocation: retained(this.allocationProfile),
+            cpuComparison: retained(this.cpuBaseline) && retained(this.cpuExport)
+                && this.cpuBaseline?.session === this.cpuExport?.session,
         } });
         if (isRecord(message) && (message.type === "status" || message.type === "terminal"))
             this.liveCountersChanged?.(message.type === "status" && ["running", "stopping"].includes(String(message.state)));
@@ -2550,8 +2717,10 @@ class CounterPanelController implements vscode.Disposable {
                     await vscode.window.showInformationMessage("Raw trace exported locally. It is unredacted; no upload was performed.");
                 }
             } catch (error) {
-                if (isRecord(error) && error.code === "unknown_handle" && this.cpuExport === saved)
+                if (isRecord(error) && error.code === "unknown_handle" && this.cpuExport === saved) {
                     this.cpuExport = undefined;
+                    this.cpuBaseline = undefined;
+                }
                 if (!result.settled) {
                     saved.session.expectedShutdown = true;
                     await this.closeChild(saved.session);
@@ -2637,7 +2806,10 @@ class CounterPanelController implements vscode.Disposable {
             || !session.eventsConnection && [...session.pendingCaptures.values()].some(pending => pending.kind === "request-activities")) this.jointGeneration++;
         if (this.joint?.session === session) this.invalidateJoint("Disconnected: retained display only; further CLI queries are unavailable.");
         this.invalidateRetainedSnapshotsFor(session);
-        if (this.cpuExport?.session === session) this.cpuExport = undefined;
+        if (this.cpuExport?.session === session) {
+            this.cpuExport = undefined;
+            this.cpuBaseline = undefined;
+        }
         if (this.allocationProfile?.session === session) this.allocationProfile = undefined;
         this.postMessage({ type: "profileAvailability" });
         if (session.process.exitCode === null && session.process.signalCode === null) {
@@ -3688,6 +3860,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     .query-view-error { border-color:var(--vscode-errorForeground); }
     ${CPU_PROFILE_STYLES}
     ${CPU_INVESTIGATION_OVERVIEW_STYLES}
+    ${CPU_COMPARISON_STYLES}
     #status, #quality { color:var(--vscode-descriptionForeground); margin:.6rem 0; }
     #value { font-size:1.5rem; font-weight:600; margin:.6rem 0; }
     canvas { width:100%; height:280px; border-bottom:1px solid var(--vscode-panel-border); }
@@ -3993,12 +4166,17 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     ${REQUEST_ACTIVITIES_SCRIPT}
     ${CPU_PROFILE_SCRIPT}
     ${CPU_INVESTIGATION_OVERVIEW_SCRIPT}
+    ${CPU_COMPARISON_SCRIPT}
     ${LIVE_TIME_NAVIGATION_SCRIPT}
     ${MEMORY_OVERVIEW_SCRIPT}
     ${LIVE_READ_CONSENT_SCRIPT}
     let cpuProfileResult;
+    let cpuBaselineProfileResult;
     let cpuCaptureSummary;
+    let cpuBaselineCaptureSummary;
+    let cpuComparisonResult;
     const cpuProfileState = { mode: 'tree', search: '', focus: [], selected: undefined };
+    const cpuBaselineProfileState = { mode: 'tree', search: '', focus: [], selected: undefined };
     let allocationProfileResult;
     const allocationProfileState = { mode: 'tree', search: '', focus: [], selected: undefined };
     const resultTabs = Array.from(document.querySelectorAll('.result-tabs [role="tab"]'));
@@ -4079,6 +4257,8 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     let exceptionEvidenceMode;
     let pendingExceptionEvidenceId;
     let cpuEvidenceId;
+    let cpuBaselineEvidenceId;
+    let activeCpuProfileRole = 'current';
     let allocationEvidenceId;
     let heapEvidenceId;
     let heapEvidenceSource;
@@ -4090,6 +4270,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     const cpuViewCache = new Map();
     const allocationViewCache = new Map();
     const profileViewLabels = {
+      comparison: 'Baseline / current',
       triage: 'Overview',
       'call-tree': 'Call tree',
       'top-methods': 'Top methods',
@@ -4184,7 +4365,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       workspaceLoadView.hidden = true;
       if (kind === 'cpu' || kind === 'allocation') {
         for (const [view, label] of Object.entries(profileViewLabels)) {
-          if (kind === 'allocation' && view === 'triage') continue;
+          if (kind === 'allocation' && (view === 'triage' || view === 'comparison')) continue;
           const option = document.createElement('option');
           option.value = view;
           option.textContent = label;
@@ -4286,7 +4467,12 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     workspaceEvidenceKind.addEventListener('change', () => setWorkspaceEvidence(workspaceEvidenceKind.value));
     workspaceView.addEventListener('change', () => {
       if (selectedWorkspaceEvidence === 'cpu' || selectedWorkspaceEvidence === 'allocation') {
-        selectProfileView(selectedWorkspaceEvidence, workspaceView.value);
+        selectProfileView(
+          selectedWorkspaceEvidence,
+          workspaceView.value,
+          undefined,
+          selectedWorkspaceEvidence === 'cpu' ? activeCpuProfileRole : 'current',
+        );
       } else if (selectedWorkspaceEvidence === 'heap') {
         navigateHeapDetails(workspaceView.value === 'details');
       } else if (selectedWorkspaceEvidence === 'thread-snapshot') {
@@ -4737,6 +4923,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       'by-module': 'By module',
       'by-namespace': 'By namespace',
       'caller-callee': 'Callers and callees',
+      comparison: 'Baseline / current comparison',
     };
     function appendCpuQuerySymbol(cell, value) {
       const segments = String(value).split(/(?<=[.,:;<>(),])|(?<=[a-z0-9])(?=[A-Z])/);
@@ -4753,11 +4940,13 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         }
       }
     }
-    function renderCpuQuery(view, result, isError, kind = 'cpu') {
+    function renderCpuQuery(view, result, isError, kind = 'cpu', profileRole = 'current') {
       const allocation = kind === 'allocation';
       const target = allocation ? document.getElementById('allocationQueryViews') : cpuQueryViews;
-      const profileResult = allocation ? allocationProfileResult : cpuProfileResult;
-      const profileState = allocation ? allocationProfileState : cpuProfileState;
+      const profileResult = allocation ? allocationProfileResult
+        : profileRole === 'baseline' ? cpuBaselineProfileResult : cpuProfileResult;
+      const profileState = allocation ? allocationProfileState
+        : profileRole === 'baseline' ? cpuBaselineProfileState : cpuProfileState;
       const queryType = allocation ? 'queryAllocation' : 'queryCpu';
       const unit = allocation ? 'estimated bytes' : 'samples';
       const section = document.createElement('section');
@@ -4767,8 +4956,17 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       if ((view !== 'call-tree' || isError) && profileResult) {
         const back = document.createElement('button');
         back.type = 'button';
-        back.textContent = allocation ? 'Back to allocation profile' : 'Back to CPU profile';
+        back.textContent = allocation ? 'Back to allocation profile'
+          : cpuComparisonResult ? 'Back to baseline / current comparison' : 'Back to CPU profile';
         back.addEventListener('click', () => {
+          if (!allocation && cpuComparisonResult) {
+            activeProfileViews.cpu = 'comparison';
+            activeProfileFilters.cpu = undefined;
+            workspaceView.value = 'comparison';
+            renderCpuQuery('comparison', cpuComparisonResult, false, 'cpu');
+            cpuQueryViews.querySelector('h3')?.focus?.({ preventScroll: true });
+            return;
+          }
           activeProfileViews[kind] = 'call-tree';
           activeProfileFilters[kind] = profileResultFilters[kind];
           const selector = document.getElementById('workspaceView');
@@ -4781,6 +4979,19 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         const message = document.createElement('p');
         message.textContent = String(result);
         section.appendChild(message);
+        target.replaceChildren(section);
+        return;
+      }
+      if (!allocation && view === 'comparison') {
+        renderCpuComparison(section, result, {
+          openProfile: (role, profileView, method) => {
+            openCpuProfile(role, profileView, method);
+          },
+          useCurrentAsNextBaseline: () => {
+            if (!cpuEvidenceId) return;
+            vscode.postMessage({ type: 'useCurrentCpuAsNextBaseline', evidenceId: cpuEvidenceId });
+          },
+        });
         target.replaceChildren(section);
         return;
       }
@@ -4851,8 +5062,11 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
               activeProfileViews[kind] = 'caller-callee';
               activeProfileFilters[kind] = rootMethodFilter;
               vscode.postMessage({
-                type: queryType, evidenceId: allocation ? allocationEvidenceId : cpuEvidenceId,
+                type: queryType,
+                evidenceId: allocation ? allocationEvidenceId
+                  : profileRole === 'baseline' ? cpuBaselineEvidenceId : cpuEvidenceId,
                 view: 'caller-callee', rootMethodFilter,
+                ...(profileRole === 'baseline' ? { profileRole } : {}),
               });
             });
             cell.appendChild(button);
@@ -4876,17 +5090,10 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         section.appendChild(wrapper);
       }
       if (view === 'triage') {
-        renderCpuInvestigationOverview(section, result, cpuCaptureSummary, {
+        renderCpuInvestigationOverview(section, result,
+          profileRole === 'baseline' ? cpuBaselineCaptureSummary : cpuCaptureSummary, {
           openProfileView: (profileView, rootMethodFilter) => {
-            if (!Array.from(workspaceView.options || []).some(option => option.value === profileView)) {
-              const option = document.createElement('option');
-              option.value = profileView;
-              option.textContent = cpuQueryLabels[profileView] || profileView;
-              workspaceView.appendChild(option);
-            }
-            workspaceView.value = profileView;
-            selectProfileView('cpu', profileView, rootMethodFilter);
-            workspaceView.focus({ preventScroll: true });
+            openCpuProfile(profileRole, profileView, rootMethodFilter);
           },
           openEvidence: evidence => {
             setWorkspaceEvidence(evidence);
@@ -4931,6 +5138,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           profileState.expanded = undefined;
         }
         if (allocation) allocationProfileResult = result;
+        else if (profileRole === 'baseline') cpuBaselineProfileResult = result;
         else cpuProfileResult = result;
         profileResultFilters[kind] = activeProfileFilters[kind];
         target.replaceChildren(section);
@@ -4938,7 +5146,11 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           activeProfileViews[kind] = queryView;
           activeProfileFilters[kind] = method;
           vscode.postMessage({
-            type: queryType, evidenceId: allocation ? allocationEvidenceId : cpuEvidenceId, view: queryView,
+            type: queryType,
+            evidenceId: allocation ? allocationEvidenceId
+              : profileRole === 'baseline' ? cpuBaselineEvidenceId : cpuEvidenceId,
+            view: queryView,
+            ...(profileRole === 'baseline' ? { profileRole } : {}),
             ...(method === undefined ? {} : { rootMethodFilter: method }),
           });
         }, profileState, allocation ? 'allocation-tick-estimated-bytes' : 'samples');
@@ -4959,26 +5171,35 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     const activeProfileFilters = { cpu: undefined, allocation: undefined };
     const profileResultFilters = { cpu: undefined, allocation: undefined };
     function profileCache(kind) { return kind === 'allocation' ? allocationViewCache : cpuViewCache; }
-    function profileEvidenceId(kind) { return kind === 'allocation' ? allocationEvidenceId : cpuEvidenceId; }
+    function profileEvidenceId(kind, role = 'current') {
+      return kind === 'allocation' ? allocationEvidenceId
+        : role === 'baseline' ? cpuBaselineEvidenceId : cpuEvidenceId;
+    }
     function profileViewTarget(kind) {
       return kind === 'allocation' ? document.getElementById('allocationQueryViews') : cpuQueryViews;
     }
-    function profileQueryKey(view, rootMethodFilter) {
-      return view + ':' + (rootMethodFilter || '');
+    function profileQueryKey(view, rootMethodFilter, role = 'current') {
+      return role + ':' + view + ':' + (rootMethodFilter || '');
     }
-    function cacheProfileQuery(kind, view, rootMethodFilter, result) {
+    function cacheProfileQuery(kind, view, rootMethodFilter, result, role = 'current') {
       const cache = profileCache(kind);
-      cache.set(profileQueryKey(view, rootMethodFilter), result);
+      cache.set(profileQueryKey(view, rootMethodFilter, role), result);
       while (cache.size > 8) cache.delete(cache.keys().next().value);
     }
     function selectProfileView(kind, view, rootMethodFilter) {
+      selectProfileViewForRole(kind, view, rootMethodFilter,
+        kind === 'cpu' ? activeCpuProfileRole : 'current');
+    }
+    function selectProfileViewForRole(kind, view, rootMethodFilter, role = 'current') {
+      if (kind === 'cpu') activeCpuProfileRole = role;
       activeProfileViews[kind] = view;
       activeProfileFilters[kind] = rootMethodFilter;
       const cache = profileCache(kind);
-      const cached = cache.get(profileQueryKey(view, rootMethodFilter));
+      const cached = view === 'comparison' ? cpuComparisonResult
+        : cache.get(profileQueryKey(view, rootMethodFilter, role));
       if (cached) {
         workspaceLoadView.hidden = true;
-        renderCpuQuery(view, cached, false, kind);
+        renderCpuQuery(view, cached, false, kind, role);
         return;
       }
       const target = profileViewTarget(kind);
@@ -4986,13 +5207,13 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       section.className = 'query-view';
       const message = document.createElement('p');
       message.className = 'query-view-provenance';
-      message.textContent = profileEvidenceId(kind)
+      message.textContent = profileEvidenceId(kind, role)
         ? 'This view is not loaded for the current capture. Selecting it did not query or read the target.'
         : 'Capture this profile before loading a view.';
       section.appendChild(message);
       target.replaceChildren(section);
       workspaceLoadView.hidden = false;
-      workspaceLoadView.disabled = !profileEvidenceId(kind) || !profileAvailability[kind]
+      workspaceLoadView.disabled = !profileEvidenceId(kind, role) || !profileAvailability[kind]
         || profileQueryBusy[kind] || profileCaptureBusy[kind];
       workspaceLoadView.textContent = profileQueryBusy[kind] || profileCaptureBusy[kind] ? 'Busy…'
         : profileAvailability[kind] ? 'Load view' : 'Retained profile unavailable';
@@ -5000,13 +5221,19 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     function loadSelectedProfileView() {
       const kind = selectedWorkspaceEvidence;
       if (kind !== 'cpu' && kind !== 'allocation') return;
-      const evidenceId = profileEvidenceId(kind);
+      const role = kind === 'cpu' ? activeCpuProfileRole : 'current';
+      const evidenceId = profileEvidenceId(kind, role);
       if (!evidenceId || !profileAvailability[kind] || profileQueryBusy[kind] || profileCaptureBusy[kind]) return;
       const view = workspaceView.value;
       const rootMethodFilter = activeProfileFilters[kind];
       const cache = profileCache(kind);
-      if (cache.has(profileQueryKey(view, rootMethodFilter))) {
-        selectProfileView(kind, view, rootMethodFilter);
+      if (view === 'comparison') {
+        if (cpuComparisonResult) selectProfileViewForRole(kind, view, undefined, 'current');
+        else vscode.postMessage({ type: 'queryCpuComparison', evidenceId });
+        return;
+      }
+      if (cache.has(profileQueryKey(view, rootMethodFilter, role))) {
+        selectProfileViewForRole(kind, view, rootMethodFilter, role);
         return;
       }
       workspaceLoadView.disabled = true;
@@ -5017,8 +5244,24 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         type: kind === 'allocation' ? 'queryAllocation' : 'queryCpu',
         evidenceId,
         view,
+        ...(role === 'baseline' ? { profileRole: role } : {}),
         ...(rootMethodFilter === undefined ? {} : { rootMethodFilter }),
       });
+    }
+    function openCpuProfile(role, view, rootMethodFilter) {
+      activeCpuProfileRole = role;
+      activeProfileViews.cpu = view;
+      activeProfileFilters.cpu = rootMethodFilter;
+      if (!Array.from(workspaceView.options).some(option => option.value === view)) {
+        const option = document.createElement('option');
+        option.value = view;
+        option.textContent = profileViewLabels[view] || view;
+        workspaceView.appendChild(option);
+      }
+      workspaceView.value = view;
+      selectProfileViewForRole('cpu', view, rootMethodFilter, role);
+      if (!cpuViewCache.has(profileQueryKey(view, rootMethodFilter, role))) loadSelectedProfileView();
+      workspaceView.focus({ preventScroll: true });
     }
     setWorkspaceEvidence('cpu');
     const counters = new Map();
@@ -5517,13 +5760,58 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         if (message.evidenceId !== threadSnapshotEvidenceId) return;
         setThreadStaticsBusy(message.state === 'running');
       } else if (message.type === 'cpuQueryState') {
-        if (message.evidenceId !== cpuEvidenceId) return;
+        const role = message.profileRole === 'baseline' ? 'baseline' : 'current';
+        if (message.evidenceId !== (role === 'baseline' ? cpuBaselineEvidenceId : cpuEvidenceId)) return;
         const cpuQueryBusy = message.state === 'running';
         profileQueryBusy.cpu = cpuQueryBusy;
         cpuQueryStatus.textContent = cpuQueryBusy ? 'Loading CPU drilldown…' : '';
         if (!cpuQueryBusy && workspaceLoadView.hidden === false && selectedWorkspaceEvidence === 'cpu') {
           workspaceLoadView.disabled = false;
           workspaceLoadView.textContent = 'Load view';
+        }
+      } else if (message.type === 'cpuComparisonState') {
+        if (message.evidenceId !== cpuEvidenceId) return;
+        profileQueryBusy.cpu = message.state === 'running';
+        cpuQueryStatus.textContent = message.state === 'running' ? 'Comparing retained CPU baseline and current captures…' : '';
+        workspaceLoadView.disabled = message.state === 'running';
+        workspaceLoadView.textContent = message.state === 'running' ? 'Comparing…' : 'Load view';
+      } else if (message.type === 'cpuComparison') {
+        if (message.evidenceId !== cpuEvidenceId || message.baselineEvidenceId !== cpuBaselineEvidenceId) return;
+        cpuComparisonResult = message.result;
+        cacheProfileQuery('cpu', 'comparison', undefined, message.result);
+        activeCpuProfileRole = 'current';
+        activeProfileViews.cpu = 'comparison';
+        activeProfileFilters.cpu = undefined;
+        workspaceView.value = 'comparison';
+        workspaceLoadView.hidden = true;
+        renderCpuQuery('comparison', message.result, false, 'cpu');
+        setWorkspaceStatus('cpu',
+          'Current evidence: bounded CPU baseline / current comparison. Direction is earlier baseline to later current; deltas are objective observations, not a performance verdict.');
+      } else if (message.type === 'cpuComparisonError') {
+        if (message.evidenceId !== cpuEvidenceId) return;
+        cpuComparisonResult = undefined;
+        if (activeProfileViews.cpu === 'comparison') {
+          workspaceLoadView.hidden = false;
+          workspaceLoadView.disabled = !profileAvailability.cpu;
+          workspaceLoadView.textContent = profileAvailability.cpu ? 'Retry comparison' : 'Retained pair unavailable';
+          renderCpuQuery('comparison', message.message, true, 'cpu');
+        }
+      } else if (message.type === 'cpuComparisonAvailability') {
+        if (message.evidenceId !== cpuEvidenceId || message.available !== false) return;
+        cpuBaselineEvidenceId = undefined;
+        cpuBaselineCaptureSummary = undefined;
+        cpuComparisonResult = undefined;
+        cpuBaselineProfileResult = undefined;
+        for (const key of [...cpuViewCache.keys()]) {
+          if (key.startsWith('baseline:') || key.startsWith('current:comparison:')) cpuViewCache.delete(key);
+        }
+        activeCpuProfileRole = 'current';
+        activeProfileViews.cpu = 'triage';
+        activeProfileFilters.cpu = undefined;
+        setWorkspaceStatus('cpu', message.message || 'Capture another CPU profile to create a fresh live pair.');
+        if (selectedWorkspaceEvidence === 'cpu') {
+          workspaceView.value = 'triage';
+          selectProfileView('cpu', 'triage', undefined);
         }
       } else if (message.type === 'captureStatus' && message.kind === 'cpu') {
         if (typeof message.evidenceId === 'string') pendingCpuEvidenceId = message.evidenceId;
@@ -5835,17 +6123,27 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         profileCaptureBusy.cpu = false;
         cpuEvidenceId = typeof message.evidenceId === 'string' ? message.evidenceId : undefined;
         cpuCaptureSummary = message.summary;
+        cpuBaselineEvidenceId = typeof message.comparisonBaseline?.evidenceId === 'string'
+          ? message.comparisonBaseline.evidenceId : undefined;
+        cpuBaselineCaptureSummary = message.comparisonBaseline?.summary;
+        cpuComparisonResult = undefined;
         cpuViewCache.clear();
-        activeProfileViews.cpu = 'triage';
+        activeCpuProfileRole = 'current';
+        activeProfileViews.cpu = cpuBaselineEvidenceId ? 'comparison' : 'triage';
         activeProfileFilters.cpu = undefined;
         document.getElementById('resultCpu').dataset.evidenceId = cpuEvidenceId || '';
         setWorkspaceStatus('cpu', 'Current evidence: CPU profile · ' + String(message.summary?.totalSamples ?? 'sample count unavailable')
           + ' captured stack samples. Percentages are sample shares, not measured CPU time or utilization; Total includes descendants and Self excludes them.');
         cpuProfileResult = undefined;
+        cpuBaselineProfileResult = undefined;
         cpuProfileState.focus = [];
         cpuProfileState.selected = undefined;
         cpuProfileState.search = '';
         cpuProfileState.expanded = undefined;
+        cpuBaselineProfileState.focus = [];
+        cpuBaselineProfileState.selected = undefined;
+        cpuBaselineProfileState.search = '';
+        cpuBaselineProfileState.expanded = undefined;
         cpuQueryViews.replaceChildren();
         cpuQueryStatus.textContent = '';
         renderCapture(message.summary);
@@ -5853,31 +6151,40 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           'CPU percentages are shares of captured stack samples, not measured CPU time or utilization. '
           + 'Total includes descendants; Self excludes descendants. Full capture denominator: '
           + String(message.summary?.totalSamples ?? 'unavailable') + ' captured stack samples. Focus and search do not renormalize values.';
+        if (!cpuBaselineEvidenceId && message.comparisonSupported === false) {
+          setWorkspaceStatus('cpu', 'Current evidence: CPU profile. The configured CLI does not advertise live CPU handle comparison; update the CLI to compare a retained pair.');
+        }
         if (selectedWorkspaceEvidence === 'cpu') setWorkspaceEvidence('cpu');
       } else if (message.type === 'query' && message.kind === 'cpu') {
-        if (message.evidenceId !== cpuEvidenceId) return;
+        const role = message.profileRole === 'baseline' ? 'baseline' : 'current';
+        const expectedEvidenceId = role === 'baseline' ? cpuBaselineEvidenceId : cpuEvidenceId;
+        if (message.evidenceId !== expectedEvidenceId) return;
         cpuQueryStatus.textContent = '';
-        cacheProfileQuery('cpu', message.view, message.rootMethodFilter, message.result);
+        cacheProfileQuery('cpu', message.view, message.rootMethodFilter, message.result, role);
         if (selectedWorkspaceEvidence === 'cpu'
+          && role === activeCpuProfileRole
           && message.view === activeProfileViews.cpu
           && message.rootMethodFilter === activeProfileFilters.cpu) {
           if (profileViewLabels[message.view]) workspaceView.value = message.view;
           workspaceLoadView.hidden = true;
-          renderCpuQuery(message.view, message.result, false);
+          renderCpuQuery(message.view, message.result, false, 'cpu', role);
         }
       } else if (message.type === 'queryError' && message.kind === 'cpu') {
-        if (message.evidenceId !== cpuEvidenceId) return;
+        const role = message.profileRole === 'baseline' ? 'baseline' : 'current';
+        const expectedEvidenceId = role === 'baseline' ? cpuBaselineEvidenceId : cpuEvidenceId;
+        if (message.evidenceId !== expectedEvidenceId) return;
         cpuQueryStatus.textContent = '';
         if (!profileAvailability.cpu) {
           setWorkspaceStatus('cpu', 'Cached CPU views may remain visible; the retained profile is unavailable for additional queries.');
         }
         if (selectedWorkspaceEvidence === 'cpu'
+          && role === activeCpuProfileRole
           && message.view === activeProfileViews.cpu
           && message.rootMethodFilter === activeProfileFilters.cpu) {
           workspaceLoadView.hidden = false;
           workspaceLoadView.disabled = !profileAvailability.cpu;
           workspaceLoadView.textContent = profileAvailability.cpu ? 'Retry view load' : 'Retained profile unavailable';
-          renderCpuQuery(message.view, message.message, true);
+          renderCpuQuery(message.view, message.message, true, 'cpu', role);
         }
       } else if (message.type === 'query' && message.kind === 'heap') {
         if (message.evidenceId !== heapEvidenceId) return;

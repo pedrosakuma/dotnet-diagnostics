@@ -159,8 +159,9 @@ function renderCpuProfile(
             + "Types and sites are independent aggregates, not a type-to-stack correlation.", "query-view-provenance");
     } else {
         const comparisonNote = text(profileGuidance,
-            "This CPU profile is temporary and cannot be saved or compared in the extension. "
-            + "The CLI has a separate retained-artifact comparison workflow; see ", "query-view-provenance");
+            "This CPU profile is temporary. A live baseline/current comparison is available only while "
+            + "the owning CLI retains the two most recent compatible CPU handles; durable saved-capture comparison remains separate. See ",
+            "query-view-provenance");
         const comparisonLink = document.createElement("a");
         comparisonLink.textContent = "CPU comparison limits";
         comparisonLink.setAttribute("href", "https://github.com/pedrosakuma/dotnet-diagnostics/blob/main/docs/historical-comparisons.md#supported-matrix");

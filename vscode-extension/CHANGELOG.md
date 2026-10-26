@@ -15,6 +15,13 @@ versioned independently from the CLI and the .NET packages.
   allocation/heap evidence or explicitly starts the existing heap-capture flow; opening the
   overview never collects. No heap comparison, type-instance enumeration, region map, persistent
   investigation context, leak verdict, or new CLI protocol field is introduced.
+- Add an incremental live CPU baseline/current view over the CLI's advertised bounded
+  `cpuHandleComparison` contract. Keep the two most recent handles as an explicit earlier baseline
+  and later current capture, show backend/evidence/quality/denominators/unavailable reasons,
+  objective raw-sample and share deltas, and bounded method movers without improved/regressed or
+  causal verdicts. Navigate from either side back to overview, call tree, hot path, top methods and
+  callers/callees while preserving each profile's cached focus and filters. Keep saved-capture
+  comparison, redacted export, direct expert views and older-CLI degradation separate.
 - Make saved-capture comparison direction explicit and reversible after a candidate artifact view
   loads successfully. Search the paged catalog up to 500 entries, retain an out-of-window current
   artifact, allow intentional self-comparison, and group matching, unknown and known

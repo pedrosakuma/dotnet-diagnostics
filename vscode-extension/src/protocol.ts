@@ -227,6 +227,22 @@ export function buildQueryFrame(
     return frame;
 }
 
+export function buildCpuComparisonFrame(
+    requestId: string,
+    currentHandle: string,
+    baselineHandle: string,
+    topN: number,
+): ProtocolFrame {
+    return {
+        type: "query",
+        requestId,
+        handle: currentHandle,
+        baselineHandle,
+        view: "diff",
+        topN,
+    };
+}
+
 /** Optional address-navigation parameters of a `query` request (issue #1168). */
 export interface QueryNavigation {
     address: string;

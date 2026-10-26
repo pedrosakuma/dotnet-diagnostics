@@ -243,6 +243,66 @@ test("each kind completes through the compiled controller and actual frame valid
         assert.equal(session.pendingCaptures.size, 0);
     }
 });
+
+test("successful CPU captures retain an explicit bounded baseline/current pair only when advertised", () => {
+    const makeSession = capability => ({
+        pendingCaptures: new Map(),
+        pendingQueries: new Map(),
+        startInFlight: false,
+        closing: false,
+        cpuHandleComparison: capability,
+        process: { exitCode: null, signalCode: null },
+    });
+    const summary = (startedAt, samples) => ({
+        processId: 4242,
+        startedAt,
+        duration: "00:00:10",
+        totalSamples: samples,
+        topHotspots: [],
+    });
+    const complete = (controller, session, evidenceId, handle, result) => {
+        let resolved;
+        session.pendingCaptures.set(evidenceId, {
+            kind: "cpu",
+            evidenceId,
+            deferred: { resolve(value) { resolved = value; }, reject() {} },
+        });
+        controller.handleFrame(session, JSON.stringify({
+            type: "capture",
+            requestId: evidenceId,
+            kind: "cpu",
+            exportHandle: handle,
+            result,
+        }));
+        return resolved;
+    };
+    const capability = {
+        version: 1,
+        queryView: "diff",
+        baselineHandleField: "baselineHandle",
+        retainedHandleLimit: 2,
+        maxTopMovers: 50,
+    };
+    const controller = Object.create(Controller.prototype);
+    controller.output = { appendLine() {} };
+    const session = makeSession(capability);
+    complete(controller, session, "cpu-1", "handle-1", summary("2026-10-26T12:00:00Z", 100));
+    assert.equal(controller.cpuBaseline, undefined);
+    complete(controller, session, "cpu-2", "handle-2", summary("2026-10-26T12:01:00Z", 120));
+    assert.equal(controller.cpuBaseline.handle, "handle-1");
+    assert.equal(controller.cpuExport.handle, "handle-2");
+    complete(controller, session, "cpu-3", "handle-3", summary("2026-10-26T12:02:00Z", 110));
+    assert.equal(controller.cpuBaseline.handle, "handle-2", "the prior current becomes the only retained baseline");
+    assert.equal(controller.cpuExport.handle, "handle-3");
+
+    const legacy = Object.create(Controller.prototype);
+    legacy.output = { appendLine() {} };
+    const legacySession = makeSession(undefined);
+    complete(legacy, legacySession, "legacy-1", "legacy-h1", summary("2026-10-26T12:00:00Z", 100));
+    complete(legacy, legacySession, "legacy-2", "legacy-h2", summary("2026-10-26T12:01:00Z", 100));
+    assert.equal(legacy.cpuBaseline, undefined);
+    assert.equal(legacy.cpuExport.handle, "legacy-h2");
+});
 test("live thread snapshot capture and eager queries share one evidence identity", async () => {
     const controller = Object.create(Controller.prototype);
     const messages = [], frames = [];
