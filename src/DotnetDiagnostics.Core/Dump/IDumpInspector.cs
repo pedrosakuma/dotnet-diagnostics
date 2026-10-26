@@ -244,6 +244,42 @@ public sealed record SegmentStat(
 {
     /// <summary>Free bytes as a percentage of segment length, rounded to two decimals.</summary>
     public double FreePercent { get; init; }
+    /// <summary>
+    /// Largest directly observed <c>obj.IsFree</c> record at least
+    /// <see cref="ObservedFreeBlockAggregation.MaterialBlockMinimumBytes"/> bytes. This is observed
+    /// layout evidence, not an allocator-success guarantee.
+    /// </summary>
+    public long? LargestObservedMaterialFreeBlockBytes { get; init; }
+    /// <summary>Number of directly observed material free records before top-K projection.</summary>
+    public long? ObservedMaterialFreeBlockCount { get; init; }
+    /// <summary>Number of material free records retained in <see cref="TopObservedMaterialFreeBlocks"/>.</summary>
+    public int? RetainedMaterialFreeBlockCount { get; init; }
+    /// <summary>Observed material free records omitted by the insertion-time top-K bound.</summary>
+    public long? OmittedMaterialFreeBlockCount { get; init; }
+    /// <summary>Configured top-K retention capacity for material free records.</summary>
+    public int? MaterialFreeBlockRetentionLimit { get; init; }
+    /// <summary>Minimum record size included in the material free-block projection.</summary>
+    public long? MaterialFreeBlockMinimumBytes { get; init; }
+    /// <summary>Largest directly observed material free records, ordered by size then address.</summary>
+    public IReadOnlyList<ObservedFreeBlockRange>? TopObservedMaterialFreeBlocks { get; init; }
+    /// <summary>Whether the observed free-block evidence is complete, partial, or indeterminate.</summary>
+    public ObservedFreeBlockEvidenceState? FreeBlockEvidenceState { get; init; }
+    /// <summary>Structured limitations on conclusions supported by the observed free-block evidence.</summary>
+    public IReadOnlyList<string>? FreeBlockEvidenceLimitations { get; init; }
+}
+
+/// <summary>
+/// One directly observed material <c>obj.IsFree</c> record. Adjacent records are not merged and the
+/// range does not establish that a managed allocation of the same size will succeed.
+/// </summary>
+public readonly record struct ObservedFreeBlockRange(ulong Start, ulong End, long Length);
+
+/// <summary>Completeness state for per-segment observed free-block evidence.</summary>
+public enum ObservedFreeBlockEvidenceState
+{
+    Complete,
+    Partial,
+    Indeterminate,
 }
 
 /// <summary>

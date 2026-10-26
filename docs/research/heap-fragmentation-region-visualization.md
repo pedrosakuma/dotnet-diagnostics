@@ -8,6 +8,12 @@ the existing ranked fragmentation table. The parent roadmap is
 This is a test-only prototype and point-in-time feasibility result. It does not
 change the Core, CLI, or VS Code production contract.
 
+> **Implementation follow-up:** issue
+> [#1270](https://github.com/pedrosakuma/dotnet-diagnostics/issues/1270) promotes
+> the bounded observed free-block evidence into the canonical Core/CLI
+> `fragmentation` result. The spike's visualization remains out of scope and is
+> tracked separately.
+
 ## Decision
 
 **Partial GO.**

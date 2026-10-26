@@ -10,6 +10,8 @@ public sealed class CliStreamingAddressProjectionTests
 {
     private const ulong Address = 0xFEDCBA9876543210;
     private const string AddressText = "0xfedcba9876543210";
+    private const ulong EndAddress = Address + 0x1000;
+    private const string EndAddressText = "0xfedcba9876544210";
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -107,14 +109,40 @@ public sealed class CliStreamingAddressProjectionTests
     {
         var result = new HeapSnapshotQueryResult("heap-handle", "fragmentation", "dump", 42, DateTimeOffset.UnixEpoch)
         {
-            Segments = [new SegmentStat(0, "SOH", "Gen0", Address, Address, 16, 16, 16, 8, 8, 1, 1) { FreePercent = 50 }],
+            Segments =
+            [
+                new SegmentStat(0, "SOH", "Gen0", Address, EndAddress, 4096, 4096, 4096, 0, 4096, 0, 1)
+                {
+                    FreePercent = 100,
+                    LargestObservedMaterialFreeBlockBytes = 4096,
+                    ObservedMaterialFreeBlockCount = 1,
+                    RetainedMaterialFreeBlockCount = 1,
+                    OmittedMaterialFreeBlockCount = 0,
+                    MaterialFreeBlockRetentionLimit = 8,
+                    MaterialFreeBlockMinimumBytes = 4096,
+                    TopObservedMaterialFreeBlocks = [new ObservedFreeBlockRange(Address, EndAddress, 4096)],
+                    FreeBlockEvidenceState = ObservedFreeBlockEvidenceState.Indeterminate,
+                    FreeBlockEvidenceLimitations = ["fixture limitation"],
+                },
+            ],
         };
 
         using var document = JsonDocument.Parse(JsonSerializer.Serialize(CliStreamingProtocol.TrimHeapQueryResult(result), JsonOptions));
         var segment = document.RootElement.GetProperty("segments")[0];
         segment.GetProperty("start").GetString().Should().Be(AddressText);
-        segment.GetProperty("end").GetString().Should().Be(AddressText);
-        segment.GetProperty("freePercent").GetDouble().Should().Be(50);
+        segment.GetProperty("end").GetString().Should().Be(EndAddressText);
+        segment.GetProperty("freePercent").GetDouble().Should().Be(100);
+        segment.GetProperty("largestObservedMaterialFreeBlockBytes").GetInt64().Should().Be(4096);
+        segment.GetProperty("observedMaterialFreeBlockCount").GetInt64().Should().Be(1);
+        segment.GetProperty("retainedMaterialFreeBlockCount").GetInt32().Should().Be(1);
+        segment.GetProperty("omittedMaterialFreeBlockCount").GetInt64().Should().Be(0);
+        segment.GetProperty("materialFreeBlockRetentionLimit").GetInt32().Should().Be(8);
+        segment.GetProperty("materialFreeBlockMinimumBytes").GetInt64().Should().Be(4096);
+        segment.GetProperty("freeBlockEvidenceState").GetString().Should().Be("indeterminate");
+        segment.GetProperty("topObservedMaterialFreeBlocks")[0].GetProperty("start")
+            .GetString().Should().Be(AddressText);
+        segment.GetProperty("topObservedMaterialFreeBlocks")[0].GetProperty("end")
+            .GetString().Should().Be(EndAddressText);
     }
 
     [Fact]

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using DotnetDiagnostics.Core.Dump;
 using FluentAssertions;
 using Microsoft.Diagnostics.Runtime;
 using Xunit.Abstractions;
@@ -29,7 +30,11 @@ internal sealed record LiveLohMeasurement(
     IReadOnlyList<FreeRangeProjection> TopFreeRanges,
     int RetentionCapacity,
     int RetentionStorageSlots,
-    long TopKSelectionComparisonCount);
+    long TopKSelectionComparisonCount,
+    SegmentStat CanonicalSegment,
+    long DiagnosticHostAllocatedBytes,
+    long DiagnosticHostRssDeltaBytes,
+    TimeSpan DiagnosticHostElapsed);
 
 internal sealed record LiveLohTrial(
     LiveLohTrialClassification Classification,
@@ -74,6 +79,13 @@ public sealed class HeapFragmentationLiveEvidenceTests(ITestOutputHelper output)
         separated.TopFreeRanges.Count(IsMaterial).Should().BeGreaterThan(1);
         control.TopFreeRanges[0].Length.Should()
             .BeGreaterThan(separated.TopFreeRanges[0].Length);
+
+        AssertCanonicalProjection(control);
+        AssertCanonicalProjection(separated);
+        CanonicalRangesInside(control).Should().ContainSingle();
+        CanonicalRangesInside(separated).Should().HaveCountGreaterThan(1);
+        control.CanonicalSegment.LargestObservedMaterialFreeBlockBytes!.Value.Should()
+            .BeGreaterThan(separated.CanonicalSegment.LargestObservedMaterialFreeBlockBytes!.Value);
     }
 
     private static LiveLohTrial Classify(
@@ -148,7 +160,33 @@ public sealed class HeapFragmentationLiveEvidenceTests(ITestOutputHelper output)
             var ready = await process.StandardOutput.ReadLineAsync()
                 .WaitAsync(TimeSpan.FromSeconds(20));
             var (leftData, rightData) = ParseReadyLine(ready, scenario);
-            var measurement = Observe(process.Id, scenario, leftData, rightData, TopK);
+            var direct = Observe(process.Id, scenario, leftData, rightData, TopK);
+            using var diagnosticHost = Process.GetCurrentProcess();
+            diagnosticHost.Refresh();
+            var allocatedBefore = GC.GetTotalAllocatedBytes(precise: true);
+            var rssBefore = diagnosticHost.WorkingSet64;
+            var watch = Stopwatch.StartNew();
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var snapshot = await new ClrMdDumpInspector().InspectLiveAsync(
+                process.Id,
+                new DumpInspectionOptions(TopTypes: 10),
+                deadline.Token);
+            watch.Stop();
+            var allocated = GC.GetTotalAllocatedBytes(precise: true) - allocatedBefore;
+            diagnosticHost.Refresh();
+            var rssDelta = Math.Max(0, diagnosticHost.WorkingSet64 - rssBefore);
+            var canonicalSegment = snapshot.Segments!.Single(segment =>
+                leftData >= segment.Start
+                && leftData < segment.End
+                && rightData >= segment.Start
+                && rightData < segment.End);
+            var measurement = direct with
+            {
+                CanonicalSegment = canonicalSegment,
+                DiagnosticHostAllocatedBytes = allocated,
+                DiagnosticHostRssDeltaBytes = rssDelta,
+                DiagnosticHostElapsed = watch.Elapsed,
+            };
 
             await process.StandardInput.WriteLineAsync("release");
             await process.StandardInput.FlushAsync();
@@ -253,7 +291,11 @@ public sealed class HeapFragmentationLiveEvidenceTests(ITestOutputHelper output)
             retainer.Snapshot(),
             topK,
             retainer.StorageSlotCount,
-            retainer.SelectionComparisonCount);
+            retainer.SelectionComparisonCount,
+            CanonicalSegment: null!,
+            DiagnosticHostAllocatedBytes: 0,
+            DiagnosticHostRssDeltaBytes: 0,
+            DiagnosticHostElapsed: TimeSpan.Zero);
     }
 
     private static (ulong LeftStart, ulong LeftEnd, ulong RightStart)? FindMarkers(
@@ -306,7 +348,11 @@ public sealed class HeapFragmentationLiveEvidenceTests(ITestOutputHelper output)
             TopFreeRanges: Array.Empty<FreeRangeProjection>(),
             topK,
             RetentionStorageSlots: topK,
-            TopKSelectionComparisonCount: 0);
+            TopKSelectionComparisonCount: 0,
+            CanonicalSegment: null!,
+            DiagnosticHostAllocatedBytes: 0,
+            DiagnosticHostRssDeltaBytes: 0,
+            DiagnosticHostElapsed: TimeSpan.Zero);
     }
 
     private static string Format(LiveLohMeasurement measurement)
@@ -322,9 +368,47 @@ public sealed class HeapFragmentationLiveEvidenceTests(ITestOutputHelper output)
             $"materialFreeRanges={measurement.ObservedMaterialFreeRangeCount}; " +
             $"largestFree={measurement.LargestObservedFreeBlockBytes}; " +
             $"topK=[{top}]; topKSlots={measurement.RetentionStorageSlots}; " +
-            $"topKComparisons={measurement.TopKSelectionComparisonCount}";
+            $"topKComparisons={measurement.TopKSelectionComparisonCount}; " +
+            $"canonicalState={measurement.CanonicalSegment.FreeBlockEvidenceState}; " +
+            $"canonicalObserved={measurement.CanonicalSegment.ObservedMaterialFreeBlockCount}; " +
+            $"canonicalRetained={measurement.CanonicalSegment.RetainedMaterialFreeBlockCount}; " +
+            $"canonicalOmitted={measurement.CanonicalSegment.OmittedMaterialFreeBlockCount}; " +
+            $"hostAllocatedBytes={measurement.DiagnosticHostAllocatedBytes}; " +
+            $"hostRssDeltaBytes={measurement.DiagnosticHostRssDeltaBytes}; " +
+            $"hostElapsedMs={measurement.DiagnosticHostElapsed.TotalMilliseconds:F1}";
     }
 
     private static bool IsMaterial(FreeRangeProjection range) =>
         range.Length >= MaterialFreeRangeMinimumBytes;
+
+    private static IReadOnlyList<ObservedFreeBlockRange> CanonicalRangesInside(
+        LiveLohMeasurement measurement) =>
+        measurement.CanonicalSegment.TopObservedMaterialFreeBlocks!
+            .Where(range =>
+                range.Start >= measurement.RegionStart
+                && range.End <= measurement.RegionEnd)
+            .ToArray();
+
+    private static void AssertCanonicalProjection(LiveLohMeasurement measurement)
+    {
+        measurement.CanonicalSegment.FreeBlockEvidenceState.Should()
+            .Be(ObservedFreeBlockEvidenceState.Indeterminate);
+        measurement.CanonicalSegment.MaterialFreeBlockRetentionLimit.Should()
+            .Be(ObservedFreeBlockAggregation.TopRangeLimit);
+        measurement.CanonicalSegment.MaterialFreeBlockMinimumBytes.Should()
+            .Be(ObservedFreeBlockAggregation.MaterialBlockMinimumBytes);
+        measurement.CanonicalSegment.RetainedMaterialFreeBlockCount.Should()
+            .BeLessThanOrEqualTo(ObservedFreeBlockAggregation.TopRangeLimit);
+        measurement.CanonicalSegment.ObservedMaterialFreeBlockCount.Should()
+            .Be(measurement.CanonicalSegment.RetainedMaterialFreeBlockCount
+                + measurement.CanonicalSegment.OmittedMaterialFreeBlockCount);
+        measurement.CanonicalSegment.FreeObjectCount.Should().BeGreaterThanOrEqualTo(
+            measurement.CanonicalSegment.ObservedMaterialFreeBlockCount!.Value,
+            "the CLR free-object compatibility aggregate includes non-material padding records");
+        measurement.CanonicalSegment.FreeBlockEvidenceLimitations.Should().Contain(
+            limitation => limitation.Contains("do not establish allocation success", StringComparison.Ordinal));
+        measurement.DiagnosticHostAllocatedBytes.Should().BeLessThan(512L * 1024 * 1024);
+        measurement.DiagnosticHostRssDeltaBytes.Should().BeLessThan(256L * 1024 * 1024);
+        measurement.DiagnosticHostElapsed.Should().BeLessThan(TimeSpan.FromSeconds(30));
+    }
 }

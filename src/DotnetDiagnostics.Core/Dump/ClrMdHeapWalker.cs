@@ -46,6 +46,8 @@ internal static class ClrMdHeapWalker
         {
             ct.ThrowIfCancellationRequested();
             long segUsed = 0, segFree = 0, segObjs = 0, segFreeObjs = 0;
+            long segmentUnresolvedObjects = 0;
+            var observedFreeBlocks = new ObservedFreeBlockAggregation();
 
             // carefully=true: the default enumeration silently abandons the REST of the segment the
             // first time a method table cannot be resolved (possible while the live target is
@@ -54,25 +56,25 @@ internal static class ClrMdHeapWalker
             foreach (var obj in segment.EnumerateObjects(carefully: true))
             {
                 ct.ThrowIfCancellationRequested();
-                if (obj.Type is null) continue;
-                if (obj.Type.MethodTable == 0)
+                if (obj.Type is null || obj.Type.MethodTable == 0)
                 {
                     unresolvedObjects++;
+                    segmentUnresolvedObjects++;
                     continue;
                 }
 
-                var size = (long)obj.Size;
-                segObjs++;
-
+                var size = checked((long)obj.Size);
                 if (obj.IsFree)
                 {
-                    segFree += size;
+                    segFree = checked(segFree + size);
                     segFreeObjs++;
+                    observedFreeBlocks.Observe(obj.Address, size);
                     continue;
                 }
 
-                segUsed += size;
-                totalBytes += size;
+                segObjs++;
+                segUsed = checked(segUsed + size);
+                totalBytes = checked(totalBytes + size);
 
                 var key = new TypeKey(
                     obj.Type.Name ?? "<unknown>",
@@ -133,7 +135,7 @@ internal static class ClrMdHeapWalker
             var reserved = (long)(segment.ReservedMemory.End - segment.ReservedMemory.Start);
             var freePct = length > 0 ? Math.Round(100.0 * segFree / length, 2) : 0.0;
 
-            segmentStats.Add(new SegmentStat(
+            var segmentStat = new SegmentStat(
                 LogicalHeap: segment.SubHeap.Index,
                 Kind: segment.Kind.ToString(),
                 Generation: ClassifySegmentGeneration(segment),
@@ -144,11 +146,12 @@ internal static class ClrMdHeapWalker
                 ReservedBytes: reserved,
                 UsedBytes: segUsed,
                 FreeBytes: segFree,
-                ObjectCount: segObjs - segFreeObjs,
+                ObjectCount: segObjs,
                 FreeObjectCount: segFreeObjs)
             {
                 FreePercent = freePct,
-            });
+            };
+            segmentStats.Add(observedFreeBlocks.ApplyTo(segmentStat, segmentUnresolvedObjects));
         }
 
         if (unresolvedObjects > 0)
