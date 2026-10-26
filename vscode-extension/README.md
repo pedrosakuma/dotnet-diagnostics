@@ -17,11 +17,18 @@ EventPipe events, find CPU hotspots, inspect heap and thread snapshots, and anal
 - **Share and compare:** export redacted measurements, save raw CPU traces locally, and compare
   compatible saved captures against a baseline.
 
-Saved comparisons summarize numeric deltas as up/down/flat/unavailable, not
-performance verdicts. The extension uses the CLI's historical comparison contract
-(compatibility and measurement semantics), not journey verdict labels such as
-`not_assessed`. Missing values remain unavailable; workload equivalence,
-throughput and latency must be established separately.
+Saved comparisons start only from a successfully loaded artifact. They name that artifact before
+selection and let you explicitly keep it as candidate (right) or reverse it into baseline (left).
+The picker searches up to the latest 500 catalog entries, groups matching, unknown and known
+family-mismatch choices without replacing CLI validation, and keeps an out-of-window current
+artifact available. Results preserve side identities, collection quality and the CLI's structured
+compatibility reasons.
+
+Comparisons summarize numeric deltas as up/down/flat/unavailable, not performance verdicts. The
+extension uses the CLI's historical comparison contract (compatibility and measurement semantics),
+not journey verdict labels such as `not_assessed`. Missing values remain unavailable; workload
+equivalence, throughput and latency must be established separately. The operation stays offline
+and does not contact the original process.
 
 ## Get started
 

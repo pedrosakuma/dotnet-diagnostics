@@ -239,7 +239,15 @@ test("baseline compare builds only validated catalog IDs and refuses mutable or 
     assert.throws(() => b.compareArgs(capture, "c".repeat(32), capture, B), /catalog/);
 });
 const comparison = () => ({ schema: "dotnet-diagnostics/historical-comparison/v1",
-    compatibility: { status: "qualified", reasons: [{ message: "<script>Retained only</script>" }] },
+    left: { reference: { captureId: A, artifactId: B }, kind: "heap-snapshot" },
+    right: { reference: { captureId: A, artifactId: B }, kind: "heap-snapshot" },
+    compatibility: { status: "qualified", reasons: [{
+        code: "RetainedOnly", side: "both", field: "population", message: "<script>Retained only</script>",
+    }] },
+    quality: {
+        left: { capture: { isComplete: true, isIncomplete: false }, notes: [] },
+        right: { capture: { isComplete: false, isIncomplete: false }, notes: ["Candidate quality unknown"] },
+    },
     metrics: [{ key: "=secret()", unit: "bytes", aggregation: "sum", normalization: "none", population: "retained",
         leftValue: 0, rightValue: 4, absoluteDelta: 4, relativeDelta: null, unavailableReason: "ZeroBaseline" }] });
 test("comparison preserves CLI deltas, zero baseline, nulls and measurement semantics", () => {
@@ -281,6 +289,9 @@ test("comparison renderer is self-contained, text-only and reports qualified evi
     assert.match(allText(root), /not percent/);
     assert.match(allText(root), /Unavailable/);
     assert.match(allText(root), /sum \/ none \/ retained/);
+    assert.match(allText(root), /baseline: complete; candidate: unknown/);
+    assert.match(allText(root), /Candidate quality unknown/);
+    assert.match(allText(root), /RetainedOnly \(both\/population\)/);
 });
 test("comparison summary counts objective deltas, including zero and unavailable, without consuming verdict labels", () => {
     const value = comparison();

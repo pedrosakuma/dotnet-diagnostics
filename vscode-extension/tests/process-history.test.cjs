@@ -14,7 +14,8 @@ const { ProcessTree } = require("../out/processTree.js");
 const envelope = data => JSON.stringify({ summary: "sample", hints: [], data });
 const A = "a".repeat(32), B = "b".repeat(32);
 const artifact = { artifactId: B, kind: "heap", supportedViews: ["summary", "types"] };
-const capture = { captureId: A, name: "Saved heap", createdUtc: "2026-10-14T00:00:00Z", state: 1, artifacts: [artifact] };
+const capture = { captureId: A, name: "Saved heap", createdUtc: "2026-10-14T00:00:00Z", state: 1,
+    artifacts: [artifact], quality: { isComplete: true, isIncomplete: false } };
 const row = (id, name) => ({ processId: id, commandLine: "SECRET-TOKEN", managedEntrypointAssemblyName: name,
     operatingSystem: "Linux", processArchitecture: "x64", runtimeVersion: "10" });
 test("processes drop sensitive command lines and explicitly bound retained inventory", () => {
@@ -35,6 +36,11 @@ test("exited and detectably reused PIDs fail instead of attaching", () => {
 test("history parses advertised views and validates query/delete intent", () => {
     assert.equal(h.parseCaptureList(envelope({ captures: [capture], nextAfterCaptureId: B })).nextAfterCaptureId, B);
     const detail = h.parseCaptureShow(JSON.stringify({ capture }));
+    assert.equal(detail.qualityStatus, "complete");
+    assert.equal(h.parseCaptureShow(JSON.stringify({ capture: { ...capture,
+        quality: { isComplete: false, isIncomplete: true } } })).qualityStatus, "incomplete");
+    assert.equal(h.parseCaptureShow(JSON.stringify({ capture: { ...capture,
+        quality: { isComplete: false, isIncomplete: false } } })).qualityStatus, "unknown");
     assert.deepEqual(h.captureQueryArgs(detail, B, "types"),
         ["query", "--capture-id", A, "--artifact-id", B, "--view", "types", "--json"]);
     assert.throws(() => h.captureQueryArgs(detail, B, "thread-statics"), /advertised offline/);

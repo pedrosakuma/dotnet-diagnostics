@@ -119,7 +119,7 @@ export function renderHistoryHtml(nonce: string, cspSource: string, detail: Capt
 table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:.25rem;border-bottom:1px solid var(--vscode-panel-border)}${QUERY_VIEW_STYLES}${WEBVIEW_FIELD_STYLES}${ACTION_AVAILABILITY_STYLES}</style></head><body>
 <h2>${escapeHtml(detail.name)}</h2><p>Saved capture ${escapeHtml(detail.captureId)} - ${escapeHtml(detail.createdUtc)}. Offline, read-only evidence; the original process is not contacted.</p>
 <label>Artifact <select id="artifact">${options}</select></label><label>View <select id="view"></select></label>
-${RESULT_EXPORT_BUTTONS}<button id="compareBaseline">Compare with saved baseline</button>
+${RESULT_EXPORT_BUTTONS}<button id="compareBaseline">Compare saved captures...</button>
 <p id="status" role="status"></p><div id="views" class="query-views"></div>
 <script nonce="${nonce}">
 const vscode = acquireVsCodeApi(), choices = ${choices};

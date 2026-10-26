@@ -47,12 +47,27 @@ from the trace associated with that CPU handle under its artifact root; the webv
 a source path. No automatic upload occurs. Raw traces can contain secrets and must be reviewed
 before sharing. A normal CPU capture does not retain a raw trace.
 
-In a **Saved Captures** panel, choose a candidate artifact/view and **Compare with saved baseline**.
-Select a baseline from the latest 50 sealed captures and one of its artifacts. The CLI, not the
-extension, evaluates compatibility and calculates deltas. The panel preserves measurement units,
-normalization, retained populations, unavailable reasons and qualified/incompatible status.
-Relative delta is a ratio, not percent; a zero baseline does not imply an infinite improvement.
-Comparison does not contact the original process or prove equivalent workloads or causation.
+In a **Saved Captures** panel, successfully load an artifact/view, then choose **Compare saved
+captures...**. The first picker names that loaded artifact and explicitly keeps it as the candidate
+(right) or reverses it into the baseline (left); running the action again can reverse the direction.
+The counterpart picker searches the same paged catalog window as Saved Captures (50 entries per
+page, at most the latest 500), while retaining the currently open capture even when it is outside
+that window. Comparing the artifact with itself is allowed.
+
+Choices are grouped by authoritative artifact-family metadata. Matching families still say that
+backend, origin, architecture, units and metric definitions require CLI validation. Different
+families remain visible with the known mismatch reason, and missing/unknown family metadata is not
+silently filtered. If no other matching-family artifact is in the loaded window, the picker keeps
+the current self-comparison and recommends saving another same-family capture or using the CLI for
+older captures. The CLI, not the extension, evaluates full compatibility and calculates deltas;
+its structured compatibility reasons are shown in the result.
+
+The panel preserves explicit baseline/candidate identities, capture quality
+(complete/incomplete/unknown), measurement units, normalization, retained populations,
+unavailable reasons and qualified/incompatible status. Relative delta is a ratio, not percent; a
+zero baseline does not imply an infinite improvement. Comparison remains offline and does not
+contact the original process. Compatibility does not prove equivalent workloads, causation,
+improvement or regression.
 
 ### Evidence-dependent actions
 

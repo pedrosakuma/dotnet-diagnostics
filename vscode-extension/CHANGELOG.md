@@ -15,6 +15,12 @@ versioned independently from the CLI and the .NET packages.
   allocation/heap evidence or explicitly starts the existing heap-capture flow; opening the
   overview never collects. No heap comparison, type-instance enumeration, region map, persistent
   investigation context, leak verdict, or new CLI protocol field is introduced.
+- Make saved-capture comparison direction explicit and reversible after a candidate artifact view
+  loads successfully. Search the paged catalog up to 500 entries, retain an out-of-window current
+  artifact, allow intentional self-comparison, and group matching, unknown and known
+  family-mismatch choices using existing metadata while leaving full compatibility to the CLI.
+  Show baseline/candidate identities, collection quality and structured CLI reasons without adding
+  performance verdicts or workload-equivalence heuristics.
 
 ## 0.5.0 - 2026-10-23
 
