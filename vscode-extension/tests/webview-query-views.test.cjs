@@ -191,6 +191,93 @@ test("live and dump webviews include the specialized renderer and styles", () =>
     }
 });
 
+test("fragmentation view distinguishes adjacent and separated equal-free layouts without replacing the table", () => {
+    const { renderQueryView, makeContainer } = loadRenderer();
+    const container = makeContainer("heapQueryViews");
+    const segment = {
+        generation: "LOH", logicalHeap: 0, start: "0x1000", end: "0x201000", length: 2097152,
+        usedBytes: 1048576, freeBytes: 1048576, freePercent: 50, objectCount: 16,
+        observedMaterialFreeBlockCount: 1, retainedMaterialFreeBlockCount: 1,
+        omittedMaterialFreeBlockCount: 0, materialFreeBlockRetentionLimit: 8,
+        materialFreeBlockMinimumBytes: 4096, freeBlockEvidenceState: "indeterminate",
+        freeBlockEvidenceLimitations: ["ClrMD exposes no formal per-segment completion signal."],
+    };
+    renderQueryView("heapQueryViews", "fragmentation", {segments: [
+        {
+            ...segment,
+            largestObservedMaterialFreeBlockBytes: 1049056,
+            topObservedMaterialFreeBlocks: [{start: "0x101000", end: "0x2011e0", length: 1049056}],
+        },
+        {
+            ...segment,
+            start: "0x300000", end: "0x500000",
+            observedMaterialFreeBlockCount: 8, retainedMaterialFreeBlockCount: 8,
+            largestObservedMaterialFreeBlockBytes: 131160,
+            topObservedMaterialFreeBlocks: Array.from({length: 8}, (_, index) => ({
+                start: "0x" + (0x310000 + index * 0x20000).toString(16),
+                end: "0x" + (0x330058 + index * 0x20000).toString(16),
+                length: 131160,
+            })),
+        },
+    ]}, false);
+
+    assert.match(container.textContent, /Largest observed material free block1(?:[.,]0)? MB/);
+    assert.match(container.textContent, /Largest observed material free block128[.,]1 KB/);
+    assert.match(container.textContent, /1 retained · 1 observed · 0 omitted/);
+    assert.match(container.textContent, /8 retained · 8 observed · 0 omitted/);
+    assert.match(container.textContent, /The strip orients used, free, and unaccounted segment bytes\. It does not prove hole topology/);
+    assert.match(container.textContent, /Heap segments \(most free bytes first\)/);
+    assert.ok(container.querySelector(".fragmentation-strip").getAttribute("role") === "img");
+    assert.match(container.querySelector(".fragmentation-strip").getAttribute("aria-label"), /not evidence of free-block topology/);
+    assert.equal(container.querySelector(".fragmentation-ranges").querySelector(".address-link"), null,
+        "free-range bounds must not become object links or start a live lookup");
+    assert.match(container.textContent, /End \(exclusive\)/);
+});
+
+test("fragmentation evidence preserves complete, partial, indeterminate, and missing values accessibly", () => {
+    const { renderQueryView, makeContainer } = loadRenderer();
+    const container = makeContainer("heapQueryViews");
+    renderQueryView("heapQueryViews", "fragmentation", {segments: [
+        {
+            generation: "Gen2", logicalHeap: 0, start: "0x1000", end: "0x2000", length: 4096,
+            usedBytes: 2048, freeBytes: 1024, freePercent: 25, objectCount: 4,
+            largestObservedMaterialFreeBlockBytes: 1024,
+            observedMaterialFreeBlockCount: 1, retainedMaterialFreeBlockCount: 1,
+            omittedMaterialFreeBlockCount: 0, materialFreeBlockRetentionLimit: 8,
+            materialFreeBlockMinimumBytes: 4096, topObservedMaterialFreeBlocks: [],
+            freeBlockEvidenceState: "partial", freeBlockEvidenceLimitations: ["One object was unresolved."],
+        },
+        {
+            generation: "LOH", logicalHeap: 0, start: "0x3000", end: "0x4000", length: 4096,
+            usedBytes: 4096, freeBytes: 0, freePercent: 0, objectCount: 1,
+            freeBlockEvidenceState: "indeterminate", freeBlockEvidenceLimitations: [],
+        },
+        {
+            generation: "POH", logicalHeap: 0, start: "0x5000", end: "0x6000", length: 4096,
+            usedBytes: 4096, freeBytes: 0, freePercent: 0, objectCount: 1,
+            largestObservedMaterialFreeBlockBytes: 0,
+            observedMaterialFreeBlockCount: 0, retainedMaterialFreeBlockCount: 0,
+            omittedMaterialFreeBlockCount: 0, materialFreeBlockRetentionLimit: 8,
+            materialFreeBlockMinimumBytes: 4096, topObservedMaterialFreeBlocks: [],
+            freeBlockEvidenceState: "complete", freeBlockEvidenceLimitations: [],
+        },
+    ]}, false);
+
+    assert.match(container.textContent, /Evidence partial/);
+    assert.match(container.textContent, /The walk skipped unresolved objects/);
+    assert.match(container.textContent, /Evidence indeterminate/);
+    assert.match(container.textContent, /Evidence complete/);
+    assert.match(container.textContent, /Largest observed material free blockUnavailable/);
+    assert.match(container.textContent, /Observed material blocksUnavailable/);
+    assert.match(container.textContent, /retained unavailable · observed unavailable · omitted unavailable/);
+    assert.match(container.textContent, /Largest observed material free block0 B/);
+    const disclosure = container.querySelector(".fragmentation-ranges");
+    assert.equal(disclosure.tagName, "details");
+    assert.equal(disclosure.querySelector("summary").tagName, "summary");
+    assert.equal(container.querySelector(".fragmentation-strip").getAttribute("role"), "img");
+    assert.match(container.querySelector(".fragmentation-strip").getAttribute("aria-label"), /Used 2 KB, Free 1 KB, Unknown or unaccounted 1 KB/);
+});
+
 test("captured data precedes static scope and quantitative summaries stay secondary", () => {
     const html = renderHtml(target, "nonce123", 120);
     assert.ok(html.indexOf('id="chart"') < html.indexOf('id="counterIdentity"'));

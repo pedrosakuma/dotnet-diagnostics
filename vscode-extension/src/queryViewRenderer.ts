@@ -318,6 +318,179 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
         if (chain.length > 64) appendMessage(parent, "Path display capped at 64 frames; remaining frames omitted.", "query-view-note");
     };
 
+    const renderFragmentationEvidence = (segmentsValue: unknown) => {
+        const segments = Array.isArray(segmentsValue) ? segmentsValue : [];
+        if (!segments.length) return;
+
+        const section = document.createElement("section");
+        section.className = "fragmentation-evidence";
+        const heading = document.createElement("h4");
+        heading.textContent = "Observed free-block evidence";
+        const scope = document.createElement("p");
+        scope.className = "query-view-note fragmentation-scope";
+        scope.textContent = "The strip orients used, free, and unaccounted segment bytes. It does not prove hole topology. "
+            + "Largest block and bounded ranges are directly observed material free records.";
+        section.append(heading, scope);
+
+        segments.forEach((value, index) => {
+            const segment = asRecord(value);
+            const item = document.createElement("section");
+            item.className = "fragmentation-segment";
+            item.setAttribute("aria-labelledby", elementId + "-fragmentation-segment-" + index);
+
+            const itemHeading = document.createElement("h5");
+            itemHeading.id = elementId + "-fragmentation-segment-" + index;
+            itemHeading.textContent = formatValue(segment.generation) + " · heap " + formatValue(segment.logicalHeap)
+                + " · " + formatAddress(segment.start) + "–" + formatAddress(segment.end);
+            item.appendChild(itemHeading);
+
+            const used = typeof segment.usedBytes === "number" && Number.isFinite(segment.usedBytes)
+                ? Math.max(0, segment.usedBytes)
+                : undefined;
+            const free = typeof segment.freeBytes === "number" && Number.isFinite(segment.freeBytes)
+                ? Math.max(0, segment.freeBytes)
+                : undefined;
+            const length = typeof segment.length === "number" && Number.isFinite(segment.length)
+                ? Math.max(0, segment.length)
+                : undefined;
+            const known = used !== undefined && free !== undefined ? used + free : undefined;
+            const unknown = length !== undefined && known !== undefined ? Math.max(0, length - known) : undefined;
+            const denominator = length && length > 0 ? length : known && known > 0 ? known : undefined;
+
+            const orientation = document.createElement("div");
+            orientation.className = "fragmentation-orientation";
+            const strip = document.createElement("div");
+            strip.className = "fragmentation-strip";
+            strip.setAttribute("role", "img");
+            const parts: Array<[string, number | undefined, string]> = [
+                ["used", used, "Used"],
+                ["free", free, "Free"],
+                ["unknown", unknown, "Unknown or unaccounted"],
+            ];
+            const readableParts: string[] = [];
+            for (const [kind, bytes, label] of parts) {
+                if (bytes === undefined) {
+                    readableParts.push(label + " unavailable");
+                    continue;
+                }
+                readableParts.push(label + " " + formatBytes(bytes));
+                if (denominator === undefined || bytes <= 0) continue;
+                const bar = document.createElement("span");
+                bar.className = "fragmentation-strip-" + kind;
+                bar.style.flexGrow = String(bytes / denominator);
+                bar.setAttribute("aria-hidden", "true");
+                strip.appendChild(bar);
+            }
+            strip.setAttribute("aria-label", "Segment byte orientation: " + readableParts.join(", ")
+                + ". This strip is not evidence of free-block topology.");
+            const legend = document.createElement("div");
+            legend.className = "fragmentation-strip-legend";
+            for (const [kind, bytes, label] of parts) {
+                const legendItem = document.createElement("span");
+                legendItem.className = "fragmentation-legend-" + kind;
+                legendItem.textContent = label + " " + (bytes === undefined ? "unavailable" : formatBytes(bytes));
+                legend.appendChild(legendItem);
+            }
+            orientation.append(strip, legend);
+            item.appendChild(orientation);
+
+            const evidenceState = typeof segment.freeBlockEvidenceState === "string"
+                ? segment.freeBlockEvidenceState.toLowerCase()
+                : undefined;
+            const largest = typeof segment.largestObservedMaterialFreeBlockBytes === "number"
+                ? segment.largestObservedMaterialFreeBlockBytes
+                : undefined;
+            const observed = typeof segment.observedMaterialFreeBlockCount === "number"
+                ? segment.observedMaterialFreeBlockCount
+                : undefined;
+            const retained = typeof segment.retainedMaterialFreeBlockCount === "number"
+                ? segment.retainedMaterialFreeBlockCount
+                : undefined;
+            const omitted = typeof segment.omittedMaterialFreeBlockCount === "number"
+                ? segment.omittedMaterialFreeBlockCount
+                : undefined;
+
+            const summary = document.createElement("div");
+            summary.className = "fragmentation-evidence-summary";
+            const largestGroup = document.createElement("div");
+            largestGroup.className = "fragmentation-largest";
+            const largestLabel = document.createElement("span");
+            largestLabel.textContent = "Largest observed material free block";
+            const largestValue = document.createElement("strong");
+            largestValue.textContent = largest === undefined ? "Unavailable" : formatBytes(largest);
+            largestGroup.append(largestLabel, largestValue);
+            const countGroup = document.createElement("div");
+            countGroup.className = "fragmentation-count";
+            const countLabel = document.createElement("span");
+            countLabel.textContent = "Observed material blocks";
+            const countValue = document.createElement("strong");
+            countValue.textContent = observed === undefined ? "Unavailable" : formatValue(observed);
+            countGroup.append(countLabel, countValue);
+            const state = document.createElement("span");
+            state.className = "fragmentation-state fragmentation-state-" + (evidenceState ?? "unavailable");
+            state.textContent = evidenceState === undefined
+                ? "Evidence state unavailable"
+                : "Evidence " + evidenceState;
+            summary.append(largestGroup, countGroup, state);
+            item.appendChild(summary);
+
+            const disclosure = document.createElement("details");
+            disclosure.className = "fragmentation-ranges";
+            const disclosureSummary = document.createElement("summary");
+            const countParts = [
+                retained === undefined ? "retained unavailable" : retained + " retained",
+                observed === undefined ? "observed unavailable" : observed + " observed",
+                omitted === undefined ? "omitted unavailable" : omitted + " omitted",
+            ];
+            disclosureSummary.textContent = "Inspect bounded largest ranges · " + countParts.join(" · ");
+            disclosure.appendChild(disclosureSummary);
+
+            const threshold = typeof segment.materialFreeBlockMinimumBytes === "number"
+                ? formatBytes(segment.materialFreeBlockMinimumBytes)
+                : "unavailable";
+            const limit = typeof segment.materialFreeBlockRetentionLimit === "number"
+                ? formatValue(segment.materialFreeBlockRetentionLimit)
+                : "unavailable";
+            appendMessage(disclosure, "Material threshold " + threshold + " · retention limit " + limit
+                + ". Range bounds are display-only captured evidence; opening this disclosure never starts a live read.",
+                "query-view-note");
+            table("Largest retained material free ranges", segment.topObservedMaterialFreeBlocks, [
+                ["Start", row => row.start],
+                ["End (exclusive)", row => row.end],
+                ["Length", row => formatBytes(row.length)],
+            ], "No material free ranges were retained, or range evidence is unavailable.", disclosure);
+
+            const limitations = Array.isArray(segment.freeBlockEvidenceLimitations)
+                ? segment.freeBlockEvidenceLimitations
+                : [];
+            const limitationsHeading = document.createElement("h6");
+            limitationsHeading.textContent = "Provenance and limitations";
+            const limitationsList = document.createElement("ul");
+            limitationsList.className = "fragmentation-limitations";
+            const stateExplanation = evidenceState === "complete"
+                ? "Producer reported this observed free-block projection complete."
+                : evidenceState === "partial"
+                    ? "The walk skipped unresolved objects; observed blocks are partial."
+                    : evidenceState === "indeterminate"
+                        ? "ClrMD does not establish per-segment walk completeness."
+                        : "The producer did not report an evidence state.";
+            for (const limitation of [
+                stateExplanation,
+                ...limitations.map(value => formatValue(value)),
+                "Observed free records do not establish allocation success, object liveness, retained size, or pinned-object concentration.",
+            ]) {
+                const listItem = document.createElement("li");
+                listItem.textContent = limitation;
+                limitationsList.appendChild(listItem);
+            }
+            disclosure.append(limitationsHeading, limitationsList);
+            item.appendChild(disclosure);
+            section.appendChild(item);
+        });
+
+        content.appendChild(section);
+    };
+
     switch (view) {
         case "roots-by-kind": {
             const rows = Array.isArray(result.rootsByKind) ? result.rootsByKind : [];
@@ -340,6 +513,7 @@ function renderQueryView(containerId: string, view: string, resultOrMessage: unk
             ], "No objects were reported on the finalizer queue.");
             break;
         case "fragmentation":
+            renderFragmentationEvidence(result.segments);
             table("Heap segments (most free bytes first)", result.segments, [
                 ["Generation", row => row.generation],
                 ["Heap", row => row.logicalHeap],
@@ -1048,6 +1222,46 @@ export const QUERY_VIEW_STYLES = `
     table.query-view-table { border-collapse:collapse; width:100%; font-size:.85rem; }
     .query-view-table th, .query-view-table td { text-align:left; vertical-align:top; padding:.35rem .5rem; border-bottom:1px solid var(--vscode-panel-border); overflow-wrap:anywhere; }
     .query-view-table th { color:var(--vscode-descriptionForeground); font-weight:600; }
+    .fragmentation-evidence { margin:.75rem 0 1rem; }
+    .fragmentation-scope { max-width:75ch; }
+    .fragmentation-segment { padding:.75rem 0; border-top:1px solid var(--vscode-panel-border); }
+    .fragmentation-segment h5 { margin:0 0 .55rem; font-size:.9rem; overflow-wrap:anywhere; }
+    .fragmentation-orientation { display:grid; gap:.3rem; }
+    .fragmentation-strip { display:flex; min-height:.75rem; border:1px solid var(--vscode-panel-border); background:var(--vscode-editor-background); }
+    .fragmentation-strip-used { background:var(--vscode-charts-blue,var(--vscode-button-background)); }
+    .fragmentation-strip-free { background:var(--vscode-charts-green,var(--vscode-testing-iconPassed)); }
+    .fragmentation-strip-unknown { background:repeating-linear-gradient(135deg,transparent 0,transparent 4px,var(--vscode-descriptionForeground) 4px,var(--vscode-descriptionForeground) 6px); }
+    .fragmentation-strip-legend { display:flex; flex-wrap:wrap; gap:.3rem 1rem; color:var(--vscode-descriptionForeground); font-size:.78rem; }
+    .fragmentation-strip-legend span::before { content:''; display:inline-block; width:.65rem; height:.65rem; margin-right:.3rem; border:1px solid var(--vscode-panel-border); vertical-align:-.05rem; }
+    .fragmentation-legend-used::before { background:var(--vscode-charts-blue,var(--vscode-button-background)); }
+    .fragmentation-legend-free::before { background:var(--vscode-charts-green,var(--vscode-testing-iconPassed)); }
+    .fragmentation-legend-unknown::before { background:repeating-linear-gradient(135deg,transparent 0,transparent 3px,var(--vscode-descriptionForeground) 3px,var(--vscode-descriptionForeground) 5px); }
+    .fragmentation-evidence-summary { display:grid; grid-template-columns:minmax(12rem,2fr) minmax(9rem,1fr) auto; gap:.5rem 1rem; align-items:end; margin:.75rem 0 .55rem; }
+    .fragmentation-largest, .fragmentation-count { display:flex; flex-direction:column; gap:.15rem; min-width:0; }
+    .fragmentation-largest span, .fragmentation-count span { color:var(--vscode-descriptionForeground); font-size:.75rem; }
+    .fragmentation-largest strong { font-size:1.15rem; overflow-wrap:anywhere; }
+    .fragmentation-count strong { overflow-wrap:anywhere; }
+    .fragmentation-state { justify-self:start; padding:.15rem .4rem; border:1px solid currentColor; border-radius:2px; font-size:.75rem; font-weight:600; text-transform:capitalize; }
+    .fragmentation-state-complete { color:var(--vscode-testing-iconPassed,var(--vscode-charts-green)); }
+    .fragmentation-state-partial { color:var(--vscode-editorWarning-foreground); }
+    .fragmentation-state-indeterminate, .fragmentation-state-unavailable { color:var(--vscode-descriptionForeground); }
+    .fragmentation-ranges { margin-top:.4rem; }
+    .fragmentation-ranges > summary { cursor:pointer; font-weight:600; overflow-wrap:anywhere; }
+    .fragmentation-ranges > summary:focus-visible { outline:1px solid var(--vscode-focusBorder); outline-offset:2px; }
+    .fragmentation-ranges h6 { margin:.75rem 0 .25rem; font-size:.82rem; }
+    .fragmentation-limitations { margin:.25rem 0; padding-left:1.2rem; color:var(--vscode-descriptionForeground); font-size:.82rem; }
+    .fragmentation-limitations li { margin:.2rem 0; }
+    @media(max-width:600px) {
+      .fragmentation-evidence-summary { grid-template-columns:1fr 1fr; }
+      .fragmentation-state { grid-column:1 / -1; }
+      .fragmentation-strip-legend { display:grid; grid-template-columns:1fr; gap:.2rem; }
+    }
+    @media(forced-colors:active) {
+      .fragmentation-strip span, .fragmentation-strip-legend span::before { forced-color-adjust:none; border-color:CanvasText; }
+      .fragmentation-strip-used, .fragmentation-legend-used::before { background:Highlight; }
+      .fragmentation-strip-free, .fragmentation-legend-free::before { background:CanvasText; }
+      .fragmentation-strip-unknown, .fragmentation-legend-unknown::before { background:Canvas; }
+    }
     .query-view-timestamp { margin:.25rem 0 .6rem; color:var(--vscode-descriptionForeground); font-size:.85rem; }
     .query-view-timestamp summary { cursor:pointer; }
     .query-view-timestamp code { display:block; margin-top:.25rem; overflow-wrap:anywhere; user-select:text; }

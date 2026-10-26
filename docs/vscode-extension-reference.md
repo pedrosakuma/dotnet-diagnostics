@@ -583,6 +583,18 @@ retained exception messages as potentially sensitive application data. Unknown f
 compact key/value fallback. Heap and thread object addresses are serialized as hexadecimal strings
 so JavaScript preserves all 64 bits.
 
+The `fragmentation` view keeps the ranked segment table as the authoritative detail and precedes it
+with a compact observed free-block summary for each segment. A used/free/unaccounted strip is
+orientation only and explicitly does not claim hole topology. The summary distinguishes missing
+projection fields from numeric zero, shows the largest observed material free block and observed
+material-block count, and reports the producer's `complete`, `partial`, or `indeterminate` state.
+An accessible disclosure contains at most the bounded retained ranges, observed/retained/omitted
+counts, exact addresses, material threshold, retention limit, provenance, and limitations. Opening
+this disclosure does not start a live read, and its range bounds are deliberately display-only
+rather than object-navigation links. The evidence describes directly observed CLR free records; it
+does not establish allocator success, object liveness, retained size, or pinned-object
+concentration.
+
 **Address navigation.** Every valid `0x` address in the heap drilldown views is shown with a
 **Copy** button, and in heap views (and, in the dump panel, thread views such as deadlock lock
 addresses, which come from the same dump) it is also a link. Following a link opens a fixed
