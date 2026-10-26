@@ -16,6 +16,10 @@ import { isJointCapture, isJointRelatedQuery, parseJointSources, supportsRequest
     type JointCapture, type JointQuery, type RelatedActivity } from "./requestActivities";
 import { REQUEST_ACTIVITIES_SCRIPT } from "./requestActivitiesView";
 import { CPU_PROFILE_SCRIPT, CPU_PROFILE_STYLES } from "./cpuProfileViewer";
+import {
+    CPU_INVESTIGATION_OVERVIEW_SCRIPT,
+    CPU_INVESTIGATION_OVERVIEW_STYLES,
+} from "./cpuInvestigationOverview";
 import { WEBVIEW_BUTTON_STYLES, WEBVIEW_FIELD_STYLES } from "./webviewFields";
 import { LIVE_TIME_NAVIGATION_SCRIPT } from "./liveTimeNavigation";
 import { MEMORY_OVERVIEW_HTML, MEMORY_OVERVIEW_SCRIPT, MEMORY_OVERVIEW_STYLES } from "./memoryOverview";
@@ -3683,6 +3687,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     .query-view-provenance { color:var(--vscode-descriptionForeground); }
     .query-view-error { border-color:var(--vscode-errorForeground); }
     ${CPU_PROFILE_STYLES}
+    ${CPU_INVESTIGATION_OVERVIEW_STYLES}
     #status, #quality { color:var(--vscode-descriptionForeground); margin:.6rem 0; }
     #value { font-size:1.5rem; font-weight:600; margin:.6rem 0; }
     canvas { width:100%; height:280px; border-bottom:1px solid var(--vscode-panel-border); }
@@ -3987,10 +3992,12 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     ${CAPTURE_VIEW_RENDERER_SCRIPT}
     ${REQUEST_ACTIVITIES_SCRIPT}
     ${CPU_PROFILE_SCRIPT}
+    ${CPU_INVESTIGATION_OVERVIEW_SCRIPT}
     ${LIVE_TIME_NAVIGATION_SCRIPT}
     ${MEMORY_OVERVIEW_SCRIPT}
     ${LIVE_READ_CONSENT_SCRIPT}
     let cpuProfileResult;
+    let cpuCaptureSummary;
     const cpuProfileState = { mode: 'tree', search: '', focus: [], selected: undefined };
     let allocationProfileResult;
     const allocationProfileState = { mode: 'tree', search: '', focus: [], selected: undefined };
@@ -4869,17 +4876,28 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         section.appendChild(wrapper);
       }
       if (view === 'triage') {
-        table('Top busy methods', data.topBusyMethods, [
-          ['Method', row => row.method], ['Module', row => row.module],
-          ['Self samples', row => row.exclusiveSamples], ['Inclusive samples', row => row.inclusiveSamples],
-        ], row => row.method);
-        table('Wait categories', data.topWaitCategories, [
-          ['Category', row => row.waitReason], ['Samples', row => row.exclusiveSamples],
-          ['Share', row => typeof row.exclusivePercent === 'number' ? row.exclusivePercent.toFixed(1) + '%' : undefined],
-        ]);
-        if (data.hotPathLeaf) table('Dominant hot-path leaf', [data.hotPathLeaf], [
-          ['Method', row => row.method], ['Module', row => row.module], ['Samples', row => row.exclusiveSamples],
-        ]);
+        renderCpuInvestigationOverview(section, result, cpuCaptureSummary, {
+          openProfileView: (profileView, rootMethodFilter) => {
+            if (!Array.from(workspaceView.options || []).some(option => option.value === profileView)) {
+              const option = document.createElement('option');
+              option.value = profileView;
+              option.textContent = cpuQueryLabels[profileView] || profileView;
+              workspaceView.appendChild(option);
+            }
+            workspaceView.value = profileView;
+            selectProfileView('cpu', profileView, rootMethodFilter);
+            workspaceView.focus({ preventScroll: true });
+          },
+          openEvidence: evidence => {
+            setWorkspaceEvidence(evidence);
+            const focusTarget = evidence === 'allocation'
+              ? document.getElementById('captureAllocation')
+              : evidence === 'thread-snapshot'
+                ? document.getElementById('captureThreadSnapshot')
+                : document.getElementById('captureRequestEvidence');
+            focusTarget?.focus({ preventScroll: true });
+          },
+        });
       } else if (view === 'top-methods') {
         table(allocation ? 'Methods ranked by estimated allocation bytes' : 'Methods ranked by sampled time', data.methods, [
           ['Method', row => row.method], ['Module', row => row.module],
@@ -4925,7 +4943,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           });
         }, profileState, allocation ? 'allocation-tick-estimated-bytes' : 'samples');
       }
-      section.appendChild(summary);
+      if (view !== 'triage') section.appendChild(summary);
       target.replaceChildren(section);
     }
     function cpuQueryColumnClass(label) {
@@ -5816,6 +5834,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         if (message.evidenceId !== pendingCpuEvidenceId) return;
         profileCaptureBusy.cpu = false;
         cpuEvidenceId = typeof message.evidenceId === 'string' ? message.evidenceId : undefined;
+        cpuCaptureSummary = message.summary;
         cpuViewCache.clear();
         activeProfileViews.cpu = 'triage';
         activeProfileFilters.cpu = undefined;

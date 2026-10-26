@@ -8,6 +8,9 @@ EventPipe events, find CPU hotspots, inspect heap and thread snapshots, and anal
 - **Watch a running app:** live counters and GC pauses, or a separate EventPipe/EventSource stream
   with bounded search and event details in the Monitoring view.
 - **Capture a problem:** CPU, heap, threads, exceptions, allocations, contention and more.
+- **Choose the next CPU question:** an evidence-first overview distinguishes observed on-CPU
+  samples, inferred wait matches and unavailable scheduler state, then links to the existing
+  call tree, hot path, allocations, threads and request evidence without collecting automatically.
 - **Explore allocation pressure:** sampled, estimated-byte call trees and flame graphs with
   method/module navigation, plus allocation type/site tables. Not exact object/lifetime tracking.
 - **Keep useful evidence:** save supported snapshots and reopen them after the app has stopped.

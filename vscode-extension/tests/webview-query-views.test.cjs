@@ -14,6 +14,10 @@ Module._resolveFilename = function (request, ...rest) {
 const { renderHtml, renderDumpAnalysisHtml } = require("../out/extension.js");
 const { QUERY_VIEW_RENDERER_SCRIPT } = require("../out/queryViewRenderer.js");
 const { CPU_PROFILE_SCRIPT } = require("../out/cpuProfileViewer.js");
+const {
+    CPU_INVESTIGATION_OVERVIEW_SCRIPT,
+    CPU_INVESTIGATION_OVERVIEW_STYLES,
+} = require("../out/cpuInvestigationOverview.js");
 const { CAPTURE_GROUPS, CAPTURE_KIND_SPECS } = require("../out/captureKinds.js");
 
 const target = {
@@ -659,8 +663,10 @@ function cpuRenderer() {
     // eslint-disable-next-line no-new-func -- tests the renderer emitted into the webview.
     const { renderCpuQuery, state } = new Function("document", "cpuQueryViews", "vscode",
         `${CPU_PROFILE_SCRIPT}
+        ${CPU_INVESTIGATION_OVERVIEW_SCRIPT}
         let cpuProfileResult;
         const cpuProfileState = { mode: 'tree', search: '', focus: [], selected: undefined };
+        let cpuCaptureSummary;
         let allocationProfileResult;
         const allocationProfileState = { mode: 'tree', search: '', focus: [], selected: undefined };
         let cpuEvidenceId;
@@ -676,6 +682,119 @@ function cpuRenderer() {
         requests,
     };
 }
+
+function cpuOverviewRenderer(result, capture) {
+    const { document, makeContainer } = createDocumentStub();
+    const container = makeContainer("cpuOverview");
+    const profileViews = [];
+    const evidence = [];
+    // eslint-disable-next-line no-new-func -- exercises the exact script emitted into the webview.
+    const render = new Function("document",
+        `${CPU_INVESTIGATION_OVERVIEW_SCRIPT}; return renderCpuInvestigationOverview;`)(document);
+    render(container, result, capture, {
+        openProfileView: (view, rootMethodFilter) => profileViews.push({ view, rootMethodFilter }),
+        openEvidence: kind => evidence.push(kind),
+    });
+    return { container, profileViews, evidence };
+}
+
+test("CPU overview distinguishes OS on-CPU evidence and keeps profile actions navigational", () => {
+    const { container, profileViews, evidence } = cpuOverviewRenderer({
+        summary: "Backend summary.",
+        data: {
+            totalSamples: 100,
+            evidenceBackend: "LinuxPerf",
+            evidenceKind: "OsOnCpuSamples",
+            selfSamples: { runningSamples: 90, waitingSamples: 0, unknownSamples: 10 },
+            topBusyMethods: [{
+                method: "OrdersApi.Price()", module: "OrdersApi.dll",
+                exclusiveSamples: 60, inclusiveSamples: 70,
+                selfSamples: { runningSamples: 60, waitingSamples: 0, unknownSamples: 0 },
+            }],
+            hotPathLeaf: {
+                method: "OrdersApi.Price()", module: "OrdersApi.dll",
+                inclusiveSamples: 70, exclusiveSamples: 60,
+            },
+            hotPathDepth: 3,
+            topWaitCategories: [],
+        },
+    }, {
+        processId: 42, startedAt: "2026-10-26T12:00:00Z", duration: "00:00:10", totalSamples: 100,
+    });
+
+    assert.match(container.textContent, /OrdersApi\.Price\(\) is the top observed on-CPU method/);
+    assert.match(container.textContent, /Evidence status: observed on-CPU samples/);
+    assert.match(container.textContent, /Observed on-CPU: 90/);
+    assert.match(container.textContent, /Application\/framework\/runtime\/GC ownership composition/);
+    assert.doesNotMatch(container.textContent, /measured CPU utilization/);
+    const bar = elements(container, element => element.classes.has("cpu-overview-bar"))[0];
+    assert.match(bar.getAttribute("aria-label"), /90 on-CPU, 0 heuristic-wait, 10 unknown/);
+
+    click(container, "Inspect callers and callees");
+    click(container, "Open call tree");
+    click(container, "Allocations");
+    assert.deepEqual(profileViews, [
+        { view: "caller-callee", rootMethodFilter: "OrdersApi.Price()" },
+        { view: "call-tree", rootMethodFilter: undefined },
+    ]);
+    assert.deepEqual(evidence, ["allocation"]);
+    assert.doesNotMatch(CPU_INVESTIGATION_OVERVIEW_SCRIPT, /postMessage|captureCpu|captureDiagnostics/);
+    assert.match(CPU_INVESTIGATION_OVERVIEW_STYLES, /@media \(max-width:650px\)/);
+    assert.match(CPU_INVESTIGATION_OVERVIEW_STYLES, /\.cpu-overview-actions button \{ flex:1 1 12rem/);
+});
+
+test("CPU overview labels EventPipe waits as inferred and abstains when unknown evidence dominates", () => {
+    const { container } = cpuOverviewRenderer({
+        data: {
+            totalSamples: 100,
+            evidenceBackend: "EventPipeSampleProfiler",
+            evidenceKind: "StackFrequencyWithHeuristicWaits",
+            selfSamples: { runningSamples: 0, waitingSamples: 20, unknownSamples: 80 },
+            topBusyMethods: [{
+                method: "Worker.Run()", module: "Worker.dll",
+                exclusiveSamples: 30, inclusiveSamples: 50,
+            }],
+            topWaitCategories: [{
+                waitReason: "ThreadPool worker idle wait", exclusiveSamples: 20, exclusivePercent: 20,
+            }],
+        },
+    }, { totalSamples: 100, duration: "00:00:10" });
+
+    assert.match(container.textContent, /Scheduler state is unknown for 80 of 100 captured samples/);
+    assert.match(container.textContent, /Evidence status: limited by unknown scheduler state/);
+    assert.match(container.textContent, /Wait labels are name-based heuristics/);
+    assert.match(container.textContent, /On-CPU state: not established by this backend/);
+    assert.doesNotMatch(container.textContent, /Observed on-CPU: 0/);
+    assert.match(container.textContent, /Top name-based heuristic wait: ThreadPool worker idle wait/);
+    assert.match(container.textContent, /does not distinguish whether unknown scheduler state came from unmatched, unresolved, or native leaves/);
+    assert.doesNotMatch(container.textContent, /application time|framework time|managed\/native/);
+    const bar = elements(container, element => element.classes.has("cpu-overview-bar"))[0];
+    assert.match(bar.getAttribute("aria-label"), /on-CPU state not established/);
+    assert.doesNotMatch(bar.getAttribute("aria-label"), /0 on-CPU/);
+});
+
+test("CPU overview presents empty and unattributable captures without inventing zero evidence", () => {
+    const empty = cpuOverviewRenderer({
+        data: {
+            totalSamples: 0,
+            evidenceBackend: "EventPipeSampleProfiler",
+            evidenceKind: "StackFrequencyWithHeuristicWaits",
+            selfSamples: { runningSamples: 0, waitingSamples: 0, unknownSamples: 0 },
+        },
+    }, { totalSamples: 0 }).container;
+    assert.match(empty.textContent, /No stack samples were captured/);
+    assert.doesNotMatch(empty.textContent, /most frequent attributable leaf/);
+
+    const degraded = cpuOverviewRenderer({
+        data: {
+            totalSamples: 25,
+            evidenceBackend: "LegacyUnknown",
+            evidenceKind: "LegacyUnknown",
+        },
+    }, { totalSamples: 25 }).container;
+    assert.match(degraded.textContent, /25 samples were captured, but no attributable method or loaded hot path was returned/);
+    assert.match(degraded.textContent, /No heuristic wait category was returned; this is not evidence that waiting was zero/);
+});
 
 test("allocation explorer uses estimated bytes, separate profile state and allocation query messages", () => {
     const { renderCpuQuery, allocationContainer, container, requests } = cpuRenderer();
@@ -703,14 +822,6 @@ test("allocation explorer uses estimated bytes, separate profile state and alloc
 
 test("CPU and allocation profile tables preserve method symbols independently", () => {
     const { renderCpuQuery, container, allocationContainer } = cpuRenderer();
-    renderCpuQuery("triage", { data: { topWaitCategories: [{
-        waitReason: "ThreadPool worker idle wait", exclusiveSamples: 12, exclusivePercent: 42.9,
-    }] } }, false);
-    const waitTable = elements(container, element => element.tagName === "table"
-        && element.className.includes("cpu-query-summary-table"))[0];
-    assert.ok(waitTable);
-    assert.equal(elements(waitTable, element => element.tagName === "td"
-        && element.className === "cpu-query-category")[0].textContent, "ThreadPool worker idle wait");
     renderCpuQuery("top-methods", { data: { methods: [{
         method: "Example.Collections.Cache<System.String>.Get(System.Int32)",
         module: "Example.Application.dll",
