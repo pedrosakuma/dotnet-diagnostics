@@ -36,7 +36,7 @@ The CLI replies with the negotiated protocol, its informational CLI version, sup
 names, and additive versioned feature capabilities:
 
 ```json
-{"type":"hello","protocolVersion":2,"cliVersion":"<informational-version>","supportedLiveKinds":["counters","event_source","gc"],"heapGrowth":{"version":1,"available":true,"storeCapacity":32,"minimumStoreCapacity":2,"queryView":"growth","handleKind":"heap-snapshot","baselineField":"baselineHandle","rankBy":["bytes","instances"],"defaultMinDeltaPct":5,"defaultTopN":25,"maxTopN":500,"requiresSameProcess":true,"requiresSameProvenance":true,"storage":"in-memory","boundedLifetime":true,"storePolicy":"shared-configured-bounded"}}
+{"type":"hello","protocolVersion":2,"cliVersion":"<informational-version>","supportedLiveKinds":["counters","event_source","gc"],"heapGrowth":{"version":1,"available":true,"storeCapacity":32,"minimumStoreCapacity":2,"queryView":"growth","handleKind":"heap-snapshot","baselineField":"baselineHandle","rankBy":["bytes","instances"],"defaultMinDeltaPct":5,"defaultTopN":25,"maxTopN":500,"requiresSameProcess":true,"requiresSameProvenance":true,"storage":"in-memory","boundedLifetime":true,"storePolicy":"shared-configured-bounded"},"cpuHandleComparison":{"version":1,"queryView":"diff","baselineHandleField":"baselineHandle","retainedHandleLimit":2,"maxTopMovers":50}}
 ```
 
 Clients may use `cliVersion` for feature-compatibility guidance and `supportedLiveKinds` to gate
@@ -45,7 +45,9 @@ optional live-stream features. They must require both a recognized `heapGrowth.v
 two-handle heap growth queries. `storeCapacity` is the effective shared handle-store capacity and
 `minimumStoreCapacity` is the minimum needed for baseline and current handles to coexist. A configured
 capacity of 1 therefore advertises `available:false` without removing the versioned capability
-object. These fields are additive and do not change protocol negotiation.
+object. Prefer `cpuHandleComparison` itself to gate CPU handle comparison: older CLIs omit the
+capability and must degrade without sending `baselineHandle` for view `diff`. These fields are
+additive and do not change protocol negotiation.
 
 ### Live sessions (`start`/`stop`)
 
@@ -333,7 +335,9 @@ After protocol-v2 negotiation, a CPU `capture` accepts optional `exportTrace: tr
 (default false). Non-boolean flags and raw-trace requests on other kinds are rejected
 before collection. The capture frame retains its existing compact `result` and adds
 `exportHandle`: a CPU-sample handle in the current CLI host, with a 20-minute TTL,
-subject to the existing bounded handle-store capacity.
+subject to the existing bounded handle-store capacity. The streaming connection additionally
+retains exactly the two most recent CPU handles as its baseline/current pair. Registering a third
+CPU capture releases the oldest handle; this is intentionally not an in-memory profile history.
 
 ```json
 {"type":"capture","requestId":"c1","kind":"cpu","processId":1234,"durationSeconds":10,"exportTrace":true}
@@ -430,10 +434,10 @@ re-walking anything.
 
 ### Follow-up drilldown queries (`query`)
 
-Once a heap or thread-snapshot `capture` response has returned a `handle`, send a `query` request to
+Once a CPU, heap or thread-snapshot `capture` response has returned a handle, send a `query` request to
 read one of its pre-computed views — no new ClrMD work happens; this dispatches to the same Core
-view dispatchers (`HeapSnapshotQueryDispatcher`, `ThreadSnapshotQueryDispatcher`) the `query_snapshot`
-MCP tool uses, scoped to the handle already registered by the prior capture:
+analytics and view dispatchers the `query_snapshot` MCP tool uses, scoped to handles already
+registered by prior captures:
 
 ```json
 {"type":"query","requestId":"q-1","handle":"<handle-id>","view":"roots-by-kind"}
@@ -442,6 +446,34 @@ MCP tool uses, scoped to the handle already registered by the prior capture:
 ```json
 {"type":"query","requestId":"q-1","handle":"<handle-id>","view":"roots-by-kind","result":{...}}
 ```
+
+CPU handles support the existing single-profile views plus an additive pairwise comparison:
+
+```json
+{"type":"query","requestId":"cpu-diff-1","handle":"<current-exportHandle>","baselineHandle":"<baseline-exportHandle>","view":"diff","topN":25}
+```
+
+`baselineHandle` is required only for CPU `view:"diff"` and both handles must still resolve in the
+same streaming CLI process. The handles must be live `cpu-sample` artifacts from the same PID, the
+baseline capture must not start after the current capture, and both artifacts must agree with their
+handle provenance. Missing, expired and capacity-evicted handles have distinct error codes;
+different kinds, PIDs, origins or reversed chronology return `invalid_query`.
+
+The response schema is `dotnet-diagnostics/cpu-sample-handle-comparison/v1`. It has no performance
+verdict. It reports per-side backend/evidence metadata, capture duration, retained sample population,
+unresolved-symbol evidence and `EvidenceQuality`; scalar metrics and top method movers use neutral
+`up`/`down`/`flat` observations. Method shares preserve their per-side sample denominators and use
+percentage-point absolute deltas. Relative deltas are null with
+`relativeDeltaUnavailableReason:"ZeroBaseline"` when the baseline is zero. A method missing from one
+retained call-tree projection keeps that side null and reports
+`outcome:"unavailable"` rather than coercing absence to zero. Backend/evidence mismatches return a
+structured `compatibility.status:"incompatible"` result with method deltas unavailable; they are
+never coerced into a cross-backend comparison. `topN` is bounded to 1-50.
+
+Workload equivalence, offered work, throughput, latency, causation and statistical repeatability are
+not established by this response. Sample shares are fractions of retained observations, not elapsed
+CPU time or work done. The extension UI and application/runtime classification are outside this
+contract.
 
 Heap handles support `roots-by-kind`, `finalizer-queue`, `fragmentation`, `gchandles`, `async`,
 `timers`, and `alc` unconditionally, plus `static-fields`, `delegate-targets`, and

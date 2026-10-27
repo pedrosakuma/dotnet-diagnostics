@@ -11,17 +11,35 @@ EventPipe events, find CPU hotspots, inspect heap and thread snapshots, and anal
 - **Choose the next CPU question:** an evidence-first overview distinguishes observed on-CPU
   samples, inferred wait matches and unavailable scheduler state, then links to the existing
   call tree, hot path, allocations, threads and request evidence without collecting automatically.
+- **Compare two live CPU profiles:** the two most recent retained handles become an explicit
+  earlier baseline and later current capture. Inspect objective raw-sample and sample-share deltas,
+  unavailable rows, quality, backend and bounded top movers, then return to either profile's
+  call tree, hot path, top methods or callers/callees.
 - **Explore allocation pressure:** sampled, estimated-byte call trees and flame graphs with
   method/module navigation, plus allocation type/site tables. Not exact object/lifetime tracking.
 - **Keep useful evidence:** save supported snapshots and reopen them after the app has stopped.
 - **Share and compare:** export redacted measurements, save raw CPU traces locally, and compare
   compatible saved captures against a baseline.
 
-Saved comparisons summarize numeric deltas as up/down/flat/unavailable, not
-performance verdicts. The extension uses the CLI's historical comparison contract
-(compatibility and measurement semantics), not journey verdict labels such as
-`not_assessed`. Missing values remain unavailable; workload equivalence,
-throughput and latency must be established separately.
+Saved comparisons start only from a successfully loaded artifact. They name that artifact before
+selection and let you explicitly keep it as candidate (right) or reverse it into baseline (left).
+The picker searches up to the latest 500 catalog entries, groups matching, unknown and known
+family-mismatch choices without replacing CLI validation, and keeps an out-of-window current
+artifact available. Results preserve side identities, collection quality and the CLI's structured
+compatibility reasons.
+
+Comparisons summarize numeric deltas as up/down/flat/unavailable, not performance verdicts. The
+extension uses the CLI's historical comparison contract (compatibility and measurement semantics),
+not journey verdict labels such as `not_assessed`. Missing values remain unavailable; workload
+equivalence, throughput and latency must be established separately. The operation stays offline
+and does not contact the original process.
+
+Live CPU comparison is distinct from that saved-capture flow. It requires the CLI's advertised
+`cpuHandleComparison` v1 capability and keeps only one in-memory pair on the owning connection.
+Direction follows capture chronology and is not reversed in the extension. **Use current as
+baseline for the next capture** clears the displayed pair without collecting; the next successful
+CPU capture creates a fresh pair. No workload equivalence, causation, application/runtime
+composition, multi-evidence correlation or automatic capture is inferred.
 
 ## Get started
 

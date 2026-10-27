@@ -16,6 +16,7 @@ export interface CaptureSummary {
     captureId: string; name: string; createdUtc: string;
     state: "recording" | "sealed" | "interrupted";
     artifacts: CaptureArtifact[];
+    qualityStatus?: "complete" | "incomplete" | "unknown";
 }
 export interface CaptureListPage { captures: CaptureSummary[]; nextAfterCaptureId?: string }
 
@@ -122,8 +123,17 @@ function capture(value: unknown): CaptureSummary {
         return { artifactId: a.artifactId, kind: a.kind, name: typeof a.name === "string" ? a.name : a.kind,
             supportedViews: views ?? [], provenance };
     });
+    let qualityStatus: CaptureSummary["qualityStatus"] = "unknown";
+    if (value.quality != null) {
+        if (!record(value.quality)) throw new Error("The CLI returned invalid capture quality.");
+        if (value.quality.isComplete != null && typeof value.quality.isComplete !== "boolean"
+            || value.quality.isIncomplete != null && typeof value.quality.isIncomplete !== "boolean")
+            throw new Error("The CLI returned invalid capture quality status.");
+        qualityStatus = value.quality.isIncomplete === true ? "incomplete"
+            : value.quality.isComplete === true ? "complete" : "unknown";
+    }
     return { captureId: value.captureId, name: typeof value.name === "string" ? value.name : "Capture",
-        createdUtc: typeof value.createdUtc === "string" ? value.createdUtc : "", state, artifacts };
+        createdUtc: typeof value.createdUtc === "string" ? value.createdUtc : "", state, artifacts, qualityStatus };
 }
 
 export function parseCaptureList(stdout: string): CaptureListPage {

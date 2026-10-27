@@ -47,12 +47,27 @@ from the trace associated with that CPU handle under its artifact root; the webv
 a source path. No automatic upload occurs. Raw traces can contain secrets and must be reviewed
 before sharing. A normal CPU capture does not retain a raw trace.
 
-In a **Saved Captures** panel, choose a candidate artifact/view and **Compare with saved baseline**.
-Select a baseline from the latest 50 sealed captures and one of its artifacts. The CLI, not the
-extension, evaluates compatibility and calculates deltas. The panel preserves measurement units,
-normalization, retained populations, unavailable reasons and qualified/incompatible status.
-Relative delta is a ratio, not percent; a zero baseline does not imply an infinite improvement.
-Comparison does not contact the original process or prove equivalent workloads or causation.
+In a **Saved Captures** panel, successfully load an artifact/view, then choose **Compare saved
+captures...**. The first picker names that loaded artifact and explicitly keeps it as the candidate
+(right) or reverses it into the baseline (left); running the action again can reverse the direction.
+The counterpart picker searches the same paged catalog window as Saved Captures (50 entries per
+page, at most the latest 500), while retaining the currently open capture even when it is outside
+that window. Comparing the artifact with itself is allowed.
+
+Choices are grouped by authoritative artifact-family metadata. Matching families still say that
+backend, origin, architecture, units and metric definitions require CLI validation. Different
+families remain visible with the known mismatch reason, and missing/unknown family metadata is not
+silently filtered. If no other matching-family artifact is in the loaded window, the picker keeps
+the current self-comparison and recommends saving another same-family capture or using the CLI for
+older captures. The CLI, not the extension, evaluates full compatibility and calculates deltas;
+its structured compatibility reasons are shown in the result.
+
+The panel preserves explicit baseline/candidate identities, capture quality
+(complete/incomplete/unknown), measurement units, normalization, retained populations,
+unavailable reasons and qualified/incompatible status. Relative delta is a ratio, not percent; a
+zero baseline does not imply an infinite improvement. Comparison remains offline and does not
+contact the original process. Compatibility does not prove equivalent workloads, causation,
+improvement or regression.
 
 ### Evidence-dependent actions
 
@@ -269,9 +284,13 @@ streaming connection if one is open, or opens a capture-only CLI connection othe
 The connection is retained while the panel owns a CPU export or allocation-explorer handle and closes with the panel.
 The capture renders its own top-hotspot table (module, method, inclusive/exclusive sample
 counts) that is replaced by the next capture rather than appended to a history. A capture does not
-start or stop the live counters/GC session, and it is not compared against any baseline.
-The current CPU profile cannot be saved or compared in the extension; the CLI's separate retained-artifact
-CPU comparison workflow and its limits are documented in [Historical comparisons](./historical-comparisons.md#supported-matrix).
+start or stop the live counters/GC session. With a CLI that advertises
+`cpuHandleComparison` v1, the second successful CPU capture on the same connection turns the
+previous handle into **Baseline (earlier)** and the new handle into **Current (later)**. The CLI
+retains at most that pair; a third successful capture advances the window. Older CLIs continue to
+show the single-profile workflow and explain that live comparison is unavailable.
+The profile itself is not persisted. Durable retained-artifact CPU comparison remains a separate
+offline workflow documented in [Historical comparisons](./historical-comparisons.md#supported-matrix).
 The live panel keeps CPU, allocation and heap evidence within the **Workspace** domain/evidence
 selectors; other existing tabs remain available for their current result surfaces. Starting or
 completing an explicit capture selects its corresponding domain or result tab. CPU
@@ -291,6 +310,25 @@ evidence. It explicitly withholds application/framework/runtime/GC ownership com
 the current evidence contract cannot classify it authoritatively. No managed/native substitute is
 shown. Capture start and duration remain metadata; no within-window timeline is drawn from
 capture-wide aggregates.
+The **Baseline / current** view names each target, capture time, duration, backend, evidence kind,
+sample population, unresolved evidence, expiry and structured quality limitations. Capture-level
+metrics and bounded top method movers show baseline/current values, raw sample change, share
+change, relative change, each capture's denominator and explicit unavailable reasons. A method
+present in only one retained projection is labelled added/removed from that projection but remains
+null on the other side; absence is never coerced to zero. Outcomes are objective
+up/down/flat/unavailable labels, never improved/regressed verdicts.
+Each capture card links back to its overview, call tree, hot path and top methods. Mover rows link
+to callers/callees on every side where the method was observed. Returning to the comparison does
+not query again, and each side keeps its own cached tree mode, search, focus and method filter.
+Direction is fixed by the CLI's chronology contract; the extension does not reverse or recompute
+deltas. **Use current as baseline for the next capture** clears the displayed pair without
+collecting, after which the next successful capture establishes a fresh current. Expired, evicted
+or disconnected handles leave already rendered evidence readable but disable further comparison
+and specialist queries. Redacted export remains scoped to the selected CPU capture rather than
+silently substituting comparison rows.
+The live comparison does not establish workload equivalence, offered work, throughput, latency,
+causation or repeatability. It adds no automatic capture, multi-evidence correlation or
+application/framework/runtime/GC composition.
 The initial hotspot table remains available under **Capture hotspot summary**, collapsed by
 default so it does not duplicate the selected drilldown.
 
