@@ -46,8 +46,14 @@ public sealed class CliStreamingCpuExportTests : IDisposable
             $$"""{"type":"capture","requestId":"c","kind":"cpu","processId":{{Environment.ProcessId}},"exportTrace":{{(trace ? "true" : "false")}}}""",
             capture => Request(capture.GetProperty("exportHandle").GetString()!, "summary"));
         frames[0].GetProperty("result").GetProperty("totalSamples").GetInt64().Should().Be(10);
+        var exportHandle = frames[0].GetProperty("exportHandle").GetString();
+        var evidence = frames[0].GetProperty("investigationEvidence");
+        evidence.GetProperty("kind").GetString().Should().Be("cpu");
+        evidence.GetProperty("target").GetProperty("processId").GetInt32().Should().Be(Environment.ProcessId);
+        evidence.GetProperty("retention").GetProperty("drilldown").GetProperty("handle").GetString()
+            .Should().Be(exportHandle);
         _sampler.LastExportTrace.Should().Be(trace);
-        var lookup = _store.TryGetWithKind(frames[0].GetProperty("exportHandle").GetString()!);
+        var lookup = _store.TryGetWithKind(exportHandle!);
         lookup.Should().NotBeNull();
         lookup!.Value.Kind.Should().Be("cpu-sample");
         frames[1].GetProperty("type").GetString().Should().Be("export", frames[1].ToString());

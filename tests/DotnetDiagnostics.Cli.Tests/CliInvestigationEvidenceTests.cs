@@ -30,6 +30,8 @@ public sealed class CliInvestigationEvidenceTests
         exit.Should().Be(0, error.ToString());
         using var frame = JsonDocument.Parse(output.ToString().Trim());
         frame.RootElement.GetProperty("protocolVersion").GetInt32().Should().Be(2);
+        frame.RootElement.GetProperty("heapGrowth").GetProperty("version").GetInt32().Should().Be(1);
+        frame.RootElement.GetProperty("cpuHandleComparison").GetProperty("version").GetInt32().Should().Be(1);
         var capability = frame.RootElement.GetProperty("capabilities").GetProperty("investigationEvidence");
         capability.GetProperty("version").GetInt32().Should().Be(1);
         capability.GetProperty("kinds").EnumerateArray().Select(item => item.GetString()).Should()
