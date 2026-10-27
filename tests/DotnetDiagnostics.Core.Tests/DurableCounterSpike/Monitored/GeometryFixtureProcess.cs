@@ -14,9 +14,22 @@ internal static class GeometryFixtureProcess
             return CaptureLeaseFixture.Run(leasePath);
         }
 
+        if (args is ["--heap-fragmentation-loh-fixture", "tail-free" or "separated"])
+        {
+            return HeapFragmentationSpike.HeapFragmentationLiveFixtureProcess.Run(args[1]);
+        }
+
+        if (args is ["--observed-free-block-geometry"])
+        {
+            return ObservedFreeBlockAggregationTests.RunGeometryWorker();
+        }
+
         if (args is not ["--geometry-fixture", "ordered" or "failure" or "cancel" or "linked-late"])
         {
-            Console.Error.WriteLine("Expected --geometry-fixture ordered|failure|cancel|linked-late.");
+            Console.Error.WriteLine(
+                "Expected --geometry-fixture ordered|failure|cancel|linked-late or " +
+                "--heap-fragmentation-loh-fixture tail-free|separated or " +
+                "--observed-free-block-geometry.");
             return 2;
         }
 

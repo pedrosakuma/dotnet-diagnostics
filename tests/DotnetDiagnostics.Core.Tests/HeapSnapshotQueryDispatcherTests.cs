@@ -380,7 +380,22 @@ public class HeapSnapshotQueryDispatcherTests
         RetentionPaths = new[] { new RetentionPath("System.String", 0x1000, new[] { new RetentionFrame("System.String", 0x1000) }, Truncated: false) },
         RootsByKind = new[] { new RootKindStat("StaticVar", 5, 5, 4096, 0, 0) },
         FinalizableObjectsByType = new[] { new FinalizableTypeStat("System.IO.FileStream", null, 3, 384) },
-        Segments = new[] { new SegmentStat(0, "Gen2", "Gen2", 0x1000, 0x2000, 4096, 4096, 0, 2048, 2048, 10, 1) { FreePercent = 50.0 } },
+        Segments = new[]
+        {
+            new SegmentStat(0, "Gen2", "Gen2", 0x1000, 0x3000, 8192, 8192, 0, 4096, 4096, 10, 1)
+            {
+                FreePercent = 50.0,
+                LargestObservedMaterialFreeBlockBytes = 4096,
+                ObservedMaterialFreeBlockCount = 1,
+                RetainedMaterialFreeBlockCount = 1,
+                OmittedMaterialFreeBlockCount = 0,
+                MaterialFreeBlockRetentionLimit = 8,
+                MaterialFreeBlockMinimumBytes = 4096,
+                TopObservedMaterialFreeBlocks = [new ObservedFreeBlockRange(0x2000, 0x3000, 4096)],
+                FreeBlockEvidenceState = ObservedFreeBlockEvidenceState.Indeterminate,
+                FreeBlockEvidenceLimitations = ["fixture limitation"],
+            },
+        },
         StaticFields = new[] { new StaticFieldStat("MyType", null, "Cache", 0x0A000001, 0x2000, "System.Collections.Generic.Dictionary`2", 4096, 1) },
         DelegateTargets = new[] { new DelegateTargetStat("Subscriber", "Publisher", "OnChanged", null, null, 7) },
         GcHandles = new GcHandlesView(2, ImmutableArray.Create(new GcHandleBucket("Strong", 2, 4096, ImmutableArray<GcHandleTypeStat>.Empty)), ImmutableArray<string>.Empty),

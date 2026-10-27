@@ -2210,6 +2210,20 @@ internal static partial class CliStreamingProtocol
             objectCount = segment.ObjectCount,
             freeObjectCount = segment.FreeObjectCount,
             freePercent = segment.FreePercent,
+            largestObservedMaterialFreeBlockBytes = segment.LargestObservedMaterialFreeBlockBytes,
+            observedMaterialFreeBlockCount = segment.ObservedMaterialFreeBlockCount,
+            retainedMaterialFreeBlockCount = segment.RetainedMaterialFreeBlockCount,
+            omittedMaterialFreeBlockCount = segment.OmittedMaterialFreeBlockCount,
+            materialFreeBlockRetentionLimit = segment.MaterialFreeBlockRetentionLimit,
+            materialFreeBlockMinimumBytes = segment.MaterialFreeBlockMinimumBytes,
+            topObservedMaterialFreeBlocks = segment.TopObservedMaterialFreeBlocks?.Select(static range => new
+            {
+                start = FormatAddress(range.Start),
+                end = FormatAddress(range.End),
+                length = range.Length,
+            }),
+            freeBlockEvidenceState = segment.FreeBlockEvidenceState?.ToString().ToLowerInvariant(),
+            freeBlockEvidenceLimitations = segment.FreeBlockEvidenceLimitations,
         }),
         staticFields = data.StaticFields?.Select(static field => new
         {

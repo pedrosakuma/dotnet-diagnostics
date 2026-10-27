@@ -512,6 +512,21 @@ protocol adds no release message, replacement slot, persistence, automatic recol
 comparison. Capture both snapshots on the same stream, query while both handles still resolve, and
 use the separate durable capture workflow when reopenable evidence is required.
 
+The `fragmentation` result preserves every existing segment field and adds bounded observed
+free-block evidence for ClrMD live/dump snapshots. Each segment reports
+`largestObservedMaterialFreeBlockBytes`, material-block
+`observedMaterialFreeBlockCount`/`retainedMaterialFreeBlockCount`/
+`omittedMaterialFreeBlockCount`, `materialFreeBlockRetentionLimit` (8),
+`materialFreeBlockMinimumBytes` (4 KiB), and up to eight
+`topObservedMaterialFreeBlocks` with hexadecimal `start`/`end` addresses and exact `length`.
+The top-K bound is enforced while walking; the full range inventory is never retained.
+`freeBlockEvidenceState` is `partial` when unresolved objects were skipped and otherwise
+`indeterminate` for ClrMD, because ClrMD exposes no formal per-segment completion signal.
+`complete` is reserved for producers that explicitly establish completion; it is never inferred
+from a warning-free walk. The existing CLR `freeObjectCount` remains unchanged and must not be
+read as a material hole count. These fields describe directly observed `obj.IsFree` records, not
+allocation success, object liveness, retained size, or pinned-object concentration.
+
 **Address navigation (`address` / `acknowledgeRisk`).** `query` accepts an optional `address` for
 heap handles. It must be a JSON **string** holding a non-zero `0x`-prefixed hexadecimal value of at
 most 16 digits; JSON numbers (which a JavaScript client would round above 2^53), decimal strings and
@@ -1924,6 +1939,7 @@ address-addressed drilldowns:
 | --- | --- | --- |
 | `top-types` (default) | top types by bytes/instances | `--top` (`--top-types` compatibility alias), `--rank-by bytes\|instances` |
 | `retention-paths` | short GC retention chains | `--type-filter <substring>`, `--top` (`--top-types` compatibility alias) |
+| `fragmentation` | ranked segment aggregates plus bounded observed material free-block evidence | `--top` (`--top-types` compatibility alias) |
 | `gcroot` | shortest GC-root chain for one object (SOS `!gcroot`) | `--address <decimal\|0x-hex>` (**dump-origin handles only**) |
 | `object` | one managed object's shape (SOS `!do`) | `--address <decimal\|0x-hex>` (**dump-origin handles only**) |
 | `heap-integrity` | `ClrHeap.VerifyHeap()` corruption triage | none (requires the handle was captured with `--verify-heap`; dump-origin only) |
