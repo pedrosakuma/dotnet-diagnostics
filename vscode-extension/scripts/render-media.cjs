@@ -9,7 +9,8 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const Module = require("node:module");
-const { execFileSync } = require("node:child_process");
+const { pathToFileURL } = require("node:url");
+const { chromium } = require("playwright-core");
 
 const root = path.join(__dirname, "..");
 const mediaDir = path.join(root, "media");
@@ -24,14 +25,21 @@ Module._resolveFilename = function (request, ...rest) {
 const { renderHtml } = require("../out/extension.js");
 
 const EXPECTED_CHROME = "153.0.8010.12";
+const requestedFiles = process.env.MEDIA_SCENARIOS
+    ? new Set(process.env.MEDIA_SCENARIOS.split(",").map(value => value.trim()).filter(Boolean))
+    : undefined;
 
 function findChrome() {
     if (process.env.CHROME_PATH) return process.env.CHROME_PATH;
-    const cache = path.join(os.homedir(), ".cache", "ms-playwright");
-    if (fs.existsSync(cache)) {
-        for (const dir of fs.readdirSync(cache).filter(d => d.startsWith("chromium-")).sort().reverse()) {
-            const candidate = path.join(cache, dir, "chrome-linux64", "chrome");
-            if (fs.existsSync(candidate)) return candidate;
+    for (const cache of [path.join(os.homedir(), ".cache", "ms-playwright"),
+        path.join(os.homedir(), "AppData", "Local", "ms-playwright")]) {
+        if (fs.existsSync(cache)) {
+            for (const dir of fs.readdirSync(cache).filter(d => d.startsWith("chromium-")).sort().reverse()) {
+                for (const relative of [["chrome-linux64", "chrome"], ["chrome-win", "chrome.exe"]]) {
+                    const candidate = path.join(cache, dir, ...relative);
+                    if (fs.existsSync(candidate)) return candidate;
+                }
+            }
         }
     }
     throw new Error("Chromium not found; set CHROME_PATH.");
@@ -110,6 +118,115 @@ const scenarios = [
     { file: "thread-snapshot.png", show: ["captureThreadResult"], messages: threadMessages(), height: 760, delayMs: 0 },
 ];
 
+function comparisonCapture(handle, startedAt, totalSamples, backend = "EventPipeSampleProfiler") {
+    return {
+        handle,
+        processId: 4242,
+        startedAt,
+        durationSeconds: 10,
+        totalSamples,
+        backend,
+        evidenceKind: "StackFrequencyWithHeuristicWaits",
+        origin: "live",
+        producingTool: "collect_sample",
+        expiresAt: "2026-01-15T12:05:00Z",
+        unresolvedExclusiveSamples: 4,
+        unresolvedExclusivePercent: 4,
+        quality: {
+            schema: "dotnet-diagnostics/evidence-quality/v1",
+            limitations: [{ category: "Sampling", scope: "capture", message: "Sampling does not establish workload equivalence." }],
+        },
+    };
+}
+
+function qualifiedComparison() {
+    const delta = (baselineValue, currentValue, deltaAbs, relativeDelta, unit = "%") => ({
+        baselineValue, currentValue, unit, deltaAbs, relativeDelta,
+        betterDirection: "neutral", outcome: deltaAbs > 0 ? "up" : "down",
+        unavailableReason: null, baselineDenominator: 100, currentDenominator: 120,
+        deltaUnit: unit === "%" ? "percentage-points" : unit,
+        relativeDeltaUnavailableReason: null,
+    });
+    return {
+        handle: "cpu-current", baselineHandle: "cpu-baseline", view: "diff",
+        summary: "Objective comparison of retained CPU sample handles.",
+        data: {
+            schema: "dotnet-diagnostics/cpu-sample-handle-comparison/v1",
+            baseline: comparisonCapture("cpu-baseline", "2026-01-15T12:00:00Z", 100),
+            current: comparisonCapture("cpu-current", "2026-01-15T12:01:00Z", 120),
+            compatibility: { status: "qualified", reasons: [] },
+            metrics: [{
+                name: "samplePopulation", population: "retained-samples", aggregation: "total", normalization: "none",
+                delta: {
+                    baselineValue: 100, currentValue: 120, unit: "samples", deltaAbs: 20, relativeDelta: .2,
+                    betterDirection: "neutral", outcome: "up", unavailableReason: null,
+                    baselineDenominator: 100, currentDenominator: 120, deltaUnit: "samples",
+                    relativeDeltaUnavailableReason: null,
+                },
+            }],
+            topMovers: [
+                {
+                    displayName: "OrdersApi.Services.PricingService.CalculateDiscountAsync(Order, CancellationToken)",
+                    baselineExclusiveSamples: 20, currentExclusiveSamples: 36,
+                    baselineTotalSamples: 100, currentTotalSamples: 120,
+                    exclusiveShare: delta(20, 30, 10, .5), unresolved: false,
+                },
+                {
+                    displayName: "System.Text.Json.Serialization.Metadata.JsonTypeInfo`1.Serialize(Utf8JsonWriter, T&)",
+                    baselineExclusiveSamples: null, currentExclusiveSamples: 12,
+                    baselineTotalSamples: 100, currentTotalSamples: 120,
+                    exclusiveShare: {
+                        baselineValue: null, currentValue: 10, unit: "%", deltaAbs: null, relativeDelta: null,
+                        betterDirection: "neutral", outcome: "unavailable",
+                        unavailableReason: "method-not-observed-in-baseline", baselineDenominator: 100,
+                        currentDenominator: 120, deltaUnit: "percentage-points",
+                        relativeDeltaUnavailableReason: "baseline-share-unavailable",
+                    },
+                    unresolved: false,
+                },
+            ],
+            notes: ["Workload equivalence is not established.", "The mover list is bounded to retained rows."],
+        },
+    };
+}
+
+function mismatchComparison() {
+    const result = qualifiedComparison();
+    result.data.current = comparisonCapture("cpu-current", "2026-01-15T12:01:00Z", 120, "perf");
+    result.data.compatibility = {
+        status: "incompatible",
+        reasons: [{
+            code: "backend-mismatch",
+            field: "backend",
+            message: "Baseline uses EventPipeSampleProfiler while current uses perf; objective deltas are unavailable.",
+        }],
+    };
+    result.data.metrics[0].delta = {
+        baselineValue: 100, currentValue: 120, unit: "samples", deltaAbs: null, relativeDelta: null,
+        betterDirection: "neutral", outcome: "unavailable", unavailableReason: "backend-mismatch",
+        baselineDenominator: 100, currentDenominator: 120, deltaUnit: "samples",
+        relativeDeltaUnavailableReason: "backend-mismatch",
+    };
+    result.data.topMovers = [{
+        displayName: "OrdersApi.Controllers.CheckoutController.SubmitAsync()",
+        baselineExclusiveSamples: 18, currentExclusiveSamples: null,
+        baselineTotalSamples: 100, currentTotalSamples: 120,
+        exclusiveShare: {
+            baselineValue: 18, currentValue: null, unit: "%", deltaAbs: null, relativeDelta: null,
+            betterDirection: "neutral", outcome: "unavailable", unavailableReason: "backend-mismatch",
+            baselineDenominator: 100, currentDenominator: 120, deltaUnit: "percentage-points",
+            relativeDeltaUnavailableReason: "backend-mismatch",
+        },
+        unresolved: false,
+    }];
+    return result;
+}
+
+const comparisonScenarios = [
+    { file: "cpu-comparison-qualified-540.png", width: 540, height: 2600, result: qualifiedComparison() },
+    { file: "cpu-comparison-mismatch-390.png", width: 390, height: 3000, result: mismatchComparison() },
+];
+
 function harness(scenario) {
     const html = renderHtml(target, "mediaNonce", 120);
     // Keep the header and only the sections that contain the requested element ids.
@@ -128,28 +245,135 @@ function harness(scenario) {
         .replace(/<script nonce="mediaNonce">/, m => script.replace(/<\/script>$/, "") + "</script>" + m);
 }
 
-fs.mkdirSync(workDir, { recursive: true });
-fs.mkdirSync(mediaDir, { recursive: true });
-const chrome = findChrome();
-const chromeVersion = execFileSync(chrome, ["--version"], { encoding: "utf8" });
-if (!chromeVersion.includes(EXPECTED_CHROME)) {
-    throw new Error(`Expected Chrome for Testing ${EXPECTED_CHROME}, found: ${chromeVersion.trim()}`);
+function comparisonHarness(scenario) {
+    const html = renderHtml(target, "mediaNonce", 120);
+    const currentSummary = {
+        processId: 4242,
+        startedAt: "2026-01-15T12:01:00Z",
+        totalSamples: scenario.result.data.current.totalSamples,
+        topHotspots: [],
+    };
+    const messages = [
+        { type: "captureStatus", kind: "cpu", state: "starting", evidenceId: "current-evidence" },
+        {
+            type: "capture",
+            kind: "cpu",
+            evidenceId: "current-evidence",
+            summary: currentSummary,
+            comparisonBaseline: {
+                evidenceId: "baseline-evidence",
+                summary: {
+                    processId: 4242,
+                    startedAt: "2026-01-15T12:00:00Z",
+                    totalSamples: scenario.result.data.baseline.totalSamples,
+                    topHotspots: [],
+                },
+            },
+        },
+        {
+            type: "cpuComparison",
+            evidenceId: "current-evidence",
+            baselineEvidenceId: "baseline-evidence",
+            result: scenario.result,
+        },
+    ];
+    const hide = `
+      body > header, body > nav, body > section:not(#resultWorkspace),
+      #resultWorkspace > :not(#workspaceCanvas), #workspaceCanvas > :not(#resultCpu),
+      #resultCpu > .panel-actions, #captureStatus, #captureHeadline, #cpuQueryStatus,
+      #cpuHotspotSummary, #cpuSamplingDisclaimer, .cpu-export-actions { display:none !important; }
+      #resultWorkspace, #workspaceCanvas, #resultCpu { display:block !important; }
+    `;
+    const script = `<script nonce="mediaNonce">
+      window.acquireVsCodeApi = () => ({ postMessage() {}, getState() { return undefined; }, setState() {} });
+      window.addEventListener('load', () => {
+        const messages = ${JSON.stringify(messages)};
+        messages.forEach((message, index) => setTimeout(() => window.postMessage(message, '*'), 25 + index * 25));
+        setTimeout(() => document.querySelectorAll('#cpuQueryViews details').forEach(detail => { detail.open = true; }), 150);
+      });
+    </script>`;
+    return html
+        .replace("<style nonce=\"mediaNonce\">", `<style nonce="mediaNonce">${theme} ${hide}`)
+        .replace(/<script nonce="mediaNonce">/, match => script.replace(/<\/script>$/, "") + "</script>" + match);
 }
-process.env.TZ = "UTC";
-const common = ["--headless=new", "--lang=en-US", "--no-sandbox", "--disable-gpu", "--hide-scrollbars", "--force-device-scale-factor=1"];
 
-for (const scenario of scenarios) {
-    const page = path.join(workDir, scenario.file.replace(".png", ".html"));
-    fs.writeFileSync(page, harness(scenario));
-    execFileSync(chrome, [...common, `--window-size=1100,${scenario.height}`, "--virtual-time-budget=6000",
-        `--screenshot=${path.join(mediaDir, scenario.file)}`, `file://${page}`], { stdio: "inherit" });
+async function screenshot(browser, file, html, viewport, waitMs, omitBackground = false, readySelector) {
+    const pagePath = path.join(workDir, file.replace(".png", ".html"));
+    fs.writeFileSync(pagePath, html);
+    const context = await browser.newContext({
+        viewport,
+        deviceScaleFactor: 1,
+        locale: "en-US",
+        timezoneId: "UTC",
+        colorScheme: "dark",
+    });
+    const page = await context.newPage();
+    const pageErrors = [];
+    page.on("pageerror", error => pageErrors.push(error));
+    await page.goto(pathToFileURL(pagePath).href, { waitUntil: "load" });
+    await page.waitForTimeout(waitMs);
+    if (pageErrors.length) throw pageErrors[0];
+    if (readySelector) {
+        const ready = page.locator(readySelector);
+        await ready.waitFor({ state: "attached", timeout: 5000 });
+        if (!(await ready.isVisible())) {
+            const ancestry = await ready.evaluate(element => {
+                const result = [];
+                for (let current = element; current; current = current.parentElement) {
+                    result.push({
+                        tag: current.tagName,
+                        id: current.id,
+                        hidden: current.hidden,
+                        display: getComputedStyle(current).display,
+                    });
+                }
+                return result;
+            });
+            throw new Error(`Screenshot target is hidden: ${JSON.stringify(ancestry)}`);
+        }
+    }
+    await page.screenshot({
+        path: path.join(mediaDir, file),
+        animations: "disabled",
+        omitBackground,
+    });
+    await context.close();
 }
 
-const iconSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128"><rect width="128" height="128" rx="24" fill="#512bd4"/>
+async function main() {
+    fs.mkdirSync(workDir, { recursive: true });
+    fs.mkdirSync(mediaDir, { recursive: true });
+    const browser = await chromium.launch({
+        executablePath: findChrome(),
+        headless: true,
+        args: ["--lang=en-US", "--no-sandbox", "--disable-gpu", "--hide-scrollbars"],
+    });
+    try {
+        const chromeVersion = browser.version();
+        if (!chromeVersion.includes(EXPECTED_CHROME)) {
+            throw new Error(`Expected Chrome for Testing ${EXPECTED_CHROME}, found: ${chromeVersion}`);
+        }
+        for (const scenario of scenarios.filter(item => !requestedFiles || requestedFiles.has(item.file))) {
+            await screenshot(browser, scenario.file, harness(scenario), { width: 1100, height: scenario.height }, 6000);
+        }
+        for (const scenario of comparisonScenarios.filter(item => !requestedFiles || requestedFiles.has(item.file))) {
+            await screenshot(browser, scenario.file, comparisonHarness(scenario),
+                { width: scenario.width, height: scenario.height }, 500, false, "#cpuQueryViews h3");
+        }
+        if (!requestedFiles || requestedFiles.has("icon.png")) {
+            const iconSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128"><rect width="128" height="128" rx="24" fill="#512bd4"/>
 <path fill="none" stroke="#fff" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" d="M14 68h24l13-34 26 62 13-28h24"/></svg>`;
-const iconPage = path.join(workDir, "icon.html");
-fs.writeFileSync(iconPage, `<!DOCTYPE html><style>html,body{margin:0;background:transparent}</style>${iconSvg}`);
-execFileSync(chrome, [...common, "--default-background-color=00000000", "--window-size=128,128",
-    `--screenshot=${path.join(mediaDir, "icon.png")}`, `file://${iconPage}`], { stdio: "inherit" });
+            await screenshot(browser, "icon.png",
+                `<!DOCTYPE html><style>html,body{margin:0;background:transparent}</style>${iconSvg}`,
+                { width: 128, height: 128 }, 0, true);
+        }
+    } finally {
+        await browser.close();
+        fs.rmSync(workDir, { recursive: true, force: true });
+    }
+}
 
-fs.rmSync(workDir, { recursive: true, force: true });
+main().catch(error => {
+    console.error(error);
+    process.exitCode = 1;
+});
