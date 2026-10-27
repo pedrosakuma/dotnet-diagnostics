@@ -72,6 +72,7 @@ cross-cutting references.
 | [`design/durable-capture-rfc.md`](./design/durable-capture-rfc.md) | Discussion draft: local durable capture packages, bounded acquisition, replay limits and storage alternatives; no shipping API changes |
 | [`design/durable-capture-contract.md`](./design/durable-capture-contract.md) | Reviewed DC1 contract for an internal one-artifact lifecycle spike; identity/versioning, immutable publication/recovery and budgets; public API placement remains proposed |
 | [`research/`](./research/README.md) | Point-in-time spikes and prototypes (feasibility studies, protocol migration assessments, tool-budget measurements) — read the linked issue for current status, since a spike's verdict can be superseded later |
+| [`research/bounded-multi-evidence-investigation-context.md`](./research/bounded-multi-evidence-investigation-context.md) | #1265 spike: current CLI/extension ownership and replacement inventory, bounded hybrid contract, minimum non-causal correlation scenario, and conditional GO decomposition |
 
 ### MCP server (`dotnet-diagnostics-mcp`)
 
