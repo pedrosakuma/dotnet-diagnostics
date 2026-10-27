@@ -33,7 +33,8 @@ function counterUi() {
     const start = script.indexOf("    const counters = new Map();");
     const end = script.indexOf("    // A capture is a single point-in-time snapshot", start);
     assert.ok(start > 0 && end > start);
-    const api = new Function("document", "canvas", "context", "getComputedStyle", "installLiveTimeNavigation", "Date",
+    const api = new Function("document", "canvas", "context", "getComputedStyle", "installLiveTimeNavigation",
+        "installMemoryOverview", "deriveMemoryOverview", "Date",
         `const metricSelect = document.getElementById('metric');
          const valueElement = document.getElementById('value');
          const qualityElement = document.getElementById('quality');
@@ -45,6 +46,8 @@ function counterUi() {
              gcPauseCount, counters, gcRows }) };`)(
         document, canvas, context, () => ({ getPropertyValue: () => "blue", color: "white", fontFamily: "system-ui" }),
         () => ({ update() {}, filter: points => points, selected: () => undefined }),
+        () => ({ render() {}, resize() {} }),
+        () => ({ state: "unavailable", headline: "", quality: [], floorValues: [], action: "capture-heap" }),
         class extends Date { constructor(...args) { super(...(args.length ? args : [now])); } static now() { return now; } },
     );
     return { ...api, drawing, get: id => document.getElementById(id), tick: ms => { now += ms; } };

@@ -18,6 +18,7 @@ import { REQUEST_ACTIVITIES_SCRIPT } from "./requestActivitiesView";
 import { CPU_PROFILE_SCRIPT, CPU_PROFILE_STYLES } from "./cpuProfileViewer";
 import { WEBVIEW_BUTTON_STYLES, WEBVIEW_FIELD_STYLES } from "./webviewFields";
 import { LIVE_TIME_NAVIGATION_SCRIPT } from "./liveTimeNavigation";
+import { MEMORY_OVERVIEW_HTML, MEMORY_OVERVIEW_SCRIPT, MEMORY_OVERVIEW_STYLES } from "./memoryOverview";
 import { LiveReadConsent, LIVE_READ_CONSENT_HTML, LIVE_READ_CONSENT_SCRIPT } from "./liveReadConsent";
 import { ACTION_AVAILABILITY_SCRIPT, ACTION_AVAILABILITY_STYLES, PROFILE_ACTIONS_SCRIPT } from "./actionAvailability";
 import {
@@ -3639,6 +3640,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     ${WEBVIEW_BUTTON_STYLES}
     .export-controls { margin:.6rem 0; }
     ${ACTION_AVAILABILITY_STYLES}
+    ${MEMORY_OVERVIEW_STYLES}
     .result-tabs, .monitoring-tabs { display:flex; gap:.2rem; overflow-x:auto; padding:.45rem 0; background:var(--vscode-editor-background); border-bottom:1px solid var(--vscode-panel-border); }
     .result-tabs { position:sticky; top:0; z-index:2; }
     .result-tabs button, .monitoring-tabs button { flex:0 0 auto; background:transparent; color:var(--vscode-foreground); border-bottom:2px solid transparent; }
@@ -3787,10 +3789,11 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       <label for="metric">Counter</label><select id="metric" aria-label="Select counter"></select>
       <button id="start">Start</button><button id="stop" disabled>Stop</button>
     </div>
+    <div id="error" role="alert"></div>
+    ${MEMORY_OVERVIEW_HTML}
     <div id="value">Waiting for first observation</div>
     <div id="counterSession" role="status">No counter session started.</div>
     <div id="quality"></div>
-    <div id="error" role="alert"></div>
     <canvas id="chart" aria-label="Selected counter time series"></canvas>
     <div id="chartTime"><span id="chartTimeStart"></span><span id="chartTimeEnd"></span></div>
     <p id="chartNote">Auto-scaled value axis, not necessarily zero-based. Lines break at session boundaries and observed sequence gaps; gaps are not zero values.</p>
@@ -3985,6 +3988,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     ${REQUEST_ACTIVITIES_SCRIPT}
     ${CPU_PROFILE_SCRIPT}
     ${LIVE_TIME_NAVIGATION_SCRIPT}
+    ${MEMORY_OVERVIEW_SCRIPT}
     ${LIVE_READ_CONSENT_SCRIPT}
     let cpuProfileResult;
     const cpuProfileState = { mode: 'tree', search: '', focus: [], selected: undefined };
@@ -4071,6 +4075,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     let allocationEvidenceId;
     let heapEvidenceId;
     let heapEvidenceSource;
+    let memoryHeapEvidenceAvailable = false;
     let diagnosticsRequestId;
     let pendingCpuEvidenceId;
     let pendingAllocationEvidenceId;
@@ -5005,7 +5010,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     const maxPointsBackstop = 5000;
     const maxGcRowsBackstop = 2000;
     let historyDurationMs = ${Math.max(1, Math.round(historyDurationSeconds))} * 1000;
-    const gcRows = []; // { element, receivedAtMs }, newest first
+    const gcRows = []; // { element, receivedAtMs, generation, session, segment }, newest first
     // A logical clock derived from Date.now() that only ever accumulates non-negative deltas: a
     // backward system clock adjustment can't make receipt timestamps non-monotonic (which would
     // break the eviction scans below), and — unlike clamping Date.now() to its own previous
@@ -5035,9 +5040,44 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     let seriesLimitReached = false;
     let gcPauseCount = 0;
     let gcTotalPauseMs = 0;
+    let memoryStreamQuality = [];
+    const memoryCounterKeys = new Set([
+      'System.Runtime/gc-heap-size',
+      'System.Runtime/gc-committed',
+      'System.Runtime/alloc-rate',
+      'System.Runtime/working-set',
+    ]);
     const formatCounterValue = value => new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(value)
       + (counters.get(selectedKey)?.unit ? ' ' + counters.get(selectedKey).unit : '');
     const liveTimeNavigation = installLiveTimeNavigation(canvas, () => counters.get(selectedKey)?.points || [], gcRows, draw, formatCounterValue);
+    const retainedCounterSessionCount = () => new Set([
+      ...Array.from(memoryCounterKeys).flatMap(key => counters.get(key)?.points.map(point => point.session) || []),
+      ...gcRows.map(row => row.session),
+    ]).size;
+    const memoryOverview = installMemoryOverview({
+      canvas: document.getElementById('memoryOverviewChart'),
+      headline: document.getElementById('memoryOverviewHeadline'),
+      quality: document.getElementById('memoryOverviewQuality'),
+      trackSummary: document.getElementById('memoryOverviewTrackSummary'),
+      limitations: document.getElementById('memoryOverviewLimitations'),
+      action: document.getElementById('memoryOverviewAction'),
+      counters,
+      gcRows,
+      currentSession: () => counterSessionNumber,
+      retainedSessionCount: retainedCounterSessionCount,
+      sequenceGaps: () => sequenceGaps,
+      seriesLimitReached: () => seriesLimitReached,
+      additionalQuality: () => memoryStreamQuality,
+      historyDurationMs: () => historyDurationMs,
+      filterPoints: points => liveTimeNavigation.filter(points),
+      heapEvidenceAvailable: () => memoryHeapEvidenceAvailable,
+      captureHeap: () => vscode.postMessage({ type: 'captureHeap' }),
+      openEvidence: kind => {
+        selectResultTab('workspace');
+        setWorkspaceEvidence(kind);
+        workspaceEvidenceKind.focus();
+      },
+    }, deriveMemoryOverview);
 
     function beginCounterSession(sessionId) {
       if (sessionId === counterSessionId) return;
@@ -5046,9 +5086,11 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       counterSegment++;
       lastSequence = 0;
       sequenceGaps = 0;
+      memoryStreamQuality = [];
       qualityElement.textContent = seriesLimitReached ? 'Panel chart limit reached: additional series omitted.' : '';
       document.getElementById('counterSession').textContent = 'Counter session ' + counterSessionNumber
         + ' · ' + new Date().toLocaleTimeString();
+      memoryOverview.render();
     }
 
     function updateButtons(running) {
@@ -5061,14 +5103,16 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       canvas.width = Math.max(1, Math.floor(canvas.clientWidth * scale));
       canvas.height = Math.max(1, Math.floor(canvas.clientHeight * scale));
       context.setTransform(scale, 0, 0, scale, 0, 0);
-      draw();
+      draw(false);
+      memoryOverview.resize();
     }
 
-    function draw() {
+    function draw(updateMemoryOverview = true) {
       const width = canvas.clientWidth;
       const height = canvas.clientHeight;
       context.clearRect(0, 0, width, height);
       liveTimeNavigation.update();
+      if (updateMemoryOverview) memoryOverview.render();
       const series = counters.get(selectedKey);
       document.getElementById('counterIdentity').textContent = series
         ? selectedKey + ' · ' + series.kind + ' · ' + (series.unit || 'unit not reported') : '';
@@ -5173,6 +5217,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         if (counters.size >= maxSeries) {
           seriesLimitReached = true;
           qualityElement.textContent = 'Chart limit reached: additional counter series are omitted.';
+          memoryOverview.render();
           return;
         }
         series = { label: counter.displayName || counter.name, unit: counter.unit || '', kind: counter.kind || 'kind not reported', points: [] };
@@ -5193,7 +5238,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         valueElement.textContent = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(counter.value) +
           (series.unit ? ' ' + series.unit : '');
       }
-      draw();
+      draw(memoryCounterKeys.has(key));
     }
 
     // The CLI assigns one shared sequence number across every observation kind in a session (not
@@ -5249,12 +5294,19 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       });
       gcBody.insertBefore(row, gcBody.firstChild);
       row.title = 'Counter session ' + counterSessionNumber + ' · source time ' + collection.timestamp;
-      gcRows.unshift({ element: row, receivedAtMs: monotonicNow() });
+      gcRows.unshift({
+        element: row,
+        receivedAtMs: monotonicNow(),
+        generation: Number(collection.generation),
+        session: counterSessionNumber,
+        segment: counterSegment,
+      });
       evictOldGcRows();
       gcHeadline.textContent = gcPauseCount + ' pause(s) observed · last ' +
         (Number.isFinite(pauseMs) ? pauseMs.toFixed(1) + ' ms' : 'unknown') +
         ' · total ' + gcTotalPauseMs.toFixed(1) + ' ms';
       liveTimeNavigation.update();
+      memoryOverview.render();
       row.tabIndex = 0;
       const inspect = () => {
         let detail = document.getElementById('selectedGcEvent');
@@ -5649,6 +5701,8 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         if (message.state === 'starting') activateCaptureTab('heap');
         captureHeapStatusElement.textContent = message.message || message.state || '';
         if (message.retainedEvidenceInvalidated === true) {
+          memoryHeapEvidenceAvailable = false;
+          memoryOverview.render();
           setAddressLiveQueriesAvailable(false);
           setWorkspaceStatus('heap', 'Heap recapture in progress. A prior visual may remain; query availability and consent follow the current retained owner.');
           document.getElementById('heapQueryViews').replaceChildren();
@@ -5718,6 +5772,8 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         if (message.evidenceId !== pendingHeapEvidenceId) return;
         heapEvidenceSource = message.source;
         heapEvidenceId = typeof message.evidenceId === 'string' ? message.evidenceId : undefined;
+        memoryHeapEvidenceAvailable = true;
+        memoryOverview.render();
         setAddressLiveQueriesAvailable(message.retainedHandleAvailable === true);
         renderHeapCapture(message.source, message.result);
         setWorkspaceStatus('heap', message.retainedHandleAvailable === true
@@ -5843,6 +5899,17 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         const dropped = typeof message.droppedObservations === 'number'
           ? message.droppedObservations + ' observations dropped by the bounded queue'
           : 'dropped-observation count unavailable';
+        memoryStreamQuality = [
+          typeof message.eventPipeEventsLost === 'number' && message.eventPipeEventsLost > 0
+            ? message.eventPipeEventsLost + ' EventPipe event(s) were reported lost.' : '',
+          typeof message.droppedObservations === 'number' && message.droppedObservations > 0
+            ? message.droppedObservations + ' observation(s) were dropped by the bounded queue.' : '',
+          typeof message.eventPipeEventsLost !== 'number'
+            ? 'EventPipe loss count is unavailable for the completed session.' : '',
+          typeof message.droppedObservations !== 'number'
+            ? 'Dropped-observation count is unavailable for the completed session.' : '',
+        ].filter(Boolean);
+        memoryOverview.render();
         qualityElement.textContent = 'This counter session: ' + [
           loss,
           dropped,
@@ -5883,7 +5950,11 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     captureThreadSnapshotButton.addEventListener('click', () => vscode.postMessage({ type: 'captureThreadSnapshot' }));
     window.addEventListener('resize', resizeCanvas);
     // The webview can be laid out while hidden (zero size); re-measure whenever the canvas gets a real size.
-    if (typeof ResizeObserver === 'function') new ResizeObserver(() => resizeCanvas()).observe(canvas);
+    if (typeof ResizeObserver === 'function') {
+      const resizeObserver = new ResizeObserver(() => resizeCanvas());
+      resizeObserver.observe(canvas);
+      resizeObserver.observe(document.getElementById('memoryOverviewChart'));
+    }
     resizeCanvas();
     updateButtons(false);
     updateEvidenceActions({});

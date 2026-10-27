@@ -99,6 +99,33 @@ product ambiguity.
 - No capture gallery/list view.
 - No per-series Y-axis customization (fixed auto-scale per track for now).
 
+## 6. Evidence-first Memory & GC overview (#1258)
+
+The live panel also exposes an optional Memory & GC overview above the expert counter chart. It is
+a projection of the already-retained stream, not another collector or investigation lifecycle.
+
+- Compact stacked tracks use webview receipt time for `System.Runtime/gc-heap-size`,
+  `gc-committed`, `alloc-rate`, observed Gen2 collections, and `working-set` when RSS is present.
+  Each numeric track keeps its own scale and unit. Lines break at observed sequence gaps; current
+  and earlier counter sessions are never joined.
+- The objective headline compares the minimum retained managed-heap observation following each
+  observed Gen2 collection in the current session. It reports stable/lower, rising, or cannot
+  assess. Rising means the latest observed floor exceeds the first by more than five percent;
+  otherwise the result is stable/lower. It does not label a leak, retained object set, cause, or
+  diagnosis.
+- Active limitations precede the visualization. Full receipt-time provenance, retention scope,
+  unavailable counters, loss/drop accounting, and the headline method remain in a keyboard-native
+  disclosure. Expired, sparse, missing, or cross-session evidence is unavailable, never zero.
+- One contextual action reuses the existing workspace: navigate to allocation evidence, inspect a
+  current heap snapshot, or explicitly enter the existing heap-capture flow. Rendering or
+  navigating the overview never starts diagnostic work.
+- The overview follows the existing live-time selection and rolling history bound. It does not
+  narrow capture-wide totals, change capture ownership/replacement, add persistence/export
+  semantics, or alter offline panels.
+
+The narrow layout keeps the headline, temporal tracks and action in one column. High-contrast mode
+uses the native foreground/border system colors in addition to distinct line patterns.
+
 ## Open questions for follow-up (not blocking #1098 start)
 
 - Exact color palette / theme-awareness (light vs dark) for tracks and the
