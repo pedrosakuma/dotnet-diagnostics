@@ -71,6 +71,15 @@ export interface HeapTypeStat {
     instanceCount: number;
     totalBytes: number;
     totalBytesPercent: number;
+    identity?: HeapTypeIdentity | null;
+}
+
+export interface HeapTypeIdentity {
+    typeFullName: string;
+    moduleName?: string | null;
+    modulePath?: string | null;
+    moduleVersionId?: string | null;
+    metadataToken?: number | null;
 }
 
 /** Observed completion state for an EventPipe gcdump capture (`source: "gcdump"` only). */
@@ -206,6 +215,7 @@ export function buildQueryFrame(
     typeFilter?: string,
     navigation?: QueryNavigation,
     rootMethodFilter?: string,
+    typeInstances?: TypeInstanceQuery,
 ): ProtocolFrame {
     const frame: ProtocolFrame = typeFilter === undefined
         ? { type: "query", requestId, handle, view }
@@ -224,6 +234,12 @@ export function buildQueryFrame(
         if (navigation.arrayCount !== undefined) frame.arrayCount = navigation.arrayCount;
     }
     if (rootMethodFilter !== undefined) frame.rootMethodFilter = rootMethodFilter;
+    if (typeInstances !== undefined) {
+        frame.typeIdentity = typeInstances.typeIdentity;
+        frame.topN = typeInstances.pageSize;
+        if (typeInstances.cursor !== undefined) frame.cursor = typeInstances.cursor;
+        if (typeInstances.acknowledgeRisk) frame.acknowledgeRisk = "high";
+    }
     return frame;
 }
 
@@ -251,6 +267,14 @@ export interface QueryNavigation {
     includeSensitiveValues?: boolean;
     arrayStartIndex?: number;
     arrayCount?: number;
+}
+
+/** Exact selected type plus one bounded page request for `view:"type-instances"`. */
+export interface TypeInstanceQuery {
+    typeIdentity: HeapTypeIdentity;
+    pageSize: number;
+    cursor?: string;
+    acknowledgeRisk?: boolean;
 }
 
 /** Allows at most one task at a time; used to keep non-cancellable on-demand queries from piling up. */

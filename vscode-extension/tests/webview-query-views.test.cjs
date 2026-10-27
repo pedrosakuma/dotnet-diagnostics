@@ -167,14 +167,17 @@ function createDocumentStub() {
 
 function loadRenderer(selectThreadSnapshotView) {
     const { document, makeContainer } = createDocumentStub();
+    const posted = [];
     // eslint-disable-next-line no-new-func -- exercises the exact script emitted into the webview.
     const api = new Function(
-        "document", "window", "selectThreadSnapshotView",
+        "document", "window", "selectThreadSnapshotView", "vscode",
         `${QUERY_VIEW_RENDERER_SCRIPT}\nreturn { renderQueryView, enhanceEvidenceTable, resetEvidenceTable,
             renderHeapTypeNavigation, navigateHeapDetails, updateThreadNavigation, renderExceptionNavigation,
-            navigateThreadTo };`,
-    )(document, {scrollY:13, scrollTo(){}}, selectThreadSnapshotView);
-    return { ...api, makeContainer, document };
+            navigateThreadTo, handleHeapInstancesMessage };`,
+    )(document, {scrollY:13, scrollTo(){}}, selectThreadSnapshotView, {
+        postMessage(message) { posted.push(JSON.parse(JSON.stringify(message))); },
+    });
+    return { ...api, makeContainer, document, posted };
 }
 
 function extractInlineScript(html) {
@@ -1948,8 +1951,8 @@ test("heap navigation needs no Explore shortcut and restores keyboard focus in l
     assert.equal(views.children.length,0,"all navigation is local; no evidence was manufactured");
 });
 
-test("heap type focus navigates captured paths, handles late paths and clears without a live read", () => {
-    const { makeContainer, document, renderHeapTypeNavigation, renderQueryView } = loadRenderer();
+test("heap type focus requests bounded instances, preserves path focus and rejects stale pages", () => {
+    const { makeContainer, document, renderHeapTypeNavigation, renderQueryView, handleHeapInstancesMessage, posted } = loadRenderer();
     const root = makeContainer("captureHeapResult");
     const table = makeTable(document, root, ["Type", "Instances", "Bytes"], [["App.Cache", 2, 100]], "captureHeapTable");
     const views = document.createElement("div");
@@ -1957,6 +1960,38 @@ test("heap type focus navigates captured paths, handles late paths and clears wi
     root.appendChild(views);
     renderHeapTypeNavigation([{ typeFullName: "App.Cache", instanceCount: 2, totalBytes: 100 }]);
     click(table, "App.Cache");
+    assert.equal(posted.length, 1);
+    assert.equal(posted[0].type, "queryHeapInstances");
+    assert.equal(posted[0].typeIdentity.typeFullName, "App.Cache");
+    const selectionId = posted[0].selectionId;
+    assert.equal(handleHeapInstancesMessage({
+        type: "heapInstances", selectionId: selectionId - 1,
+        result: { view: "type-instances", typeInstances: [{ address: "0x99", size: 1 }] },
+    }), true);
+    assert.doesNotMatch(root.textContent, /0x99/);
+    handleHeapInstancesMessage({
+        type: "heapInstances", selectionId,
+        result: {
+            view: "type-instances",
+            typeInstances: [{ address: "0x10", size: 48, generation: "Generation2", segmentKind: "Generation2" }],
+            scannedObjects: 12,
+            instanceEnumerationComplete: false,
+            nextCursor: "v1.cursor",
+            instanceConsistency: "stable-offline-dump",
+            origin: "Dump",
+            capturedAt: "2026-10-26T12:00:00Z",
+            enumeratedAt: "2026-10-26T12:01:00Z",
+            quality: { limitations: [{ scope: "query-type-instances" }] },
+            instanceWarnings: ["Enumeration stopped at PageSize=50."],
+        },
+    });
+    assert.match(root.textContent, /0x10/);
+    assert.match(root.textContent, /inventory is incomplete/);
+    assert.match(root.textContent, /Stable offline dump paging/);
+    assert.match(root.textContent, /Source: Dump/);
+    assert.match(root.textContent, /Quality reports 1 limitation/);
+    click(root, "Load next instance page");
+    assert.equal(posted[1].cursor, "v1.cursor");
     assert.match(root.textContent, /Retention paths are not available yet/);
     renderQueryView("heapQueryViews", "retention-paths", { retentionPaths: [
         { targetTypeFullName: "App.Cache", targetObjectAddress: "0x10", chain: [] },

@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using DotnetDiagnostics.Core.Safety;
 using DotnetDiagnostics.Core.Dump;
@@ -22,6 +24,80 @@ internal static class CliStreamingQueryNavigation
 
     internal const string AddressFormatMessage =
         "'address' must be a JSON string holding a non-zero 0x-prefixed hexadecimal value of at most 16 digits (never a JSON number).";
+
+    internal const string TypeIdentityFormatMessage =
+        "'typeIdentity' must be an object with a non-empty typeFullName and optional bounded moduleName, modulePath, moduleVersionId, and positive metadataToken fields.";
+
+    internal static bool TryReadTypeIdentity(JsonElement root, out TypeIdentity? identity)
+    {
+        identity = null;
+        if (!root.TryGetProperty("typeIdentity", out var element) || element.ValueKind == JsonValueKind.Null)
+            return true;
+        if (element.ValueKind != JsonValueKind.Object
+            || !TryReadBoundedString(element, "typeFullName", required: true, 1024, out var typeFullName)
+            || !TryReadBoundedString(element, "moduleName", required: false, 1024, out var moduleName)
+            || !TryReadBoundedString(element, "modulePath", required: false, 4096, out var modulePath))
+            return false;
+
+        Guid? moduleVersionId = null;
+        if (element.TryGetProperty("moduleVersionId", out var mvidElement)
+            && mvidElement.ValueKind != JsonValueKind.Null)
+        {
+            if (mvidElement.ValueKind != JsonValueKind.String
+                || !Guid.TryParse(mvidElement.GetString(), out var parsedMvid))
+                return false;
+            moduleVersionId = parsedMvid;
+        }
+
+        int? metadataToken = null;
+        if (element.TryGetProperty("metadataToken", out var tokenElement)
+            && tokenElement.ValueKind != JsonValueKind.Null)
+        {
+            if (tokenElement.ValueKind != JsonValueKind.Number
+                || !tokenElement.TryGetInt32(out var parsedToken)
+                || parsedToken <= 0)
+                return false;
+            metadataToken = parsedToken;
+        }
+
+        identity = new TypeIdentity(typeFullName!)
+        {
+            ModuleName = moduleName,
+            ModulePath = modulePath,
+            ModuleVersionId = moduleVersionId,
+            MetadataToken = metadataToken,
+        };
+        return true;
+    }
+
+    internal static string CreateTypeInstanceCursor(
+        string handle,
+        TypeIdentity typeIdentity,
+        HeapSnapshotArtifact snapshot,
+        ulong afterAddress)
+    {
+        var fingerprint = TypeInstanceCursorFingerprint(handle, typeIdentity, snapshot);
+        return $"v1.{afterAddress:x16}.{fingerprint}";
+    }
+
+    internal static bool TryParseTypeInstanceCursor(
+        string? cursor,
+        string handle,
+        TypeIdentity typeIdentity,
+        HeapSnapshotArtifact snapshot,
+        out ulong afterAddress)
+    {
+        afterAddress = 0;
+        if (cursor is null)
+            return true;
+        var parts = cursor.Split('.', StringSplitOptions.None);
+        return parts.Length == 3
+            && parts[0] == "v1"
+            && parts[1].Length == 16
+            && ulong.TryParse(parts[1], NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out afterAddress)
+            && afterAddress != 0
+            && string.Equals(parts[2], TypeInstanceCursorFingerprint(handle, typeIdentity, snapshot), StringComparison.Ordinal);
+    }
 
     internal static bool TryReadArrayRange(JsonElement root, string view, out HeapObjectInspectionOptions? options)
     {
@@ -96,6 +172,14 @@ internal static class CliStreamingQueryNavigation
     internal static string FormatAddress(ulong address) =>
         "0x" + address.ToString("x", CultureInfo.InvariantCulture);
 
+    internal static object ProjectTypeInstance(HeapTypeInstance instance) => new
+    {
+        address = FormatAddress(instance.Address),
+        instance.Size,
+        instance.SegmentKind,
+        instance.Generation,
+    };
+
     /// <summary>
     /// Keeps only the static fields whose referenced object is exactly <paramref name="address"/> (a
     /// projection of the already-captured list; nothing is re-read from the target).
@@ -165,4 +249,41 @@ internal static class CliStreamingQueryNavigation
         truncated = inspection.Truncated,
         warnings = inspection.Warnings,
     };
+
+    private static bool TryReadBoundedString(
+        JsonElement root,
+        string propertyName,
+        bool required,
+        int maxLength,
+        out string? value)
+    {
+        value = null;
+        if (!root.TryGetProperty(propertyName, out var element) || element.ValueKind == JsonValueKind.Null)
+            return !required;
+        if (element.ValueKind != JsonValueKind.String)
+            return false;
+        value = element.GetString();
+        return value is not null
+            && (!required || !string.IsNullOrWhiteSpace(value))
+            && value.Length <= maxLength
+            && !value.Any(char.IsControl);
+    }
+
+    private static string TypeInstanceCursorFingerprint(
+        string handle,
+        TypeIdentity typeIdentity,
+        HeapSnapshotArtifact snapshot)
+    {
+        var payload = string.Join('\n',
+            handle,
+            snapshot.Origin,
+            snapshot.ProcessId.ToString(CultureInfo.InvariantCulture),
+            snapshot.CapturedAt.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture),
+            typeIdentity.TypeFullName,
+            typeIdentity.ModuleName ?? string.Empty,
+            typeIdentity.ModulePath ?? string.Empty,
+            typeIdentity.ModuleVersionId?.ToString("D", CultureInfo.InvariantCulture) ?? string.Empty,
+            typeIdentity.MetadataToken?.ToString(CultureInfo.InvariantCulture) ?? string.Empty);
+        return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(payload)).AsSpan(0, 12));
+    }
 }

@@ -1,4 +1,4 @@
-export type LiveReadOperation = "object" | "gcroot";
+export type LiveReadOperation = "object" | "gcroot" | "instances";
 export type ConsentChoice = "once" | "session" | "cancel";
 
 export class LiveReadConsent {
@@ -63,7 +63,7 @@ export class LiveReadConsent {
 
 export const LIVE_READ_CONSENT_HTML = `<details id="liveReadConsents">
 <summary>Live-read permissions: none remembered</summary>
-<p>Remembered permissions apply separately to Object and GC root reads for this heap snapshot and CLI connection only.
+<p>Remembered permissions apply separately to type-instance, Object and GC root reads for this heap snapshot and CLI connection only.
 Reads can suspend the target and expose sensitive data. A new heap capture or closed panel ends these grants.
 Captures and exports still need their own acknowledgement.</p>
 <button id="revokeLiveReads" type="button" aria-disabled="true" title="No remembered live-read permission.">Revoke remembered live reads</button>
@@ -76,7 +76,7 @@ document.getElementById('revokeLiveReads').addEventListener('click', () => vscod
 function renderLiveReadConsent(message) {
   const root = document.getElementById('liveReadConsents');
   const grants = Array.isArray(message.grants) ? message.grants : [];
-  const names = grants.map(name => name === 'gcroot' ? 'GC root' : 'Object');
+  const names = grants.map(name => name === 'gcroot' ? 'GC root' : name === 'instances' ? 'Type instances' : 'Object');
   const revoke = document.getElementById('revokeLiveReads');
   revoke.setAttribute('aria-disabled', String(!grants.length));
   revoke.title = grants.length ? '' : 'No remembered live-read permission.';

@@ -1,5 +1,106 @@
+import { SingleFlightGuard, isQueryResult, type HeapTypeIdentity, type QueryResult } from "./protocol";
+
 declare function updateEvidenceViewSwitcher(container: HTMLElement): void;
 declare function selectThreadSnapshotView(view: string): void;
+declare function appendAddressValue(parent: HTMLElement, value: unknown, containerId: string): void;
+declare const vscode: { postMessage(message: Record<string, unknown>): void };
+
+export const TYPE_INSTANCE_PAGE_SIZE = 50;
+
+export interface TypeInstanceNavigationHost {
+    currentHeapHandle(): string | undefined;
+    acknowledge(typeName: string): Promise<boolean>;
+    query(handle: string, typeIdentity: HeapTypeIdentity, cursor: string | undefined, acknowledgeRisk: boolean): Promise<QueryResult>;
+    post(message: Record<string, unknown>): void;
+    log(text: string): void;
+}
+
+export class TypeInstanceNavigationController {
+    private readonly guard = new SingleFlightGuard();
+
+    public constructor(private readonly host: TypeInstanceNavigationHost) {}
+
+    public async handle(message: Record<string, unknown>): Promise<boolean> {
+        if (message.type !== "queryHeapInstances") return false;
+        const identity = parseHeapTypeIdentity(message.typeIdentity);
+        const cursor = message.cursor === undefined ? undefined
+            : typeof message.cursor === "string" && message.cursor.length > 0 && message.cursor.length <= 256
+                ? message.cursor : null;
+        const selectionId = typeof message.selectionId === "number" && Number.isSafeInteger(message.selectionId)
+            && message.selectionId > 0 ? message.selectionId : undefined;
+        if (identity === undefined || cursor === null || selectionId === undefined) {
+            this.host.log("Ignored an invalid heap type-instance request from the webview.");
+            return true;
+        }
+        const outcome = await this.guard.run(() => this.query(identity, cursor, selectionId));
+        if (!outcome.started) {
+            this.fail(identity.typeFullName, selectionId, "Another type-instance page is still running.");
+        }
+        return true;
+    }
+
+    private async query(identity: HeapTypeIdentity, cursor: string | undefined, selectionId: number): Promise<void> {
+        const handle = this.host.currentHeapHandle();
+        if (handle === undefined) {
+            this.fail(identity.typeFullName, selectionId, "No current heap snapshot handle is available.");
+            return;
+        }
+        if (!await this.host.acknowledge(identity.typeFullName)) {
+            this.fail(identity.typeFullName, selectionId, "Cancelled: the live-read acknowledgement was declined.");
+            return;
+        }
+        if (this.host.currentHeapHandle() !== handle) {
+            this.fail(identity.typeFullName, selectionId, "The heap context changed during acknowledgement; select the type again.");
+            return;
+        }
+        try {
+            const result = await this.host.query(handle, identity, cursor, true);
+            if (!isQueryResult(result) || result.view !== "type-instances"
+                || !sameHeapTypeIdentity(identity, result.requestedTypeIdentity)) {
+                this.fail(identity.typeFullName, selectionId, "The CLI returned an unexpected type-instance response.");
+                return;
+            }
+            this.host.post({ type: "heapInstances", selectionId, typeIdentity: identity, result });
+        } catch (error) {
+            this.fail(identity.typeFullName, selectionId, error instanceof Error ? error.message : String(error));
+        }
+    }
+
+    private fail(typeFullName: string, selectionId: number, message: string): void {
+        this.host.post({ type: "heapInstancesError", selectionId, typeFullName, message });
+        this.host.log(`Heap type-instance query for '${typeFullName}' failed: ${message}`);
+    }
+}
+
+function parseHeapTypeIdentity(value: unknown): HeapTypeIdentity | undefined {
+    if (typeof value !== "object" || value === null) return undefined;
+    const candidate = value as Record<string, unknown>;
+    if (typeof candidate.typeFullName !== "string" || candidate.typeFullName.trim().length === 0
+        || candidate.typeFullName.length > 1024) return undefined;
+    for (const [key, limit] of [["moduleName", 1024], ["modulePath", 4096]] as const) {
+        const field = candidate[key];
+        if (field !== undefined && field !== null && (typeof field !== "string" || field.length > limit)) return undefined;
+    }
+    if (candidate.moduleVersionId !== undefined && candidate.moduleVersionId !== null
+        && (typeof candidate.moduleVersionId !== "string"
+            || !/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(candidate.moduleVersionId)))
+        return undefined;
+    if (candidate.metadataToken !== undefined && candidate.metadataToken !== null
+        && (typeof candidate.metadataToken !== "number" || !Number.isSafeInteger(candidate.metadataToken)
+            || candidate.metadataToken <= 0 || candidate.metadataToken > 2147483647))
+        return undefined;
+    return candidate as unknown as HeapTypeIdentity;
+}
+
+function sameHeapTypeIdentity(expected: HeapTypeIdentity, actual: unknown): boolean {
+    const parsed = parseHeapTypeIdentity(actual);
+    return parsed !== undefined
+        && parsed.typeFullName === expected.typeFullName
+        && (parsed.moduleName ?? null) === (expected.moduleName ?? null)
+        && (parsed.modulePath ?? null) === (expected.modulePath ?? null)
+        && (parsed.moduleVersionId ?? null) === (expected.moduleVersionId ?? null)
+        && (parsed.metadataToken ?? null) === (expected.metadataToken ?? null);
+}
 
 function setThreadWorkspaceView(view: string): void {
     const workspaceView = document.getElementById("workspaceView") as HTMLSelectElement | null;
@@ -102,7 +203,7 @@ function renderHeapTypeNavigation(types: Array<Record<string, unknown>>): void {
     selection.className = "evidence-selection";
     const note = document.createElement("p");
     note.textContent = "Retained objects in this snapshot, not allocation traffic. Search/sort covers returned top types only. "
-        + "Select a type to find matching captured retention paths. Instance enumeration is not available here.";
+        + "Select a type to enumerate a bounded page of current instances, then inspect an address.";
     selection.appendChild(note);
     const detail = document.createElement("div");
     detail.tabIndex = -1;
@@ -130,6 +231,27 @@ function renderHeapTypeNavigation(types: Array<Record<string, unknown>>): void {
             const counts = document.createElement("p");
             counts.textContent = String(type.instanceCount ?? "Unavailable") + " instances | "
                 + String(type.totalBytes ?? "Unavailable") + " direct bytes. Not dominator-retained size.";
+            const identity = typeof type.identity === "object" && type.identity !== null
+                ? type.identity as Record<string, unknown> : { typeFullName: name, moduleName: type.moduleName ?? null };
+            const status = document.createElement("p");
+            status.setAttribute("role", "status");
+            status.textContent = "Requesting the first bounded instance page…";
+            const instances = document.createElement("div");
+            instances.className = "heap-type-instances";
+            const more = document.createElement("button");
+            more.type = "button";
+            more.textContent = "Load next instance page";
+            more.hidden = true;
+            const selectionId = ((window as unknown as { heapTypeSelectionSequence?: number }).heapTypeSelectionSequence ?? 0) + 1;
+            (window as unknown as { heapTypeSelectionSequence?: number }).heapTypeSelectionSequence = selectionId;
+            const state = { selectionId, typeIdentity: identity, status, instances, more, returned: 0, nextCursor: undefined as string | undefined };
+            (selection as HTMLElement & { instanceState?: typeof state }).instanceState = state;
+            more.addEventListener("click", () => {
+                if (!state.nextCursor) return;
+                more.disabled = true;
+                status.textContent = "Requesting the next bounded instance page…";
+                vscode.postMessage({ type: "queryHeapInstances", selectionId, typeIdentity: identity, cursor: state.nextCursor });
+            });
             const clear = document.createElement("button");
             clear.type = "button";
             clear.textContent = "Clear type focus";
@@ -137,10 +259,11 @@ function renderHeapTypeNavigation(types: Array<Record<string, unknown>>): void {
                 selectedButton?.removeAttribute("aria-current");
                 selectedButton = undefined;
                 delete selection.dataset.type;
+                delete (selection as HTMLElement & { instanceState?: unknown }).instanceState;
                 detail.replaceChildren();
                 applyHeapTypeFocus();
             });
-            detail.append(title, counts, clear);
+            detail.append(title, counts, status, instances, more, clear);
             const views = document.getElementById("heapQueryViews");
             const switcher = views?.querySelector<HTMLElement>(".evidence-view-switcher");
             if (views && switcher && document.getElementById("heapQueryViews-retention-paths")) {
@@ -148,6 +271,7 @@ function renderHeapTypeNavigation(types: Array<Record<string, unknown>>): void {
                 updateEvidenceViewSwitcher(views);
             }
             applyHeapTypeFocus();
+            vscode.postMessage({ type: "queryHeapInstances", selectionId, typeIdentity: identity });
             if (pane) showDetails();
             else {
                 detail.focus({ preventScroll: true });
@@ -156,6 +280,72 @@ function renderHeapTypeNavigation(types: Array<Record<string, unknown>>): void {
         });
         cell.replaceChildren(button);
     });
+}
+
+function handleHeapInstancesMessage(message: Record<string, unknown>): boolean {
+    if (message.type !== "heapInstances" && message.type !== "heapInstancesError") return false;
+    const selection = document.getElementById("heapTypeSelection") as (HTMLElement & {
+        instanceState?: {
+            selectionId: number;
+            typeIdentity: Record<string, unknown>;
+            status: HTMLElement;
+            instances: HTMLElement;
+            more: HTMLButtonElement;
+            returned: number;
+            nextCursor?: string;
+        };
+    }) | null;
+    const state = selection?.instanceState;
+    if (!state || message.selectionId !== state.selectionId) return true;
+    state.more.disabled = false;
+    if (message.type === "heapInstancesError") {
+        state.status.textContent = "Instance enumeration unavailable: " + String(message.message ?? "The query failed.");
+        state.more.hidden = true;
+        return true;
+    }
+
+    const result = message.result as Record<string, unknown> | undefined;
+    const rows = Array.isArray(result?.typeInstances) ? result.typeInstances : [];
+    for (const value of rows) {
+        if (typeof value !== "object" || value === null) continue;
+        const row = value as Record<string, unknown>;
+        const card = document.createElement("div");
+        card.className = "query-view-metric";
+        const address = document.createElement("strong");
+        appendAddressValue(address, row.address, "heapQueryViews");
+        const metadata = document.createElement("span");
+        metadata.textContent = String(row.size ?? "Unavailable") + " bytes | "
+            + String(row.generation ?? "Unknown generation") + " | " + String(row.segmentKind ?? "Unknown segment");
+        card.append(address, metadata);
+        state.instances.appendChild(card);
+    }
+    state.returned += rows.length;
+    const complete = result?.instanceEnumerationComplete === true;
+    state.nextCursor = typeof result?.nextCursor === "string" ? result.nextCursor : undefined;
+    state.more.hidden = complete || state.nextCursor === undefined;
+    const scanned = typeof result?.scannedObjects === "number" ? result.scannedObjects : "unknown";
+    const consistency = result?.instanceConsistency === "stable-offline-dump"
+        ? "Stable offline dump paging."
+        : "Live best-effort paging: GC or allocation between pages can move, remove, add, skip, or repeat logical instances.";
+    const origin = String(result?.origin ?? "Unknown origin");
+    const capturedAt = typeof result?.capturedAt === "string" ? result.capturedAt : "unknown capture time";
+    const enumeratedAt = typeof result?.enumeratedAt === "string" ? result.enumeratedAt : "unknown enumeration time";
+    const quality = typeof result?.quality === "object" && result.quality !== null
+        ? result.quality as Record<string, unknown> : undefined;
+    const limitationCount = Array.isArray(quality?.limitations) ? quality.limitations.length : 0;
+    state.status.textContent = state.returned + " instance address(es) returned across bounded page(s); "
+        + scanned + " heap object(s) scanned in the latest page. "
+        + (complete ? "Enumeration reached the end of the heap. " : "The inventory is incomplete; more pages may exist. ")
+        + consistency + " Source: " + origin + ", snapshot captured " + capturedAt + ", page enumerated " + enumeratedAt + ". "
+        + (limitationCount ? "Quality reports " + limitationCount + " limitation(s)." : "No additional quality limitation was reported.");
+    const warnings = Array.isArray(result?.instanceWarnings) ? result.instanceWarnings : [];
+    for (const warning of warnings) {
+        const item = document.createElement("p");
+        item.className = "thread-secondary";
+        item.textContent = String(warning);
+        state.instances.appendChild(item);
+    }
+    return true;
 }
 
 function applyHeapTypeFocus(): void {
@@ -527,5 +717,6 @@ function updateThreadNavigation(view: string, result: Record<string, unknown>): 
 }
 
 export const SNAPSHOT_NAVIGATION_SCRIPT = navigateHeapDetails.toString() + "\n" + renderHeapTypeNavigation.toString() + "\n"
+    + handleHeapInstancesMessage.toString() + "\n"
     + applyHeapTypeFocus.toString() + "\n" + setThreadWorkspaceView.toString() + "\n" + navigateThreadTo.toString()
     + "\n" + navigateThreadFromGroup.toString() + "\n" + updateThreadNavigation.toString();

@@ -258,6 +258,7 @@ public static class DiagnosticOperationCatalog
         public const string ThreadStatics = "thread-statics";
         public const string ObjectView = "object";
         public const string GcRoot = "gcroot";
+        public const string TypeInstances = "type-instances";
         public const string ObjectSize = "objsize";
         public const string DuplicateStrings = "duplicate-strings";
 
@@ -269,7 +270,7 @@ public static class DiagnosticOperationCatalog
 
             Add(["records", "children"]);
             Add(HeapSnapshotQueryDispatcher.ProjectionViews);
-            Add([ObjectView, GcRoot, ObjectSize, DuplicateStrings, Diff, Growth]);
+            Add([ObjectView, GcRoot, TypeInstances, ObjectSize, DuplicateStrings, Diff, Growth]);
             Add(ThreadSnapshotQueryDispatcher.SessionViews);
             Add([ResolveAddress, FrameVariables, ThreadStatics]);
             Add(OffCpuQueryDispatcher.SessionViews);

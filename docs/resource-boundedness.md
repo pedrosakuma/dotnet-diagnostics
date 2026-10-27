@@ -214,6 +214,25 @@ Warnings report field/depth budget hits, individual read failures and the count 
 outside the inspected interval. Changing ranges is a separate read; no aggregate array cache is
 built. The extension's bounded history retains metadata-only pages, not sensitive previews.
 
+### Heap type-instance enumeration
+
+The Core ClrMD query returns at most **100** exact-type object rows per request (the extension asks
+for 50) and visits at most **250,000** heap objects after the supplied continuation point. Both
+limits are enforced during enumeration: matching addresses are appended only while the page has
+capacity, and the walk stops when either bound is reached. The query never materializes the full
+matching inventory and never calculates retained size. Results report `scannedObjects`, whether
+the heap end was reached, an opaque next cursor, structured quality, and a warning naming the cap
+that stopped the page.
+
+The cursor is bound to the owning ephemeral handle, snapshot provenance and exact type identity.
+Dump pages enumerate segment/address order over the same immutable file and are stable. Live pages
+re-attach independently; their cursor prevents accidental cross-handle/type reuse but cannot make
+object addresses stable across GC. The response therefore labels live consistency as best-effort
+and warns that logical instances can be skipped or repeated between pages. Gcdump has no object
+addresses and fails explicitly. The extension retains only the pages the user requested for the
+currently selected type; a new capture or type selection replaces that UI state, and the existing
+CLI handle lifetime/connection ownership remains the authoritative availability boundary.
+
 ### Allocation profiling
 
 The EventPipe allocation sampler uses `GCAllocationTick`, not per-object instrumentation.

@@ -50,6 +50,24 @@ public sealed record HeapSnapshotQueryResult(
     public GcHandlesView? GcHandles { get; init; }
     /// <summary>Populated when <see cref="View"/> is <c>"object"</c>.</summary>
     public HeapObjectInspection? ObjectDetails { get; init; }
+    /// <summary>Exact type identity requested by the <c>"type-instances"</c> view.</summary>
+    public TypeIdentity? RequestedTypeIdentity { get; init; }
+    /// <summary>Bounded object rows returned by the <c>"type-instances"</c> view.</summary>
+    public IReadOnlyList<HeapTypeInstance>? TypeInstances { get; init; }
+    /// <summary>Requested maximum number of instances in this page.</summary>
+    public int? InstancePageSize { get; init; }
+    /// <summary>Number of heap objects visited while producing this page.</summary>
+    public int? ScannedObjects { get; init; }
+    /// <summary>True only when this query reached the end of the heap.</summary>
+    public bool? InstanceEnumerationComplete { get; init; }
+    /// <summary>Opaque handle/type-bound continuation cursor for a later page.</summary>
+    public string? NextCursor { get; init; }
+    /// <summary>When the snapshot origin was re-opened to enumerate this page.</summary>
+    public DateTimeOffset? EnumeratedAt { get; init; }
+    /// <summary>Whether paging is stable offline or best-effort across independent live re-reads.</summary>
+    public string? InstanceConsistency { get; init; }
+    /// <summary>Enumeration-specific limits and live-stability warnings.</summary>
+    public IReadOnlyList<string>? InstanceWarnings { get; init; }
     /// <summary>Populated when <see cref="View"/> is <c>"gcroot"</c>.</summary>
     public HeapGcRootInspection? GcRoot { get; init; }
     /// <summary>Populated when <see cref="View"/> is <c>"objsize"</c>.</summary>

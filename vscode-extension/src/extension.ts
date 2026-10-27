@@ -24,6 +24,7 @@ import { WEBVIEW_BUTTON_STYLES, WEBVIEW_FIELD_STYLES } from "./webviewFields";
 import { LIVE_TIME_NAVIGATION_SCRIPT } from "./liveTimeNavigation";
 import { MEMORY_OVERVIEW_HTML, MEMORY_OVERVIEW_SCRIPT, MEMORY_OVERVIEW_STYLES } from "./memoryOverview";
 import { LiveReadConsent, LIVE_READ_CONSENT_HTML, LIVE_READ_CONSENT_SCRIPT } from "./liveReadConsent";
+import { TypeInstanceNavigationController, type TypeInstanceNavigationHost } from "./snapshotNavigation";
 import { ACTION_AVAILABILITY_SCRIPT, ACTION_AVAILABILITY_STYLES, PROFILE_ACTIONS_SCRIPT } from "./actionAvailability";
 import {
     BoundedProtocolLineReader,
@@ -67,6 +68,8 @@ import {
     type DumpHeapCaptureResult,
     type HeapCaptureResult,
     type QueryResult,
+    type HeapTypeIdentity,
+    type TypeInstanceQuery,
     type ThreadCaptureResult,
     type ProtocolFrame,
     type TargetProcess,
@@ -306,6 +309,7 @@ class CounterPanelController implements vscode.Disposable {
     private heapSnapshot?: { session: StreamChild; handle: string; evidenceId: string };
     private readonly liveReadConsent = new LiveReadConsent(state => this.postMessage(state));
     private readonly addressNavigation = new AddressNavigationController(this.createAddressNavigationHost());
+    private readonly typeInstanceNavigation = new TypeInstanceNavigationController(this.createTypeInstanceNavigationHost());
     private connectChildTask?: Promise<StreamChild>;
     private lastRecoveryNotice?: { message: string; at: number };
 
@@ -1378,12 +1382,13 @@ class CounterPanelController implements vscode.Disposable {
         typeFilter?: string,
         navigation?: QueryNavigation,
         rootMethodFilter?: string,
+        typeInstances?: TypeInstanceQuery,
     ): Promise<QueryResult> {
         const requestId = randomBytes(12).toString("hex");
         const pending = deferred<QueryResult>();
         session.pendingQueries.set(requestId, pending);
         try {
-            this.writeFrame(session, buildQueryFrame(requestId, handle, view, typeFilter, navigation, rootMethodFilter));
+            this.writeFrame(session, buildQueryFrame(requestId, handle, view, typeFilter, navigation, rootMethodFilter, typeInstances));
             return await withTimeout(pending.promise, 60_000);
         } finally {
             session.pendingQueries.delete(requestId);
@@ -1451,6 +1456,46 @@ class CounterPanelController implements vscode.Disposable {
                 await vscode.env.clipboard.writeText(address);
                 vscode.window.setStatusBarMessage(`Copied ${address}`, 2000);
             },
+            log: text => this.output.appendLine(text),
+        };
+    }
+
+    private createTypeInstanceNavigationHost(): TypeInstanceNavigationHost {
+        return {
+            currentHeapHandle: () => {
+                const snapshot = this.heapSnapshot;
+                if (!snapshot || snapshot.session.closing || snapshot.session.process.exitCode !== null
+                    || snapshot.session.process.signalCode !== null) return undefined;
+                return snapshot.handle;
+            },
+            acknowledge: async typeName => this.liveReadConsent.acknowledge("instances", () => {
+                const snapshot = this.heapSnapshot;
+                return snapshot && !snapshot.session.closing && snapshot.session.process.exitCode === null
+                    && snapshot.session.process.signalCode === null ? snapshot : undefined;
+            }, async () => {
+                const choice = await vscode.window.showWarningMessage(
+                    `Enumerating instances of ${typeName} re-attaches to the LIVE process via ptrace and briefly suspends it while ClrMD scans a bounded heap page. Addresses can move after GC and the result is not part of the captured snapshot.`,
+                    { modal: true },
+                    "Acknowledge and Read",
+                    "Allow for This Snapshot Session",
+                    "Cancel",
+                );
+                return choice === "Allow for This Snapshot Session" ? "session"
+                    : choice === "Acknowledge and Read" ? "once" : "cancel";
+            }),
+            query: async (handle, typeIdentity, cursor, acknowledgeRisk) => {
+                const snapshot = this.heapSnapshot;
+                if (!snapshot || snapshot.handle !== handle) throw new Error("The heap snapshot changed; select the type again.");
+                return await this.sendQuery(
+                    snapshot.session,
+                    handle,
+                    "type-instances",
+                    undefined,
+                    undefined,
+                    undefined,
+                    { typeIdentity, pageSize: 50, cursor, acknowledgeRisk });
+            },
+            post: message => this.postMessage(message),
             log: text => this.output.appendLine(text),
         };
     }
@@ -2068,6 +2113,9 @@ class CounterPanelController implements vscode.Disposable {
                 this.useCurrentCpuAsNextBaseline(message.evidenceId);
             } else if (message.type === "navigationSelection") {
                 void this.exporter.handle(message);
+            } else if (message.type === "queryHeapInstances") {
+                this.exporter.set(undefined);
+                void this.typeInstanceNavigation.handle(message);
             } else if (message.type === "copyAddress" || message.type === "navigateAddress") {
                 if (message.type === "navigateAddress") this.exporter.set(undefined);
                 void this.addressNavigation.handle(message);
@@ -3179,6 +3227,7 @@ class DumpAnalysisPanelController implements vscode.Disposable {
     /** Heap snapshot handle address navigation queries; the connection stays open for it too (issue #1168). */
     private heapHandle: string | undefined;
     private readonly addressNavigation = new AddressNavigationController(this.createAddressNavigationHost());
+    private readonly typeInstanceNavigation = new TypeInstanceNavigationController(this.createTypeInstanceNavigationHost());
     private readonly threadStaticsGuard = new SingleFlightGuard();
 
     public constructor(
@@ -3203,6 +3252,11 @@ class DumpAnalysisPanelController implements vscode.Disposable {
             if (isRecord(message) && (message.type === "copyAddress" || message.type === "navigateAddress")) {
                 if (message.type === "navigateAddress") this.exporter.set(undefined);
                 void this.addressNavigation.handle(message);
+                return;
+            }
+            if (isRecord(message) && message.type === "queryHeapInstances") {
+                this.exporter.set(undefined);
+                void this.typeInstanceNavigation.handle(message);
                 return;
             }
             if (!isRecord(message) || message.type !== "queryThreadStatics") {
@@ -3370,12 +3424,19 @@ class DumpAnalysisPanelController implements vscode.Disposable {
     }
 
     /** See `CounterPanelController.sendQuery`'s doc comment — identical reasoning, different connection type. */
-    private async sendQuery(child: DumpAnalysisChild, handle: string, view: string, typeFilter?: string, navigation?: QueryNavigation): Promise<QueryResult> {
+    private async sendQuery(
+        child: DumpAnalysisChild,
+        handle: string,
+        view: string,
+        typeFilter?: string,
+        navigation?: QueryNavigation,
+        typeInstances?: TypeInstanceQuery,
+    ): Promise<QueryResult> {
         const requestId = randomBytes(12).toString("hex");
         const pending = deferred<QueryResult>();
         child.pendingQueries.set(requestId, pending);
         try {
-            this.writeFrame(child, buildQueryFrame(requestId, handle, view, typeFilter, navigation));
+            this.writeFrame(child, buildQueryFrame(requestId, handle, view, typeFilter, navigation, undefined, typeInstances));
             return await withTimeout(pending.promise, 60_000);
         } finally {
             child.pendingQueries.delete(requestId);
@@ -3401,6 +3462,27 @@ class DumpAnalysisPanelController implements vscode.Disposable {
                 await vscode.env.clipboard.writeText(address);
                 vscode.window.setStatusBarMessage(`Copied ${address}`, 2000);
             },
+            log: text => this.output.appendLine(text),
+        };
+    }
+
+    private createTypeInstanceNavigationHost(): TypeInstanceNavigationHost {
+        return {
+            currentHeapHandle: () => this.activeChild && !this.activeChild.terminated ? this.heapHandle : undefined,
+            acknowledge: async () => true,
+            query: async (handle: string, typeIdentity: HeapTypeIdentity, cursor: string | undefined) => {
+                const child = this.activeChild;
+                if (!child || child.terminated || handle !== this.heapHandle)
+                    throw new Error("The dump analysis connection is no longer available.");
+                return await this.sendQuery(
+                    child,
+                    handle,
+                    "type-instances",
+                    undefined,
+                    undefined,
+                    { typeIdentity, pageSize: 50, cursor });
+            },
+            post: message => this.postMessage(message),
             log: text => this.output.appendLine(text),
         };
     }
@@ -6313,6 +6395,8 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           workspaceLoadView.textContent = profileAvailability.cpu ? 'Retry view load' : 'Retained profile unavailable';
           renderCpuQuery(message.view, message.message, true, 'cpu', role);
         }
+      } else if (handleHeapInstancesMessage(message)) {
+        // Selection-id matching inside the shared renderer rejects stale pages.
       } else if (message.type === 'query' && message.kind === 'heap') {
         if (message.evidenceId !== heapEvidenceId) return;
         renderQueryView('heapQueryViews', message.view, message.result, false);
@@ -6676,6 +6760,8 @@ export function renderDumpAnalysisHtml(dumpFileName: string, nonce: string): str
         renderDumpHeapCapture(message.result);
       } else if (message.type === 'capture' && message.kind === 'thread-snapshot') {
         renderDumpThreadCapture(message.result);
+      } else if (handleHeapInstancesMessage(message)) {
+        // Selection-id matching inside the shared renderer rejects stale pages.
       } else if (message.type === 'query' && message.kind === 'heap') {
         renderQueryView('heapQueryViews', message.view, message.result, false);
       } else if (message.type === 'query' && message.kind === 'thread-snapshot') {

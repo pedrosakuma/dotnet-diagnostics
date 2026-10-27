@@ -730,6 +730,23 @@ right-side **Object inspector**, keeping the source view in place, with **Close*
 **Referencing statics** view filters the already-captured static fields by that exact address, so
 it needs no extra read and only exists when you opted into static fields before capturing.
 
+Selecting a heap type opens a bounded instance page before address navigation. The extension sends
+the exact capture-provided type identity, not only the display name, and requests at most 50 rows
+at a time. **Load next instance page** follows the CLI's opaque cursor; the UI keeps the selected
+type, Back-to-types focus target and already-returned addresses while the next page loads. A
+selection id rejects late pages after the user selects another type or a new capture replaces the
+workspace. Each returned address opens the existing Object inspector and its Object / GC root path
+/ Referencing statics actions. The aggregate count and bytes remain direct snapshot facts; the
+bounded address list is explicitly incomplete until the CLI reports that enumeration reached the
+end of the heap, and it is never labeled retained size.
+
+Dump pages are address-stable rereads of the same immutable file. Live pages require a separate
+**Type instances** live-read permission because they re-attach and briefly suspend the target;
+their status warns that GC or allocation between pages can move, remove, add, skip or repeat
+logical instances. Closing/replacing the heap handle disables further pages exactly like object
+and GC-root reads. Gcdump type rows remain aggregate-only and surface instance addresses as
+unavailable rather than empty.
+
 **Arrays and value-type entries.** The inspector reads a bounded range of at most 8 array
 elements. **Previous array range**, **Next array range**, and **Start index / Read array range**
 let you inspect other ranges without loading the full array. Indices are zero-based linear
@@ -750,15 +767,16 @@ consent. Each range read still obeys the live-read or offline-dump policy.
 
 **Live-read permissions.** In the live Heap tab, expand this section to inspect active grants
 and the last 30 decisions/uses, or **Revoke remembered live reads**. Native prompts offer
-**Acknowledge and Read** (once), **Allow for This Snapshot Session**, or cancellation. Object
-and GC root permissions are separate; remembering one never authorizes the other. Grants are
+**Acknowledge and Read** (once), **Allow for This Snapshot Session**, or cancellation. Type-instance,
+Object and GC root permissions are separate; remembering one never authorizes the others. Grants are
 in-memory, limited to the current heap snapshot and its CLI connection, and cleared on a new
 heap capture, connection closure, observed target exit or panel closure. Revoking while a prompt
 is open cancels that pending acknowledgement; it cannot interrupt a read already dispatched.
 Captures, raw traces and exports keep their separate acknowledgements. Dump reads do not acquire
 live-read grants. The bounded history records operation/decision/time, not addresses or values.
-**Object** and **GC root path** are read on demand through the CLI's `query` request with
-`address`. For a live panel that read uses the host's privileged attach mechanism and may suspend
+**Type instances**, **Object**, and **GC root path** are read on demand through the CLI's `query`
+request. Object and root queries use `address`; type enumeration uses the exact selected type
+identity plus a bounded cursor. For a live panel that read uses the host's privileged attach mechanism and may suspend
 the target (High risk; Linux uses ptrace), so
 the extension asks for an explicit modal acknowledgement unless that operation has an active
 snapshot-session grant, and shows the result as read

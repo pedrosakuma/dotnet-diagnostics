@@ -11,6 +11,107 @@ internal static class ClrMdHeapDrilldownService
     private const int GcRootDepthLimit = 64;
     private const int MaxRetainedGraphObjects = 250_000;
 
+    public static HeapTypeInstancesInspection EnumerateTypeInstances(
+        ClrRuntime runtime,
+        TypeIdentity requestedType,
+        HeapTypeInstanceQueryOptions options,
+        Func<ClrType?, TypeIdentity?> buildTypeIdentity,
+        HeapSnapshotOrigin origin,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(runtime);
+        ArgumentNullException.ThrowIfNull(requestedType);
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(buildTypeIdentity);
+        options.Validate();
+        if (string.IsNullOrWhiteSpace(requestedType.TypeFullName))
+            throw new ArgumentException("TypeFullName must be non-empty.", nameof(requestedType));
+
+        var instances = new List<HeapTypeInstance>(options.PageSize);
+        var warnings = new List<string>();
+        var typeMatchesByMethodTable = new Dictionary<ulong, bool>();
+        var scanned = 0;
+        var complete = true;
+        ulong lastScannedAddress = options.AfterAddress;
+
+        foreach (var segment in runtime.Heap.Segments.OrderBy(static segment => segment.Start))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var startAddress = options.AfterAddress < segment.Start
+                ? segment.Start
+                : options.AfterAddress == ulong.MaxValue
+                    ? ulong.MaxValue
+                    : options.AfterAddress + 1;
+            if (startAddress >= segment.End)
+                continue;
+
+            var range = new MemoryRange(startAddress, segment.End);
+            foreach (var obj in segment.EnumerateObjects(range, carefully: true))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                lastScannedAddress = obj.Address;
+                scanned++;
+                if (!obj.IsFree
+                    && obj.Type is { MethodTable: not 0 } type
+                    && string.Equals(type.Name, requestedType.TypeFullName, StringComparison.Ordinal))
+                {
+                    if (!typeMatchesByMethodTable.TryGetValue(type.MethodTable, out var typeMatches))
+                    {
+                        typeMatches = TypeMatches(requestedType, buildTypeIdentity(type), type.Name);
+                        typeMatchesByMethodTable[type.MethodTable] = typeMatches;
+                    }
+
+                    if (typeMatches)
+                    {
+                        instances.Add(new HeapTypeInstance(
+                            obj.Address,
+                            checked((long)obj.Size),
+                            segment.Kind.ToString(),
+                            segment.GetGeneration(obj.Address).ToString()));
+                        if (instances.Count >= options.PageSize)
+                        {
+                            complete = false;
+                            break;
+                        }
+                    }
+                }
+
+                if (scanned >= options.MaxScannedObjects)
+                {
+                    complete = false;
+                    break;
+                }
+            }
+
+            if (!complete)
+                break;
+        }
+
+        if (!complete)
+        {
+            warnings.Add(instances.Count >= options.PageSize
+                ? $"Enumeration stopped at PageSize={options.PageSize}; more matching instances may exist after the returned cursor."
+                : $"Enumeration stopped at MaxScannedObjects={options.MaxScannedObjects:N0}; more matching instances may exist after the returned cursor.");
+        }
+        if (origin == HeapSnapshotOrigin.Live)
+        {
+            warnings.Add("Live pages re-attach independently. GC or allocation between pages can move, remove, or add objects, so the cursor is best-effort and pages can skip or repeat logical instances.");
+        }
+
+        return new HeapTypeInstancesInspection(
+            requestedType,
+            instances,
+            options.PageSize,
+            scanned,
+            complete,
+            complete ? null : lastScannedAddress,
+            DateTimeOffset.UtcNow,
+            origin == HeapSnapshotOrigin.Dump ? "stable-offline-dump" : "best-effort-live-reread")
+        {
+            Warnings = warnings.Count == 0 ? null : warnings,
+        };
+    }
+
     public static HeapObjectInspection InspectObject(ClrRuntime runtime, ulong address, HeapObjectInspectionOptions? options = null)
     {
         var rangeRequested = options is not null;
@@ -161,6 +262,23 @@ internal static class ClrMdHeapDrilldownService
         }
 
         return obj;
+    }
+
+    private static bool TypeMatches(TypeIdentity requested, TypeIdentity? observed, string? observedName)
+    {
+        if (!string.Equals(requested.TypeFullName, observed?.TypeFullName ?? observedName, StringComparison.Ordinal))
+            return false;
+
+        if (requested.ModuleVersionId is { } requestedMvid && requested.MetadataToken is { } requestedToken)
+        {
+            return observed?.ModuleVersionId == requestedMvid && observed.MetadataToken == requestedToken;
+        }
+
+        if (!string.IsNullOrEmpty(requested.ModulePath))
+            return string.Equals(requested.ModulePath, observed?.ModulePath, StringComparison.OrdinalIgnoreCase);
+
+        return string.IsNullOrEmpty(requested.ModuleName)
+            || string.Equals(requested.ModuleName, observed?.ModuleName, StringComparison.OrdinalIgnoreCase);
     }
 
     private static List<HeapObjectField> ReadObjectFields(ClrObject obj, List<string> warnings)

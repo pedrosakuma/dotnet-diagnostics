@@ -2122,6 +2122,32 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
             IDumpInspector inspector = new ClrMdDumpInspector();
             var snapshot = await inspector.InspectAsync(dump.FilePath,
                 new DumpInspectionOptions(TopTypes: 25, IncludeStaticFields: true, SnapshotStaticFieldTopN: 5000), CancellationToken.None);
+            var stringType = snapshot.TopTypesByInstances.First(type =>
+                type.TypeFullName == "System.String" && type.Identity is not null);
+            var firstInstances = await inspector.EnumerateTypeInstancesAsync(
+                snapshot,
+                stringType.Identity!,
+                new HeapTypeInstanceQueryOptions(PageSize: 3, MaxScannedObjects: 250_000),
+                CancellationToken.None);
+            firstInstances.Instances.Should().HaveCount(3);
+            firstInstances.Complete.Should().BeFalse();
+            firstInstances.NextAfterAddress.Should().NotBeNull();
+            firstInstances.ScannedObjects.Should().BeInRange(3, HeapTypeInstanceQueryOptions.MaxObjectScanCount);
+            firstInstances.Consistency.Should().Be("stable-offline-dump");
+            firstInstances.Instances.Should().OnlyContain(instance => instance.Address > 0 && instance.Size > 0);
+
+            var secondInstances = await inspector.EnumerateTypeInstancesAsync(
+                snapshot,
+                stringType.Identity!,
+                new HeapTypeInstanceQueryOptions(
+                    PageSize: 3,
+                    MaxScannedObjects: 250_000,
+                    AfterAddress: firstInstances.NextAfterAddress!.Value),
+                CancellationToken.None);
+            secondInstances.Instances.Should().NotIntersectWith(firstInstances.Instances);
+            secondInstances.Instances.Should().OnlyContain(instance =>
+                instance.Address > firstInstances.NextAfterAddress.Value);
+
             ulong Address(string field) => snapshot.StaticFields!.Single(f =>
                 f.ContainingTypeFullName == "ArrayInspectionFixture" && f.FieldName == field).ValueAddress;
             Task<HeapObjectInspection> Read(string field, int start = 0, int count = 8) =>
