@@ -275,10 +275,22 @@ CPU comparison workflow and its limits are documented in [Historical comparisons
 The live panel keeps CPU, allocation and heap evidence within the **Workspace** domain/evidence
 selectors; other existing tabs remain available for their current result surfaces. Starting or
 completing an explicit capture selects its corresponding domain or result tab. CPU
-captures automatically show a triage overview and can be queried on the captured artifact for a
+captures automatically show an evidence-first guided overview and can be queried on the captured artifact for a
 call tree, top methods, hot path, module/namespace aggregates, and callers/callees of a selected
 method. These are in-memory views of the same sample, not additional captures; the owning CLI
 connection must remain open. The result panel keeps the capture summary and drilldown together.
+The overview leads with the strongest statement supported by the backend: OS-backed captures can
+name observed on-CPU samples, while EventPipe captures report stack frequency and keep wait matches
+explicitly heuristic. A running / heuristic-wait / unknown bar is shown only when the returned
+self-sample breakdown reconciles with the capture total; it is not CPU utilization or elapsed time.
+The top attributable method and dominant loaded hot-path leaf link to the existing profile views.
+Allocations, Threads & waits, and Requests & networking remain separate evidence and are offered as
+navigation targets without starting a capture. The quality disclosure separates observed, inferred,
+and unavailable conclusions, including unknown scheduler state and missing throughput/contention
+evidence. It explicitly withholds application/framework/runtime/GC ownership composition because
+the current evidence contract cannot classify it authoritatively. No managed/native substitute is
+shown. Capture start and duration remain metadata; no within-window timeline is drawn from
+capture-wide aggregates.
 The initial hotspot table remains available under **Capture hotspot summary**, collapsed by
 default so it does not duplicate the selected drilldown.
 
