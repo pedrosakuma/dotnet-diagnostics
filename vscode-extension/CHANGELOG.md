@@ -15,6 +15,11 @@ versioned independently from the CLI and the .NET packages.
   allocation/heap evidence or explicitly starts the existing heap-capture flow; opening the
   overview never collects. No heap comparison, type-instance enumeration, region map, persistent
   investigation context, leak verdict, or new CLI protocol field is introduced.
+- Make live CPU baseline/current deltas and method movers readable at 390 px and 540 px by
+  projecting table rows as labelled evidence cards without changing table semantics. Preserve
+  method presence, per-capture samples, shares and denominators, objective deltas, unavailable
+  reasons, evidence actions, forced-colors borders and keyboard-focusable controls.
+
 - Add an incremental live CPU baseline/current view over the CLI's advertised bounded
   `cpuHandleComparison` contract. Keep the two most recent handles as an explicit earlier baseline
   and later current capture, show backend/evidence/quality/denominators/unavailable reasons,

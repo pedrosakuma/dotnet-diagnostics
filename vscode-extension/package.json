@@ -334,6 +334,7 @@
     "@types/node": "^20.17.0",
     "@types/vscode": "^1.96.0",
     "@vscode/vsce": "3.3.2",
+    "playwright-core": "1.64.1",
     "typescript": "^5.7.2"
   }
 }

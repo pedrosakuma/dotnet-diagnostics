@@ -168,6 +168,7 @@ function renderCpuComparison(
     actions: CpuComparisonActions,
 ): void {
     const data = result.data;
+    container.className = (container.className + " cpu-comparison-view").trim();
     const text = (parent: HTMLElement, value: string, className?: string): HTMLElement => {
         const element = document.createElement("p");
         element.textContent = value;
@@ -272,18 +273,19 @@ function renderCpuComparison(
     container.appendChild(metricsHeading);
     const metrics = document.createElement("table");
     metrics.className = "query-view-table cpu-comparison-table";
+    metrics.setAttribute("aria-label", "Capture-level objective deltas");
     addHeader(metrics, ["Metric", "Baseline", "Current", "Absolute delta", "Relative delta", "Outcome / unavailable"]);
     const metricsBody = document.createElement("tbody");
     for (const metric of data.metrics) {
         const row = document.createElement("tr");
         addCells(row, [
             metric.name + " · " + metric.population + " · " + metric.normalization,
-            format(metric.delta.baselineValue, metric.delta.unit),
-            format(metric.delta.currentValue, metric.delta.unit),
+            valueAndDenominator(metric.delta.baselineValue, metric.delta.unit, metric.delta.baselineDenominator),
+            valueAndDenominator(metric.delta.currentValue, metric.delta.unit, metric.delta.currentDenominator),
             format(metric.delta.deltaAbs, metric.delta.deltaUnit),
             formatRelative(metric.delta),
             metric.delta.unavailableReason || metric.delta.outcome,
-        ]);
+        ], ["Metric", "Baseline", "Current", "Absolute delta", "Relative delta", "Outcome / unavailable"], true);
         metricsBody.appendChild(row);
     }
     metrics.appendChild(metricsBody);
@@ -300,6 +302,7 @@ function renderCpuComparison(
         "query-view-provenance");
     const movers = document.createElement("table");
     movers.className = "query-view-table cpu-comparison-table";
+    movers.setAttribute("aria-label", "Top method movers");
     addHeader(movers, ["Method", "Presence", "Baseline samples / share", "Current samples / share",
         "Raw sample delta", "Share delta", "Relative share delta", "Inspect evidence"]);
     const moversBody = document.createElement("tbody");
@@ -321,8 +324,10 @@ function renderCpuComparison(
             rawDelta,
             formatDelta(mover.exclusiveShare),
             formatRelative(mover.exclusiveShare),
-        ]);
+        ], ["Method", "Presence", "Baseline samples / share", "Current samples / share",
+            "Raw sample delta", "Share delta", "Relative share delta"], true);
         const actionCell = document.createElement("td");
+        actionCell.setAttribute("data-label", "Inspect evidence");
         const controls = document.createElement("div");
         controls.className = "cpu-comparison-row-actions";
         if (mover.baselineExclusiveSamples != null) {
@@ -386,6 +391,14 @@ function renderCpuComparison(
             ? "Unavailable" + (delta.unavailableReason ? " (" + delta.unavailableReason + ")" : "")
             : format(delta.deltaAbs, delta.deltaUnit);
     }
+    function valueAndDenominator(
+        value: number | null | undefined,
+        unit: string | null | undefined,
+        denominator: number | null | undefined,
+    ): string {
+        const rendered = format(value, unit);
+        return denominator == null ? rendered : rendered + " · denominator " + denominator + " samples";
+    }
     function sampleAndShare(samples: number | null | undefined, share: number | null | undefined, denominator: number): string {
         return samples == null || share == null
             ? "Unavailable (denominator " + denominator + " samples)"
@@ -403,18 +416,21 @@ function renderCpuComparison(
         head.appendChild(row);
         table.appendChild(head);
     }
-    function addCells(row: HTMLElement, values: string[]): void {
-        for (const value of values) {
-            const cell = document.createElement("td");
+    function addCells(row: HTMLElement, values: string[], labels: string[], firstCellIsHeader = false): void {
+        values.forEach((value, index) => {
+            const cell = document.createElement(index === 0 && firstCellIsHeader ? "th" : "td");
+            if (index === 0 && firstCellIsHeader) cell.setAttribute("scope", "row");
+            cell.setAttribute("data-label", labels[index]);
             cell.textContent = value;
             row.appendChild(cell);
-        }
+        });
     }
 }
 
 export const CPU_COMPARISON_SCRIPT = renderCpuComparison.toString();
 
 export const CPU_COMPARISON_STYLES = `
+    .cpu-comparison-view { container-type:inline-size; }
     .cpu-comparison-captures { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:.7rem; }
     .cpu-comparison-capture, .cpu-comparison-compatibility {
         border:1px solid var(--vscode-panel-border); padding:.65rem; min-width:0;
@@ -424,13 +440,52 @@ export const CPU_COMPARISON_STYLES = `
     .cpu-comparison-capture dt { color:var(--vscode-descriptionForeground); }
     .cpu-comparison-capture dd { margin:0; overflow-wrap:anywhere; font-variant-numeric:tabular-nums; }
     .cpu-comparison-table { min-width:64rem; }
-    .cpu-comparison-table td { vertical-align:top; }
+    .cpu-comparison-table td, .cpu-comparison-table th { vertical-align:top; overflow-wrap:anywhere; }
     .cpu-comparison-row-actions { display:flex; flex-direction:column; gap:.3rem; min-width:10rem; }
-    @media (max-width:650px) {
+    @container (max-width:650px) {
         .cpu-comparison-captures { grid-template-columns:1fr; }
         .cpu-comparison-capture .cpu-overview-actions button { flex:1 1 11rem; min-width:0; }
+        .query-view-table-wrap:has(.cpu-comparison-table) { overflow-x:visible; }
+        .cpu-comparison-table {
+            display:block; min-width:0; width:100%; border:0; background:transparent;
+        }
+        .cpu-comparison-table thead {
+            position:absolute; width:1px; height:1px; padding:0; margin:-1px;
+            overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0;
+        }
+        .cpu-comparison-table tbody { display:grid; gap:.65rem; }
+        .cpu-comparison-table tr {
+            display:block; border:1px solid var(--vscode-panel-border);
+            background:var(--vscode-editorWidget-background); min-width:0;
+        }
+        .cpu-comparison-table td, .cpu-comparison-table tbody th {
+            display:grid; grid-template-columns:minmax(8.5rem,38%) minmax(0,1fr);
+            gap:.65rem; width:auto; padding:.45rem .55rem; border:0;
+            border-bottom:1px solid var(--vscode-panel-border); text-align:left;
+            min-width:0; max-width:none; white-space:normal;
+        }
+        .cpu-comparison-table td:last-child { border-bottom:0; }
+        .cpu-comparison-table td::before, .cpu-comparison-table tbody th::before {
+            content:attr(data-label); color:var(--vscode-descriptionForeground);
+            font-weight:600; overflow-wrap:anywhere;
+        }
+        .cpu-comparison-table tbody th {
+            grid-template-columns:1fr; gap:.2rem; font-weight:600;
+        }
+        .cpu-comparison-table tbody th::before { font-size:.9em; font-weight:400; }
+        .cpu-comparison-row-actions { min-width:0; }
+        .cpu-comparison-row-actions button { width:100%; min-height:2.25rem; white-space:normal; }
+    }
+    @container (max-width:430px) {
+        .cpu-comparison-capture .cpu-overview-actions button { flex-basis:100%; }
+        .cpu-comparison-table td {
+            grid-template-columns:1fr; gap:.2rem;
+        }
     }
     @media (forced-colors: active) {
-        .cpu-comparison-capture, .cpu-comparison-compatibility { border-color:CanvasText; }
+        .cpu-comparison-capture, .cpu-comparison-compatibility,
+        .cpu-comparison-table tr, .cpu-comparison-table td, .cpu-comparison-table tbody th {
+            border-color:CanvasText;
+        }
     }
 `;
