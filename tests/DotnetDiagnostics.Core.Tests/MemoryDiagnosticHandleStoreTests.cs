@@ -200,6 +200,15 @@ public class MemoryDiagnosticHandleStoreTests
     }
 
     [Fact]
+    public void Capacity_ReportsConfiguredMaximumWithoutChangingStoreBehavior()
+    {
+        var store = new MemoryDiagnosticHandleStore(maxEntries: 7);
+
+        store.Capacity.Should().Be(7);
+        store.EntryCount.Should().Be(0);
+    }
+
+    [Fact]
     public void Tombstones_RemainStrictlyBoundedAndForgetOldestMetadata()
     {
         var store = new MemoryDiagnosticHandleStore(maxEntries: 2);

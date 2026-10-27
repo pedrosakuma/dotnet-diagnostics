@@ -32,15 +32,20 @@ not require a version bump. Send a handshake before any other request:
 {"type":"hello","protocolVersion":2}
 ```
 
-The CLI replies with the negotiated protocol, its informational CLI version, and the supported live
-kind names:
+The CLI replies with the negotiated protocol, its informational CLI version, supported live kind
+names, and additive versioned feature capabilities:
 
 ```json
-{"type":"hello","protocolVersion":2,"cliVersion":"0.31.0","supportedLiveKinds":["counters","event_source","gc"]}
+{"type":"hello","protocolVersion":2,"cliVersion":"<informational-version>","supportedLiveKinds":["counters","event_source","gc"],"heapGrowth":{"version":1,"available":true,"storeCapacity":32,"minimumStoreCapacity":2,"queryView":"growth","handleKind":"heap-snapshot","baselineField":"baselineHandle","rankBy":["bytes","instances"],"defaultMinDeltaPct":5,"defaultTopN":25,"maxTopN":500,"requiresSameProcess":true,"requiresSameProvenance":true,"storage":"in-memory","boundedLifetime":true,"storePolicy":"shared-configured-bounded"}}
 ```
 
 Clients may use `cliVersion` for feature-compatibility guidance and `supportedLiveKinds` to gate
-optional live-stream features; both fields are additive and do not change protocol negotiation.
+optional live-stream features. They must require both a recognized `heapGrowth.version` and
+`heapGrowth.available:true`, rather than infer support from the general CLI version, before sending
+two-handle heap growth queries. `storeCapacity` is the effective shared handle-store capacity and
+`minimumStoreCapacity` is the minimum needed for baseline and current handles to coexist. A configured
+capacity of 1 therefore advertises `available:false` without removing the versioned capability
+object. These fields are additive and do not change protocol negotiation.
 
 ### Live sessions (`start`/`stop`)
 
@@ -458,8 +463,54 @@ returns an `invalid_query` error. `typeFilter` is ignored by every other view.
 `omittedThreads`, and `notes` (a truncation note when `omittedThreads > 0`). Of the address-targeted drilldown views, only `object` and `gcroot` are exposed
 through this request, for heap handles (see below); `objsize`, `duplicate-strings`, `resolve-address`
 and `frame-vars` remain MCP-only `query_snapshot` views. Heap handles captured with `source:"gcdump"` support none of the 10 views above except
-`top-types` (outside this feature's scope), since a gcdump retains only per-type node/byte totals;
-expect a `view_unavailable_for_gc_dump` error for every view queried against a gcdump-origin handle.
+`top-types` (outside this feature's scope), since a gcdump retains only per-type node/byte totals.
+The two-handle `growth` view below is the exception: it can compare two gcdump snapshots while
+preserving their evidence-quality limitations, but it cannot add retention paths that gcdump never
+captured. Expect a `view_unavailable_for_gc_dump` error for every ordinary single-handle view queried
+against a gcdump-origin handle.
+
+#### Retention-aware heap growth (`view:"growth"`)
+
+When `hello.heapGrowth.version` is `1` and `hello.heapGrowth.available` is `true`, compare an earlier
+baseline heap handle with a later current heap handle on the same open CLI stream:
+
+```json
+{"type":"query","requestId":"growth-1","handle":"<current-handle>","baselineHandle":"<baseline-handle>","view":"growth","rankBy":"bytes","minDeltaPct":5,"topN":25}
+```
+
+`baselineHandle` is required only for `growth`; `diff` is not part of the CLI protocol. `rankBy`
+defaults to `bytes` and also accepts `instances`; `minDeltaPct` defaults to `5` and must be
+finite and non-negative; `topN` defaults to `25` and remains bounded to 1-500. The CLI calls Core
+`HeapGrowthDiff.Build` directly, so type identity matching, absolute-growth ranking, gcdump quality
+propagation, verdicts, notes, omitted/ambiguous correlation reporting, and current-snapshot retention
+path correlation are identical to the existing Core behavior. The `query` response keeps the normal
+outer `handle`/`view` fields, adds `baselineHandle`, and returns Core's growth result plus the two
+capture origins, including both handles, PID, baseline/current capture timestamps, elapsed time,
+heap totals, ranked growers, quality, verdict, and notes.
+
+Both handles must resolve to `heap-snapshot` payloads, be distinct, describe the same PID, have the
+same `live`, `dump`, or `gcDump` provenance, and be supplied in chronological order. For `live` and
+`gcDump` pairs, the query also verifies that the target PID still exists and that the running
+process's start time is not later than either capture timestamp. An exited target fails with
+`reason:"target_process_unavailable"`; a reused PID or stale capture identity fails with
+`reason:"process_lifetime_mismatch"`. Both use the normal structured `invalid_query` error envelope.
+Dump-origin pairs are offline and never perform this live-process check. Malformed input returns
+`invalid_query`; a wrong baseline kind returns `unsupported_handle_kind`; an incompatible payload
+returns `query_failed`. An unavailable baseline returns `handle_unavailable` with
+`handleRole:"baseline"` and a distinct `status` of `expired`, `capacity_evicted`, or `unknown`, so
+clients do not collapse bounded-store loss into an invalid ID. The same shape and statuses apply to
+an unavailable current handle with `handleRole:"current"`; a wrong current or baseline kind returns
+`unsupported_handle_kind` with the corresponding `handleRole`.
+
+`storePolicy:"shared-configured-bounded"` means baseline and current remain ordinary entries in the
+existing shared, configured, bounded `MemoryDiagnosticHandleStore`, with the same TTL and capacity
+rules as old-client captures and every other heap capture. This is not an unbounded history and not
+a dedicated two-slot or pinned pair. Either handle may expire or be capacity-evicted. Streaming does
+not proactively run dead-process eviction, so live/gcdump growth validates target liveness and process
+lifetime when the query is made instead of claiming that stale handles were already invalidated. The
+protocol adds no release message, replacement slot, persistence, automatic recollection, or durable
+comparison. Capture both snapshots on the same stream, query while both handles still resolve, and
+use the separate durable capture workflow when reopenable evidence is required.
 
 **Address navigation (`address` / `acknowledgeRisk`).** `query` accepts an optional `address` for
 heap handles. It must be a JSON **string** holding a non-zero `0x`-prefixed hexadecimal value of at
