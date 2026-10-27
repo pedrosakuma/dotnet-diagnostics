@@ -56,7 +56,15 @@ internal static class ClrMdHeapWalker
             foreach (var obj in segment.EnumerateObjects(carefully: true))
             {
                 ct.ThrowIfCancellationRequested();
-                if (obj.Type is null || obj.Type.MethodTable == 0)
+                // Preserve the legacy global-warning contract for null-type placeholders while
+                // still marking this segment's additive free-block evidence partial.
+                if (obj.Type is null)
+                {
+                    segmentUnresolvedObjects++;
+                    continue;
+                }
+
+                if (obj.Type.MethodTable == 0)
                 {
                     unresolvedObjects++;
                     segmentUnresolvedObjects++;
