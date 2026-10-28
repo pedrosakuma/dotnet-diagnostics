@@ -540,10 +540,12 @@ re-walking anything.
 
 ### Follow-up drilldown queries (`query`)
 
-Once a CPU, heap or thread-snapshot `capture` response has returned a handle, send a `query` request to
-read one of its pre-computed views — no new ClrMD work happens; this dispatches to the same Core
-analytics and view dispatchers the `query_snapshot` MCP tool uses, scoped to handles already
-registered by prior captures:
+Once a CPU, heap or thread-snapshot `capture` response has returned a `handle`, send a `query` request to
+read one of its follow-up views. Most views are projections of already-computed capture data and
+dispatch to the same Core view dispatchers (`HeapSnapshotQueryDispatcher`,
+`ThreadSnapshotQueryDispatcher`) the `query_snapshot` MCP tool uses. The explicitly documented
+`type-instances`, `object`, `gcroot`, and `thread-statics` views instead re-open the handle's
+recorded origin with ClrMD, while preserving the same handle ownership and expiry:
 
 ```json
 {"type":"query","requestId":"q-1","handle":"<handle-id>","view":"roots-by-kind"}
@@ -664,6 +666,32 @@ The top-K bound is enforced while walking; the full range inventory is never ret
 from a warning-free walk. The existing CLR `freeObjectCount` remains unchanged and must not be
 read as a material hole count. These fields describe directly observed `obj.IsFree` records, not
 allocation success, object liveness, retained size, or pinned-object concentration.
+
+**Bounded type-instance pages (`type-instances`).** This view requires the exact `typeIdentity`
+object returned on a heap capture's `topTypesByBytes[]` / `topTypesByInstances[]` row. `topN`
+is the page size (default 50, maximum 100). Each request enforces both that returned-row limit and
+an insertion-time scan limit of 250,000 heap objects; it never builds the complete matching
+inventory before truncating. The result returns exact hexadecimal `typeInstances[].address`
+values plus size/generation/segment metadata, `scannedObjects`,
+`instanceEnumerationComplete`, `nextCursor`, `enumeratedAt`, `instanceConsistency`,
+`instanceWarnings`, capture provenance, and structured `quality`. An incomplete page is not a
+complete inventory. Continue only with the opaque `nextCursor`; it is bound to the same handle,
+snapshot and exact type identity, and reuse against another context returns `invalid_query`.
+
+```json
+{"type":"query","requestId":"instances-1","handle":"<heap-handle>","view":"type-instances","typeIdentity":{"typeFullName":"Sample.Cache","moduleName":"Sample.dll","moduleVersionId":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa","metadataToken":33554433},"topN":50}
+```
+
+Dump-origin enumeration re-reads the immutable dump and reports
+`instanceConsistency:"stable-offline-dump"`; cursor pages are address-ordered and stable for that
+handle/file. Live-origin enumeration is a High-risk ClrMD re-attach and requires
+`acknowledgeRisk:"high"`. Every page is an independent bounded reread, so it reports
+`instanceConsistency:"best-effort-live-reread"`: GC and allocation between pages can move,
+remove, add, skip, or repeat logical instances. The cursor is stable and validated as a protocol
+continuation token, not a claim that live object identity remains stable. Gcdump returns
+`view_unavailable_for_gc_dump`, because aggregate nodes do not contain object addresses.
+Returned addresses can be passed directly to `object`, `gcroot`, or captured `static-fields`
+navigation; no retained-size calculation is performed.
 
 **Address navigation (`address` / `acknowledgeRisk`).** `query` accepts an optional `address` for
 heap handles. It must be a JSON **string** holding a non-zero `0x`-prefixed hexadecimal value of at

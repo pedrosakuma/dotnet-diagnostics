@@ -111,6 +111,7 @@ internal static partial class CliStreamingProtocol
         "delegate-targets",
         "retention-paths",
         "retained-exceptions",
+        "type-instances",
     };
 
     /// <summary>
@@ -1559,6 +1560,38 @@ internal static partial class CliStreamingProtocol
             rootMethodFilter = filter;
         }
 
+        if (!CliStreamingQueryNavigation.TryReadTypeIdentity(root, out var typeIdentity))
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId,
+                code = "invalid_query",
+                message = CliStreamingQueryNavigation.TypeIdentityFormatMessage,
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+
+        string? cursor = null;
+        if (root.TryGetProperty("cursor", out var cursorElement)
+            && cursorElement.ValueKind != JsonValueKind.Null)
+        {
+            if (cursorElement.ValueKind != JsonValueKind.String
+                || cursorElement.GetString() is not { Length: > 0 and <= 256 } cursorValue
+                || cursorValue.Any(char.IsControl))
+            {
+                await writer.WriteAsync(new
+                {
+                    type = "error",
+                    requestId,
+                    code = "invalid_query",
+                    message = "'cursor' must be a non-empty string of at most 256 characters without control characters.",
+                }, CancellationToken.None).ConfigureAwait(false);
+                return;
+            }
+            cursor = cursorValue;
+        }
+
         // #1168: `address` is a strict 0x-hex string (never a JSON number); validated before any handle lookup.
         var addressStatus = CliStreamingQueryNavigation.TryReadAddress(root, out var address);
         if (addressStatus == CliStreamingQueryNavigation.AddressStatus.Invalid)
@@ -1756,14 +1789,14 @@ internal static partial class CliStreamingProtocol
             await HandleHeapQueryAsync(
                 requestId, services, writer, stdin, stdout, stderr, handles, handle, view, topN,
                 addressStatus == CliStreamingQueryNavigation.AddressStatus.Valid ? address : null,
-                acknowledgeRisk, includeSensitiveValues, objectOptions, found.Artifact, cancellationToken).ConfigureAwait(false);
+                acknowledgeRisk, includeSensitiveValues, objectOptions, typeIdentity, cursor, found.Artifact, cancellationToken).ConfigureAwait(false);
             return;
         }
 
-        if (includeSensitiveValues || objectOptions is not null)
+        if (includeSensitiveValues || objectOptions is not null || typeIdentity is not null || cursor is not null)
         {
             await writer.WriteAsync(new { type = "error", requestId, code = "invalid_query",
-                message = "Object-value and array-range reads require a heap-snapshot handle." },
+                message = "Object-value, array-range, type-identity, and cursor fields require a heap-snapshot handle." },
                 CancellationToken.None).ConfigureAwait(false);
             return;
         }
@@ -1980,6 +2013,8 @@ internal static partial class CliStreamingProtocol
         string? acknowledgeRisk,
         bool includeSensitiveValues,
         HeapObjectInspectionOptions? objectOptions,
+        TypeIdentity? typeIdentity,
+        string? cursor,
         object artifact,
         CancellationToken cancellationToken)
     {
@@ -1998,6 +2033,26 @@ internal static partial class CliStreamingProtocol
         }
 
         var snapshot = (HeapSnapshotArtifact)artifact;
+        if (normalizedView == "type-instances")
+        {
+            await HandleHeapTypeInstancesAsync(
+                requestId, services, writer, stdin, stdout, stderr, handles, handle, topN,
+                address, acknowledgeRisk, typeIdentity, cursor, snapshot, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        if (typeIdentity is not null || cursor is not null)
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId,
+                code = "invalid_query",
+                message = "'typeIdentity' and 'cursor' are supported only for view 'type-instances'.",
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+
         if (isObjectRead)
         {
             await HandleHeapObjectReadAsync(
@@ -2060,6 +2115,173 @@ internal static partial class CliStreamingProtocol
             handle,
             view = normalizedView,
             result = TrimHeapQueryResult(result.Data! with { Address = address }),
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task HandleHeapTypeInstancesAsync(
+        string requestId,
+        IServiceProvider services,
+        ProtocolWriter writer,
+        TextReader stdin,
+        TextWriter stdout,
+        TextWriter stderr,
+        IDiagnosticHandleStore handles,
+        string handle,
+        int topN,
+        ulong? address,
+        string? acknowledgeRisk,
+        TypeIdentity? typeIdentity,
+        string? cursor,
+        HeapSnapshotArtifact snapshot,
+        CancellationToken cancellationToken)
+    {
+        if (address is not null)
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId,
+                code = "invalid_query",
+                message = "'address' is not accepted for view 'type-instances'; use the returned instance addresses with 'object' or 'gcroot'.",
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+        if (typeIdentity is null)
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId,
+                code = "invalid_query",
+                message = $"A valid 'typeIdentity' is required for view 'type-instances'. {CliStreamingQueryNavigation.TypeIdentityFormatMessage}",
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+        if (topN > HeapTypeInstanceQueryOptions.MaxPageSize)
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId,
+                code = "invalid_query",
+                message = $"'topN' for view 'type-instances' must be between 1 and {HeapTypeInstanceQueryOptions.MaxPageSize}.",
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+        if (snapshot.Origin == HeapSnapshotOrigin.GcDump)
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId,
+                code = "view_unavailable_for_gc_dump",
+                message = "View 'type-instances' is unavailable for gcdump handles because they retain aggregate type counts, not stable object addresses.",
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+        if (!CliStreamingQueryNavigation.TryParseTypeInstanceCursor(cursor, handle, typeIdentity, snapshot, out var afterAddress))
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId,
+                code = "invalid_query",
+                message = "The type-instance cursor is malformed or belongs to a different handle, snapshot, or type.",
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+
+        var safetyOptions = CliStreamingQueryNavigation.CreateObjectReadSafetyOptions(
+            snapshot.Origin, handle, "type-instances", acknowledgeRisk);
+        var safety = await CliSafetyPreflight.RunAsync(
+            safetyOptions,
+            handles,
+            CliExecutionContext.OneShot,
+            interactive: false,
+            stdin,
+            stdout,
+            stderr,
+            artifactRoot: null,
+            cancellationToken).ConfigureAwait(false);
+        if (safety != CliSafetyPreflightDisposition.Proceed)
+        {
+            var resolvedRisk = CliInvocationSafety.Resolve(safetyOptions, handles).RiskLevel;
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId,
+                code = "query_safety_rejected",
+                message = resolvedRisk >= InvocationRiskLevel.High
+                    ? $"The 'type-instances' query was not run. Re-send with acknowledgeRisk=\"{EnumName(resolvedRisk)}\" after showing the risk explanation to the user."
+                    : "The 'type-instances' query was not run.",
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+
+        HeapTypeInstancesInspection inspection;
+        try
+        {
+            inspection = await services.GetRequiredService<IDumpInspector>().EnumerateTypeInstancesAsync(
+                snapshot,
+                typeIdentity,
+                new HeapTypeInstanceQueryOptions(topN, HeapTypeInstanceQueryOptions.MaxObjectScanCount, afterAddress),
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId,
+                code = "query_failed",
+                message = $"type-instances: {ex.Message}",
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+
+        var nextCursor = inspection.NextAfterAddress is { } nextAddress
+            ? CliStreamingQueryNavigation.CreateTypeInstanceCursor(handle, typeIdentity, snapshot, nextAddress)
+            : null;
+        var quality = snapshot.Quality ?? DotnetDiagnostics.Core.Evidence.EvidenceQuality.LegacyUnknown;
+        if (!inspection.Complete)
+        {
+            quality = GcDumpEvidence.WithProjection(
+                quality,
+                "query-type-instances",
+                1,
+                $"The page stopped after returning {inspection.Instances.Count} matching instance(s) or scanning {inspection.ScannedObjects:N0} objects; the remaining inventory is unknown until later pages complete.");
+        }
+
+        var result = new HeapSnapshotQueryResult(
+            handle,
+            "type-instances",
+            snapshot.Origin.ToString(),
+            snapshot.ProcessId,
+            snapshot.CapturedAt)
+        {
+            Quality = quality,
+            RequestedTypeIdentity = typeIdentity,
+            TypeInstances = inspection.Instances,
+            InstancePageSize = inspection.PageSize,
+            ScannedObjects = inspection.ScannedObjects,
+            InstanceEnumerationComplete = inspection.Complete,
+            NextCursor = nextCursor,
+            EnumeratedAt = inspection.EnumeratedAt,
+            InstanceConsistency = inspection.Consistency,
+            InstanceWarnings = inspection.Warnings,
+        };
+
+        await writer.WriteAsync(new
+        {
+            type = "query",
+            requestId,
+            handle,
+            view = "type-instances",
+            result = TrimHeapQueryResult(result),
         }, cancellationToken).ConfigureAwait(false);
     }
 
@@ -2356,6 +2578,15 @@ internal static partial class CliStreamingProtocol
         address = data.Address is { } queryAddress ? FormatAddress(queryAddress) : null,
         objectDetails = data.ObjectDetails is { } objectDetails ? CliStreamingQueryNavigation.ProjectObject(objectDetails) : null,
         sensitiveValuesIncluded = data.ObjectDetails is not null && includeSensitiveValues,
+        requestedTypeIdentity = data.RequestedTypeIdentity,
+        typeInstances = data.TypeInstances?.Select(CliStreamingQueryNavigation.ProjectTypeInstance),
+        instancePageSize = data.InstancePageSize,
+        scannedObjects = data.ScannedObjects,
+        instanceEnumerationComplete = data.InstanceEnumerationComplete,
+        nextCursor = data.NextCursor,
+        enumeratedAt = data.EnumeratedAt,
+        instanceConsistency = data.InstanceConsistency,
+        instanceWarnings = data.InstanceWarnings,
         gcRoot = data.GcRoot is { } gcRoot ? CliStreamingQueryNavigation.ProjectGcRoot(gcRoot) : null,
         retentionPaths = data.RetentionPaths?.Select(ProjectRetentionPath),
         rootsByKind = data.RootsByKind,

@@ -12,6 +12,7 @@ public sealed class CliStreamingQueryNavigationTests
     [Theory]
     [InlineData("object")]
     [InlineData("gcroot")]
+    [InlineData("type-instances")]
     public void ObjectReadSafety_DumpOriginIsOfflineWarn_LiveOriginStaysHighAcknowledge(string view)
     {
         var dump = CliInvocationSafety.Resolve(
@@ -109,5 +110,45 @@ public sealed class CliStreamingQueryNavigationTests
     public void ObjectReadViews_ExcludeObjectSize()
     {
         CliStreamingQueryNavigation.ObjectReadViews.Should().BeEquivalentTo("object", "gcroot");
+    }
+
+    [Fact]
+    public void TypeInstanceCursor_IsStableAndBoundToHandleSnapshotAndType()
+    {
+        var snapshot = new HeapSnapshotArtifact(
+            HeapSnapshotOrigin.Dump,
+            42,
+            DateTimeOffset.Parse("2026-10-26T12:00:00Z"),
+            TimeSpan.Zero,
+            new("CoreCLR", "10.0", "x64", false, 1),
+            new(0, 0, 0, 0, 0, 0, 0),
+            [],
+            []);
+        var type = new TypeIdentity("Sample.Cache")
+        {
+            ModuleName = "Sample.dll",
+            ModuleVersionId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+            MetadataToken = 0x02000001,
+        };
+
+        var cursor = CliStreamingQueryNavigation.CreateTypeInstanceCursor("h1", type, snapshot, 0xfedcba9876543210);
+
+        CliStreamingQueryNavigation.TryParseTypeInstanceCursor(cursor, "h1", type, snapshot, out var address)
+            .Should().BeTrue();
+        address.Should().Be(0xfedcba9876543210);
+        CliStreamingQueryNavigation.TryParseTypeInstanceCursor(cursor, "h2", type, snapshot, out _)
+            .Should().BeFalse();
+        CliStreamingQueryNavigation.TryParseTypeInstanceCursor(
+            cursor, "h1", type with { TypeFullName = "Sample.Other" }, snapshot, out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public void TypeInstanceProjection_KeepsExactAddressAsHexString()
+    {
+        var json = JsonSerializer.Serialize(CliStreamingQueryNavigation.ProjectTypeInstance(
+            new HeapTypeInstance(0xfedcba9876543210, 48, "Generation2", "Generation2")));
+
+        using var document = JsonDocument.Parse(json);
+        document.RootElement.GetProperty("address").GetString().Should().Be("0xfedcba9876543210");
     }
 }

@@ -49,6 +49,49 @@ public sealed record HeapObjectInspectionOptions(int ArrayStartIndex = 0, int Ar
     }
 }
 
+/// <summary>One managed object discovered by a bounded exact-type heap enumeration.</summary>
+public sealed record HeapTypeInstance(
+    ulong Address,
+    long Size,
+    string SegmentKind,
+    string Generation);
+
+/// <summary>Bounds and continuation point for one exact-type heap enumeration page.</summary>
+public sealed record HeapTypeInstanceQueryOptions(
+    int PageSize = 50,
+    int MaxScannedObjects = 250_000,
+    ulong AfterAddress = 0)
+{
+    public const int MaxPageSize = 100;
+    public const int MaxObjectScanCount = 250_000;
+
+    public void Validate()
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(PageSize, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(PageSize, MaxPageSize);
+        ArgumentOutOfRangeException.ThrowIfLessThan(MaxScannedObjects, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(MaxScannedObjects, MaxObjectScanCount);
+    }
+}
+
+/// <summary>
+/// One bounded page of instances for an exact managed type. <see cref="NextAfterAddress"/> is an
+/// internal continuation point; hosts should bind it to the owning handle and type before exposing
+/// it as a cursor.
+/// </summary>
+public sealed record HeapTypeInstancesInspection(
+    TypeIdentity TypeIdentity,
+    IReadOnlyList<HeapTypeInstance> Instances,
+    int PageSize,
+    int ScannedObjects,
+    bool Complete,
+    ulong? NextAfterAddress,
+    DateTimeOffset EnumeratedAt,
+    string Consistency)
+{
+    public IReadOnlyList<string>? Warnings { get; init; }
+}
+
 /// <summary>Shortest GC-root chain currently found for a target object.</summary>
 public sealed record HeapGcRootInspection(
     ulong Address,

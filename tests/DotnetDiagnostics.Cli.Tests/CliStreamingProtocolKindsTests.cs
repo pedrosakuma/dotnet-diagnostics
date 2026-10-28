@@ -847,7 +847,68 @@ public sealed class CliStreamingProtocolKindsTests
                 includeStaticFields = true,
                 includeRetentionPaths = true,
             });
-            var handle = (await session.ReadFrameAsync()).GetProperty("result").GetProperty("data").GetProperty("handle").GetString();
+            var heapCapture = await session.ReadFrameAsync();
+            var heapData = heapCapture.GetProperty("result").GetProperty("data");
+            var handle = heapData.GetProperty("handle").GetString();
+
+            var enumerableType = heapData.GetProperty("topTypesByInstances")
+                .EnumerateArray()
+                .First(type => type.GetProperty("instanceCount").GetInt64() > 3
+                    && type.TryGetProperty("identity", out var identity)
+                    && identity.ValueKind == JsonValueKind.Object);
+            var typeIdentity = enumerableType.GetProperty("identity").Clone();
+            await session.SendAsync(new
+            {
+                type = "query",
+                requestId = "instances-1",
+                handle,
+                view = "type-instances",
+                typeIdentity,
+                topN = 2,
+            });
+            var instancePage1 = await session.ReadFrameAsync();
+            instancePage1.GetProperty("type").GetString().Should().Be("query");
+            var instanceResult1 = instancePage1.GetProperty("result");
+            instanceResult1.GetProperty("typeInstances").GetArrayLength().Should().Be(2);
+            instanceResult1.GetProperty("instanceEnumerationComplete").GetBoolean().Should().BeFalse();
+            instanceResult1.GetProperty("instanceConsistency").GetString().Should().Be("stable-offline-dump");
+            instanceResult1.GetProperty("quality").ValueKind.Should().Be(JsonValueKind.Object);
+            var cursor = instanceResult1.GetProperty("nextCursor").GetString();
+            cursor.Should().NotBeNullOrWhiteSpace();
+            var firstAddresses = instanceResult1.GetProperty("typeInstances").EnumerateArray()
+                .Select(instance => instance.GetProperty("address").GetString()).ToArray();
+            foreach (var firstAddress in firstAddresses)
+            {
+                firstAddress.Should().NotBeNull();
+                CliStreamingQueryNavigation.TryParseHexAddress(firstAddress, out _).Should().BeTrue();
+            }
+
+            await session.SendAsync(new
+            {
+                type = "query",
+                requestId = "instances-2",
+                handle,
+                view = "type-instances",
+                typeIdentity,
+                topN = 2,
+                cursor,
+            });
+            var instanceResult2 = (await session.ReadFrameAsync()).GetProperty("result");
+            instanceResult2.GetProperty("typeInstances").EnumerateArray()
+                .Select(instance => instance.GetProperty("address").GetString())
+                .Should().NotIntersectWith(firstAddresses);
+
+            await session.SendAsync(new
+            {
+                type = "query",
+                requestId = "instances-wrong-type",
+                handle,
+                view = "type-instances",
+                typeIdentity = new { typeFullName = "Different.Type" },
+                topN = 2,
+                cursor,
+            });
+            (await session.ReadFrameAsync()).GetProperty("code").GetString().Should().Be("invalid_query");
 
             await session.SendAsync(new { type = "capture", requestId = "thread", kind = "thread-snapshot", dumpFile = dump.FilePath });
             var threadHandle = (await session.ReadFrameAsync()).GetProperty("result").GetProperty("data").GetProperty("handle").GetString();

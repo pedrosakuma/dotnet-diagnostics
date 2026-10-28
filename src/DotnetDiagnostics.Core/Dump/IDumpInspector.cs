@@ -59,6 +59,24 @@ public interface IDumpInspector
     }
 
     /// <summary>
+    /// Re-opens the snapshot origin and enumerates one bounded page of objects matching the exact
+    /// type identity. Implementations must enforce both the page and scanned-object limits while
+    /// walking rather than accumulating the full matching inventory first.
+    /// </summary>
+    Task<HeapTypeInstancesInspection> EnumerateTypeInstancesAsync(
+        HeapSnapshotArtifact snapshot,
+        TypeIdentity typeIdentity,
+        HeapTypeInstanceQueryOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        ArgumentNullException.ThrowIfNull(typeIdentity);
+        ArgumentNullException.ThrowIfNull(options);
+        options.Validate();
+        throw new NotSupportedException("This inspector does not support type-instance enumeration.");
+    }
+
+    /// <summary>
     /// Resolves the shortest GC-root chain currently found for the managed object at
     /// <paramref name="address"/> against the process or dump behind <paramref name="snapshot"/>.
     /// </summary>
