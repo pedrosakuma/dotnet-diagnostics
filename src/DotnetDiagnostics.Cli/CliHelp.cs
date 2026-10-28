@@ -27,6 +27,7 @@ Options:
                                 Non-interactive acknowledgement for high/critical operations.
       --launch -- <app> [args]  Launch a child app for the commands that support descendant attach.
       --suspend-startup         With 'collect --kind startup', arm EventPipe before managed startup.
+      --version                 Print the CLI informational version and exit.
   -h, --help                    Show this help or 'dotnet-diagnostics-cli <command> --help'.
 """;
 

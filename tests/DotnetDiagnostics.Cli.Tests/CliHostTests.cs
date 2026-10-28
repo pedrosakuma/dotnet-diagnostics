@@ -8,6 +8,16 @@ namespace DotnetDiagnostics.Cli.Tests;
 public sealed class CliHostTests
 {
     [Fact]
+    public async Task RunAsync_Version_PrintsInformationalVersionAndReturnsZero()
+    {
+        var (exit, stdout, stderr) = await RunAsync("--version");
+
+        exit.Should().Be(0);
+        stdout.Trim().Should().Be($"dotnet-diagnostics-cli {CliBuildVersion.Current}");
+        stderr.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task RunAsync_Help_PrintsUsageToStdoutAndReturnsZero()
     {
         var (exit, stdout, stderr) = await RunAsync("--help");

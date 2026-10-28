@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using DotnetDiagnostics.Core;
@@ -38,10 +37,6 @@ internal static partial class CliStreamingProtocol
     private const int ProtocolVersion = 2;
     private const string HeapGrowthView = "growth";
     private const int MaxControlLineBytes = 64 * 1024;
-    private static readonly string CliVersion =
-        typeof(CliStreamingProtocol).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
-        ?? typeof(CliStreamingProtocol).Assembly.GetName().Version?.ToString(3)
-        ?? "unknown";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
@@ -338,7 +333,7 @@ internal static partial class CliStreamingProtocol
                         {
                             type = "hello",
                             protocolVersion = ProtocolVersion,
-                            cliVersion = CliVersion,
+                            cliVersion = CliBuildVersion.Current,
                             supportedLiveKinds = LiveKinds.Keys.Order(StringComparer.Ordinal).ToArray(),
                             heapGrowth = ProjectHeapGrowthCapability(services),
                             requestActivities = new

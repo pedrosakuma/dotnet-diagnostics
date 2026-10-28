@@ -2,7 +2,37 @@
 
 ## [Unreleased]
 
-### Added
+## [0.33.0] — 2026-10-28
+
+Highlights: **bounded, capability-gated investigation context and objective comparison for
+retained CPU and heap evidence, plus truthful fragmentation and object-instance drilldown.**
+The MCP server, standalone CLI, Core library, and BenchmarkDotNet diagnoser still ship from the
+same release tag. The VS Code extension changes below are versioned and published separately.
+
+### Core
+
+- **Objective CPU snapshot comparison (#1263, #1282).** Core can compare compatible retained
+  CPU-sample handles without assigning an improvement/regression verdict. Results preserve each
+  side's backend, evidence quality, capture duration, sample population, unresolved-symbol share,
+  denominators, zero-baseline unavailability and bounded top method movers.
+- **Observed material free-block evidence (#1270, #1277).** ClrMD live/dump heap snapshots now
+  report the largest directly observed material free block and a bounded top-eight range sample
+  per segment. Counts, omissions, thresholds and `complete`/`partial`/`indeterminate` state remain
+  explicit; the projection does not claim allocation success, liveness, retained size, pinning or
+  a complete heap-region map.
+- **Bounded exact-type instance enumeration (#1255, #1278).** Core can page exact object
+  addresses for a selected heap type with a 100-row result cap and a 250,000-object scan cap
+  enforced during enumeration. Opaque cursors are bound to the handle, provenance and type;
+  immutable dump pages are stable, live pages are explicitly best-effort rereads, and gcdump
+  fails because it has no object addresses.
+
+### CLI
+
+- **Retention-aware heap growth (#1259, #1279).** The protocol-v2 `hello.heapGrowth` capability
+  advertises whether the shared bounded handle store can retain a baseline/current pair.
+  `query` view `growth` compares chronological same-process heap handles across live, dump or
+  gcdump provenance while preserving Core quality, correlation, verdict and retention-path
+  semantics. Expiry, capacity eviction, target exit and PID reuse have distinct failures.
 
 - **Bounded CPU handle comparison in the CLI JSONL stream (#1263).** The additive
   `hello.cpuHandleComparison` capability advertises `query` view `diff`, which accepts
@@ -12,6 +42,39 @@
   observations stay null/unavailable and zero baselines do not fabricate relative
   deltas. It emits no improvement/regression verdict. Each stream retains only its two
   newest CPU handles; a third capture releases the oldest.
+- **Capability-versioned investigation evidence (#1265, #1273).** Successful captures for CPU,
+  allocation, off-CPU, contention, ThreadPool, GC and requests can emit bounded, ephemeral
+  `investigationEvidence` descriptors. The additive `hello.capabilities.investigationEvidence`
+  contract limits item and total bytes, records target/window/quality/safety/retention facts, and
+  does not create a new command, automatic capture, persistence, scoring or causal conclusion.
+- **Heap fragmentation and instance navigation (#1277, #1278).** Heap `fragmentation` responses
+  include the new bounded observed-free-block fields. The new `type-instances` view returns
+  paged hexadecimal addresses that can feed existing `object`, `gcroot` and captured
+  `static-fields` navigation; live rereads require the existing High-risk acknowledgement.
+- **Release identity smoke.** `dotnet-diagnostics-cli --version` now prints the package's
+  informational version and exits without constructing the diagnostics host.
+
+### MCP server and BenchmarkDotNet
+
+- The registered MCP tool surface and BenchmarkDotNet diagnoser surface are unchanged. Existing
+  MCP heap `fragmentation` queries receive the additive shared-Core free-block fields, but heap
+  growth, CPU handle comparison, investigation descriptors and type-instance pagination remain
+  CLI contracts. BenchmarkDotNet continues to consume the shared Core package without a new
+  option or result contract in this release.
+
+### VS Code extension (separately versioned)
+
+- Refined Requests + completed Activities inline navigation and prepared extension 0.5.0
+  independently of the four `v0.33.0` NuGet packages (#1251, #1256).
+- Added optional evidence-first Memory & GC and guided CPU overviews over existing retained
+  evidence, plus objective live CPU baseline/current navigation and responsive narrow-pane
+  comparison cards (#1258, #1261, #1264, #1272, #1275, #1282, #1285).
+- Added the bounded Investigation lens, compact fragmentation evidence, and type-to-instance
+  navigation while preserving direct expert views, explicit limitations and no automatic
+  collection (#1265, #1266, #1273, #1277, #1278, #1280, #1281).
+- Preserved the CPU execution-composition NO-GO and the separately documented conditional
+  multi-evidence/fragmentation research decisions rather than presenting unsupported composition
+  or a decorative region map as released evidence (#1262, #1265, #1266, #1274, #1276).
 
 ## [0.32.1] — 2026-10-22
 
