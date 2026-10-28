@@ -15,6 +15,7 @@ using Xunit.Abstractions;
 
 namespace DotnetDiagnostics.Cli.Tests;
 
+[Collection(nameof(CliStreamingProtocolTests))]
 public sealed class CliGcActivitiesLiveTests(ITestOutputHelper output)
 {
     internal const int NegativeOuterTimeoutMs = 30_000;

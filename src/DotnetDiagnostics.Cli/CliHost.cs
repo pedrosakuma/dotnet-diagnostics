@@ -144,6 +144,12 @@ internal static class CliHost
         ArgumentNullException.ThrowIfNull(stderr);
         runtimeOptions ??= new CliRuntimeOptions();
 
+        if (args.Length == 1 && string.Equals(args[0], "--version", StringComparison.Ordinal))
+        {
+            await stdout.WriteLineAsync($"dotnet-diagnostics-cli {CliBuildVersion.Current}").ConfigureAwait(false);
+            return 0;
+        }
+
         if (args.Length > 0 && string.Equals(args[0], "stream", StringComparison.Ordinal))
         {
             return await CliStreamingProtocol.RunAsync(

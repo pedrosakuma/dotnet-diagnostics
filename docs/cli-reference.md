@@ -823,6 +823,7 @@ These apply to every command:
 | `--acknowledge-risk <high\|critical>` | Deliberately authorize a high/critical operation in one-shot or other non-interactive use. The value must exactly match the resolved level. |
 | `--launch -- <app> [args]` | **Dev mode.** Launch `<app>` as a child of the CLI so live attach works under `kernel.yama.ptrace_scope=1` with no privilege — see the [Linux note](#linux-ptrace-note). Supported by `capabilities`, `collect`, `dump`, `inspect`, `inspect-heap` (live), `get-bytes` (module) and `session`. Mutually exclusive with `--pid`; the child is terminated on exit. Because process launch/termination is high risk, place the exact resolved `--acknowledge-risk` before the `--` delimiter. |
 | `--suspend-startup` | **Cold-start capture (#446).** With `--launch`, launches the target *suspended* on a reverse-connect `DOTNET_DiagnosticPorts=…,suspend` port, arms the EventPipe session **before any managed code runs**, then resumes — capturing non-replayed DependencyInjection call-site activity that an attach after startup misses, plus any loader events emitted by the runtime provider. Applies to `collect --kind startup`. The MCP equivalent is gated `collect_events(kind="startup", launch=...)` over stdio. Default off. |
+| `--version` | Print the CLI informational version and exit without building the diagnostics host. |
 | `-h, --help` | Show the global usage screen, or a focused screen for `<command> --help`. |
 
 Exit codes: `0` success (a `dump` preview is also a success), `1` a structured failure envelope
