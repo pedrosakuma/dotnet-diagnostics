@@ -8,6 +8,54 @@ EventSource events, plus a point-in-time CPU capture, backed by Core-owned Event
 `dotnet-diagnostics-cli`. It does not collect diagnostics in TypeScript and does not use the MCP
 server as a data transport.
 
+## Ephemeral bounded investigation context
+
+When the protocol-v2 handshake advertises the exact
+`capabilities.investigationEvidence.version=1` contract, the extension can retain a private,
+in-memory context containing independent `cpu`, `allocation`, `off_cpu`, `contention`,
+`threadpool`, `gc`, and `requests` results. This implements the descriptor and reducer foundation
+approved by the conditional GO in the
+[bounded multi-evidence spike at commit `d66bc8d`](https://github.com/pedrosakuma/dotnet-diagnostics/blob/d66bc8d1828a224461ac77c71e8435fb78c7ccd6/docs/research/bounded-multi-evidence-investigation-context.md).
+It does **not** implement the future investigation lens, automatically collect evidence, add
+history, persist or export the context, or use an MCP tool.
+
+The reducer enforces all limits before insertion:
+
+- exactly one copied result per normalized kind, with atomic same-kind replacement;
+- at most seven items;
+- at most 1 MiB of UTF-8 JSON for any copied result;
+- at most 4 MiB of UTF-8 JSON for descriptors plus copied results in aggregate.
+
+An invalid descriptor, stale target generation, changed target identity, oversized item, or
+aggregate-budget rejection leaves the previous same-kind item unchanged. The reducer does not
+silently truncate a result or evict another kind to make room. `gc-activities` is excluded from
+version 1 because it has separate GC and Activity owners/windows and cannot be represented as one
+atomic item by this contract.
+
+The context is scoped to the controller's current target generation and is cleared when the target
+changes, the panel closes, or the controller deactivates. Target PID alone is not treated as a
+generation. The CLI descriptor carries its before/after process-start-time status; evidence from a
+changed generation is rejected, and unknown identity remains explicitly unverified.
+
+The copied projection belongs to the extension context. Any drilldown handle remains borrowed from
+the exact CLI connection and advertised store identity. Handle TTL is only an upper bound:
+replacement, capacity eviction, explicit invalidation, process exit, or disconnect can make the
+handle unavailable earlier. The reducer records expiry, capacity eviction, owner replacement, and
+connection closure as distinct display-only reasons rather than treating the retained copy as
+queryable. A disconnect does not erase the already admitted bounded projection.
+
+Independent capture windows are wall-clock reports, not a joint observation session. The only
+allowed temporal outcomes are `reported-intersection`, `adjacent`, `none`, and `unknown`;
+`observed-overlap` is intentionally impossible. Comparison requires verified matching process
+identity and a compatible CLI clock instance. No outcome establishes causality or uninterrupted
+provider/target coverage.
+
+Older CLIs remain compatible: without the exact capability the normal single-capture UI continues
+unchanged and no multi-evidence item is admitted. Older extensions ignore the additive capability
+and descriptor fields. Application-controlled rows, symbols, paths, trace IDs, and other sensitive
+capture values remain subject to each collector's existing warning and are retained only in this
+bounded in-memory copy.
+
 ## Screenshots
 
 > These images are **illustrative**. They render the extension's real webview panels with

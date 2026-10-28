@@ -29,6 +29,8 @@ internal sealed record CaptureView(string Kind, string Title, string Summary, Ca
     CaptureViewEvidence Evidence)
 {
     public string? Handle { get; init; }
+    public DateTimeOffset? HandleExpiresAt { get; init; }
+    public string Backend { get; init; } = "unknown";
 }
 
 internal sealed class CaptureViewBuilder
@@ -122,6 +124,7 @@ internal static class CliStreamingCaptureViews
         DateTimeOffset? start = null;
         TimeSpan? duration = null;
         object? evidence = null;
+        var backend = "eventpipe";
         string summary;
         switch (result.Envelope)
         {
@@ -140,6 +143,9 @@ internal static class CliStreamingCaptureViews
             case DiagnosticResult<OffCpuSnapshot> { Data: { } s } envelope:
                 summary = envelope.Summary;
                 start = s.StartedAt; duration = s.Duration;
+                backend = s.SymbolSource.Contains("perf", StringComparison.OrdinalIgnoreCase) ? "perf"
+                    : s.SymbolSource.Contains("etw", StringComparison.OrdinalIgnoreCase) ? "etw"
+                    : "os-scheduler";
                 b.Metric("Off-CPU time (ms)", s.TotalOffCpuMicros / 1000.0);
                 b.Metric("Threads", s.DistinctThreads);
                 b.Metric("Scheduler switches", s.SchedSwitches);
@@ -280,9 +286,12 @@ internal static class CliStreamingCaptureViews
             default:
                 throw new InvalidOperationException("The collector returned no supported structured capture payload.");
         }
+        var allocationEnvelope = result.Envelope as DiagnosticResult<AllocationSample>;
         return b.Build(options.Kind!, summary, options, start, duration, evidence) with
         {
-            Handle = result.Envelope is DiagnosticResult<AllocationSample> allocation ? allocation.Handle : null,
+            Handle = result.Handle ?? allocationEnvelope?.Handle,
+            HandleExpiresAt = result.HandleExpiresAt ?? allocationEnvelope?.HandleExpiresAt,
+            Backend = backend,
         };
     }
 }

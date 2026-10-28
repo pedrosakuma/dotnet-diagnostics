@@ -8,7 +8,11 @@ internal static partial class CliStreamingProtocol
 {
     private static readonly string[] JointQueryViews = ["requests", "related-activities"];
     /// <summary>Session-local one-slot lifetime, independent of the generic multi-handle registry.</summary>
-    private sealed class JointCaptureSlot(IServiceProvider services, ProtocolWriter writer, TextWriter stderr) : IAsyncDisposable
+    private sealed class JointCaptureSlot(
+        IServiceProvider services,
+        ProtocolWriter writer,
+        TextWriter stderr,
+        CliInvestigationEvidence investigationEvidence) : IAsyncDisposable
     {
         private readonly object _gate = new();
         private RequestActivityCapture? _capture;
@@ -112,6 +116,11 @@ internal static partial class CliStreamingProtocol
                         capture.Sources,
                         requests = capture.QueryRequests(capture.CaptureId),
                     },
+                    investigationEvidence = investigationEvidence.CreateRequestActivities(
+                        capture,
+                        CliInvestigationEvidence.ReadProcessStart(pid),
+                        handle,
+                        expiresAt),
                 }, CancellationToken.None).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)

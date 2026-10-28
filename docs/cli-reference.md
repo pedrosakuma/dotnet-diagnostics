@@ -36,7 +36,7 @@ The CLI replies with the negotiated protocol, its informational CLI version, sup
 names, and additive versioned feature capabilities:
 
 ```json
-{"type":"hello","protocolVersion":2,"cliVersion":"<informational-version>","supportedLiveKinds":["counters","event_source","gc"],"heapGrowth":{"version":1,"available":true,"storeCapacity":32,"minimumStoreCapacity":2,"queryView":"growth","handleKind":"heap-snapshot","baselineField":"baselineHandle","rankBy":["bytes","instances"],"defaultMinDeltaPct":5,"defaultTopN":25,"maxTopN":500,"requiresSameProcess":true,"requiresSameProvenance":true,"storage":"in-memory","boundedLifetime":true,"storePolicy":"shared-configured-bounded"},"cpuHandleComparison":{"version":1,"queryView":"diff","baselineHandleField":"baselineHandle","retainedHandleLimit":2,"maxTopMovers":50}}
+{"type":"hello","protocolVersion":2,"cliVersion":"<informational-version>","supportedLiveKinds":["counters","event_source","gc"],"heapGrowth":{"version":1,"available":true,"storeCapacity":32,"minimumStoreCapacity":2,"queryView":"growth","handleKind":"heap-snapshot","baselineField":"baselineHandle","rankBy":["bytes","instances"],"defaultMinDeltaPct":5,"defaultTopN":25,"maxTopN":500,"requiresSameProcess":true,"requiresSameProvenance":true,"storage":"in-memory","boundedLifetime":true,"storePolicy":"shared-configured-bounded"},"cpuHandleComparison":{"version":1,"queryView":"diff","baselineHandleField":"baselineHandle","retainedHandleLimit":2,"maxTopMovers":50},"capabilities":{"investigationEvidence":{"version":1,"kinds":["cpu","allocation","off_cpu","contention","threadpool","gc","requests"],"maxItems":7,"maxItemBytes":1048576,"maxTotalBytes":4194304}}}
 ```
 
 Clients may use `cliVersion` for feature-compatibility guidance and `supportedLiveKinds` to gate
@@ -46,8 +46,114 @@ two-handle heap growth queries. `storeCapacity` is the effective shared handle-s
 `minimumStoreCapacity` is the minimum needed for baseline and current handles to coexist. A configured
 capacity of 1 therefore advertises `available:false` without removing the versioned capability
 object. Prefer `cpuHandleComparison` itself to gate CPU handle comparison: older CLIs omit the
-capability and must degrade without sending `baselineHandle` for view `diff`. These fields are
-additive and do not change protocol negotiation.
+capability and must degrade without sending `baselineHandle` for view `diff`.
+`capabilities.investigationEvidence` is also additive: older clients may ignore it, and clients
+must treat a missing or incompatible capability as unavailable without rejecting protocol version
+2. These fields do not change protocol negotiation.
+
+### Bounded investigation-evidence descriptor
+
+`capabilities.investigationEvidence.version=1` allows a client to retain a bounded, ephemeral
+multi-evidence context from independent one-shot captures. This contract follows the conditional
+GO recorded by the
+[bounded multi-evidence spike at commit `d66bc8d`](https://github.com/pedrosakuma/dotnet-diagnostics/blob/d66bc8d1828a224461ac77c71e8435fb78c7ccd6/docs/research/bounded-multi-evidence-investigation-context.md).
+It does not change protocol version 2 or add a new command.
+
+Successful `capture` terminal frames for `cpu`, `allocation`, `off_cpu`, `contention`,
+`threadpool`, `gc`, and `requests` include an additive `investigationEvidence` object.
+`request-activities` also emits one descriptor normalized to `kind:"requests"`.
+`gc-activities` is deliberately excluded from version 1 because its two artifacts, owners, and
+windows require a future atomic component contract. Kestrel, database, networking, exception,
+heap, and thread-snapshot captures are also outside this capability.
+
+The descriptor has this shape:
+
+```json
+{
+  "version": 1,
+  "evidenceId": "<CLI-generated-id>",
+  "kind": "allocation",
+  "collectorKind": "allocation",
+  "target": {
+    "processId": 1234,
+    "processStartedAt": "2026-10-26T14:58:00Z",
+    "identityStatus": "verified"
+  },
+  "window": {
+    "kind": "reported",
+    "start": "2026-10-26T15:00:00Z",
+    "end": "2026-10-26T15:00:06Z",
+    "clock": {
+      "kind": "diagnostic-host-utc",
+      "instanceId": "<CLI-connection-id>",
+      "comparison": "reported-only"
+    },
+    "completion": "normal"
+  },
+  "retention": {
+    "connection": {
+      "instanceId": "<CLI-connection-id>",
+      "storeId": "<connection-store-id>"
+    },
+    "projection": {
+      "owner": "extension-context",
+      "mode": "response-copy"
+    },
+    "drilldown": {
+      "owner": "cli-connection",
+      "connectionId": "<CLI-connection-id>",
+      "storeId": "<connection-store-id>",
+      "handle": "<borrowed-handle>",
+      "status": "available",
+      "unavailableReason": null,
+      "expiresNoLaterThan": "2026-10-26T15:20:06Z",
+      "invalidatedBy": [
+        "expired",
+        "capacity-evicted",
+        "owner-replaced",
+        "invalidated",
+        "connection-closed",
+        "process-exited"
+      ]
+    }
+  },
+  "backend": { "kind": "eventpipe", "source": "allocation" },
+  "quality": {
+    "status": "reported",
+    "source": "collector",
+    "limitations": []
+  },
+  "safety": {
+    "risk": "moderate",
+    "authorization": "standard-preflight"
+  },
+  "mayContainSensitiveData": true,
+  "limitations": [
+    "Independent captures use reported wall-clock comparison only; temporal relation never establishes causality.",
+    "Handle expiry is an upper bound. Capacity eviction, replacement, invalidation, process exit, or connection close can end drilldown earlier.",
+    "The extension owns only its bounded response copy; CLI handles remain borrowed from this connection and store."
+  ],
+  "availability": "available",
+  "unavailableReason": null
+}
+```
+
+The CLI reads the target process start time before and after collection. Equal known values produce
+`identityStatus:"verified"`; an unavailable lifetime produces `"unknown"`; a changed lifetime
+produces `"changed"` together with `availability:"unavailable"` and
+`unavailableReason:"target-changed"`. Connection and store identities are stable only for the
+current streaming CLI process.
+
+`expiresNoLaterThan` is an upper bound, never a lease. A handle can become unavailable earlier
+because of replacement, capacity eviction, explicit invalidation, target exit, or connection
+closure. The copied result and the borrowed drilldown handle therefore have separate owners and
+lifecycles. A missing handle is represented explicitly with `owner:"none"`,
+`status:"unavailable"`, and `unavailableReason:"not-retained"`.
+
+Independent capture windows may be classified only as `reported-intersection`, `adjacent`, `none`,
+or `unknown`. They can never establish observed overlap, causal overlap, or continuous target
+coverage. Consumers must require verified matching target generation and a compatible reported
+clock before returning anything other than `unknown`.
 
 ### Live sessions (`start`/`stop`)
 
