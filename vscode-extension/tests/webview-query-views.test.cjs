@@ -2688,12 +2688,14 @@ test("heap view switching retains table filters and selection, surfaces hidden f
             selector.listeners.change();
             assert.equal(input.value, "Cache");
             assert.equal(statics.querySelector(".evidence-pick"), null);
+            document.activeElement = selector;
             renderQueryView("heapQueryViews", "roots-by-kind", "Permission denied", true);
             assert.equal(statics.hidden, false, "a late failing query must not steal selection");
             assert.match(controls.textContent, /1 unavailable view/);
             selector = controls.querySelector("select");
             assert.equal(selector.value, statics.id);
-            assert.match(selector.children.find(option => option.value === roots.id).textContent, /GC roots by kind \(unavailable\)/);
+            assert.equal(selector.focused, true, "a late result restores focus to the rebuilt selector");
+            assert.equal(selector.children.find(option => option.value === roots.id).textContent, "GC roots by kind (unavailable)");
             selector.value = roots.id;
             selector.listeners.change();
             assert.match(roots.textContent, /Permission denied/);

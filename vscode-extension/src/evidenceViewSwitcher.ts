@@ -12,6 +12,7 @@ function updateEvidenceViewSwitcher(container: HTMLElement): void {
     const bar = controls;
     const tabs = container.id === "threadQueryViews";
     const compact = container.id === "heapQueryViews";
+    const compactSelectorFocused = compact && bar.querySelector("select") === document.activeElement;
     const active = bar.dataset.active;
     const focusedPanel = Array.from(bar.querySelectorAll<HTMLButtonElement>("button"))
         .find(button => button === document.activeElement)?.dataset.panel;
@@ -62,8 +63,7 @@ function updateEvidenceViewSwitcher(container: HTMLElement): void {
         for (const panel of panels) {
             const option = document.createElement("option");
             option.value = panel.id;
-            const panelLabel = panel.querySelector("summary")?.textContent ?? "Evidence";
-            option.textContent = panelLabel + (panel.classList.contains("query-view-error") ? " (unavailable)" : "");
+            option.textContent = panel.querySelector("summary")?.textContent ?? "Evidence";
             selector.appendChild(option);
         }
         selector.value = selected.id;
@@ -72,6 +72,7 @@ function updateEvidenceViewSwitcher(container: HTMLElement): void {
             if (panel) select(panel);
         });
         bar.append(label, selector, status);
+        if (compactSelectorFocused) selector.focus({ preventScroll: true });
         for (const panel of panels) panel.hidden = panel !== selected;
         return;
     }
