@@ -5,6 +5,10 @@ versioned independently from the CLI and the .NET packages.
 
 ## Unreleased
 
+- Use the webview page as the single vertical scroll owner for live and dump heap workspaces.
+  Preserve the wide type/detail columns and narrow stacked navigation without competing scrollbars
+  inside the type list and details pane.
+
 ## 0.6.0 - 2026-10-29
 
 Use CLI **0.33.0 or later** for the complete feature set in this release. Base protocol-v2
