@@ -273,15 +273,25 @@ GC/activity overlap remains overlap evidence, not a causal latency diagnosis.
 
 The live panel has **Monitoring** and **Workspace** tabs. Monitoring contains independent
 **Live counters & GC pauses** and **Live Events** subviews.
-The Workspace domain selector includes **CPU**, **Memory & GC**, **Threads & waits**,
-**Requests & networking**, and **Exceptions**. Its compact **Domain → Evidence → View** controls
-navigate one content panel.
+The Workspace **Area** selector includes **CPU**, **Memory & GC**, **Threads & waits**,
+**Requests & networking**, and **Exceptions**. Navigation progresses through
+**Area → Evidence to inspect → Analysis** in one content panel. A stage with zero or one
+meaningful option is omitted or rendered as an explicit heading; ordinary generic captures use
+**Result summary**, never a disabled **Capture result** selector. The adjacent state label
+distinguishes a **Local switch**, an explicit **Retained query**, and a **New collection**.
+Concrete actions name their work, such as **Capture CPU samples**, **Capture heap snapshot**, and
+**Load call tree**. Changing a navigation choice never collects, reattaches, elevates, reopens an
+origin or replaces evidence. Native selects retain keyboard behavior and focus when rebuilt; the
+stages stack in narrow webviews. Deep links and internal routes continue to use the canonical
+area/evidence/analysis values.
 Captured charts, rows, stacks and occurrences lead each result. Quantitative summaries use
 small secondary text, while active loss, withheld verification, stale/unavailable evidence and
 inferred candidates remain visible in compact alerts. Full reasons stay inspectable beside
 those alerts. Static scope, retention guidance, export explanations and complete metrics follow
 the data or use keyboard-operable disclosures. Sensitive-data and replacement warnings stay
 at the capture action; native consent still presents the full policy before dispatch.
+The compact **Evidence identity and lifecycle** disclosure preserves current source, target,
+quality, replacement, expiry/disconnect and display-only context without overloading option labels.
 Thread snapshots and off-CPU, contention, and thread-pool captures appear under Threads & waits;
 the point-in-time snapshot and the generic event capture remain separate evidence kinds.
 Those three generic kinds share the same single replaceable result slot used by GC and the other
@@ -305,7 +315,8 @@ process context menu and explicitly collects a new heap/GC dump/thread snapshot.
 add persistence for other captures or convert current results into saved evidence.
 
 For ordinary Requests, Kestrel, Database, and Networking captures, choose the kind in
-**Workspace → Requests & networking → Evidence** and select **Capture**. The existing duration,
+**Workspace → Requests & networking → Evidence to inspect** and use its explicit capture action.
+The existing duration,
 row-count, and applicable threshold prompts still apply; merely navigating never captures.
 The Workspace and duration prompt disclose successful replacement of the shared generic result
 before dispatch. No extra history or cache is retained, and ordinary captures have no verified
@@ -342,7 +353,7 @@ must be recovered with the CLI first. CPU/exception persistence is not exposed b
 History calls inherit the CLI artifact root (including `MCP_ARTIFACT_ROOT`), have a 60-second
 deadline and a combined 8388608-character output cap; failures are explicit, not partial JSON.
 
-Open **Workspace**, choose **CPU** under **Domain**, and select **Capture** (also available as the **Capture CPU sample** tree-view action or
+Open **Workspace**, choose **CPU** under **Area**, and select **Capture CPU samples** (also available as the **Capture CPU sample** tree-view action or
 Command Palette command `dotnetDiagnostics.captureCpu`) to take a single point-in-time CPU sample
 of the selected process.
 Unlike the counters/GC timeline, a capture is a one-shot snapshot: it reuses the panel's active
@@ -357,9 +368,9 @@ retains at most that pair; a third successful capture advances the window. Older
 show the single-profile workflow and explain that live comparison is unavailable.
 The profile itself is not persisted. Durable retained-artifact CPU comparison remains a separate
 offline workflow documented in [Historical comparisons](./historical-comparisons.md#supported-matrix).
-The live panel keeps CPU, allocation and heap evidence within the **Workspace** domain/evidence
-selectors; other existing tabs remain available for their current result surfaces. Starting or
-completing an explicit capture selects its corresponding domain or result tab. CPU
+The live panel keeps CPU, allocation and heap evidence within the **Workspace** area/evidence
+navigation; other existing tabs remain available for their current result surfaces. Starting or
+completing an explicit capture selects its corresponding area or result tab. CPU
 captures automatically show an evidence-first guided overview and can be queried on the captured artifact for a
 call tree, top methods, hot path, module/namespace aggregates, and callers/callees of a selected
 method. These are in-memory views of the same sample, not additional captures; the owning CLI
@@ -651,7 +662,7 @@ snapshot needs the host's corresponding privileged attach access (on Linux, see 
 permission-denied message when that access is unavailable.
 
 In **Workspace > Threads & waits**, **Thread explorer** is the default after a successful snapshot
-and is also directly selectable in **View**. Its compact table aligns **Thread**, **State** and
+and is also directly selectable in **Analysis**. Its compact table aligns **Thread**, **State** and
 **Top frame**. Each thread's chevron expands its stack immediately below that row, in
 top-of-stack-first order; several stacks can remain open. Native buttons support Enter/Space,
 and top-frame previews wrap to two lines while expanded stacks preserve the full frame text.
@@ -671,8 +682,8 @@ invented from another thread's stack. Group counts may exceed the representative
 All of this is snapshot navigation, not a scheduler timeline; a new snapshot resets selections.
 Its mode selector switches between **Returned threads**, **Wait chains** and **Inferred cycle
 candidates**, preserving the selected thread. Grouped stack evidence remains available from
-**View**. The original inline table remains available under **Inline thread summary**. The Workspace
-view selector and status identify inferred deadlock candidates and unavailable/pending snapshot
+**Analysis**. The original inline table remains available under **Inline thread summary**. The Workspace
+analysis selector and status identify inferred deadlock candidates and unavailable/pending snapshot
 queries; a terminal capture or query failure is shown as unavailable rather than left pending. If
 the owning CLI connection closes, returned evidence remains display-only and live thread-statics
 queries are disabled.
@@ -682,11 +693,13 @@ follow-up `query` requests against the capture's handle (sequentially, over the 
 connection). Heap and saved/dump thread results have an **Evidence views** switcher instead of stacking all
 sections vertically. Switching displays one result at a time and preserves its controls and
 selection, without querying again; new results do not steal the selected view. In the live thread
-snapshot Workspace, the **View** selector labels pending/unavailable queries and returned inferred
+snapshot Workspace, the **Analysis** selector labels pending/unavailable queries and returned inferred
 cycle candidates, while its visible status reports failures and warnings. Heap snapshots whose
 retained connection closes remain display-only, and live object/GC-root address follow-ups are
 disabled. Thread explorer is the default live thread view; detailed query responses remain
-available as alternatives, including their metadata, limitations and errors.
+available as alternatives, including their metadata, limitations and errors. The Analysis selector
+retains pending, unavailable and inferred labels; choosing one is a local presentation switch and
+does not issue another query.
 
 - **Heap** (7 always queried): `roots-by-kind`, `finalizer-queue`, `fragmentation`, `gchandles`,
   `async`, `timers`, `alc`. Four more are opt-in via a multi-select QuickPick shown before a

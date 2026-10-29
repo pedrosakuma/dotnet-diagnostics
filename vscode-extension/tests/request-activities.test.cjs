@@ -68,7 +68,7 @@ function retained(f) {
 }
 
 test("joint capture button uses a concise visible label with accessible scope", () => {
-    assert.match(source, /<button id="captureRequestActivities" type="button" aria-label="Capture requests and completed Activities">Capture<\/button>/);
+    assert.match(source, /<button id="captureRequestActivities" type="button" aria-label="Capture requests and completed Activities">Capture requests \+ Activities…<\/button>/);
     assert.match(source, /jointCaptureStatus\.textContent = message\.state === 'done' \? '' : message\.message/);
     assert.match(source, /workspaceEvidenceStatus\.hidden = kind === 'request-activities' && genericCaptureKind === kind/);
     assert.match(source, /\.joint-request-table \.joint-request-details-row > td \{[^}]*white-space:normal; min-width:0;/);

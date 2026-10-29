@@ -5,6 +5,11 @@ versioned independently from the CLI and the .NET packages.
 
 ## Unreleased
 
+- Make the canonical Workspace navigation progressive and task-oriented with
+  **Area → Evidence to inspect → Analysis** stages. Replace singleton selectors with explicit
+  headings, use **Result summary** instead of disabled **Capture result**, distinguish local
+  switches, retained queries and new collections, keep concrete capture/load actions beside the
+  current state, and preserve focus, narrow-webview stacking, deep links and evidence ownership.
 - Replace the heap evidence button row with one labelled view selector. Retention paths, roots,
   fragmentation, handles, timers, and other captured views remain available without competing
   visually with the selected type's instance and paging actions.
