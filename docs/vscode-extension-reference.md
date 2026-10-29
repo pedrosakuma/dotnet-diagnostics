@@ -519,10 +519,10 @@ that table's filter and sort without another request.
 explicit reproduction action under **Requests & networking**, also present in that Workspace
 domain and the Command Palette. It does not alter the standalone in-flight request capture.
 The CLI must actually advertise `hello.requestActivities` version 1, its two query views and
-bounded limits. The capability is available in CLI 0.32.1; the general CLI 0.31.0 feature floor
-does not imply support. CLI 0.32.1 includes this capability, but the extension checks the actual
-hello contract. Unsupported/missing capabilities produce actionable guidance before configuration
-and without dispatching a capture. Communication remains extension → CLI → Core only.
+bounded limits. The capability is available beginning in CLI 0.32.1, but the extension checks the
+actual hello contract rather than inferring support from a version string. Unsupported/missing
+capabilities produce actionable guidance before configuration and without dispatching a capture.
+Communication remains extension → CLI → Core only.
 
 Enter 1–20 exact ActivitySource names from the application's configuration or documentation,
 each 1–200 ASCII letters/digits or `.`, `_`, `-`; comma separators and surrounding whitespace are
@@ -907,6 +907,26 @@ Visual Studio Marketplace. A matching tag push therefore publishes; do not creat
 part of release preparation. Configure the repository Actions secret `VSCE_PAT` with a publisher
 token that has Marketplace management/publish access. The normal CI workflow continues to test
 extension changes on pushes to `main` and pull requests; it does not publish from those builds.
+
+### 0.6.0 preparation evidence and limits
+
+The release candidate was tested on 2026-10-29 against the exact
+`dotnet-diagnostics-cli.0.33.0.nupkg` attached to the public `v0.33.0` GitHub Release. Its
+SHA-256 was `47B6C5075A7C5CC056D211F5BD38064B4738FD37707720E2CF2EB946C4E33648`, and
+`gh attestation verify` accepted the package for this repository. The tool was installed from that
+local package because this host's direct NuGet.org TLS connection was unavailable.
+
+TypeScript checking and all 361 applicable extension tests passed; the one skipped test is the
+Windows-inapplicable SIGTERM child-process case. The suite included the real JSONL handshake and
+capability checks against the installed CLI 0.33.0 assembly. The packaged candidate contains 73
+files and reports publisher `pedrosakuma`, extension version `0.6.0`, the CLI 0.33.0 compatibility
+floor, and the new type-instance and fragmentation release notes. Its pre-publication SHA-256 was
+`2E60DBF47F382CD602D15A0FED112EA5E78B890F30556CC261DC5867530BB9F2`.
+
+This evidence validates the source-built candidate and its released CLI contract; it does not
+prove Marketplace indexing, publisher-token availability, or the byte identity of the workflow's
+future Linux-built VSIX. The tag-triggered workflow remains the publication authority and must run
+successfully after the release-preparation PR merges.
 
 ### 0.5.0 preparation evidence and limits
 

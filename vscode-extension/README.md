@@ -44,7 +44,7 @@ composition, multi-evidence correlation or automatic capture is inferred.
 ## Get started
 
 Requires VS Code **1.96+** and the **.NET 10 runtime**, or a self-contained CLI. Install
-`dotnet-diagnostics-cli` **0.31.0+** in the environment where VS Code runs your workspace:
+`dotnet-diagnostics-cli` **0.33.0+** in the environment where VS Code runs your workspace:
 
 ```sh
 dotnet tool install -g dotnet-diagnostics-cli
@@ -52,8 +52,11 @@ dotnet tool install -g dotnet-diagnostics-cli
 
 Already installed? Run `dotnet tool update -g dotnet-diagnostics-cli`. The extension never
 installs or updates the CLI automatically. CLI 0.29.0 supports the base protocol-v2 workflows;
-the environment check identifies older versions and warns that allocation exploration, sensitive-value
-reveal and array-range navigation require 0.31.0 or later. CLI 0.30.0 supports the prior capture/navigation/export features.
+the environment check identifies older versions and warns when the complete extension feature set
+is unavailable. CLI 0.31.0 added allocation exploration and sensitive-value/array-range reads;
+CLI 0.32.1 added request Activities; CLI 0.33.0 adds guided CPU comparison, bounded investigation
+evidence, heap type-instance navigation, and observed fragmentation projection. Capability checks,
+not version assumptions, continue to gate each optional workflow.
 
 1. Open **.NET Diagnostics** in the Activity Bar.
 2. Run **Check Environment** to verify host permissions and CLI feature compatibility, then select

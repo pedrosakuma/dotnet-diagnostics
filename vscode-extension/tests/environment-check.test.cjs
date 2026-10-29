@@ -47,7 +47,7 @@ const perfDegraded = {
     affectedTools: ["collect_sample(kind=\"off_cpu\")"],
 };
 
-const HELLO_OK = '{"type":"hello","protocolVersion":2,"cliVersion":"0.31.0"}\n';
+const HELLO_OK = '{"type":"hello","protocolVersion":2,"cliVersion":"0.33.0"}\n';
 const result = (o = {}) => ({ exitCode: 0, stdout: "", stderr: "", ...o });
 
 function runner(handshake, doctor) {
@@ -77,7 +77,7 @@ test("parseDoctorOutput rejects malformed output", () => {
 });
 
 test("parseHandshakeOutput distinguishes ok, unsupported and invalid", () => {
-    assert.deepEqual(parseHandshakeOutput(HELLO_OK), { kind: "ok", protocolVersion: 2, cliVersion: "0.31.0" });
+    assert.deepEqual(parseHandshakeOutput(HELLO_OK), { kind: "ok", protocolVersion: 2, cliVersion: "0.33.0" });
     assert.deepEqual(
         parseHandshakeOutput('{"type":"error","code":"protocol_version_unsupported","message":"m","supportedVersions":[1]}\n'),
         { kind: "unsupported", supportedVersions: [1] },
@@ -107,7 +107,7 @@ test("degraded checks stay ready but carry warnings with remediation", async () 
     assert.match(report.issues[0].guidance, /perf_event_paranoid/);
 });
 
-for (const cliVersion of ["0.29.0", "0.30.0"]) {
+for (const cliVersion of ["0.29.0", "0.30.0", "0.31.0", "0.32.1"]) {
 test(`older protocol-v2 CLI ${cliVersion} reports available and unavailable extension features`, async () => {
     const hello = result({ stdout: JSON.stringify({ type: "hello", protocolVersion: 2, cliVersion }) + "\n" });
     const run = runner(hello, result({ stdout: doctorJson([okCheck], "Ok") }));
@@ -117,10 +117,11 @@ test(`older protocol-v2 CLI ${cliVersion} reports available and unavailable exte
     assert.equal(report.issues[0].kind, "feature-compatibility");
     assert.equal(report.issues[0].severity, "warning");
     assert.match(report.issues[0].message, /live counters\/GC pauses/);
-    assert.match(report.issues[0].message, /address navigation/);
+    assert.match(report.issues[0].message, /guided comparison/);
+    assert.match(report.issues[0].message, /type-instance navigation/);
     assert.match(report.issues[0].guidance, /Update/);
     assert.equal(report.issues[0].command, UPDATE_COMMAND);
-    assert.equal(MIN_FULL_FEATURES_CLI_VERSION, "0.31.0");
+    assert.equal(MIN_FULL_FEATURES_CLI_VERSION, "0.33.0");
     assert.deepEqual(actionsForReport(report), ["Copy Update Command", "Open Getting Started", "Recheck"]);
 });
 }
@@ -132,13 +133,13 @@ test("feature support stays unverified when a protocol-v2 CLI does not report a 
     assert.equal(report.ready, true);
     assert.equal(report.issues[0].kind, "feature-compatibility");
     assert.match(report.issues[0].message, /could not be verified/);
-    assert.match(report.issues[0].guidance, /0\.31\.0 or later/);
+    assert.match(report.issues[0].guidance, /0\.33\.0 or later/);
     assert.equal(report.issues[0].command, undefined);
 });
 
 test("CLI prereleases below the stable feature minimum are not treated as fully compatible", async () => {
     const run = runner(
-        result({ stdout: '{"type":"hello","protocolVersion":2,"cliVersion":"0.31.0-preview.1"}\n' }),
+        result({ stdout: '{"type":"hello","protocolVersion":2,"cliVersion":"0.33.0-preview.1"}\n' }),
         result({ stdout: doctorJson([okCheck], "Ok") }),
     );
     const report = await checkEnvironment("cli", run);

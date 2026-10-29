@@ -8,7 +8,7 @@
 
 export const REQUIRED_PROTOCOL_VERSION = 2;
 export const MIN_CLI_VERSION = "0.29.0";
-export const MIN_FULL_FEATURES_CLI_VERSION = "0.31.0";
+export const MIN_FULL_FEATURES_CLI_VERSION = "0.33.0";
 // `dotnet tool install` has no version-range syntax, so install the latest stable release.
 export const INSTALL_COMMAND = "dotnet tool install -g dotnet-diagnostics-cli";
 export const DEFAULT_CLI_PATH = "dotnet-diagnostics-cli";
@@ -252,8 +252,8 @@ function featureCompatibilityIssue(cliPath: string, cliVersion: string | undefin
     }
 
     const knownVersion = version
-        ? `CLI ${cliVersion} supports protocol v2 and live counters/GC pauses. Earlier capture, address navigation and export features depend on its version; allocation explorer, sensitive-value reveal and array-range navigation require CLI ${MIN_FULL_FEATURES_CLI_VERSION} or later.`
-        : `CLI supports protocol v2, but its version is unavailable or unrecognized; support for diagnostic captures, heap/thread drilldowns, address navigation, exports, allocation explorer and value/range reads could not be verified. Use CLI ${MIN_FULL_FEATURES_CLI_VERSION} or later for the full extension feature set.`;
+        ? `CLI ${cliVersion} supports protocol v2 and live counters/GC pauses. Earlier captures and drilldowns remain available according to their advertised capabilities; guided comparison, bounded investigation evidence, type-instance navigation and fragmentation projection require the capabilities shipped in CLI ${MIN_FULL_FEATURES_CLI_VERSION}.`
+        : `CLI supports protocol v2, but its version is unavailable or unrecognized; support for diagnostic captures, drilldowns, guided comparison and bounded investigation evidence could not be verified. Use CLI ${MIN_FULL_FEATURES_CLI_VERSION} or later for the full extension feature set.`;
     return {
         kind: "feature-compatibility",
         severity: "warning",

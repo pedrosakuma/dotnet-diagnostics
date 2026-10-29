@@ -2,7 +2,7 @@
   "name": "dotnet-diagnostics",
   "displayName": ".NET Diagnostics",
   "description": "Live .NET runtime counters, GC pauses and EventPipe events, CPU, heap and thread snapshots, and dump analysis for running .NET processes, powered by dotnet-diagnostics-cli.",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "publisher": "pedrosakuma",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -298,7 +298,7 @@
           {
             "id": "installCli",
             "title": "Install the CLI",
-            "description": "Install dotnet-diagnostics-cli 0.31.0 or later for all features. The extension never installs tools for you.\n[Copy Install Command](command:dotnetDiagnostics.copyInstallCommand)",
+            "description": "Install dotnet-diagnostics-cli 0.33.0 or later for all features. The extension never installs tools for you.\n[Copy Install Command](command:dotnetDiagnostics.copyInstallCommand)",
             "media": {
               "markdown": "media/walkthrough/install-cli.md"
             }

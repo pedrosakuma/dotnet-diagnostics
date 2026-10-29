@@ -5,6 +5,12 @@ versioned independently from the CLI and the .NET packages.
 
 ## Unreleased
 
+## 0.6.0 - 2026-10-29
+
+Use CLI **0.33.0 or later** for the complete feature set in this release. Base protocol-v2
+workflows still support CLI 0.29.0, and older capability-bearing CLIs continue to expose the
+features they advertise. The extension does not install or update the CLI automatically.
+
 - Add an evidence-first **Memory & GC overview** to the existing live counters panel. It uses only
   retained `System.Runtime` counters and observed GC pauses to show compact receipt-time tracks for
   managed heap, committed memory, allocation rate, observed Gen2 collections, and RSS when present.
@@ -13,13 +19,15 @@ versioned independently from the CLI and the .NET packages.
   boundaries, EventPipe loss availability, and bounded-queue drops remain explicit rather than
   becoming zero or a continuous timeline. The contextual action either navigates to existing
   allocation/heap evidence or explicitly starts the existing heap-capture flow; opening the
-  overview never collects. No heap comparison, type-instance enumeration, region map, persistent
-  investigation context, leak verdict, or new CLI protocol field is introduced.
+  overview never collects. The overview itself adds no heap comparison, type-instance enumeration,
+  region map, persistent investigation context, leak verdict, or new CLI protocol field.
+- Add an evidence-first **CPU overview** that distinguishes observed on-CPU samples, inferred wait
+  matches, and unavailable scheduler evidence. It links to existing CPU, allocation, thread, and
+  request evidence without assigning application/runtime ownership or collecting automatically.
 - Make live CPU baseline/current deltas and method movers readable at 390 px and 540 px by
   projecting table rows as labelled evidence cards without changing table semantics. Preserve
   method presence, per-capture samples, shares and denominators, objective deltas, unavailable
   reasons, evidence actions, forced-colors borders and keyboard-focusable controls.
-
 - Add an incremental live CPU baseline/current view over the CLI's advertised bounded
   `cpuHandleComparison` contract. Keep the two most recent handles as an explicit earlier baseline
   and later current capture, show backend/evidence/quality/denominators/unavailable reasons,
@@ -39,6 +47,14 @@ versioned independently from the CLI and the .NET packages.
   existing specialist workspaces. The minimum sync-over-async scenario corroborates recurring
   ThreadPool/long-request symptoms only when retained evidence supports them and otherwise abstains;
   it never auto-captures, persists, exports, scores or assigns causality.
+- Add bounded exact-type instance navigation for live and dump heap snapshots. Pages preserve the
+  selected type and existing addresses, use opaque CLI cursors, reject stale responses, and open
+  returned addresses in the existing object and GC-root inspector. Live pages require explicit
+  read consent and remain best-effort; gcdump rows report addresses as unavailable.
+- Add a compact fragmentation orientation view while retaining the segment table as authoritative
+  evidence. It reports observed material free blocks, bounded retained ranges, omitted counts, and
+  complete/partial/indeterminate quality without claiming full heap topology, retained size,
+  pinning concentration, or allocation success.
 
 ## 0.5.0 - 2026-10-23
 
