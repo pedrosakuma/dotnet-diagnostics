@@ -255,6 +255,22 @@ are only **remembered hints**, never active targets after restart. Selection is 
 
 After selecting a process, browse the **Live Diagnostics** action tree:
 
+The first, optional **What are you investigating?** group maps six common symptoms to a bounded
+set of existing actions: high CPU, memory growth or GC pressure, slow requests, locks/blocking/
+waits, exceptions/crashes, and general runtime health. Each symptom shows exactly one recommended
+first measurement plus relevant alternatives and **All diagnostic actions**. The picker names the
+active target, or states that dispatch will use the existing process picker; it also identifies
+whether an action monitors, collects temporary evidence, creates a local artifact, or works
+offline, and discloses target impact, sensitive-data scope and platform/capability prerequisites.
+Opening or cancelling the symptom picker is navigation only. It does not attach, collect, request
+privileges, reconnect, reopen retained evidence or replace a result. Only choosing a concrete
+action delegates to the existing command, which retains active-target/PID-reuse validation,
+capability gates, cancellation, consent and risk acknowledgement. Unsupported actions abstain in
+their existing prerequisite flow; the other symptom alternatives and unchanged expert groups
+remain reachable. The selected symptom stays visible on the native group, while Monitoring,
+Workspace and Investigation remain the canonical owners of empty, collecting, ready,
+insufficient-evidence, permission-limited, disconnected and cancelled states.
+
 | Group | Existing actions |
 |---|---|
 | CPU | CPU sample; CPU sample with raw trace (explicit acknowledgement) |

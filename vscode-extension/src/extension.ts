@@ -95,6 +95,13 @@ import {
     INVESTIGATION_LENS_SCRIPT,
     INVESTIGATION_LENS_STYLES,
 } from "./investigationLens";
+import {
+    SYMPTOM_SPECS,
+    isSymptomId,
+    runSymptomInvestigation,
+    symptomSpec,
+    type SymptomId,
+} from "./symptomInvestigation";
 
 /**
  * The 7 heap query views available unconditionally once any heap snapshot is captured, plus the 3
@@ -3782,6 +3789,7 @@ export function activate(context: vscode.ExtensionContext): void {
         row ? guarded(() => processes.invoke(row, action)) : fallback();
     const actions = new DiagnosticsActionsProvider();
     controller.targetChanged = target => {
+        actions.setActiveTarget(target);
         void guarded(() => processes.setActiveTarget(target ? {
             processId: target.processId,
             entrypoint: target.managedEntrypointAssemblyName ?? null,
@@ -3833,6 +3841,16 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.commands.registerCommand("dotnetDiagnostics.captureHeap", (row?: ProcessRow) => processCommand(row, "heap", () => controller.captureHeap())),
         vscode.commands.registerCommand("dotnetDiagnostics.captureThreadSnapshot", (row?: ProcessRow) => processCommand(row, "threads", () => controller.captureThreadSnapshot())),
         vscode.commands.registerCommand("dotnetDiagnostics.analyzeDumpFile", () => analyzeDumpFile(output, context)),
+        vscode.commands.registerCommand("dotnetDiagnostics.investigateSymptom", (id: unknown) => guarded(async () => {
+            if (!isSymptomId(id)) throw new Error("Select a supported investigation symptom.");
+            actions.setSelectedSymptom(id);
+            await runSymptomInvestigation(
+                id,
+                actions.activeTargetLabel,
+                (items, options) => Promise.resolve(vscode.window.showQuickPick(items, options)),
+                (command, ...args) => Promise.resolve(vscode.commands.executeCommand(command, ...args)),
+            );
+        })),
     );
     registerOnboarding(context, output);
 }
@@ -3842,6 +3860,20 @@ class DiagnosticsActionsProvider implements vscode.TreeDataProvider<vscode.TreeI
     private readonly changed = new vscode.EventEmitter<vscode.TreeItem | undefined>();
     public readonly onDidChangeTreeData = this.changed.event;
     private liveCountersActive = false;
+    private activeTarget?: TargetProcess;
+    private selectedSymptom?: SymptomId;
+    public get activeTargetLabel(): string | undefined {
+        if (!this.activeTarget) return undefined;
+        return `${this.activeTarget.managedEntrypointAssemblyName ?? "Unknown .NET application"} · PID ${this.activeTarget.processId}`;
+    }
+    public setActiveTarget(target: TargetProcess | undefined): void {
+        this.activeTarget = target;
+        this.changed.fire(undefined);
+    }
+    public setSelectedSymptom(id: SymptomId): void {
+        this.selectedSymptom = id;
+        this.changed.fire(undefined);
+    }
     public setLiveCountersActive(active: boolean): void {
         if (active === this.liveCountersActive) return;
         this.liveCountersActive = active;
@@ -3939,7 +3971,18 @@ class DiagnosticsActionsProvider implements vscode.TreeDataProvider<vscode.TreeI
             return group(spec.id, spec.label, captures);
         });
         const events = action("Start Live Events", "dotnetDiagnostics.startEvents", "Independent EventPipe stream; explicit providers and consent");
-        return [group("monitoring", "Monitoring", [start, stop, events]), ...groups, captureDiagnostics, analyzeDumpFile];
+        const symptomChildren = SYMPTOM_SPECS.map(spec =>
+            action(spec.label, "dotnetDiagnostics.investigateSymptom", spec.description, [spec.id]));
+        symptomChildren.push(action("All diagnostic actions", "dotnetDiagnostics.captureDiagnostics",
+            "Open the complete searchable expert catalog"));
+        const symptomGroup = group("symptoms", "What are you investigating?", symptomChildren);
+        symptomGroup.description = this.selectedSymptom
+            ? symptomSpec(this.selectedSymptom).label
+            : this.activeTargetLabel ?? "Optional guide";
+        symptomGroup.tooltip = this.selectedSymptom
+            ? `Selected symptom: ${symptomSpec(this.selectedSymptom).label}. Choosing a symptom never starts collection.`
+            : "Choose a symptom to compare recommended evidence and alternatives. Nothing is collected automatically.";
+        return [symptomGroup, group("monitoring", "Monitoring", [start, stop, events]), ...groups, captureDiagnostics, analyzeDumpFile];
     }
 }
 

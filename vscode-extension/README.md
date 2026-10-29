@@ -74,6 +74,16 @@ The **Live Diagnostics** action tree groups captures under **CPU**, **Memory & G
 **Threads & waits**, **Requests & networking**, and **Exceptions**. **Monitoring**
 contains separate **Live counters & GC pauses** and **Live Events** views. Switching views
 does not start or stop either stream, collect or reopen evidence, or change event acknowledgements.
+An optional **What are you investigating?** group adds symptom-first paths for high CPU, memory
+growth or GC pressure, slow requests, locks/waits, exceptions/crashes, and general runtime health.
+Choosing a symptom only opens a bounded evidence picker: it shows the active target (or that the
+existing process picker will run), one recommended first measurement, relevant alternatives,
+collection/monitoring/artifact semantics, impact/privacy/platform prerequisites, and
+**All diagnostic actions**. It never collects, reconnects, requests privileges, opens retained
+evidence, or replaces a result until a concrete existing action is chosen. The selected symptom
+remains visible on the group while canonical Monitoring, Workspace and Investigation surfaces own
+all empty, collecting, ready, insufficient-evidence, permission-limited, disconnected and
+cancelled states.
 Each stream keeps its own lifecycle, status, retained buffer and controls. Expand an action-tree
 group to browse; only selecting an action enters its existing capture/consent flow.
 Counter history remains bounded across Stop/Start. The panel identifies the current counter

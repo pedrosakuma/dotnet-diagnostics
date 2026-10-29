@@ -5,6 +5,12 @@ versioned independently from the CLI and the .NET packages.
 
 ## Unreleased
 
+- Add an optional **What are you investigating?** entry above the unchanged expert action groups.
+  Six bounded symptom paths show the active target, one recommended first measurement, alternatives,
+  evidence mode, impact/privacy/platform prerequisites, and direct access to all diagnostic actions.
+  Merely choosing or cancelling a symptom never collects, reconnects, requests privileges, opens
+  retained evidence or replaces results; concrete choices reuse the existing target, capability,
+  consent and canonical Monitoring/Workspace/Investigation flows.
 - Make the canonical Workspace navigation progressive and task-oriented with
   **Area → Evidence to inspect → Analysis** stages. Replace singleton selectors with explicit
   headings, use **Result summary** instead of disabled **Capture result**, distinguish local

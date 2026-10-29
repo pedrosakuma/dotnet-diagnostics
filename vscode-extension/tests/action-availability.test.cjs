@@ -288,6 +288,37 @@ test("sidebar Stop Live Counters is discoverable but has no command without an a
     assert.equal(stop().command, undefined);
     provider.dispose();
 });
+test("symptom entry is optional, target-aware navigation beside the unchanged expert groups", () => {
+    const provider = new Actions();
+    let roots = provider.getChildren();
+    const symptom = roots[0];
+    assert.equal(symptom.label, "What are you investigating?");
+    assert.equal(symptom.description, "Optional guide");
+    assert.deepEqual(provider.getChildren(symptom).slice(0, 6).map(item => item.label), [
+        "High CPU",
+        "Memory growth or GC pressure",
+        "Slow requests",
+        "Locks, blocking or waits",
+        "Exceptions or crashes",
+        "General runtime health",
+    ]);
+    assert.equal(provider.getChildren(symptom).at(-1).label, "All diagnostic actions");
+    provider.setActiveTarget({
+        processId: 4242,
+        managedEntrypointAssemblyName: "Example.Api",
+        runtimeVersion: "10.0.0",
+        operatingSystem: "Windows",
+        processArchitecture: "X64",
+    });
+    roots = provider.getChildren();
+    assert.equal(roots[0].description, "Example.Api · PID 4242");
+    provider.setSelectedSymptom("slow-requests");
+    roots = provider.getChildren();
+    assert.equal(roots[0].description, "Slow requests");
+    assert.match(roots[0].tooltip, /never starts collection/);
+    assert.deepEqual(roots.slice(1, 7).map(item => item.label),
+        ["Monitoring", "CPU", "Memory & GC", "Threads & waits", "Requests & networking", "Exceptions"]);
+});
 test("CPU startup failure retains the previous connection-bound capture as well as its measurements", async () => {
     const controller = Object.create(Controller.prototype);
     const previous = controller.cpuExport = { session: {}, handle: "previous" };
