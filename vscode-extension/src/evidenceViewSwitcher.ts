@@ -11,6 +11,7 @@ function updateEvidenceViewSwitcher(container: HTMLElement): void {
     }
     const bar = controls;
     const tabs = container.id === "threadQueryViews";
+    const compact = container.id === "heapQueryViews";
     const active = bar.dataset.active;
     const focusedPanel = Array.from(bar.querySelectorAll<HTMLButtonElement>("button"))
         .find(button => button === document.activeElement)?.dataset.panel;
@@ -30,6 +31,8 @@ function updateEvidenceViewSwitcher(container: HTMLElement): void {
             button.setAttribute(tabs ? "aria-selected" : "aria-pressed", String(active));
             if (tabs) button.tabIndex = active ? 0 : -1;
         }
+        const selector = bar.querySelector<HTMLSelectElement>("select");
+        if (selector) selector.value = panel.id;
     };
     bar.replaceChildren();
     const tablist = document.createElement("div");
@@ -44,10 +47,34 @@ function updateEvidenceViewSwitcher(container: HTMLElement): void {
     status.setAttribute("role", "status");
     const errors = panels.filter(panel => panel.classList.contains("query-view-error"));
     const candidates = panels.filter(panel => panel.classList.contains("query-view-deadlocks"));
+    status.id = container.id + "ViewStatus";
     status.textContent = panels.length + " available views. "
         + (errors.length ? errors.length + " unavailable view(s); select the labelled view for its error. " : "")
         + (candidates.length ? "Inferred deadlock candidates reported; inspect Deadlock candidates. " : "")
         + "Switching views preserves filters and selection; no new read.";
+    if (compact) {
+        const label = document.createElement("label");
+        const selector = document.createElement("select");
+        selector.id = container.id + "Selector";
+        selector.setAttribute("aria-describedby", status.id);
+        label.htmlFor = selector.id;
+        label.textContent = "Evidence view";
+        for (const panel of panels) {
+            const option = document.createElement("option");
+            option.value = panel.id;
+            const panelLabel = panel.querySelector("summary")?.textContent ?? "Evidence";
+            option.textContent = panelLabel + (panel.classList.contains("query-view-error") ? " (unavailable)" : "");
+            selector.appendChild(option);
+        }
+        selector.value = selected.id;
+        selector.addEventListener("change", () => {
+            const panel = panels.find(candidate => candidate.id === selector.value);
+            if (panel) select(panel);
+        });
+        bar.append(label, selector, status);
+        for (const panel of panels) panel.hidden = panel !== selected;
+        return;
+    }
     for (const panel of panels) {
         const button = document.createElement("button");
         button.type = "button";
@@ -88,6 +115,10 @@ export const EVIDENCE_VIEW_SWITCHER_STYLES = `
     #heapQueryViews, #threadQueryViews { display:flex; flex-direction:column; }
     .evidence-view-switcher { order:-1; display:flex; flex-wrap:wrap; gap:.3rem; margin:.5rem 0; }
     .evidence-view-switcher p { flex-basis:100%; color:var(--vscode-descriptionForeground); font-size:.85rem; }
+    #heapQueryViews .evidence-view-switcher { display:grid; grid-template-columns:max-content minmax(0, 28rem); align-items:center; gap:.35rem .6rem; }
+    #heapQueryViews .evidence-view-switcher label { font-weight:600; }
+    #heapQueryViews .evidence-view-switcher select { width:100%; min-width:0; }
+    #heapQueryViews .evidence-view-switcher p { grid-column:1 / -1; margin:.15rem 0 0; }
     .evidence-view-switcher button[aria-pressed="true"] { outline:2px solid var(--vscode-focusBorder); }
     .evidence-tabs, .thread-mode-tabs { display:flex; gap:.2rem; overflow-x:auto; max-width:100%; border-bottom:1px solid var(--vscode-panel-border); }
     .evidence-tabs { flex:1 1 100%; min-width:0; }
@@ -102,4 +133,7 @@ export const EVIDENCE_VIEW_SWITCHER_STYLES = `
     .evidence-tabs button:focus-visible, .thread-mode-tabs button:focus-visible { outline:1px solid var(--vscode-focusBorder); outline-offset:-2px; }
     .thread-mode-tabs { margin:.6rem 0; }
     #heapQueryViews > [hidden], #threadQueryViews > [hidden], .diagnostic-table-view[hidden] { display:none; }
+    @media(max-width:600px) {
+        #heapQueryViews .evidence-view-switcher { grid-template-columns:minmax(0, 1fr); }
+    }
 `;

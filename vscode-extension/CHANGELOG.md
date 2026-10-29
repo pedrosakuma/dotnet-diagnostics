@@ -5,6 +5,9 @@ versioned independently from the CLI and the .NET packages.
 
 ## Unreleased
 
+- Replace the heap evidence button row with one labelled view selector. Retention paths, roots,
+  fragmentation, handles, timers, and other captured views remain available without competing
+  visually with the selected type's instance and paging actions.
 - Use the webview page as the single vertical scroll owner for live and dump heap workspaces.
   Preserve the wide type/detail columns and narrow stacked navigation without competing scrollbars
   inside the type list and details pane.
