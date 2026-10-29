@@ -1195,14 +1195,13 @@ export const QUERY_VIEW_RENDERER_SCRIPT =
 export const QUERY_VIEW_STYLES = `
     #captureHeapResult { container-type:inline-size; }
     .heap-workspace { display:grid; grid-template-columns:minmax(16rem, 2fr) minmax(24rem, 3fr); gap:1rem; align-items:start; margin-top:.6rem; }
-    .heap-type-list, .heap-detail-pane { min-width:0; max-height:70vh; overflow:auto; scrollbar-gutter:stable; }
+    .heap-type-list, .heap-detail-pane { min-width:0; }
     .heap-detail-pane { border:1px solid var(--vscode-panel-border); padding:.6rem; }
     .heap-type-list td:first-child { overflow-wrap:anywhere; }
     .heap-type-list button[aria-current="true"] { font-weight:700; text-decoration:underline; }
     #backToHeapTypes { display:none; }
     @container (max-width: 850px) {
         .heap-workspace { display:block; }
-        .heap-type-list, .heap-detail-pane { max-height:none; overflow:visible; }
         #backToHeapTypes { display:inline-block; }
     }
     .query-views { margin-top:.8rem; }

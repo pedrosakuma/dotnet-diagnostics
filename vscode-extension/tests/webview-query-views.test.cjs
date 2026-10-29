@@ -1903,6 +1903,9 @@ test("live and dump heap layouts keep types and details in separate responsive p
         assert.match(html, /id="backToHeapTypes" type="button">Back to types/);
         assert.match(html, /id="heapDetailPane"[\s\S]*?id="heapQueryViews"[\s\S]*?id="addressNavigation"/);
         assert.match(html, /@container \(max-width: 850px\)/);
+        assert.match(html, /\.heap-type-list, \.heap-detail-pane \{ min-width:0; \}/);
+        assert.doesNotMatch(html, /\.heap-type-list, \.heap-detail-pane \{[^}]*overflow:auto/);
+        assert.doesNotMatch(html, /max-height:70vh/);
         assert.doesNotMatch(html, /id="openHeapDetails"|Explore heap details/);
         assert.doesNotMatch(html, /\.heap-workspace\[data-focused="(?:true|false)"\][^{]+\{ display:none; \}/);
         assert.match(html, /workspace\.dataset\.focused = "true"/);
