@@ -27,6 +27,10 @@ test("Live Events panel exposes bounded controls and clear sensitive-data framin
     assert.match(html, /id="startEvents"/);
     assert.match(html, /id="stopEvents"/);
     assert.match(html, /id="eventsSearch"[^>]*maxlength="256"/);
+    assert.match(html, /Search retained events/);
+    assert.match(html, /Case-insensitive substring across retained provider, event, level/);
+    assert.match(html, /\* and \? are literal/);
+    assert.match(html, /Search does not restrict upstream collection/);
     assert.match(html, /bounded memory, not automatically saved or logged/);
     assert.match(html, /Native Windows ETW is not collected/);
     assert.match(html, /const eventsMaxCount = 2000;/);
@@ -215,7 +219,29 @@ test("Events sorts all retained matches before bounded pages and resumes newest 
     assert.equal(ui.get("eventsPagination").hidden, true);
     assert.equal(ui.get("eventsPrevious").disabled, true);
     assert.equal(ui.get("eventsNext").disabled, true);
+    ui.get("eventsSearch").value = "ITEM240";
+    ui.get("eventsSearch").dispatch("input");
+    assert.equal(body.children.length, 1, "retained event search is case-insensitive");
+    ui.get("eventsSearch").value = "*";
+    ui.get("eventsSearch").dispatch("input");
+    assert.equal(body.children.length, 0, "wildcard characters are literal in ordinary substring search");
+    assert.match(ui.get("eventsEmpty").textContent, /not evidence of full-stream absence/);
     assert.ok(ui.messages.every(message => message.type === "ackEventBatch"));
+});
+
+test("Events search treats literal wildcard characters as retained payload text", () => {
+    const ui = eventsDocument();
+    ui.batch([
+        event(1, { provider: "Star*Provider", payload: { value: "ordinary" } }),
+        event(2, { provider: "Question?Provider", payload: { value: "ordinary" } }),
+        event(3, { provider: "Plain.Provider", payload: { pattern: "literal*" } }),
+    ]);
+    ui.get("eventsSearch").value = "*";
+    ui.get("eventsSearch").dispatch("input");
+    assert.deepEqual(ui.get("eventsBody").children.map(row => row.eventObservation.sequence), [3, 1]);
+    ui.get("eventsSearch").value = "?";
+    ui.get("eventsSearch").dispatch("input");
+    assert.deepEqual(ui.get("eventsBody").children.map(row => row.eventObservation.sequence), [2]);
 });
 
 test("Events source-time, numeric level and text sorting retain deterministic ties across eviction", () => {

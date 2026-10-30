@@ -106,7 +106,12 @@ export class ProcessTree implements vscode.TreeDataProvider<ProcessRow>, vscode.
     }
 
     public async setFilter(): Promise<void> {
-        const filter = await vscode.window.showInputBox({ prompt: "Filter .NET processes by name, PID, runtime or platform", value: this.filter });
+        const filter = await vscode.window.showInputBox({
+            title: "Filter .NET processes",
+            prompt: "Case-insensitive substring across name, PID, runtime, and platform. * and ? are literal characters; this filters the loaded process inventory only.",
+            placeHolder: "For example: MyApp, 4242, linux",
+            value: this.filter,
+        });
         if (filter === undefined) return;
         this.filter = filter;
         await this.refresh();

@@ -59,6 +59,9 @@ for (const [name, html] of [
         assert.match(script, /"thread-statics":"Thread statics"/);
         assert.match(html, /id="threadStaticsType"/);
         assert.match(html, /id="threadStaticsButton"/);
+        assert.match(html, /Exact full type name/);
+        assert.match(html, /Use the runtime's exact type name and casing/);
+        assert.match(html, /queries the retained snapshot handle or dump origin; it is not a local filter/);
     });
 
     test(`${name} webview thread-statics button validates input client-side`, () => {

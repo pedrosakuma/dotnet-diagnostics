@@ -221,6 +221,25 @@ frames. The CLI path can be set in the machine-scoped `dotnetDiagnostics.cliPath
 extension host must be able to execute it. Runtime, missing-tool, and protocol-version errors are
 shown with actionable guidance.
 
+## Filter matching and evidence scope
+
+Text fields intentionally preserve the matching contract of the evidence they control. Ordinary
+search fields use literal substrings: `*` and `?` are characters, not wildcard syntax. A zero-result
+bounded projection never establishes exhaustive absence.
+
+| Entry point | Matching contract | Evidence scope and effect |
+|---|---|---|
+| **.NET Processes** filter | Case-insensitive substring across name, PID, runtime, and platform; `*` / `?` are literal | Filters the loaded inventory (at most 500 rows). It does not rediscover or attach. |
+| Diagnostic-table **Search returned rows** | Case-insensitive substring of returned row text; `*` / `?` are literal | Local filter over returned rows only. Counts keep the returned-row denominator and do not describe the full capture. |
+| **Thread explorer** filter | Case-insensitive substring across the serialized returned thread record, including IDs, state/wait fields, and frames; `*` / `?` are literal | Local filter over the bounded snapshot projection. It does not query the origin or establish that no other thread/frame matched. |
+| CPU/allocation **Highlight loaded method or module** | Case-insensitive substring; `*` / `?` are literal | Highlights loaded projection nodes. It never hides nodes or changes capture/focus denominators, widths, sample counts, or estimated-byte totals. |
+| CPU/allocation **Query subtree by method** and caller/callee actions | Case-insensitive method-name substring against the retained profile | Explicit retained-handle query, not a local highlight and not a new collection. Call-tree re-rooting selects the matching occurrence with the highest inclusive count, which may differ from the selected visual path. |
+| Live Events **Search retained events** | Case-insensitive substring across retained provider, event name, level, and payload keys/values; `*` / `?` are literal | Local search before pagination. It does not change providers, level, keywords, target event volume, acknowledgements, or collection. |
+| Retained exception type/message choices | Exact retained value, including case; message choices are scoped to the selected type | Local selection over retained occurrences. All-observed type totals remain unchanged. |
+| **GC and activities** ActivitySource input | Comma-separated, case-insensitive whole-name patterns: `*` matches any characters and `?` one; plain text matches one complete source name; empty includes all | Configures a new collection. Wildcard/provider-grammar patterns can require broad DiagnosticSource provider collection followed by local filtering, so a narrow result does not guarantee lower target event volume. |
+| **Requests + completed Activities** sources | Exact full ActivitySource names with application-reported casing; wildcard characters are rejected | Configures a new explicit reproduction. No discovery or fallback capture is performed. |
+| **Query thread statics** type | Exact full runtime type name and casing | Explicit query against the retained snapshot handle or dump origin. It is not a local filter and never runs while typing. |
+
 The **Events** tab starts an independent `event_source` EventPipe session; it can run while the
 counters/GC stream is stopped or active. It asks for 1–8 explicit provider names, an event level
 (0–5), and a signed 64-bit decimal keyword mask, then requires acknowledgement because provider
@@ -531,7 +550,12 @@ byte-weight confirmation displays an update message instead of mislabelling a ti
 Use **Capture Diagnostics** (`dotnetDiagnostics.captureDiagnostics`) for allocations, off-CPU
 blocking, lock contention, thread pool, GC, GC and activities, in-flight requests, Kestrel,
 database or networking. A single picker asks for duration (1-300 seconds, default 10), rows per
-table (1-100), and applicable symbol path, ActivitySource filters or request threshold.
+table (1-100), and applicable symbol path, ActivitySource patterns or request threshold.
+For **GC and activities**, the optional comma-separated ActivitySource input uses case-insensitive,
+whole-name wildcard matching: `*` matches any characters, `?` matches one, plain text matches one
+complete source name, and empty includes all sources. Patterns that cannot be applied safely by the
+DiagnosticSource provider grammar subscribe broadly and are filtered locally, so a restrictive
+visible result does not guarantee reduced target-side event volume.
 Results contain structured metrics/tables, collector notes, omissions and evidence quality.
 Unknown values remain **Unavailable**, not zero; GC elapsed time is not labelled as pause time.
 Off-CPU requires explicit high-risk acknowledgement and platform tracing permissions

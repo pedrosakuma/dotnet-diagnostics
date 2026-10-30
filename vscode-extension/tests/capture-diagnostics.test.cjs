@@ -209,6 +209,8 @@ test("parameters reject invalid input and forward only applicable options", () =
     assert.ok(kinds.validateSymbolPath("x".repeat(1025)));
     assert.equal(kinds.validateSymbolPath(""), undefined);
     assert.deepEqual(kinds.parseSources("A,A,B*"), { sources: ["A", "B*"] });
+    assert.deepEqual(kinds.parseSources(" MyApp.* , MyApp.?orker "), { sources: ["MyApp.*", "MyApp.?orker"] });
+    assert.deepEqual(kinds.parseSources("   "), {}, "empty input includes all ActivitySources");
     assert.ok(kinds.parseSources(Array.from({ length: 21 }, (_, i) => `s${i}`).join(",")).error);
     const params = { durationSeconds: 6, topN: 3, symbolPath: "/sym", sources: ["A"], thresholdMs: 100 };
     const off = kinds.buildCaptureRequest("r", kinds.CAPTURE_KIND_SPECS[1], 42, params);
@@ -217,6 +219,27 @@ test("parameters reject invalid input and forward only applicable options", () =
     assert.equal(off.sources, undefined);
     assert.equal(off.thresholdMs, undefined);
     assert.equal(kinds.captureTimeoutMs("gc-activities", 10), 100000);
+});
+test("GC/activity source prompt explains whole-name wildcard collection semantics", async () => {
+    const spec = kinds.CAPTURE_KIND_SPECS.find(item => item.kind === "gc-activities");
+    const { controller, frames } = fixture(spec);
+    const prompts = [];
+    vscode.window.showInputBox = async options => {
+        prompts.push(options);
+        if (/duration/i.test(options.prompt)) return "10";
+        if (/rows per table/i.test(options.prompt)) return "20";
+        return "MyApp.*";
+    };
+    await controller.captureDiagnostics("gc-activities");
+    const sourcePrompt = prompts.find(options => /whole-name patterns/i.test(options.prompt));
+    assert.ok(sourcePrompt);
+    assert.match(sourcePrompt.prompt, /case-insensitive/);
+    assert.match(sourcePrompt.prompt, /\* matches any characters and \? matches one/);
+    assert.match(sourcePrompt.prompt, /Plain text matches one complete source name/);
+    assert.match(sourcePrompt.prompt, /empty includes all sources/);
+    assert.match(sourcePrompt.prompt, /broad provider collection followed by local filtering/);
+    assert.equal(sourcePrompt.placeHolder, "MyApp.*");
+    assert.deepEqual(frames[0].sources, ["MyApp.*"]);
 });
 test("result guard rejects ragged rows, unknown quality, mismatched totals and invalid provenance", () => {
     assert.equal(kinds.isCaptureViewResult(view()), true);

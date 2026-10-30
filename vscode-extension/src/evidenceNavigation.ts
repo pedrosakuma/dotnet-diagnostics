@@ -12,15 +12,20 @@ function enhanceEvidenceTable(table: HTMLTableElement | null): void {
     const controls = document.createElement("div");
     controls.className = "evidence-controls";
     const label = document.createElement("label");
-    label.textContent = "Filter returned rows ";
+    label.textContent = "Search returned rows ";
     const input = document.createElement("input");
     input.type = "search";
     input.value = "";
     input.maxLength = 512;
+    input.setAttribute("aria-label",
+        "Search returned rows by case-insensitive substring. Asterisks and question marks are literal characters.");
     label.appendChild(input);
+    const help = document.createElement("span");
+    help.className = "evidence-filter-help";
+    help.textContent = "Case-insensitive substring; * and ? are literal. Searches returned rows only.";
     const status = document.createElement("span");
     status.setAttribute("role", "status");
-    controls.append(label, status);
+    controls.append(label, help, status);
     table.parentElement?.insertBefore(controls, table);
     const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
     let sortIndex = -1;
@@ -50,7 +55,10 @@ function enhanceEvidenceTable(table: HTMLTableElement | null): void {
             return descending ? -result : result;
         });
         body!.replaceChildren(...visible);
-        status.textContent = visible.length + " of " + stateRows.length + " returned rows. Not a full-capture filter.";
+        status.textContent = visible.length + " of " + stateRows.length + " returned rows. "
+            + (term && visible.length === 0
+                ? "No match in this bounded projection; not evidence of full-capture absence."
+                : "Not a full-capture filter.");
     }
     headers.forEach((header, index) => {
         const button = document.createElement("button");
@@ -89,11 +97,22 @@ function renderExceptionNavigation(parent: HTMLElement, events: Array<Record<str
     const title = document.createElement("h4");
     title.textContent = "Explore retained occurrences";
     const help = document.createElement("p");
-    help.textContent = "Filters apply only to retained events. All-observed type counts do not change.";
+    help.textContent = "Type and message choices use exact retained values, including case. Messages are scoped "
+        + "to the selected type. Filters apply only to retained occurrences; all-observed type counts do not change.";
     const type = document.createElement("select");
-    type.setAttribute("aria-label", "Exception type");
+    type.id = "retainedExceptionType";
+    type.setAttribute("aria-label", "Exact retained exception type");
     const message = document.createElement("select");
-    message.setAttribute("aria-label", "Exception message");
+    message.id = "retainedExceptionMessage";
+    message.setAttribute("aria-label", "Exact retained exception message for the selected type");
+    const typeLabel = document.createElement("label");
+    typeLabel.htmlFor = type.id;
+    typeLabel.textContent = "Exception type (exact)";
+    typeLabel.appendChild(type);
+    const messageLabel = document.createElement("label");
+    messageLabel.htmlFor = message.id;
+    messageLabel.textContent = "Message for selected type (exact)";
+    messageLabel.appendChild(message);
     const occurrences = document.createElement("ol");
     occurrences.className = "exception-occurrences";
     occurrences.setAttribute("aria-label", "Retained exception occurrences");
@@ -240,7 +259,7 @@ function renderExceptionNavigation(parent: HTMLElement, events: Array<Record<str
         selectedOccurrenceButton?.focus({ preventScroll: true });
         selectedOccurrenceButton?.scrollIntoView({ block: "nearest" });
     });
-    section.append(type, message, reset, status, layout, help);
+    section.append(typeLabel, messageLabel, reset, status, layout, help);
     parent.appendChild(section);
     draw();
 }
@@ -264,6 +283,7 @@ export const EVIDENCE_NAVIGATION_STYLES = `
     .evidence-controls label { display:flex; flex-wrap:wrap; gap:.35rem; min-width:0; max-width:100%; }
     .evidence-controls input { box-sizing:border-box; min-width:0; max-width:100%; }
     .evidence-controls span { color:var(--vscode-descriptionForeground); font-size:.85rem; }
+    .evidence-controls .evidence-filter-help { flex-basis:100%; }
     .evidence-selection { border-left:3px solid var(--vscode-focusBorder); padding:.5rem; overflow-wrap:anywhere; max-height:45vh; overflow:auto; }
     button.heap-type-link {
         margin-left:.5rem; padding:0; border:0; border-radius:0;
@@ -274,6 +294,7 @@ export const EVIDENCE_NAVIGATION_STYLES = `
     button.heap-type-link { margin:0; font-size:inherit; text-align:left; overflow-wrap:anywhere; }
     button.heap-type-link:hover { background:transparent; color:var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground)); }
     button.heap-type-link:focus-visible { outline:1px solid var(--vscode-focusBorder); outline-offset:3px; }
+    .exception-explorer label { display:inline-flex; flex-direction:column; gap:.2rem; margin:.25rem; }
     .exception-explorer button, .exception-explorer select { margin:.25rem; }
     .exception-navigation-layout { display:grid; grid-template-columns:minmax(12rem, 1fr) minmax(0, 1.5fr); gap:.75rem; align-items:start; }
     .exception-occurrences { display:flex; flex-direction:column; gap:.2rem; max-height:45vh; overflow:auto; min-width:0; list-style:none; margin:0; padding:0; }
