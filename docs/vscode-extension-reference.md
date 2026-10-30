@@ -504,10 +504,17 @@ Types and stacks are independent aggregates: choosing a type does not filter the
 Capture totals include ticks without stacks; the profile reports its attributed share rather than
 redistributing missing bytes. Subtree queries still use the highest-ranked method-name match.
 Allocation profiles have separate state from CPU profiles, retain their owning CLI connection and
-never recollect on navigation. A new allocation capture replaces the displayed profile. If no
-allocation call tree is returned, the panel says that the response does not identify why attribution
-is unavailable and suggests checking capture quality/retrying under representative allocation
-activity; it does not claim a cause or diagnosis.
+never recollect on navigation. A new allocation capture replaces the displayed profile. The capture
+quality metrics separate sampled events/bytes from stack-attributed events/bytes. The explorer
+therefore reports a raw-empty window separately from a nonzero capture with no usable stack
+attribution; unknown or malformed attribution remains unavailable rather than becoming zero.
+
+The **.NET Diagnostics** output channel records bounded `[profile-evidence]` lifecycle lines for
+allocation capture and profile query requests/responses: UTC timestamp, request/evidence identity,
+CLI child PID/lifetime, requested duration/topN, numeric raw/attributed weights, weight unit, node
+count, limit/loss-note counts and structured error codes. Retained handles are represented only by
+a short SHA-256 fingerprint, and the records omit stack frames, type names, method filters and
+application payloads.
 
 This is not exact object instrumentation or per-object lifetime tracking: `GCAllocationTick` fires
 roughly per 100 KB allocated and names the most recent object. Counts are ticks, not objects;

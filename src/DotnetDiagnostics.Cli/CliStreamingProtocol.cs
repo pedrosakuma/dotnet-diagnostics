@@ -1005,7 +1005,10 @@ internal static partial class CliStreamingProtocol
                     }, CancellationToken.None).ConfigureAwait(false);
                     return;
                 }
-                var view = CliStreamingCaptureViews.Project(capture, structuredOptions);
+                var view = CliStreamingCaptureViews.Project(
+                    capture,
+                    structuredOptions,
+                    services.GetRequiredService<IDiagnosticHandleStore>());
                 var descriptor = investigationEvidence.Create(
                     kind,
                     processId!.Value,

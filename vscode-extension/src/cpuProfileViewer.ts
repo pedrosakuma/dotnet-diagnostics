@@ -60,7 +60,11 @@ function renderCpuProfile(
             .reduce((sum, child) => sum + child.node.inclusiveSamples, entry.node.exclusiveSamples);
         if (represented > entry.node.inclusiveSamples) invalid = true;
     }
-    if (invalid || (data.totalSamples !== undefined && !validCount(data.totalSamples))) {
+    if (invalid
+        || (data.totalSamples !== undefined && !validCount(data.totalSamples))
+        || (allocation && data.totalSamples === undefined)
+        || (allocation && data.root !== undefined && validCount(data.totalSamples)
+            && data.root.inclusiveSamples > data.totalSamples)) {
         const message = document.createElement("p");
         message.setAttribute("role", "alert");
         message.textContent = "Call tree unavailable: invalid or missing " + unit + " / frame data. No values were replaced with zero.";
@@ -73,9 +77,13 @@ function renderCpuProfile(
     let focus = atPath(state.focus) ?? entries[0];
     let selected = state.selected ? atPath(state.selected) : undefined;
     if (!focus) {
-        container.textContent = allocation
-            ? "No call tree was returned for this allocation profile. The response does not identify why attribution is unavailable. Check capture quality and retry during representative allocation activity before drawing conclusions."
-            : "No call tree was returned for this sample. The response does not identify why the profile is unavailable.";
+        container.textContent = allocation && data.totalSamples === 0
+            ? "No allocation ticks were captured in this window. Capture completion confirms protocol execution, not representative allocation activity or exact EventPipe arm timing."
+            : allocation && validCount(data.totalSamples) && data.totalSamples > 0
+                ? `${data.totalSamples} estimated sampled bytes were captured, but no usable stack attribution was returned. The profile is intentionally empty; the bytes were not replaced with zero.`
+                : allocation
+                    ? "No call tree was returned for this allocation profile. The response does not identify why attribution is unavailable."
+                    : "No call tree was returned for this sample. The response does not identify why the profile is unavailable.";
         return;
     }
     const method = (node: CpuTreeNode) => node.frame?.method || "Unknown method";
@@ -154,9 +162,14 @@ function renderCpuProfile(
         + "Gray blocks represent self " + unit + " or explicitly labelled omitted / unattributed descendants.", "query-view-provenance");
     if (allocation) {
         const stacked = data.root?.inclusiveSamples ?? 0;
-        text(profileGuidance, "Displayed root: " + stacked + " of " + captureTotal + " estimated bytes ("
-            + percent(stacked, captureTotal) + "). Remaining bytes are outside this root or have no captured stack. "
-            + "Types and sites are independent aggregates, not a type-to-stack correlation.", "query-view-provenance");
+        const coverage = captureTotal === 0
+            ? "No allocation ticks were captured in this window. Capture completion confirms protocol execution, not representative allocation activity or exact EventPipe arm timing."
+            : stacked === 0
+                ? captureTotal + " estimated sampled bytes were captured, but none were attributable to usable stacks. The profile is intentionally empty; captured bytes were not replaced with zero."
+                : "Displayed root: " + stacked + " of " + captureTotal + " estimated bytes ("
+                    + percent(stacked, captureTotal) + "). Remaining bytes are outside this root or have no captured stack.";
+        text(profileGuidance, coverage + " Types and sites are independent aggregates, not a type-to-stack correlation.",
+            "query-view-provenance");
     } else {
         const comparisonNote = text(profileGuidance,
             "This CPU profile is temporary. A live baseline/current comparison is available only while "
