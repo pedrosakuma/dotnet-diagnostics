@@ -1,0 +1,120 @@
+{
+  "schema": "dotnet-diagnostics/statistical-evidence-method-registry/v1",
+  "status": "design-only",
+  "availabilityStates": [
+    "available",
+    "insufficient_observations",
+    "incompatible",
+    "loss_detected",
+    "unsupported_approximation",
+    "not_applicable"
+  ],
+  "independenceUnits": [
+    "event",
+    "bounded_time_window",
+    "capture",
+    "process_run",
+    "environment_allocation"
+  ],
+  "eventLevelDefault": "rejected_without_demonstration",
+  "methods": [
+    {
+      "id": "window-median",
+      "version": 1,
+      "minimumInputCount": 1,
+      "allowedIndependenceUnits": [
+        "bounded_time_window",
+        "capture",
+        "process_run",
+        "environment_allocation"
+      ],
+      "requiresPairing": false,
+      "produces": [
+        "estimate"
+      ],
+      "emitsVerdict": false
+    },
+    {
+      "id": "paired-delta",
+      "version": 1,
+      "minimumInputCount": 1,
+      "allowedIndependenceUnits": [
+        "capture",
+        "process_run",
+        "environment_allocation"
+      ],
+      "requiresPairing": true,
+      "produces": [
+        "baseline_estimate",
+        "candidate_estimate",
+        "absolute_delta",
+        "relative_delta"
+      ],
+      "emitsVerdict": false
+    },
+    {
+      "id": "median-absolute-deviation",
+      "version": 1,
+      "minimumInputCount": 2,
+      "allowedIndependenceUnits": [
+        "bounded_time_window",
+        "capture",
+        "process_run",
+        "environment_allocation"
+      ],
+      "requiresPairing": false,
+      "produces": [
+        "dispersion"
+      ],
+      "emitsVerdict": false
+    },
+    {
+      "id": "wilson-score-rate",
+      "version": 1,
+      "minimumInputCount": 1,
+      "allowedIndependenceUnits": [
+        "capture",
+        "process_run",
+        "environment_allocation"
+      ],
+      "requiresPairing": false,
+      "produces": [
+        "rate",
+        "interval"
+      ],
+      "emitsVerdict": false
+    },
+    {
+      "id": "theil-sen-slope",
+      "version": 1,
+      "minimumInputCount": 2,
+      "allowedIndependenceUnits": [
+        "bounded_time_window",
+        "capture",
+        "process_run",
+        "environment_allocation"
+      ],
+      "requiresPairing": false,
+      "produces": [
+        "slope"
+      ],
+      "emitsVerdict": false
+    },
+    {
+      "id": "percentile-bootstrap-interval",
+      "version": 1,
+      "minimumInputCount": 2,
+      "allowedIndependenceUnits": [
+        "bounded_time_window",
+        "capture",
+        "process_run",
+        "environment_allocation"
+      ],
+      "requiresPairing": false,
+      "produces": [
+        "interval"
+      ],
+      "emitsVerdict": false
+    }
+  ]
+}

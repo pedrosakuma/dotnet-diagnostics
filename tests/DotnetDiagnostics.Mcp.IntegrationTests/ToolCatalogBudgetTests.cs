@@ -3,6 +3,8 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.Json.Schema;
+using System.Text.Json.Serialization;
 using FluentAssertions;
 using Microsoft.AspNetCore.Mvc.Testing;
 using ModelContextProtocol;
@@ -103,6 +105,151 @@ public sealed class ToolCatalogBudgetTests : IClassFixture<ToolCatalogBudgetTest
     }
 
     [Fact]
+    public async Task ProspectiveStatisticalEvidenceContract_MeasuresCatalogSchemaAndPayloadCost()
+    {
+        await using var client = await ConnectAsync();
+        var result = await client.ListToolsAsync(
+            new ListToolsRequestParams(),
+            cancellationToken: CancellationToken.None);
+        var current = ToolCatalogMeasurement.Measure(result);
+
+        var schema = McpJsonUtilities.DefaultOptions.GetJsonSchemaAsNode(
+            typeof(ProspectiveStatisticalEvidence),
+            new JsonSchemaExporterOptions
+            {
+                TreatNullObliviousAsNonNullable = true,
+            });
+        var schemaBytes = SerializedLength(schema);
+        var projected = ProjectStatisticalEvidenceOntoExistingTools(result, schema);
+        var payloads = RepresentativeStatisticalEvidence.Payloads
+            .Select(payload => new
+            {
+                payload.Availability,
+                Bytes = JsonSerializer.SerializeToUtf8Bytes(
+                    payload,
+                    McpJsonUtilities.DefaultOptions).Length,
+            })
+            .ToArray();
+        var availablePayloadBytes = payloads.Single(static payload =>
+            payload.Availability == ProspectiveEvidenceAvailability.Available).Bytes;
+        var unavailablePayloadBytes = payloads
+            .Where(static payload =>
+                    payload.Availability != ProspectiveEvidenceAvailability.Available)
+            .Select(static payload => payload.Bytes)
+            .ToArray();
+
+        _output.WriteLine(
+            $"prospective statistical evidence schema: {schemaBytes:N0} bytes");
+        _output.WriteLine(
+            $"prospective maximal catalog: {projected.MaximalBytes:N0} bytes " +
+            $"(delta +{projected.MaximalBytes - current.SerializedBytes:N0})");
+        _output.WriteLine(
+            $"prospective default catalog: {projected.DefaultBytes:N0} bytes " +
+            $"(delta +{projected.DefaultBytes - current.DefaultCatalogBytes:N0})");
+        foreach (var payload in payloads)
+        {
+            _output.WriteLine(
+                $"representative {payload.Availability} payload: {payload.Bytes:N0} bytes");
+        }
+
+        projected.MaximalToolCount.Should().Be(17,
+            "statistical evidence must reuse existing tools rather than add an MCP tool");
+        projected.DefaultToolCount.Should().Be(13);
+        projected.MaximalBytes.Should().BeGreaterThan(current.SerializedBytes,
+            "typed result records consume tools/list schema bytes even before any payload is returned");
+        projected.DefaultBytes.Should().BeGreaterThan(current.DefaultCatalogBytes);
+        schemaBytes.Should().BeLessThanOrEqualTo(8_192,
+            "a representative single-record schema should remain bounded enough to evaluate explicitly");
+        payloads.Should().OnlyContain(static payload => payload.Bytes <= 4_096,
+            "one bounded evidence record should remain small relative to collector result payloads");
+
+        var contract = File.ReadAllText(Path.Combine(
+            FindRepoRoot(),
+            "docs",
+            "design",
+            "statistical-evidence-contract.md"));
+        var budgetReport = File.ReadAllText(Path.Combine(
+            FindRepoRoot(),
+            "docs",
+            "research",
+            "mcp-tool-catalog-budget.md"));
+        foreach (var measuredBytes in new[]
+                 {
+                     current.SerializedBytes,
+                     current.DefaultCatalogBytes,
+                     schemaBytes,
+                     projected.MaximalBytes,
+                     projected.DefaultBytes,
+                     projected.MaximalBytes - current.SerializedBytes,
+                     availablePayloadBytes,
+                 })
+        {
+            var formatted = measuredBytes.ToString("N0", CultureInfo.InvariantCulture);
+            contract.Should().Contain(formatted,
+                "the design contract must carry the executable schema/catalog/payload measurement");
+            budgetReport.Should().Contain(formatted,
+                "the catalog budget report must carry the executable prospective measurement");
+        }
+
+        var unavailableRange = string.Create(
+            CultureInfo.InvariantCulture,
+            $"{unavailablePayloadBytes.Min():N0}–{unavailablePayloadBytes.Max():N0}");
+        contract.Should().Contain(unavailableRange);
+        budgetReport.Should().Contain(unavailableRange);
+    }
+
+    [Fact]
+    public void StatisticalMethodRegistry_DefinesTheDesignOnlyFoundation()
+    {
+        var registryPath = Path.Combine(
+            FindRepoRoot(),
+            "docs",
+            "design",
+            "statistical-evidence-method-registry.v1.json");
+        using var document = JsonDocument.Parse(File.ReadAllText(registryPath));
+        var root = document.RootElement;
+
+        root.GetProperty("schema").GetString().Should()
+            .Be("dotnet-diagnostics/statistical-evidence-method-registry/v1");
+        root.GetProperty("status").GetString().Should().Be("design-only");
+        root.GetProperty("eventLevelDefault").GetString().Should()
+            .Be("rejected_without_demonstration");
+        root.GetProperty("availabilityStates").EnumerateArray()
+            .Select(static item => item.GetString())
+            .Should().Equal(
+                "available",
+                "insufficient_observations",
+                "incompatible",
+                "loss_detected",
+                "unsupported_approximation",
+                "not_applicable");
+        root.GetProperty("independenceUnits").EnumerateArray()
+            .Select(static item => item.GetString())
+            .Should().Equal(
+                "event",
+                "bounded_time_window",
+                "capture",
+                "process_run",
+                "environment_allocation");
+
+        var methods = root.GetProperty("methods").EnumerateArray().ToArray();
+        methods.Select(static method => method.GetProperty("id").GetString())
+            .Should().Equal(
+                "window-median",
+                "paired-delta",
+                "median-absolute-deviation",
+                "wilson-score-rate",
+                "theil-sen-slope",
+                "percentile-bootstrap-interval");
+        methods.Should().OnlyContain(static method =>
+            method.GetProperty("version").GetInt32() == 1
+            && method.GetProperty("minimumInputCount").GetInt32() > 0
+            && !method.GetProperty("emitsVerdict").GetBoolean()
+            && method.GetProperty("allowedIndependenceUnits").GetArrayLength() > 0
+            && method.GetProperty("produces").GetArrayLength() > 0);
+    }
+
+    [Fact]
     public async Task AttachTool_ToolsListAdvertisesExternalDockerProfileFlow()
     {
         await using var client = await ConnectAsync();
@@ -190,6 +337,81 @@ public sealed class ToolCatalogBudgetTests : IClassFixture<ToolCatalogBudgetTest
             cancellationToken: CancellationToken.None);
     }
 
+    private static ProjectedCatalogMeasurement ProjectStatisticalEvidenceOntoExistingTools(
+        ListToolsResult result,
+        JsonNode statisticalEvidenceSchema)
+    {
+        var maximal = JsonSerializer.SerializeToNode(
+            result,
+            McpJsonUtilities.DefaultOptions)?.AsObject()
+            ?? throw new InvalidOperationException("Could not serialize the MCP tool catalog.");
+        var optionalToolNames = new HashSet<string>(
+            ["attach_to_pod", "detach_from_pod", "list_orchestrator", "discover_azure"],
+            StringComparer.Ordinal);
+        var defaultCatalog = JsonSerializer.SerializeToNode(
+            new ListToolsResult
+            {
+                Tools = result.Tools
+                    .Where(tool => !optionalToolNames.Contains(tool.Name))
+                    .ToArray(),
+            },
+            McpJsonUtilities.DefaultOptions)?.AsObject()
+            ?? throw new InvalidOperationException("Could not serialize the default MCP tool catalog.");
+
+        ApplyStatisticalEvidenceSchema(maximal, statisticalEvidenceSchema);
+        ApplyStatisticalEvidenceSchema(defaultCatalog, statisticalEvidenceSchema);
+        var tools = maximal["tools"]!.AsArray();
+        var defaultTools = defaultCatalog["tools"]!.AsArray();
+
+        return new ProjectedCatalogMeasurement(
+            MaximalBytes: SerializedLength(maximal),
+            DefaultBytes: SerializedLength(defaultCatalog),
+            MaximalToolCount: tools.Count,
+            DefaultToolCount: defaultTools.Count);
+    }
+
+    private static void ApplyStatisticalEvidenceSchema(
+        JsonObject catalog,
+        JsonNode statisticalEvidenceSchema)
+    {
+        var tools = catalog["tools"]?.AsArray()
+            ?? throw new InvalidOperationException("The MCP tool catalog has no tools array.");
+        var hostTools = new HashSet<string>(
+            ["collect_events", "collect_sample", "compare_to_baseline"],
+            StringComparer.Ordinal);
+
+        foreach (var tool in tools)
+        {
+            var toolObject = tool?.AsObject()
+                ?? throw new InvalidOperationException("The MCP tool catalog contains a non-object tool.");
+            var name = toolObject["name"]?.GetValue<string>()
+                ?? throw new InvalidOperationException("An MCP tool has no name.");
+            if (!hostTools.Contains(name))
+            {
+                continue;
+            }
+
+            var outputProperties = toolObject["outputSchema"]?["properties"]?.AsObject()
+                ?? throw new InvalidOperationException($"Tool '{name}' has no output-schema properties.");
+            outputProperties["statisticalEvidence"] = statisticalEvidenceSchema.DeepClone();
+        }
+    }
+
+    private static int SerializedLength(JsonNode node)
+        => Encoding.UTF8.GetByteCount(node.ToJsonString(McpJsonUtilities.DefaultOptions));
+
+    private static string FindRepoRoot()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "DotnetDiagnostics.slnx")))
+        {
+            directory = directory.Parent;
+        }
+
+        return directory?.FullName
+            ?? throw new InvalidOperationException("Could not locate repository root.");
+    }
+
     public sealed class FullCatalogFactory : WebApplicationFactory<DotnetDiagnostics.Mcp.Program>
     {
         public const string Token = "catalog-budget-test-token-do-not-use-in-prod";
@@ -217,6 +439,197 @@ public sealed class ToolCatalogBudgetTests : IClassFixture<ToolCatalogBudgetTest
             Environment.SetEnvironmentVariable("AzureDiscovery__Enabled", _previousAzureDiscoveryEnabled);
         }
     }
+}
+
+internal sealed record ProjectedCatalogMeasurement(
+    int MaximalBytes,
+    int DefaultBytes,
+    int MaximalToolCount,
+    int DefaultToolCount);
+
+[JsonConverter(typeof(JsonStringEnumConverter<ProspectiveEvidenceAvailability>))]
+internal enum ProspectiveEvidenceAvailability
+{
+    [JsonStringEnumMemberName("available")]
+    Available,
+
+    [JsonStringEnumMemberName("insufficient_observations")]
+    InsufficientObservations,
+
+    [JsonStringEnumMemberName("incompatible")]
+    Incompatible,
+
+    [JsonStringEnumMemberName("loss_detected")]
+    LossDetected,
+
+    [JsonStringEnumMemberName("unsupported_approximation")]
+    UnsupportedApproximation,
+
+    [JsonStringEnumMemberName("not_applicable")]
+    NotApplicable,
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter<ProspectiveIndependenceUnit>))]
+internal enum ProspectiveIndependenceUnit
+{
+    [JsonStringEnumMemberName("bounded_time_window")]
+    BoundedTimeWindow,
+
+    [JsonStringEnumMemberName("capture")]
+    Capture,
+
+    [JsonStringEnumMemberName("process_run")]
+    ProcessRun,
+
+    [JsonStringEnumMemberName("environment_allocation")]
+    EnvironmentAllocation,
+}
+
+internal sealed record ProspectiveObservedQuantity(
+    string Id,
+    string Unit,
+    string Aggregation,
+    string Normalization);
+
+internal sealed record ProspectiveEvidenceDelta(
+    double? BaselineEstimate,
+    double? CandidateEstimate,
+    double? Absolute,
+    double? Relative);
+
+internal sealed record ProspectiveEvidenceInterval(
+    double ConfidenceLevel,
+    double Lower,
+    double Upper);
+
+internal sealed record ProspectiveEvidenceCounts(
+    int Observations,
+    int Windows,
+    int Captures,
+    int Repetitions,
+    int IndependenceUnits,
+    int ExcludedNonFinite,
+    int LostOrDropped);
+
+internal sealed record ProspectiveEvidenceMethod(
+    string Id,
+    int Version,
+    IReadOnlyDictionary<string, string> Parameters);
+
+internal sealed record ProspectiveCompatibilityIdentity(
+    string Runtime,
+    string Backend,
+    string Unit,
+    string CaptureSettingsFingerprint,
+    string WorkloadFingerprint,
+    string ComparisonAxis);
+
+internal sealed record ProspectiveUnavailableField(
+    string Field,
+    string Reason);
+
+internal sealed record ProspectiveStatisticalEvidence(
+    string Schema,
+    ProspectiveEvidenceAvailability Availability,
+    ProspectiveObservedQuantity Quantity,
+    double? Estimate,
+    ProspectiveEvidenceDelta? Delta,
+    ProspectiveEvidenceInterval? Interval,
+    ProspectiveEvidenceCounts Counts,
+    ProspectiveEvidenceMethod Method,
+    ProspectiveIndependenceUnit IndependenceUnit,
+    ProspectiveCompatibilityIdentity Compatibility,
+    IReadOnlyList<ProspectiveUnavailableField> UnavailableFields,
+    IReadOnlyList<string> Assumptions,
+    IReadOnlyList<string> Limitations);
+
+internal static class RepresentativeStatisticalEvidence
+{
+    internal static IReadOnlyList<ProspectiveStatisticalEvidence> Payloads { get; } =
+    [
+        Create(ProspectiveEvidenceAvailability.Available, estimate: 12.5,
+            delta: new(10, 12.5, 2.5, 0.25),
+            interval: new(0.95, 1.1, 3.8),
+            limitations: ["Interval describes resampling variability, not a causal verdict."]),
+        Create(ProspectiveEvidenceAvailability.InsufficientObservations,
+            unavailableFields:
+            [
+                new("estimate", "minimum_independence_units_not_met"),
+                new("interval", "minimum_independence_units_not_met"),
+            ],
+            limitations: ["Need at least two independent process runs; found one."]),
+        Create(ProspectiveEvidenceAvailability.Incompatible,
+            unavailableFields:
+            [
+                new("delta", "capture_settings_mismatch"),
+                new("interval", "capture_settings_mismatch"),
+            ],
+            limitations: ["Capture settings fingerprints differ; observations were not pooled."]),
+        Create(ProspectiveEvidenceAvailability.LossDetected,
+            unavailableFields:
+            [
+                new("estimate", "source_loss_detected"),
+                new("interval", "source_loss_detected"),
+            ],
+            limitations: ["Detected source loss invalidates population-level interval estimation."]),
+        Create(ProspectiveEvidenceAvailability.UnsupportedApproximation,
+            unavailableFields:
+            [
+                new("estimate", "reservoir_approximation_not_admitted"),
+                new("interval", "reservoir_approximation_not_admitted"),
+            ],
+            limitations: ["The retained reservoir approximation is not admitted by this method."]),
+        Create(ProspectiveEvidenceAvailability.NotApplicable,
+            unavailableFields:
+            [
+                new("delta", "baseline_or_candidate_not_applicable"),
+                new("interval", "parent_estimate_not_applicable"),
+            ],
+            limitations: ["A paired delta requires both baseline and candidate observations."]),
+    ];
+
+    private static ProspectiveStatisticalEvidence Create(
+        ProspectiveEvidenceAvailability availability,
+        double? estimate = null,
+        ProspectiveEvidenceDelta? delta = null,
+        ProspectiveEvidenceInterval? interval = null,
+        IReadOnlyList<ProspectiveUnavailableField>? unavailableFields = null,
+        IReadOnlyList<string>? limitations = null)
+        => new(
+            Schema: "dotnet-diagnostics/statistical-evidence/v1",
+            availability,
+            new("request-latency", "ms", "window_median", "per_request"),
+            estimate,
+            delta,
+            interval,
+            new(
+                Observations: availability == ProspectiveEvidenceAvailability.Available ? 1200 : 0,
+                Windows: availability == ProspectiveEvidenceAvailability.Available ? 12 : 1,
+                Captures: availability == ProspectiveEvidenceAvailability.Available ? 6 : 1,
+                Repetitions: availability == ProspectiveEvidenceAvailability.Available ? 3 : 1,
+                IndependenceUnits: availability == ProspectiveEvidenceAvailability.Available ? 3 : 1,
+                ExcludedNonFinite: 0,
+                LostOrDropped: availability == ProspectiveEvidenceAvailability.LossDetected ? 17 : 0),
+            new(
+                "paired-delta",
+                1,
+                new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["estimate"] = "median",
+                    ["interval"] = "percentile-bootstrap-interval/v1",
+                    ["resamples"] = "2000",
+                }),
+            ProspectiveIndependenceUnit.ProcessRun,
+            new(
+                "coreclr/10",
+                "eventpipe",
+                "ms",
+                "sha256:capture-settings",
+                "sha256:workload",
+                "baseline_vs_candidate"),
+            unavailableFields ?? [],
+            ["Process runs are independent under the scenario protocol."],
+            limitations ?? []);
 }
 
 internal sealed record ToolCatalogMeasurement(
