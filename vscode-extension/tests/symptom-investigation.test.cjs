@@ -31,6 +31,9 @@ test("symptom guide maps each common journey to one bounded recommended first me
         assert.equal(spec.actions.filter(action => action.recommended).length, 1, spec.id);
         assert.ok(spec.actions.some(action => action.label === "All diagnostic actions"), spec.id);
     }
+    assert.ok(SYMPTOM_SPECS.find(spec => spec.id === "high-cpu").actions
+        .some(action => action.label === "Capture new CPU samples + retain raw trace"));
+    assert.equal(SYMPTOM_SPECS.find(spec => spec.id === "high-cpu").actions[0].label, "Capture new CPU samples");
 });
 
 test("guide discloses target, evidence mode and boundaries before dispatch", () => {

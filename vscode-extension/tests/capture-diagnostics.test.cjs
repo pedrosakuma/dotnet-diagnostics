@@ -59,6 +59,8 @@ test("one command exposes exactly the ten scoped kinds", () => {
     assert.deepEqual(kinds.CAPTURE_KIND_SPECS.filter(s => s.risk === "high").map(s => s.kind), ["off_cpu"]);
     const manifest = require("../package.json");
     assert.equal(manifest.contributes.commands.filter(c => c.command === "dotnetDiagnostics.captureDiagnostics").length, 1);
+    assert.equal(manifest.contributes.commands.find(c => c.command === "dotnetDiagnostics.saveSnapshot").title,
+        ".NET Diagnostics: Capture New Persistent Snapshot");
 });
 test("native capture groups expose every existing flow without attaching on expansion", () => {
     const provider = new Actions();
@@ -81,6 +83,8 @@ test("native capture groups expose every existing flow without attaching on expa
         assert.equal(leaves.filter(item => item.command?.command === "dotnetDiagnostics." + suffix).length, 1, suffix);
     assert.equal(leaves.filter(item => item.command?.command === "dotnetDiagnostics.investigateSymptom").length, 6);
     assert.equal(leaves.find(item => item.label === "Stop Live Counters").command, undefined);
+    assert.ok(leaves.some(item => item.label === "Capture new CPU samples"));
+    assert.ok(leaves.some(item => item.label === "Capture new CPU samples + retain raw trace"));
     for (const suffix of ["captureDiagnostics", "analyzeDumpFile"])
         assert.equal(roots.filter(item => item.command?.command === "dotnetDiagnostics." + suffix).length, 1, suffix);
     assert.deepEqual(provider.getChildren(leaves[0]), []);

@@ -128,7 +128,7 @@
       },
       {
         "command": "dotnetDiagnostics.saveSnapshot",
-        "title": ".NET Diagnostics: Capture and Save Snapshot"
+        "title": ".NET Diagnostics: Capture New Persistent Snapshot"
       },
       {
         "command": "dotnetDiagnostics.startCounters",
@@ -140,11 +140,11 @@
       },
       {
         "command": "dotnetDiagnostics.captureCpu",
-        "title": ".NET Diagnostics: Capture CPU Now"
+        "title": ".NET Diagnostics: Capture New CPU Samples"
       },
       {
         "command": "dotnetDiagnostics.captureCpuTrace",
-        "title": ".NET Diagnostics: Capture CPU + raw trace"
+        "title": ".NET Diagnostics: Capture New CPU Samples + Retain Raw Trace"
       },
       {
         "command": "dotnetDiagnostics.startEvents",

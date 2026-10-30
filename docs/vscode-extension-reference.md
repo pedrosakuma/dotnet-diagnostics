@@ -94,24 +94,30 @@ bounded in-memory copy.
 
 ## Sharing results
 
-Use **Export redacted JSON** or **Export redacted CSV** in a result panel to open an editable
-document containing only allowlisted measurements from the most recent result. Save it locally
+Use **Open redacted measurements (JSON)** or **Open redacted measurements (CSV)** in a result
+panel to open an editable document containing only allowlisted measurements from the displayed
+result. Save it locally
 with the editor's normal Save action. These intentionally lossy exports exclude application
 text, symbols, identifiers, paths, arbitrary object values and diagnostic interpretations.
 Unavailable values remain unavailable, not zero; explicit omission counts include excluded data
 and presentation caps. These documents are not raw evidence or re-importable capture packages.
 
-After a CPU capture, **Export redacted investigation summary** calls the CLI's `export-summary`
-in the same connection that owns the capture, then applies the same measurement-only projection
-before opening it. This needs a CLI build containing the export protocol; if the connection has
-closed or its handle has expired, capture again. It never calls a fresh CLI with an expired handle.
+After a CPU capture, **Open retained investigation measurements (JSON)** calls the CLI's
+`export-summary` on the displayed capture's retained handle, then applies the same lossy
+measurement-only projection before opening it. This is distinct from projecting the already-loaded
+panel result, but it is still not a complete or reopenable investigation summary. It needs a CLI
+build containing the export protocol; if the connection has closed or its handle has expired,
+capture again. The export action never starts a fresh capture or calls a fresh CLI with an expired
+handle.
 
-Raw traces are a separate, unredacted, local-only option. Choose **Capture CPU + raw trace** and
-explicitly acknowledge the sensitive-data warning before collection. **Export raw trace locally**
+Raw traces are a separate, unredacted, local-only option. Choose
+**Capture new CPU samples + retain raw trace** and explicitly acknowledge the sensitive-data warning
+before collection. **Save retained raw trace locally**
 requires another confirmation and a native local Save dialog. The CLI materializes bytes only
 from the trace associated with that CPU handle under its artifact root; the webview cannot provide
 a source path. No automatic upload occurs. Raw traces can contain secrets and must be reviewed
-before sharing. A normal CPU capture does not retain a raw trace.
+before sharing. A normal CPU capture does not retain a raw trace, and the save action never
+recollects one.
 
 In a **Saved Captures** panel, successfully load an artifact/view, then choose **Compare saved
 captures...**. The first picker names that loaded artifact and explicitly keeps it as the candidate
@@ -142,9 +148,9 @@ requiring an investigation wizard. Result actions follow these prerequisites:
 
 | Action | No result / loading | Ready | Failed attempt / disconnected |
 |---|---|---|---|
-| CPU redacted JSON/CSV | Unavailable until a CPU result exists | Host-held measurements; no CLI request | Previous successful measurements remain exportable, including while a new capture runs |
-| CPU profile queries / investigation summary | Unavailable without a retained CLI profile; wait during capture/query/export | Uses the displayed capture's CLI handle | Previous valid profile survives rejected/failed captures; disconnect or an expired-handle response requires recapture |
-| Raw trace export | Requires **Capture CPU + raw trace** and an idle retained connection | Separate acknowledgement and local destination | Unavailable after disconnect or replacement by a capture without a trace |
+| CPU redacted JSON/CSV | Unavailable until a CPU result exists | Host-held measurements from the displayed result; no CLI request; lossy and non-reopenable | Previous successful measurements remain exportable, including while a new capture runs |
+| CPU profile queries / retained investigation measurements | Unavailable without a retained CLI profile; wait during capture/query/export | Uses the displayed capture's CLI handle; applies the same lossy measurement projection | Previous valid profile survives rejected/failed captures; disconnect or an expired-handle response requires recapture; export never captures |
+| Retained raw trace save | Requires **Capture new CPU samples + retain raw trace** and an idle retained connection | Separate acknowledgement and local destination | Unavailable after disconnect or replacement by a capture without a trace; save never captures |
 | Allocation exploration | Hidden without a retained profile; busy operations temporarily disable queries | Uses the allocation profile, independently of CPU | Table-only and disconnected results remain readable with recapture guidance |
 | Saved-view export / comparison | Unavailable on selection change, unsupported views, loading or failure | Only the successfully loaded selection; comparison waits for the current comparison | Stale responses cannot enable another selection; a successful new selection restores actions |
 
@@ -295,7 +301,7 @@ The Workspace **Area** selector includes **CPU**, **Memory & GC**, **Threads & w
 meaningful option is omitted or rendered as an explicit heading; ordinary generic captures use
 **Result summary**, never a disabled **Capture result** selector. The adjacent state label
 distinguishes a **Local switch**, an explicit **Retained query**, and a **New collection**.
-Concrete actions name their work, such as **Capture CPU samples**, **Capture heap snapshot**, and
+Concrete actions name their work, such as **Capture new CPU samples**, **Capture heap snapshot**, and
 **Load call tree**. Changing a navigation choice never collects, reattaches, elevates, reopens an
 origin or replaces evidence. Native selects retain keyboard behavior and focus when rebuilt; the
 stages stack in narrow webviews. Deep links and internal routes continue to use the canonical
@@ -326,7 +332,7 @@ Groups organize collection entry points, not permissions: actions still require 
 evidence prerequisites. Retention paths, thread wait chains, heap object inspection and other
 drilldowns remain beside their evidence, not separate collectors.
 **Analyze Dump File** remains a standalone action for an existing file with no selected process
-required. **Saved Captures** remains a sibling view; **Capture and Save Snapshot** stays on the
+required. **Saved Captures** remains a sibling view; **Capture New Persistent Snapshot** stays on the
 process context menu and explicitly collects a new heap/GC dump/thread snapshot. Grouping does not
 add persistence for other captures or convert current results into saved evidence.
 
@@ -352,8 +358,10 @@ select the intended target and start again.
 with an explicit cap notice), with refresh,
 reopen and confirmed CLI-managed deletion. It survives extension and CLI process restarts;
 ordinary panel results and ephemeral handles are not history entries. On a process, choose
-**Capture and Save Snapshot** to collect a **new** live heap, gcdump or thread snapshot, rather
-than converting an older panel result. Saving requires explicit high-risk acknowledgement
+**Capture New Persistent Snapshot** to collect a **new** live heap, gcdump or thread snapshot,
+rather than converting an older panel result or a lossy redacted sharing document. The live heap
+and thread result panels repeat this boundary beside the temporary displayed snapshot. Persistence
+requires explicit high-risk acknowledgement
 (suspension risk for live heap/threads, a blocking Gen2 GC for gcdump). Saved evidence can contain
 sensitive data and remains on disk until deleted.
 The view explicitly labels the catalog on this extension host, not workspace-local history.
@@ -369,7 +377,7 @@ must be recovered with the CLI first. CPU/exception persistence is not exposed b
 History calls inherit the CLI artifact root (including `MCP_ARTIFACT_ROOT`), have a 60-second
 deadline and a combined 8388608-character output cap; failures are explicit, not partial JSON.
 
-Open **Workspace**, choose **CPU** under **Area**, and select **Capture CPU samples** (also available as the **Capture CPU sample** tree-view action or
+Open **Workspace**, choose **CPU** under **Area**, and select **Capture new CPU samples** (also available as the **Capture new CPU samples** tree-view action or
 Command Palette command `dotnetDiagnostics.captureCpu`) to take a single point-in-time CPU sample
 of the selected process.
 Unlike the counters/GC timeline, a capture is a one-shot snapshot: it reuses the panel's active

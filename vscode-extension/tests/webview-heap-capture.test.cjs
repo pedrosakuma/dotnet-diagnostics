@@ -30,6 +30,15 @@ function extractInlineScript(html) {
     return match[1];
 }
 
+test("live snapshot panel distinguishes temporary display from a new persistent capture", () => {
+    const html = renderHtml(target, "nonce123", 120);
+    assert.match(html, /This displayed heap snapshot is temporary/);
+    assert.match(html, /<strong>Capture New Persistent Snapshot<\/strong>/);
+    assert.match(html, /collects separate durable evidence/);
+    assert.match(html, /never converts this result or a redacted measurement document/);
+    assert.match(html, /This displayed thread snapshot is temporary/);
+});
+
 // Evaluates the real, extracted renderHeapCapture implementation (plus its parseTimeSpanToMs
 // dependency and a minimal DOM stub) so this test exercises exactly what ships to the browser,
 // not a hand-copied stand-in. Mirrors the extraction technique in webview-gc-pause.test.cjs.

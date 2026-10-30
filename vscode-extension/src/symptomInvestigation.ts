@@ -50,7 +50,7 @@ export const SYMPTOM_SPECS: readonly SymptomSpec[] = [
         description: "Find sampled on-CPU hotspots",
         actions: [
             {
-                label: "Capture CPU samples",
+                label: "Capture new CPU samples",
                 reason: "A bounded CPU sample is the lowest-surprise first evidence for sustained processor use.",
                 mode: "Collects new temporary evidence in Workspace → CPU.",
                 boundaries: "Moderate target impact; no persistent artifact; validates the active target before collection.",
@@ -65,9 +65,9 @@ export const SYMPTOM_SPECS: readonly SymptomSpec[] = [
                 command: "dotnetDiagnostics.startCounters",
             },
             {
-                label: "Capture CPU + raw trace",
+                label: "Capture new CPU samples + retain raw trace",
                 reason: "Keep the raw trace when later offline tooling is required.",
-                mode: "Collects temporary CPU evidence and creates a local raw artifact.",
+                mode: "Collects new temporary CPU evidence and retains a local raw artifact.",
                 boundaries: "The trace is unredacted; explicit confirmation is required before collection.",
                 command: "dotnetDiagnostics.captureCpuTrace",
             },
@@ -135,7 +135,7 @@ export const SYMPTOM_SPECS: readonly SymptomSpec[] = [
                 command: "dotnetDiagnostics.captureRequestActivities",
             },
             {
-                label: "Capture CPU samples",
+                label: "Capture new CPU samples",
                 reason: "Check whether request latency overlaps sampled on-CPU work.",
                 mode: "Collects separate temporary evidence in Workspace → CPU.",
                 boundaries: "CPU samples do not prove request causality or workload equivalence.",
