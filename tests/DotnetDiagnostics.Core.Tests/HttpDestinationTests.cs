@@ -156,6 +156,7 @@ public sealed class HttpDestinationTests
 
     [Theory]
     [InlineData("System.Net.Http", true)]
+    [InlineData("SYSTEM.NET.HTTP", true)]
     [InlineData("System.Net.Htt?", true)]
     [InlineData("system.net.*", true)]
     [InlineData("*", true)]

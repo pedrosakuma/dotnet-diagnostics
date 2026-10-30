@@ -1269,14 +1269,16 @@ test("CPU focus uses exact local paths across modes, preserves capture denominat
 test("CPU search highlights without filtering counts, expands matches, and persists across modes", () => {
     const { renderCpuQuery, container, requests } = cpuRenderer();
     renderCpuQuery("call-tree", { data: { totalSamples: 20,
-        root: cpuNode("Root", 20, 0, [cpuNode("A.Work", 15, 15), cpuNode("B.Wait", 5, 5)]),
+        root: cpuNode("Root", 20, 0, [cpuNode("A.Work*", 15, 15), cpuNode("B.Wait", 5, 5)]),
     } }, false);
     const input = container.querySelector("input");
+    assert.match(input.attributes["aria-label"], /case-insensitive substring/);
+    assert.match(input.attributes["aria-label"], /literal characters/);
     input.value = "b.wAIT";
     input.listeners.input();
     assert.match(container.textContent, /1 matching loaded node/);
     assert.match(container.querySelector(".cpu-profile-match").textContent, /B.Wait/);
-    assert.match(container.querySelector(".cpu-call-tree").textContent, /A.Work/);
+    assert.match(container.querySelector(".cpu-call-tree").textContent, /A.Work\*/);
     click(container, "Flame graph (icicle)");
     const matched = elements(container, element => element.attributes.class === "cpu-flame-match");
     assert.equal(matched.length, 1);
@@ -1284,6 +1286,13 @@ test("CPU search highlights without filtering counts, expands matches, and persi
     input.value = "App";
     input.listeners.input();
     assert.match(container.textContent, /3 matching loaded node/);
+    input.value = "*";
+    input.listeners.input();
+    assert.match(container.textContent, /1 matching loaded node/);
+    input.value = "missing";
+    input.listeners.input();
+    assert.match(container.textContent, /0 matching loaded node/);
+    assert.match(container.textContent, /omitted nodes may still contain matches/);
     assert.deepEqual(requests, []);
 });
 
@@ -1902,7 +1911,7 @@ function makeTable(document, parent, columns, values, id) {
 test("returned-row navigation filters and numerically sorts without redundant disclosures", () => {
     const { makeContainer, document, enhanceEvidenceTable } = loadRenderer();
     const root = makeContainer("tables");
-    const table = makeTable(document, root, ["Name", "Bytes"], [["A", 100], ["B", 2], ["C", 30]]);
+    const table = makeTable(document, root, ["Name", "Bytes"], [["A*", 100], ["B", 2], ["C?", 30]]);
     enhanceEvidenceTable(table);
     const rows = () => table.querySelector("tbody").children;
     click(table.querySelector("thead"), "Bytes");
@@ -1916,14 +1925,25 @@ test("returned-row navigation filters and numerically sorts without redundant di
     assert.equal(root.querySelector(".evidence-pick"), null);
     assert.equal(root.querySelector(".evidence-selection"), null);
     const input = root.querySelector("input");
-    input.value = "B";
+    assert.match(input.attributes["aria-label"], /case-insensitive substring/);
+    assert.match(root.textContent, /\* and \? are literal/);
+    input.value = "b";
     input.listeners.input();
     assert.equal(rows().length, 1);
     assert.match(root.textContent, /1 of 3 returned rows/);
+    input.value = "*";
+    input.listeners.input();
+    assert.equal(rows().length, 1);
+    assert.match(rows()[0].textContent, /A\*/);
+    input.value = "?";
+    input.listeners.input();
+    assert.equal(rows().length, 1);
+    assert.match(rows()[0].textContent, /C\?/);
     input.value = "not found";
     input.listeners.input();
     assert.equal(rows().length, 0);
     assert.match(root.textContent, /0 of 3/);
+    assert.match(root.textContent, /not evidence of full-capture absence/);
 });
 
 test("table enhancement preserves meaningful links and nested disclosures without duplicating cells", () => {
@@ -2331,15 +2351,17 @@ test("exception type and message filters select retained occurrences without cha
     renderExceptionNavigation(root, [
         { exceptionType: "A", exceptionMessage: "", timestamp: "t1", threadId: 1 },
         { exceptionType: "A", exceptionMessage: "<img>message", timestamp: "t2", threadId: 2, managedStack: ["Throw()"] },
+        { exceptionType: "a", exceptionMessage: "case differs", timestamp: "t2b", threadId: 22 },
         { exceptionType: "B", exceptionMessage: "other", timestamp: "t3", threadId: 3 },
     ]);
     const [type, message] = root.querySelectorAll("select");
     type.value = JSON.stringify("A");
     type.listeners.change();
-    assert.match(root.textContent, /2 of 3 retained occurrences/);
+    assert.match(root.textContent, /2 of 4 retained occurrences/);
+    assert.match(root.textContent, /exact retained values, including case/);
     message.value = JSON.stringify("");
     message.listeners.change();
-    assert.match(root.textContent, /1 of 3 retained occurrences/);
+    assert.match(root.textContent, /1 of 4 retained occurrences/);
     click(root, "t1 | A | thread 1");
     assert.match(root.textContent, /No managed stack was captured/);
     message.value = JSON.stringify("<img>message");
@@ -2353,7 +2375,7 @@ test("exception type and message filters select retained occurrences without cha
     assert.equal(message.value, "");
     assert.doesNotMatch(root.querySelector("section").textContent, /Throw\(\)/);
     click(root, "Reset exception filters");
-    assert.match(root.textContent, /3 of 3 retained occurrences/);
+    assert.match(root.textContent, /4 of 4 retained occurrences/);
 });
 
 test("exception occurrence detail keeps selection, keyboard return and bounded navigation in wide and narrow fixtures", () => {

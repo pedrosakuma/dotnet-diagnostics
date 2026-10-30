@@ -25,6 +25,10 @@ test("processes drop sensitive command lines and explicitly bound retained inven
     assert.equal(inventory.truncated, true);
     assert.ok(!JSON.stringify(inventory).includes("SECRET"));
     assert.equal(h.filterProcesses(inventory.processes, "App490").length, 1);
+    assert.equal(h.filterProcesses(inventory.processes, "app490").length, 1, "matching is case-insensitive");
+    const literals = h.parseProcessInventory(envelope([row(700, "Star*App"), row(701, "Question?App")])).processes;
+    assert.deepEqual(h.filterProcesses(literals, "*").map(process => process.processId), [700]);
+    assert.deepEqual(h.filterProcesses(literals, "?").map(process => process.processId), [701]);
     assert.throws(() => h.parseProcessInventory(envelope([row(-1, "invalid")])), /invalid process/);
 });
 test("exited and detectably reused PIDs fail instead of attaching", () => {
@@ -98,8 +102,12 @@ test("native welcome and filtered-empty recovery distinguish discovery failure a
         assert.deepEqual(await tree.getChildren(), []);
         assert.equal(tree.message, undefined, "TreeView.message suppresses native viewsWelcome content");
         data = [row(42, "App")];
-        vscode.window.showInputBox = async () => "missing";
+        let filterOptions;
+        vscode.window.showInputBox = async options => { filterOptions = options; return "missing"; };
         await tree.setFilter();
+        assert.match(filterOptions.prompt, /Case-insensitive substring/);
+        assert.match(filterOptions.prompt, /\* and \? are literal/);
+        assert.match(filterOptions.prompt, /loaded process inventory only/);
         const empty = (await tree.getChildren())[0];
         assert.match(empty.message, /No processes match/);
         assert.equal(tree.getTreeItem(empty).command.command, "dotnetDiagnostics.clearProcessFilter");

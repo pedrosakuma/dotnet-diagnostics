@@ -431,12 +431,17 @@ function updateThreadNavigation(view: string, result: Record<string, unknown>): 
     search.value = state.search;
     search.id = "threadExplorerSearch";
     search.placeholder = "Thread ID, state or stack method";
-    search.setAttribute("aria-label", "Find returned threads or stack methods");
+    search.setAttribute("aria-label", "Filter returned thread records by case-insensitive substring. "
+        + "Asterisks and question marks are literal characters.");
     const searchLabel = document.createElement("label");
     searchLabel.htmlFor = search.id;
     searchLabel.className = "thread-search";
-    searchLabel.textContent = "Filter returned threads";
+    searchLabel.textContent = "Filter returned thread records";
     searchLabel.appendChild(search);
+    const searchHelp = document.createElement("p");
+    searchHelp.className = "thread-secondary";
+    searchHelp.textContent = "Case-insensitive substring across returned thread fields and frames; * and ? are literal. "
+        + "This searches the bounded snapshot projection only.";
     const listing = document.createElement("div");
     const mode = { value: state.mode ?? "threads" };
     const modes = document.createElement("div");
@@ -678,7 +683,9 @@ function updateThreadNavigation(view: string, result: Record<string, unknown>): 
             }
             if (state.revealSelected && !selected && typeof state.selected === "number")
                 appendThread(undefined, state.selected);
-            if (!body.children.length) text(listing, state.threads.length ? "No returned threads match this filter." : "No threads were returned.");
+            if (!body.children.length) text(listing, state.threads.length
+                ? "No returned threads match this substring in the bounded snapshot projection."
+                : "No threads were returned.");
             listing.appendChild(table);
         }
         if (mode.value === "cycles") text(listing, state.deadlocks === undefined
@@ -714,7 +721,7 @@ function updateThreadNavigation(view: string, result: Record<string, unknown>): 
         }
     }
     search.addEventListener("input", () => { state.search = search.value; state.revealSelected = false; drawList(); });
-    explorer.append(modes, searchLabel, listing, note);
+    explorer.append(modes, searchLabel, searchHelp, listing, note);
     selectMode(mode.value);
     if (hadSearchFocus) search.focus({ preventScroll: true });
     else if (focusedMode) modeButtons.find(button => button.dataset.mode === focusedMode)?.focus({ preventScroll: true });

@@ -129,14 +129,17 @@ function renderCpuProfile(
     container.appendChild(controls);
 
     const label = document.createElement("label");
-    label.textContent = "Find method or module ";
+    label.textContent = "Highlight loaded method or module ";
     const search = document.createElement("input");
     search.type = "search";
     search.maxLength = 512;
     search.value = state.search;
-    search.setAttribute("aria-label", "Find method or module in the loaded projection");
+    search.setAttribute("aria-label", "Highlight loaded method or module nodes by case-insensitive substring. "
+        + "Asterisks and question marks are literal characters.");
     label.appendChild(search);
     container.appendChild(label);
+    text(container, "Case-insensitive substring; * and ? are literal. Highlights loaded nodes only and "
+        + "does not filter or renormalize totals.", "query-view-provenance");
     const searchStatus = text(container, "", "query-view-provenance");
     searchStatus.setAttribute("role", "status");
     const profileGuidance = document.createElement("section");
@@ -458,6 +461,8 @@ function renderCpuProfile(
         searchStatus.textContent = state.search.length
             ? entries.filter(entry => underFocus(entry) && matches(entry.node)).length
                 + " matching loaded node(s) in this focus. No nodes hidden."
+                + (entries.some(entry => underFocus(entry) && matches(entry.node))
+                    ? "" : " No match in this loaded projection; omitted nodes may still contain matches.")
             : "Showing " + entries.filter(underFocus).length + " loaded node(s).";
         drawSelection();
         visualization.replaceChildren();

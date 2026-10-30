@@ -4346,10 +4346,14 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       </table>
       </details>
       <div class="statics-form">
-        <input id="threadStaticsType" type="text" maxlength="512" placeholder="Exact type name for thread statics, e.g. MyApp.Cache" />
+        <label for="threadStaticsType">Exact full type name</label>
+        <input id="threadStaticsType" type="text" maxlength="512" placeholder="MyApp.Cache"
+          aria-describedby="threadStaticsHelp" />
         <button id="threadStaticsButton" type="button">Query thread statics</button>
         <span id="threadStaticsError" class="statics-error"></span>
       </div>
+      <p id="threadStaticsHelp" class="query-view-provenance">Use the runtime's exact type name and casing.
+        This queries the retained snapshot handle or dump origin; it is not a local filter.</p>
       <div id="threadQueryViews" class="query-views"></div>
     </div>
   </section>
@@ -4361,8 +4365,12 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       <button id="stopEvents" type="button" disabled>Stop</button>
       <button id="eventsFollow" type="button" disabled>Pause following</button>
       <button id="eventsClear" type="button">Clear</button>
-      <label for="eventsSearch">Search</label><input id="eventsSearch" type="search" maxlength="${LIVE_EVENT_SEARCH_MAX_CHARS}" placeholder="Search retained events" />
+      <label for="eventsSearch">Search retained events</label><input id="eventsSearch" type="search"
+        maxlength="${LIVE_EVENT_SEARCH_MAX_CHARS}" placeholder="Provider, event, level, payload key or value"
+        aria-describedby="eventsSearchHelp" />
     </div>
+    <small id="eventsSearchHelp">Case-insensitive substring across retained provider, event, level, and
+      payload keys/values; * and ? are literal. Search does not restrict upstream collection.</small>
     <div id="eventsStatus" role="status">Not running.</div>
     <div id="eventsPresentation" role="status">Following latest. Newest events appear first.</div>
     <p id="eventsEmpty">No retained events. Start a stream with the provider, level and keywords documented by your application; zero matches does not confirm target inactivity.</p>
@@ -4378,7 +4386,8 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         <tbody id="eventsBody"></tbody>
       </table>
     </div>
-    <small>Search and sorting cover retained events only, before pagination.</small>
+    <small>Search and sorting cover retained events only, before pagination. No match is not evidence
+      that no matching event was observed outside the retained window or configured subscription.</small>
     <div id="eventsQualityDetail"></div>
     <section id="eventDetails" aria-label="Selected event details"><p>Select an event to inspect its bounded payload.</p></section>
     <div id="eventsSubscription">Start Live Events to choose explicit provider names, level and keyword mask.</div>
@@ -5098,7 +5107,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       document.getElementById('eventsPagination').hidden = pageCount <= 1;
       document.getElementById('eventsEmpty').hidden = filtered.length > 0;
       document.getElementById('eventsEmpty').textContent = events.length
-        ? 'No retained events match this search. Clear the search to see retained events.'
+        ? 'No retained events match this case-insensitive substring. * and ? are literal. Clear the search to see retained events; this is not evidence of full-stream absence.'
         : 'No retained events. Only configured provider, level and keyword matches can appear; zero matches does not confirm target inactivity.';
       eventsBody.replaceChildren();
       for (const item of page) {
@@ -6838,10 +6847,14 @@ export function renderDumpAnalysisHtml(dumpFileName: string, nonce: string): str
       </table>
       </details>
       <div class="statics-form">
-        <input id="threadStaticsType" type="text" maxlength="512" placeholder="Exact type name for thread statics, e.g. MyApp.Cache" />
+        <label for="threadStaticsType">Exact full type name</label>
+        <input id="threadStaticsType" type="text" maxlength="512" placeholder="MyApp.Cache"
+          aria-describedby="threadStaticsHelp" />
         <button id="threadStaticsButton" type="button">Query thread statics</button>
         <span id="threadStaticsError" class="statics-error"></span>
       </div>
+      <p id="threadStaticsHelp" class="query-view-provenance">Use the runtime's exact type name and casing.
+        This queries the retained snapshot handle or dump origin; it is not a local filter.</p>
       <div id="threadQueryViews" class="query-views"></div>
     </div>
   </section>
@@ -7102,7 +7115,9 @@ async function promptCaptureParams(spec: CaptureKindSpec): Promise<CaptureParams
     }
     if (spec.supportsSources) {
         const sources = await vscode.window.showInputBox({
-            prompt: "Optional comma-separated ActivitySource filters; empty captures all sources",
+            title: "ActivitySource patterns for this new collection",
+            prompt: "Optional comma-separated whole-name patterns, case-insensitive: * matches any characters and ? matches one. Example: MyApp.*. Plain text matches one complete source name; empty includes all sources. Wildcards may require broad provider collection followed by local filtering.",
+            placeHolder: "MyApp.*",
             validateInput: value => parseSources(value).error,
         });
         if (sources === undefined) return undefined;
