@@ -17,8 +17,9 @@ EventPipe events, find CPU hotspots, inspect heap and thread snapshots, and anal
   call tree, hot path, top methods or callers/callees.
 - **Explore allocation pressure:** sampled, estimated-byte call trees and flame graphs with
   method/module navigation, plus allocation type/site tables. Not exact object/lifetime tracking.
-- **Keep useful evidence:** save supported snapshots and reopen them after the app has stopped.
-- **Share and compare:** export redacted measurements, save raw CPU traces locally, and compare
+- **Keep useful evidence:** capture new persistent supported snapshots and reopen them after the app has stopped.
+- **Share and compare:** export lossy redacted measurements from a displayed result, save a retained
+  raw CPU trace locally, and compare
   compatible saved captures against a baseline.
 
 Saved comparisons start only from a successfully loaded artifact. They name that artifact before
@@ -116,7 +117,7 @@ Memory & GC, Threads & waits, Requests & networking, and Exceptions. A stage wit
 meaningful option becomes a heading instead of a disabled selector, so ordinary captures show
 **Result summary** rather than a disabled **Capture result** choice. A compact state label
 distinguishes **Local switch**, **Retained query**, and **New collection**, while concrete actions
-such as **Capture CPU samples** and **Load call tree** stay beside the current state. The evidence
+such as **Capture new CPU samples** and **Load call tree** stay beside the current state. The evidence
 identity and lifecycle disclosure keeps source, target, quality, replacement and display-only
 context available. Merely changing Area, Evidence to inspect or Analysis never collects,
 reattaches, elevates, reopens an origin or replaces evidence. Thread snapshots and
@@ -139,6 +140,8 @@ unhandled exception. Started timestamps display in UTC; the original ISO value r
 to assistive technology and in the timestamp tooltip. Monitoring, dump analysis, and saved evidence
 keep their source-specific result surfaces.
 **Analyze Dump File** and **Saved Captures** remain separate offline entry points.
+On a process, **Capture New Persistent Snapshot** collects a separate durable live heap, GC dump,
+or thread snapshot. It never converts a temporary panel result or a redacted sharing document.
 
 **Requests + completed Activities** is a separate explicit reproduction action in Requests &
 networking and the Command Palette. It requires the additive `hello.requestActivities` v1
@@ -199,9 +202,11 @@ Run the CLI as the same OS user as your app. Some captures can briefly pause the
 trigger a GC; live heap/thread inspection also needs OS tracing permissions. Higher-impact
 actions ask for confirmation before running.
 
-Captures can contain sensitive application data. JSON/CSV sharing exports intentionally exclude
-application text and identifiers; raw traces are **not redacted**, require explicit confirmation,
-and are only saved locally. No automatic upload occurs.
+Captures can contain sensitive application data. **Open redacted measurements (JSON/CSV)** uses
+only the displayed result and intentionally excludes application text and identifiers. The output
+is lossy and cannot reopen an investigation. Raw traces are **not redacted**: they must be retained
+when collecting new CPU evidence, require explicit confirmation, and can only be saved locally from
+that retained capture. Export actions never collect again and no automatic upload occurs.
 
 Windows, macOS and Linux desktop/workspace hosts are supported, including Remote SSH, WSL and
 Dev Containers. Install the CLI in that same host environment; browser-only VS Code is not supported.

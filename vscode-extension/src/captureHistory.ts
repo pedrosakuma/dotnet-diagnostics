@@ -67,7 +67,9 @@ export class CaptureHistory implements vscode.TreeDataProvider<HistoryRow>, vsco
             if (page.nextAfterCaptureId && this.rows.length < 500) this.rows.push({ more: page.nextAfterCaptureId });
             else if (page.nextAfterCaptureId)
                 this.rows.push({ message: "Showing the first 500 saved captures. Use the CLI for older captures." });
-            if (!this.rows.length) this.rows.push({ message: "No saved captures. Use Capture and Save Snapshot on a process." });
+            if (!this.rows.length) this.rows.push({
+                message: "No saved captures. Use Capture New Persistent Snapshot on a process to collect separate durable evidence.",
+            });
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             this.rows = [{ message: `Cannot list saved captures: ${message}` }];
@@ -167,19 +169,19 @@ export class CaptureHistory implements vscode.TreeDataProvider<HistoryRow>, vsco
     }
     public async save(process: ProcessEntry): Promise<void> {
         const selected = await vscode.window.showQuickPick([
-            { label: "Live heap snapshot", captureKind: "heap-live" as const },
-            { label: "GC dump snapshot", captureKind: "heap-gcdump" as const },
-            { label: "Thread snapshot", captureKind: "thread-snapshot" as const },
-        ], { placeHolder: "Collect a NEW saved snapshot (does not convert the current panel result)" });
+            { label: "New persistent live heap snapshot", captureKind: "heap-live" as const },
+            { label: "New persistent GC dump snapshot", captureKind: "heap-gcdump" as const },
+            { label: "New persistent thread snapshot", captureKind: "thread-snapshot" as const },
+        ], { placeHolder: "Collect NEW durable evidence (never converts the displayed result or a sharing export)" });
         if (!selected) return;
         const warning = selected.captureKind === "heap-gcdump"
             ? "This induces a blocking Gen2 GC and may pause the process."
             : "This attaches with ptrace and briefly suspends the process.";
         const confirmation = await vscode.window.showWarningMessage(
-            `Capture and save a NEW snapshot of PID ${process.processId}? ${warning} `
+            `Capture a NEW persistent snapshot of PID ${process.processId}? This collects again; it does not convert any displayed result. ${warning} `
             + "The saved evidence can contain sensitive application data and remains on disk until CLI-managed deletion.",
-            { modal: true }, "Acknowledge and Save", "Cancel");
-        if (confirmation !== "Acknowledge and Save") return;
+            { modal: true }, "Acknowledge and Capture", "Cancel");
+        if (confirmation !== "Acknowledge and Capture") return;
         const inventory = parseProcessInventory(await runHistoryCli(this.cliPath(), ["processes", "--json"]));
         validateTarget(process, inventory.processes);
         const stdout = await runHistoryCli(this.cliPath(), persistCaptureArgs(selected.captureKind, process.processId, true));

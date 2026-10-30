@@ -157,9 +157,10 @@ export class ResultExporter {
     }
 }
 
-export const RESULT_EXPORT_BUTTONS = `<div class="controls"><button id="exportJson">Export redacted JSON</button>
-<button id="exportCsv">Export redacted CSV</button></div>
-<p>Exports contain measurements only; application text and diagnostic interpretations are excluded. Save the opened document locally.</p>`;
+export const RESULT_EXPORT_BUTTONS = `<h4>Share displayed measurements</h4>
+<div class="controls"><button id="exportJson">Open redacted measurements (JSON)</button>
+<button id="exportCsv">Open redacted measurements (CSV)</button></div>
+<p>Uses only the currently displayed result. This lossy measurement document excludes application text and diagnostic interpretations, cannot reopen the investigation, and must be saved locally with the editor.</p>`;
 export const RESULT_EXPORT_SCRIPT = `for (const format of ["json", "csv"]) {
   const button = document.getElementById(format === "json" ? "exportJson" : "exportCsv");
   button.addEventListener("click", () => {

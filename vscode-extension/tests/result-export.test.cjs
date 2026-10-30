@@ -39,6 +39,12 @@ test("measurement projections retain unavailable and measured zero with explicit
     assert.ok(result.omitted >= 21);
     assert.match(result.notice, /Lossy measurement-only/);
 });
+test("sharing controls identify displayed, lossy, non-reopenable evidence", () => {
+    assert.match(e.RESULT_EXPORT_BUTTONS, /Share displayed measurements/);
+    assert.match(e.RESULT_EXPORT_BUTTONS, /Open redacted measurements \(JSON\)/);
+    assert.match(e.RESULT_EXPORT_BUTTONS, /currently displayed result/);
+    assert.match(e.RESULT_EXPORT_BUTTONS, /cannot reopen the investigation/);
+});
 test("export uses only host-held evidence and opens an editable local document", async () => {
     const exporter = new e.ResultExporter(), docs = [], errors = [];
     vscode.window.showTextDocument = async document => docs.push(document);

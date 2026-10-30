@@ -17,8 +17,8 @@ document.addEventListener("click", event => {
 
 export function profileRetentionText(retained: boolean): string {
     return retained
-        ? "Cached loaded projection. Additional evidence requires an explicit query on the retained CLI connection."
-        : "Cached loaded projection only. The retained CLI profile is unavailable; additional queries and raw trace exports require a new capture.";
+        ? "Cached loaded projection. Additional evidence requires an explicit query on this displayed capture's retained CLI connection."
+        : "Cached loaded projection only. This displayed capture's retained CLI evidence is unavailable; additional queries and retained-evidence exports require a new capture.";
 }
 
 function installProfileActions(): (message: {
@@ -45,12 +45,18 @@ function installProfileActions(): (message: {
         const busy = captures.size > 0 || queries.size > 0 || exporting;
         const wait = "Wait for the current capture, query or export to finish.";
         const cpuReason = profiles.cpu ? wait : "Capture CPU with a retained CLI profile first; reconnect by capturing again.";
+        const summaryReason = profiles.cpu ? wait : cpuMeasurements
+            ? "This displayed CPU capture has no retained CLI evidence. Capture new CPU samples; export never starts a capture."
+            : "Capture new CPU samples first. Export never starts a capture.";
         const allocationReason = profiles.allocation ? wait : "Capture allocations with a retained CLI profile first.";
         for (const id of ["exportJson", "exportCsv"])
-            setActionAvailable(document.getElementById(id), cpuMeasurements, "Capture CPU first. Redacted measurements remain exportable offline.");
-        setActionAvailable(document.getElementById("exportSummary"), profiles.cpu && !busy, cpuReason);
+            setActionAvailable(document.getElementById(id), cpuMeasurements,
+                "Capture new CPU samples first. Redacted measurements use the displayed result and remain available offline.");
+        setActionAvailable(document.getElementById("exportSummary"), profiles.cpu && !busy, summaryReason);
         setActionAvailable(document.getElementById("exportTrace"), profiles.trace && !busy,
-            profiles.trace ? wait : "Use Capture CPU + raw trace first; its CLI connection must remain open.");
+            profiles.trace ? wait : profiles.cpu
+                ? "This displayed CPU capture did not retain a raw trace. Capture new CPU samples + retain raw trace; saving never starts a capture."
+                : "This displayed CPU capture has no retained CLI evidence. Capture new CPU samples + retain raw trace; saving never starts a capture.");
         for (const id of ["captureCpu", "captureCpuTrace", "captureAllocation"])
             setActionAvailable(document.getElementById(id), !busy, wait);
         for (const button of Array.from(document.querySelectorAll<HTMLElement>("[data-cpu-view], #cpuQueryViews [data-profile-query]")))
@@ -75,9 +81,13 @@ function installProfileActions(): (message: {
             explorer.hidden = !profiles.allocation;
         }
         const cpuStatus = document.getElementById("cpuEvidencePrerequisite");
-        if (cpuStatus) cpuStatus.textContent = !cpuMeasurements ? "Capture CPU to enable measurement exports."
-            : !profiles.cpu ? "Redacted measurements are available offline. Capture again for CLI profile queries and exports."
-                : "Redacted measurements are available; profile queries and investigation exports use the retained CLI connection.";
+        if (cpuStatus) cpuStatus.textContent = !cpuMeasurements
+            ? "No displayed CPU capture. Collect new CPU samples to enable sharing and retained-evidence actions."
+            : !profiles.cpu
+                ? "Displayed CPU measurements remain shareable offline. Retained CLI evidence is unavailable, so investigation-summary and raw-trace exports cannot run. Export actions never collect again."
+                : !profiles.trace
+                    ? "Displayed CPU measurements are shareable. Investigation-summary export uses this capture's retained CLI profile. No raw trace was retained; saving one requires a new CPU capture with trace retention."
+                    : "Displayed CPU measurements are shareable. Investigation-summary and raw-trace exports reuse this capture's retained CLI evidence and never collect again.";
         const allocationStatus = document.getElementById("allocationEvidencePrerequisite");
         if (allocationStatus) allocationStatus.textContent = profiles.allocation ? ""
             : "Allocation exploration requires a retained profile. Table-only or disconnected results remain readable; capture again with a profile-capable CLI.";

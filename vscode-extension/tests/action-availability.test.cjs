@@ -13,8 +13,9 @@ const { renderHistoryHtml } = require("../out/captureHistoryPanel.js");
 const { SingleFlightGuard } = require("../out/protocol.js");
 require("./stubs/vscode-stub.js").EventEmitter = class { event() {} fire() {} dispose() {} };
 const extensionPath = path.join(__dirname, "../out/extension.js");
-const { Controller, Actions } = new Function("require", "exports",
-    fs.readFileSync(extensionPath, "utf8") + "\nreturn { Controller: CounterPanelController, Actions: DiagnosticsActionsProvider };")(
+const { Controller, Actions, renderHtml } = new Function("require", "exports",
+    fs.readFileSync(extensionPath, "utf8")
+    + "\nreturn { Controller: CounterPanelController, Actions: DiagnosticsActionsProvider, renderHtml: exports.renderHtml };")(
     Module.createRequire(extensionPath), {});
 
 function dom() {
@@ -75,6 +76,7 @@ function profileUi() {
 const ready = { cpu: true, trace: true, allocation: true };
 test("profile action matrix preserves host-held evidence independently of connection and capture phase", () => {
     const ui = profileUi();
+    assert.match(ui.get("cpuEvidencePrerequisite").textContent, /No displayed CPU capture/);
     assert.equal(ui.available("captureCpu"), true);
     assert.equal(ui.available("captureCpuTrace"), true);
     assert.equal(ui.available("exportJson"), false);
@@ -112,10 +114,17 @@ test("profile action matrix preserves host-held evidence independently of connec
     assert.equal(ui.available("exportSummary"), false);
     assert.equal(ui.available("exportTrace"), false);
     assert.equal(ui.available("exportCsv"), true, "disconnect does not discard redacted measurements");
-    assert.match(ui.get("cpuEvidencePrerequisite").textContent, /offline/);
+    assert.match(ui.get("cpuEvidencePrerequisite").textContent, /remain shareable offline/);
+    assert.match(ui.get("cpuEvidencePrerequisite").textContent, /never collect again/);
+    assert.match(ui.get("exportSummary").title, /never starts a capture/);
     ui.update({ type: "capture", kind: "cpu", profiles: { cpu: true, trace: false, allocation: false } });
     assert.equal(ui.available("exportSummary"), true);
     assert.equal(ui.available("exportTrace"), false, "ordinary CPU capture did not retain a trace");
+    assert.match(ui.get("cpuEvidencePrerequisite").textContent, /No raw trace was retained/);
+    assert.match(ui.get("exportTrace").title, /did not retain a raw trace/);
+    ui.update({ type: "profileAvailability", profiles: ready });
+    assert.match(ui.get("cpuEvidencePrerequisite").textContent, /reuse this capture's retained CLI evidence/);
+    assert.match(ui.get("cpuEvidencePrerequisite").textContent, /never collect again/);
 });
 test("unavailable actions remain focusable but block click and keyboard-generated click invocation", () => {
     const ui = profileUi();
@@ -125,7 +134,7 @@ test("unavailable actions remain focusable but block click and keyboard-generate
     ui.get("exportJson").click();
     assert.equal(calls, 0);
     assert.equal(ui.document.activeElement, ui.get("exportJson"));
-    assert.match(ui.get("exportJson").title, /Capture CPU/);
+    assert.match(ui.get("exportJson").title, /Capture new CPU samples/);
     ui.update({ type: "capture", kind: "cpu" });
     ui.get("exportJson").click();
     assert.equal(calls, 1);
@@ -137,13 +146,48 @@ test("disconnect updates cached projection provenance and disables raw exports w
     note.setAttribute("data-profile-retention-note","");
     ui.get("cpuQueryViews").children.push(note);
     ui.update({type:"capture",kind:"cpu",profiles:ready});
-    assert.match(note.textContent,/explicit query on the retained CLI connection/);
+    assert.match(note.textContent,/explicit query on this displayed capture's retained CLI connection/);
     ui.update({type:"profileAvailability",profiles:{cpu:false,trace:false,allocation:false}});
     assert.match(note.textContent,/Cached loaded projection only/);
-    assert.match(note.textContent,/raw trace exports require a new capture/);
+    assert.match(note.textContent,/retained-evidence exports require a new capture/);
     assert.equal(ui.get("cpuQueryViews").getAttribute("data-profile-retained"),"false");
     assert.equal(ui.available("exportTrace"),false);
     assert.equal(ui.available("exportJson"),true);
+});
+test("CPU rendering separates new collection from displayed and retained-evidence exports", () => {
+    const html = renderHtml({
+        processId: 42, managedEntrypointAssemblyName: "Fixture", runtimeVersion: "10",
+        operatingSystem: "Windows", processArchitecture: "x64",
+    }, "nonce", 120);
+    const captureGroup = html.indexOf('aria-label="New CPU capture"');
+    const evidenceGroup = html.indexOf("<summary>Share or save displayed CPU evidence</summary>");
+    assert.ok(captureGroup >= 0 && evidenceGroup > captureGroup);
+    assert.ok(html.indexOf('id="captureCpuTrace"') < evidenceGroup,
+        "trace retention belongs to new capture options, not displayed-evidence exports");
+    assert.match(html, /Open redacted measurements \(JSON\)/);
+    assert.match(html, /Open retained investigation measurements \(JSON\)/);
+    assert.match(html, /Save retained raw trace locally…/);
+    assert.match(html, /They never start a new capture/);
+    assert.match(html, /cannot reopen the investigation/);
+});
+test("retained-evidence export failure never falls back to a new capture", async () => {
+    const controller = Object.create(Controller.prototype);
+    controller.exporting = false;
+    controller.cpuExport = undefined;
+    controller.postMessage = () => {};
+    let captureCalls = 0;
+    controller.captureCpuCore = async () => { captureCalls++; };
+    const errors = [];
+    const originalError = require("./stubs/vscode-stub.js").window.showErrorMessage;
+    require("./stubs/vscode-stub.js").window.showErrorMessage = async message => errors.push(message);
+    try {
+        await controller.exportCpu("summary");
+        assert.equal(captureCalls, 0);
+        assert.match(errors[0], /CPU export failed/);
+        assert.match(errors[0], /Capture CPU with an updated CLI first/);
+    } finally {
+        require("./stubs/vscode-stub.js").window.showErrorMessage = originalError;
+    }
 });
 test("saved view actions follow loaded selection, reject stale responses and recover after failure", () => {
     const ui = dom(), messages = [];

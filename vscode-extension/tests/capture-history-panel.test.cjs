@@ -180,12 +180,28 @@ test("save is a new explicit snapshot, revalidates the process and reopens the r
     const history = new CaptureHistory(() => "cli", { appendLine() {} });
     history.open = async row => opened.push(row.capture.captureId);
     try {
-        vscode.window.showQuickPick = async () => ({ captureKind: "heap-gcdump" });
+        let choices, pickerOptions, warning;
+        vscode.window.showQuickPick = async (items, options) => {
+            choices = items;
+            pickerOptions = options;
+            return { captureKind: "heap-gcdump" };
+        };
         vscode.window.showWarningMessage = async () => "Cancel";
         await history.save(process);
         assert.equal(calls.length, 0);
-        vscode.window.showWarningMessage = async () => "Acknowledge and Save";
+        assert.deepEqual(choices.map(choice => choice.label), [
+            "New persistent live heap snapshot",
+            "New persistent GC dump snapshot",
+            "New persistent thread snapshot",
+        ]);
+        assert.match(pickerOptions.placeHolder, /never converts the displayed result or a sharing export/);
+        vscode.window.showWarningMessage = async message => {
+            warning = message;
+            return "Acknowledge and Capture";
+        };
         await history.save(process);
+        assert.match(warning, /collects again/);
+        assert.match(warning, /does not convert any displayed result/);
         assert.equal(calls[0][0], "processes");
         assert.ok(calls[1].includes("--persist") && calls[1].includes("gcdump"));
         assert.deepEqual(opened, [A]);

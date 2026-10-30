@@ -608,10 +608,10 @@ class CounterPanelController implements vscode.Disposable {
 
     public async captureCpuTrace(): Promise<void> {
         const confirmation = await vscode.window.showWarningMessage(
-            "Collect a raw CPU trace locally? Raw traces can contain secrets and sensitive application data. "
-            + "They are not redacted and will never be uploaded automatically.",
-            { modal: true }, "Acknowledge and Capture Trace", "Cancel");
-        if (confirmation !== "Acknowledge and Capture Trace") return;
+            "Collect NEW CPU samples and retain their raw trace for later local export? Raw traces can contain secrets "
+            + "and sensitive application data. They are not redacted and will never be uploaded automatically.",
+            { modal: true }, "Acknowledge and Capture New Evidence", "Cancel");
+        if (confirmation !== "Acknowledge and Capture New Evidence") return;
         if (this.captureCpuTask) throw new Error("Wait for the current CPU capture to finish.");
         this.captureCpuTask = this.captureCpuCore(true).finally(() => { this.captureCpuTask = undefined; });
         await this.captureCpuTask;
@@ -3903,12 +3903,12 @@ class DiagnosticsActionsProvider implements vscode.TreeDataProvider<vscode.TreeI
             title: "Stop Live Counters",
         };
 
-        const captureCpu = new vscode.TreeItem("Capture CPU Now", vscode.TreeItemCollapsibleState.None);
-        captureCpu.description = "Take a point-in-time CPU sample";
+        const captureCpu = new vscode.TreeItem("Capture new CPU samples", vscode.TreeItemCollapsibleState.None);
+        captureCpu.description = "Collect new temporary CPU evidence";
         captureCpu.iconPath = new vscode.ThemeIcon("flame");
         captureCpu.command = {
             command: "dotnetDiagnostics.captureCpu",
-            title: "Capture CPU Now",
+            title: "Capture new CPU samples",
         };
 
         const captureHeap = new vscode.TreeItem("Capture Heap Snapshot", vscode.TreeItemCollapsibleState.None);
@@ -3962,7 +3962,8 @@ class DiagnosticsActionsProvider implements vscode.TreeDataProvider<vscode.TreeI
                 return action(`Capture ${capture.label}`, "dotnetDiagnostics.captureDiagnostics", capture.description, [kind]);
             });
             if (spec.id === "cpu") captures.push(captureCpu,
-                action("Capture CPU + raw trace", "dotnetDiagnostics.captureCpuTrace", "Unredacted trace; explicit confirmation before collection"));
+                action("Capture new CPU samples + retain raw trace", "dotnetDiagnostics.captureCpuTrace",
+                    "Collects again; unredacted trace stays local and requires explicit confirmation"));
             if (spec.id === "memory") captures.splice(1, 0, captureHeap);
             if (spec.id === "threads") captures.unshift(captureThreadSnapshot);
             if (spec.id === "exceptions") captures.push(captureExceptions);
@@ -4200,7 +4201,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       </div>
       <p id="workspaceNavigationStatus" class="workspace-navigation-context" role="status" aria-live="polite">
         <strong id="workspaceOperationKind" class="workspace-operation-kind">New collection</strong>
-        <span id="workspaceNavigationHelp">Capture CPU samples to create evidence; navigation never collects automatically.</span>
+        <span id="workspaceNavigationHelp">Capture new CPU samples to create evidence; navigation never collects automatically.</span>
       </p>
     </div>
     <div id="workspaceEvidenceStatus" class="workspace-evidence-status" role="status" tabindex="-1">No evidence selected.</div>
@@ -4257,8 +4258,9 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
   </section>
     </section>
   <section id="resultCpu" class="result-tab-panel" role="tabpanel" aria-labelledby="resultTabWorkspace" data-export-kind="cpu" data-evidence-id="" hidden>
-    <div class="panel-actions">
-      <button id="captureCpu" type="button" aria-label="Capture CPU samples">Capture CPU samples…</button>
+      <div class="panel-actions" aria-label="New CPU capture">
+        <button id="captureCpu" type="button" aria-label="Capture new CPU samples">Capture new CPU samples…</button>
+        <button id="captureCpuTrace" type="button">Capture new CPU samples + retain raw trace…</button>
     </div>
     <div id="captureStatus" role="status"></div>
     <div id="captureResult" class="empty">
@@ -4278,13 +4280,14 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       </p>
     </div>
     <details class="cpu-export-actions">
-      <summary>CPU exports</summary>
-      <p id="cpuEvidencePrerequisite" role="status">Capture CPU to enable measurement exports.</p>
+      <summary>Share or save displayed CPU evidence</summary>
+      <p id="cpuEvidencePrerequisite" role="status">No displayed CPU capture. Collect new CPU samples to enable sharing and retained-evidence actions.</p>
       ${RESULT_EXPORT_BUTTONS}
+      <h4>Use retained CLI evidence</h4>
+      <p>These actions operate only on the displayed CPU capture's retained CLI handle. They never start a new capture.</p>
       <div class="controls export-controls">
-        <button id="captureCpuTrace" type="button">Capture CPU + raw trace</button>
-        <button id="exportSummary" type="button">Export redacted investigation summary</button>
-        <button id="exportTrace" type="button">Export raw trace locally</button>
+        <button id="exportSummary" type="button">Open retained investigation measurements (JSON)</button>
+        <button id="exportTrace" type="button">Save retained raw trace locally…</button>
       </div>
     </details>
   </section>
@@ -4332,6 +4335,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       </section>
       </div>
     </div>
+    <p class="query-view-provenance">This displayed heap snapshot is temporary. <strong>Capture New Persistent Snapshot</strong> on the process collects separate durable evidence; it never converts this result or a redacted measurement document.</p>
     ${LIVE_READ_CONSENT_HTML}
   </section>
   <section id="resultThreads" hidden>
@@ -4352,6 +4356,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       </div>
       <div id="threadQueryViews" class="query-views"></div>
     </div>
+    <p class="query-view-provenance">This displayed thread snapshot is temporary. <strong>Capture New Persistent Snapshot</strong> on the process collects separate durable evidence; it never converts this result or a redacted measurement document.</p>
   </section>
     <section id="monitoringEvents" class="monitoring-view" role="tabpanel" aria-labelledby="monitoringTabEvents" hidden>
   <section id="resultEvents">

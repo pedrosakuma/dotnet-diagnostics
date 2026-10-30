@@ -421,7 +421,7 @@ test("live panel exposes the compact evidence workspace and keeps other result r
     assert.doesNotMatch(dumpHtml, /workspace-thread-snapshot/);
     assert.match(html, /id="captureGc" type="button">Capture GC evidence…/);
     assert.match(html, /id="cpuSamplingDisclaimer"/);
-    assert.match(html, /<section id="resultCpu"[^>]*data-export-kind="cpu"[\s\S]*?<button id="captureCpu" type="button" aria-label="Capture CPU samples">Capture CPU samples…/);
+    assert.match(html, /<section id="resultCpu"[^>]*data-export-kind="cpu"[\s\S]*?<button id="captureCpu" type="button" aria-label="Capture new CPU samples">Capture new CPU samples…/);
     assert.match(html, /<section id="resultHeap"[\s\S]*?<button id="captureHeap" type="button" aria-label="Capture heap snapshot">Capture heap snapshot…/);
     assert.match(script, /function selectResultTab\(selected\)/);
     assert.match(script, /event\.key === 'ArrowRight'/);
