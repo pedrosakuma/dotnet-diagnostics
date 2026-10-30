@@ -65,19 +65,21 @@ test("native capture groups expose every existing flow without attaching on expa
     const roots = provider.getChildren();
     const groups = roots.filter(item => item.collapsibleState !== vscode.TreeItemCollapsibleState.None);
     assert.deepEqual(groups.map(item => item.label),
-        ["Monitoring", "CPU", "Memory & GC", "Threads & waits", "Requests & networking", "Exceptions"]);
+        ["What are you investigating?", "Monitoring", "CPU", "Memory & GC", "Threads & waits", "Requests & networking", "Exceptions"]);
     const leaves = groups.flatMap(group => {
         assert.equal(group.command, undefined, "expansion is not a diagnostic command");
         assert.equal(typeof group.id, "string");
         return provider.getChildren(group);
     });
-    const generic = leaves.filter(item => item.command?.command === "dotnetDiagnostics.captureDiagnostics");
+    const generic = leaves.filter(item => item.command?.command === "dotnetDiagnostics.captureDiagnostics"
+        && item.command.arguments?.length);
     assert.deepEqual(generic.map(item => item.command.arguments[0]).sort(),
         kinds.CAPTURE_KIND_SPECS.map(spec => spec.kind).sort());
     assert.equal(new Set(generic.map(item => item.command.arguments[0])).size, 10);
     for (const suffix of ["captureCpu", "captureCpuTrace", "captureHeap", "captureThreadSnapshot",
         "captureExceptions", "startCounters", "startEvents"])
         assert.equal(leaves.filter(item => item.command?.command === "dotnetDiagnostics." + suffix).length, 1, suffix);
+    assert.equal(leaves.filter(item => item.command?.command === "dotnetDiagnostics.investigateSymptom").length, 6);
     assert.equal(leaves.find(item => item.label === "Stop Live Counters").command, undefined);
     for (const suffix of ["captureDiagnostics", "analyzeDumpFile"])
         assert.equal(roots.filter(item => item.command?.command === "dotnetDiagnostics." + suffix).length, 1, suffix);

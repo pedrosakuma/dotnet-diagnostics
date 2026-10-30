@@ -95,6 +95,13 @@ import {
     INVESTIGATION_LENS_SCRIPT,
     INVESTIGATION_LENS_STYLES,
 } from "./investigationLens";
+import {
+    SYMPTOM_SPECS,
+    isSymptomId,
+    runSymptomInvestigation,
+    symptomSpec,
+    type SymptomId,
+} from "./symptomInvestigation";
 
 /**
  * The 7 heap query views available unconditionally once any heap snapshot is captured, plus the 3
@@ -3782,6 +3789,7 @@ export function activate(context: vscode.ExtensionContext): void {
         row ? guarded(() => processes.invoke(row, action)) : fallback();
     const actions = new DiagnosticsActionsProvider();
     controller.targetChanged = target => {
+        actions.setActiveTarget(target);
         void guarded(() => processes.setActiveTarget(target ? {
             processId: target.processId,
             entrypoint: target.managedEntrypointAssemblyName ?? null,
@@ -3833,6 +3841,16 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.commands.registerCommand("dotnetDiagnostics.captureHeap", (row?: ProcessRow) => processCommand(row, "heap", () => controller.captureHeap())),
         vscode.commands.registerCommand("dotnetDiagnostics.captureThreadSnapshot", (row?: ProcessRow) => processCommand(row, "threads", () => controller.captureThreadSnapshot())),
         vscode.commands.registerCommand("dotnetDiagnostics.analyzeDumpFile", () => analyzeDumpFile(output, context)),
+        vscode.commands.registerCommand("dotnetDiagnostics.investigateSymptom", (id: unknown) => guarded(async () => {
+            if (!isSymptomId(id)) throw new Error("Select a supported investigation symptom.");
+            actions.setSelectedSymptom(id);
+            await runSymptomInvestigation(
+                id,
+                actions.activeTargetLabel,
+                (items, options) => Promise.resolve(vscode.window.showQuickPick(items, options)),
+                (command, ...args) => Promise.resolve(vscode.commands.executeCommand(command, ...args)),
+            );
+        })),
     );
     registerOnboarding(context, output);
 }
@@ -3842,6 +3860,20 @@ class DiagnosticsActionsProvider implements vscode.TreeDataProvider<vscode.TreeI
     private readonly changed = new vscode.EventEmitter<vscode.TreeItem | undefined>();
     public readonly onDidChangeTreeData = this.changed.event;
     private liveCountersActive = false;
+    private activeTarget?: TargetProcess;
+    private selectedSymptom?: SymptomId;
+    public get activeTargetLabel(): string | undefined {
+        if (!this.activeTarget) return undefined;
+        return `${this.activeTarget.managedEntrypointAssemblyName ?? "Unknown .NET application"} · PID ${this.activeTarget.processId}`;
+    }
+    public setActiveTarget(target: TargetProcess | undefined): void {
+        this.activeTarget = target;
+        this.changed.fire(undefined);
+    }
+    public setSelectedSymptom(id: SymptomId): void {
+        this.selectedSymptom = id;
+        this.changed.fire(undefined);
+    }
     public setLiveCountersActive(active: boolean): void {
         if (active === this.liveCountersActive) return;
         this.liveCountersActive = active;
@@ -3939,7 +3971,18 @@ class DiagnosticsActionsProvider implements vscode.TreeDataProvider<vscode.TreeI
             return group(spec.id, spec.label, captures);
         });
         const events = action("Start Live Events", "dotnetDiagnostics.startEvents", "Independent EventPipe stream; explicit providers and consent");
-        return [group("monitoring", "Monitoring", [start, stop, events]), ...groups, captureDiagnostics, analyzeDumpFile];
+        const symptomChildren = SYMPTOM_SPECS.map(spec =>
+            action(spec.label, "dotnetDiagnostics.investigateSymptom", spec.description, [spec.id]));
+        symptomChildren.push(action("All diagnostic actions", "dotnetDiagnostics.captureDiagnostics",
+            "Open the complete searchable expert catalog"));
+        const symptomGroup = group("symptoms", "What are you investigating?", symptomChildren);
+        symptomGroup.description = this.selectedSymptom
+            ? symptomSpec(this.selectedSymptom).label
+            : this.activeTargetLabel ?? "Optional guide";
+        symptomGroup.tooltip = this.selectedSymptom
+            ? `Selected symptom: ${symptomSpec(this.selectedSymptom).label}. Choosing a symptom never starts collection.`
+            : "Choose a symptom to compare recommended evidence and alternatives. Nothing is collected automatically.";
+        return [symptomGroup, group("monitoring", "Monitoring", [start, stop, events]), ...groups, captureDiagnostics, analyzeDumpFile];
     }
 }
 
@@ -3972,7 +4015,16 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     header { margin:.8rem 0; }
     .controls { display:flex; gap:.45rem; align-items:center; flex-wrap:wrap; }
     .panel-actions { display:flex; gap:.45rem; align-items:center; flex-wrap:wrap; margin:.7rem 0; }
-    .workspace-controls, .workspace-view-controls { display:flex; gap:.45rem; align-items:center; flex-wrap:wrap; margin:.6rem 0; }
+    .workspace-navigation { display:grid; grid-template-columns:minmax(0, 1fr); gap:.55rem; margin:.65rem 0; }
+    .workspace-choice { display:grid; grid-template-columns:max-content minmax(0, 28rem) auto; gap:.4rem .6rem; align-items:center; }
+    .workspace-choice > label, .workspace-selected-state > span { font-weight:600; }
+    .workspace-choice select { width:100%; min-width:0; }
+    .workspace-selected-state { display:grid; grid-template-columns:max-content minmax(0, 1fr); gap:.4rem .6rem; align-items:baseline; }
+    .workspace-selected-state h3 { margin:0; font-size:inherit; overflow-wrap:anywhere; }
+    .workspace-navigation-context { display:flex; gap:.45rem; align-items:baseline; flex-wrap:wrap; margin:.05rem 0; color:var(--vscode-descriptionForeground); }
+    .workspace-operation-kind { border:1px solid var(--vscode-panel-border); border-radius:999px; padding:.1rem .45rem; color:var(--vscode-foreground); }
+    .workspace-evidence-details { margin:.1rem 0 .45rem; }
+    .workspace-evidence-details p { color:var(--vscode-descriptionForeground); overflow-wrap:anywhere; }
     .workspace-evidence-status { color:var(--vscode-descriptionForeground); margin:.45rem 0; }
     #workspaceCanvas > section { margin-top:.6rem; }
     #workspaceCanvas > section[hidden], #workspaceGcCapture[hidden] { display:none; }
@@ -4100,6 +4152,10 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     #counterSession, #status, #gcHeadline { font-size:.85rem; color:var(--vscode-descriptionForeground); margin:.3rem 0; }
     #value { font-size:1rem; font-weight:400; margin:.3rem 0; }
     #exceptionCaptureViews > details > summary { display:none; }
+    @media(max-width:600px) {
+      .workspace-choice, .workspace-selected-state { grid-template-columns:minmax(0, 1fr); }
+      .workspace-choice > button { justify-self:start; }
+    }
     ${QUERY_VIEW_STYLES}
     ${WEBVIEW_FIELD_STYLES}
   </style>
@@ -4116,8 +4172,9 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
   </nav>
   ${INVESTIGATION_LENS_HTML}
   <section id="resultWorkspace" class="result-tab-panel" role="tabpanel" aria-labelledby="resultTabWorkspace" hidden>
-    <div class="workspace-controls">
-      <label for="workspaceDomain">Domain</label>
+    <div class="workspace-navigation" aria-label="Workspace navigation">
+      <div class="workspace-choice">
+      <label for="workspaceDomain">Area</label>
       <select id="workspaceDomain">
         <option value="cpu">CPU</option>
         <option value="memory">Memory &amp; GC</option>
@@ -4125,15 +4182,32 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         <option value="requests">Requests &amp; networking</option>
         <option value="exceptions">Exceptions</option>
       </select>
-      <label for="workspaceEvidenceKind">Evidence</label>
-      <select id="workspaceEvidenceKind" aria-label="Select current evidence kind"></select>
+      </div>
+      <div id="workspaceEvidenceControl" class="workspace-choice">
+      <label for="workspaceEvidenceKind">Evidence to inspect</label>
+      <select id="workspaceEvidenceKind" aria-label="Choose evidence to inspect" aria-describedby="workspaceNavigationStatus"></select>
+      </div>
+      <div id="workspaceEvidenceHeading" class="workspace-selected-state" hidden>
+        <span>Evidence to inspect</span><h3 id="workspaceEvidenceHeadingText"></h3>
+      </div>
+      <div id="workspaceAnalysisControl" class="workspace-choice">
+      <label for="workspaceView">Analysis</label>
+      <select id="workspaceView" aria-label="Choose analysis" aria-describedby="workspaceNavigationStatus"></select>
+      <button id="workspaceLoadView" type="button" hidden>Load view</button>
+      </div>
+      <div id="workspaceAnalysisHeading" class="workspace-selected-state" hidden>
+        <span>Analysis</span><h3 id="workspaceAnalysisHeadingText"></h3>
+      </div>
+      <p id="workspaceNavigationStatus" class="workspace-navigation-context" role="status" aria-live="polite">
+        <strong id="workspaceOperationKind" class="workspace-operation-kind">New collection</strong>
+        <span id="workspaceNavigationHelp">Capture CPU samples to create evidence; navigation never collects automatically.</span>
+      </p>
     </div>
     <div id="workspaceEvidenceStatus" class="workspace-evidence-status" role="status" tabindex="-1">No evidence selected.</div>
-    <div class="workspace-view-controls">
-      <label for="workspaceView">View</label>
-      <select id="workspaceView" aria-label="Select a view"></select>
-      <button id="workspaceLoadView" type="button" hidden>Load view</button>
-    </div>
+    <details id="workspaceEvidenceDetails" class="workspace-evidence-details">
+      <summary>Evidence identity and lifecycle</summary>
+      <p id="workspaceEvidenceDetailsText">No evidence is selected. Identity, source, target, quality and lifecycle are shown with the result after capture.</p>
+    </details>
     <div id="workspaceGcCapture" hidden>
       <div class="panel-actions"><button id="captureGc" type="button">Capture GC evidence…</button></div>
       <div id="workspaceGcStatus" role="status"></div>
@@ -4144,7 +4218,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       <small>Replaces the current result · May contain sensitive data</small>
     </div>
     <div id="jointReproduction" hidden>
-      <button id="captureRequestActivities" type="button" aria-label="Capture requests and completed Activities">Capture</button>
+      <button id="captureRequestActivities" type="button" aria-label="Capture requests and completed Activities">Capture requests + Activities…</button>
       <button id="cancelRequestActivities" type="button" disabled>Cancel reproduction</button>
       <div id="jointCaptureStatus" role="status"></div>
     </div>
@@ -4184,7 +4258,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     </section>
   <section id="resultCpu" class="result-tab-panel" role="tabpanel" aria-labelledby="resultTabWorkspace" data-export-kind="cpu" data-evidence-id="" hidden>
     <div class="panel-actions">
-      <button id="captureCpu" type="button" aria-label="Capture CPU sample">Capture</button>
+      <button id="captureCpu" type="button" aria-label="Capture CPU samples">Capture CPU samples…</button>
     </div>
     <div id="captureStatus" role="status"></div>
     <div id="captureResult" class="empty">
@@ -4215,7 +4289,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     </details>
   </section>
   <section id="resultAllocation" class="result-tab-panel" role="tabpanel" aria-labelledby="resultTabAllocation" hidden>
-    <div class="panel-actions"><button id="captureAllocation" type="button" aria-label="Capture allocations">Capture</button></div>
+    <div class="panel-actions"><button id="captureAllocation" type="button" aria-label="Capture allocation profile">Capture allocation profile…</button></div>
     <div id="captureAllocationStatus" role="status"></div>
     <p id="allocationEvidencePrerequisite" role="status">Capture allocations to enable profile exploration.</p>
     <div id="allocationExplorer" hidden>
@@ -4228,7 +4302,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       Navigation reuses this capture without collecting again. All types are combined in the profile.</p>
   </section>
   <section id="resultExceptions" hidden>
-    <div class="panel-actions"><button id="captureExceptions" type="button" aria-label="Capture exceptions">Capture</button>
+    <div class="panel-actions"><button id="captureExceptions" type="button" aria-label="Capture exceptions">Capture exceptions…</button>
       <small>Replaces the current result · Messages may contain sensitive data</small></div>
     <div id="captureExceptionsStatus" role="status"></div>
     <p id="exceptionEvidenceIdentity" class="workspace-evidence-status" role="status">No exception evidence has been captured.</p>
@@ -4240,7 +4314,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     </p>
   </section>
   <section id="resultHeap" class="result-tab-panel" role="tabpanel" aria-labelledby="resultTabHeap" hidden>
-    <div class="panel-actions"><button id="captureHeap" type="button" aria-label="Capture heap snapshot">Capture</button></div>
+    <div class="panel-actions"><button id="captureHeap" type="button" aria-label="Capture heap snapshot">Capture heap snapshot…</button></div>
     <div id="captureHeapStatus" role="status" aria-live="polite"></div>
     <div id="captureHeapResult" class="empty">
       <div id="captureHeapHeadline"></div>
@@ -4261,7 +4335,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     ${LIVE_READ_CONSENT_HTML}
   </section>
   <section id="resultThreads" hidden>
-    <div class="panel-actions"><button id="captureThreadSnapshot" type="button" aria-label="Capture thread snapshot">Capture</button></div>
+    <div class="panel-actions"><button id="captureThreadSnapshot" type="button" aria-label="Capture thread snapshot">Capture thread snapshot…</button></div>
     <div id="captureThreadStatus" role="status" aria-live="polite"></div>
     <div id="captureThreadResult" class="empty">
       <div id="captureThreadHeadline"></div>
@@ -4379,9 +4453,18 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     const resultTabs = Array.from(document.querySelectorAll('.result-tabs [role="tab"]'));
     const workspaceDomain = document.getElementById('workspaceDomain');
     const workspaceEvidenceKind = document.getElementById('workspaceEvidenceKind');
+    const workspaceEvidenceControl = document.getElementById('workspaceEvidenceControl');
+    const workspaceEvidenceHeading = document.getElementById('workspaceEvidenceHeading');
+    const workspaceEvidenceHeadingText = document.getElementById('workspaceEvidenceHeadingText');
     const workspaceEvidenceStatus = document.getElementById('workspaceEvidenceStatus');
+    const workspaceEvidenceDetailsText = document.getElementById('workspaceEvidenceDetailsText');
     const workspaceView = document.getElementById('workspaceView');
+    const workspaceAnalysisControl = document.getElementById('workspaceAnalysisControl');
+    const workspaceAnalysisHeading = document.getElementById('workspaceAnalysisHeading');
+    const workspaceAnalysisHeadingText = document.getElementById('workspaceAnalysisHeadingText');
     const workspaceLoadView = document.getElementById('workspaceLoadView');
+    const workspaceOperationKind = document.getElementById('workspaceOperationKind');
+    const workspaceNavigationHelp = document.getElementById('workspaceNavigationHelp');
     const workspaceCanvas = document.getElementById('workspaceCanvas');
     const workspaceGcCapture = document.getElementById('workspaceGcCapture');
     const workspaceGcStatus = document.getElementById('workspaceGcStatus');
@@ -4431,6 +4514,23 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       db: 'Database',
       networking: 'Networking',
     };
+    const workspaceEvidenceQuestions = {
+      cpu: 'Shows where captured stack samples accumulated.',
+      allocation: 'Shows sampled allocation pressure by method, module and type.',
+      heap: 'Shows retained heap totals, types and captured drilldowns.',
+      gc: 'Shows garbage-collection events from one explicit capture.',
+      'gc-activities': 'Shows garbage collections correlated with captured Activities.',
+      'thread-snapshot': 'Shows one point-in-time snapshot of returned threads, locks and waits.',
+      off_cpu: 'Shows sampled blocking stacks from one explicit capture.',
+      contention: 'Shows observed lock-contention events from one explicit capture.',
+      threadpool: 'Shows captured thread-pool events and starvation indicators.',
+      requests: 'Shows requests still in flight when the capture window closed.',
+      'request-activities': 'Shows in-flight requests with explicitly retained completed Activities.',
+      kestrel: 'Shows captured Kestrel server events.',
+      db: 'Shows captured database-command events.',
+      networking: 'Shows captured HTTP, DNS, TLS and socket events.',
+      exceptions: 'Shows the current managed-exception or crash-guard result.',
+    };
     const isThreadCapture = kind => ['off_cpu', 'contention', 'threadpool'].includes(kind);
     const isRequestCapture = kind => ['requests', 'request-activities', 'kestrel', 'db', 'networking'].includes(kind);
     const usesWorkspaceForGenericCapture = kind => Object.prototype.hasOwnProperty.call(genericCaptureDomains, kind);
@@ -4449,6 +4549,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     workspaceCanvas.appendChild(workspaceGcCapture);
     let selectedWorkspaceEvidence = 'cpu';
     const workspaceEvidenceStatusByKind = new Map();
+    const workspaceEvidenceDetailByKind = new Map();
     const exceptionCaptureModes = { exceptions: 'Managed exceptions', 'crash-guard': 'Crash guard' };
     let exceptionEvidenceId;
     let exceptionEvidenceMode;
@@ -4459,6 +4560,8 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     let allocationEvidenceId;
     let heapEvidenceId;
     let heapEvidenceSource;
+    let heapDetailsAvailable = false;
+    let heapCaptureBusy = false;
     let memoryHeapEvidenceAvailable = false;
     let diagnosticsRequestId;
     let pendingCpuEvidenceId;
@@ -4480,8 +4583,83 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       const compact = message.includes('display-only') ? 'Display-only · Live follow-up reads unavailable'
         : /^(Current evidence:|Current result:|Current generic capture result:)/.test(message) ? '' : message;
       workspaceEvidenceStatusByKind.set(statusKind, compact);
+      workspaceEvidenceDetailByKind.set(statusKind, message);
       if (selectedWorkspaceEvidence === statusKind || selectedWorkspaceEvidence === 'gc-activities' && statusKind === 'gc') {
         workspaceEvidenceStatus.textContent = compact;
+        workspaceEvidenceDetailsText.textContent = message;
+      }
+    }
+    function workspaceOptions(select) {
+      return Array.from(select.options || select.children || []);
+    }
+    function selectedWorkspaceLabel(select, fallback) {
+      return workspaceOptions(select).find(option => option.value === select.value)?.textContent || fallback;
+    }
+    function setWorkspaceOperation(kind, help) {
+      workspaceOperationKind.textContent = kind;
+      workspaceNavigationHelp.textContent = help;
+    }
+    function workspaceAnalysisLabel() {
+      if (workspaceView.value === 'capture-result') return 'Result summary';
+      return selectedWorkspaceLabel(workspaceView, selectedWorkspaceEvidence === 'exceptions' ? 'Exception details' : 'Analysis');
+    }
+    function workspaceActionLabel(label) {
+      return label ? label[0].toLowerCase() + label.slice(1) : 'analysis';
+    }
+    function profileAnalysisLoaded(kind, view) {
+      if (view === 'comparison') return Boolean(cpuComparisonResult);
+      const role = kind === 'cpu' ? activeCpuProfileRole : 'current';
+      return profileCache(kind).has(profileQueryKey(view, activeProfileFilters[kind], role));
+    }
+    function updateWorkspaceNavigationPresentation() {
+      const evidenceOptions = workspaceOptions(workspaceEvidenceKind);
+      const evidenceHasChoice = evidenceOptions.length > 1;
+      workspaceEvidenceControl.hidden = !evidenceHasChoice;
+      workspaceEvidenceHeading.hidden = evidenceHasChoice;
+      workspaceEvidenceHeadingText.textContent = selectedWorkspaceLabel(workspaceEvidenceKind, 'No evidence selected');
+
+      const analysisOptions = workspaceOptions(workspaceView);
+      const analysisHasChoice = analysisOptions.length > 1;
+      workspaceAnalysisControl.hidden = !analysisHasChoice;
+      workspaceAnalysisHeading.hidden = analysisHasChoice;
+      workspaceAnalysisHeadingText.textContent = workspaceAnalysisLabel();
+
+      const question = workspaceEvidenceQuestions[selectedWorkspaceEvidence] || 'Shows the current captured result.';
+      if (selectedWorkspaceEvidence === 'cpu' || selectedWorkspaceEvidence === 'allocation') {
+        const role = selectedWorkspaceEvidence === 'cpu' ? activeCpuProfileRole : 'current';
+        if (!profileEvidenceId(selectedWorkspaceEvidence, role)) {
+          setWorkspaceOperation('New collection', question + ' Capture explicitly to create evidence; navigation never collects automatically.');
+        } else if (profileAnalysisLoaded(selectedWorkspaceEvidence, activeProfileViews[selectedWorkspaceEvidence])) {
+          setWorkspaceOperation('Local switch', question + ' This analysis is already loaded; changing Analysis performs no new read.');
+        } else if (profileCaptureBusy[selectedWorkspaceEvidence]) {
+          setWorkspaceOperation('New collection', question
+            + ' An explicit capture is in progress; navigation does not start another collection or replace evidence.');
+        } else if (profileQueryBusy[selectedWorkspaceEvidence]) {
+          setWorkspaceOperation('Retained query', question
+            + ' An explicit retained-evidence query is in progress; navigation itself performs no read.');
+        } else if (!profileAvailability[selectedWorkspaceEvidence]) {
+          setWorkspaceOperation('Retained query', question
+            + ' The retained query handle is unavailable; cached analyses remain local and navigation never reconnects or recollects.');
+        } else {
+          setWorkspaceOperation('Retained query', question + ' Selecting Analysis is local. Use '
+            + workspaceLoadView.textContent + ' to query the retained capture explicitly; it never starts a new collection.');
+        }
+      } else if (selectedWorkspaceEvidence === 'thread-snapshot') {
+        setWorkspaceOperation('Local switch', question
+          + ' Changing Analysis switches returned, pending or unavailable snapshot views and does not issue another query or capture.');
+      } else if (selectedWorkspaceEvidence === 'heap') {
+        setWorkspaceOperation(heapCaptureBusy || !heapEvidenceId ? 'New collection' : 'Local switch', question
+          + (heapCaptureBusy
+            ? ' An explicit heap capture is in progress; navigation does not start another collection or preserve query access to invalidated evidence.'
+            : heapEvidenceId
+            ? ' Changing Analysis switches the current snapshot presentation; it does not collect, reattach or replace evidence.'
+            : ' Capture explicitly to create evidence; navigation never collects automatically.'));
+      } else if (selectedWorkspaceEvidence === 'exceptions') {
+        setWorkspaceOperation('New collection', question
+          + ' The heading shows the current result. Capture explicitly to replace the separate exception result.');
+      } else {
+        setWorkspaceOperation('New collection', question
+          + ' The heading shows the current result. Capture explicitly to replace the shared generic result.');
       }
     }
     function threadQueryStatusSummary() {
@@ -4509,6 +4687,8 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       }
     }
     function setWorkspaceEvidence(kind) {
+      const evidenceSelectorFocused = document.activeElement === workspaceEvidenceKind;
+      const analysisSelectorFocused = document.activeElement === workspaceView;
       selectedWorkspaceEvidence = kind;
       workspaceDomain.value = kind === 'cpu' ? 'cpu'
         : kind === 'exceptions' ? 'exceptions'
@@ -4537,8 +4717,10 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       document.getElementById('jointReproduction').hidden = kind !== 'request-activities';
       const ordinaryRequestCapture = ['requests', 'kestrel', 'db', 'networking'].includes(kind);
       document.getElementById('workspaceRequestCapture').hidden = !ordinaryRequestCapture;
-      document.getElementById('captureRequestEvidence').setAttribute('aria-label', 'Capture ' + (genericCaptureLabels[kind] || kind));
-      workspaceEvidenceKind.disabled = kind === 'exceptions';
+      const captureLabel = genericCaptureLabels[kind] || kind;
+      const captureRequestEvidence = document.getElementById('captureRequestEvidence');
+      captureRequestEvidence.textContent = 'Capture ' + captureLabel[0].toLowerCase() + captureLabel.slice(1) + '…';
+      captureRequestEvidence.setAttribute('aria-label', 'Capture ' + captureLabel);
       for (const [panelKind, panel] of Object.entries(workspacePanels)) panel.hidden = panelKind !== kind;
       const sharedGcEvidence = kind === 'gc' || kind === 'gc-activities';
       workspaceGcCapture.hidden = !sharedGcEvidence;
@@ -4549,6 +4731,9 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       workspaceEvidenceStatus.textContent = workspaceEvidenceStatusByKind.get(statusKind)
         ?? (ordinaryRequestCapture ? 'No completed evidence. Select Capture to collect ' + genericCaptureLabels[kind] + '.'
           : 'No completed evidence is displayed for this kind.');
+      workspaceEvidenceDetailsText.textContent = workspaceEvidenceDetailByKind.get(statusKind)
+        ?? 'No current ' + (genericCaptureLabels[kind] || selectedWorkspaceLabel(workspaceEvidenceKind, kind))
+          + ' evidence. Identity, source, target, quality and lifecycle are shown with the result after capture.';
       workspaceEvidenceStatus.hidden = kind === 'request-activities' && genericCaptureKind === kind;
       workspaceThreadViewStatus.textContent = '';
       if (usesWorkspaceForGenericCapture(kind)) {
@@ -4558,7 +4743,6 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         genericCaptureViews.hidden = true;
       }
       workspaceView.replaceChildren();
-      workspaceView.disabled = false;
       workspaceLoadView.hidden = true;
       if (kind === 'cpu' || kind === 'allocation') {
         for (const [view, label] of Object.entries(profileViewLabels)) {
@@ -4590,23 +4774,29 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       } else if (usesWorkspaceForGenericCapture(kind)) {
         const option = document.createElement('option');
         option.value = 'capture-result';
-        option.textContent = 'Capture result';
+        option.textContent = 'Result summary';
         workspaceView.appendChild(option);
         workspaceView.value = 'capture-result';
-        workspaceView.disabled = true;
       } else {
         const option = document.createElement('option');
         option.value = kind === 'heap' ? 'snapshot' : 'capture-result';
         workspaceView.appendChild(option);
-        option.textContent = kind === 'heap' ? 'Snapshot totals' : kind === 'exceptions' ? 'Exception details' : 'Capture result';
-        if (kind === 'heap' && heapEvidenceSource === 'live') {
+        workspaceView.value = option.value;
+        option.textContent = kind === 'heap' ? 'Snapshot totals' : kind === 'exceptions' ? 'Exception details' : 'Result summary';
+        if (kind === 'heap' && heapDetailsAvailable) {
           const details = document.createElement('option');
           details.value = 'details';
           details.textContent = 'Heap details';
           workspaceView.appendChild(details);
-          workspaceView.disabled = false;
-        } else workspaceView.disabled = true;
+          if (document.getElementById('heapWorkspace')?.dataset.focused === 'true')
+            workspaceView.value = 'details';
+        }
       }
+      updateWorkspaceNavigationPresentation();
+      if (evidenceSelectorFocused)
+        (workspaceEvidenceControl.hidden ? workspaceEvidenceStatus : workspaceEvidenceKind).focus({ preventScroll: true });
+      if (analysisSelectorFocused)
+        (workspaceAnalysisControl.hidden ? workspaceEvidenceStatus : workspaceView).focus({ preventScroll: true });
     }
     function selectThreadSnapshotView(view) {
       threadSnapshotView = view;
@@ -4655,6 +4845,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           ? threadQueryStatusSummary()
           : 'Capture a thread snapshot to explore returned threads, locks and waits.';
       }
+      updateWorkspaceNavigationPresentation();
     }
     workspaceDomain.addEventListener('change', () => setWorkspaceEvidence(
       workspaceDomain.value === 'cpu' ? 'cpu'
@@ -4672,6 +4863,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         );
       } else if (selectedWorkspaceEvidence === 'heap') {
         navigateHeapDetails(workspaceView.value === 'details');
+        updateWorkspaceNavigationPresentation();
       } else if (selectedWorkspaceEvidence === 'thread-snapshot') {
         selectThreadSnapshotView(workspaceView.value);
       }
@@ -5399,6 +5591,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       if (cached) {
         workspaceLoadView.hidden = true;
         renderCpuQuery(view, cached, false, kind, role);
+        updateWorkspaceNavigationPresentation();
         return;
       }
       const target = profileViewTarget(kind);
@@ -5414,8 +5607,11 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       workspaceLoadView.hidden = false;
       workspaceLoadView.disabled = !profileEvidenceId(kind, role) || !profileAvailability[kind]
         || profileQueryBusy[kind] || profileCaptureBusy[kind];
-      workspaceLoadView.textContent = profileQueryBusy[kind] || profileCaptureBusy[kind] ? 'Busy…'
-        : profileAvailability[kind] ? 'Load view' : 'Retained profile unavailable';
+      const label = profileViewLabels[view] || cpuQueryLabels[view] || view;
+      workspaceLoadView.textContent = profileQueryBusy[kind] || profileCaptureBusy[kind]
+        ? 'Loading ' + workspaceActionLabel(label) + '…'
+        : profileAvailability[kind] ? 'Load ' + workspaceActionLabel(label) : 'Retained profile unavailable';
+      updateWorkspaceNavigationPresentation();
     }
     function loadSelectedProfileView() {
       const kind = selectedWorkspaceEvidence;
@@ -5436,7 +5632,9 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         return;
       }
       workspaceLoadView.disabled = true;
-      workspaceLoadView.textContent = 'Loading…';
+      workspaceLoadView.textContent = 'Loading '
+        + workspaceActionLabel(profileViewLabels[view] || cpuQueryLabels[view] || view) + '…';
+      updateWorkspaceNavigationPresentation();
       const status = kind === 'cpu' ? cpuQueryStatus : document.getElementById('allocationQueryStatus');
       status.textContent = 'Loading ' + (profileViewLabels[view] || view) + ' from the retained capture…';
       vscode.postMessage({
@@ -5976,14 +6174,16 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         cpuQueryStatus.textContent = cpuQueryBusy ? 'Loading CPU drilldown…' : '';
         if (!cpuQueryBusy && workspaceLoadView.hidden === false && selectedWorkspaceEvidence === 'cpu') {
           workspaceLoadView.disabled = false;
-          workspaceLoadView.textContent = 'Load view';
+          workspaceLoadView.textContent = 'Load ' + workspaceActionLabel(workspaceAnalysisLabel());
+          updateWorkspaceNavigationPresentation();
         }
       } else if (message.type === 'cpuComparisonState') {
         if (message.evidenceId !== cpuEvidenceId) return;
         profileQueryBusy.cpu = message.state === 'running';
         cpuQueryStatus.textContent = message.state === 'running' ? 'Comparing retained CPU baseline and current captures…' : '';
         workspaceLoadView.disabled = message.state === 'running';
-        workspaceLoadView.textContent = message.state === 'running' ? 'Comparing…' : 'Load view';
+        workspaceLoadView.textContent = message.state === 'running' ? 'Comparing retained profiles…' : 'Load baseline / current';
+        updateWorkspaceNavigationPresentation();
       } else if (message.type === 'cpuComparison') {
         if (message.evidenceId !== cpuEvidenceId || message.baselineEvidenceId !== cpuBaselineEvidenceId) return;
         cpuComparisonResult = message.result;
@@ -5994,6 +6194,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         workspaceView.value = 'comparison';
         workspaceLoadView.hidden = true;
         renderCpuQuery('comparison', message.result, false, 'cpu');
+        updateWorkspaceNavigationPresentation();
         setWorkspaceStatus('cpu',
           'Current evidence: bounded CPU baseline / current comparison. Direction is earlier baseline to later current; deltas are objective observations, not a performance verdict.');
       } else if (message.type === 'cpuComparisonError') {
@@ -6004,6 +6205,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           workspaceLoadView.disabled = !profileAvailability.cpu;
           workspaceLoadView.textContent = profileAvailability.cpu ? 'Retry comparison' : 'Retained pair unavailable';
           renderCpuQuery('comparison', message.message, true, 'cpu');
+          updateWorkspaceNavigationPresentation();
         }
       } else if (message.type === 'cpuComparisonAvailability') {
         if (message.evidenceId !== cpuEvidenceId || message.available !== false) return;
@@ -6030,7 +6232,9 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         if (selectedWorkspaceEvidence === 'cpu' && workspaceLoadView.hidden === false) {
           workspaceLoadView.disabled = profileCaptureBusy.cpu || profileQueryBusy.cpu || !profileAvailability.cpu;
           workspaceLoadView.textContent = profileCaptureBusy.cpu ? 'Capture in progress…'
-            : workspaceLoadView.disabled ? 'Retained profile unavailable' : 'Load view';
+            : workspaceLoadView.disabled ? 'Retained profile unavailable'
+              : 'Load ' + workspaceActionLabel(workspaceAnalysisLabel());
+          updateWorkspaceNavigationPresentation();
         }
       } else if (message.type === 'session') {
         beginCounterSession(message.sessionId);
@@ -6053,7 +6257,8 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         document.getElementById('allocationQueryStatus').textContent = busy ? 'Loading allocation details…' : '';
         if (!busy && workspaceLoadView.hidden === false && selectedWorkspaceEvidence === 'allocation') {
           workspaceLoadView.disabled = false;
-          workspaceLoadView.textContent = 'Load view';
+          workspaceLoadView.textContent = 'Load ' + workspaceActionLabel(workspaceAnalysisLabel());
+          updateWorkspaceNavigationPresentation();
         }
       } else if (message.type === 'captureStatus' && message.kind === 'allocation') {
         if (typeof message.evidenceId === 'string') pendingAllocationEvidenceId = message.evidenceId;
@@ -6063,7 +6268,9 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         if (selectedWorkspaceEvidence === 'allocation' && workspaceLoadView.hidden === false) {
           workspaceLoadView.disabled = profileCaptureBusy.allocation || profileQueryBusy.allocation || !profileAvailability.allocation;
           workspaceLoadView.textContent = profileCaptureBusy.allocation ? 'Capture in progress…'
-            : workspaceLoadView.disabled ? 'Retained profile unavailable' : 'Load view';
+            : workspaceLoadView.disabled ? 'Retained profile unavailable'
+              : 'Load ' + workspaceActionLabel(workspaceAnalysisLabel());
+          updateWorkspaceNavigationPresentation();
         }
       } else if (message.type === 'capture' && message.kind === 'allocation') {
         if (message.evidenceId !== pendingAllocationEvidenceId) return;
@@ -6095,6 +6302,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
             if (profileViewLabels[message.view]) workspaceView.value = message.view;
             workspaceLoadView.hidden = true;
             renderCpuQuery(message.view, message.result, false, 'allocation');
+            updateWorkspaceNavigationPresentation();
           }
         }
       } else if (message.type === 'queryError' && message.kind === 'allocation') {
@@ -6107,8 +6315,10 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           && message.rootMethodFilter === activeProfileFilters.allocation) {
           workspaceLoadView.hidden = false;
           workspaceLoadView.disabled = !profileAvailability.allocation;
-          workspaceLoadView.textContent = profileAvailability.allocation ? 'Retry view load' : 'Retained profile unavailable';
+          workspaceLoadView.textContent = profileAvailability.allocation
+            ? 'Retry ' + workspaceActionLabel(workspaceAnalysisLabel()) : 'Retained profile unavailable';
           renderCpuQuery(message.view, message.message, true, 'allocation');
+          updateWorkspaceNavigationPresentation();
         }
       } else if (message.type === 'captureStatus' && message.kind === 'exceptions') {
         if (typeof message.evidenceId !== 'string' || !exceptionCaptureModes[message.captureKind]) return;
@@ -6214,18 +6424,22 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       } else if (message.type === 'captureStatus' && message.kind === 'heap') {
         if (typeof message.evidenceId === 'string') pendingHeapEvidenceId = message.evidenceId;
         if (message.state === 'starting') activateCaptureTab('heap');
+        heapCaptureBusy = message.state === 'running' || message.state === 'starting';
         captureHeapStatusElement.textContent = message.message || message.state || '';
         if (message.retainedEvidenceInvalidated === true) {
+          heapDetailsAvailable = false;
           memoryHeapEvidenceAvailable = false;
           memoryOverview.render();
           setAddressLiveQueriesAvailable(false);
           setWorkspaceStatus('heap', 'Heap recapture in progress. A prior visual may remain; query availability and consent follow the current retained owner.');
+          resetHeapDetailsNavigation();
           document.getElementById('heapQueryViews').replaceChildren();
           resetAddressNavigation();
         } else if (message.state === 'error') {
           setWorkspaceStatus('heap', 'Heap recapture failed. A prior visual may remain; queryability is not inferred from that display.');
         }
         captureHeapButton.disabled = message.state === 'running' || message.state === 'starting';
+        if (selectedWorkspaceEvidence === 'heap') setWorkspaceEvidence('heap');
       } else if (message.type === 'captureStatus' && message.kind === 'thread-snapshot') {
         if (typeof message.evidenceId !== 'string') return;
         if (message.state === 'starting') pendingThreadSnapshotEvidenceId = message.evidenceId;
@@ -6285,8 +6499,10 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         document.getElementById('exceptionCaptureViews-exceptions').open = true;
       } else if (message.type === 'capture' && message.kind === 'heap') {
         if (message.evidenceId !== pendingHeapEvidenceId) return;
+        heapCaptureBusy = false;
         heapEvidenceSource = message.source;
         heapEvidenceId = typeof message.evidenceId === 'string' ? message.evidenceId : undefined;
+        heapDetailsAvailable = message.source === 'live';
         memoryHeapEvidenceAvailable = true;
         memoryOverview.render();
         setAddressLiveQueriesAvailable(message.retainedHandleAvailable === true);
@@ -6295,6 +6511,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           ? 'Current evidence: heap snapshot (' + String(message.source || 'source unavailable') + '). Live follow-up reads require separate consent.'
           : 'Current evidence is display-only: heap snapshot (' + String(message.source || 'source unavailable')
             + ') has no retained live-query handle.');
+        if (selectedWorkspaceEvidence === 'heap') setWorkspaceEvidence('heap');
       } else if (message.type === 'capture' && message.kind === 'thread-snapshot') {
         if (message.evidenceId !== pendingThreadSnapshotEvidenceId) return;
         threadSnapshotEvidenceId = message.evidenceId;
@@ -6327,6 +6544,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         const detail = typeof message.message === 'string' ? message.message : 'The retained CLI connection closed.';
         setWorkspaceStatus('heap', 'Current heap evidence is display-only: ' + detail + ' Live object and GC-root follow-up reads are disabled.');
         setAddressLiveQueriesAvailable(false);
+        if (selectedWorkspaceEvidence === 'heap') updateWorkspaceNavigationPresentation();
       } else if (message.type === 'capture') {
         if (message.evidenceId !== pendingCpuEvidenceId) return;
         profileCaptureBusy.cpu = false;
@@ -6377,6 +6595,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           if (profileViewLabels[message.view]) workspaceView.value = message.view;
           workspaceLoadView.hidden = true;
           renderCpuQuery(message.view, message.result, false, 'cpu', role);
+          updateWorkspaceNavigationPresentation();
         }
       } else if (message.type === 'queryError' && message.kind === 'cpu') {
         const role = message.profileRole === 'baseline' ? 'baseline' : 'current';
@@ -6392,8 +6611,10 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
           && message.rootMethodFilter === activeProfileFilters.cpu) {
           workspaceLoadView.hidden = false;
           workspaceLoadView.disabled = !profileAvailability.cpu;
-          workspaceLoadView.textContent = profileAvailability.cpu ? 'Retry view load' : 'Retained profile unavailable';
+          workspaceLoadView.textContent = profileAvailability.cpu
+            ? 'Retry ' + workspaceActionLabel(workspaceAnalysisLabel()) : 'Retained profile unavailable';
           renderCpuQuery(message.view, message.message, true, 'cpu', role);
+          updateWorkspaceNavigationPresentation();
         }
       } else if (handleHeapInstancesMessage(message)) {
         // Selection-id matching inside the shared renderer rejects stale pages.

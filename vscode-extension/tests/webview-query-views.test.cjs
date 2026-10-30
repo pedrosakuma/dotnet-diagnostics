@@ -172,7 +172,7 @@ function loadRenderer(selectThreadSnapshotView) {
     const api = new Function(
         "document", "window", "selectThreadSnapshotView", "vscode",
         `${QUERY_VIEW_RENDERER_SCRIPT}\nreturn { renderQueryView, enhanceEvidenceTable, resetEvidenceTable,
-            renderHeapTypeNavigation, navigateHeapDetails, updateThreadNavigation, renderExceptionNavigation,
+            renderHeapTypeNavigation, navigateHeapDetails, resetHeapDetailsNavigation, updateThreadNavigation, renderExceptionNavigation,
             navigateThreadTo, handleHeapInstancesMessage };`,
     )(document, {scrollY:13, scrollTo(){}}, selectThreadSnapshotView, {
         postMessage(message) { posted.push(JSON.parse(JSON.stringify(message))); },
@@ -297,7 +297,7 @@ test("captured data precedes static scope and quantitative summaries stay second
     assert.ok(html.indexOf('id="eventsTable"') < html.indexOf('id="eventsSubscription"'));
     assert.match(html, /\.capture-summary, \.exception-capture-summary[\s\S]*?font-size:\.85rem/);
     for (const id of ["captureCpu", "captureAllocation", "captureHeap", "captureThreadSnapshot", "captureExceptions"])
-        assert.match(html, new RegExp(`id="${id}"[^>]*aria-label="[^"]+">Capture</button>`));
+        assert.match(html, new RegExp(`id="${id}"[^>]*aria-label="[^"]+">Capture [^<]+</button>`));
 
     const { renderQueryView, makeContainer, document, updateThreadNavigation } = loadRenderer();
     const exceptions = makeContainer("exceptionCaptureViews");
@@ -401,9 +401,15 @@ test("live panel exposes the compact evidence workspace and keeps other result r
     assert.doesNotMatch(html, /id="resultTabEvents"|id="resultTabLive"/);
     assert.doesNotMatch(html, /id="resultTabExceptions"/);
     assert.doesNotMatch(html, /id="resultTabThreads"/);
-    assert.match(html, /<select id="workspaceDomain">[\s\S]*?Memory &amp; GC[\s\S]*?Threads &amp; waits[\s\S]*?Requests &amp; networking[\s\S]*?Exceptions/);
+    assert.match(html, /<label for="workspaceDomain">Area<\/label>[\s\S]*?<select id="workspaceDomain">[\s\S]*?Memory &amp; GC[\s\S]*?Threads &amp; waits[\s\S]*?Requests &amp; networking[\s\S]*?Exceptions/);
+    assert.match(html, /<label for="workspaceEvidenceKind">Evidence to inspect<\/label>/);
+    assert.match(html, /<label for="workspaceView">Analysis<\/label>/);
     assert.match(html, /id="workspaceEvidenceKind"/);
     assert.match(html, /id="workspaceView"/);
+    assert.match(html, /id="workspaceEvidenceHeading"[\s\S]*?id="workspaceEvidenceHeadingText"/);
+    assert.match(html, /id="workspaceAnalysisHeading"[\s\S]*?id="workspaceAnalysisHeadingText"/);
+    assert.match(html, /id="workspaceNavigationStatus"[^>]*role="status"[^>]*aria-live="polite"/);
+    assert.match(html, /Evidence identity and lifecycle/);
     assert.match(html, /id="workspaceCanvas"/);
     assert.match(html, /id="resultExceptions" hidden/);
     assert.match(html, /exceptionCaptureViews[\s\S]*?Managed exceptions retain bounded messages without stack frames/);
@@ -415,8 +421,8 @@ test("live panel exposes the compact evidence workspace and keeps other result r
     assert.doesNotMatch(dumpHtml, /workspace-thread-snapshot/);
     assert.match(html, /id="captureGc" type="button">Capture GC evidence…/);
     assert.match(html, /id="cpuSamplingDisclaimer"/);
-    assert.match(html, /<section id="resultCpu"[^>]*data-export-kind="cpu"[\s\S]*?<button id="captureCpu" type="button" aria-label="Capture CPU sample">Capture/);
-    assert.match(html, /<section id="resultHeap"[\s\S]*?<button id="captureHeap" type="button" aria-label="Capture heap snapshot">Capture/);
+    assert.match(html, /<section id="resultCpu"[^>]*data-export-kind="cpu"[\s\S]*?<button id="captureCpu" type="button" aria-label="Capture CPU samples">Capture CPU samples…/);
+    assert.match(html, /<section id="resultHeap"[\s\S]*?<button id="captureHeap" type="button" aria-label="Capture heap snapshot">Capture heap snapshot…/);
     assert.match(script, /function selectResultTab\(selected\)/);
     assert.match(script, /event\.key === 'ArrowRight'/);
     assert.match(script, /function selectProfileView\(kind, view, rootMethodFilter\)/);
@@ -426,6 +432,9 @@ test("live panel exposes the compact evidence workspace and keeps other result r
     assert.match(script, /setWorkspaceStatus\(genericCaptureKind, 'Not current: the shared generic capture result was replaced by '/);
     assert.match(script, /message\.evidenceId !== threadSnapshotEvidenceId/);
     assert.match(script, /message\.retainedEvidenceInvalidated === true/);
+    assert.match(script, /heapDetailsAvailable = message\.source === 'live'/);
+    assert.match(script, /if \(selectedWorkspaceEvidence === 'heap'\) setWorkspaceEvidence\('heap'\)/);
+    assert.match(script, /heapDetailsAvailable = false;[\s\S]*?Heap recapture in progress/);
     assert.doesNotMatch(script, /workspaceGcResults/);
     assert.match(script, /evidenceId,\s*view,/);
     assert.doesNotMatch(script, /vscode\.postMessage\(\{ type: 'queryCpu', view \}\)/);
@@ -441,6 +450,7 @@ test("live panel exposes the compact evidence workspace and keeps other result r
     assert.match(html, /\.evidence-controls input \{ box-sizing:border-box; min-width:0; max-width:100%; \}/);
     assert.match(html, /\.cpu-query-table \.cpu-query-symbol span, \.cpu-query-table \.cpu-query-module span \{ display:inline-block; white-space:nowrap; overflow-wrap:normal; \}/);
     assert.match(html, /\.cpu-query-summary-table \.cpu-query-category \{ width:56%; overflow-wrap:anywhere; word-break:normal; \}/);
+    assert.match(html, /@media\(max-width:600px\) \{\s*\.workspace-choice, \.workspace-selected-state \{ grid-template-columns:minmax\(0, 1fr\); \}/);
     assert.match(script, /message\.type === 'query' && message\.kind === 'cpu'/);
     assert.match(script, /renderCpuQuery\(message\.view, message\.result, false, 'cpu', role\)/);
 });
@@ -494,9 +504,13 @@ test("domain return restores CPU view and filter without a request; new captures
     const capture = script.slice(captureStart, script.indexOf("setWorkspaceEvidence('cpu');", captureStart)
         + "setWorkspaceEvidence('cpu');".length);
     const { document, makeContainer } = createDocumentStub();
-    const names = ["workspaceDomain", "workspaceEvidenceKind", "workspaceEvidenceStatus", "workspaceView",
-        "workspaceLoadView", "workspaceGcCapture", "workspaceGcStatus", "cpuQueryViews", "cpuQueryStatus",
-        "openHeapDetails", "backToHeapTypes", "captureGc", "resultCpu", "resultAllocation", "resultHeap",
+    const names = ["workspaceDomain", "workspaceEvidenceKind", "workspaceEvidenceControl",
+        "workspaceEvidenceHeading", "workspaceEvidenceHeadingText", "workspaceEvidenceStatus",
+        "workspaceEvidenceDetailsText", "workspaceView", "workspaceAnalysisControl",
+        "workspaceAnalysisHeading", "workspaceAnalysisHeadingText", "workspaceLoadView",
+        "workspaceOperationKind", "workspaceNavigationHelp", "workspaceGcCapture", "workspaceGcStatus",
+        "cpuQueryViews", "cpuQueryStatus",
+        "openHeapDetails", "backToHeapTypes", "heapWorkspace", "captureGc", "resultCpu", "resultAllocation", "resultHeap",
         "resultThreads", "cpuSamplingDisclaimer", "workspaceCanvas", "workspaceCaptureStatus",
         "workspaceThreadViewStatus", "genericCaptureViews", "captureThreadHeadline", "captureThreadTable",
         "threadQueryViews", "threadDetails", "threadStaticsForm", "jointReproduction",
@@ -513,6 +527,15 @@ test("domain return restores CPU view and filter without a request; new captures
       const usesWorkspaceForGenericCapture = kind => ['gc','gc-activities'].includes(kind)
         || isThreadCapture(kind) || isRequestCapture(kind);
       const genericCaptureLabels = {requests:'In-flight requests',kestrel:'Kestrel',db:'Database',networking:'Networking'};
+      const workspaceEvidenceQuestions = {
+        cpu:'Shows where captured stack samples accumulated.',
+        allocation:'Shows sampled allocation pressure.',
+        heap:'Shows retained heap totals.',
+        'thread-snapshot':'Shows returned threads.',
+        requests:'Shows in-flight requests.',kestrel:'Shows Kestrel events.',
+        db:'Shows database events.',networking:'Shows networking events.',
+        'request-activities':'Shows requests and Activities.'
+      };
       let genericCaptureKind;
       let activeResultTab;
       const selectResultTab = name => { activeResultTab = name; };
@@ -533,19 +556,38 @@ test("domain return restores CPU view and filter without a request; new captures
       ${navigation}
       ${activation}
       ${profile}
-      return {setWorkspaceEvidence,activateCaptureTab,getActiveResultTab:()=>activeResultTab,
+      return {setWorkspaceEvidence,setWorkspaceStatus,activateCaptureTab,getActiveResultTab:()=>activeResultTab,
         selectThreadSnapshotView,selectProfileView,cacheProfileQuery,loadSelectedProfileView,
+        cpuCacheKeys:()=>[...cpuViewCache.keys()],
+        isAnalysisLoaded:()=>profileAnalysisLoaded('cpu',activeProfileViews.cpu),
+        setHeapState:(source,evidenceId,detailsAvailable=true)=>{
+          heapEvidenceSource=source;heapEvidenceId=evidenceId;heapDetailsAvailable=detailsAvailable;
+          heapCaptureBusy=false;setWorkspaceEvidence('heap');
+        },
+        setHeapBusy:busy=>{heapCaptureBusy=busy;setWorkspaceEvidence('heap');},
         setAvailable:()=>{profileAvailability.cpu=true},
         capture:message=>{${capture}}};
     `)(document, {postMessage:m=>requests.push(m)}, renders);
+    assert.equal(nodes.workspaceOperationKind.textContent, "New collection");
     api.capture({evidenceId:"cpu-1",summary:{totalSamples:100}});
+    assert.equal(nodes.workspaceEvidenceControl.hidden, true, "single CPU evidence is a heading, not a disabled selector");
+    assert.equal(nodes.workspaceEvidenceHeadingText.textContent, "CPU sample");
+    assert.equal(nodes.workspaceAnalysisControl.hidden, false);
+    assert.equal(nodes.workspaceOperationKind.textContent, "Retained query");
     api.setAvailable();
-    api.cacheProfileQuery("cpu","call-tree","Repeat",{data:{root:"cached exact projection"}});
     api.selectProfileView("cpu","call-tree","Repeat");
+    assert.equal(nodes.workspaceOperationKind.textContent, "Retained query");
+    assert.equal(nodes.workspaceLoadView.textContent, "Load call tree");
+    api.cacheProfileQuery("cpu","call-tree","Repeat",{data:{root:"cached exact projection"}});
+    assert.deepEqual(api.cpuCacheKeys(), ["current:call-tree:Repeat"]);
+    api.selectProfileView("cpu","call-tree","Repeat");
+    assert.equal(api.isAnalysisLoaded(), true);
+    assert.equal(nodes.workspaceOperationKind.textContent, "Local switch");
     api.setWorkspaceEvidence("heap");
     api.setWorkspaceEvidence("cpu");
     assert.equal(nodes.workspaceView.value,"call-tree");
     assert.equal(nodes.workspaceLoadView.hidden,true);
+    assert.equal(nodes.workspaceOperationKind.textContent, "Local switch");
     assert.equal(renders.at(-1)[1].data.root,"cached exact projection");
     assert.deepEqual(requests,[]);
     api.selectProfileView("cpu","top-methods");
@@ -566,6 +608,34 @@ test("domain return restores CPU view and filter without a request; new captures
     assert.equal(nodes.workspaceView.value, "snapshot");
     api.selectThreadSnapshotView("thread-statics");
     assert.match(nodes.workspaceThreadViewStatus.textContent, /explicitly query this snapshot/);
+    nodes.workspaceEvidenceKind.focused = false;
+    document.activeElement = nodes.workspaceEvidenceKind;
+    api.setWorkspaceEvidence("thread-snapshot");
+    assert.equal(nodes.workspaceEvidenceKind.focused, true, "rebuilt multi-choice evidence selector restores focus");
+    nodes.workspaceView.focused = false;
+    document.activeElement = nodes.workspaceView;
+    api.setWorkspaceEvidence("thread-snapshot");
+    assert.equal(nodes.workspaceView.focused, true, "rebuilt multi-choice analysis selector restores focus");
+    nodes.workspaceEvidenceKind.focused = false;
+    document.activeElement = nodes.workspaceEvidenceKind;
+    api.setWorkspaceEvidence("exceptions");
+    assert.equal(nodes.workspaceEvidenceControl.hidden, true);
+    assert.equal(nodes.workspaceEvidenceHeadingText.textContent, "No completed exception capture");
+    assert.equal(nodes.workspaceEvidenceKind.focused, false, "a hidden singleton selector does not reclaim focus");
+    assert.equal(nodes.workspaceEvidenceStatus.focused, true, "focus moves to visible evidence context");
+    api.setHeapState("live", "heap-1");
+    assert.deepEqual(nodes.workspaceView.children.map(option => option.value), ["snapshot", "details"]);
+    assert.equal(nodes.workspaceAnalysisControl.hidden, false);
+    assert.equal(nodes.workspaceOperationKind.textContent, "Local switch");
+    nodes.heapWorkspace.dataset.focused = "true";
+    api.setHeapBusy(true);
+    assert.equal(nodes.workspaceView.value, "details", "a non-invalidating status refresh preserves the open details pane");
+    assert.equal(nodes.workspaceOperationKind.textContent, "New collection");
+    assert.match(nodes.workspaceNavigationHelp.textContent, /capture is in progress/);
+    nodes.heapWorkspace.dataset.focused = "false";
+    api.setHeapState("live", "heap-1", false);
+    assert.deepEqual(nodes.workspaceView.children.map(option => option.value), ["snapshot"]);
+    assert.equal(nodes.workspaceAnalysisHeadingText.textContent, "Snapshot totals");
     assert.deepEqual(requests, [{type:"queryCpu",evidenceId:"cpu-1",view:"top-methods"}],
         "switching thread views remains local and never issues an implicit query");
     for (const kind of ["requests", "kestrel", "db", "networking"]) {
@@ -576,16 +646,25 @@ test("domain return restores CPU view and filter without a request; new captures
             ["requests", "request-activities", "kestrel", "db", "networking"]);
         assert.equal(nodes.workspaceEvidenceKind.value, kind);
         assert.equal(nodes.workspaceView.value, "capture-result");
-        assert.equal(nodes.workspaceView.disabled, true, "generic results have no retained query view");
+        assert.notEqual(nodes.workspaceView.disabled, true, "generic results do not expose a disabled analysis selector");
+        assert.equal(nodes.workspaceAnalysisControl.hidden, true);
+        assert.equal(nodes.workspaceAnalysisHeadingText.textContent, "Result summary");
         assert.equal(nodes.workspaceLoadView.hidden, true, "navigation has no synthetic load action");
         assert.match(nodes.workspaceEvidenceStatus.textContent, /No completed evidence/);
+        assert.equal(nodes.workspaceOperationKind.textContent, "New collection");
+        assert.match(nodes.workspaceNavigationHelp.textContent, /replace the shared generic result/);
         assert.equal(nodes.workspaceRequestCapture.hidden, false);
         assert.equal(nodes.jointReproduction.hidden, true);
         assert.match(nodes.captureRequestEvidence.attributes["aria-label"], /^Capture /);
+        assert.match(nodes.captureRequestEvidence.textContent, /^Capture .+…$/);
     }
     api.setWorkspaceEvidence("request-activities");
     assert.equal(nodes.workspaceRequestCapture.hidden, true);
     assert.equal(nodes.jointReproduction.hidden, false, "the existing joint reproduction remains available in its evidence context");
+    api.setWorkspaceStatus("request-activities",
+        "Display-only: the retained handle expired after disconnect; captured rows remain readable.");
+    assert.match(nodes.workspaceEvidenceStatus.textContent, /Display-only/);
+    assert.match(nodes.workspaceEvidenceDetailsText.textContent, /expired after disconnect/);
     assert.deepEqual(requests, [{type:"queryCpu",evidenceId:"cpu-1",view:"top-methods"}],
         "request-family navigation performs no CLI work");
 });
@@ -1918,7 +1997,7 @@ test("heap navigation needs no Explore shortcut and restores keyboard focus in l
     assert.doesNotMatch(live, /id="openHeapDetails"/);
     assert.doesNotMatch(dump,/id="openHeapDetails"/);
     assert.match(extractInlineScript(live),/navigateHeapDetails\(workspaceView.value === 'details'\)/);
-    const {makeContainer,document,renderHeapTypeNavigation,navigateHeapDetails}=loadRenderer();
+    const {makeContainer,document,renderHeapTypeNavigation,navigateHeapDetails,resetHeapDetailsNavigation}=loadRenderer();
     const workspace=makeContainer("heapWorkspace");
     const types=document.createElement("div");types.id="heapTypeList";workspace.appendChild(types);
     const table=makeTable(document,types,["Type"],[["App.Cache"]],"captureHeapTable");
@@ -1939,6 +2018,15 @@ test("heap navigation needs no Explore shortcut and restores keyboard focus in l
     click(table,"App.Cache");
     assert.equal(workspace.dataset.focused,"true");
     assert.equal(view.value,"details","type selection keeps workspace destination truthful");
+    const selection=document.getElementById("heapTypeSelection");
+    selection.dataset.type="App.Cache";
+    selection.instanceState={selectionId:1};
+    resetHeapDetailsNavigation();
+    assert.equal(workspace.dataset.focused,"false");
+    assert.equal(view.value,"snapshot");
+    assert.equal(document.getElementById("heapTypeSelection"),null,"retained-evidence invalidation removes stale type and instance state");
+    renderHeapTypeNavigation([{typeFullName:"App.Cache",instanceCount:2,totalBytes:100}]);
+    navigateHeapDetails(true);
     back.onclick();
     assert.equal(workspace.dataset.focused,"false");
     assert.equal(view.value,"snapshot");

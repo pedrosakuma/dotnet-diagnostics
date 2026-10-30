@@ -74,6 +74,16 @@ The **Live Diagnostics** action tree groups captures under **CPU**, **Memory & G
 **Threads & waits**, **Requests & networking**, and **Exceptions**. **Monitoring**
 contains separate **Live counters & GC pauses** and **Live Events** views. Switching views
 does not start or stop either stream, collect or reopen evidence, or change event acknowledgements.
+An optional **What are you investigating?** group adds symptom-first paths for high CPU, memory
+growth or GC pressure, slow requests, locks/waits, exceptions/crashes, and general runtime health.
+Choosing a symptom only opens a bounded evidence picker: it shows the active target (or that the
+existing process picker will run), one recommended first measurement, relevant alternatives,
+collection/monitoring/artifact semantics, impact/privacy/platform prerequisites, and
+**All diagnostic actions**. It never collects, reconnects, requests privileges, opens retained
+evidence, or replaces a result until a concrete existing action is chosen. The selected symptom
+remains visible on the group while canonical Monitoring, Workspace and Investigation surfaces own
+all empty, collecting, ready, insufficient-evidence, permission-limited, disconnected and
+cancelled states.
 Each stream keeps its own lifecycle, status, retained buffer and controls. Expand an action-tree
 group to browse; only selecting an action enters its existing capture/consent flow.
 Counter history remains bounded across Stop/Start. The panel identifies the current counter
@@ -99,16 +109,24 @@ and truncations. Nonzero counts and unknown source loss remain prominent, with e
 available in the quality disclosure. **Clear** only removes retained rows and selection; it
 does not reset quality accounting, the subscription or whether the stream has observed an event.
 **Capture Diagnostics** remains the searchable expert catalog for all ten capture kinds. Its
-generic results appear in their canonical **Workspace** domain; allocations keep their dedicated
+generic results appear in their canonical **Workspace** area; allocations keep their dedicated
 profile and query path.
-The live panel's **Workspace** uses compact **Domain → Evidence → View** selectors for CPU,
-Memory & GC, Threads & waits, Requests & networking, and Exceptions. Thread snapshots and
-off-CPU/contention/thread-pool captures share their domain's presentation without sharing evidence
+The live panel's **Workspace** progresses through **Area → Evidence to inspect → Analysis** for CPU,
+Memory & GC, Threads & waits, Requests & networking, and Exceptions. A stage with only one
+meaningful option becomes a heading instead of a disabled selector, so ordinary captures show
+**Result summary** rather than a disabled **Capture result** choice. A compact state label
+distinguishes **Local switch**, **Retained query**, and **New collection**, while concrete actions
+such as **Capture CPU samples** and **Load call tree** stay beside the current state. The evidence
+identity and lifecycle disclosure keeps source, target, quality, replacement and display-only
+context available. Merely changing Area, Evidence to inspect or Analysis never collects,
+reattaches, elevates, reopens an origin or replaces evidence. Thread snapshots and
+off-CPU/contention/thread-pool captures share their area's presentation without sharing evidence
 ownership: the snapshot handle is independent from the single replaceable generic-capture result.
 Standalone requests, Kestrel, database, and networking captures share the Requests & networking workspace and
-the existing single replaceable generic-capture result; its **Capture result** view is descriptive,
-not a retained-handle query. Select the ordinary kind under **Evidence**, then **Capture** in the
-Workspace to use its existing parameter prompts. Replacement and sensitive-data guidance is
+the existing single replaceable generic-capture result; its **Result summary** heading is descriptive,
+not a retained-handle query. Select the ordinary kind under **Evidence to inspect**, then use its
+explicit capture action in the Workspace to use its existing parameter prompts. Replacement and
+sensitive-data guidance is
 visible before capture; ordinary captures cannot be cancelled here. A compact active-quality alert precedes the returned data, with full reasons
 available at the alert. Metrics, full quality scope and stable table guidance follow the rows. In-flight request results lead with the capture-window summary and
 retained request rows; state filters and search apply only to returned rows, with truncation and

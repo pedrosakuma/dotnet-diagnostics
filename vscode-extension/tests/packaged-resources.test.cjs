@@ -15,7 +15,11 @@ test("VSIX contains every declared walkthrough Markdown resource without unrelat
     await createVSIX({ cwd: root, packagePath, dependencies: false });
 
     // Inspect the archive, not the source tree or vsce's candidate file list.
-    const files = await readZip(packagePath, () => true);
+    const files = await readZip(packagePath, name => !name.endsWith("/") && (
+        name === "extension/package.json"
+        || name.startsWith("extension/media/")
+        || /^extension\/(scripts|src|tests|node_modules)\//.test(name)
+    ));
     const manifest = JSON.parse(files.get("extension/package.json").toString("utf8"));
     const markdownPaths = manifest.contributes.walkthroughs.flatMap(walkthrough =>
         walkthrough.steps.flatMap(step => step.media?.markdown ? [step.media.markdown] : []));

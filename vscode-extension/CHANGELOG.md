@@ -5,6 +5,17 @@ versioned independently from the CLI and the .NET packages.
 
 ## Unreleased
 
+- Add an optional **What are you investigating?** entry above the unchanged expert action groups.
+  Six bounded symptom paths show the active target, one recommended first measurement, alternatives,
+  evidence mode, impact/privacy/platform prerequisites, and direct access to all diagnostic actions.
+  Merely choosing or cancelling a symptom never collects, reconnects, requests privileges, opens
+  retained evidence or replaces results; concrete choices reuse the existing target, capability,
+  consent and canonical Monitoring/Workspace/Investigation flows.
+- Make the canonical Workspace navigation progressive and task-oriented with
+  **Area → Evidence to inspect → Analysis** stages. Replace singleton selectors with explicit
+  headings, use **Result summary** instead of disabled **Capture result**, distinguish local
+  switches, retained queries and new collections, keep concrete capture/load actions beside the
+  current state, and preserve focus, narrow-webview stacking, deep links and evidence ownership.
 - Replace the heap evidence button row with one labelled view selector. Retention paths, roots,
   fragmentation, handles, timers, and other captured views remain available without competing
   visually with the selected type's instance and paging actions.

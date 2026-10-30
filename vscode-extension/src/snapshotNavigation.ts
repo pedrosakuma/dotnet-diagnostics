@@ -157,6 +157,17 @@ function navigateHeapDetails(details: boolean): void {
     workspace?.navigateDetails?.(details);
 }
 
+function resetHeapDetailsNavigation(): void {
+    navigateHeapDetails(false);
+    const selection = document.getElementById("heapTypeSelection") as (HTMLElement & {
+        instanceState?: unknown;
+    }) | null;
+    if (!selection) return;
+    delete selection.dataset.type;
+    delete selection.instanceState;
+    selection.remove();
+}
+
 function navigateThreadFromGroup(id: number, returnFocus?: HTMLElement): void {
     navigateThreadTo(id, "threadQueryViews-unique-stacks", returnFocus);
 }
@@ -716,7 +727,8 @@ function updateThreadNavigation(view: string, result: Record<string, unknown>): 
     }
 }
 
-export const SNAPSHOT_NAVIGATION_SCRIPT = navigateHeapDetails.toString() + "\n" + renderHeapTypeNavigation.toString() + "\n"
+export const SNAPSHOT_NAVIGATION_SCRIPT = navigateHeapDetails.toString() + "\n" + resetHeapDetailsNavigation.toString() + "\n"
+    + renderHeapTypeNavigation.toString() + "\n"
     + handleHeapInstancesMessage.toString() + "\n"
     + applyHeapTypeFocus.toString() + "\n" + setThreadWorkspaceView.toString() + "\n" + navigateThreadTo.toString()
     + "\n" + navigateThreadFromGroup.toString() + "\n" + updateThreadNavigation.toString();
