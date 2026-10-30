@@ -496,6 +496,11 @@ Allocation capture results additionally include `result.handle`, identifying tha
 in-memory `allocation-sample` artifact on the same connection (20-minute TTL). Query it with
 `call-tree`, `top-methods`, `hot-path`, `by-module`, `by-namespace` or `caller-callee`;
 `rootMethodFilter` selects a method-name match for subtrees or callers/callees.
+The capture metrics distinguish raw sampled totals (`Sampled events` / `Sampled bytes`) from
+usable stack attribution (`Stack-attributed events` / `Stack-attributed bytes`). A completed
+capture with zero raw events is reported separately from a nonzero capture whose events carried
+no usable stacks; unavailable retained-handle coverage remains null rather than being replaced
+with zero.
 No new collection occurs. CPU-only views such as `triage` and `inlining` are rejected.
 Successful allocation query results confirm `weightUnit:"allocation-tick-estimated-bytes"`.
 The reused `totalSamples` / `inclusiveSamples` / `exclusiveSamples` fields then contain estimated

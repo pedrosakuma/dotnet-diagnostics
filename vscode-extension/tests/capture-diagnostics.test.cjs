@@ -33,7 +33,13 @@ function view(kind = "contention") {
 }
 function fixture(spec = kinds.CAPTURE_KIND_SPECS[0], overrides = {}) {
     const messages = [], frames = [];
-    const session = { pendingCaptures: new Map(), pendingQueries: new Map(), startInFlight: false, ...overrides };
+    const session = {
+        pendingCaptures: new Map(),
+        pendingQueries: new Map(),
+        startInFlight: false,
+        process: { pid: 7788, exitCode: null, signalCode: null },
+        ...overrides,
+    };
     const controller = Object.create(Controller.prototype);
     controller.selectedTarget = { processId: 4242 };
     controller.targetGeneration = 1;
@@ -558,20 +564,29 @@ test("a sibling capture cannot close the connection retaining a CPU export handl
 });
 test("allocation capture retains its exact connection and byte-weighted handle, then drills down without recapture", async () => {
     const { controller, messages, frames, session } = fixture();
-    session.process = { exitCode: null, signalCode: null };
+    session.process = { pid: 7788, exitCode: null, signalCode: null };
     let closed = 0;
     const queries = [];
+    const output = [];
+    controller.output = { appendLine: line => output.push(line) };
     controller.acquireChild = async () => ({ session, owns: true });
     controller.closeChild = async () => { closed++; };
     controller.writeFrame = (_session, frame) => {
         frames.push(frame);
         controller.handleFrame(session, JSON.stringify({ type: "capture", requestId: frame.requestId,
-            kind: "allocation", result: { ...view("allocation"), handle: "this-allocation" } }));
+            kind: "allocation", result: { ...view("allocation"), handle: "this-allocation",
+                metrics: [
+                    { label: "Sampled events", value: 5 },
+                    { label: "Sampled bytes", value: 500 },
+                    { label: "Stack-attributed events", value: 4 },
+                    { label: "Stack-attributed bytes", value: 400 },
+                ] } }));
     };
     controller.sendQuery = async (connection, handle, queryView) => {
         assert.equal(connection, session);
         queries.push({ handle, view: queryView });
-        return { weightUnit: "allocation-tick-estimated-bytes", data: {} };
+        return { weightUnit: "allocation-tick-estimated-bytes",
+            data: { totalSamples: 500, nodeCount: 3, root: { inclusiveSamples: 400 } } };
     };
     vscode.window.showQuickPick = () => { throw new Error("dedicated action does not need a kind picker"); };
     await controller.captureAllocations();
@@ -581,10 +596,39 @@ test("allocation capture retains its exact connection and byte-weighted handle, 
     assert.deepEqual(queries, [{ handle: "this-allocation", view: "call-tree" }, { handle: "this-allocation", view: "top-methods" }]);
     assert.equal(closed, 0);
     assert.equal(messages.filter(message => message.type === "query" && message.kind === "allocation").length, 2);
+    assert.match(output.find(line => line.includes("event=capture-request")), /processId=4242 durationSeconds=10 topN=25 childPid=7788/);
+    assert.match(output.find(line => line.includes("event=capture-response")),
+        /sampledEvents=5 sampledBytes=500 stackAttributedEvents=4 stackAttributedBytes=400 handlePresent=true handleId=[0-9a-f]{12}/);
     controller.sendQuery = async () => ({ data: {} });
     await controller.queryCpu("call-tree", undefined, "allocation");
     assert.match(messages.findLast(message => message.type === "queryError").message, /did not confirm allocation-byte weighting/);
     assert.equal(controller.allocationProfile, undefined);
+});
+test("profile query evidence logs reconciled weights and structured handle failures without raw handles", async () => {
+    const { controller, session } = fixture();
+    session.process = { pid: 9911, exitCode: null, signalCode: null };
+    const output = [];
+    controller.output = { appendLine: line => output.push(line) };
+    controller.writeFrame = (_session, frame) => controller.handleFrame(session, JSON.stringify({
+        type: "query", requestId: frame.requestId, handle: frame.handle, view: frame.view,
+        result: { handle: frame.handle, view: frame.view, weightUnit: "allocation-tick-estimated-bytes",
+            data: { totalSamples: 500, nodeCount: 3, root: { inclusiveSamples: 400 } } },
+    }));
+    await controller.sendQuery(session, "secret-handle", "call-tree", undefined, undefined, undefined, undefined,
+        { kind: "allocation", evidenceId: "capture-one" });
+    const response = output.find(line => line.includes("event=query-response"));
+    assert.match(response, /weightUnit=allocation-tick-estimated-bytes totalWeight=500 rootInclusiveWeight=400 nodeCount=3/);
+    assert.doesNotMatch(response, /secret-handle/);
+
+    controller.writeFrame = (_session, frame) => controller.handleFrame(session, JSON.stringify({
+        type: "error", requestId: frame.requestId, code: "unknown_handle", message: "Expired secret-handle",
+    }));
+    await assert.rejects(() => controller.sendQuery(
+        session, "secret-handle", "call-tree", undefined, undefined, undefined, undefined,
+        { kind: "allocation", evidenceId: "capture-one" }));
+    const failure = output.findLast(line => line.includes("event=query-error"));
+    assert.match(failure, /code=unknown_handle/);
+    assert.doesNotMatch(failure, /Expired secret-handle|secret-handle/);
 });
 test("failed allocation capture preserves the previous profile; successful table-only replacement invalidates it", async () => {
     const { controller, session, messages } = fixture();

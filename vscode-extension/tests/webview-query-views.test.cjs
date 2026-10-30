@@ -1071,6 +1071,50 @@ test("allocation explorer uses estimated bytes, separate profile state and alloc
     assert.match(allocationContainer.textContent, /800 of 1000/);
 });
 
+test("allocation explorer distinguishes raw-empty windows from nonzero captures without usable stacks", () => {
+    const rawEmpty = cpuRenderer();
+    rawEmpty.renderCpuQuery("call-tree", {
+        weightUnit: "allocation-tick-estimated-bytes",
+        data: { totalSamples: 0, root: cpuNode("Root", 0, 0) },
+    }, false, "allocation");
+    assert.match(rawEmpty.allocationContainer.textContent, /No allocation ticks were captured in this window/);
+    assert.doesNotMatch(rawEmpty.allocationContainer.textContent, /0 of 0 estimated bytes/);
+
+    const unattributed = cpuRenderer();
+    unattributed.renderCpuQuery("call-tree", {
+        weightUnit: "allocation-tick-estimated-bytes",
+        data: { totalSamples: 4096, root: cpuNode("Root", 0, 0) },
+    }, false, "allocation");
+    assert.match(unattributed.allocationContainer.textContent,
+        /4096 estimated sampled bytes were captured, but none were attributable to usable stacks/);
+    assert.match(unattributed.allocationContainer.textContent, /captured bytes were not replaced with zero/);
+
+    const missingTree = cpuRenderer();
+    missingTree.renderCpuQuery("call-tree", {
+        weightUnit: "allocation-tick-estimated-bytes",
+        data: { totalSamples: 4096 },
+    }, false, "allocation");
+    assert.match(missingTree.allocationContainer.textContent,
+        /4096 estimated sampled bytes were captured, but no usable stack attribution was returned/);
+
+    const missingTotal = cpuRenderer();
+    missingTotal.renderCpuQuery("call-tree", {
+        weightUnit: "allocation-tick-estimated-bytes",
+        data: { root: cpuNode("Root", 0, 0) },
+    }, false, "allocation");
+    assert.match(missingTotal.allocationContainer.textContent,
+        /Call tree unavailable: invalid or missing estimated bytes/);
+    assert.match(missingTotal.allocationContainer.textContent, /No values were replaced with zero/);
+
+    const contradictory = cpuRenderer();
+    contradictory.renderCpuQuery("call-tree", {
+        weightUnit: "allocation-tick-estimated-bytes",
+        data: { totalSamples: 100, root: cpuNode("Root", 101, 0) },
+    }, false, "allocation");
+    assert.match(contradictory.allocationContainer.textContent,
+        /Call tree unavailable: invalid or missing estimated bytes/);
+});
+
 test("CPU and allocation profile tables preserve method symbols independently", () => {
     const { renderCpuQuery, container, allocationContainer } = cpuRenderer();
     renderCpuQuery("top-methods", { data: { methods: [{

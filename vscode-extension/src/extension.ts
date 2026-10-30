@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { execFile as execFileCallback, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { basename } from "node:path";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
@@ -192,6 +192,7 @@ type HeapCaptureSource = "live" | "gcdump";
 
 interface StreamChild {
     process: ChildProcessWithoutNullStreams;
+    startedAtMs: number;
     lines: ReadlineInterface | BoundedProtocolLineReader;
     handshake: Deferred<void>;
     protocolReady: boolean;
@@ -1141,10 +1142,32 @@ class CounterPanelController implements vscode.Disposable {
         };
         session.pendingCaptures.set(requestId, pending);
         try {
+            if (spec.kind === "allocation") {
+                this.output.appendLine(profileDiagnostic("capture-request", {
+                    requestId,
+                    processId: target.processId,
+                    durationSeconds: params.durationSeconds,
+                    topN: params.topN,
+                    childPid: session.process.pid,
+                }));
+            }
             this.writeFrame(session, buildCaptureRequest(requestId, spec, target.processId, params));
             status("running", `${spec.label} capture requested (${params.durationSeconds} seconds after startup). Allow time for tracing startup, then reproduce the problem.`);
             const result = await withTimeout(pending.deferred.promise, captureTimeoutMs(spec.kind, params.durationSeconds));
             if (spec.kind === "allocation") {
+                this.output.appendLine(profileDiagnostic("capture-response", {
+                    requestId,
+                    processId: target.processId,
+                    childPid: session.process.pid,
+                    sampledEvents: captureMetric(result, "Sampled events"),
+                    sampledBytes: captureMetric(result, "Sampled bytes"),
+                    stackAttributedEvents: captureMetric(result, "Stack-attributed events"),
+                    stackAttributedBytes: captureMetric(result, "Stack-attributed bytes"),
+                    handlePresent: typeof result.handle === "string",
+                    handleId: opaqueHandleIdentity(result.handle),
+                    limitOrLossNoteCount: result.notes.filter(note => /limit|loss|lost/i.test(note)).length,
+                    limitationCount: result.evidence.limitations.length,
+                }));
                 this.allocationProfile = typeof result.handle === "string" && result.handle.length > 0 && result.handle.length <= 128
                     ? { session, handle: result.handle, evidenceId: requestId } : undefined;
                 this.postMessage({ type: "capture", kind: "allocation", evidenceId: requestId, result });
@@ -1390,13 +1413,54 @@ class CounterPanelController implements vscode.Disposable {
         navigation?: QueryNavigation,
         rootMethodFilter?: string,
         typeInstances?: TypeInstanceQuery,
+        profileObservation?: { kind: "cpu" | "allocation"; evidenceId?: string },
     ): Promise<QueryResult> {
         const requestId = randomBytes(12).toString("hex");
         const pending = deferred<QueryResult>();
         session.pendingQueries.set(requestId, pending);
+        if (profileObservation) {
+            this.output.appendLine(profileDiagnostic("query-request", {
+                requestId,
+                evidenceId: profileObservation.evidenceId,
+                kind: profileObservation.kind,
+                view,
+                childPid: session.process.pid,
+                handleId: opaqueHandleIdentity(handle),
+            }));
+        }
         try {
             this.writeFrame(session, buildQueryFrame(requestId, handle, view, typeFilter, navigation, rootMethodFilter, typeInstances));
-            return await withTimeout(pending.promise, 60_000);
+            const result = await withTimeout(pending.promise, 60_000);
+            if (profileObservation) {
+                const metrics = profileQueryMetrics(result);
+                this.output.appendLine(profileDiagnostic("query-response", {
+                    requestId,
+                    evidenceId: profileObservation.evidenceId,
+                    kind: profileObservation.kind,
+                    view,
+                    childPid: session.process.pid,
+                    handleId: opaqueHandleIdentity(handle),
+                    weightUnit: metrics.weightUnit,
+                    totalWeight: metrics.totalWeight,
+                    rootInclusiveWeight: metrics.rootInclusiveWeight,
+                    nodeCount: metrics.nodeCount,
+                }));
+            }
+            return result;
+        } catch (error) {
+            if (profileObservation) {
+                this.output.appendLine(profileDiagnostic("query-error", {
+                    requestId,
+                    evidenceId: profileObservation.evidenceId,
+                    kind: profileObservation.kind,
+                    view,
+                    childPid: session.process.pid,
+                    handleId: opaqueHandleIdentity(handle),
+                    code: isRecord(error) && typeof error.code === "string" ? error.code : "unclassified",
+                    messageLength: errorMessage(error).length,
+                }));
+            }
+            throw error;
         } finally {
             session.pendingQueries.delete(requestId);
         }
@@ -1606,7 +1670,15 @@ class CounterPanelController implements vscode.Disposable {
                 if (!saved || saved.session.closing || saved.session.process.exitCode !== null || saved.session.process.signalCode !== null) {
                     throw new Error(`Capture ${kind} first. Drilldown requires this panel's retained CLI connection.`);
                 }
-                const result = await this.sendQuery(saved.session, saved.handle, view, undefined, undefined, rootMethodFilter);
+                const result = await this.sendQuery(
+                    saved.session,
+                    saved.handle,
+                    view,
+                    undefined,
+                    undefined,
+                    rootMethodFilter,
+                    undefined,
+                    { kind, evidenceId });
                 const current = kind === "allocation"
                     ? this.allocationProfile
                     : profileRole === "baseline" ? this.cpuBaseline : this.cpuExport;
@@ -2300,6 +2372,7 @@ class CounterPanelController implements vscode.Disposable {
         }
         const session: StreamChild = {
             process: child,
+            startedAtMs: Date.now(),
             lines: eventsConnection
                 ? new BoundedProtocolLineReader(child.stdout, LIVE_EVENT_CONTROL_LINE_MAX_BYTES)
                 : createInterface({ input: child.stdout }),
@@ -2318,6 +2391,10 @@ class CounterPanelController implements vscode.Disposable {
             closing: false,
             eventsConnection,
         };
+        this.output.appendLine(profileDiagnostic("child-start", {
+            childPid: child.pid,
+            connection: eventsConnection ? "events" : "diagnostics",
+        }));
         if (!eventsConnection) {
             this.activeChild = session;
             this.statusBar.text = "$(sync~spin) .NET Counters";
@@ -2343,6 +2420,15 @@ class CounterPanelController implements vscode.Disposable {
             this.failPending(session, error);
         });
         child.once("close", (code, signal) => {
+            this.output.appendLine(profileDiagnostic("child-exit", {
+                childPid: child.pid,
+                connection: session.eventsConnection ? "events" : "diagnostics",
+                lifetimeMs: Math.max(0, Date.now() - session.startedAtMs),
+                exitCode: code,
+                signal,
+                expectedShutdown: session.expectedShutdown,
+                closing: session.closing,
+            }));
             if (session.investigationConnectionId)
                 this.getInvestigationEvidence().markConnectionClosed(session.investigationConnectionId);
             if (this.joint?.session === session)
@@ -2482,6 +2568,12 @@ class CounterPanelController implements vscode.Disposable {
                     ? frame.cpuHandleComparison : undefined;
                 session.investigationEvidence = isRecord(frame.capabilities)
                     && supportsInvestigationEvidence(frame.capabilities.investigationEvidence);
+                this.output.appendLine(profileDiagnostic("child-handshake", {
+                    childPid: session.process.pid,
+                    connection: session.eventsConnection ? "events" : "diagnostics",
+                    protocolVersion: frame.protocolVersion,
+                    cliVersion: typeof frame.cliVersion === "string" ? frame.cliVersion : "unreported",
+                }));
                 this.postMessage({
                     type: "investigationEvidenceCapability",
                     supported: session.investigationEvidence,
@@ -7063,6 +7155,45 @@ function isCounterValue(value: unknown): value is CounterValue {
         && typeof value.provider === "string"
         && typeof value.name === "string"
         && typeof value.value === "number";
+}
+
+type ProfileDiagnosticValue = string | number | boolean | null | undefined;
+
+function profileDiagnostic(event: string, fields: Record<string, ProfileDiagnosticValue>): string {
+    const details = Object.entries(fields)
+        .map(([key, value]) => `${key}=${value === undefined || value === null ? "unavailable" : String(value)}`)
+        .join(" ");
+    return `[profile-evidence] atUtc=${new Date().toISOString()} event=${event}${details ? ` ${details}` : ""}`;
+}
+
+function opaqueHandleIdentity(handle: unknown): string | undefined {
+    return typeof handle === "string" && handle.length > 0
+        ? createHash("sha256").update(handle).digest("hex").slice(0, 12)
+        : undefined;
+}
+
+function captureMetric(result: CaptureViewResult, label: string): number | undefined {
+    const value = result.metrics.find(metric => metric.label === label)?.value;
+    return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+function profileQueryMetrics(result: QueryResult): {
+    weightUnit?: string;
+    totalWeight?: number;
+    rootInclusiveWeight?: number;
+    nodeCount?: number;
+} {
+    const record = result as unknown as Record<string, unknown>;
+    const data = isRecord(record.data) ? record.data : undefined;
+    const root = data && isRecord(data.root) ? data.root : undefined;
+    const count = (value: unknown): number | undefined =>
+        typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+    return {
+        weightUnit: typeof record.weightUnit === "string" ? record.weightUnit : undefined,
+        totalWeight: count(data?.totalSamples),
+        rootInclusiveWeight: count(root?.inclusiveSamples),
+        nodeCount: count(data?.nodeCount),
+    };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

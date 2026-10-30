@@ -4,6 +4,7 @@ using DotnetDiagnostics.Core.Collection;
 using DotnetDiagnostics.Core.Contention;
 using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Db;
+using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Evidence;
 using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.Kestrel;
@@ -117,7 +118,10 @@ internal static class CliStreamingCaptureViews
         "requests", "kestrel", "db", "networking",
     };
 
-    internal static CaptureView Project(CliCommandResult result, CliOptions options)
+    internal static CaptureView Project(
+        CliCommandResult result,
+        CliOptions options,
+        IDiagnosticHandleStore? handles = null)
     {
         var b = new CaptureViewBuilder();
         var top = options.Top!.Value;
@@ -133,10 +137,14 @@ internal static class CliStreamingCaptureViews
                 start = s.StartedAt; duration = s.Duration;
                 b.Metric("Sampled events", s.TotalEvents);
                 b.Metric("Sampled bytes", s.TotalBytes);
+                var coverage = ResolveAllocationCoverage(handles, envelope.Handle, s);
+                b.Metric("Stack-attributed events", coverage?.Events);
+                b.Metric("Stack-attributed bytes", coverage?.Bytes);
                 b.Table("types", "Types by sampled bytes", ["Type", "Sampled bytes", "Sampled events", "Heap"], s.TopByBytes, top,
                     t => [t.TypeName, t.TotalBytes, t.EventCount, t.DominantKind.ToString()]);
                 b.Table("sites", "Allocation sites", ["Method", "Module", "Sampled bytes", "Sampled events"], s.TopBySite, top,
                     t => [t.Frame.Method, t.Frame.Module, t.TotalBytes, t.EventCount]);
+                b.Note(DescribeAllocationCoverage(s, coverage));
                 b.Note("GCAllocationTick is sampled; bytes and event counts are not exact allocation totals. No samples do not prove no allocation.");
                 b.Note("Profiling can be expensive. Limits: 64 MiB raw trace, 100,000 ticks, 4,096 types, 16,384 distinct frames/tree nodes and 128 frames per stack. Limit hits and lost-event traces fail explicitly; no partial profile is returned. Trace conversion has additional memory/disk cost; these limits are not a hard process-RSS budget.");
                 break;
@@ -294,4 +302,60 @@ internal static class CliStreamingCaptureViews
             Backend = backend,
         };
     }
+
+    private static AllocationCoverage? ResolveAllocationCoverage(
+        IDiagnosticHandleStore? handles,
+        string? handle,
+        AllocationSample sample)
+    {
+        if (handles is null || string.IsNullOrWhiteSpace(handle))
+        {
+            return null;
+        }
+
+        var artifact = handles.TryGet<AllocationSampleArtifact>(handle);
+        if (artifact?.EstimatedBytesTrace is not { } byteTrace)
+        {
+            return null;
+        }
+
+        var events = artifact.TraceArtifact.Root.InclusiveSamples;
+        var bytes = byteTrace.Root.InclusiveSamples;
+        return events < 0 || events > sample.TotalEvents || bytes < 0 || bytes > sample.TotalBytes
+            || (events == 0 && bytes > 0)
+            ? null
+            : new AllocationCoverage(events, bytes);
+    }
+
+    private static string DescribeAllocationCoverage(AllocationSample sample, AllocationCoverage? coverage)
+    {
+        if (sample.TotalEvents == 0)
+        {
+            return "No allocation ticks were observed in this window. Capture completion confirms protocol execution, not workload activity or exact EventPipe arm timing.";
+        }
+
+        if (coverage is null)
+        {
+            return "Stack-attribution coverage is unavailable from the retained handle. Raw allocation totals remain valid, but the profile cannot be reconciled.";
+        }
+
+        if (coverage.Events == 0)
+        {
+            return $"Observed {sample.TotalEvents:N0} allocation tick(s) representing {sample.TotalBytes:N0} sampled byte(s), but none carried a usable stack. The retained allocation profile is intentionally empty.";
+        }
+
+        if (coverage.Bytes == 0)
+        {
+            return $"Usable stacks were captured for {coverage.Events:N0} of {sample.TotalEvents:N0} allocation tick(s), but no sampled byte weight was attributed to them. The byte-weighted allocation profile is intentionally empty.";
+        }
+
+        if (coverage.Bytes < sample.TotalBytes || coverage.Events < sample.TotalEvents)
+        {
+            return $"Usable stacks attributed {coverage.Bytes:N0} of {sample.TotalBytes:N0} sampled byte(s) across {coverage.Events:N0} of {sample.TotalEvents:N0} allocation tick(s). Unattributed totals remain visible and are not replaced with zero.";
+        }
+
+        return $"Usable stacks attributed all {coverage.Bytes:N0} sampled byte(s) across all {coverage.Events:N0} allocation tick(s).";
+    }
+
+    private sealed record AllocationCoverage(long Events, long Bytes);
 }

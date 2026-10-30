@@ -5,6 +5,7 @@ using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Contention;
 using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Db;
+using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.Kestrel;
 using DotnetDiagnostics.Core.Networking;
@@ -62,13 +63,45 @@ public sealed class CliStreamingCaptureViewsTests
     public void AllocationView_ExposesTheExactCaptureHandleAndResourceLimitCaveats()
     {
         var sample = new AllocationSample(42, Start, Duration, 2, 200, [], []);
-        var envelope = DiagnosticResult.OkWithHandle(sample, "Sampled allocations", "allocation-one",
-            Start + TimeSpan.FromMinutes(20));
+        var handles = new MemoryDiagnosticHandleStore();
+        var tickTrace = Trace(total: 2, root: 1);
+        var byteTrace = Trace(total: 200, root: 150);
+        var handle = handles.Register(
+            42,
+            "allocation-sample",
+            new AllocationSampleArtifact(sample, tickTrace) { EstimatedBytesTrace = byteTrace },
+            TimeSpan.FromMinutes(20),
+            evictWhenProcessExits: false,
+            origin: HandleOrigin.Live);
+        var envelope = DiagnosticResult.OkWithHandle(sample, "Sampled allocations", handle.Id, handle.ExpiresAt);
         var result = new CliCommandResult(false, false, envelope, string.Empty);
-        var view = CliStreamingCaptureViews.Project(result, Options("allocation"));
-        view.Handle.Should().Be("allocation-one");
+        var view = CliStreamingCaptureViews.Project(result, Options("allocation"), handles);
+        view.Handle.Should().Be(handle.Id);
+        view.Metrics.Single(metric => metric.Label == "Stack-attributed events").Value.Should().Be(1L);
+        view.Metrics.Single(metric => metric.Label == "Stack-attributed bytes").Value.Should().Be(150L);
+        view.Notes.Should().Contain(note => note.Contains("150 of 200 sampled byte(s)", StringComparison.Ordinal));
         view.Notes.Should().Contain(note => note.Contains("not a hard process-RSS budget", StringComparison.Ordinal));
         view.Notes.Should().Contain(note => note.Contains("64 MiB", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AllocationView_DistinguishesRawEmptyFromNonzeroCaptureWithoutUsableStacks()
+    {
+        var handles = new MemoryDiagnosticHandleStore();
+        var empty = ProjectAllocation(handles, events: 0, bytes: 0, stackEvents: 0, stackBytes: 0);
+        empty.Notes.Should().Contain(note => note.Contains("No allocation ticks were observed", StringComparison.Ordinal));
+        empty.Metrics.Single(metric => metric.Label == "Stack-attributed bytes").Value.Should().Be(0L);
+
+        var unattributed = ProjectAllocation(handles, events: 3, bytes: 300, stackEvents: 0, stackBytes: 0);
+        unattributed.Notes.Should().Contain(note => note.Contains("none carried a usable stack", StringComparison.Ordinal));
+        unattributed.Metrics.Single(metric => metric.Label == "Sampled bytes").Value.Should().Be(300L);
+        unattributed.Metrics.Single(metric => metric.Label == "Stack-attributed bytes").Value.Should().Be(0L);
+
+        var stackedWithoutByteWeight = ProjectAllocation(handles, events: 3, bytes: 0, stackEvents: 3, stackBytes: 0);
+        stackedWithoutByteWeight.Notes.Should().Contain(note =>
+            note.Contains("Usable stacks were captured for 3 of 3 allocation tick(s)", StringComparison.Ordinal));
+        stackedWithoutByteWeight.Notes.Should().NotContain(note =>
+            note.Contains("none carried a usable stack", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -177,4 +210,37 @@ public sealed class CliStreamingCaptureViewsTests
     {
         Command = "collect", Kind = kind, Pid = 42, DurationSeconds = 6, Top = 1, Depth = "detail",
     };
+
+    private static CaptureView ProjectAllocation(
+        MemoryDiagnosticHandleStore handles,
+        long events,
+        long bytes,
+        long stackEvents,
+        long stackBytes)
+    {
+        var sample = new AllocationSample(42, Start, Duration, events, bytes, [], []);
+        var registered = handles.Register(
+            42,
+            "allocation-sample",
+            new AllocationSampleArtifact(sample, Trace(events, stackEvents))
+            {
+                EstimatedBytesTrace = Trace(bytes, stackBytes),
+            },
+            TimeSpan.FromMinutes(20),
+            evictWhenProcessExits: false,
+            origin: HandleOrigin.Live);
+        var envelope = DiagnosticResult.OkWithHandle(sample, "Sampled allocations", registered.Id, registered.ExpiresAt);
+        return CliStreamingCaptureViews.Project(
+            new CliCommandResult(false, false, envelope, string.Empty),
+            Options("allocation"),
+            handles);
+    }
+
+    private static CpuSampleTraceArtifact Trace(long total, long root)
+        => new(
+            42,
+            Start,
+            Duration,
+            total,
+            new CallTreeNode(new SampledFrame(string.Empty, "<root>"), root, 0, []));
 }
