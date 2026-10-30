@@ -34,6 +34,30 @@ part of both surfaces.
 
 ## Reproduce
 
+### Scenario-first statistical evidence prospective cost (2026-10-30, #1308)
+
+The real HTTP test measures the unchanged shipping catalog at **283,845 bytes**
+for the maximal 17-tool surface and **250,677 bytes** for the default 13 tools.
+
+The same executable test generates a design-only representative statistical
+evidence schema and projects it onto the existing `collect_events`,
+`collect_sample`, and `compare_to_baseline` output schemas without registering a
+tool or changing production DTOs:
+
+- representative evidence schema: **3,493 bytes**;
+- prospective maximal catalog: **294,393 bytes** (**+10,548**);
+- prospective default catalog: **261,225 bytes** (**+10,548**);
+- representative available payload: **1,058 bytes**;
+- representative unavailable payloads: **1,006–1,047 bytes**.
+
+The projection is deliberately conservative and is not approved field placement.
+It proves that a result record repeated across generated output schemas is not
+free. The current 285,000-byte shipping ceiling is unchanged; #1308 therefore
+defers a shared public record until scenario vertical slices justify exact
+placement and a deliberate catalog-budget decision. The contract and interpretation
+are in
+[`../design/statistical-evidence-contract.md`](../design/statistical-evidence-contract.md).
+
 ### Objective summary comparison (2026-10-19, #1192)
 
 The real HTTP budget test measures **283,845 bytes** for the maximal 17-tool
