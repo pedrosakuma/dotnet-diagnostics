@@ -824,7 +824,8 @@ These apply to every command:
 |---|---|
 | `-p, --pid <pid\|name>` | Target OS process id, or a case-insensitive prefix of the visible .NET process entrypoint/name. Purely numeric values are always treated as literal PIDs. **Auto-resolved** when exactly one .NET process is visible and `--pid` is omitted. |
 | `--json` | Emit the raw `DiagnosticResult<T>` envelope as JSON instead of the human table. JSON is never colorized. |
-| `--explain-risk` | Print the resolved Core safety descriptor and exit without executing the command. With `--json`, emits a machine-readable safety explanation. |
+| `--jsonl` | Emit the same envelope as one compact JSON object followed by one newline. This is useful for append-only machine pipelines; it is mutually exclusive with `--json`. The bidirectional live protocol remains `stream --protocol jsonl`. |
+| `--explain-risk` | Print the resolved Core safety descriptor and exit without executing the command. With `--json` or `--jsonl`, emits a machine-readable safety explanation. |
 | `--acknowledge-risk <high\|critical>` | Deliberately authorize a high/critical operation in one-shot or other non-interactive use. The value must exactly match the resolved level. |
 | `--launch -- <app> [args]` | **Dev mode.** Launch `<app>` as a child of the CLI so live attach works under `kernel.yama.ptrace_scope=1` with no privilege — see the [Linux note](#linux-ptrace-note). Supported by `capabilities`, `collect`, `dump`, `inspect`, `inspect-heap` (live), `get-bytes` (module) and `session`. Mutually exclusive with `--pid`; the child is terminated on exit. Because process launch/termination is high risk, place the exact resolved `--acknowledge-risk` before the `--` delimiter. |
 | `--suspend-startup` | **Cold-start capture (#446).** With `--launch`, launches the target *suspended* on a reverse-connect `DOTNET_DiagnosticPorts=…,suspend` port, arms the EventPipe session **before any managed code runs**, then resumes — capturing non-replayed DependencyInjection call-site activity that an attach after startup misses, plus any loader events emitted by the runtime provider. Applies to `collect --kind startup`. The MCP equivalent is gated `collect_events(kind="startup", launch=...)` over stdio. Default off. |
@@ -1531,6 +1532,61 @@ dotnet-diagnostics-cli compare ./before.json ./mid.json ./after.json --save ./ma
 
 For how to read the verdict / trend and when to reach for a journey, see
 [investigation-playbooks.md §1d](./investigation-playbooks.md#1d-did-my-fix-actually-help--comparative--n-way-trend-journeys).
+
+### `gc-pressure`
+
+Characterize a bounded sequence of independent GC observation windows that was
+captured with the scenario protocol from
+[`gc-pressure-characterization.md`](./research/gc-pressure-characterization.md).
+The command is offline and Core-only: it reads one JSON capture, does not attach,
+does not recollect, and never starts an automatic heap capture.
+
+```bash
+dotnet-diagnostics-cli gc-pressure --file ./gc-pressure.capture.json
+dotnet-diagnostics-cli gc-pressure --file ./gc-pressure.capture.json --json
+dotnet-diagnostics-cli gc-pressure --file ./gc-pressure.capture.json --jsonl
+```
+
+The input contains at most eight separately started, non-overlapping windows.
+The product protocol requires at least five valid windows, exactly one baseline,
+and at least two cooldown windows. It reports median and p95 across the bounded
+window summaries for LOH size, completed Gen2 collections per observed second,
+authoritative GC pause p95, and authoritative suspension-time percentage. A
+Theil-Sen slope is available only when the five-window minimum is met.
+
+The result selects exactly one next action:
+
+- `allocation-investigation` when allocation-pressure signals persist across at
+  least three consecutive windows. This takes precedence over a later LOH
+  maximum left by churn.
+- `retained-heap-investigation` when LOH has a persistent positive robust slope
+  and the required cooldown windows do not return to the baseline envelope.
+  The action requests separate graph/root evidence; it does not identify a
+  retaining cause.
+- `continued-observation` for the stable or recovered-transient geometry.
+- `justified-inconclusion` when the shape is not discriminating or required
+  evidence is insufficient, incompatible, lost, truncated, or represented by
+  an unsupported approximation.
+
+Availability, capture/runtime/backend identity, method identity and version,
+window/event/loss counts, persistence, cooldown recovery, and temporal
+co-observations are preserved in JSON and JSONL. Timing fields are explicitly
+non-causal. The thresholds are the named scenario geometry demonstrated by the
+bounded characterization; they are not universal production defaults.
+
+Old artifacts are not reinterpreted. A missing `schemaVersion`, an unsupported
+capture schema, or an artifact without this contract returns
+`justified-inconclusion` with `availability:"incompatible"` and an explicit
+`legacy_contract_missing` or `unsupported_capture_schema_<n>` reason. The source
+file is never modified, and missing evidence is never backfilled from a live
+process or current defaults.
+
+The shipping MCP catalog is unchanged because this Core record is exposed only
+through the existing standalone CLI; no tool or MCP result schema references it,
+so the `tools/list` delta is zero bytes. A representative six-window sustained
+capture measured 2,084 input bytes, a 5,271-byte indented JSON envelope, and a
+3,779-byte one-line JSONL envelope. Tests keep the representative JSON below
+20,000 bytes and the input reader rejects files above 256 KiB before parsing.
 
 ### `investigate`
 

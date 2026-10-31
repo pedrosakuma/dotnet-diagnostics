@@ -93,6 +93,9 @@ internal static class CliInvocationSafety
                 DiagnosticOperationCatalog.StartInvestigation),
             "export-summary" => InvocationSafetyRequest.Create(
                 DiagnosticOperationCatalog.ExportInvestigationSummary),
+            "gc-pressure" => InvocationSafetyRequest.Create(
+                DiagnosticOperationCatalog.GetBytes,
+                ("kind", DiagnosticOperationCatalog.ByteKinds.Captures)),
             "completion" => InvocationSafetyRequest.Create(
                 DiagnosticOperationCatalog.ShellCompletion),
             "session" => InvocationSafetyRequest.Create(

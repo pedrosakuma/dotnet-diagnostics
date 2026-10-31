@@ -13,10 +13,11 @@ internal static partial class CliCommands
             return false;
         }
         var portable = options.Command == "captures" && options.CaptureAction is "export" or "import" or "import-result";
-        if (!portable && (options.CaptureEntries.Count != 0 || options.CaptureFile is not null ||
+        var gcPressureFile = options.Command == "gc-pressure" && options.CaptureFile is not null;
+        if (!portable && (options.CaptureEntries.Count != 0 || options.CaptureFile is not null && !gcPressureFile ||
                           options.OperationId is not null || options.RequestedUtc is not null))
         {
-            error = "--entry, --file, --operation-id and --requested-utc require captures export, import, or import-result.";
+            error = "--entry, --operation-id and --requested-utc require captures export, import, or import-result; --file is also accepted by gc-pressure.";
             return false;
         }
         if (portable && !TryValidatePortableCapture(options, out error)) return false;

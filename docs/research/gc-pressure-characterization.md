@@ -116,5 +116,29 @@ evidence remains necessary.
 - LOH size can change at collection boundaries and does not identify retaining roots.
 - The live loss case intentionally constrains retained details; it validates abstention,
   not a recovery or estimation strategy.
-- Product placement, CLI rendering, payload/schema cost, and old-artifact behavior
-  remain work for the separate follow-up issue.
+## Product contract delivered by #1324
+
+The product follow-up promotes the decision geometry into the scenario-local
+`DotnetDiagnostics.Core.Gc.GcPressureCharacterizer` contract and exposes it through
+the offline `dotnet-diagnostics-cli gc-pressure --file <capture.json>` command.
+The Core result retains capture/runtime/backend identity, availability, method
+identity/version, bounded counts, median/p95/slope evidence, persistence, cooldown
+recovery, and non-causal timing observations. It does not add a collector, MCP
+tool, automatic heap capture, or extension UI.
+
+Human, JSON, and one-line JSONL output render the same Core result without
+recalculation. Allocation-pressure persistence takes precedence over a late LOH
+maximum. Retained growth selects the separate retained-heap graph/root
+investigation without identifying a retaining cause. Thresholds remain the named
+scenario geometry above, not universal production defaults.
+
+Old artifacts are never backfilled or rewritten. Missing or unsupported schema
+metadata produces `justified-inconclusion` with explicit incompatible
+availability. Loss and truncation take precedence over insufficient-window
+estimates, and unsupported approximate representations remain unavailable.
+
+No MCP type references the new record, so the registered `tools/list` schema cost
+is zero. A representative sustained six-window capture measured 2,084 input bytes,
+5,271 bytes for the indented JSON envelope, and 3,779 bytes for the compact JSONL
+envelope. The CLI reader bounds input at 256 KiB and the output regression test
+keeps the representative JSON below 20 KiB.

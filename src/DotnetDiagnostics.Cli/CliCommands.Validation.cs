@@ -11,6 +11,11 @@ internal static partial class CliCommands
     {
         ArgumentNullException.ThrowIfNull(options);
         error = null;
+        if (options.Json && options.Jsonl)
+        {
+            error = "--json and --jsonl are mutually exclusive.";
+            return false;
+        }
         if (!TryValidateCaptures(options, out error))
         {
             return false;
@@ -51,6 +56,7 @@ internal static partial class CliCommands
             "compare" => TryValidateCompare(options, out error),
             "investigate" => TryValidateInvestigate(options, out error),
             "export-summary" => TryValidateExportSummary(options, out error),
+            "gc-pressure" => TryValidateGcPressure(options, out error),
             "completion" => TryValidateCompletion(options, out error),
             _ => true,
         };
@@ -78,9 +84,9 @@ internal static partial class CliCommands
             return true;
         }
 
-        if (options.Json)
+        if (options.Json || options.Jsonl)
         {
-            error = "--watch cannot be combined with --json because watch redraws human output.";
+            error = "--watch cannot be combined with --json or --jsonl because watch redraws human output.";
             return false;
         }
 
@@ -790,6 +796,25 @@ internal static partial class CliCommands
         if (!CliCompletionScripts.ShellSet.Contains(options.CompletionShell))
         {
             error = $"Unknown completion shell '{options.CompletionShell}'. Valid shells: {string.Join(", ", CliCompletionScripts.Shells)}.";
+            return false;
+        }
+
+        return true;
+    }
+
+    public static bool TryValidateGcPressure(CliOptions options, out string? error)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        error = null;
+        if (string.IsNullOrWhiteSpace(options.CaptureFile))
+        {
+            error = "The 'gc-pressure' command requires --file <path>.";
+            return false;
+        }
+
+        if (!File.Exists(options.CaptureFile))
+        {
+            error = $"--file: file '{options.CaptureFile}' does not exist.";
             return false;
         }
 
