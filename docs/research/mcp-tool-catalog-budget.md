@@ -83,6 +83,22 @@ comparison. Adding it to the registered typed output schema would exceed the
 
 ## Reproduce
 
+### Objective retained-growth Core/CLI contract (2026-11-01, #1325)
+
+The executable HTTP budget test measures **283,845 bytes** for the maximal
+17-tool catalog and **250,677 bytes** for the default 13-tool subset. The
+shipping catalog delta is **0 bytes**: objective retained growth adds no MCP
+tool, and the existing `query_snapshot.data` output remains intentionally
+unconstrained.
+
+The same test measures the actual Core
+`RetainedGrowthEvidenceResult` schema at **11,663 bytes** and a representative
+three-pair gcdump payload (including compatibility, methods, counts,
+allocation evidence, observer effects, availability, assumptions, and
+limitations) at **8,203 bytes**. These are result-contract and per-response
+costs, not `tools/list` costs. The 17/13 tool counts and the existing
+**285,000-byte** ceiling remain unchanged.
+
 ### Scenario-first statistical evidence prospective cost (2026-10-30, #1308)
 
 The real HTTP test measures the unchanged shipping catalog at **283,845 bytes**

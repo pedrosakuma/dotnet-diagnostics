@@ -121,6 +121,138 @@ public sealed class CliStreamingHeapGrowthTests
     }
 
     [Fact]
+    public async Task Query_Growth_WithExactType_ReturnsBoundedObjectiveEvidenceWithoutVerdictOrConcentration()
+    {
+        var (processId, baselineTime) = CurrentProcessCaptureIdentity();
+        var store = new MemoryDiagnosticHandleStore();
+        var primaryBaseline = Register(store, HeapSnapshot(
+            HeapSnapshotOrigin.Dump, processId, baselineTime, null, ("Leaky.Cache", 1_000, 10)));
+        var primaryCurrent = Register(store, HeapSnapshot(
+            HeapSnapshotOrigin.Dump, processId, baselineTime.AddSeconds(1), null, ("Leaky.Cache", 2_000, 20)));
+        var secondBaseline = Register(store, HeapSnapshot(
+            HeapSnapshotOrigin.Dump, processId + 1, baselineTime.AddSeconds(2), null, ("Leaky.Cache", 2_000, 20)));
+        var secondCurrent = Register(store, HeapSnapshot(
+            HeapSnapshotOrigin.Dump, processId + 1, baselineTime.AddSeconds(3), null, ("Leaky.Cache", 3_200, 32)));
+        var thirdBaseline = Register(store, HeapSnapshot(
+            HeapSnapshotOrigin.Dump, processId + 2, baselineTime.AddSeconds(4), null, ("Leaky.Cache", 3_200, 32)));
+        var thirdCurrent = Register(store, HeapSnapshot(
+            HeapSnapshotOrigin.Dump, processId + 2, baselineTime.AddSeconds(5), null, ("Leaky.Cache", 4_600, 46)));
+
+        var frames = await RunAsync(
+            store,
+            new { type = "hello", protocolVersion = 2 },
+            new
+            {
+                type = "query",
+                requestId = "objective",
+                handle = primaryCurrent.Id,
+                baselineHandle = primaryBaseline.Id,
+                view = "growth",
+                typeFilter = "Leaky.Cache",
+                comparisonPairs = new object[]
+                {
+                    new
+                    {
+                        attemptId = "run-2",
+                        baselineHandle = secondBaseline.Id,
+                        currentHandle = secondCurrent.Id,
+                        observedGen2Collections = 2,
+                        allocation = new { sampledBytes = 50_000L, sampleEvents = 20L, lostOrDropped = 0L },
+                    },
+                    new
+                    {
+                        attemptId = "run-3",
+                        baselineHandle = thirdBaseline.Id,
+                        currentHandle = thirdCurrent.Id,
+                        allocation = new { sampledBytes = 70_000L, sampleEvents = 30L, lostOrDropped = 0L },
+                    },
+                    new
+                    {
+                        attemptId = "run-4",
+                        outcome = "failed",
+                        failureReason = "target exited before current capture",
+                    },
+                },
+            });
+
+        var result = frames[1].RootElement.GetProperty("result");
+        result.TryGetProperty("verdict", out _).Should().BeFalse();
+        result.TryGetProperty("growers", out _).Should().BeFalse();
+        var objective = result.GetProperty("objectiveRetainedGrowth");
+        objective.GetProperty("schema").GetString()
+            .Should().Be("dotnet-diagnostics/retained-growth-evidence/v1");
+        objective.GetProperty("targetType").GetProperty("typeFullName").GetString()
+            .Should().Be("Leaky.Cache");
+        objective.GetProperty("counts").GetProperty("attempts").GetInt32().Should().Be(4);
+        objective.GetProperty("counts").GetProperty("acceptedPairs").GetInt32().Should().Be(3);
+        objective.GetProperty("counts").GetProperty("failedAttempts").GetInt32().Should().Be(1);
+        objective.GetProperty("repeated").GetProperty("availability").GetString().Should().Be("available");
+        objective.GetProperty("repeated").GetProperty("medianRetainedBytesDelta").GetDouble()
+            .Should().Be(1_200);
+        objective.GetProperty("allocationEvidence").GetProperty("availability").GetString()
+            .Should().Be("available");
+        objective.GetProperty("allocationEvidence").GetProperty("medianSampledBytes").GetDouble()
+            .Should().Be(60_000);
+        objective.GetProperty("pairs")[0].GetProperty("retainedBytesDelta").GetInt64()
+            .Should().Be(1_000);
+    }
+
+    [Fact]
+    public async Task Query_Growth_ComparisonPairsRequireObjectiveAndRemainBounded()
+    {
+        var (processId, baselineTime) = CurrentProcessCaptureIdentity();
+        var store = new MemoryDiagnosticHandleStore();
+        var baseline = Register(store, HeapSnapshot(
+            HeapSnapshotOrigin.Dump, processId, baselineTime, null, ("Cache", 1_000, 10)));
+        var current = Register(store, HeapSnapshot(
+            HeapSnapshotOrigin.Dump, processId, baselineTime.AddSeconds(1), null, ("Cache", 2_000, 20)));
+        var pair = new
+        {
+            attemptId = "extra",
+            outcome = "failed",
+            failureReason = "fixture",
+        };
+
+        var missingObjective = (await RunAsync(
+            store,
+            new { type = "hello", protocolVersion = 2 },
+            new
+            {
+                type = "query",
+                requestId = "missing-objective",
+                handle = current.Id,
+                baselineHandle = baseline.Id,
+                view = "growth",
+                comparisonPairs = new[] { pair },
+            }))[1].RootElement;
+        missingObjective.GetProperty("code").GetString().Should().Be("invalid_query");
+        missingObjective.GetProperty("message").GetString().Should().Contain("typeFilter");
+
+        var tooMany = (await RunAsync(
+            store,
+            new { type = "hello", protocolVersion = 2 },
+            new
+            {
+                type = "query",
+                requestId = "bounded",
+                handle = current.Id,
+                baselineHandle = baseline.Id,
+                view = "growth",
+                typeFilter = "Cache",
+                comparisonPairs = Enumerable.Range(1, 8)
+                    .Select(index => new
+                    {
+                        attemptId = $"failed-{index}",
+                        outcome = "failed",
+                        failureReason = "fixture",
+                    })
+                    .ToArray(),
+            }))[1].RootElement;
+        tooMany.GetProperty("code").GetString().Should().Be("invalid_query");
+        tooMany.GetProperty("message").GetString().Should().Contain("at most 7");
+    }
+
+    [Fact]
     public async Task Query_Growth_GcDumpPreservesQualityAndMissingRetentionNote()
     {
         var (processId, baselineTime) = CurrentProcessCaptureIdentity();

@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using DotnetDiagnostics.Core.Dump;
 using DotnetDiagnostics.Core.Evidence;
 
@@ -30,6 +31,12 @@ public sealed record HeapGrowthResult(
     public EvidenceQuality? BaselineQuality { get; init; }
     /// <summary>Evidence quality of the current gcdump capture; null for ClrMD live/dump captures.</summary>
     public EvidenceQuality? CurrentQuality { get; init; }
+    /// <summary>
+    /// Optional verdict-free evidence for one explicitly selected managed type. Older artifacts and
+    /// callers omit this block; absence never means zero retained growth.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public RetainedGrowthEvidenceResult? ObjectiveRetainedGrowth { get; init; }
 }
 
 /// <summary>

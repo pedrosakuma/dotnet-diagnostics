@@ -1,3 +1,4 @@
+using System.Text.Json;
 using DotnetDiagnostics.Core.Comparison;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Dump;
@@ -29,6 +30,8 @@ public sealed class HeapGrowthDiffTests
         growth.Growers[0].InstancesDelta.Should().Be(40);
         growth.Growers[0].IsNew.Should().BeFalse();
         growth.Growers[1].TypeFullName.Should().Be("Tiny.Noise");
+        JsonSerializer.Serialize(growth).Should().NotContain("ObjectiveRetainedGrowth",
+            "legacy heap-growth artifacts must omit the additive objective block when it was not requested");
     }
 
     [Fact]
@@ -41,6 +44,29 @@ public sealed class HeapGrowthDiffTests
 
         growth.Growers.Should().BeEmpty();
         growth.Verdict.Should().Be("stable");
+    }
+
+    [Fact]
+    public void Build_WithObjectiveTarget_AddsVerdictFreeSelectedTypeEvidence()
+    {
+        var baseline = HeapSnapshot(("Example.RetainedNode", 1_000, 10));
+        var current = HeapSnapshot(("Example.RetainedNode", 2_500, 25));
+
+        var growth = HeapGrowthDiff.Build(
+            baseline,
+            "baseline",
+            current,
+            "current",
+            "bytes",
+            minDeltaPct: 0,
+            topN: 25,
+            objectiveTargetType: new TypeIdentity("Example.RetainedNode"));
+
+        growth.ObjectiveRetainedGrowth.Should().NotBeNull();
+        growth.ObjectiveRetainedGrowth!.Pairs.Should().ContainSingle().Which
+            .RetainedBytesDelta.Should().Be(1_500);
+        JsonSerializer.Serialize(growth.ObjectiveRetainedGrowth).ToLowerInvariant()
+            .Should().NotContain("verdict");
     }
 
     [Fact]

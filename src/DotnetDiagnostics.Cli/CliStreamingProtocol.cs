@@ -1667,19 +1667,57 @@ internal static partial class CliStreamingProtocol
         if (root.TryGetProperty("typeFilter", out var typeFilterElement)
             && typeFilterElement.ValueKind != JsonValueKind.Null)
         {
-            if (typeFilterElement.ValueKind != JsonValueKind.String)
+            if (typeFilterElement.ValueKind != JsonValueKind.String
+                || typeFilterElement.GetString() is not { Length: <= 512 } requestedTypeFilter
+                || requestedTypeFilter.Any(char.IsControl))
             {
                 await writer.WriteAsync(new
                 {
                     type = "error",
                     requestId,
                     code = "invalid_query",
-                    message = "'typeFilter' must be a string.",
+                    message = "'typeFilter' must be a string of at most 512 characters without control characters.",
                 }, CancellationToken.None).ConfigureAwait(false);
                 return;
             }
 
-            typeFilter = typeFilterElement.GetString();
+            typeFilter = requestedTypeFilter;
+        }
+
+        if (isHeapGrowth && typeFilter is not null && string.IsNullOrWhiteSpace(typeFilter))
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId,
+                code = "invalid_query",
+                message = "When supplied for view 'growth', 'typeFilter' must be the non-empty exact full name of one objective type.",
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+
+        if (!TryParseHeapGrowthAttempts(root, isHeapGrowth, out var comparisonAttempts, out var comparisonError))
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId,
+                code = "invalid_query",
+                message = comparisonError,
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+
+        if (comparisonAttempts.Count > 0 && typeFilter is null)
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId,
+                code = "invalid_query",
+                message = "'comparisonPairs' requires a non-empty exact objective 'typeFilter'; legacy unfiltered growth remains a single-pair response.",
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
         }
 
         string? rootMethodFilter = null;
@@ -1923,6 +1961,8 @@ internal static partial class CliStreamingProtocol
                 growthRankBy,
                 minDeltaPct,
                 topN,
+                typeFilter?.Trim(),
+                comparisonAttempts,
                 cancellationToken).ConfigureAwait(false);
             return;
         }
@@ -3469,11 +3509,17 @@ reads a view of a prior capture's handle: heap views are roots-by-kind, finalize
 fragmentation, gchandles, async, timers, alc, static-fields, delegate-targets, retention-paths and
 retained-exceptions; thread-snapshot views are deadlocks, unique-stacks, wait-chains, threadpool and
 thread-statics. The optional "typeFilter" string is the exact full type name that thread-statics
-requires (otherwise error code "invalid_query"); it is ignored by every other view.
+requires (otherwise error code "invalid_query"); growth also uses it to select one objective type.
 If hello advertises heapGrowth.version=1 and heapGrowth.available=true, compare two same-process
 heap handles with
 {"type":"query","requestId":...,"handle":"<current>","baselineHandle":"<earlier>","view":"growth",
-"rankBy":"bytes"|"instances","minDeltaPct":5,"topN":25}. The captures must have matching
+"rankBy":"bytes"|"instances","minDeltaPct":5,"topN":25}. This unfiltered legacy shape is unchanged.
+Add "typeFilter":"Exact.Full.Type" for verdict-free objective retained-growth evidence. The optional
+"comparisonPairs" array adds at most 7 bounded attempts (8 including the primary pair); completed
+entries name baseline/current handles, while failed/aborted entries retain attemptId, outcome and
+failureReason without replacement. Entries may separately carry observedGen2Collections and an
+allocation object with sampledBytes/sampleEvents/lostOrDropped; allocation never contributes to
+retained bytes or instances. The captures must have matching
 live/dump/gcdump provenance and chronological order. heapGrowth.storeCapacity reports the effective
 shared handle-store capacity; growth requires heapGrowth.minimumStoreCapacity=2. Both remain
 ordinary bounded in-memory

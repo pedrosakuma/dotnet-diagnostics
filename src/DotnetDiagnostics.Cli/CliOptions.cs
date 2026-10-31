@@ -222,6 +222,8 @@ internal sealed record CliOptions
 
     /// <summary>Drill-down handle (<c>--handle</c>) for the <c>query</c> command (parsed for forward-compat; the one-shot CLI cannot honour it — see #286).</summary>
     public string? Handle { get; init; }
+    /// <summary>Earlier heap-snapshot handle (<c>--baseline-handle</c>) for session <c>query --view growth</c>.</summary>
+    public string? BaselineHandle { get; init; }
     public string? GcHandle { get; init; }
 
     /// <summary>
@@ -639,6 +641,7 @@ internal sealed record CliOptions
             new StringOptionDescriptor((state, value) => state.Mvid = value, "--mvid"),
             new StringOptionDescriptor((state, value) => state.Asset = value, "--asset"),
             new StringOptionDescriptor((state, value) => state.Handle = value, "--handle"),
+            new StringOptionDescriptor((state, value) => state.BaselineHandle = value, "--baseline-handle"),
             new StringOptionDescriptor((state, value) => state.GcHandle = value, "--gc-handle"),
             new StringOptionDescriptor((state, value) => state.LatestOfKind = value, "--latest-of-kind"),
             new StringOptionDescriptor((state, value) => state.View = value, "--view"),
@@ -797,6 +800,7 @@ internal sealed record CliOptions
         public string? Asset { get; set; }
 
         public string? Handle { get; set; }
+        public string? BaselineHandle { get; set; }
         public string? GcHandle { get; set; }
 
         public string? LatestOfKind { get; set; }
@@ -966,6 +970,7 @@ internal sealed record CliOptions
                 Mvid = Mvid,
                 Asset = Asset,
                 Handle = Handle,
+                BaselineHandle = BaselineHandle,
                 GcHandle = GcHandle,
                 LatestOfKind = LatestOfKind,
                 View = View,
