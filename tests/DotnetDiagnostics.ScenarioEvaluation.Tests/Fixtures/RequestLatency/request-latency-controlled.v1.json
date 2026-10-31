@@ -1,0 +1,3941 @@
+{
+  "schemaVersion": 1,
+  "id": "request-latency-controlled-v1",
+  "cases": [
+    {
+      "id": "aa-control",
+      "baseline": {
+        "id": "baseline",
+        "role": "baseline",
+        "compatibilityIdentity": {
+          "dimensions": [
+            {
+              "name": "target.runtime-flavor",
+              "value": "CoreCLR"
+            },
+            {
+              "name": "target.runtime-version-policy",
+              "value": "same-major-minor"
+            },
+            {
+              "name": "target.os",
+              "value": "windows"
+            },
+            {
+              "name": "target.architecture",
+              "value": "x64"
+            },
+            {
+              "name": "target.process-run-id",
+              "value": "fixture-run"
+            },
+            {
+              "name": "backend.id",
+              "value": "scenario-http-stopwatch"
+            },
+            {
+              "name": "backend.version",
+              "value": "1"
+            },
+            {
+              "name": "quantity.id",
+              "value": "request-latency"
+            },
+            {
+              "name": "quantity.unit",
+              "value": "ms"
+            },
+            {
+              "name": "quantity.aggregation",
+              "value": "p50-p95-p99-r7"
+            },
+            {
+              "name": "quantity.normalization",
+              "value": "per-completed-request"
+            },
+            {
+              "name": "quantity.filters",
+              "value": "endpoint=/request-latency-fixture"
+            },
+            {
+              "name": "quantity.representation",
+              "value": "exact"
+            },
+            {
+              "name": "capture.duration",
+              "value": "bounded-request-count"
+            },
+            {
+              "name": "capture.windowing",
+              "value": "non-overlapping-fixed-count"
+            },
+            {
+              "name": "capture.providers",
+              "value": "stopwatch"
+            },
+            {
+              "name": "capture.sampling-period",
+              "value": "per-completed-request"
+            },
+            {
+              "name": "capture.retention",
+              "value": "max=256/window"
+            },
+            {
+              "name": "capture.enrichment",
+              "value": "http-status-and-completion-state"
+            },
+            {
+              "name": "workload.scenario",
+              "value": "request-latency-distribution-shift"
+            },
+            {
+              "name": "workload.version",
+              "value": "1"
+            },
+            {
+              "name": "workload.parameters",
+              "value": "sequential-fixed-count"
+            },
+            {
+              "name": "workload.concurrency",
+              "value": "1"
+            },
+            {
+              "name": "workload.deployment",
+              "value": "local-loopback"
+            },
+            {
+              "name": "workload.request-mix",
+              "value": "single-endpoint"
+            },
+            {
+              "name": "workload.repetition-arm",
+              "value": "baseline"
+            },
+            {
+              "name": "workload.injected-delay-ms",
+              "value": "not-varied"
+            },
+            {
+              "name": "workload.incomplete-work",
+              "value": "complete"
+            },
+            {
+              "name": "independence.unit",
+              "value": "bounded_time_window"
+            },
+            {
+              "name": "independence.nesting",
+              "value": "request-event-within-non-overlapping-window"
+            },
+            {
+              "name": "independence.pairing-key",
+              "value": "window-pair-id"
+            },
+            {
+              "name": "comparison.axis",
+              "value": "workload.repetition-arm"
+            }
+          ]
+        },
+        "windows": [
+          {
+            "id": "window-1",
+            "pairKey": "pair-1",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              9.6,
+              9.9,
+              10.2,
+              9.6,
+              9.9,
+              10.2,
+              9.6,
+              9.9
+            ]
+          },
+          {
+            "id": "window-2",
+            "pairKey": "pair-2",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              10.1,
+              10.4,
+              9.8,
+              10.1,
+              10.4,
+              9.8,
+              10.1,
+              10.4
+            ]
+          },
+          {
+            "id": "window-3",
+            "pairKey": "pair-3",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              9.7,
+              10,
+              10.3,
+              9.7,
+              10,
+              10.3,
+              9.7,
+              10
+            ]
+          },
+          {
+            "id": "window-4",
+            "pairKey": "pair-4",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              10.2,
+              9.6,
+              9.9,
+              10.2,
+              9.6,
+              9.9,
+              10.2,
+              9.6
+            ]
+          },
+          {
+            "id": "window-5",
+            "pairKey": "pair-5",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              9.8,
+              10.1,
+              10.4,
+              9.8,
+              10.1,
+              10.4,
+              9.8,
+              10.1
+            ]
+          },
+          {
+            "id": "window-6",
+            "pairKey": "pair-6",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              10.3,
+              9.7,
+              10,
+              10.3,
+              9.7,
+              10,
+              10.3,
+              9.7
+            ]
+          },
+          {
+            "id": "window-7",
+            "pairKey": "pair-7",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              9.9,
+              10.2,
+              9.6,
+              9.9,
+              10.2,
+              9.6,
+              9.9,
+              10.2
+            ]
+          },
+          {
+            "id": "window-8",
+            "pairKey": "pair-8",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              10.4,
+              9.8,
+              10.1,
+              10.4,
+              9.8,
+              10.1,
+              10.4,
+              9.8
+            ]
+          }
+        ]
+      },
+      "candidate": {
+        "id": "candidate",
+        "role": "candidate",
+        "compatibilityIdentity": {
+          "dimensions": [
+            {
+              "name": "target.runtime-flavor",
+              "value": "CoreCLR"
+            },
+            {
+              "name": "target.runtime-version-policy",
+              "value": "same-major-minor"
+            },
+            {
+              "name": "target.os",
+              "value": "windows"
+            },
+            {
+              "name": "target.architecture",
+              "value": "x64"
+            },
+            {
+              "name": "target.process-run-id",
+              "value": "fixture-run"
+            },
+            {
+              "name": "backend.id",
+              "value": "scenario-http-stopwatch"
+            },
+            {
+              "name": "backend.version",
+              "value": "1"
+            },
+            {
+              "name": "quantity.id",
+              "value": "request-latency"
+            },
+            {
+              "name": "quantity.unit",
+              "value": "ms"
+            },
+            {
+              "name": "quantity.aggregation",
+              "value": "p50-p95-p99-r7"
+            },
+            {
+              "name": "quantity.normalization",
+              "value": "per-completed-request"
+            },
+            {
+              "name": "quantity.filters",
+              "value": "endpoint=/request-latency-fixture"
+            },
+            {
+              "name": "quantity.representation",
+              "value": "exact"
+            },
+            {
+              "name": "capture.duration",
+              "value": "bounded-request-count"
+            },
+            {
+              "name": "capture.windowing",
+              "value": "non-overlapping-fixed-count"
+            },
+            {
+              "name": "capture.providers",
+              "value": "stopwatch"
+            },
+            {
+              "name": "capture.sampling-period",
+              "value": "per-completed-request"
+            },
+            {
+              "name": "capture.retention",
+              "value": "max=256/window"
+            },
+            {
+              "name": "capture.enrichment",
+              "value": "http-status-and-completion-state"
+            },
+            {
+              "name": "workload.scenario",
+              "value": "request-latency-distribution-shift"
+            },
+            {
+              "name": "workload.version",
+              "value": "1"
+            },
+            {
+              "name": "workload.parameters",
+              "value": "sequential-fixed-count"
+            },
+            {
+              "name": "workload.concurrency",
+              "value": "1"
+            },
+            {
+              "name": "workload.deployment",
+              "value": "local-loopback"
+            },
+            {
+              "name": "workload.request-mix",
+              "value": "single-endpoint"
+            },
+            {
+              "name": "workload.repetition-arm",
+              "value": "candidate"
+            },
+            {
+              "name": "workload.injected-delay-ms",
+              "value": "not-varied"
+            },
+            {
+              "name": "workload.incomplete-work",
+              "value": "complete"
+            },
+            {
+              "name": "independence.unit",
+              "value": "bounded_time_window"
+            },
+            {
+              "name": "independence.nesting",
+              "value": "request-event-within-non-overlapping-window"
+            },
+            {
+              "name": "independence.pairing-key",
+              "value": "window-pair-id"
+            },
+            {
+              "name": "comparison.axis",
+              "value": "workload.repetition-arm"
+            }
+          ]
+        },
+        "windows": [
+          {
+            "id": "window-1",
+            "pairKey": "pair-1",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              10,
+              10.3,
+              9.7,
+              10,
+              10.3,
+              9.7,
+              10,
+              10.3
+            ]
+          },
+          {
+            "id": "window-2",
+            "pairKey": "pair-2",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              9.6,
+              9.9,
+              10.2,
+              9.6,
+              9.9,
+              10.2,
+              9.6,
+              9.9
+            ]
+          },
+          {
+            "id": "window-3",
+            "pairKey": "pair-3",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              10.1,
+              10.4,
+              9.8,
+              10.1,
+              10.4,
+              9.8,
+              10.1,
+              10.4
+            ]
+          },
+          {
+            "id": "window-4",
+            "pairKey": "pair-4",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              9.7,
+              10,
+              10.3,
+              9.7,
+              10,
+              10.3,
+              9.7,
+              10
+            ]
+          },
+          {
+            "id": "window-5",
+            "pairKey": "pair-5",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              10.2,
+              9.6,
+              9.9,
+              10.2,
+              9.6,
+              9.9,
+              10.2,
+              9.6
+            ]
+          },
+          {
+            "id": "window-6",
+            "pairKey": "pair-6",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              9.8,
+              10.1,
+              10.4,
+              9.8,
+              10.1,
+              10.4,
+              9.8,
+              10.1
+            ]
+          },
+          {
+            "id": "window-7",
+            "pairKey": "pair-7",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              10.3,
+              9.7,
+              10,
+              10.3,
+              9.7,
+              10,
+              10.3,
+              9.7
+            ]
+          },
+          {
+            "id": "window-8",
+            "pairKey": "pair-8",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              9.9,
+              10.2,
+              9.6,
+              9.9,
+              10.2,
+              9.6,
+              9.9,
+              10.2
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "injected-shift",
+      "baseline": {
+        "id": "baseline",
+        "role": "baseline",
+        "compatibilityIdentity": {
+          "dimensions": [
+            {
+              "name": "target.runtime-flavor",
+              "value": "CoreCLR"
+            },
+            {
+              "name": "target.runtime-version-policy",
+              "value": "same-major-minor"
+            },
+            {
+              "name": "target.os",
+              "value": "windows"
+            },
+            {
+              "name": "target.architecture",
+              "value": "x64"
+            },
+            {
+              "name": "target.process-run-id",
+              "value": "fixture-run"
+            },
+            {
+              "name": "backend.id",
+              "value": "scenario-http-stopwatch"
+            },
+            {
+              "name": "backend.version",
+              "value": "1"
+            },
+            {
+              "name": "quantity.id",
+              "value": "request-latency"
+            },
+            {
+              "name": "quantity.unit",
+              "value": "ms"
+            },
+            {
+              "name": "quantity.aggregation",
+              "value": "p50-p95-p99-r7"
+            },
+            {
+              "name": "quantity.normalization",
+              "value": "per-completed-request"
+            },
+            {
+              "name": "quantity.filters",
+              "value": "endpoint=/request-latency-fixture"
+            },
+            {
+              "name": "quantity.representation",
+              "value": "exact"
+            },
+            {
+              "name": "capture.duration",
+              "value": "bounded-request-count"
+            },
+            {
+              "name": "capture.windowing",
+              "value": "non-overlapping-fixed-count"
+            },
+            {
+              "name": "capture.providers",
+              "value": "stopwatch"
+            },
+            {
+              "name": "capture.sampling-period",
+              "value": "per-completed-request"
+            },
+            {
+              "name": "capture.retention",
+              "value": "max=256/window"
+            },
+            {
+              "name": "capture.enrichment",
+              "value": "http-status-and-completion-state"
+            },
+            {
+              "name": "workload.scenario",
+              "value": "request-latency-distribution-shift"
+            },
+            {
+              "name": "workload.version",
+              "value": "1"
+            },
+            {
+              "name": "workload.parameters",
+              "value": "sequential-fixed-count"
+            },
+            {
+              "name": "workload.concurrency",
+              "value": "1"
+            },
+            {
+              "name": "workload.deployment",
+              "value": "local-loopback"
+            },
+            {
+              "name": "workload.request-mix",
+              "value": "single-endpoint"
+            },
+            {
+              "name": "workload.repetition-arm",
+              "value": "paired"
+            },
+            {
+              "name": "workload.injected-delay-ms",
+              "value": "10"
+            },
+            {
+              "name": "workload.incomplete-work",
+              "value": "complete"
+            },
+            {
+              "name": "independence.unit",
+              "value": "bounded_time_window"
+            },
+            {
+              "name": "independence.nesting",
+              "value": "request-event-within-non-overlapping-window"
+            },
+            {
+              "name": "independence.pairing-key",
+              "value": "window-pair-id"
+            },
+            {
+              "name": "comparison.axis",
+              "value": "workload.injected-delay-ms"
+            }
+          ]
+        },
+        "windows": [
+          {
+            "id": "window-1",
+            "pairKey": "pair-1",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              9.6,
+              9.9,
+              10.2,
+              9.6,
+              9.9,
+              10.2,
+              9.6,
+              9.9
+            ]
+          },
+          {
+            "id": "window-2",
+            "pairKey": "pair-2",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              10.1,
+              10.4,
+              9.8,
+              10.1,
+              10.4,
+              9.8,
+              10.1,
+              10.4
+            ]
+          },
+          {
+            "id": "window-3",
+            "pairKey": "pair-3",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              9.7,
+              10,
+              10.3,
+              9.7,
+              10,
+              10.3,
+              9.7,
+              10
+            ]
+          },
+          {
+            "id": "window-4",
+            "pairKey": "pair-4",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              10.2,
+              9.6,
+              9.9,
+              10.2,
+              9.6,
+              9.9,
+              10.2,
+              9.6
+            ]
+          },
+          {
+            "id": "window-5",
+            "pairKey": "pair-5",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              9.8,
+              10.1,
+              10.4,
+              9.8,
+              10.1,
+              10.4,
+              9.8,
+              10.1
+            ]
+          },
+          {
+            "id": "window-6",
+            "pairKey": "pair-6",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              10.3,
+              9.7,
+              10,
+              10.3,
+              9.7,
+              10,
+              10.3,
+              9.7
+            ]
+          },
+          {
+            "id": "window-7",
+            "pairKey": "pair-7",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              9.9,
+              10.2,
+              9.6,
+              9.9,
+              10.2,
+              9.6,
+              9.9,
+              10.2
+            ]
+          },
+          {
+            "id": "window-8",
+            "pairKey": "pair-8",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              10.4,
+              9.8,
+              10.1,
+              10.4,
+              9.8,
+              10.1,
+              10.4,
+              9.8
+            ]
+          }
+        ]
+      },
+      "candidate": {
+        "id": "candidate",
+        "role": "candidate",
+        "compatibilityIdentity": {
+          "dimensions": [
+            {
+              "name": "target.runtime-flavor",
+              "value": "CoreCLR"
+            },
+            {
+              "name": "target.runtime-version-policy",
+              "value": "same-major-minor"
+            },
+            {
+              "name": "target.os",
+              "value": "windows"
+            },
+            {
+              "name": "target.architecture",
+              "value": "x64"
+            },
+            {
+              "name": "target.process-run-id",
+              "value": "fixture-run"
+            },
+            {
+              "name": "backend.id",
+              "value": "scenario-http-stopwatch"
+            },
+            {
+              "name": "backend.version",
+              "value": "1"
+            },
+            {
+              "name": "quantity.id",
+              "value": "request-latency"
+            },
+            {
+              "name": "quantity.unit",
+              "value": "ms"
+            },
+            {
+              "name": "quantity.aggregation",
+              "value": "p50-p95-p99-r7"
+            },
+            {
+              "name": "quantity.normalization",
+              "value": "per-completed-request"
+            },
+            {
+              "name": "quantity.filters",
+              "value": "endpoint=/request-latency-fixture"
+            },
+            {
+              "name": "quantity.representation",
+              "value": "exact"
+            },
+            {
+              "name": "capture.duration",
+              "value": "bounded-request-count"
+            },
+            {
+              "name": "capture.windowing",
+              "value": "non-overlapping-fixed-count"
+            },
+            {
+              "name": "capture.providers",
+              "value": "stopwatch"
+            },
+            {
+              "name": "capture.sampling-period",
+              "value": "per-completed-request"
+            },
+            {
+              "name": "capture.retention",
+              "value": "max=256/window"
+            },
+            {
+              "name": "capture.enrichment",
+              "value": "http-status-and-completion-state"
+            },
+            {
+              "name": "workload.scenario",
+              "value": "request-latency-distribution-shift"
+            },
+            {
+              "name": "workload.version",
+              "value": "1"
+            },
+            {
+              "name": "workload.parameters",
+              "value": "sequential-fixed-count"
+            },
+            {
+              "name": "workload.concurrency",
+              "value": "1"
+            },
+            {
+              "name": "workload.deployment",
+              "value": "local-loopback"
+            },
+            {
+              "name": "workload.request-mix",
+              "value": "single-endpoint"
+            },
+            {
+              "name": "workload.repetition-arm",
+              "value": "paired"
+            },
+            {
+              "name": "workload.injected-delay-ms",
+              "value": "50"
+            },
+            {
+              "name": "workload.incomplete-work",
+              "value": "complete"
+            },
+            {
+              "name": "independence.unit",
+              "value": "bounded_time_window"
+            },
+            {
+              "name": "independence.nesting",
+              "value": "request-event-within-non-overlapping-window"
+            },
+            {
+              "name": "independence.pairing-key",
+              "value": "window-pair-id"
+            },
+            {
+              "name": "comparison.axis",
+              "value": "workload.injected-delay-ms"
+            }
+          ]
+        },
+        "windows": [
+          {
+            "id": "window-1",
+            "pairKey": "pair-1",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              50.1,
+              50.4,
+              49.8,
+              50.1,
+              50.4,
+              49.8,
+              50.1,
+              50.4
+            ]
+          },
+          {
+            "id": "window-2",
+            "pairKey": "pair-2",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              49.7,
+              50,
+              50.3,
+              49.7,
+              50,
+              50.3,
+              49.7,
+              50
+            ]
+          },
+          {
+            "id": "window-3",
+            "pairKey": "pair-3",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              50.2,
+              49.6,
+              49.9,
+              50.2,
+              49.6,
+              49.9,
+              50.2,
+              49.6
+            ]
+          },
+          {
+            "id": "window-4",
+            "pairKey": "pair-4",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              49.8,
+              50.1,
+              50.4,
+              49.8,
+              50.1,
+              50.4,
+              49.8,
+              50.1
+            ]
+          },
+          {
+            "id": "window-5",
+            "pairKey": "pair-5",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              50.3,
+              49.7,
+              50,
+              50.3,
+              49.7,
+              50,
+              50.3,
+              49.7
+            ]
+          },
+          {
+            "id": "window-6",
+            "pairKey": "pair-6",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              49.9,
+              50.2,
+              49.6,
+              49.9,
+              50.2,
+              49.6,
+              49.9,
+              50.2
+            ]
+          },
+          {
+            "id": "window-7",
+            "pairKey": "pair-7",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              50.4,
+              49.8,
+              50.1,
+              50.4,
+              49.8,
+              50.1,
+              50.4,
+              49.8
+            ]
+          },
+          {
+            "id": "window-8",
+            "pairKey": "pair-8",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              50,
+              50.3,
+              49.7,
+              50,
+              50.3,
+              49.7,
+              50,
+              50.3
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "changed-request-mix",
+      "baseline": {
+        "id": "baseline",
+        "role": "baseline",
+        "compatibilityIdentity": {
+          "dimensions": [
+            {
+              "name": "target.runtime-flavor",
+              "value": "CoreCLR"
+            },
+            {
+              "name": "target.runtime-version-policy",
+              "value": "same-major-minor"
+            },
+            {
+              "name": "target.os",
+              "value": "windows"
+            },
+            {
+              "name": "target.architecture",
+              "value": "x64"
+            },
+            {
+              "name": "target.process-run-id",
+              "value": "fixture-run"
+            },
+            {
+              "name": "backend.id",
+              "value": "scenario-http-stopwatch"
+            },
+            {
+              "name": "backend.version",
+              "value": "1"
+            },
+            {
+              "name": "quantity.id",
+              "value": "request-latency"
+            },
+            {
+              "name": "quantity.unit",
+              "value": "ms"
+            },
+            {
+              "name": "quantity.aggregation",
+              "value": "p50-p95-p99-r7"
+            },
+            {
+              "name": "quantity.normalization",
+              "value": "per-completed-request"
+            },
+            {
+              "name": "quantity.filters",
+              "value": "endpoint=/request-latency-fixture"
+            },
+            {
+              "name": "quantity.representation",
+              "value": "exact"
+            },
+            {
+              "name": "capture.duration",
+              "value": "bounded-request-count"
+            },
+            {
+              "name": "capture.windowing",
+              "value": "non-overlapping-fixed-count"
+            },
+            {
+              "name": "capture.providers",
+              "value": "stopwatch"
+            },
+            {
+              "name": "capture.sampling-period",
+              "value": "per-completed-request"
+            },
+            {
+              "name": "capture.retention",
+              "value": "max=256/window"
+            },
+            {
+              "name": "capture.enrichment",
+              "value": "http-status-and-completion-state"
+            },
+            {
+              "name": "workload.scenario",
+              "value": "request-latency-distribution-shift"
+            },
+            {
+              "name": "workload.version",
+              "value": "1"
+            },
+            {
+              "name": "workload.parameters",
+              "value": "sequential-fixed-count"
+            },
+            {
+              "name": "workload.concurrency",
+              "value": "1"
+            },
+            {
+              "name": "workload.deployment",
+              "value": "local-loopback"
+            },
+            {
+              "name": "workload.request-mix",
+              "value": "single-endpoint"
+            },
+            {
+              "name": "workload.repetition-arm",
+              "value": "baseline"
+            },
+            {
+              "name": "workload.injected-delay-ms",
+              "value": "not-varied"
+            },
+            {
+              "name": "workload.incomplete-work",
+              "value": "complete"
+            },
+            {
+              "name": "independence.unit",
+              "value": "bounded_time_window"
+            },
+            {
+              "name": "independence.nesting",
+              "value": "request-event-within-non-overlapping-window"
+            },
+            {
+              "name": "independence.pairing-key",
+              "value": "window-pair-id"
+            },
+            {
+              "name": "comparison.axis",
+              "value": "workload.repetition-arm"
+            }
+          ]
+        },
+        "windows": [
+          {
+            "id": "window-1",
+            "pairKey": "pair-1",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              9.6,
+              9.9,
+              10.2,
+              9.6,
+              9.9,
+              10.2,
+              9.6,
+              9.9
+            ]
+          },
+          {
+            "id": "window-2",
+            "pairKey": "pair-2",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              10.1,
+              10.4,
+              9.8,
+              10.1,
+              10.4,
+              9.8,
+              10.1,
+              10.4
+            ]
+          },
+          {
+            "id": "window-3",
+            "pairKey": "pair-3",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              9.7,
+              10,
+              10.3,
+              9.7,
+              10,
+              10.3,
+              9.7,
+              10
+            ]
+          },
+          {
+            "id": "window-4",
+            "pairKey": "pair-4",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              10.2,
+              9.6,
+              9.9,
+              10.2,
+              9.6,
+              9.9,
+              10.2,
+              9.6
+            ]
+          },
+          {
+            "id": "window-5",
+            "pairKey": "pair-5",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              9.8,
+              10.1,
+              10.4,
+              9.8,
+              10.1,
+              10.4,
+              9.8,
+              10.1
+            ]
+          },
+          {
+            "id": "window-6",
+            "pairKey": "pair-6",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              10.3,
+              9.7,
+              10,
+              10.3,
+              9.7,
+              10,
+              10.3,
+              9.7
+            ]
+          },
+          {
+            "id": "window-7",
+            "pairKey": "pair-7",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              9.9,
+              10.2,
+              9.6,
+              9.9,
+              10.2,
+              9.6,
+              9.9,
+              10.2
+            ]
+          },
+          {
+            "id": "window-8",
+            "pairKey": "pair-8",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              10.4,
+              9.8,
+              10.1,
+              10.4,
+              9.8,
+              10.1,
+              10.4,
+              9.8
+            ]
+          }
+        ]
+      },
+      "candidate": {
+        "id": "candidate",
+        "role": "candidate",
+        "compatibilityIdentity": {
+          "dimensions": [
+            {
+              "name": "target.runtime-flavor",
+              "value": "CoreCLR"
+            },
+            {
+              "name": "target.runtime-version-policy",
+              "value": "same-major-minor"
+            },
+            {
+              "name": "target.os",
+              "value": "windows"
+            },
+            {
+              "name": "target.architecture",
+              "value": "x64"
+            },
+            {
+              "name": "target.process-run-id",
+              "value": "fixture-run"
+            },
+            {
+              "name": "backend.id",
+              "value": "scenario-http-stopwatch"
+            },
+            {
+              "name": "backend.version",
+              "value": "1"
+            },
+            {
+              "name": "quantity.id",
+              "value": "request-latency"
+            },
+            {
+              "name": "quantity.unit",
+              "value": "ms"
+            },
+            {
+              "name": "quantity.aggregation",
+              "value": "p50-p95-p99-r7"
+            },
+            {
+              "name": "quantity.normalization",
+              "value": "per-completed-request"
+            },
+            {
+              "name": "quantity.filters",
+              "value": "endpoint=/request-latency-fixture"
+            },
+            {
+              "name": "quantity.representation",
+              "value": "exact"
+            },
+            {
+              "name": "capture.duration",
+              "value": "bounded-request-count"
+            },
+            {
+              "name": "capture.windowing",
+              "value": "non-overlapping-fixed-count"
+            },
+            {
+              "name": "capture.providers",
+              "value": "stopwatch"
+            },
+            {
+              "name": "capture.sampling-period",
+              "value": "per-completed-request"
+            },
+            {
+              "name": "capture.retention",
+              "value": "max=256/window"
+            },
+            {
+              "name": "capture.enrichment",
+              "value": "http-status-and-completion-state"
+            },
+            {
+              "name": "workload.scenario",
+              "value": "request-latency-distribution-shift"
+            },
+            {
+              "name": "workload.version",
+              "value": "1"
+            },
+            {
+              "name": "workload.parameters",
+              "value": "sequential-fixed-count"
+            },
+            {
+              "name": "workload.concurrency",
+              "value": "1"
+            },
+            {
+              "name": "workload.deployment",
+              "value": "local-loopback"
+            },
+            {
+              "name": "workload.request-mix",
+              "value": "mixed-delay-endpoint"
+            },
+            {
+              "name": "workload.repetition-arm",
+              "value": "candidate"
+            },
+            {
+              "name": "workload.injected-delay-ms",
+              "value": "not-varied"
+            },
+            {
+              "name": "workload.incomplete-work",
+              "value": "complete"
+            },
+            {
+              "name": "independence.unit",
+              "value": "bounded_time_window"
+            },
+            {
+              "name": "independence.nesting",
+              "value": "request-event-within-non-overlapping-window"
+            },
+            {
+              "name": "independence.pairing-key",
+              "value": "window-pair-id"
+            },
+            {
+              "name": "comparison.axis",
+              "value": "workload.repetition-arm"
+            }
+          ]
+        },
+        "windows": [
+          {
+            "id": "window-1",
+            "pairKey": "pair-1",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              9.6,
+              49.9,
+              10.2,
+              49.6,
+              9.9,
+              50.2,
+              9.6,
+              49.9
+            ]
+          },
+          {
+            "id": "window-2",
+            "pairKey": "pair-2",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              10.1,
+              50.4,
+              9.8,
+              50.1,
+              10.4,
+              49.8,
+              10.1,
+              50.4
+            ]
+          },
+          {
+            "id": "window-3",
+            "pairKey": "pair-3",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              9.7,
+              50,
+              10.3,
+              49.7,
+              10,
+              50.3,
+              9.7,
+              50
+            ]
+          },
+          {
+            "id": "window-4",
+            "pairKey": "pair-4",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              10.2,
+              49.6,
+              9.9,
+              50.2,
+              9.6,
+              49.9,
+              10.2,
+              49.6
+            ]
+          },
+          {
+            "id": "window-5",
+            "pairKey": "pair-5",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              9.8,
+              50.1,
+              10.4,
+              49.8,
+              10.1,
+              50.4,
+              9.8,
+              50.1
+            ]
+          },
+          {
+            "id": "window-6",
+            "pairKey": "pair-6",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              10.3,
+              49.7,
+              10,
+              50.3,
+              9.7,
+              50,
+              10.3,
+              49.7
+            ]
+          },
+          {
+            "id": "window-7",
+            "pairKey": "pair-7",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              9.9,
+              50.2,
+              9.6,
+              49.9,
+              10.2,
+              49.6,
+              9.9,
+              50.2
+            ]
+          },
+          {
+            "id": "window-8",
+            "pairKey": "pair-8",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              10.4,
+              49.8,
+              10.1,
+              50.4,
+              9.8,
+              50.1,
+              10.4,
+              49.8
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "low-sample-count",
+      "baseline": {
+        "id": "baseline",
+        "role": "baseline",
+        "compatibilityIdentity": {
+          "dimensions": [
+            {
+              "name": "target.runtime-flavor",
+              "value": "CoreCLR"
+            },
+            {
+              "name": "target.runtime-version-policy",
+              "value": "same-major-minor"
+            },
+            {
+              "name": "target.os",
+              "value": "windows"
+            },
+            {
+              "name": "target.architecture",
+              "value": "x64"
+            },
+            {
+              "name": "target.process-run-id",
+              "value": "fixture-run"
+            },
+            {
+              "name": "backend.id",
+              "value": "scenario-http-stopwatch"
+            },
+            {
+              "name": "backend.version",
+              "value": "1"
+            },
+            {
+              "name": "quantity.id",
+              "value": "request-latency"
+            },
+            {
+              "name": "quantity.unit",
+              "value": "ms"
+            },
+            {
+              "name": "quantity.aggregation",
+              "value": "p50-p95-p99-r7"
+            },
+            {
+              "name": "quantity.normalization",
+              "value": "per-completed-request"
+            },
+            {
+              "name": "quantity.filters",
+              "value": "endpoint=/request-latency-fixture"
+            },
+            {
+              "name": "quantity.representation",
+              "value": "exact"
+            },
+            {
+              "name": "capture.duration",
+              "value": "bounded-request-count"
+            },
+            {
+              "name": "capture.windowing",
+              "value": "non-overlapping-fixed-count"
+            },
+            {
+              "name": "capture.providers",
+              "value": "stopwatch"
+            },
+            {
+              "name": "capture.sampling-period",
+              "value": "per-completed-request"
+            },
+            {
+              "name": "capture.retention",
+              "value": "max=256/window"
+            },
+            {
+              "name": "capture.enrichment",
+              "value": "http-status-and-completion-state"
+            },
+            {
+              "name": "workload.scenario",
+              "value": "request-latency-distribution-shift"
+            },
+            {
+              "name": "workload.version",
+              "value": "1"
+            },
+            {
+              "name": "workload.parameters",
+              "value": "sequential-fixed-count"
+            },
+            {
+              "name": "workload.concurrency",
+              "value": "1"
+            },
+            {
+              "name": "workload.deployment",
+              "value": "local-loopback"
+            },
+            {
+              "name": "workload.request-mix",
+              "value": "single-endpoint"
+            },
+            {
+              "name": "workload.repetition-arm",
+              "value": "paired"
+            },
+            {
+              "name": "workload.injected-delay-ms",
+              "value": "10"
+            },
+            {
+              "name": "workload.incomplete-work",
+              "value": "complete"
+            },
+            {
+              "name": "independence.unit",
+              "value": "bounded_time_window"
+            },
+            {
+              "name": "independence.nesting",
+              "value": "request-event-within-non-overlapping-window"
+            },
+            {
+              "name": "independence.pairing-key",
+              "value": "window-pair-id"
+            },
+            {
+              "name": "comparison.axis",
+              "value": "workload.injected-delay-ms"
+            }
+          ]
+        },
+        "windows": [
+          {
+            "id": "window-1",
+            "pairKey": "pair-1",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 2,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              9.6,
+              9.9
+            ]
+          }
+        ]
+      },
+      "candidate": {
+        "id": "candidate",
+        "role": "candidate",
+        "compatibilityIdentity": {
+          "dimensions": [
+            {
+              "name": "target.runtime-flavor",
+              "value": "CoreCLR"
+            },
+            {
+              "name": "target.runtime-version-policy",
+              "value": "same-major-minor"
+            },
+            {
+              "name": "target.os",
+              "value": "windows"
+            },
+            {
+              "name": "target.architecture",
+              "value": "x64"
+            },
+            {
+              "name": "target.process-run-id",
+              "value": "fixture-run"
+            },
+            {
+              "name": "backend.id",
+              "value": "scenario-http-stopwatch"
+            },
+            {
+              "name": "backend.version",
+              "value": "1"
+            },
+            {
+              "name": "quantity.id",
+              "value": "request-latency"
+            },
+            {
+              "name": "quantity.unit",
+              "value": "ms"
+            },
+            {
+              "name": "quantity.aggregation",
+              "value": "p50-p95-p99-r7"
+            },
+            {
+              "name": "quantity.normalization",
+              "value": "per-completed-request"
+            },
+            {
+              "name": "quantity.filters",
+              "value": "endpoint=/request-latency-fixture"
+            },
+            {
+              "name": "quantity.representation",
+              "value": "exact"
+            },
+            {
+              "name": "capture.duration",
+              "value": "bounded-request-count"
+            },
+            {
+              "name": "capture.windowing",
+              "value": "non-overlapping-fixed-count"
+            },
+            {
+              "name": "capture.providers",
+              "value": "stopwatch"
+            },
+            {
+              "name": "capture.sampling-period",
+              "value": "per-completed-request"
+            },
+            {
+              "name": "capture.retention",
+              "value": "max=256/window"
+            },
+            {
+              "name": "capture.enrichment",
+              "value": "http-status-and-completion-state"
+            },
+            {
+              "name": "workload.scenario",
+              "value": "request-latency-distribution-shift"
+            },
+            {
+              "name": "workload.version",
+              "value": "1"
+            },
+            {
+              "name": "workload.parameters",
+              "value": "sequential-fixed-count"
+            },
+            {
+              "name": "workload.concurrency",
+              "value": "1"
+            },
+            {
+              "name": "workload.deployment",
+              "value": "local-loopback"
+            },
+            {
+              "name": "workload.request-mix",
+              "value": "single-endpoint"
+            },
+            {
+              "name": "workload.repetition-arm",
+              "value": "paired"
+            },
+            {
+              "name": "workload.injected-delay-ms",
+              "value": "50"
+            },
+            {
+              "name": "workload.incomplete-work",
+              "value": "complete"
+            },
+            {
+              "name": "independence.unit",
+              "value": "bounded_time_window"
+            },
+            {
+              "name": "independence.nesting",
+              "value": "request-event-within-non-overlapping-window"
+            },
+            {
+              "name": "independence.pairing-key",
+              "value": "window-pair-id"
+            },
+            {
+              "name": "comparison.axis",
+              "value": "workload.injected-delay-ms"
+            }
+          ]
+        },
+        "windows": [
+          {
+            "id": "window-1",
+            "pairKey": "pair-1",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 2,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              50.1,
+              50.4
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "reservoir-approximation",
+      "baseline": {
+        "id": "baseline",
+        "role": "baseline",
+        "compatibilityIdentity": {
+          "dimensions": [
+            {
+              "name": "target.runtime-flavor",
+              "value": "CoreCLR"
+            },
+            {
+              "name": "target.runtime-version-policy",
+              "value": "same-major-minor"
+            },
+            {
+              "name": "target.os",
+              "value": "windows"
+            },
+            {
+              "name": "target.architecture",
+              "value": "x64"
+            },
+            {
+              "name": "target.process-run-id",
+              "value": "fixture-run"
+            },
+            {
+              "name": "backend.id",
+              "value": "scenario-http-stopwatch"
+            },
+            {
+              "name": "backend.version",
+              "value": "1"
+            },
+            {
+              "name": "quantity.id",
+              "value": "request-latency"
+            },
+            {
+              "name": "quantity.unit",
+              "value": "ms"
+            },
+            {
+              "name": "quantity.aggregation",
+              "value": "p50-p95-p99-r7"
+            },
+            {
+              "name": "quantity.normalization",
+              "value": "per-completed-request"
+            },
+            {
+              "name": "quantity.filters",
+              "value": "endpoint=/request-latency-fixture"
+            },
+            {
+              "name": "quantity.representation",
+              "value": "exact"
+            },
+            {
+              "name": "capture.duration",
+              "value": "bounded-request-count"
+            },
+            {
+              "name": "capture.windowing",
+              "value": "non-overlapping-fixed-count"
+            },
+            {
+              "name": "capture.providers",
+              "value": "stopwatch"
+            },
+            {
+              "name": "capture.sampling-period",
+              "value": "per-completed-request"
+            },
+            {
+              "name": "capture.retention",
+              "value": "max=256/window"
+            },
+            {
+              "name": "capture.enrichment",
+              "value": "http-status-and-completion-state"
+            },
+            {
+              "name": "workload.scenario",
+              "value": "request-latency-distribution-shift"
+            },
+            {
+              "name": "workload.version",
+              "value": "1"
+            },
+            {
+              "name": "workload.parameters",
+              "value": "sequential-fixed-count"
+            },
+            {
+              "name": "workload.concurrency",
+              "value": "1"
+            },
+            {
+              "name": "workload.deployment",
+              "value": "local-loopback"
+            },
+            {
+              "name": "workload.request-mix",
+              "value": "single-endpoint"
+            },
+            {
+              "name": "workload.repetition-arm",
+              "value": "paired"
+            },
+            {
+              "name": "workload.injected-delay-ms",
+              "value": "10"
+            },
+            {
+              "name": "workload.incomplete-work",
+              "value": "complete"
+            },
+            {
+              "name": "independence.unit",
+              "value": "bounded_time_window"
+            },
+            {
+              "name": "independence.nesting",
+              "value": "request-event-within-non-overlapping-window"
+            },
+            {
+              "name": "independence.pairing-key",
+              "value": "window-pair-id"
+            },
+            {
+              "name": "comparison.axis",
+              "value": "workload.injected-delay-ms"
+            }
+          ]
+        },
+        "windows": [
+          {
+            "id": "window-1",
+            "pairKey": "pair-1",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "reservoir_sampled",
+            "retainedLatenciesMilliseconds": [
+              9.9,
+              9.9,
+              9.6,
+              9.9
+            ]
+          },
+          {
+            "id": "window-2",
+            "pairKey": "pair-2",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "reservoir_sampled",
+            "retainedLatenciesMilliseconds": [
+              10.1,
+              10.1,
+              10.4,
+              10.1
+            ]
+          },
+          {
+            "id": "window-3",
+            "pairKey": "pair-3",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "reservoir_sampled",
+            "retainedLatenciesMilliseconds": [
+              10,
+              10.3,
+              10,
+              9.7
+            ]
+          },
+          {
+            "id": "window-4",
+            "pairKey": "pair-4",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "reservoir_sampled",
+            "retainedLatenciesMilliseconds": [
+              9.6,
+              9.9,
+              10.2,
+              9.6
+            ]
+          },
+          {
+            "id": "window-5",
+            "pairKey": "pair-5",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "reservoir_sampled",
+            "retainedLatenciesMilliseconds": [
+              10.1,
+              10.1,
+              10.4,
+              10.4
+            ]
+          },
+          {
+            "id": "window-6",
+            "pairKey": "pair-6",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "reservoir_sampled",
+            "retainedLatenciesMilliseconds": [
+              9.7,
+              10,
+              10.3,
+              10
+            ]
+          },
+          {
+            "id": "window-7",
+            "pairKey": "pair-7",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "reservoir_sampled",
+            "retainedLatenciesMilliseconds": [
+              9.9,
+              10.2,
+              10.2,
+              9.6
+            ]
+          },
+          {
+            "id": "window-8",
+            "pairKey": "pair-8",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "reservoir_sampled",
+            "retainedLatenciesMilliseconds": [
+              10.4,
+              9.8,
+              9.8,
+              10.1
+            ]
+          }
+        ]
+      },
+      "candidate": {
+        "id": "candidate",
+        "role": "candidate",
+        "compatibilityIdentity": {
+          "dimensions": [
+            {
+              "name": "target.runtime-flavor",
+              "value": "CoreCLR"
+            },
+            {
+              "name": "target.runtime-version-policy",
+              "value": "same-major-minor"
+            },
+            {
+              "name": "target.os",
+              "value": "windows"
+            },
+            {
+              "name": "target.architecture",
+              "value": "x64"
+            },
+            {
+              "name": "target.process-run-id",
+              "value": "fixture-run"
+            },
+            {
+              "name": "backend.id",
+              "value": "scenario-http-stopwatch"
+            },
+            {
+              "name": "backend.version",
+              "value": "1"
+            },
+            {
+              "name": "quantity.id",
+              "value": "request-latency"
+            },
+            {
+              "name": "quantity.unit",
+              "value": "ms"
+            },
+            {
+              "name": "quantity.aggregation",
+              "value": "p50-p95-p99-r7"
+            },
+            {
+              "name": "quantity.normalization",
+              "value": "per-completed-request"
+            },
+            {
+              "name": "quantity.filters",
+              "value": "endpoint=/request-latency-fixture"
+            },
+            {
+              "name": "quantity.representation",
+              "value": "exact"
+            },
+            {
+              "name": "capture.duration",
+              "value": "bounded-request-count"
+            },
+            {
+              "name": "capture.windowing",
+              "value": "non-overlapping-fixed-count"
+            },
+            {
+              "name": "capture.providers",
+              "value": "stopwatch"
+            },
+            {
+              "name": "capture.sampling-period",
+              "value": "per-completed-request"
+            },
+            {
+              "name": "capture.retention",
+              "value": "max=256/window"
+            },
+            {
+              "name": "capture.enrichment",
+              "value": "http-status-and-completion-state"
+            },
+            {
+              "name": "workload.scenario",
+              "value": "request-latency-distribution-shift"
+            },
+            {
+              "name": "workload.version",
+              "value": "1"
+            },
+            {
+              "name": "workload.parameters",
+              "value": "sequential-fixed-count"
+            },
+            {
+              "name": "workload.concurrency",
+              "value": "1"
+            },
+            {
+              "name": "workload.deployment",
+              "value": "local-loopback"
+            },
+            {
+              "name": "workload.request-mix",
+              "value": "single-endpoint"
+            },
+            {
+              "name": "workload.repetition-arm",
+              "value": "paired"
+            },
+            {
+              "name": "workload.injected-delay-ms",
+              "value": "50"
+            },
+            {
+              "name": "workload.incomplete-work",
+              "value": "complete"
+            },
+            {
+              "name": "independence.unit",
+              "value": "bounded_time_window"
+            },
+            {
+              "name": "independence.nesting",
+              "value": "request-event-within-non-overlapping-window"
+            },
+            {
+              "name": "independence.pairing-key",
+              "value": "window-pair-id"
+            },
+            {
+              "name": "comparison.axis",
+              "value": "workload.injected-delay-ms"
+            }
+          ]
+        },
+        "windows": [
+          {
+            "id": "window-1",
+            "pairKey": "pair-1",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "reservoir_sampled",
+            "retainedLatenciesMilliseconds": [
+              50.1,
+              49.8,
+              50.1,
+              50.1
+            ]
+          },
+          {
+            "id": "window-2",
+            "pairKey": "pair-2",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "reservoir_sampled",
+            "retainedLatenciesMilliseconds": [
+              49.7,
+              49.7,
+              50,
+              50
+            ]
+          },
+          {
+            "id": "window-3",
+            "pairKey": "pair-3",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "reservoir_sampled",
+            "retainedLatenciesMilliseconds": [
+              49.6,
+              49.6,
+              50.2,
+              50.2
+            ]
+          },
+          {
+            "id": "window-4",
+            "pairKey": "pair-4",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "reservoir_sampled",
+            "retainedLatenciesMilliseconds": [
+              50.4,
+              50.4,
+              50.1,
+              49.8
+            ]
+          },
+          {
+            "id": "window-5",
+            "pairKey": "pair-5",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "reservoir_sampled",
+            "retainedLatenciesMilliseconds": [
+              50,
+              49.7,
+              49.7,
+              49.7
+            ]
+          },
+          {
+            "id": "window-6",
+            "pairKey": "pair-6",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "reservoir_sampled",
+            "retainedLatenciesMilliseconds": [
+              50.2,
+              50.2,
+              49.6,
+              49.9
+            ]
+          },
+          {
+            "id": "window-7",
+            "pairKey": "pair-7",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "reservoir_sampled",
+            "retainedLatenciesMilliseconds": [
+              49.8,
+              49.8,
+              50.1,
+              49.8
+            ]
+          },
+          {
+            "id": "window-8",
+            "pairKey": "pair-8",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "reservoir_sampled",
+            "retainedLatenciesMilliseconds": [
+              50.3,
+              49.7,
+              50,
+              50
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "incompatible-identity",
+      "baseline": {
+        "id": "baseline",
+        "role": "baseline",
+        "compatibilityIdentity": {
+          "dimensions": [
+            {
+              "name": "target.runtime-flavor",
+              "value": "CoreCLR"
+            },
+            {
+              "name": "target.runtime-version-policy",
+              "value": "same-major-minor"
+            },
+            {
+              "name": "target.os",
+              "value": "windows"
+            },
+            {
+              "name": "target.architecture",
+              "value": "x64"
+            },
+            {
+              "name": "target.process-run-id",
+              "value": "fixture-run"
+            },
+            {
+              "name": "backend.id",
+              "value": "scenario-http-stopwatch"
+            },
+            {
+              "name": "backend.version",
+              "value": "1"
+            },
+            {
+              "name": "quantity.id",
+              "value": "request-latency"
+            },
+            {
+              "name": "quantity.unit",
+              "value": "ms"
+            },
+            {
+              "name": "quantity.aggregation",
+              "value": "p50-p95-p99-r7"
+            },
+            {
+              "name": "quantity.normalization",
+              "value": "per-completed-request"
+            },
+            {
+              "name": "quantity.filters",
+              "value": "endpoint=/request-latency-fixture"
+            },
+            {
+              "name": "quantity.representation",
+              "value": "exact"
+            },
+            {
+              "name": "capture.duration",
+              "value": "bounded-request-count"
+            },
+            {
+              "name": "capture.windowing",
+              "value": "non-overlapping-fixed-count"
+            },
+            {
+              "name": "capture.providers",
+              "value": "stopwatch"
+            },
+            {
+              "name": "capture.sampling-period",
+              "value": "per-completed-request"
+            },
+            {
+              "name": "capture.retention",
+              "value": "max=256/window"
+            },
+            {
+              "name": "capture.enrichment",
+              "value": "http-status-and-completion-state"
+            },
+            {
+              "name": "workload.scenario",
+              "value": "request-latency-distribution-shift"
+            },
+            {
+              "name": "workload.version",
+              "value": "1"
+            },
+            {
+              "name": "workload.parameters",
+              "value": "sequential-fixed-count"
+            },
+            {
+              "name": "workload.concurrency",
+              "value": "1"
+            },
+            {
+              "name": "workload.deployment",
+              "value": "local-loopback"
+            },
+            {
+              "name": "workload.request-mix",
+              "value": "single-endpoint"
+            },
+            {
+              "name": "workload.repetition-arm",
+              "value": "paired"
+            },
+            {
+              "name": "workload.injected-delay-ms",
+              "value": "10"
+            },
+            {
+              "name": "workload.incomplete-work",
+              "value": "complete"
+            },
+            {
+              "name": "independence.unit",
+              "value": "bounded_time_window"
+            },
+            {
+              "name": "independence.nesting",
+              "value": "request-event-within-non-overlapping-window"
+            },
+            {
+              "name": "independence.pairing-key",
+              "value": "window-pair-id"
+            },
+            {
+              "name": "comparison.axis",
+              "value": "workload.injected-delay-ms"
+            }
+          ]
+        },
+        "windows": [
+          {
+            "id": "window-1",
+            "pairKey": "pair-1",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              9.6,
+              9.9,
+              10.2,
+              9.6,
+              9.9,
+              10.2,
+              9.6,
+              9.9
+            ]
+          },
+          {
+            "id": "window-2",
+            "pairKey": "pair-2",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              10.1,
+              10.4,
+              9.8,
+              10.1,
+              10.4,
+              9.8,
+              10.1,
+              10.4
+            ]
+          },
+          {
+            "id": "window-3",
+            "pairKey": "pair-3",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              9.7,
+              10,
+              10.3,
+              9.7,
+              10,
+              10.3,
+              9.7,
+              10
+            ]
+          },
+          {
+            "id": "window-4",
+            "pairKey": "pair-4",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              10.2,
+              9.6,
+              9.9,
+              10.2,
+              9.6,
+              9.9,
+              10.2,
+              9.6
+            ]
+          },
+          {
+            "id": "window-5",
+            "pairKey": "pair-5",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              9.8,
+              10.1,
+              10.4,
+              9.8,
+              10.1,
+              10.4,
+              9.8,
+              10.1
+            ]
+          },
+          {
+            "id": "window-6",
+            "pairKey": "pair-6",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              10.3,
+              9.7,
+              10,
+              10.3,
+              9.7,
+              10,
+              10.3,
+              9.7
+            ]
+          },
+          {
+            "id": "window-7",
+            "pairKey": "pair-7",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              9.9,
+              10.2,
+              9.6,
+              9.9,
+              10.2,
+              9.6,
+              9.9,
+              10.2
+            ]
+          },
+          {
+            "id": "window-8",
+            "pairKey": "pair-8",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              10.4,
+              9.8,
+              10.1,
+              10.4,
+              9.8,
+              10.1,
+              10.4,
+              9.8
+            ]
+          }
+        ]
+      },
+      "candidate": {
+        "id": "candidate",
+        "role": "candidate",
+        "compatibilityIdentity": {
+          "dimensions": [
+            {
+              "name": "target.runtime-flavor",
+              "value": "NativeAOT"
+            },
+            {
+              "name": "target.runtime-version-policy",
+              "value": "same-major-minor"
+            },
+            {
+              "name": "target.os",
+              "value": "windows"
+            },
+            {
+              "name": "target.architecture",
+              "value": "x64"
+            },
+            {
+              "name": "target.process-run-id",
+              "value": "fixture-run"
+            },
+            {
+              "name": "backend.id",
+              "value": "scenario-http-stopwatch"
+            },
+            {
+              "name": "backend.version",
+              "value": "1"
+            },
+            {
+              "name": "quantity.id",
+              "value": "request-latency"
+            },
+            {
+              "name": "quantity.unit",
+              "value": "ms"
+            },
+            {
+              "name": "quantity.aggregation",
+              "value": "p50-p95-p99-r7"
+            },
+            {
+              "name": "quantity.normalization",
+              "value": "per-completed-request"
+            },
+            {
+              "name": "quantity.filters",
+              "value": "endpoint=/different"
+            },
+            {
+              "name": "quantity.representation",
+              "value": "exact"
+            },
+            {
+              "name": "capture.duration",
+              "value": "bounded-request-count"
+            },
+            {
+              "name": "capture.windowing",
+              "value": "overlapping-1s"
+            },
+            {
+              "name": "capture.providers",
+              "value": "stopwatch"
+            },
+            {
+              "name": "capture.sampling-period",
+              "value": "per-completed-request"
+            },
+            {
+              "name": "capture.retention",
+              "value": "max=256/window"
+            },
+            {
+              "name": "capture.enrichment",
+              "value": "http-status-and-completion-state"
+            },
+            {
+              "name": "workload.scenario",
+              "value": "request-latency-distribution-shift"
+            },
+            {
+              "name": "workload.version",
+              "value": "1"
+            },
+            {
+              "name": "workload.parameters",
+              "value": "sequential-fixed-count"
+            },
+            {
+              "name": "workload.concurrency",
+              "value": "1"
+            },
+            {
+              "name": "workload.deployment",
+              "value": "local-loopback"
+            },
+            {
+              "name": "workload.request-mix",
+              "value": "single-endpoint"
+            },
+            {
+              "name": "workload.repetition-arm",
+              "value": "paired"
+            },
+            {
+              "name": "workload.injected-delay-ms",
+              "value": "50"
+            },
+            {
+              "name": "workload.incomplete-work",
+              "value": "complete"
+            },
+            {
+              "name": "independence.unit",
+              "value": "bounded_time_window"
+            },
+            {
+              "name": "independence.nesting",
+              "value": "request-event-within-non-overlapping-window"
+            },
+            {
+              "name": "independence.pairing-key",
+              "value": "window-pair-id"
+            },
+            {
+              "name": "comparison.axis",
+              "value": "workload.injected-delay-ms"
+            }
+          ]
+        },
+        "windows": [
+          {
+            "id": "window-1",
+            "pairKey": "pair-1",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              50.1,
+              50.4,
+              49.8,
+              50.1,
+              50.4,
+              49.8,
+              50.1,
+              50.4
+            ]
+          },
+          {
+            "id": "window-2",
+            "pairKey": "pair-2",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              49.7,
+              50,
+              50.3,
+              49.7,
+              50,
+              50.3,
+              49.7,
+              50
+            ]
+          },
+          {
+            "id": "window-3",
+            "pairKey": "pair-3",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              50.2,
+              49.6,
+              49.9,
+              50.2,
+              49.6,
+              49.9,
+              50.2,
+              49.6
+            ]
+          },
+          {
+            "id": "window-4",
+            "pairKey": "pair-4",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              49.8,
+              50.1,
+              50.4,
+              49.8,
+              50.1,
+              50.4,
+              49.8,
+              50.1
+            ]
+          },
+          {
+            "id": "window-5",
+            "pairKey": "pair-5",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              50.3,
+              49.7,
+              50,
+              50.3,
+              49.7,
+              50,
+              50.3,
+              49.7
+            ]
+          },
+          {
+            "id": "window-6",
+            "pairKey": "pair-6",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              49.9,
+              50.2,
+              49.6,
+              49.9,
+              50.2,
+              49.6,
+              49.9,
+              50.2
+            ]
+          },
+          {
+            "id": "window-7",
+            "pairKey": "pair-7",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              50.4,
+              49.8,
+              50.1,
+              50.4,
+              49.8,
+              50.1,
+              50.4,
+              49.8
+            ]
+          },
+          {
+            "id": "window-8",
+            "pairKey": "pair-8",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              50,
+              50.3,
+              49.7,
+              50,
+              50.3,
+              49.7,
+              50,
+              50.3
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "incomplete-work",
+      "baseline": {
+        "id": "baseline",
+        "role": "baseline",
+        "compatibilityIdentity": {
+          "dimensions": [
+            {
+              "name": "target.runtime-flavor",
+              "value": "CoreCLR"
+            },
+            {
+              "name": "target.runtime-version-policy",
+              "value": "same-major-minor"
+            },
+            {
+              "name": "target.os",
+              "value": "windows"
+            },
+            {
+              "name": "target.architecture",
+              "value": "x64"
+            },
+            {
+              "name": "target.process-run-id",
+              "value": "fixture-run"
+            },
+            {
+              "name": "backend.id",
+              "value": "scenario-http-stopwatch"
+            },
+            {
+              "name": "backend.version",
+              "value": "1"
+            },
+            {
+              "name": "quantity.id",
+              "value": "request-latency"
+            },
+            {
+              "name": "quantity.unit",
+              "value": "ms"
+            },
+            {
+              "name": "quantity.aggregation",
+              "value": "p50-p95-p99-r7"
+            },
+            {
+              "name": "quantity.normalization",
+              "value": "per-completed-request"
+            },
+            {
+              "name": "quantity.filters",
+              "value": "endpoint=/request-latency-fixture"
+            },
+            {
+              "name": "quantity.representation",
+              "value": "exact"
+            },
+            {
+              "name": "capture.duration",
+              "value": "bounded-request-count"
+            },
+            {
+              "name": "capture.windowing",
+              "value": "non-overlapping-fixed-count"
+            },
+            {
+              "name": "capture.providers",
+              "value": "stopwatch"
+            },
+            {
+              "name": "capture.sampling-period",
+              "value": "per-completed-request"
+            },
+            {
+              "name": "capture.retention",
+              "value": "max=256/window"
+            },
+            {
+              "name": "capture.enrichment",
+              "value": "http-status-and-completion-state"
+            },
+            {
+              "name": "workload.scenario",
+              "value": "request-latency-distribution-shift"
+            },
+            {
+              "name": "workload.version",
+              "value": "1"
+            },
+            {
+              "name": "workload.parameters",
+              "value": "sequential-fixed-count"
+            },
+            {
+              "name": "workload.concurrency",
+              "value": "1"
+            },
+            {
+              "name": "workload.deployment",
+              "value": "local-loopback"
+            },
+            {
+              "name": "workload.request-mix",
+              "value": "single-endpoint"
+            },
+            {
+              "name": "workload.repetition-arm",
+              "value": "paired"
+            },
+            {
+              "name": "workload.injected-delay-ms",
+              "value": "not-varied"
+            },
+            {
+              "name": "workload.incomplete-work",
+              "value": "complete"
+            },
+            {
+              "name": "independence.unit",
+              "value": "bounded_time_window"
+            },
+            {
+              "name": "independence.nesting",
+              "value": "request-event-within-non-overlapping-window"
+            },
+            {
+              "name": "independence.pairing-key",
+              "value": "window-pair-id"
+            },
+            {
+              "name": "comparison.axis",
+              "value": "workload.incomplete-work"
+            }
+          ]
+        },
+        "windows": [
+          {
+            "id": "window-1",
+            "pairKey": "pair-1",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              9.6,
+              9.9,
+              10.2,
+              9.6,
+              9.9,
+              10.2,
+              9.6,
+              9.9
+            ]
+          },
+          {
+            "id": "window-2",
+            "pairKey": "pair-2",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              10.1,
+              10.4,
+              9.8,
+              10.1,
+              10.4,
+              9.8,
+              10.1,
+              10.4
+            ]
+          },
+          {
+            "id": "window-3",
+            "pairKey": "pair-3",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              9.7,
+              10,
+              10.3,
+              9.7,
+              10,
+              10.3,
+              9.7,
+              10
+            ]
+          },
+          {
+            "id": "window-4",
+            "pairKey": "pair-4",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              10.2,
+              9.6,
+              9.9,
+              10.2,
+              9.6,
+              9.9,
+              10.2,
+              9.6
+            ]
+          },
+          {
+            "id": "window-5",
+            "pairKey": "pair-5",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              9.8,
+              10.1,
+              10.4,
+              9.8,
+              10.1,
+              10.4,
+              9.8,
+              10.1
+            ]
+          },
+          {
+            "id": "window-6",
+            "pairKey": "pair-6",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              10.3,
+              9.7,
+              10,
+              10.3,
+              9.7,
+              10,
+              10.3,
+              9.7
+            ]
+          },
+          {
+            "id": "window-7",
+            "pairKey": "pair-7",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              9.9,
+              10.2,
+              9.6,
+              9.9,
+              10.2,
+              9.6,
+              9.9,
+              10.2
+            ]
+          },
+          {
+            "id": "window-8",
+            "pairKey": "pair-8",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 0,
+            "censoredCount": 0,
+            "missingCount": 0,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              10.4,
+              9.8,
+              10.1,
+              10.4,
+              9.8,
+              10.1,
+              10.4,
+              9.8
+            ]
+          }
+        ]
+      },
+      "candidate": {
+        "id": "candidate",
+        "role": "candidate",
+        "compatibilityIdentity": {
+          "dimensions": [
+            {
+              "name": "target.runtime-flavor",
+              "value": "CoreCLR"
+            },
+            {
+              "name": "target.runtime-version-policy",
+              "value": "same-major-minor"
+            },
+            {
+              "name": "target.os",
+              "value": "windows"
+            },
+            {
+              "name": "target.architecture",
+              "value": "x64"
+            },
+            {
+              "name": "target.process-run-id",
+              "value": "fixture-run"
+            },
+            {
+              "name": "backend.id",
+              "value": "scenario-http-stopwatch"
+            },
+            {
+              "name": "backend.version",
+              "value": "1"
+            },
+            {
+              "name": "quantity.id",
+              "value": "request-latency"
+            },
+            {
+              "name": "quantity.unit",
+              "value": "ms"
+            },
+            {
+              "name": "quantity.aggregation",
+              "value": "p50-p95-p99-r7"
+            },
+            {
+              "name": "quantity.normalization",
+              "value": "per-completed-request"
+            },
+            {
+              "name": "quantity.filters",
+              "value": "endpoint=/request-latency-fixture"
+            },
+            {
+              "name": "quantity.representation",
+              "value": "exact"
+            },
+            {
+              "name": "capture.duration",
+              "value": "bounded-request-count"
+            },
+            {
+              "name": "capture.windowing",
+              "value": "non-overlapping-fixed-count"
+            },
+            {
+              "name": "capture.providers",
+              "value": "stopwatch"
+            },
+            {
+              "name": "capture.sampling-period",
+              "value": "per-completed-request"
+            },
+            {
+              "name": "capture.retention",
+              "value": "max=256/window"
+            },
+            {
+              "name": "capture.enrichment",
+              "value": "http-status-and-completion-state"
+            },
+            {
+              "name": "workload.scenario",
+              "value": "request-latency-distribution-shift"
+            },
+            {
+              "name": "workload.version",
+              "value": "1"
+            },
+            {
+              "name": "workload.parameters",
+              "value": "sequential-fixed-count"
+            },
+            {
+              "name": "workload.concurrency",
+              "value": "1"
+            },
+            {
+              "name": "workload.deployment",
+              "value": "local-loopback"
+            },
+            {
+              "name": "workload.request-mix",
+              "value": "single-endpoint"
+            },
+            {
+              "name": "workload.repetition-arm",
+              "value": "paired"
+            },
+            {
+              "name": "workload.injected-delay-ms",
+              "value": "not-varied"
+            },
+            {
+              "name": "workload.incomplete-work",
+              "value": "errors-censored-missing"
+            },
+            {
+              "name": "independence.unit",
+              "value": "bounded_time_window"
+            },
+            {
+              "name": "independence.nesting",
+              "value": "request-event-within-non-overlapping-window"
+            },
+            {
+              "name": "independence.pairing-key",
+              "value": "window-pair-id"
+            },
+            {
+              "name": "comparison.axis",
+              "value": "workload.incomplete-work"
+            }
+          ]
+        },
+        "windows": [
+          {
+            "id": "window-1",
+            "pairKey": "pair-1",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 1,
+            "censoredCount": 1,
+            "missingCount": 1,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              10.1,
+              10.4,
+              9.8,
+              10.1,
+              10.4,
+              9.8,
+              10.1,
+              10.4
+            ]
+          },
+          {
+            "id": "window-2",
+            "pairKey": "pair-2",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 1,
+            "censoredCount": 1,
+            "missingCount": 1,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              9.7,
+              10,
+              10.3,
+              9.7,
+              10,
+              10.3,
+              9.7,
+              10
+            ]
+          },
+          {
+            "id": "window-3",
+            "pairKey": "pair-3",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 1,
+            "censoredCount": 1,
+            "missingCount": 1,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              10.2,
+              9.6,
+              9.9,
+              10.2,
+              9.6,
+              9.9,
+              10.2,
+              9.6
+            ]
+          },
+          {
+            "id": "window-4",
+            "pairKey": "pair-4",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 1,
+            "censoredCount": 1,
+            "missingCount": 1,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              9.8,
+              10.1,
+              10.4,
+              9.8,
+              10.1,
+              10.4,
+              9.8,
+              10.1
+            ]
+          },
+          {
+            "id": "window-5",
+            "pairKey": "pair-5",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 1,
+            "censoredCount": 1,
+            "missingCount": 1,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              10.3,
+              9.7,
+              10,
+              10.3,
+              9.7,
+              10,
+              10.3,
+              9.7
+            ]
+          },
+          {
+            "id": "window-6",
+            "pairKey": "pair-6",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 1,
+            "censoredCount": 1,
+            "missingCount": 1,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              9.9,
+              10.2,
+              9.6,
+              9.9,
+              10.2,
+              9.6,
+              9.9,
+              10.2
+            ]
+          },
+          {
+            "id": "window-7",
+            "pairKey": "pair-7",
+            "pairOrder": "baseline_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 1,
+            "censoredCount": 1,
+            "missingCount": 1,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              10.4,
+              9.8,
+              10.1,
+              10.4,
+              9.8,
+              10.1,
+              10.4,
+              9.8
+            ]
+          },
+          {
+            "id": "window-8",
+            "pairKey": "pair-8",
+            "pairOrder": "candidate_first",
+            "sourceCompletedCount": 8,
+            "errorCount": 1,
+            "censoredCount": 1,
+            "missingCount": 1,
+            "lostOrDropped": 0,
+            "representation": "exact",
+            "retainedLatenciesMilliseconds": [
+              10,
+              10.3,
+              9.7,
+              10,
+              10.3,
+              9.7,
+              10,
+              10.3
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
