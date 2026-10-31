@@ -93,6 +93,33 @@ internal static partial class CliCommands
 
                 return await CompareRequestLatencyAsync(options, cancellationToken).ConfigureAwait(false);
             }
+
+            if (schemas.Any(schema =>
+                    string.Equals(schema, CpuHotspotCaptureSet.SchemaV1, StringComparison.Ordinal)))
+            {
+                if (!schemas.All(schema =>
+                        string.Equals(schema, CpuHotspotCaptureSet.SchemaV1, StringComparison.Ordinal)))
+                {
+                    return BuildResult<object>(DiagnosticResult.Fail<object>(
+                        "compare: mixed CPU-hotspot and snapshot schemas are unsupported.",
+                        new DiagnosticError(
+                            "MixedSchemas",
+                            "Both CPU-hotspot inputs must use the CPU-hotspot capture-set v1 schema.")),
+                        static (_, _) => { });
+                }
+                if (options.Mode is not null)
+                {
+                    return BuildResult<object>(DiagnosticResult.Fail<object>(
+                        "compare: --mode does not apply to CPU-hotspot capture sets.",
+                        new DiagnosticError(
+                            "InvalidArgument",
+                            "CPU-hotspot comparison has fixed paired-capture semantics.",
+                            nameof(options.Mode))),
+                        static (_, _) => { });
+                }
+
+                return await CompareCpuHotspotAsync(options, cancellationToken).ConfigureAwait(false);
+            }
         }
 
         var snapshots = new List<ComparableSnapshot>(options.ComparePaths.Count);
@@ -245,6 +272,191 @@ internal static partial class CliCommands
             cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidDataException("Request-latency window-set JSON was empty.");
     }
+
+    private static async Task<CliCommandResult> CompareCpuHotspotAsync(
+        CliOptions options,
+        CancellationToken cancellationToken)
+    {
+        CpuHotspotComparisonResult result;
+        try
+        {
+            var baseline = await ReadCpuHotspotCaptureSetAsync(
+                options.ComparePaths[0],
+                cancellationToken).ConfigureAwait(false);
+            var candidate = await ReadCpuHotspotCaptureSetAsync(
+                options.ComparePaths[1],
+                cancellationToken).ConfigureAwait(false);
+            result = CpuHotspotComparison.Compare(baseline, candidate);
+        }
+        catch (Exception ex) when (
+            ex is IOException
+                or JsonException
+                or UnauthorizedAccessException
+                or NotSupportedException
+                or ArgumentException)
+        {
+            return BuildResult<object>(DiagnosticResult.Fail<object>(
+                "compare: CPU-hotspot evidence is invalid.",
+                new DiagnosticError("InvalidCpuHotspotEvidence", ex.Message)),
+                static (_, _) => { });
+        }
+
+        if (!string.IsNullOrWhiteSpace(options.SavePath))
+        {
+            try
+            {
+                var fullPath = Path.GetFullPath(options.SavePath);
+                var directory = Path.GetDirectoryName(fullPath);
+                if (!string.IsNullOrWhiteSpace(directory))
+                {
+                    Directory.CreateDirectory(directory);
+                }
+
+                await using var output = File.Create(fullPath);
+                await JsonSerializer.SerializeAsync(
+                    output,
+                    result,
+                    CpuHotspotComparisonJsonContext.Default.CpuHotspotComparisonResult,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (
+                ex is IOException
+                    or UnauthorizedAccessException
+                    or NotSupportedException
+                    or ArgumentException)
+            {
+                return BuildResult<object>(DiagnosticResult.Fail<object>(
+                    $"compare: failed to write '{options.SavePath}'.",
+                    new DiagnosticError("OutputWriteFailure", ex.Message)),
+                    static (_, _) => { });
+            }
+        }
+
+        return new(false, false, result, RenderCpuHotspotComparison(result));
+    }
+
+    private static async Task<CpuHotspotCaptureSet> ReadCpuHotspotCaptureSetAsync(
+        string path,
+        CancellationToken cancellationToken)
+    {
+        var info = new FileInfo(path);
+        if (!info.Exists)
+        {
+            throw new FileNotFoundException("CPU-hotspot capture-set file was not found.", path);
+        }
+        if (info.Length is < 1 or > CpuHotspotComparison.MaximumSerializedCaptureSetBytes)
+        {
+            throw new InvalidDataException(
+                $"CPU-hotspot capture-set files must be 1..{CpuHotspotComparison.MaximumSerializedCaptureSetBytes} bytes.");
+        }
+
+        await using var stream = info.OpenRead();
+        return await JsonSerializer.DeserializeAsync(
+            stream,
+            CpuHotspotComparisonJsonContext.Default.CpuHotspotCaptureSet,
+            cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidDataException("CPU-hotspot capture-set JSON was empty.");
+    }
+
+    internal static string RenderCpuHotspotComparison(CpuHotspotComparisonResult result)
+    {
+        var text = new StringBuilder();
+        text.AppendLine(CultureInfo.InvariantCulture,
+            $"CPU-hotspot comparison: availability={ToWireName(result.Availability)}; no performance or causal verdict");
+        if (result.UnavailableReason is not null)
+        {
+            text.AppendLine(CultureInfo.InvariantCulture,
+                $"  unavailable reason : {result.UnavailableReason}");
+        }
+        text.AppendLine(CultureInfo.InvariantCulture,
+            $"  paired captures     : matched={result.PairCounts.Matched}; valid-independent-complete={result.PairCounts.ValidIndependentComplete}; unpaired={result.PairCounts.Unpaired}; order-mismatch={result.PairCounts.PairOrderMismatches}; run-mismatch={result.PairCounts.ProcessRunMismatches}; process-mismatch={result.PairCounts.ProcessIdMismatches}; overlapping={result.PairCounts.OverlappingCaptureIntervals}");
+        text.AppendLine(CultureInfo.InvariantCulture,
+            $"  baseline counts     : captures={result.BaselineCounts.Captures}; samples={result.BaselineCounts.TotalSamples}; unresolved-exclusive={result.BaselineCounts.UnresolvedExclusiveSamples}; below-minimum={result.BaselineCounts.BelowMinimumSamples}; selected-method-missing={result.BaselineCounts.MissingSelectedMethod}");
+        text.AppendLine(CultureInfo.InvariantCulture,
+            $"  candidate counts    : captures={result.CandidateCounts.Captures}; samples={result.CandidateCounts.TotalSamples}; unresolved-exclusive={result.CandidateCounts.UnresolvedExclusiveSamples}; below-minimum={result.CandidateCounts.BelowMinimumSamples}; selected-method-missing={result.CandidateCounts.MissingSelectedMethod}");
+        if (result.IdentityMismatches.Count > 0)
+        {
+            text.AppendLine("  compatibility mismatches:");
+            foreach (var mismatch in result.IdentityMismatches)
+            {
+                text.AppendLine(CultureInfo.InvariantCulture,
+                    $"    {mismatch.Field}{(mismatch.PairKey is null ? string.Empty : $"[{mismatch.PairKey}]")}: baseline={mismatch.BaselineValue ?? "unavailable"}, candidate={mismatch.CandidateValue ?? "unavailable"} ({mismatch.Reason})");
+            }
+        }
+
+        AppendCpuHotspotCaptureMeasurements(text, "baseline", result.BaselineCaptures);
+        AppendCpuHotspotCaptureMeasurements(text, "candidate", result.CandidateCaptures);
+        AppendCpuHotspotDistribution(text, "baseline selected share", result.BaselineSelectedShare);
+        AppendCpuHotspotDistribution(text, "candidate selected share", result.CandidateSelectedShare);
+        AppendCpuHotspotDistribution(text, "baseline unresolved share", result.BaselineUnresolvedShare);
+        AppendCpuHotspotDistribution(text, "candidate unresolved share", result.CandidateUnresolvedShare);
+
+        if (result.PairedShareDeltas.Count > 0)
+        {
+            text.AppendLine("  paired selected-share deltas (candidate - baseline):");
+            foreach (var delta in result.PairedShareDeltas)
+            {
+                text.AppendLine(CultureInfo.InvariantCulture,
+                    $"    {delta.PairKey}: {FormatCpuHotspotDeltaPercent(delta.CandidateMinusBaseline)}");
+            }
+            text.AppendLine(CultureInfo.InvariantCulture,
+                $"    median: {FormatCpuHotspotDeltaPercent(result.MedianPairedShareDelta)}");
+        }
+
+        if (result.RankStability is { } rank)
+        {
+            text.AppendLine(CultureInfo.InvariantCulture,
+                $"  top-{rank.TopK}/rank stability: pairs={rank.CompletePairs}; median-overlap={rank.MedianTopKOverlap:0.###}; same-selected-rank={rank.SameSelectedRankFraction:0.###}; median-absolute-rank-delta={rank.MedianAbsoluteSelectedRankDelta:0.###}");
+        }
+        if (result.UnavailableFields.Count > 0)
+        {
+            text.AppendLine(CultureInfo.InvariantCulture,
+                $"  unavailable fields  : {string.Join(", ", result.UnavailableFields.Select(field => $"{field.Field}={field.Reason}"))}");
+        }
+
+        text.Append("  samples are correlated within each capture; shares are not CPU time or offered-load-normalized performance.");
+        return text.ToString();
+    }
+
+    private static void AppendCpuHotspotCaptureMeasurements(
+        StringBuilder text,
+        string label,
+        IReadOnlyList<CpuHotspotCaptureMeasurement> captures)
+    {
+        text.AppendLine(CultureInfo.InvariantCulture, $"  {label} captures:");
+        foreach (var capture in captures)
+        {
+            text.AppendLine(CultureInfo.InvariantCulture,
+                $"    {capture.PairKey}/{capture.Id}: samples={capture.TotalSamples}; selected-inclusive={capture.SelectedMethodInclusiveSamples?.ToString(CultureInfo.InvariantCulture) ?? "unavailable"}; selected-share={FormatCpuHotspotPercent(capture.SelectedMethodInclusiveShare)}; selected-rank={capture.SelectedMethodRank?.ToString(CultureInfo.InvariantCulture) ?? "unavailable"}; unresolved-exclusive={capture.UnresolvedExclusiveSamples}; unresolved-share={FormatCpuHotspotPercent(capture.UnresolvedExclusiveShare)}");
+        }
+    }
+
+    private static void AppendCpuHotspotDistribution(
+        StringBuilder text,
+        string label,
+        CpuHotspotDistribution distribution)
+        => text.AppendLine(CultureInfo.InvariantCulture,
+            $"  {label,-27}: median={FormatCpuHotspotPercent(distribution.Median)}; IQR={FormatCpuHotspotPercent(distribution.InterquartileRange)}; range=[{FormatCpuHotspotPercent(distribution.Minimum)}, {FormatCpuHotspotPercent(distribution.Maximum)}]");
+
+    private static string FormatCpuHotspotPercent(double? value)
+        => value is { } share
+            ? share.ToString("0.###%", CultureInfo.InvariantCulture)
+            : "unavailable";
+
+    private static string FormatCpuHotspotDeltaPercent(double? value)
+        => value is { } share
+            ? share.ToString("+0.###%;-0.###%;0%", CultureInfo.InvariantCulture)
+            : "unavailable";
+
+    private static string ToWireName(CpuHotspotEvidenceAvailability availability)
+        => availability switch
+        {
+            CpuHotspotEvidenceAvailability.Available => "available",
+            CpuHotspotEvidenceAvailability.InsufficientObservations => "insufficient_observations",
+            CpuHotspotEvidenceAvailability.Incompatible => "incompatible",
+            CpuHotspotEvidenceAvailability.UnsupportedApproximation => "unsupported_approximation",
+            _ => throw new ArgumentOutOfRangeException(nameof(availability)),
+        };
 
     internal static string RenderRequestLatencyComparison(RequestLatencyComparisonResult result)
     {

@@ -1935,6 +1935,21 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         var collectEnvelope = DeserializeEnvelope(collectResult);
         collectEnvelope!.Handle.Should().NotBeNullOrWhiteSpace();
 
+        var variabilityResult = await client.CallToolAsync(
+            "query_snapshot",
+            new Dictionary<string, object?>
+            {
+                ["handle"] = collectEnvelope.Handle!,
+                ["view"] = CpuSampleQueryDispatcher.HotspotVariabilityView,
+            },
+            cancellationToken: CancellationToken.None);
+        variabilityResult.IsError.Should().NotBe(true, JsonSerializer.Serialize(variabilityResult));
+        var variability = DeserializeStructured<CpuHotspotCaptureProfile>(variabilityResult);
+        variability.Should().NotBeNull();
+        variability!.Schema.Should().Be(CpuHotspotCaptureProfile.SchemaV1);
+        variability.Methods.Should().HaveCountLessThanOrEqualTo(
+            CpuHotspotCaptureProjection.MaximumMethodsPerCapture);
+
         var compactResult = await client.CallToolAsync(
             "query_snapshot",
             new Dictionary<string, object?>
@@ -2781,6 +2796,103 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         var oversizedEnvelope = DeserializeEnvelope(oversizedResult)!;
         oversizedEnvelope.Error!.Kind.Should().Be("InvalidRequestLatencyEvidence");
         oversizedEnvelope.Error.Message.Should().Contain("262144-byte limit");
+    }
+
+    [Fact]
+    public async Task CompareToBaseline_CpuHotspot_ReusesExistingToolWithoutVerdict()
+    {
+        static CpuHotspotCaptureSet CaptureSet(string axisValue, int selectedSamples)
+            => new(
+                CpuHotspotCaptureSet.SchemaV1,
+                axisValue,
+                new(
+                    new("CoreCLR", "same-major-minor", "linux", "x64"),
+                    new(
+                        CpuSampleBackend.EventPipeSampleProfiler.ToString(),
+                        "1",
+                        CpuSampleEvidenceKind.StackFrequencyWithHeuristicWaits),
+                    new(
+                        "cpu-hotspot-inclusive-share",
+                        "sample-share",
+                        "inclusive-stack-membership",
+                        "retained-total-samples",
+                        "none",
+                        "selected",
+                        CpuHotspotRepresentation.Exact),
+                    new(5, "1ms", "top-16", "none"),
+                    new("steady-load", "1", "route=/work", 100, "same-node"),
+                    new("capture", "samples-within-capture", "pairKey"),
+                    new("build", axisValue)),
+                Enumerable.Range(1, CpuHotspotComparison.MinimumCompletePairs)
+                    .Select(index =>
+                    {
+                        var pairOrder = index % 2 == 0
+                            ? CpuHotspotPairOrder.CandidateFirst
+                            : CpuHotspotPairOrder.BaselineFirst;
+                        var startedAt = DateTimeOffset.UnixEpoch.AddMinutes(index * 2);
+                        if ((string.Equals(axisValue, "candidate", StringComparison.Ordinal)
+                                && pairOrder == CpuHotspotPairOrder.BaselineFirst)
+                            || (!string.Equals(axisValue, "candidate", StringComparison.Ordinal)
+                                && pairOrder == CpuHotspotPairOrder.CandidateFirst))
+                        {
+                            startedAt = startedAt.AddSeconds(6);
+                        }
+                        var methods = new[]
+                        {
+                            new CpuHotspotMethodObservation("selected", "Selected", selectedSamples),
+                            new CpuHotspotMethodObservation("other", "Other", 70 - selectedSamples),
+                            new CpuHotspotMethodObservation("third", "Third", 10),
+                        };
+                        return new CpuHotspotCaptureObservation(
+                            $"capture-{index}",
+                            $"pair-{index}",
+                            pairOrder,
+                            $"run-{index}",
+                            new(
+                                CpuHotspotCaptureProfile.SchemaV1,
+                                1000 + index,
+                                startedAt,
+                                5,
+                                100,
+                                5,
+                                CpuSampleBackend.EventPipeSampleProfiler,
+                                CpuSampleEvidenceKind.StackFrequencyWithHeuristicWaits,
+                                CpuHotspotRepresentation.Exact,
+                                methods.Length,
+                                0,
+                                methods));
+                    }).ToArray());
+
+        var baseline = JsonSerializer.Serialize(
+            CaptureSet("baseline", 30),
+            CpuHotspotComparisonJsonContext.Default.CpuHotspotCaptureSet);
+        var candidate = JsonSerializer.Serialize(
+            CaptureSet("candidate", 60),
+            CpuHotspotComparisonJsonContext.Default.CpuHotspotCaptureSet);
+        await using var client = await ConnectAsync();
+
+        var result = await client.CallToolAsync(
+            "compare_to_baseline",
+            new Dictionary<string, object?>
+            {
+                ["snapshotsJson"] = new[] { baseline, candidate },
+            },
+            cancellationToken: CancellationToken.None);
+
+        result.IsError.Should().NotBeTrue(JsonSerializer.Serialize(result));
+        var comparison = DeserializeStructured<CpuHotspotComparisonResult>(result)!;
+        comparison.Schema.Should().Be(CpuHotspotComparisonResult.SchemaV1);
+        comparison.Availability.Should().Be(CpuHotspotEvidenceAvailability.Available);
+        comparison.PairCounts.ValidIndependentComplete.Should()
+            .Be(CpuHotspotComparison.MinimumCompletePairs);
+        comparison.MedianPairedShareDelta.Should().BeApproximately(0.3, 0.000001);
+        var envelope = DeserializeEnvelope(result)!;
+        envelope.Summary.Should().Contain("samples within a capture are correlated")
+            .And.Contain("shares are not CPU time")
+            .And.Contain("no regression")
+            .And.Contain("health")
+            .And.NotContain("warranted");
+        JsonSerializer.Serialize(result.StructuredContent).Should().NotContain("\"verdict\"");
     }
 
     [Fact]

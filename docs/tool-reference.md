@@ -528,7 +528,9 @@ Views available per `kind`:
 | `heap-snapshot` | `inspect_heap` / `inspect_heap(source="live")` / `inspect_heap(source="dump")` / `inspect_heap(source="gcdump")` | `top-types` (default), `retention-paths`, `roots-by-kind`, `finalizer-queue`, `fragmentation`, `static-fields`, `delegate-targets`, `duplicate-strings`, `retained-exceptions`, `gchandles`, `timers`, `alc`, `com-wrappers`, `object`, `gcroot`, `objsize`, `async`, `diff`, `growth` |
 | `thread-snapshot` | `collect_thread_snapshot` | `top-blocked` (default), `threads-summary`, `stack`, `lock-graph`, `deadlocks`, `unique-stacks`, `async-stalls`, `wait-chains`, `threadpool`, `resolve-address`, `frame-vars`, `thread-statics` |
 | `off-cpu-snapshot` | `collect_sample(kind="off_cpu")` | `topStacks` (default), `byThread`, `stack` |
-| `cpu-sample` / `allocation-sample` / `native-alloc-sample` / `native-lock-contention-sample` | `collect_sample(kind="cpu")` / `collect_sample(kind="allocation")` / `collect_sample(kind="native-alloc")` / `collect_sample(kind="native-lock-contention")` | `call-tree`, `top-methods`, `by-module`, `by-namespace`, `hot-path`, `caller-callee`, `triage`, `code-versions`, `inlining`, `diff` |
+| `cpu-sample` | `collect_sample(kind="cpu")` | `call-tree`, `top-methods`, `by-module`, `by-namespace`, `hot-path`, `caller-callee`, `triage`, `code-versions`, `inlining`, `hotspot-variability`, `diff` |
+| `native-alloc-sample` / `native-lock-contention-sample` | `collect_sample(kind="native-alloc")` / `collect_sample(kind="native-lock-contention")` | `call-tree`, `top-methods`, `by-module`, `by-namespace`, `hot-path`, `caller-callee`, `triage`, `code-versions`, `inlining`, `diff` |
+| `allocation-sample` | `collect_sample(kind="allocation")` | `call-tree`, `top-methods`, `by-module`, `by-namespace`, `hot-path`, `caller-callee`, `triage`, `code-versions`, `inlining`, `diff`, `allocation-reproducibility` |
 
 **Live heap snapshots and stack roots (issue #1160).** `inspect_heap(source="live")` does not walk
 managed thread stacks for roots: the CLR DAC can fault natively (SIGSEGV in
@@ -561,6 +563,18 @@ Proxied pod calls keep full results inline because dynamic pod Resources are not
 Pairwise sample diffs remain
 inline and accepted pairs are `cpu-sample × cpu-sample`, `heap-snapshot × heap-snapshot` and
 `allocation-sample × allocation-sample`. Allocation diffs normalize totals to per-second rates.
+
+`allocation-sample` also accepts `view="allocation-reproducibility"` with one or more earlier
+separately started capture handles in `comparisonHandles`; the current `handle` is appended.
+This is not the generic `diff` verdict path. It accepts 2-8 captures and top-K 1-16 (default 3),
+preserves each capture's estimated-byte/tick totals with descriptive median and raw MAD, and
+evaluates allocated types and allocation stacks independently using top-K Jaccard membership plus
+shared-key Spearman ranks. The payload exposes attributed/unattributed byte and tick shares and
+explicit empty, no-stack, zero-weight, partial, complete and unavailable states. Historical
+captures missing compatibility identity remain incompatible without synthetic backfill. The view
+does not gate on sampled-total overlap/deltas, build generic intervals over weighted ticks,
+correlate types to stacks, or emit causal, severity, regression, health or performance verdicts.
+Scenario thresholds are caller-named and non-universal.
 
 Counters, contention and ThreadPool journey comparisons report objective deltas,
 not workload-independent improvement/regression. Their metrics are direction-neutral:
@@ -780,6 +794,14 @@ ranked by exclusive samples descending), and the dominant `hot-path` leaf. It re
 category (if any) with its observation percentage, and the
 hot-path leaf; every percentage in a summary is paired with its sample count and the total it is taken against. The `NextActionHint` points at `caller-callee` anchored on the top busy method (or at
 `call-tree` when no attributable method was found).
+
+`view="hotspot-variability"` returns the bounded
+`dotnet-diagnostics/cpu-hotspot-capture/v1` profile recorded with a current
+CPU capture. It preserves capture-level absolute sample counts, unresolved
+exclusive samples, backend/evidence semantics, and at most 16 ranked methods
+for repeated-capture comparison. A legacy artifact without the recorded block
+returns `LegacyContractMissing`; the query never manufactures zero-valued or
+available evidence from an old payload.
 
 `view="code-versions"` (issue #1075) joins each sample's **leaf** instruction pointer to the compiled
 code version it landed in, so a method row is not silently the sum of several machine-code bodies
@@ -3507,9 +3529,15 @@ contract.
   `byGeneration`, `heap-stats`, `n+1`, `connectionPool`, `queues`, `dns`,
   `config`, `timeline`, `hillClimbing`, `requests`, `longRunning`, … Activities
   handles additionally accept `trace` with a required `traceId`.
-- **cpu-sample / allocation-sample / native-alloc-sample / native-lock-contention-sample**: `call-tree`
+- **cpu-sample**: `call-tree`
+  (default), `top-methods`, `by-module`, `by-namespace`, `hot-path`,
+  `caller-callee`, `triage`, `code-versions`, `inlining`,
+  `hotspot-variability`, `diff`.
+- **native-alloc-sample / native-lock-contention-sample**: `call-tree`
   (default), `top-methods`, `by-module`, `by-namespace`, `hot-path`,
   `caller-callee`, `triage`, `code-versions`, `inlining`, `diff`.
+- **allocation-sample**: the same views, plus `allocation-reproducibility`
+  over separately started compatible captures.
 
 **Common view-specific parameters** (each ignored outside its view):
 `rankBy` (`bytes`/`instances`), `typeFullName`, `address`,
@@ -4290,6 +4318,27 @@ result makes no regression, improvement, significance, causation,
 equivalent-load or operational-importance verdict. `topN`, `depth` and `mode`
 are journey-only knobs and do not apply to request latency.
 
+`snapshotsJson` also accepts exactly two
+`dotnet-diagnostics/cpu-hotspot-capture-set/v1` bodies, baseline then
+candidate. That path returns
+`dotnet-diagnostics/cpu-hotspot-comparison/v1` through the same existing
+`data` envelope. One separately started and stopped compatible CPU capture is
+the independence unit; samples inside it are correlated. Each body is limited
+to 256 KiB, each side to 12 captures, and each capture profile to 16 methods.
+At least four complete pairs with at least 80 samples per capture are required
+for pooled selected-share, paired-delta, top-2 membership, and rank-stability
+evidence.
+
+Target/platform, backend/evidence, duration/capture protocol, quantity,
+selected method, workload/offered load, independence/pairing, and
+comparison-axis compatibility are strict. Counts and unresolved shares remain
+visible when pooled fields are unavailable. Paired captures require matching
+process/run identity and pair order, and capture intervals on the same process
+must not overlap. The result never converts sample
+share to CPU time, assumes samples are independent, normalizes performance
+without offered-load evidence, or emits significance, improvement, regression,
+causation, health, or operational-importance verdicts.
+
 Diffs a current investigation summary against a baseline (or compares an ordered
 journey of `ComparableSnapshot` bodies) and returns a verdict + headline + ranked
 deltas. Large local matrices return a compact inline payload plus a
@@ -4302,7 +4351,7 @@ dynamic pod Resources are not forwarded.
 |---|---|---|---|
 | `baselineSummaryJson` | `string?` | — | Baseline summary JSON (from a prior `export_investigation_summary`). Optional when `snapshotsJson` is supplied |
 | `currentSummaryJson` | `string?` | — | Current summary JSON. Optional when `snapshotsJson` is supplied |
-| `snapshotsJson` | `string[]?` | — | Ordered `ComparableSnapshot` JSON bodies for an N-way journey diff, or exactly two request-latency window-set v1 bodies (baseline then candidate); bodies, not file paths |
+| `snapshotsJson` | `string[]?` | — | Ordered `ComparableSnapshot` JSON bodies for an N-way journey diff, exactly two request-latency window-set v1 bodies, or exactly two CPU-hotspot capture-set v1 bodies (baseline then candidate); bodies, not file paths |
 | `topN` | `int` | `25` | Max metric series / key rows in compact inline payloads |
 | `depth` | `string` | `full` | `full` (whole matrix when small) or `compact` (verdict/headline/top deltas) |
 | `mode` | `string?` | `trend` | `trend` (ordered captures over time) or `dispersion` (unordered replicas → outliers) |

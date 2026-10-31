@@ -1,4 +1,5 @@
 using DotnetDiagnostics.Core.CpuSampling;
+using DotnetDiagnostics.Core.Comparison;
 using DotnetDiagnostics.Core.Collection;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.NativeAlloc;
@@ -167,10 +168,11 @@ public static class SamplerUseCases
             return WithContext(AttachGuard.ClassifyAttachFailure<CpuSample>("collect_sample", pid, ex), ctx);
         }
 
+        var artifact = CpuHotspotCaptureProjection.EnsureProfile(result.Artifact);
         var handle = handles.RegisterWithMetadata(
             pid,
             "cpu-sample",
-            result.Artifact,
+            artifact,
             SampleHandleTtl,
             evictWhenProcessExits: false,
             origin: HandleOrigin.Live,
@@ -206,7 +208,7 @@ public static class SamplerUseCases
             handle.Id,
             handle.ExpiresAt,
             depth,
-            result.Artifact.TracePath,
+            artifact.TracePath,
             signals,
             [.. hints]);
         return WithContext(ok, ctx);
@@ -252,10 +254,19 @@ public static class SamplerUseCases
         }
 
         var sample = result.Summary;
+        var reproducibility = AllocationReproducibilityCaptureMetadata.Create(
+            ctx,
+            pid,
+            durationSeconds,
+            topN);
         var handle = handles.Register(
             pid,
             "allocation-sample",
-            new AllocationSampleArtifact(sample, result.Artifact) { EstimatedBytesTrace = result.EstimatedBytesArtifact },
+            new AllocationSampleArtifact(sample, result.Artifact)
+            {
+                EstimatedBytesTrace = result.EstimatedBytesArtifact,
+                Reproducibility = reproducibility,
+            },
             SampleHandleTtl,
             evictWhenProcessExits: false,
             origin: HandleOrigin.Live);

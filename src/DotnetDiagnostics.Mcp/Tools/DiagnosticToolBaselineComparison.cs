@@ -19,7 +19,7 @@ internal static class DiagnosticToolBaselineComparison
         IPrincipalAccessor principalAccessor,
         [Description("Baseline summary JSON (from a prior export_investigation_summary). Optional when snapshotsJson is supplied.")] string? baselineSummaryJson = null,
         [Description("Current summary JSON (from export_investigation_summary on the new investigation). Optional when snapshotsJson is supplied.")] string? currentSummaryJson = null,
-        [Description("Ordered comparison JSON bodies. Accepts 2..N ComparableSnapshot documents or exactly two request-latency window-set v1 documents. JSON only; no file paths.")] string[]? snapshotsJson = null,
+        [Description("Ordered comparison JSON bodies. Accepts 2..N ComparableSnapshot documents, exactly two request-latency window-set v1 documents, or exactly two CPU-hotspot capture-set v1 documents. JSON only; no file paths.")] string[]? snapshotsJson = null,
         [Description("ComparableSnapshot journey only: maximum metric series / key rows returned in compact inline payloads and used to bound key-matrix construction. Must be >= 1. Defaults to 25.")] int topN = 25,
         [Description("ComparableSnapshot journey only: inline verbosity. `full` returns the full matrix; local large results may use a journey://diff/{handle} Resource link, while proxied results stay inline because dynamic pod Resources are not forwarded. `compact` returns verdict/headline/counts/notes plus top-N deltas. Defaults to `full`.")] string depth = "full",
         [Description("ComparableSnapshot journey only: `trend` (default) compares ordered captures over time; `dispersion` compares unordered replicas for outliers.")] string? mode = null,
@@ -140,6 +140,17 @@ internal static class DiagnosticToolBaselineComparison
                     new NextActionHint(
                         "compare_to_baseline",
                         "Pass exactly two request-latency window-set v1 JSON documents: baseline then candidate.")),
+            CpuHotspotCaptureSet.SchemaV1 => snapshotsJson.Length == 2
+                ? CompareCpuHotspot(snapshotsJson[0], snapshotsJson[1])
+                : DiagnosticResult.Fail<object>(
+                    "CPU-hotspot comparison requires exactly two JSON documents.",
+                    new DiagnosticError(
+                        "InvalidArgument",
+                        $"Received {snapshotsJson.Length} CPU-hotspot capture-set documents.",
+                        nameof(snapshotsJson)),
+                    new NextActionHint(
+                        "compare_to_baseline",
+                        "Pass exactly two CPU-hotspot capture-set v1 JSON documents: baseline then candidate.")),
             _ => DiagnosticResult.Fail<object>(
                 "Unsupported comparison schema.",
                 new DiagnosticError("UnsupportedSchema", "The supplied comparison schema is unsupported.", "UnsupportedComparisonSchema"),
@@ -198,6 +209,60 @@ internal static class DiagnosticToolBaselineComparison
             throw new InvalidDataException(
                 $"{side} request-latency window set exceeds the " +
                 $"{RequestLatencyComparison.MaximumSerializedWindowSetBytes}-byte limit.");
+        }
+    }
+
+    private static DiagnosticResult<object> CompareCpuHotspot(
+        string baselineJson,
+        string candidateJson)
+    {
+        try
+        {
+            EnsureCpuHotspotCaptureSetSize(baselineJson, "Baseline");
+            EnsureCpuHotspotCaptureSetSize(candidateJson, "Candidate");
+            var baseline = JsonSerializer.Deserialize(
+                baselineJson,
+                CpuHotspotComparisonJsonContext.Default.CpuHotspotCaptureSet)
+                ?? throw new InvalidDataException("Baseline CPU-hotspot document was empty.");
+            var candidate = JsonSerializer.Deserialize(
+                candidateJson,
+                CpuHotspotComparisonJsonContext.Default.CpuHotspotCaptureSet)
+                ?? throw new InvalidDataException("Candidate CPU-hotspot document was empty.");
+            var comparison = CpuHotspotComparison.Compare(baseline, candidate);
+            var summary =
+                $"CPU-hotspot comparison availability={JsonNamingPolicy.SnakeCaseLower.ConvertName(comparison.Availability.ToString())}; " +
+                $"{comparison.PairCounts.ValidIndependentComplete} valid independent complete capture pair(s). " +
+                "Objective capture-level evidence only; samples within a capture are correlated, shares are not CPU time, and no regression, improvement, significance, causation, equivalent-load, health, or operational-importance verdict is emitted.";
+            return DiagnosticResult.Ok<object>(
+                comparison,
+                summary,
+                new NextActionHint(
+                    "collect_sample",
+                    "If follow-up is needed, collect matching CPU captures under the same declared workload and compatibility identity without treating this comparison as a verdict."));
+        }
+        catch (Exception exception) when (
+            exception is JsonException or ArgumentException or InvalidDataException)
+        {
+            return DiagnosticResult.Fail<object>(
+                "CPU-hotspot comparison input is malformed or incompatible with the v1 contract.",
+                new DiagnosticError(
+                    "InvalidCpuHotspotEvidence",
+                    exception.Message,
+                    "CpuHotspotContractValidationFailed"),
+                new NextActionHint(
+                    "compare_to_baseline",
+                    "Re-export both CPU-hotspot capture sets from the same contract version and retry."));
+        }
+    }
+
+    private static void EnsureCpuHotspotCaptureSetSize(string json, string side)
+    {
+        var serializedBytes = Encoding.UTF8.GetByteCount(json);
+        if (serializedBytes > CpuHotspotComparison.MaximumSerializedCaptureSetBytes)
+        {
+            throw new InvalidDataException(
+                $"{side} CPU-hotspot capture set exceeds the " +
+                $"{CpuHotspotComparison.MaximumSerializedCaptureSetBytes}-byte limit.");
         }
     }
 

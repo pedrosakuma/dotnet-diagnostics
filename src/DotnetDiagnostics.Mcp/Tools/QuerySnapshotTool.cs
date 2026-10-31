@@ -55,6 +55,7 @@ public sealed partial class QuerySnapshotTool
     // tool names it explicitly so the (handle, view) contract is uniform across kinds.
     internal const string CallTreeView = "call-tree";
     internal const string DiffView = "diff";
+    internal const string AllocationReproducibilityView = "allocation-reproducibility";
 
     // Heap-snapshot view that diffs two LIVE heap snapshots N seconds apart and ranks the types
     // that grew by retained bytes / instances, with retention-path drill-down on the top growers
@@ -74,6 +75,7 @@ public sealed partial class QuerySnapshotTool
         CpuSampleQueryDispatcher.TriageView,
         CpuSampleQueryDispatcher.CodeVersionsView,
         CpuSampleQueryDispatcher.InliningView,
+        CpuSampleQueryDispatcher.HotspotVariabilityView,
         DiffView,
     };
 
@@ -154,7 +156,7 @@ public sealed partial class QuerySnapshotTool
         IFrameVariableResolver frameVariableResolver,
         [Description("Drilldown handle; required unless latestOfKind is supplied.")] string? handle = null,
         [Description("Kind-specific view; omit for default. Durable selectors add bounded records and composition children. Historical views never reattach; see tool-reference.md.")] string? view = null,
-        [Description("Ranked entries: defaults 50 heap/thread/collection, 25 off-CPU/diff. Inline caps: threads 8, locks 12, retention paths 10; full evidence stays behind the handle.")] int? topN = null,
+        [Description("Ranked entries: defaults 50 heap/thread/collection, 25 off-CPU/diff, 3 allocation-reproducibility. Reproducibility cap 16. Inline caps: threads 8, locks 12, retention paths 10; full evidence stays behind the handle.")] int? topN = null,
         [Description("Heap top-types/growth: bytes|instances. CPU top-methods: exclusive|inclusive|running. Running is on-CPU self samples only for OS backends; otherwise frequency candidates, not scheduler state.")] string rankBy = "bytes",
         [Description("Heap view='retention-paths': substring match on TypeFullName. Thread view='thread-statics': required exact full type name.")] string? typeFullName = null,
         [Description("Decimal/0x address: heap object/gcroot/objsize; thread lock-graph waiter paging. resolve-address accepts comma-separated native addresses, returning module/RVA/build-id or unmapped.")] string? address = null,
@@ -170,7 +172,7 @@ public sealed partial class QuerySnapshotTool
         [Description("Call-tree depth >=1, inline cap 8. Narrow with rootMethodFilter for deeper evidence.")] int maxDepth = CpuSampleQueryDispatcher.MaxProjectedCallTreeDepth,
         [Description("Call-tree nodes >=1, inline cap 64; full tree stays behind handle.")] int maxNodes = CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes,
         [Description("Diff: pairwise baseline unless comparisonHandles supplied. Heap growth: required EARLIER live heap handle.")] string? baselineHandle = null,
-        [Description("Diff: ordered prior handles; current handle is appended. Mutually exclusive with baselineHandle.")] string[]? comparisonHandles = null,
+        [Description("Diff: ordered prior handles. Allocation-reproducibility: separately started compatible allocation handles. Current handle is appended. Mutually exclusive with baselineHandle.")] string[]? comparisonHandles = null,
         [Description("Diff/growth views: minimum absolute delta percentage required for a row to surface. Defaults to 5.0.")] double minDeltaPct = 5.0,
         [Description("full (default): full diff matrix, possibly a local journey:// Resource; proxy stays inline. compact: verdict/counts/notes/top-N deltas. Sample top-methods compact caps rows to 5; call-tree compact caps depth/nodes to 3/16.")] string depth = "full",
         [Description("Diff: trend (ordered time captures, default) or dispersion (unordered replicas; requires comparisonHandles).")] string? mode = null,
@@ -288,6 +290,17 @@ public sealed partial class QuerySnapshotTool
         if (!AuthorizeKind(principal, kind, view, out var activeAuthorizationFailure))
         {
             return activeAuthorizationFailure!;
+        }
+
+        var isAllocationReproducibility = string.Equals(
+            view?.Trim(),
+            AllocationReproducibilityView,
+            StringComparison.OrdinalIgnoreCase);
+        if (comparisonHandles is not null && !IsDiffView(view) && !isAllocationReproducibility)
+        {
+            return InvalidArgument(
+                nameof(comparisonHandles),
+                $"is supported only for view='{DiffView}' or view='{AllocationReproducibilityView}'");
         }
 
         var isDiffView = IsDiffView(view);

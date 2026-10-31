@@ -1,4 +1,5 @@
 using DotnetDiagnostics.Core;
+using DotnetDiagnostics.Core.Comparison;
 using DotnetDiagnostics.Core.NativeLockContention;
 
 namespace DotnetDiagnostics.Core.CpuSampling;
@@ -57,6 +58,9 @@ public static partial class CpuSampleQueryDispatcher
     /// </summary>
     public const string InliningView = "inlining";
 
+    /// <summary>Bounded capture-level profile used to assemble repeated CPU-hotspot comparisons.</summary>
+    public const string HotspotVariabilityView = "hotspot-variability";
+
     /// <summary>Default number of rows returned by the ranked CPU views.</summary>
     public const int DefaultTopN = 20;
 
@@ -86,7 +90,7 @@ public static partial class CpuSampleQueryDispatcher
 
     private static readonly string[] Views =
     {
-        CallTreeView, TopMethodsView, ByModuleView, ByNamespaceView, HotPathView, CallerCalleeView, TriageView, CodeVersionsView, InliningView,
+        CallTreeView, TopMethodsView, ByModuleView, ByNamespaceView, HotPathView, CallerCalleeView, TriageView, CodeVersionsView, InliningView, HotspotVariabilityView,
     };
 
     /// <summary>The view names this dispatcher can render from a trace alone (drill-down without re-sampling).</summary>
@@ -108,6 +112,27 @@ public static partial class CpuSampleQueryDispatcher
         NativeLockContentionArtifact nativeLock => nativeLock.TraceArtifact,
         _ => null,
     };
+
+    /// <summary>Returns the profile recorded with the capture without manufacturing evidence for legacy artifacts.</summary>
+    public static DiagnosticResult<CpuHotspotCaptureProfile> RenderHotspotVariability(
+        CpuSampleTraceArtifact artifact,
+        string handle)
+    {
+        ArgumentNullException.ThrowIfNull(artifact);
+        return artifact.HotspotVariability is { } profile
+            ? DiagnosticResult.Ok(
+                profile,
+                $"Returned the bounded CPU-hotspot capture profile for handle '{handle}'. Samples within this capture are correlated observations, not independent measurements or CPU time.")
+            : DiagnosticResult.Fail<CpuHotspotCaptureProfile>(
+                $"CPU-hotspot variability evidence was not recorded for legacy handle '{handle}'.",
+                new DiagnosticError(
+                    "LegacyContractMissing",
+                    "The retained CPU artifact predates the CPU-hotspot capture profile.",
+                    CpuHotspotCaptureProfile.SchemaV1),
+                new NextActionHint(
+                    "collect_sample",
+                    "Collect a fresh CPU sample with the current producer; do not substitute zero-valued evidence."));
+    }
 
     /// <summary>
     /// Renders the pruned call tree from <paramref name="artifact"/>. Mirrors the server's

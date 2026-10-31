@@ -172,6 +172,22 @@ public sealed partial class CaptureArtifactCodecTests
     }
 
     [Fact]
+    public void Cpu_LegacySnapshotWithoutHotspotVariabilityRemainsReadable()
+    {
+        var enriched = DotnetDiagnostics.Core.Comparison.CpuHotspotCaptureProjection.EnsureProfile(Cpu());
+        var payload = JsonNode.Parse(CaptureArtifactCodec.Encode("cpu-sample", enriched, Budget))!;
+        payload["snapshot"]!.AsObject().Remove("HotspotVariability");
+
+        var restored = (CpuSampleTraceArtifact)CaptureArtifactCodec.Decode(
+            "cpu-sample",
+            1,
+            Encoding.UTF8.GetBytes(payload.ToJsonString()),
+            Budget);
+
+        restored.HotspotVariability.Should().BeNull();
+    }
+
+    [Fact]
     public void Cpu_DeepTreeIsFlatOnDiskAndPreservesEveryNodeAndIdentity()
     {
         var trace = Cpu();
@@ -251,6 +267,7 @@ public sealed partial class CaptureArtifactCodecTests
                 "triage" => CpuSampleQueryDispatcher.RenderTriage(cpu, "stable", 50, 80),
                 "code-versions" => CpuSampleQueryDispatcher.RenderCodeVersions(cpu, "stable", null, 50),
                 "inlining" => CpuSampleQueryDispatcher.RenderInlining(cpu, "stable", null, 50),
+                "hotspot-variability" => CpuSampleQueryDispatcher.RenderHotspotVariability(cpu, "stable"),
                 _ => throw new InvalidOperationException(view),
             };
         }

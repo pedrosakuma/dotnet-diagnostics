@@ -28,6 +28,7 @@ public sealed class CliInvocationSafetyTests
             ["export-summary"] = new() { Command = "export-summary" },
             ["session"] = new() { Command = "session" },
             ["stream"] = new() { Command = "stream", Kind = "counters" },
+            ["gc-pressure"] = new() { Command = "gc-pressure", CaptureFile = "capture.json" },
             ["completion"] = new() { Command = "completion" },
         };
 

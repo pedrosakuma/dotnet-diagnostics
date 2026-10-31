@@ -118,9 +118,12 @@ internal static partial class CliCommands
                 services.GetRequiredService<IThreadPoolCollector>(), resolver, handles,
                 pid, duration, depth, cancellationToken).ConfigureAwait(false))),
 
-            "contention" => Wrap(options, await EventCollectionUseCases.CollectContention(
-                services.GetRequiredService<IContentionCollector>(), resolver, handles,
-                pid, duration, depth, cancellationToken).ConfigureAwait(false)),
+            "contention" => BuildResultWithComparableSave(
+                options,
+                await EventCollectionUseCases.CollectContentionWithConcentration(
+                    services.GetRequiredService<IContentionCollector>(), resolver, handles,
+                    pid, duration, depth, cancellationToken).ConfigureAwait(false),
+                RenderContentionConcentration),
 
             "db" => Wrap(options, await EventCollectionUseCases.CollectDb(
                 services.GetRequiredService<IDbCollector>(), resolver, handles,
@@ -291,6 +294,74 @@ internal static partial class CliCommands
         }
         foreach (var note in capture.Notes) text.AppendLine(System.Globalization.CultureInfo.InvariantCulture, $"  Note: {note}");
     }
+
+    internal static void RenderContentionConcentration(
+        System.Text.StringBuilder text,
+        ContentionSnapshot snapshot)
+    {
+        var evidence = snapshot.Concentration;
+        text.AppendLine();
+        if (evidence is null)
+        {
+            text.AppendLine(
+                "  contention concentration: unavailable (this artifact predates the additive evidence block; values were not backfilled)");
+            return;
+        }
+
+        text.AppendLine(System.Globalization.CultureInfo.InvariantCulture,
+            $"  contention concentration: {EvidenceName(evidence.Availability)}, shape={EvidenceName(evidence.Shape)}");
+        text.AppendLine(System.Globalization.CultureInfo.InvariantCulture,
+            $"    method={evidence.Method.Id}/v{evidence.Method.Version}, independence={evidence.IndependenceUnit}, captures={evidence.Counts.IndependentCaptureUnits}");
+        text.AppendLine(System.Globalization.CultureInfo.InvariantCulture,
+            $"    counts: observed events={evidence.Counts.ObservedEvents}, retained events={evidence.Counts.RetainedEvents}, retention dropped={evidence.Counts.RetentionDroppedEvents}, distinct locks={evidence.Counts.DistinctLocks}, retained locks={evidence.Counts.RetainedLocks}, active windows={evidence.Counts.ActiveWindows}/{evidence.Counts.TotalWindows}, source loss={FormatNullableCount(evidence.Counts.DetectedSourceLossEvents)}");
+        text.AppendLine(System.Globalization.CultureInfo.InvariantCulture,
+            $"    wait-duration concentration: top-1={FormatRatio(evidence.Top1WaitDurationShare)}, top-3={FormatRatio(evidence.Top3WaitDurationShare)}, active-window fraction={FormatRatio(evidence.ActiveWindowFraction)}");
+        text.AppendLine(System.Globalization.CultureInfo.InvariantCulture,
+            $"    wait quantiles ({evidence.WaitDurationQuantiles.Unit}, {EvidenceName(evidence.WaitDurationQuantiles.Representation)}): p50={FormatNullableNumber(evidence.WaitDurationQuantiles.P50)}, p95={FormatNullableNumber(evidence.WaitDurationQuantiles.P95)}, max={FormatNullableNumber(evidence.WaitDurationQuantiles.Maximum)}");
+
+        var owner = evidence.OwnerOverlap;
+        var ownerInterval = owner.Interval is null
+            ? "unavailable"
+            : string.Create(
+                System.Globalization.CultureInfo.InvariantCulture,
+                $"[{owner.Interval.Lower:P2}, {owner.Interval.Upper:P2}]");
+        text.AppendLine(System.Globalization.CultureInfo.InvariantCulture,
+            $"    owner overlap: {EvidenceName(owner.Availability)}, method={owner.Method.Id}/v{owner.Method.Version}, independence={owner.IndependenceUnit}, captures={owner.PositiveCaptures}/{owner.CaptureCount}, rate={FormatRatio(owner.Rate)}, interval={ownerInterval}");
+
+        foreach (var item in evidence.UnavailableFields.Concat(owner.UnavailableFields))
+        {
+            text.AppendLine(System.Globalization.CultureInfo.InvariantCulture,
+                $"    unavailable: {item.Field} ({item.Reason})");
+        }
+        foreach (var assumption in evidence.Assumptions.Concat(owner.Assumptions))
+        {
+            text.AppendLine(System.Globalization.CultureInfo.InvariantCulture,
+                $"    assumption: {assumption}");
+        }
+        foreach (var limitation in evidence.Limitations.Concat(owner.Limitations))
+        {
+            text.AppendLine(System.Globalization.CultureInfo.InvariantCulture,
+                $"    limitation: {limitation}");
+        }
+    }
+
+    private static string EvidenceName<T>(T value) where T : struct, Enum
+        => System.Text.Json.JsonSerializer.Serialize(value).Trim('"');
+
+    private static string FormatRatio(double? value)
+        => value is { } measured
+            ? string.Concat(
+                (measured * 100).ToString("0.00", System.Globalization.CultureInfo.InvariantCulture),
+                "%")
+            : "unavailable";
+
+    private static string FormatNullableNumber(double? value)
+        => value is { } measured
+            ? measured.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)
+            : "unavailable";
+
+    private static string FormatNullableCount(long? value)
+        => value?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "unavailable";
 
     private static async Task<CliCommandResult> CollectCpuSampleAsync(
         IServiceProvider services,

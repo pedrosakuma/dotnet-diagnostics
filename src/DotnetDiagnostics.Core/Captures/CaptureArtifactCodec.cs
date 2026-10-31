@@ -215,7 +215,12 @@ internal static class CaptureArtifactCodec
                 if (property.Get is not null && property.Set is null)
                     info.Properties.RemoveAt(i);
                 else if (property.Get is not null && property.Set is not null)
-                    property.IsRequired = true;
+                    property.IsRequired = !(
+                        (info.Type == typeof(CpuSampleTraceArtifact)
+                            && property.Name == nameof(CpuSampleTraceArtifact.HotspotVariability))
+                        || (info.Type == typeof(AllocationSampleArtifact)
+                            && property.Name is (nameof(AllocationSampleArtifact.EstimatedBytesTrace)
+                                or nameof(AllocationSampleArtifact.Reproducibility))));
             }
         });
         options.MakeReadOnly();

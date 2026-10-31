@@ -1,3 +1,4 @@
+using DotnetDiagnostics.Core.Comparison;
 using DotnetDiagnostics.Core.CpuSampling;
 using FluentAssertions;
 
@@ -25,6 +26,24 @@ public class CpuSampleQueryDispatcherTests
         outcome.Data.Root.Frame.Method.Should().Be("Root");
         outcome.Data.NodeCount.Should().Be(3);
         outcome.Data.Truncated.Should().BeFalse();
+    }
+
+    [Fact]
+    public void RenderHotspotVariability_ReturnsOnlyRecordedProfile()
+    {
+        var trace = Trace();
+        var enriched = CpuHotspotCaptureProjection.EnsureProfile(trace);
+
+        var current = CpuSampleQueryDispatcher.RenderHotspotVariability(enriched, Handle);
+        var legacy = CpuSampleQueryDispatcher.RenderHotspotVariability(trace, Handle);
+
+        current.Error.Should().BeNull();
+        current.Data!.Schema.Should().Be(CpuHotspotCaptureProfile.SchemaV1);
+        current.Data.TotalSamples.Should().Be(100);
+        legacy.Data.Should().BeNull();
+        legacy.Error!.Kind.Should().Be("LegacyContractMissing");
+        legacy.Hints.Should().ContainSingle()
+            .Which.Reason.Should().Contain("do not substitute zero-valued evidence");
     }
 
     [Fact]

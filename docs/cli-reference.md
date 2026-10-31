@@ -36,7 +36,7 @@ The CLI replies with the negotiated protocol, its informational CLI version, sup
 names, and additive versioned feature capabilities:
 
 ```json
-{"type":"hello","protocolVersion":2,"cliVersion":"<informational-version>","supportedLiveKinds":["counters","event_source","gc"],"threadPoolBacklog":{"version":1,"maximumWindows":64,"defaultMinimumWindows":4,"defaultDrainTailWindows":2},"heapGrowth":{"version":1,"available":true,"storeCapacity":32,"minimumStoreCapacity":2,"queryView":"growth","handleKind":"heap-snapshot","baselineField":"baselineHandle","objectiveTargetField":"typeFilter","comparisonPairsField":"comparisonPairs","objectiveSchema":"dotnet-diagnostics/retained-growth-evidence/v1","maxAttempts":8,"minimumRobustPairs":3,"rankBy":["bytes","instances"],"defaultMinDeltaPct":5,"defaultTopN":25,"maxTopN":500,"requiresSameProcess":true,"requiresSameProvenance":true,"storage":"in-memory","boundedLifetime":true,"storePolicy":"shared-configured-bounded"},"cpuHandleComparison":{"version":1,"queryView":"diff","baselineHandleField":"baselineHandle","retainedHandleLimit":2,"maxTopMovers":50},"requestLatencyComparison":{"version":1,"messageType":"compare","kind":"request-latency","inputSchema":"dotnet-diagnostics/request-latency-window-set/v1","resultSchema":"dotnet-diagnostics/request-latency-comparison/v1","maxWindowsPerSide":32,"maxRetainedSamplesPerWindow":256},"capabilities":{"investigationEvidence":{"version":1,"kinds":["cpu","allocation","off_cpu","contention","threadpool","gc","requests"],"maxItems":7,"maxItemBytes":1048576,"maxTotalBytes":4194304}}}
+{"type":"hello","protocolVersion":2,"cliVersion":"<informational-version>","supportedLiveKinds":["counters","event_source","gc"],"threadPoolBacklog":{"version":1,"maximumWindows":64,"defaultMinimumWindows":4,"defaultDrainTailWindows":2},"heapGrowth":{"version":1,"available":true,"storeCapacity":32,"minimumStoreCapacity":2,"queryView":"growth","handleKind":"heap-snapshot","baselineField":"baselineHandle","objectiveTargetField":"typeFilter","comparisonPairsField":"comparisonPairs","objectiveSchema":"dotnet-diagnostics/retained-growth-evidence/v1","maxAttempts":8,"minimumRobustPairs":3,"rankBy":["bytes","instances"],"defaultMinDeltaPct":5,"defaultTopN":25,"maxTopN":500,"requiresSameProcess":true,"requiresSameProvenance":true,"storage":"in-memory","boundedLifetime":true,"storePolicy":"shared-configured-bounded"},"cpuHandleComparison":{"version":1,"queryView":"diff","baselineHandleField":"baselineHandle","retainedHandleLimit":2,"maxTopMovers":50},"requestLatencyComparison":{"version":1,"messageType":"compare","kind":"request-latency","inputSchema":"dotnet-diagnostics/request-latency-window-set/v1","resultSchema":"dotnet-diagnostics/request-latency-comparison/v1","maxWindowsPerSide":32,"maxRetainedSamplesPerWindow":256},"cpuHotspotComparison":{"version":1,"messageType":"compare","kind":"cpu-hotspot","inputSchema":"dotnet-diagnostics/cpu-hotspot-capture-set/v1","resultSchema":"dotnet-diagnostics/cpu-hotspot-comparison/v1","maxCapturesPerSide":12,"maxMethodsPerCapture":16},"capabilities":{"investigationEvidence":{"version":1,"kinds":["cpu","allocation","off_cpu","contention","threadpool","gc","requests"],"maxItems":7,"maxItemBytes":1048576,"maxTotalBytes":4194304}}}
 ```
 
 Clients may use `cliVersion` for feature-compatibility guidance and `supportedLiveKinds` to gate
@@ -59,6 +59,20 @@ The correlated response is:
 ```json
 {"type":"comparison","requestId":"latency-1","kind":"request-latency","result":{"schema":"dotnet-diagnostics/request-latency-comparison/v1",...}}
 ```
+
+`cpuHotspotComparison` advertises the parallel bounded CPU-hotspot comparison.
+Send exactly two inline `dotnet-diagnostics/cpu-hotspot-capture-set/v1`
+objects:
+
+```json
+{"type":"compare","requestId":"cpu-1","kind":"cpu-hotspot","baseline":{...},"candidate":{...}}
+```
+
+The response carries
+`dotnet-diagnostics/cpu-hotspot-comparison/v1`. CPU `capture` frames also add
+the bounded `hotspotVariability` capture profile; clients may ignore that
+additive property. The CLI still performs the CPU collection in Core. VS Code
+must not collect EventPipe data or calculate these statistics in TypeScript.
 
 Malformed input returns a correlated `type="error"` frame. The control frame is
 bounded to 576 KiB so it can carry two maximum-size 256 KiB window sets plus
@@ -527,7 +541,8 @@ Paths, symbols, request identifiers and sanitized SQL may still contain sensitiv
 
 Allocation capture results additionally include `result.handle`, identifying that capture's
 in-memory `allocation-sample` artifact on the same connection (20-minute TTL). Query it with
-`call-tree`, `top-methods`, `hot-path`, `by-module`, `by-namespace` or `caller-callee`;
+`call-tree`, `top-methods`, `hot-path`, `by-module`, `by-namespace`, `caller-callee` or
+`allocation-reproducibility`;
 `rootMethodFilter` selects a method-name match for subtrees or callers/callees.
 The capture metrics distinguish raw sampled totals (`Sampled events` / `Sampled bytes`) from
 usable stack attribution (`Stack-attributed events` / `Stack-attributed bytes`). A completed
@@ -539,8 +554,9 @@ Successful allocation query results confirm `weightUnit:"allocation-tick-estimat
 The reused `totalSamples` / `inclusiveSamples` / `exclusiveSamples` fields then contain estimated
 allocation **bytes**, not CPU observations, tick counts or object counts. Totals include ticks
 without attributed stacks. Tree projections retain the 64-node/depth-8 limit.
-Historical artifacts without the separate byte-weighted trace are rejected by this JSONL path;
-existing text-REPL/MCP allocation queries preserve their historical tick-count semantics.
+Historical artifacts without the separate byte-weighted trace are rejected by byte-weighted
+call-tree queries and remain explicitly incompatible for reproducibility analysis rather than
+being backfilled with synthetic identity.
 Capture/aggregation costs and explicit failure limits are documented under
 [allocation profiling](./resource-boundedness.md#allocation-profiling).
 
@@ -548,6 +564,25 @@ Capture/aggregation costs and explicit failure limits are documented under
 {"type":"capture","requestId":"alloc-1","kind":"allocation","processId":1234,"durationSeconds":5,"topN":25}
 {"type":"query","requestId":"alloc-2","handle":"<result.handle>","view":"call-tree"}
 ```
+
+Allocation reproducibility requires at least two **separately started and stopped** compatible
+captures; one capture is one independence unit. Pass the earlier handles in `comparisonHandles`
+and the final handle in `handle`. At most eight captures and top-K 16 are accepted; omitted
+`topN` defaults to 3.
+
+```json
+{"type":"query","requestId":"alloc-repro","handle":"<third>","comparisonHandles":["<first>","<second>"],"view":"allocation-reproducibility","topN":3}
+```
+
+The result preserves each capture's estimated allocation bytes and allocation ticks, then reports
+their median and raw median absolute deviation as descriptive values only. It evaluates allocated
+type membership/ranks and allocation-stack membership/ranks independently: bounded top-K Jaccard
+for membership and Spearman after re-ranking only keys shared by each pair. Attribution includes
+attributed/unattributed tick and byte shares and explicit `raw_empty`, `no_stack`, `zero_weight`,
+`partial`, `complete`, `unavailable` and `unavailable_handle` states. It does not correlate a type
+to a stack, gate on sampled-total overlap/deltas, construct intervals over weighted ticks, or emit
+causal, severity, regression, health or performance verdicts. Workload equivalence and any
+scenario-specific named thresholds remain caller-held assumptions, not universal defaults.
 
 Exception captures use the same Core collectors and safety profiles as `collect --kind exceptions`
 or `collect --kind crash-guard`:
@@ -892,7 +927,8 @@ These apply to every command:
 |---|---|
 | `-p, --pid <pid\|name>` | Target OS process id, or a case-insensitive prefix of the visible .NET process entrypoint/name. Purely numeric values are always treated as literal PIDs. **Auto-resolved** when exactly one .NET process is visible and `--pid` is omitted. |
 | `--json` | Emit the raw `DiagnosticResult<T>` envelope as JSON instead of the human table. JSON is never colorized. |
-| `--explain-risk` | Print the resolved Core safety descriptor and exit without executing the command. With `--json`, emits a machine-readable safety explanation. |
+| `--jsonl` | Emit the same envelope as one compact JSON object followed by one newline. This is useful for append-only machine pipelines; it is mutually exclusive with `--json`. The bidirectional live protocol remains `stream --protocol jsonl`. |
+| `--explain-risk` | Print the resolved Core safety descriptor and exit without executing the command. With `--json` or `--jsonl`, emits a machine-readable safety explanation. |
 | `--acknowledge-risk <high\|critical>` | Deliberately authorize a high/critical operation in one-shot or other non-interactive use. The value must exactly match the resolved level. |
 | `--launch -- <app> [args]` | **Dev mode.** Launch `<app>` as a child of the CLI so live attach works under `kernel.yama.ptrace_scope=1` with no privilege — see the [Linux note](#linux-ptrace-note). Supported by `capabilities`, `collect`, `dump`, `inspect`, `inspect-heap` (live), `get-bytes` (module) and `session`. Mutually exclusive with `--pid`; the child is terminated on exit. Because process launch/termination is high risk, place the exact resolved `--acknowledge-risk` before the `--` delimiter. |
 | `--suspend-startup` | **Cold-start capture (#446).** With `--launch`, launches the target *suspended* on a reverse-connect `DOTNET_DiagnosticPorts=…,suspend` port, arms the EventPipe session **before any managed code runs**, then resumes — capturing non-replayed DependencyInjection call-site activity that an attach after startup misses, plus any loader events emitted by the runtime provider. Applies to `collect --kind startup`. The MCP equivalent is gated `collect_events(kind="startup", launch=...)` over stdio. Default off. |
@@ -1227,6 +1263,61 @@ See [networking correlation and capture quality](networking-correlation.md).
 | `--min-level <level>` | `logs`: minimum level (default `Information`). |
 | `--unsafe-provider` | `event_source`: opt in to a non-allowlisted provider. |
 | `--save <file>` | Save a comparable snapshot JSON. Supported collect kinds: `counters`, `datas` (`gc-datas`), `gc` (`gc-events`), `contention`, `threadpool`. |
+
+#### Managed-contention concentration evidence
+
+`collect --kind contention` adds a scenario-specific `concentration` block to the
+Core result and ordinary JSON output. JSONL capture frames expose the same record as
+`contentionConcentration`; human output prints the same availability, shape, counts,
+shares, quantiles, unavailable reasons, assumptions, and limitations.
+
+The block groups retained wait duration by the capture-local
+`(lockId, associatedObjectId)` identity and reports top-1 and top-3 shares. It also
+reports one-second active-window coverage and the existing bounded p50/p95/max wait
+quantiles. Positive waits with neither identity are explicitly unavailable and are
+never merged into a synthetic dominant lock. Small timestamp boundary skew is
+clamped into the first/last window; timestamps outside that bounded tolerance leave
+the temporal shape unavailable. The descriptive shape is:
+
+- `short_burst` when active windows are at most 50% of the bounded capture;
+- otherwise `dominant` when top-1 is at least 65% and top-3 is at least 80%;
+- otherwise `diffuse`;
+- `truncated_inventory` when the collector retained fewer events than it observed;
+- `bounded_capture_observed_no_contention` when a completed bounded capture observed
+  no contention events;
+- `unavailable` when the inputs cannot support a shape.
+
+These names prioritize the next contention drilldown only. They do not establish
+cause, severity, regression, starvation, or workload health. A no-contention capture
+does not substitute numeric zero for missing shares.
+
+One separately started capture is the independence unit. Events and one-second
+windows are nested descriptive evidence, not independent trials. Owner overlap is
+therefore `not_applicable` for an ordinary single capture and is reported only when
+the evaluator receives valid binary observations from separately started captures;
+its Wilson interval retains both positive and total capture counts. Source loss is
+nullable: when the runtime-side count is not observable, JSON uses `null` plus the
+stable `source_loss_not_observable` reason rather than zero. Known source loss makes
+the affected concentration and quantiles unavailable.
+
+The collector retains the 200 longest events. When `totalEvents` exceeds the retained
+event count, top-lock concentration is unavailable because shares over that ranked
+subset would be biased. The existing quantiles can remain available because their
+bounded sampler observes every delivered event independently of the retained event
+rows. Artifacts written before this additive block deserialize with
+`concentration: null`; the CLI labels the evidence unavailable and never backfills
+values from the older bounded rows.
+
+With the pinned SDK and serializer, the exact scenario-local evidence schema is
+4,917 UTF-8 bytes. Representative evidence payloads are 2,185 bytes (`available`),
+2,505 bytes (`truncated_inventory`), and 2,785 bytes
+(`bounded_capture_observed_no_contention`). A representative contention snapshot
+grows from 2,925 to 5,106 bytes, an additive 2,181 bytes. The MCP
+`collect_events(kind="contention")` projection preserves its prior wire shape and does
+not expose this block, so the measured maximal/default catalogs remain 283,977 /
+250,809 bytes: zero catalog growth and no new tool. BenchmarkDotNet continues to use
+the ordinary contention Core path, which leaves the nullable block unset and omits it
+from its null-suppressing JSON artifacts.
 
 CLI activity collection is exploratory by default: `--max-events` retains the first N
 completed stop events after source filtering (default 200). With `--trace-id`, it instead
@@ -1634,6 +1725,48 @@ significance, causation, equivalent-load, or operational-importance verdict.
 `--mode` does not apply, mixed request-latency/snapshot inputs are rejected, and
 more or fewer than two request-latency inputs are rejected.
 
+Exactly two `dotnet-diagnostics/cpu-hotspot-capture-set/v1` files select the
+Core-owned repeated-capture CPU-hotspot path:
+
+```bash
+dotnet-diagnostics-cli compare ./baseline-cpu.json ./candidate-cpu.json
+dotnet-diagnostics-cli compare ./baseline-cpu.json ./candidate-cpu.json --json
+dotnet-diagnostics-cli compare ./baseline-cpu.json ./candidate-cpu.json \
+  --save ./cpu-hotspot-comparison.json
+```
+
+The result schema is `dotnet-diagnostics/cpu-hotspot-comparison/v1`. One
+separately started and stopped compatible capture is the independence unit;
+samples within a capture are correlated observations. Each side accepts at
+most 12 captures, each capture profile retains at most 16 ranked methods, and
+each input file is limited to 256 KiB. At least four complete compatible pairs
+with at least 80 samples per capture are required for pooled movement evidence.
+
+Human, JSON, saved, and JSONL output preserve absolute total, selected-method,
+and unresolved-exclusive sample counts per capture. Available evidence reports
+capture-level median, R7 IQR and range for selected-method inclusive share and
+unresolved-exclusive share; ordered candidate-minus-baseline share deltas and
+their median; top-2 membership overlap; and selected-method rank stability.
+Shares remain fractions in JSON and are percentages only in human rendering.
+
+Compatibility is strict across target runtime/platform, backend and evidence
+kind, duration and capture protocol, quantity definition, selected method,
+workload and offered load, independence/pairing semantics, and comparison-axis
+name. Each matched pair also requires the same process-run identity, process
+ID, and pair order. Capture intervals for a process must not overlap, so a
+reused capture cannot inflate the independent pair count.
+Approximate/truncated profiles, excessive unresolved attribution,
+incomplete pairs, low counts, or a missing selected method produce explicit
+`unsupported_approximation`, `incompatible`, or
+`insufficient_observations` states; unavailable pooled fields remain `null` or
+empty rather than zero.
+
+The comparison never converts sample share to CPU time, treats samples as
+independent, normalizes by performance without offered-load evidence, or emits
+improvement, regression, significance, causation, health, or
+operational-importance verdicts. `--mode` does not apply and mixed schemas are
+rejected.
+
 Compare two or more saved comparable snapshots from `collect --save`. Human output keeps the compact verdict, first→last headline, and top metric/key deltas in the terminal; `--json` emits the full `SnapshotJourneyDiff`, and `--save` writes that full matrix to a file. Local MCP `compare_to_baseline` / `query_snapshot(view="diff")` calls use a `journey://diff/{handle}` Resource link when the matrix is large. Proxied pod calls return full results inline because dynamic pod Resources are not forwarded.
 
 For counters, contention and ThreadPool, `not_assessed` means no workload-dependent
@@ -1679,6 +1812,61 @@ dotnet-diagnostics-cli compare ./before.json ./mid.json ./after.json --save ./ma
 
 For how to read the verdict / trend and when to reach for a journey, see
 [investigation-playbooks.md §1d](./investigation-playbooks.md#1d-did-my-fix-actually-help--comparative--n-way-trend-journeys).
+
+### `gc-pressure`
+
+Characterize a bounded sequence of independent GC observation windows that was
+captured with the scenario protocol from
+[`gc-pressure-characterization.md`](./research/gc-pressure-characterization.md).
+The command is offline and Core-only: it reads one JSON capture, does not attach,
+does not recollect, and never starts an automatic heap capture.
+
+```bash
+dotnet-diagnostics-cli gc-pressure --file ./gc-pressure.capture.json
+dotnet-diagnostics-cli gc-pressure --file ./gc-pressure.capture.json --json
+dotnet-diagnostics-cli gc-pressure --file ./gc-pressure.capture.json --jsonl
+```
+
+The input contains at most eight separately started, non-overlapping windows.
+The product protocol requires at least five valid windows, exactly one baseline,
+and at least two cooldown windows. It reports median and p95 across the bounded
+window summaries for LOH size, completed Gen2 collections per observed second,
+authoritative GC pause p95, and authoritative suspension-time percentage. A
+Theil-Sen slope is available only when the five-window minimum is met.
+
+The result selects exactly one next action:
+
+- `allocation-investigation` when allocation-pressure signals persist across at
+  least three consecutive windows. This takes precedence over a later LOH
+  maximum left by churn.
+- `retained-heap-investigation` when LOH has a persistent positive robust slope
+  and the required cooldown windows do not return to the baseline envelope.
+  The action requests separate graph/root evidence; it does not identify a
+  retaining cause.
+- `continued-observation` for the stable or recovered-transient geometry.
+- `justified-inconclusion` when the shape is not discriminating or required
+  evidence is insufficient, incompatible, lost, truncated, or represented by
+  an unsupported approximation.
+
+Availability, capture/runtime/backend identity, method identity and version,
+window/event/loss counts, persistence, cooldown recovery, and temporal
+co-observations are preserved in JSON and JSONL. Timing fields are explicitly
+non-causal. The thresholds are the named scenario geometry demonstrated by the
+bounded characterization; they are not universal production defaults.
+
+Old artifacts are not reinterpreted. A missing `schemaVersion`, an unsupported
+capture schema, or an artifact without this contract returns
+`justified-inconclusion` with `availability:"incompatible"` and an explicit
+`legacy_contract_missing` or `unsupported_capture_schema_<n>` reason. The source
+file is never modified, and missing evidence is never backfilled from a live
+process or current defaults.
+
+The shipping MCP catalog is unchanged because this Core record is exposed only
+through the existing standalone CLI; no tool or MCP result schema references it,
+so the `tools/list` delta is zero bytes. A representative six-window sustained
+capture measured 2,084 input bytes, a 5,271-byte indented JSON envelope, and a
+3,779-byte one-line JSONL envelope. Tests keep the representative JSON below
+20,000 bytes and the input reader rejects files above 256 KiB before parsing.
 
 ### `investigate`
 
@@ -2136,6 +2324,22 @@ exposes drilldown views computed from the merged call tree without re-sampling:
 
 For session ranked views, `--top` is preferred. The older `--top-types` remains a compatibility
 alias; when both are present, `--top` wins.
+
+`allocation-sample` handles additionally accept `allocation-reproducibility`. Repeat
+`--comparison-handle <id>` for independently started earlier captures; the primary `--handle`
+is appended as the final capture. The view uses the same Core result and bounds as JSONL:
+2-8 captures, `--top` default 3 and maximum 16. Human output labels descriptive medians/raw MAD,
+independent type/stack Jaccard and shared-key Spearman, attribution shares/states, assumptions and
+limitations. `--json` emits the complete
+`dotnet-diagnostics/allocation-reproducibility/v1` payload. No new collection is started:
+
+```text
+query --handle <third> \
+  --comparison-handle <first> \
+  --comparison-handle <second> \
+  --view allocation-reproducibility \
+  --top 3
+```
 
 `--rank-by inclusive` ranks by inclusive observations; `exclusive` ranks leaf observations.
 `--rank-by running` uses measured on-CPU self samples only for perf/ETW evidence. On CoreCLR

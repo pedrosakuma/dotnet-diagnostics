@@ -20,6 +20,10 @@ internal static class CliSafetyPreflight
         WriteIndented = true,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
+    private static readonly JsonSerializerOptions JsonLinesOptions = new(JsonOptions)
+    {
+        WriteIndented = false,
+    };
 
     internal static async Task<CliSafetyPreflightDisposition> RunAsync(
         CliOptions options,
@@ -134,9 +138,11 @@ internal static class CliSafetyPreflight
             IsDumpPreview(options) ? "--confirm" : null,
             Executed: false);
 
-        if (options.Json)
+        if (options.Json || options.Jsonl)
         {
-            await stdout.WriteLineAsync(JsonSerializer.Serialize(explanation, JsonOptions)).ConfigureAwait(false);
+            await stdout.WriteLineAsync(JsonSerializer.Serialize(
+                explanation,
+                options.Jsonl ? JsonLinesOptions : JsonOptions)).ConfigureAwait(false);
             return;
         }
 

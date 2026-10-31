@@ -65,6 +65,30 @@ operate only over those bounded pair-level deltas, so work cannot scale with an
 unbounded raw request stream. Descriptive p50/p95/p99 values use retained
 completed requests; failure and incompleteness counts remain separate.
 
+### Offline CPU-hotspot variability comparison
+
+The Core-owned CPU-hotspot comparison (#1331) is not a collector. Each side
+accepts **1-12** separately started capture observations, each capture profile
+retains at most **16** ranked methods, and each one-shot CLI or MCP JSON body is
+limited to **256 KiB**. JSONL uses the same existing **576 KiB** bounded control
+frame, enough for two maximum-size capture sets plus envelope overhead.
+
+All bounds are enforced before comparison. Capture IDs and pair keys are
+unique within a side; counts are non-negative and fit signed 64-bit totals;
+method IDs are unique; and no per-method or unresolved count may exceed the
+capture total. Capture intervals for the same process must not overlap, and
+paired captures must name the same process/run identity. The comparison
+performs fixed-size sorting over at most 24
+capture rows and their bounded method inventories. It does not retain raw
+sample events or replay traces.
+
+At least four complete compatible capture pairs with at least 80 samples per
+capture are required for pooled selected-share, paired-delta, top-2, and rank
+evidence. Exact counts and unresolved shares remain visible when those fields
+are withheld. Approximate/truncated capture representation, unresolved share
+above 35%, or paired unresolved-share change above 20 percentage points is an
+explicit degraded state rather than silently accepted attribution.
+
 ### JSONL structured capture views
 
 The VS Code **Capture Diagnostics** path reuses the existing bounded Core collectors and
@@ -357,7 +381,7 @@ graph.
 |---|---|---|---|---|
 | `EventPipeInFlightRequestCollector` (`Requests/`) | `maxRequests` (caller-supplied) | The **oldest** still-pending requests (most likely to explain a stall) | Newer request starts once the cap is hit | `notes`: `"Dropped {n} newer in-flight request start event(s) after reaching maxRequests=..."` — `Requests`/`InFlightCount` become lower bounds |
 | `EventPipeGcCollector` (`Gc/`) | `maxEvents` 1..100,000 (default 200) independently caps collection rows, heap-stat samples and suspension intervals; pending collections 256, suspension states 128, runtime identities 16, ignored numeric reasons 16 | First N detail rows; aggregates over valid pairs continue after row caps. Pending collection key is CLR + unsigned count; suspension key is CLR + emitting thread. Small copied facts, no TraceEvent clones or TTL | New pending keys are rejected at insertion when full; existing keys can complete. No invented pause endpoint. Limitation categories have fixed names and saturating 64-bit counters; legacy 32-bit collection counters saturate explicitly | `DroppedEvents`/`DroppedHeapStats` concern collection detail only; `suspension.droppedIntervals` concerns pause detail. Fixed `limitations` entries name exact cap/loss/censoring categories. Transport loss or ambiguous pairing makes authoritative timing unavailable, not a lower bound. Missing optional restart-stop retains the primary phase but reports envelope loss; multiple CLR instances degrade process-wide attribution |
-| `EventPipeContentionCollector` (`Contention/`) | `MaxTrackedEvents = 200` | The **longest-duration** contention events | Shorter events past the cap | `notes`: `"Retained the N longest contention event(s) after reaching the in-memory cap of 200; M shorter event(s) were dropped."` |
+| `EventPipeContentionCollector` (`Contention/`) | `MaxTrackedEvents = 200` | The **longest-duration** contention events | Shorter events past the cap | `notes`: `"Retained the N longest contention event(s) after reaching the in-memory cap of 200; M shorter event(s) were dropped."` The Core/CLI contention-concentration block reports `unsupported_approximation` / `truncated_inventory` and leaves top-1/top-3 shares null whenever `TotalEvents > Events.Count`; computing lock shares from the longest-event subset would be biased. Existing bounded wait quantiles remain separately qualified by their own exact/reservoir representation. |
 | — same collector, distinct monitor ids | `MaxTrackedMonitorIds = 4096` | First 4096 distinct monitor identities | `DistinctMonitors` becomes a lower bound past the cap | `notes`: distinct-monitor overflow note |
 | `EventPipeJitCollector` (`Jit/`) | `MaxTrackedMethods = 2048`, plus separate caps for pending starts (4096 ids × 8 starts/id), IL-map correlation (4096), R2R-miss correlation (4096) | Top-line JIT counters always stay exact; per-method detail for the **first** 2048 distinct methods observed (first-come, not ranked) | Per-method rows for methods observed after the cap (still counted in aggregate totals) | `notes`: one message per exhausted cap, each naming the exact limit and drop count |
 | `DbEventAggregationState` (`Db/`) | `MaxTrackedCommandAggregates = 256`, `MaxTrackedNPlusOneIncidents = 256`, `MaxTrackedPendingCommands = 2048` (+ a TTL for pending commands) | The **first** 256 distinct command shapes / N+1 keys observed (first-come, not ranked); up to 2048 in-flight (unmatched `BeginExecute`) commands, each expiring after a fixed TTL if never completed | Additional distinct command shapes fold into a single overflow bucket; pending commands beyond the cap evict oldest-first; pending commands stuck past the TTL are dropped (assumed abandoned) | `notes`: `"Aggregated N additional distinct DB command shape(s) into the overflow bucket..."`, `"Evicted N oldest pending SqlClient command(s)..."`, `"Expired N pending SqlClient command(s) that exceeded the M-minute completion TTL."` |

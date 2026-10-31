@@ -42,12 +42,12 @@ does not expand with the result record.
 Measured against the canonical source-generated schemas and representative
 available/incompatible results:
 
-- current maximal catalog: **286,320 bytes**
-- current default catalog: **253,152 bytes**
+- current maximal catalog: **286,452 bytes**
+- current default catalog: **253,284 bytes**
 - existing `compare_to_baseline` output-schema delta is **0 bytes**
 - standalone typed request-latency result schema: **10,142 bytes**
 - projected catalog if that result were wired into the typed output schema:
-  **296,460 bytes** (**+10,140 bytes**)
+  **296,592 bytes** (**+10,140 bytes**)
 - representative available result payload: **5,688 bytes**
 - representative incompatible result payload: **6,277 bytes**
 
@@ -56,13 +56,38 @@ invoke the comparison, rather than adding about 10.1 KB to every maximal `tools/
 response. The slightly larger incompatible payload is expected because it carries
 field-level identity mismatches and explicit unavailable-field reasons.
 
+### CPU-hotspot variability comparison placement (#1331)
+
+The CPU-hotspot variability path reuses `collect_sample`/`query_snapshot` for
+collection and the existing `compare_to_baseline.snapshotsJson` parameter for
+bounded repeated-capture comparison. It adds no tool and no parameter. The
+Core result remains in the tool's unconstrained `data` envelope, so the typed
+output schema does not expand.
+
+Measured against the source-generated result schema and representative
+available/incompatible/degraded results:
+
+- current maximal catalog: **286,452 bytes**
+- current default catalog: **253,284 bytes**
+- CPU-hotspot existing `compare_to_baseline` output-schema delta is **0 bytes**
+- standalone typed CPU-hotspot result schema: **15,593 bytes**
+- projected catalog if wired into the typed output schema:
+  **302,043 bytes** (**+15,591 bytes**)
+- representative available result payload: **10,019 bytes**
+- representative incompatible result payload: **9,141 bytes**
+- representative degraded result payload: **9,115 bytes**
+
+The bounded result is therefore paid only by callers that request this
+comparison. Adding it to the registered typed output schema would exceed the
+287,000-byte maximal-catalog ceiling.
+
 ## Reproduce
 
 ### ThreadPool bounded-backlog evidence (2026-11-01, #1323)
 
-The real HTTP budget test measures **286,320 bytes** for the maximal 17-tool
-catalog and **253,152 bytes** for the default 13-tool subset. Relative to the
-pre-#1323 shipping measurement of 283,845/250,677 bytes, the typed
+The real HTTP budget test measures **286,452 bytes** for the maximal 17-tool
+catalog and **253,284 bytes** for the default 13-tool subset. Relative to the
+pre-#1323 shipping measurement of 283,977/250,809 bytes, the typed
 `ThreadPoolBacklogEvidence` property on the existing counter snapshot path adds
 **2,475 bytes** to each catalog. No MCP tool is added.
 
@@ -73,7 +98,7 @@ The executable measurement also records:
 - representative loss-abstention payload: **567 bytes**.
 
 The approved ceiling changes from **285,000 to 287,000 bytes** (+2,000 bytes,
-0.702%), leaving **680 bytes** of measured headroom. This preserves explicit
+0.702%), leaving **548 bytes** of measured headroom. This preserves explicit
 availability, abstention, independent queue/worker movement, same-capture reason
 provenance and unavailable-p95 fields instead of replacing the contract with an
 opaque object. The existing `collect_events` counter output path carries the
@@ -81,8 +106,8 @@ record; tool counts and registration gates remain unchanged.
 
 ### Objective retained-growth Core/CLI contract (2026-11-01, #1325)
 
-The executable HTTP budget test measures **286,320 bytes** for the maximal
-17-tool catalog and **253,152 bytes** for the default 13-tool subset after the
+The executable HTTP budget test measures **286,452 bytes** for the maximal
+17-tool catalog and **253,284 bytes** for the default 13-tool subset after the
 concurrent #1323 typed counter-output addition. The retained-growth
 shipping catalog delta is **0 bytes**: objective retained growth adds no MCP
 tool, and the existing `query_snapshot.data` output remains intentionally
@@ -98,8 +123,8 @@ retained growth requires no increase beyond the current **287,000-byte** ceiling
 
 ### Scenario-first statistical evidence prospective cost (2026-10-30, #1308)
 
-The real HTTP test measures the current shipping catalog at **286,320 bytes**
-for the maximal 17-tool surface and **253,152 bytes** for the default 13 tools.
+The real HTTP test measures the current shipping catalog at **286,452 bytes**
+for the maximal 17-tool surface and **253,284 bytes** for the default 13 tools.
 
 The same executable test generates a design-only representative statistical
 evidence schema and projects it onto the existing `collect_events`,
@@ -107,8 +132,8 @@ evidence schema and projects it onto the existing `collect_events`,
 tool or changing production DTOs:
 
 - representative evidence schema: **3,493 bytes**;
-- prospective maximal catalog: **296,868 bytes** (**+10,548**);
-- prospective default catalog: **263,700 bytes** (**+10,548**);
+- prospective maximal catalog: **297,000 bytes** (**+10,548**);
+- prospective default catalog: **263,832 bytes** (**+10,548**);
 - representative available payload: **1,058 bytes**;
 - representative unavailable payloads: **1,006–1,047 bytes**.
 
@@ -123,8 +148,8 @@ are in
 
 ### Objective summary comparison (2026-10-19, #1192)
 
-The real HTTP budget test measures **283,845 bytes** for the maximal 17-tool
-catalog and **250,677 bytes** for the default 13-tool subset on Linux
+The real HTTP budget test measures **283,977 bytes** for the maximal 17-tool
+catalog and **250,809 bytes** for the default 13-tool subset on Linux
 (SDK 10.0.401, runtime 10.0.12). Both are **38 bytes** above the October 18
 comparison follow-up below, from the revised `compare_to_baseline` description.
 The **285,000-byte ceiling is unchanged**, leaving **1,155 bytes** of headroom.

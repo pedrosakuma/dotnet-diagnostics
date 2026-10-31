@@ -248,6 +248,35 @@ lossy, incomplete, failed, aborted, unpaired, or incompatible evidence remains
 explicitly unavailable for paired inference. CLI and the existing MCP
 `compare_to_baseline` placement consume this same Core calculation.
 
+**Second shipping vertical slice (#1331):** Core owns the scenario-specific
+`dotnet-diagnostics/cpu-hotspot-capture/v1`,
+`dotnet-diagnostics/cpu-hotspot-capture-set/v1`, and
+`dotnet-diagnostics/cpu-hotspot-comparison/v1` contracts. One separately
+started and stopped compatible capture is the independence unit; individual
+samples never increase the inferential count. The bounded capture profile
+retains absolute total and unresolved-exclusive sample counts plus at most 16
+ranked method identities/counts. Four complete compatible pairs with at least
+80 samples per capture admit capture-level median, R7 IQR/range, paired
+selected-share deltas, top-2 overlap, and selected-method rank stability.
+
+Target/platform, backend/evidence semantics, duration/capture protocol,
+quantity, selected method, workload/offered load, independence/pairing, and
+comparison-axis compatibility are strict. Pair order and process-run identity
+and process ID must match within each pair, and capture intervals on a process
+must not overlap. Approximate or truncated representation and
+material unresolved attribution are explicit `unsupported_approximation`;
+missing/low/incomplete evidence is `insufficient_observations`; identity
+failures are `incompatible`. Counts and unresolved shares remain visible when
+pooling is withheld.
+
+This slice does not convert sample share to CPU time, treat samples inside a
+capture as independent, normalize performance without offered-load evidence,
+or emit movement thresholds, significance, improvement, regression,
+causation, health, or operational verdicts. CLI file/JSON/JSONL and the
+existing MCP comparison envelope consume the same Core result. MCP collection
+continues through the existing CPU sample/query surface, and VS Code continues
+through CLI JSONL rather than a TypeScript collector.
+
 ### 8.2 BenchmarkDotNet
 
 The BenchmarkDotNet project already references Core; Core must never reference
@@ -436,11 +465,11 @@ scenario vertical slice (#1323) present:
 
 | Measurement | UTF-8 bytes |
 |---|---:|
-| Current maximal 17-tool catalog | 286,320 |
-| Current default 13-tool catalog | 253,152 |
+| Current maximal 17-tool catalog | 286,452 |
+| Current default 13-tool catalog | 253,284 |
 | Representative evidence JSON schema | 3,493 |
-| Prospective maximal catalog when the typed record is added to `collect_events`, `collect_sample`, and `compare_to_baseline` | 296,868 |
-| Prospective default catalog with the same three existing tools | 263,700 |
+| Prospective maximal catalog when the typed record is added to `collect_events`, `collect_sample`, and `compare_to_baseline` | 297,000 |
+| Prospective default catalog with the same three existing tools | 263,832 |
 | Catalog increase, maximal and default | 10,548 |
 | Representative `available` payload | 1,058 |
 | Representative unavailable payload range | 1,006–1,047 |
@@ -458,6 +487,31 @@ Therefore:
 - a shared record after two vertical slices requires a deliberate catalog-budget
   decision or a proven reusable-schema mechanism, not an assumption that shared
   result types cost zero;
+
+### 13.1 First vertical slice: contention concentration
+
+Issue #1319 implements a scenario-specific Core result and CLI projection rather than
+the synthetic shared record above. On the same pinned SDK/serializer:
+
+| Measurement | UTF-8 bytes |
+|---|---:|
+| `ContentionConcentrationEvidence` JSON schema | 4,917 |
+| Representative `available` evidence payload | 2,185 |
+| Representative `truncated_inventory` evidence payload | 2,505 |
+| Representative `bounded_capture_observed_no_contention` evidence payload | 2,785 |
+| Representative contention snapshot without evidence | 2,925 |
+| Representative contention snapshot with evidence | 5,106 |
+| Representative snapshot increase | 2,181 |
+| Maximal/default MCP catalog increase | 0 / 0 |
+
+The maximal/default catalogs remain 283,977 / 250,809 bytes. The existing
+`collect_events(kind="contention")` wire result uses a projection with the prior
+contention fields and deliberately excludes the new Core/CLI block. This preserves
+the approved MCP surface and demonstrates the intended vertical-slice rule: measure
+the scenario contract at its actual placement instead of paying repeated generated
+schema cost for an unapproved universal DTO. The standalone CLI opts into a dedicated
+Core collection path; the ordinary path used by MCP and BenchmarkDotNet leaves the
+block unset, preserving their existing behavior.
 - opaque/untyped MCP data is not an automatic workaround when clients need stable
   evidence semantics.
 
