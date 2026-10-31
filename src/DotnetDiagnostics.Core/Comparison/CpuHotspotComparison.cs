@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using DotnetDiagnostics.Core.CpuSampling;
+using DotnetDiagnostics.Core.Memory;
 
 namespace DotnetDiagnostics.Core.Comparison;
 
@@ -13,16 +14,18 @@ public static class CpuHotspotCaptureProjection
     {
         ArgumentNullException.ThrowIfNull(artifact);
 
-        var rows = CpuSampleComparableProjection.ProjectTyped(artifact, "cpu-sample")
+        var root = CallTreeIdentityProjector.Stamp(artifact.Root, artifact.MethodIdentities);
+        var rows = CpuSampleAnalytics.RankMethods(root, artifact.TotalSamples, byInclusive: true)
             .Select(row =>
             {
-                var key = ComparableKeyFactory.ForMethod("cpu-sample", row.Key.Symbol, row.Key.Identity);
+                var symbol = new SymbolRef(row.Module, row.Method);
+                var key = ComparableKeyFactory.ForMethod("cpu-sample", symbol, row.Identity);
                 return new
                 {
                     MethodId = key.ExactId ?? key.StableId,
-                    DisplayName = row.Key.Symbol.MethodFullName,
-                    row.Value.InclusiveSamples,
-                    row.Value.ExclusiveSamples,
+                    DisplayName = row.Method,
+                    row.InclusiveSamples,
+                    row.ExclusiveSamples,
                 };
             })
             .OrderByDescending(static row => row.InclusiveSamples)

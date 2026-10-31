@@ -307,6 +307,45 @@ public sealed class CpuHotspotComparisonTests
         profile.Methods.Should().OnlyContain(method => !string.IsNullOrWhiteSpace(method.MethodId));
     }
 
+    [Fact]
+    public void CaptureProjection_SumsInclusiveSamplesAcrossDisjointCallPaths()
+    {
+        var sharedLeft = new CallTreeNode(
+            new SampledFrame("Demo", "Shared"),
+            30,
+            0,
+            []);
+        var sharedRight = new CallTreeNode(
+            new SampledFrame("Demo", "Shared"),
+            30,
+            0,
+            []);
+        var root = new CallTreeNode(
+            new SampledFrame("", "<root>"),
+            60,
+            0,
+            [
+                new CallTreeNode(new SampledFrame("Demo", "Left"), 30, 0, [sharedLeft]),
+                new CallTreeNode(new SampledFrame("Demo", "Right"), 30, 0, [sharedRight]),
+            ]);
+        var artifact = new CpuSampleTraceArtifact(
+            42,
+            DateTimeOffset.UnixEpoch,
+            TimeSpan.FromSeconds(5),
+            60,
+            root,
+            new Dictionary<SymbolRef, SourceLocation>(),
+            new Dictionary<SymbolRef, MethodIdentity>())
+        {
+            Evidence = CpuSampleEvidence.EventPipeSampleProfiler,
+        };
+
+        var profile = CpuHotspotCaptureProjection.Project(artifact);
+
+        profile.Methods.Single(method => method.DisplayName == "Shared")
+            .InclusiveSamples.Should().Be(60);
+    }
+
     private static CpuHotspotCaptureSet CaptureSet(
         string axisValue,
         int[] selectedSamples,
