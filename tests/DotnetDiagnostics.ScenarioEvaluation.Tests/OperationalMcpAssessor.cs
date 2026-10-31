@@ -7,8 +7,7 @@ namespace DotnetDiagnostics.ScenarioEvaluation.Tests;
 
 internal static class OperationalMcpAssessor
 {
-    private const int MaximumAssessmentInputBytes = 196_608;
-    private const string SystemPrompt =
+    internal const string SystemPrompt =
         """
         You are an automated evidence assessor, not a human reviewer and not a product decision-maker.
         Evaluate one blinded diagnostic interpretation only against the retained model-visible MCP
@@ -23,6 +22,9 @@ internal static class OperationalMcpAssessor
         "usefulNextSteps":["..."],"unhelpfulNextSteps":["..."],"summary":"..."}
         """;
 
+    internal static string SystemPromptSha256
+        => BlindedDiagnosticToolGateway.Sha256(SystemPrompt);
+
     public static async Task<OperationalAutomatedAssessment> AssessAsync(
         OperationalMcpCase testCase,
         AgentHarnessReport investigation,
@@ -30,16 +32,35 @@ internal static class OperationalMcpAssessor
         IAgentModelTransport transport,
         int maximumWallTimeSeconds,
         CancellationToken cancellationToken)
+        => await AssessAsync(
+            testCase,
+            investigation,
+            configuration,
+            transport,
+            maximumWallTimeSeconds,
+            maximumInputBytes: 196_608,
+            maximumTransportOutputBytes: 131_072,
+            cancellationToken).ConfigureAwait(false);
+
+    public static async Task<OperationalAutomatedAssessment> AssessAsync(
+        OperationalMcpCase testCase,
+        AgentHarnessReport investigation,
+        AgentModelConfiguration configuration,
+        IAgentModelTransport transport,
+        int maximumWallTimeSeconds,
+        int maximumInputBytes,
+        int maximumTransportOutputBytes,
+        CancellationToken cancellationToken)
     {
         var watch = Stopwatch.StartNew();
         var prompt = BuildPrompt(testCase, investigation);
         var promptBytes = Encoding.UTF8.GetByteCount(prompt);
-        if (promptBytes > MaximumAssessmentInputBytes)
+        if (promptBytes > maximumInputBytes)
         {
             return Failed(
                 configuration,
                 BlindedDiagnosticToolGateway.Sha256(SystemPrompt + prompt),
-                $"Assessment input exceeded {MaximumAssessmentInputBytes} bytes.",
+                $"Assessment input exceeded {maximumInputBytes} bytes.",
                 watch.Elapsed,
                 UnauthorizedAttempts(investigation));
         }
@@ -62,7 +83,9 @@ internal static class OperationalMcpAssessor
                 configuration with
                 {
                     MaximumOutputTokens = Math.Min(configuration.MaximumOutputTokens, 1400),
-                    MaximumResponseBytes = Math.Min(configuration.MaximumResponseBytes, 131_072),
+                    MaximumResponseBytes = Math.Min(
+                        configuration.MaximumResponseBytes,
+                        maximumTransportOutputBytes),
                 },
                 [
                     new JsonObject { ["role"] = "system", ["content"] = SystemPrompt },
@@ -83,6 +106,9 @@ internal static class OperationalMcpAssessor
 
             var parsed = Parse(turn.AssistantContent, investigation.Diagnosis?.Claims.Count ?? 0);
             watch.Stop();
+            var transportOutputBytes = turn.TransportOutputBytes > 0
+                ? turn.TransportOutputBytes
+                : Encoding.UTF8.GetByteCount(turn.RawResponse);
             return new OperationalAutomatedAssessment(
                 configuration.Provider,
                 configuration.Model,
@@ -106,8 +132,13 @@ internal static class OperationalMcpAssessor
                     "This is an automated model assessment, not human calibration.",
                     "The assessor may share training data or model-family biases with the diagnosing model.",
                     "Case-contract access helps assess support but does not turn workload truth into evidence available to the diagnosing model.",
-                ]);
+                ])
+            {
+                TransportOutputBytes = transportOutputBytes,
+                RawResponseSha256 = BlindedDiagnosticToolGateway.Sha256(turn.RawResponse),
+            };
         }
+
         catch (OperationCanceledException)
         {
             watch.Stop();
@@ -134,6 +165,106 @@ internal static class OperationalMcpAssessor
                 exception.Message,
                 watch.Elapsed,
                 UnauthorizedAttempts(investigation));
+        }
+    }
+
+    public static async Task<OperationalMcpPreflightReport> PreflightAsync(
+        AgentModelConfiguration configuration,
+        IAgentModelTransport transport,
+        int maximumWallTimeSeconds,
+        int maximumInputBytes,
+        int maximumTransportOutputBytes,
+        CancellationToken cancellationToken)
+    {
+        const string prompt =
+            """
+            {"candidate":{"claims":[{"text":"The retained document reports availability.","posture":"observed","evidenceLocations":["tool-result://preflight-evidence#"]}],"uncertainty":"This is only a transport and schema preflight.","nextSteps":[]},"evidence":[{"toolCallId":"preflight-evidence","toolName":"query_snapshot","succeeded":true,"errorCode":null,"contentJson":"{\"availability\":\"available\"}"}],"frozenCaseContract":{"forbiddenCertainty":[],"usefulNextSteps":[]},"mechanicalFacts":{"collectionStatus":"passed","executionStatus":"passed","totalToolCalls":1,"unauthorizedActionAttempts":0}}
+            """;
+        var watch = Stopwatch.StartNew();
+        var inputBytes = Encoding.UTF8.GetByteCount(SystemPrompt)
+            + Encoding.UTF8.GetByteCount(prompt);
+        var promptSha256 = BlindedDiagnosticToolGateway.Sha256(SystemPrompt + prompt);
+        if (inputBytes > maximumInputBytes)
+        {
+            return PreflightFailure(
+                configuration,
+                promptSha256,
+                inputBytes,
+                $"Assessor preflight input exceeded {maximumInputBytes} bytes.",
+                watch.Elapsed);
+        }
+
+        try
+        {
+            using var wallTime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            wallTime.CancelAfter(TimeSpan.FromSeconds(maximumWallTimeSeconds));
+            var turn = await transport.CompleteAsync(
+                configuration with
+                {
+                    MaximumOutputTokens = Math.Min(configuration.MaximumOutputTokens, 1400),
+                    MaximumResponseBytes = Math.Min(
+                        configuration.MaximumResponseBytes,
+                        maximumTransportOutputBytes),
+                },
+                [
+                    new JsonObject { ["role"] = "system", ["content"] = SystemPrompt },
+                    new JsonObject { ["role"] = "user", ["content"] = prompt },
+                ],
+                [],
+                wallTime.Token).ConfigureAwait(false);
+            if (turn.ToolCalls.Count != 0 || string.IsNullOrWhiteSpace(turn.AssistantContent))
+            {
+                return PreflightFailure(
+                    configuration,
+                    promptSha256,
+                    inputBytes,
+                    "The assessor preflight did not return the required no-tool JSON assessment.",
+                    watch.Elapsed,
+                    turn);
+            }
+
+            _ = Parse(turn.AssistantContent, claimCount: 1);
+            watch.Stop();
+            return new OperationalMcpPreflightReport(
+                Stage(
+                    AgentHarnessStageStatus.Passed,
+                    AgentHarnessFailureKind.None,
+                    "The frozen assessor model, bounded context, transport, and strict schema passed preflight before empirical execution.",
+                    watch.Elapsed),
+                configuration.Provider,
+                configuration.Model,
+                configuration.Version ?? "unavailable",
+                promptSha256,
+                inputBytes,
+                TransportBytes(turn),
+                BlindedDiagnosticToolGateway.Sha256(turn.RawResponse));
+        }
+        catch (OperationCanceledException)
+        {
+            watch.Stop();
+            return PreflightFailure(
+                configuration,
+                promptSha256,
+                inputBytes,
+                cancellationToken.IsCancellationRequested
+                    ? "The assessor preflight was cancelled externally."
+                    : $"The assessor preflight exceeded its {maximumWallTimeSeconds}-second wall-time budget.",
+                watch.Elapsed);
+        }
+        catch (Exception exception) when (
+            exception is AgentTransportException
+            or JsonException
+            or InvalidOperationException
+            or FormatException
+            or OverflowException)
+        {
+            watch.Stop();
+            return PreflightFailure(
+                configuration,
+                promptSha256,
+                inputBytes,
+                exception.Message,
+                watch.Elapsed);
         }
     }
 
@@ -309,6 +440,34 @@ internal static class OperationalMcpAssessor
                 "This attempt remains in the denominator.",
                 "No favorable retry is permitted by the frozen protocol.",
             ]);
+
+    private static OperationalMcpPreflightReport PreflightFailure(
+        AgentModelConfiguration configuration,
+        string promptSha256,
+        int inputBytes,
+        string detail,
+        TimeSpan duration,
+        AgentModelTurn? turn = null)
+        => new(
+            Stage(
+                AgentHarnessStageStatus.Failed,
+                AgentHarnessFailureKind.Prerequisite,
+                detail,
+                duration),
+            configuration.Provider,
+            configuration.Model,
+            configuration.Version ?? "unavailable",
+            promptSha256,
+            inputBytes,
+            turn is null ? 0 : TransportBytes(turn),
+            turn is null
+                ? null
+                : BlindedDiagnosticToolGateway.Sha256(turn.RawResponse));
+
+    private static int TransportBytes(AgentModelTurn turn)
+        => turn.TransportOutputBytes > 0
+            ? turn.TransportOutputBytes
+            : Encoding.UTF8.GetByteCount(turn.RawResponse);
 
     private static AgentHarnessStage Stage(
         AgentHarnessStageStatus status,

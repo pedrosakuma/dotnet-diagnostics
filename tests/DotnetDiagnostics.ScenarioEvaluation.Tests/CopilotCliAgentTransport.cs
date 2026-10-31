@@ -193,6 +193,8 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
         info.ArgumentList.Add(configuration.Model);
         info.ArgumentList.Add("--effort");
         info.ArgumentList.Add("low");
+        info.ArgumentList.Add("--context");
+        info.ArgumentList.Add(configuration.ContextTier);
         info.ArgumentList.Add("--session-id");
         info.ArgumentList.Add(invocationId.ToString("D"));
         info.ArgumentList.Add("--output-format");
@@ -439,6 +441,7 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
 
     internal static AgentModelTurn ParseOutput(string jsonLines)
     {
+        var transportOutputBytes = Encoding.UTF8.GetByteCount(jsonLines);
         string? accepted = null;
         foreach (var line in jsonLines.Split('\n', StringSplitOptions.RemoveEmptyEntries))
         {
@@ -495,7 +498,10 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
                         toolCall.GetProperty("arguments").GetRawText()),
                 ],
                 new AgentModelUsage(null, null, null),
-                null);
+                null)
+            {
+                TransportOutputBytes = transportOutputBytes,
+            };
         }
 
         return new AgentModelTurn(
@@ -503,7 +509,10 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
             root.GetProperty("diagnosis").GetRawText(),
             [],
             new AgentModelUsage(null, null, null),
-            null);
+            null)
+        {
+            TransportOutputBytes = transportOutputBytes,
+        };
     }
 
     private static void RejectCliToolActivity(JsonElement root)

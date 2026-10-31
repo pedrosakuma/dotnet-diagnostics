@@ -85,6 +85,16 @@ public sealed record OperationalMcpBudget(
     int MaximumResponseBytes,
     int MaximumArtifactBytes)
 {
+    public int MaximumPreflightWallTimeSeconds { get; init; } = 60;
+
+    public int MaximumMcpPayloadBytes { get; init; } = MaximumResponseBytes;
+
+    public int MaximumModelTransportOutputBytes { get; init; } = MaximumResponseBytes;
+
+    public int MaximumAssessmentInputBytes { get; init; } = 196_608;
+
+    public int MaximumAssessmentTransportOutputBytes { get; init; } = 131_072;
+
     public AgentHarnessBudget ToAgentBudget()
         => new(
             MaximumWallTimeSeconds,
@@ -94,9 +104,18 @@ public sealed record OperationalMcpBudget(
             MaximumInputTokens,
             MaximumOutputTokens,
             MaximumEstimatedCostUsd,
-            MaximumResponseBytes,
+            MaximumModelTransportOutputBytes,
             MaximumArtifactBytes);
 }
+
+public sealed record OperationalMcpModelFreeze(
+    string Provider,
+    string DiagnosingModel,
+    string AssessorModel,
+    string ContextTier,
+    string DiagnosingPromptSha256,
+    string AssessorPromptSha256,
+    string TransportProtocolSha256);
 
 public sealed record OperationalMcpInventoryEntry(
     OperationalMcpFamily Family,
@@ -126,7 +145,14 @@ public sealed record OperationalMcpCase(
     int RequiredCaptures,
     string ExpectedEvidence,
     IReadOnlyList<string> ForbiddenCertainty,
-    IReadOnlyList<string> UsefulNextSteps);
+    IReadOnlyList<string> UsefulNextSteps)
+{
+    public int CaptureDurationSeconds { get; init; } = 2;
+
+    public int CaptureTopN { get; init; } = 10;
+
+    public int QueryTopN { get; init; } = 5;
+}
 
 public sealed record OperationalMcpProtocol(
     int SchemaVersion,
@@ -139,7 +165,19 @@ public sealed record OperationalMcpProtocol(
     OperationalMcpBudget Budgets,
     IReadOnlyList<OperationalMcpInventoryEntry> Inventory,
     IReadOnlyList<OperationalMcpProjection> Projections,
-    IReadOnlyList<OperationalMcpCase> Cases);
+    IReadOnlyList<OperationalMcpCase> Cases)
+{
+    public OperationalMcpModelFreeze? Models { get; init; }
+
+    public string ExpectedProductFingerprint { get; init; } = "unavailable";
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter<OperationalMcpExchangeOrigin>))]
+public enum OperationalMcpExchangeOrigin
+{
+    Predeclared,
+    FollowUp,
+}
 
 public sealed record OperationalMcpExchange(
     int Sequence,
@@ -154,7 +192,11 @@ public sealed record OperationalMcpExchange(
     bool Succeeded,
     bool Projected,
     string? ProjectedSchema,
-    string? ErrorCode);
+    string? ErrorCode)
+{
+    public OperationalMcpExchangeOrigin Origin { get; init; } =
+        OperationalMcpExchangeOrigin.FollowUp;
+}
 
 public sealed record OperationalClaimAssessment(
     string Claim,
@@ -176,7 +218,22 @@ public sealed record OperationalAutomatedAssessment(
     IReadOnlyList<string> UnhelpfulNextSteps,
     int UnauthorizedActionAttempts,
     string Summary,
-    IReadOnlyList<string> Limitations);
+    IReadOnlyList<string> Limitations)
+{
+    public int TransportOutputBytes { get; init; }
+
+    public string? RawResponseSha256 { get; init; }
+}
+
+public sealed record OperationalMcpPreflightReport(
+    AgentHarnessStage Stage,
+    string AssessorProvider,
+    string AssessorModel,
+    string AssessorVersion,
+    string PromptSha256,
+    int InputBytes,
+    int TransportOutputBytes,
+    string? RawResponseSha256);
 
 public sealed record OperationalMcpRunReport(
     int SchemaVersion,
@@ -193,7 +250,14 @@ public sealed record OperationalMcpRunReport(
     bool RequiredEvidenceSequenceCompleted,
     AgentHarnessReport Investigation,
     IReadOnlyList<OperationalMcpExchange> McpExchanges,
-    OperationalAutomatedAssessment Assessment);
+    OperationalAutomatedAssessment Assessment)
+{
+    public int PredeclaredToolCalls { get; init; }
+
+    public int FollowUpToolCalls { get; init; }
+
+    public bool FollowUpAddedEvidence { get; init; }
+}
 
 public sealed record OperationalDimensionDelta(
     string Dimension,
@@ -214,7 +278,7 @@ public sealed record OperationalMcpPilotReport(
     string ProtocolFingerprint,
     string InventoryFingerprint,
     string ProjectionFingerprint,
-    string ProductCommit,
+    string ProductFingerprint,
     string ModelProvider,
     string Model,
     string ModelVersion,
@@ -224,7 +288,12 @@ public sealed record OperationalMcpPilotReport(
     DateTimeOffset CompletedAtUtc,
     IReadOnlyList<OperationalMcpRunReport> Attempts,
     IReadOnlyList<OperationalFamilyConclusion> FamilyConclusions,
-    IReadOnlyList<string> Limitations);
+    IReadOnlyList<string> Limitations)
+{
+    public OperationalMcpPreflightReport? AssessorPreflight { get; init; }
+
+    public string EvaluatorCommit { get; init; } = "unavailable";
+}
 
 internal static class OperationalMcpJson
 {

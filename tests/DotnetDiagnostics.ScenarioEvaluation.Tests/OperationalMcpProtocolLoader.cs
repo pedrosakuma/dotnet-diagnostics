@@ -6,18 +6,26 @@ namespace DotnetDiagnostics.ScenarioEvaluation.Tests;
 
 internal static class OperationalMcpProtocolLoader
 {
-    public const int CurrentSchemaVersion = 1;
-    public const int CurrentRunSchemaVersion = 1;
-    public const int CurrentPilotSchemaVersion = 1;
-    internal const string FrozenProtocolVersion = "1.4.0";
+    public const int CurrentSchemaVersion = 2;
+    public const int CurrentRunSchemaVersion = 2;
+    public const int CurrentPilotSchemaVersion = 2;
+    internal const string FrozenProtocolVersion = "2.0.0";
     internal const string FrozenProtocolFingerprint =
-        "1b2ef845bd52287994d822decfca71a073114c72a2c7b5602a70d8e570779879";
+        "df1db2c83d7d71967fa582153f49e88b0201017f3f4486602f2da49a2604c43d";
     internal const string FrozenInventoryFingerprint =
-        "c01e7f13107854fdc4f8f9aae5d60d6b0cd4f33a3728b5027c0d88947e57947e";
+        "5502f0bfd8617e77faf3315fe5e8087976f8667d08c353b01093c4be95463f67";
     internal const string FrozenProjectionFingerprint =
-        "ea96a3a44e6326df5e1d58b8a88695ec4dc5307a77d871a0cb2a190674a8010e";
+        "9ab6488c85a32d5fa89426411068866c6966832e41cfa899d2c348e8ced47696";
+    internal const string PreservedV1FileSha256 =
+        "c95d63300432d0d09e2b65bcab5b9fae0c2cfe8ee9ee2fef456714975b939891";
 
     public static string DefaultPath
+        => Path.Combine(
+            AppContext.BaseDirectory,
+            "OperationalMcp",
+            "operational-mcp-ab-v2.protocol.json");
+
+    public static string PreservedV1Path
         => Path.Combine(
             AppContext.BaseDirectory,
             "OperationalMcp",
@@ -28,6 +36,27 @@ internal static class OperationalMcpProtocolLoader
         var protocol = OperationalMcpJson.Read<OperationalMcpProtocol>(DefaultPath);
         Validate(protocol);
         ValidateFrozenIdentity(protocol);
+        return protocol;
+    }
+
+    public static OperationalMcpProtocol LoadPreservedV1()
+    {
+        var fileSha256 = Convert.ToHexStringLower(
+            SHA256.HashData(File.ReadAllBytes(PreservedV1Path)));
+        if (!string.Equals(fileSha256, PreservedV1FileSha256, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                "The preserved operational MCP protocol 1.4.0 file changed.");
+        }
+
+        var protocol = OperationalMcpJson.Read<OperationalMcpProtocol>(PreservedV1Path);
+        if (protocol.SchemaVersion != 1
+            || !string.Equals(protocol.ProtocolVersion, "1.4.0", StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                "The preserved operational MCP protocol 1.4.0 artifact changed.");
+        }
+
         return protocol;
     }
 
@@ -44,6 +73,49 @@ internal static class OperationalMcpProtocolLoader
 
     public static string ProjectionFingerprint(OperationalMcpProtocol protocol)
         => Fingerprint(protocol.Projections);
+
+    public static string ProductSourceFingerprint()
+    {
+        var root = RepositoryRoot();
+        var paths = new List<string>
+        {
+            Path.Combine(root, "Directory.Build.props"),
+            Path.Combine(root, "Directory.Packages.props"),
+            Path.Combine(root, "global.json"),
+        };
+        foreach (var directory in new[]
+                 {
+                     Path.Combine(root, "src", "DotnetDiagnostics.Core"),
+                     Path.Combine(root, "src", "DotnetDiagnostics.Mcp"),
+                 })
+        {
+            paths.AddRange(Directory.EnumerateFiles(
+                directory,
+                "*",
+                SearchOption.AllDirectories).Where(path =>
+                !path.Contains(
+                    $"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}",
+                    StringComparison.OrdinalIgnoreCase)
+                && !path.Contains(
+                    $"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}",
+                    StringComparison.OrdinalIgnoreCase)));
+        }
+
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        foreach (var path in paths.OrderBy(path =>
+                     Path.GetRelativePath(root, path),
+                     StringComparer.Ordinal))
+        {
+            var relative = Path.GetRelativePath(root, path)
+                .Replace(Path.DirectorySeparatorChar, '/');
+            hash.AppendData(Encoding.UTF8.GetBytes(relative));
+            hash.AppendData([0]);
+            hash.AppendData(File.ReadAllBytes(path));
+            hash.AppendData([0]);
+        }
+
+        return Convert.ToHexStringLower(hash.GetHashAndReset());
+    }
 
     public static IReadOnlyList<OperationalMcpArm> ArmOrder(
         OperationalMcpProtocol protocol,
@@ -64,14 +136,12 @@ internal static class OperationalMcpProtocolLoader
         var view = testCase.Family == OperationalMcpFamily.AllocationReproducibility
             ? "allocation-reproducibility"
             : "hotspot-variability";
-        var queryRequirement = testCase.Family == OperationalMcpFamily.AllocationReproducibility
-            ? "compare every returned handle in one query_snapshot call"
-            : "query every returned handle with query_snapshot";
         var reportedSymptom =
-            $"{testCase.ReportedSymptom} Frozen procedure: request exactly "
-            + $"{testCase.RequiredCaptures} fresh collect_sample(kind=\"{kind}\") captures, then "
-            + $"{queryRequirement} using view=\"{view}\" before returning a diagnosis. "
-            + "Do not substitute manual comparison of individual capture summaries for the required query.";
+            $"{testCase.ReportedSymptom} The evaluator has already executed exactly "
+            + $"{testCase.RequiredCaptures} fresh collect_sample(kind=\"{kind}\") captures and "
+            + $"the frozen family-specific query_snapshot(view=\"{view}\") sequence. "
+            + "Interpret the retained evidence first; use the same bounded tools only when a "
+            + "follow-up can add evidence rather than repeat the predeclared sequence.";
         return new(
             ScenarioManifestLoader.CurrentSchemaVersion,
             $"operational-mcp-{testCase.Id}",
@@ -139,6 +209,57 @@ internal static class OperationalMcpProtocolLoader
                 "The operational MCP assessment wall-time budget must be in [1, 300] seconds.");
         }
 
+        if (protocol.Budgets.MaximumPreflightWallTimeSeconds is < 1 or > 300
+            || protocol.Budgets.MaximumMcpPayloadBytes is < 1 or > 1_048_576
+            || protocol.Budgets.MaximumModelTransportOutputBytes is < 1 or > 1_048_576
+            || protocol.Budgets.MaximumAssessmentInputBytes is < 1 or > 1_048_576
+            || protocol.Budgets.MaximumAssessmentTransportOutputBytes is < 1 or > 1_048_576)
+        {
+            throw new InvalidDataException(
+                "The operational MCP v2 preflight and byte budgets must be finite and bounded.");
+        }
+
+        var models = protocol.Models
+            ?? throw new InvalidDataException(
+                "The operational MCP v2 protocol must freeze diagnosing and assessor models.");
+        Require(models.Provider, "models.provider");
+        Require(models.DiagnosingModel, "models.diagnosingModel");
+        Require(models.AssessorModel, "models.assessorModel");
+        Require(models.ContextTier, "models.contextTier");
+        RequireFingerprint(models.DiagnosingPromptSha256, "models.diagnosingPromptSha256");
+        RequireFingerprint(models.AssessorPromptSha256, "models.assessorPromptSha256");
+        RequireFingerprint(models.TransportProtocolSha256, "models.transportProtocolSha256");
+        if (!string.Equals(
+                models.DiagnosingPromptSha256,
+                BlindedAgentHarness.SystemPromptSha256,
+                StringComparison.Ordinal)
+            || !string.Equals(
+                models.AssessorPromptSha256,
+                OperationalMcpAssessor.SystemPromptSha256,
+                StringComparison.Ordinal)
+            || !string.Equals(
+                models.TransportProtocolSha256,
+                BlindedAgentHarness.TransportProtocolSha256,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                "The frozen v2 prompt or transport-protocol fingerprint changed.");
+        }
+
+        RequireFingerprint(
+            protocol.ExpectedProductFingerprint,
+            nameof(protocol.ExpectedProductFingerprint));
+        var productFingerprint = ProductSourceFingerprint();
+        if (!string.Equals(
+                productFingerprint,
+                protocol.ExpectedProductFingerprint,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                $"The frozen product source fingerprint changed: expected "
+                + $"{protocol.ExpectedProductFingerprint}, observed {productFingerprint}.");
+        }
+
         if (protocol.Inventory.Count == 0
             || protocol.Inventory.Select(entry => entry.Family).Distinct().Count() != protocol.Inventory.Count)
         {
@@ -200,6 +321,11 @@ internal static class OperationalMcpProtocolLoader
                 || testCase.Workers is < 1 or > 8
                 || testCase.WarmupMilliseconds is < 0 or > 10_000
                 || testCase.RequiredCaptures is < 3 or > 4
+                || testCase.CaptureDurationSeconds is < 1 or > 6
+                || testCase.CaptureTopN is < 1 or > 20
+                || testCase.QueryTopN is < 1 or > 16
+                || testCase.RequiredCaptures * testCase.CaptureDurationSeconds
+                    > protocol.Budgets.MaximumCaptureSeconds
                 || testCase.ForbiddenCertainty.Count == 0
                 || testCase.UsefulNextSteps.Count == 0)
             {
@@ -216,6 +342,16 @@ internal static class OperationalMcpProtocolLoader
                 {
                     throw new InvalidDataException(
                         $"Partition '{partition}' is missing family '{family}'.");
+                }
+
+                if (protocol.Cases.Count(value =>
+                        value.Partition == OperationalMcpPartition.Development) != eligible.Count
+                    || protocol.Cases.Any(value =>
+                        value.Id.Contains("1338", StringComparison.Ordinal)
+                        || value.Id.Contains("v1", StringComparison.Ordinal)))
+                {
+                    throw new InvalidDataException(
+                        "The v2 protocol must contain one fresh development case per eligible family and no v1 case identity.");
                 }
             }
 
@@ -292,5 +428,19 @@ internal static class OperationalMcpProtocolLoader
             throw new InvalidDataException(
                 $"Operational MCP field '{name}' must be a lowercase SHA-256 fingerprint.");
         }
+    }
+
+    private static string RepositoryRoot()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null
+               && !File.Exists(Path.Combine(directory.FullName, "DotnetDiagnostics.slnx")))
+        {
+            directory = directory.Parent;
+        }
+
+        return directory?.FullName
+            ?? throw new FileNotFoundException(
+                "Could not locate the repository root for product fingerprinting.");
     }
 }

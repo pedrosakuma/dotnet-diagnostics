@@ -51,7 +51,10 @@ public sealed record AgentModelConfiguration(
     int MaximumOutputTokens,
     string? Version = null,
     int MaximumResponseBytes = 131_072,
-    string? TransportVersion = null);
+    string? TransportVersion = null)
+{
+    public string ContextTier { get; init; } = "default";
+}
 
 public sealed record AgentHarnessStage(
     AgentHarnessStageStatus Status,
@@ -79,7 +82,10 @@ public sealed record AgentModelTurn(
     string? AssistantContent,
     IReadOnlyList<AgentToolCall> ToolCalls,
     AgentModelUsage Usage,
-    string? ProviderRequestId);
+    string? ProviderRequestId)
+{
+    public int TransportOutputBytes { get; init; }
+}
 
 public sealed record AgentToolResult(
     string ToolCallId,
@@ -171,11 +177,25 @@ public sealed record AgentHarnessReport(
     int? TotalOutputTokens,
     decimal? EstimatedCostUsd,
     int RetainedArtifactBytes,
-    IReadOnlyList<string> Limitations);
+    IReadOnlyList<string> Limitations)
+{
+    public int ModelTransportOutputBytes { get; init; }
+}
 
 public sealed record AgentHarnessRequest(
     ScenarioManifest Manifest,
     AgentModelConfiguration Model,
     AgentHarnessBudget Budget,
     string OutputPath,
-    string EvidenceKind);
+    string EvidenceKind)
+{
+    public IReadOnlyList<AgentPredeclaredEvidence> PredeclaredEvidence { get; init; } = [];
+}
+
+public sealed record AgentPredeclaredEvidence(
+    AgentToolCall Call,
+    AgentToolResult Result,
+    AgentApprovalEvent Approval);
+
+public sealed class AgentPredeclaredEvidenceException(string message)
+    : Exception(message);
