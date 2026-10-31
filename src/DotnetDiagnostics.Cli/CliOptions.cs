@@ -52,6 +52,9 @@ internal sealed record CliOptions
     /// <summary>Emit the raw <see cref="DotnetDiagnostics.Core.DiagnosticResult{T}"/> envelope as JSON (<c>--json</c>).</summary>
     public bool Json { get; init; }
 
+    /// <summary>Emit one compact machine-readable JSON object per output line (<c>--jsonl</c>).</summary>
+    public bool Jsonl { get; init; }
+
     /// <summary>Explain the resolved Core safety descriptor without executing the command (<c>--explain-risk</c>).</summary>
     public bool ExplainRisk { get; init; }
 
@@ -222,8 +225,17 @@ internal sealed record CliOptions
 
     /// <summary>Drill-down handle (<c>--handle</c>) for the <c>query</c> command (parsed for forward-compat; the one-shot CLI cannot honour it — see #286).</summary>
     public string? Handle { get; init; }
+
     /// <summary>Earlier heap-snapshot handle (<c>--baseline-handle</c>) for session <c>query --view growth</c>.</summary>
     public string? BaselineHandle { get; init; }
+
+    /// <summary>
+    /// Additional retained allocation handles for <c>query --view allocation-reproducibility</c>.
+    /// Repeat <c>--comparison-handle</c>; together with <see cref="Handle"/> the bounded set contains
+    /// at most eight separately started captures.
+    /// </summary>
+    public IReadOnlyList<string> ComparisonHandles { get; init; } = Array.Empty<string>();
+
     public string? GcHandle { get; init; }
 
     /// <summary>
@@ -403,7 +415,7 @@ internal sealed record CliOptions
     private static readonly HashSet<string> HistoricalOptions = new(StringComparer.Ordinal)
     {
         "--baseline-capture-id", "--baseline-artifact-id", "--candidate-capture-id", "--candidate-artifact-id",
-        "--capture-root", "--json", "--explain-risk", "--acknowledge-risk", "--help", "-h",
+        "--capture-root", "--json", "--jsonl", "--explain-risk", "--acknowledge-risk", "--help", "-h",
     };
 
     /// <summary>
@@ -547,6 +559,7 @@ internal sealed record CliOptions
         {
             new FlagOptionDescriptor(state => state.Help = true, "--help", "-h"),
             new FlagOptionDescriptor(state => state.Json = true, "--json"),
+            new FlagOptionDescriptor(state => state.Jsonl = true, "--jsonl"),
             new FlagOptionDescriptor(state => state.ExplainRisk = true, "--explain-risk"),
             new StringOptionDescriptor((state, value) => state.AcknowledgeRisk = value, "--acknowledge-risk"),
             new StringOptionDescriptor((state, value) => state.SavePath = value, "--save"),
@@ -641,6 +654,7 @@ internal sealed record CliOptions
             new StringOptionDescriptor((state, value) => state.Mvid = value, "--mvid"),
             new StringOptionDescriptor((state, value) => state.Asset = value, "--asset"),
             new StringOptionDescriptor((state, value) => state.Handle = value, "--handle"),
+            new StringOptionDescriptor((state, value) => state.ComparisonHandles.Add(value), "--comparison-handle"),
             new StringOptionDescriptor((state, value) => state.BaselineHandle = value, "--baseline-handle"),
             new StringOptionDescriptor((state, value) => state.GcHandle = value, "--gc-handle"),
             new StringOptionDescriptor((state, value) => state.LatestOfKind = value, "--latest-of-kind"),
@@ -705,6 +719,8 @@ internal sealed record CliOptions
         public string? CommandLineContains { get; set; }
 
         public bool Json { get; set; }
+
+        public bool Jsonl { get; set; }
 
         public bool ExplainRisk { get; set; }
 
@@ -801,6 +817,7 @@ internal sealed record CliOptions
 
         public string? Handle { get; set; }
         public string? BaselineHandle { get; set; }
+        public List<string> ComparisonHandles { get; } = [];
         public string? GcHandle { get; set; }
 
         public string? LatestOfKind { get; set; }
@@ -921,6 +938,7 @@ internal sealed record CliOptions
                 PidName = PidName,
                 CommandLineContains = CommandLineContains,
                 Json = Json,
+                Jsonl = Jsonl,
                 ExplainRisk = ExplainRisk,
                 AcknowledgeRisk = AcknowledgeRisk,
                 SavePath = SavePath,
@@ -971,6 +989,7 @@ internal sealed record CliOptions
                 Asset = Asset,
                 Handle = Handle,
                 BaselineHandle = BaselineHandle,
+                ComparisonHandles = ComparisonHandles.ToArray(),
                 GcHandle = GcHandle,
                 LatestOfKind = LatestOfKind,
                 View = View,

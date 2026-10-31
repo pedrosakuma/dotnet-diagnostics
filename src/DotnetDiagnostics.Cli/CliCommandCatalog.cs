@@ -18,6 +18,7 @@ internal static class CliCommandCatalog
         "-p",
         "--pid",
         "--json",
+        "--jsonl",
         "--explain-risk",
         "--acknowledge-risk",
         "--capture-root",
@@ -31,7 +32,7 @@ internal static class CliCommandCatalog
         "-p", "--pid", "--kind", "-d", "--duration", "--depth", "--max-events", "--max-gc-events", "--max-matched-activities", "--interval",
         "--provider", "--meter", "--source", "--category", "--min-level", "--save", "--dump-file",
         "--top-types", "--retention-path-limit", "--symbol-path", "--native-aot-map", "--cpu-backend", "--dump-type", "--out", "--mvid",
-        "--asset", "--handle", "--baseline-handle", "--gc-handle", "--latest-of-kind", "--view", "--trace-id", "--provider-filter", "--root-method-filter", "--rank-by",
+        "--asset", "--handle", "--baseline-handle", "--comparison-handle", "--gc-handle", "--latest-of-kind", "--view", "--trace-id", "--provider-filter", "--root-method-filter", "--rank-by",
         "--type-filter", "--address", "--offset", "--cursor", "--max-depth", "--max-nodes", "--thread-id",
         "--native-alloc-sample-period", "--native-lock-contention-sample-period", "--max-frames-per-thread", "--watch",
         "--frames-to-hash", "--min-count", "--top", "--threshold", "--mode", "--stack-rank",
@@ -77,6 +78,7 @@ Options:
   -p, --pid <pid|name>          Target OS process id, or visible .NET process name/prefix
                                 (auto-resolved when only one is visible).
       --json                    Emit the raw DiagnosticResult envelope as JSON.
+      --jsonl                   Emit one compact DiagnosticResult JSON object per line.
       --capture-root <directory>
                                 Stable capture store root, independent of --out and session scratch.
       --explain-risk            Print the resolved Core safety descriptor without executing.
@@ -437,6 +439,8 @@ query options:
       --after-record-id <int>   records: exclusive continuation from the previous page.
       --page-size <int>         records: bounded page size, 1..1000 (default 100).
       --handle <id>             Session drill-down handle. Exactly one of --handle/--latest-of-kind is required.
+      --comparison-handle <id>  allocation-reproducibility: additional retained allocation capture;
+                                repeat up to seven times (eight captures total with --handle).
       --baseline-handle <id>    Session heap growth: earlier heap-snapshot handle paired with --handle.
       --latest-of-kind <kind>   Session query: alias for --handle — resolves to the most recently registered
                                 non-expired handle of this kind (e.g. cpu-sample); narrow with --pid.
@@ -481,6 +485,7 @@ query options:
                 "--capture-id", "--artifact-id", "--from", "--to", "--category", "--name",
                 "--after-record-id", "--page-size",
                 "--handle",
+                "--comparison-handle",
                 "--baseline-handle",
                 "--gc-handle",
                 "--latest-of-kind",
@@ -623,6 +628,27 @@ stream options:
 """,
             "",
             ["--protocol"]),
+        new(
+            "gc-pressure",
+            "Characterize bounded GC/LOH observation windows from a capture JSON file.",
+"""
+gc-pressure options:
+      --file <path>             Required. GC pressure capture schema v1 JSON containing
+                                1-8 independent bounded windows.
+      --json                    Emit the full result envelope as indented JSON.
+      --jsonl                   Emit the same envelope as one compact JSON line.
+
+  The scenario protocol requires at least five valid windows, exactly one baseline,
+  and at least two cooldown windows. Loss, truncation, unsupported approximation,
+  insufficient evidence, and legacy artifacts select justified inconclusion.
+  Thresholds are scenario geometry, not universal production defaults.
+""",
+"""
+  dotnet-diagnostics-cli gc-pressure --file ./gc-pressure.capture.json
+  dotnet-diagnostics-cli gc-pressure --file ./gc-pressure.capture.json --json
+  dotnet-diagnostics-cli gc-pressure --file ./gc-pressure.capture.json --jsonl
+""",
+            ["--file", "--json", "--jsonl"]),
         new(
             "completion",
             "Emit a shell-completion script for bash, zsh or PowerShell.",

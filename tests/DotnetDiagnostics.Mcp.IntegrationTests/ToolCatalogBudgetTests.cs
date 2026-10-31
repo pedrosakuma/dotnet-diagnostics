@@ -10,6 +10,7 @@ using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Dump;
 using DotnetDiagnostics.Core.Evidence;
+using DotnetDiagnostics.Mcp.Tools;
 using FluentAssertions;
 using Microsoft.AspNetCore.Mvc.Testing;
 using ModelContextProtocol;
@@ -107,6 +108,24 @@ public sealed class ToolCatalogBudgetTests : IClassFixture<ToolCatalogBudgetTest
             data.EnumerateObject().Should().BeEmpty(
                 $"{name}.data must still accept any JSON value, including null and non-object values");
         }
+    }
+
+    [Fact]
+    public void ContentionProjection_PreservesTheExistingMcpWireShape()
+    {
+        var schema = McpJsonUtilities.DefaultOptions.GetJsonSchemaAsNode(
+            typeof(CollectEventsContentionSnapshot),
+            new JsonSchemaExporterOptions
+            {
+                TreatNullObliviousAsNonNullable = true,
+            });
+        var properties = schema["properties"]!.AsObject();
+
+        properties.Should().ContainKey("processId");
+        properties.Should().ContainKey("events");
+        properties.Should().ContainKey("notes");
+        properties.Should().NotContainKey("concentration",
+            "issue #1319 is Core/CLI evidence and must not expand the MCP catalog");
     }
 
     [Fact]

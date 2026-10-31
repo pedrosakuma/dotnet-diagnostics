@@ -464,11 +464,11 @@ On 2026-10-30 with the repository's pinned SDK/serializer:
 
 | Measurement | UTF-8 bytes |
 |---|---:|
-| Current maximal 17-tool catalog | 283,845 |
-| Current default 13-tool catalog | 250,677 |
+| Current maximal 17-tool catalog | 283,977 |
+| Current default 13-tool catalog | 250,809 |
 | Representative evidence JSON schema | 3,493 |
-| Prospective maximal catalog when the typed record is added to `collect_events`, `collect_sample`, and `compare_to_baseline` | 294,393 |
-| Prospective default catalog with the same three existing tools | 261,225 |
+| Prospective maximal catalog when the typed record is added to `collect_events`, `collect_sample`, and `compare_to_baseline` | 294,525 |
+| Prospective default catalog with the same three existing tools | 261,357 |
 | Catalog increase, maximal and default | 10,548 |
 | Representative `available` payload | 1,058 |
 | Representative unavailable payload range | 1,006–1,047 |
@@ -486,6 +486,31 @@ Therefore:
 - a shared record after two vertical slices requires a deliberate catalog-budget
   decision or a proven reusable-schema mechanism, not an assumption that shared
   result types cost zero;
+
+### 13.1 First vertical slice: contention concentration
+
+Issue #1319 implements a scenario-specific Core result and CLI projection rather than
+the synthetic shared record above. On the same pinned SDK/serializer:
+
+| Measurement | UTF-8 bytes |
+|---|---:|
+| `ContentionConcentrationEvidence` JSON schema | 4,917 |
+| Representative `available` evidence payload | 2,185 |
+| Representative `truncated_inventory` evidence payload | 2,505 |
+| Representative `bounded_capture_observed_no_contention` evidence payload | 2,785 |
+| Representative contention snapshot without evidence | 2,925 |
+| Representative contention snapshot with evidence | 5,106 |
+| Representative snapshot increase | 2,181 |
+| Maximal/default MCP catalog increase | 0 / 0 |
+
+The maximal/default catalogs remain 283,977 / 250,809 bytes. The existing
+`collect_events(kind="contention")` wire result uses a projection with the prior
+contention fields and deliberately excludes the new Core/CLI block. This preserves
+the approved MCP surface and demonstrates the intended vertical-slice rule: measure
+the scenario contract at its actual placement instead of paying repeated generated
+schema cost for an unapproved universal DTO. The standalone CLI opts into a dedicated
+Core collection path; the ordinary path used by MCP and BenchmarkDotNet leaves the
+block unset, preserving their existing behavior.
 - opaque/untyped MCP data is not an automatic workaround when clients need stable
   evidence semantics.
 

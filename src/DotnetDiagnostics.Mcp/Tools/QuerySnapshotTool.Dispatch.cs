@@ -261,6 +261,11 @@ public sealed partial class QuerySnapshotTool
             return Task.FromResult(forbidden!);
         }
 
+        if (context.MatchesView(AllocationReproducibilityView))
+        {
+            return Task.FromResult(TryBuildAllocationReproducibility(context));
+        }
+
         if (IsDiffView(context))
         {
             return Task.FromResult(TryBuildDiff(
@@ -364,6 +369,69 @@ public sealed partial class QuerySnapshotTool
             effectiveMaxDepth,
             effectiveMaxNodes);
         return Task.FromResult(AsObjectEnvelope(callTree));
+    }
+
+    private static DiagnosticResult<object> TryBuildAllocationReproducibility(
+        QuerySnapshotDispatchContext context)
+    {
+        if (!string.Equals(
+            context.Kind,
+            DiagnosticOperationCatalog.QuerySnapshotHandleKinds.AllocationSample,
+            StringComparison.Ordinal))
+        {
+            return InvalidArgument(
+                nameof(context.View),
+                $"view='{AllocationReproducibilityView}' requires an allocation-sample handle");
+        }
+
+        if (context.BaselineHandle is not null)
+        {
+            return InvalidArgument(
+                nameof(context.BaselineHandle),
+                $"is not used by view='{AllocationReproducibilityView}'; pass separately started captures through comparisonHandles");
+        }
+
+        var topK = context.TopN ?? AllocationReproducibilityBounds.DefaultTopK;
+        if (topK is < 1 or > AllocationReproducibilityBounds.MaximumTopK)
+        {
+            return InvalidArgument(
+                nameof(context.TopN),
+                $"must be between 1 and {AllocationReproducibilityBounds.MaximumTopK} for view='{AllocationReproducibilityView}'");
+        }
+
+        var selectedHandles = (context.ComparisonHandles ?? []).Append(context.Handle).ToArray();
+        var inputs = new List<AllocationReproducibilityInput>(selectedHandles.Length);
+        foreach (var selectedHandle in selectedHandles)
+        {
+            var lookup = context.Handles.LookupWithKind(selectedHandle);
+            if (lookup.Lookup is { } found)
+            {
+                if (!AuthorizeKind(
+                    context.Principal,
+                    found.Kind,
+                    AllocationReproducibilityView,
+                    out var authorizationFailure))
+                {
+                    return authorizationFailure!;
+                }
+            }
+            else
+            {
+                lookup = AuthorizeUnavailableLookup(
+                    context.Principal,
+                    lookup,
+                    AllocationReproducibilityView,
+                    out var authorizationFailure);
+                if (authorizationFailure is not null)
+                {
+                    return authorizationFailure;
+                }
+            }
+
+            inputs.Add(AllocationReproducibilityInput.FromLookup(selectedHandle, lookup));
+        }
+
+        return AsObjectEnvelope(AllocationReproducibility.Analyze(inputs, topK));
     }
 
     private static Task<DiagnosticResult<object>> HandleCountersCollectionAsync(QuerySnapshotDispatchContext context)

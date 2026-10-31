@@ -163,6 +163,7 @@ internal static partial class CliCommands
             "compare" => await CompareAsync(services, options, cancellationToken).ConfigureAwait(false),
             "investigate" => await InvestigateAsync(services, options, cancellationToken).ConfigureAwait(false),
             "export-summary" => await ExportSummaryAsync(services, options, cancellationToken).ConfigureAwait(false),
+            "gc-pressure" => await GcPressureAsync(options, cancellationToken).ConfigureAwait(false),
             "completion" => Completion(options),
             _ => throw new ArgumentException($"Unknown command '{options.Command}'.", nameof(options)),
         };

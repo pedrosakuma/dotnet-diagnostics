@@ -214,10 +214,13 @@ internal static class CaptureArtifactCodec
                 // Their canonical stored inputs, not the computed projection, are persisted.
                 if (property.Get is not null && property.Set is null)
                     info.Properties.RemoveAt(i);
-                else if (property.Get is not null && property.Set is not null
-                    && !(info.Type == typeof(CpuSampleTraceArtifact)
-                        && property.Name == nameof(CpuSampleTraceArtifact.HotspotVariability)))
-                    property.IsRequired = true;
+                else if (property.Get is not null && property.Set is not null)
+                    property.IsRequired = !(
+                        (info.Type == typeof(CpuSampleTraceArtifact)
+                            && property.Name == nameof(CpuSampleTraceArtifact.HotspotVariability))
+                        || (info.Type == typeof(AllocationSampleArtifact)
+                            && property.Name is (nameof(AllocationSampleArtifact.EstimatedBytesTrace)
+                                or nameof(AllocationSampleArtifact.Reproducibility))));
             }
         });
         options.MakeReadOnly();

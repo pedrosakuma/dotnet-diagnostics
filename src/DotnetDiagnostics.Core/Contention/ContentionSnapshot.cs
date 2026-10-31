@@ -11,7 +11,8 @@ public sealed record ContentionSnapshot(
     TimeSpan P95ContentionDuration,
     TimeSpan MaxContentionDuration,
     IReadOnlyList<ContentionEventSample> Events,
-    IReadOnlyList<string> Notes);
+    IReadOnlyList<string> Notes,
+    ContentionConcentrationEvidence? Concentration = null);
 
 public sealed record ContentionEventSample(
     DateTimeOffset StartedAt,

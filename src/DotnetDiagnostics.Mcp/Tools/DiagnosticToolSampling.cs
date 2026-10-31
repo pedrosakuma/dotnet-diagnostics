@@ -215,10 +215,19 @@ internal static class DiagnosticToolSampling
         }
 
         var sample = result.Summary;
+        var reproducibility = AllocationReproducibilityCaptureMetadata.Create(
+            ctx,
+            pid,
+            durationSeconds,
+            topN);
         var handle = handles.Register(
             pid,
             "allocation-sample",
-            new AllocationSampleArtifact(sample, result.Artifact),
+            new AllocationSampleArtifact(sample, result.Artifact)
+            {
+                EstimatedBytesTrace = result.EstimatedBytesArtifact,
+                Reproducibility = reproducibility,
+            },
             CpuSampleHandleTtl,
             evictWhenProcessExits: false,
             origin: HandleOrigin.Live);

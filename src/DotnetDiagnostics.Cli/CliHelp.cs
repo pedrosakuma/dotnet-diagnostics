@@ -20,6 +20,7 @@ internal static class CliHelp
 Options:
   -p, --pid <pid|name>          Target OS process id, or visible .NET process name/prefix.
       --json                    Emit the raw DiagnosticResult envelope as JSON.
+      --jsonl                   Emit one compact DiagnosticResult JSON object per line.
       --persist                 Opt in to durable captures on collect/inspect-heap/session.
       --capture-root <directory> Stable capture root, independent of dump/export scratch paths.
       --explain-risk            Print the resolved Core safety descriptor without executing.
