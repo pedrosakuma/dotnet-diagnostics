@@ -42,12 +42,12 @@ does not expand with the result record.
 Measured against the canonical source-generated schemas and representative
 available/incompatible results:
 
-- current maximal catalog: **283,845 bytes**
-- current default catalog: **250,677 bytes**
+- current maximal catalog: **283,977 bytes**
+- current default catalog: **250,809 bytes**
 - existing `compare_to_baseline` output-schema delta is **0 bytes**
 - standalone typed request-latency result schema: **10,142 bytes**
 - projected catalog if that result were wired into the typed output schema:
-  **293,985 bytes** (**+10,140 bytes**)
+  **294,117 bytes** (**+10,140 bytes**)
 - representative available result payload: **5,688 bytes**
 - representative incompatible result payload: **6,277 bytes**
 
@@ -60,8 +60,8 @@ field-level identity mismatches and explicit unavailable-field reasons.
 
 ### Objective retained-growth Core/CLI contract (2026-11-01, #1325)
 
-The executable HTTP budget test measures **283,845 bytes** for the maximal
-17-tool catalog and **250,677 bytes** for the default 13-tool subset. The
+The executable HTTP budget test measures **283,977 bytes** for the maximal
+17-tool catalog and **250,809 bytes** for the default 13-tool subset. The
 shipping catalog delta is **0 bytes**: objective retained growth adds no MCP
 tool, and the existing `query_snapshot.data` output remains intentionally
 unconstrained.
@@ -76,8 +76,8 @@ costs, not `tools/list` costs. The 17/13 tool counts and the existing
 
 ### Scenario-first statistical evidence prospective cost (2026-10-30, #1308)
 
-The real HTTP test measures the unchanged shipping catalog at **283,845 bytes**
-for the maximal 17-tool surface and **250,677 bytes** for the default 13 tools.
+The real HTTP test measures the shipping catalog at **283,977 bytes**
+for the maximal 17-tool surface and **250,809 bytes** for the default 13 tools.
 
 The same executable test generates a design-only representative statistical
 evidence schema and projects it onto the existing `collect_events`,
@@ -85,8 +85,8 @@ evidence schema and projects it onto the existing `collect_events`,
 tool or changing production DTOs:
 
 - representative evidence schema: **3,493 bytes**;
-- prospective maximal catalog: **294,393 bytes** (**+10,548**);
-- prospective default catalog: **261,225 bytes** (**+10,548**);
+- prospective maximal catalog: **294,525 bytes** (**+10,548**);
+- prospective default catalog: **261,357 bytes** (**+10,548**);
 - representative available payload: **1,058 bytes**;
 - representative unavailable payloads: **1,006–1,047 bytes**.
 
@@ -100,8 +100,8 @@ are in
 
 ### Objective summary comparison (2026-10-19, #1192)
 
-The real HTTP budget test measures **283,845 bytes** for the maximal 17-tool
-catalog and **250,677 bytes** for the default 13-tool subset on Linux
+The real HTTP budget test measures **283,977 bytes** for the maximal 17-tool
+catalog and **250,809 bytes** for the default 13-tool subset on Linux
 (SDK 10.0.401, runtime 10.0.12). Both are **38 bytes** above the October 18
 comparison follow-up below, from the revised `compare_to_baseline` description.
 The **285,000-byte ceiling is unchanged**, leaving **1,155 bytes** of headroom.

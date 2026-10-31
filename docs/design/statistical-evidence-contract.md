@@ -435,11 +435,11 @@ On 2026-10-30 with the repository's pinned SDK/serializer:
 
 | Measurement | UTF-8 bytes |
 |---|---:|
-| Current maximal 17-tool catalog | 283,845 |
-| Current default 13-tool catalog | 250,677 |
+| Current maximal 17-tool catalog | 283,977 |
+| Current default 13-tool catalog | 250,809 |
 | Representative evidence JSON schema | 3,493 |
-| Prospective maximal catalog when the typed record is added to `collect_events`, `collect_sample`, and `compare_to_baseline` | 294,393 |
-| Prospective default catalog with the same three existing tools | 261,225 |
+| Prospective maximal catalog when the typed record is added to `collect_events`, `collect_sample`, and `compare_to_baseline` | 294,525 |
+| Prospective default catalog with the same three existing tools | 261,357 |
 | Catalog increase, maximal and default | 10,548 |
 | Representative `available` payload | 1,058 |
 | Representative unavailable payload range | 1,006–1,047 |

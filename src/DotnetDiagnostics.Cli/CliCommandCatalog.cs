@@ -31,7 +31,7 @@ internal static class CliCommandCatalog
         "-p", "--pid", "--kind", "-d", "--duration", "--depth", "--max-events", "--max-gc-events", "--max-matched-activities", "--interval",
         "--provider", "--meter", "--source", "--category", "--min-level", "--save", "--dump-file",
         "--top-types", "--retention-path-limit", "--symbol-path", "--native-aot-map", "--cpu-backend", "--dump-type", "--out", "--mvid",
-        "--asset", "--handle", "--baseline-handle", "--gc-handle", "--latest-of-kind", "--view", "--trace-id", "--provider-filter", "--root-method-filter", "--rank-by",
+        "--asset", "--handle", "--baseline-handle", "--comparison-handle", "--gc-handle", "--latest-of-kind", "--view", "--trace-id", "--provider-filter", "--root-method-filter", "--rank-by",
         "--type-filter", "--address", "--offset", "--cursor", "--max-depth", "--max-nodes", "--thread-id",
         "--native-alloc-sample-period", "--native-lock-contention-sample-period", "--max-frames-per-thread", "--watch",
         "--frames-to-hash", "--min-count", "--top", "--threshold", "--mode", "--stack-rank",
@@ -437,6 +437,8 @@ query options:
       --after-record-id <int>   records: exclusive continuation from the previous page.
       --page-size <int>         records: bounded page size, 1..1000 (default 100).
       --handle <id>             Session drill-down handle. Exactly one of --handle/--latest-of-kind is required.
+      --comparison-handle <id>  allocation-reproducibility: additional retained allocation capture;
+                                repeat up to seven times (eight captures total with --handle).
       --baseline-handle <id>    Session heap growth: earlier heap-snapshot handle paired with --handle.
       --latest-of-kind <kind>   Session query: alias for --handle — resolves to the most recently registered
                                 non-expired handle of this kind (e.g. cpu-sample); narrow with --pid.
@@ -481,6 +483,7 @@ query options:
                 "--capture-id", "--artifact-id", "--from", "--to", "--category", "--name",
                 "--after-record-id", "--page-size",
                 "--handle",
+                "--comparison-handle",
                 "--baseline-handle",
                 "--gc-handle",
                 "--latest-of-kind",

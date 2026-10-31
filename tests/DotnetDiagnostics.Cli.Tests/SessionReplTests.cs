@@ -1495,7 +1495,8 @@ public sealed class SessionReplTests
     public void SessionViewsFor_CpuSampleKinds_ReturnAnalyticsViews()
     {
         CliCommands.SessionViewsFor("cpu-sample").Should().Equal(CpuSampleQueryDispatcher.SessionViews);
-        CliCommands.SessionViewsFor("allocation-sample").Should().Equal(CpuSampleQueryDispatcher.SessionViews);
+        CliCommands.SessionViewsFor("allocation-sample").Should()
+            .Equal([.. CpuSampleQueryDispatcher.SessionViews, "allocation-reproducibility"]);
         CliCommands.SessionViewsFor("native-alloc-sample").Should().Equal(CpuSampleQueryDispatcher.SessionViews);
         CliCommands.SessionViewsFor("native-lock-contention-sample").Should().Equal(CpuSampleQueryDispatcher.SessionViews);
 

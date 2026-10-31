@@ -511,7 +511,8 @@ Paths, symbols, request identifiers and sanitized SQL may still contain sensitiv
 
 Allocation capture results additionally include `result.handle`, identifying that capture's
 in-memory `allocation-sample` artifact on the same connection (20-minute TTL). Query it with
-`call-tree`, `top-methods`, `hot-path`, `by-module`, `by-namespace` or `caller-callee`;
+`call-tree`, `top-methods`, `hot-path`, `by-module`, `by-namespace`, `caller-callee` or
+`allocation-reproducibility`;
 `rootMethodFilter` selects a method-name match for subtrees or callers/callees.
 The capture metrics distinguish raw sampled totals (`Sampled events` / `Sampled bytes`) from
 usable stack attribution (`Stack-attributed events` / `Stack-attributed bytes`). A completed
@@ -523,8 +524,9 @@ Successful allocation query results confirm `weightUnit:"allocation-tick-estimat
 The reused `totalSamples` / `inclusiveSamples` / `exclusiveSamples` fields then contain estimated
 allocation **bytes**, not CPU observations, tick counts or object counts. Totals include ticks
 without attributed stacks. Tree projections retain the 64-node/depth-8 limit.
-Historical artifacts without the separate byte-weighted trace are rejected by this JSONL path;
-existing text-REPL/MCP allocation queries preserve their historical tick-count semantics.
+Historical artifacts without the separate byte-weighted trace are rejected by byte-weighted
+call-tree queries and remain explicitly incompatible for reproducibility analysis rather than
+being backfilled with synthetic identity.
 Capture/aggregation costs and explicit failure limits are documented under
 [allocation profiling](./resource-boundedness.md#allocation-profiling).
 
@@ -532,6 +534,25 @@ Capture/aggregation costs and explicit failure limits are documented under
 {"type":"capture","requestId":"alloc-1","kind":"allocation","processId":1234,"durationSeconds":5,"topN":25}
 {"type":"query","requestId":"alloc-2","handle":"<result.handle>","view":"call-tree"}
 ```
+
+Allocation reproducibility requires at least two **separately started and stopped** compatible
+captures; one capture is one independence unit. Pass the earlier handles in `comparisonHandles`
+and the final handle in `handle`. At most eight captures and top-K 16 are accepted; omitted
+`topN` defaults to 3.
+
+```json
+{"type":"query","requestId":"alloc-repro","handle":"<third>","comparisonHandles":["<first>","<second>"],"view":"allocation-reproducibility","topN":3}
+```
+
+The result preserves each capture's estimated allocation bytes and allocation ticks, then reports
+their median and raw median absolute deviation as descriptive values only. It evaluates allocated
+type membership/ranks and allocation-stack membership/ranks independently: bounded top-K Jaccard
+for membership and Spearman after re-ranking only keys shared by each pair. Attribution includes
+attributed/unattributed tick and byte shares and explicit `raw_empty`, `no_stack`, `zero_weight`,
+`partial`, `complete`, `unavailable` and `unavailable_handle` states. It does not correlate a type
+to a stack, gate on sampled-total overlap/deltas, construct intervals over weighted ticks, or emit
+causal, severity, regression, health or performance verdicts. Workload equivalence and any
+scenario-specific named thresholds remain caller-held assumptions, not universal defaults.
 
 Exception captures use the same Core collectors and safety profiles as `collect --kind exceptions`
 or `collect --kind crash-guard`:
@@ -2146,6 +2167,22 @@ exposes drilldown views computed from the merged call tree without re-sampling:
 
 For session ranked views, `--top` is preferred. The older `--top-types` remains a compatibility
 alias; when both are present, `--top` wins.
+
+`allocation-sample` handles additionally accept `allocation-reproducibility`. Repeat
+`--comparison-handle <id>` for independently started earlier captures; the primary `--handle`
+is appended as the final capture. The view uses the same Core result and bounds as JSONL:
+2-8 captures, `--top` default 3 and maximum 16. Human output labels descriptive medians/raw MAD,
+independent type/stack Jaccard and shared-key Spearman, attribution shares/states, assumptions and
+limitations. `--json` emits the complete
+`dotnet-diagnostics/allocation-reproducibility/v1` payload. No new collection is started:
+
+```text
+query --handle <third> \
+  --comparison-handle <first> \
+  --comparison-handle <second> \
+  --view allocation-reproducibility \
+  --top 3
+```
 
 `--rank-by inclusive` ranks by inclusive observations; `exclusive` ranks leaf observations.
 `--rank-by running` uses measured on-CPU self samples only for perf/ETW evidence. On CoreCLR

@@ -252,10 +252,19 @@ public static class SamplerUseCases
         }
 
         var sample = result.Summary;
+        var reproducibility = AllocationReproducibilityCaptureMetadata.Create(
+            ctx,
+            pid,
+            durationSeconds,
+            topN);
         var handle = handles.Register(
             pid,
             "allocation-sample",
-            new AllocationSampleArtifact(sample, result.Artifact) { EstimatedBytesTrace = result.EstimatedBytesArtifact },
+            new AllocationSampleArtifact(sample, result.Artifact)
+            {
+                EstimatedBytesTrace = result.EstimatedBytesArtifact,
+                Reproducibility = reproducibility,
+            },
             SampleHandleTtl,
             evictWhenProcessExits: false,
             origin: HandleOrigin.Live);

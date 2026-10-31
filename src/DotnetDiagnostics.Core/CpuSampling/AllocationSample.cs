@@ -1,4 +1,7 @@
 using DotnetDiagnostics.Core.Dump;
+using DotnetDiagnostics.Core.Internal;
+using DotnetDiagnostics.Core.ProcessDiscovery;
+using System.Runtime.InteropServices;
 
 namespace DotnetDiagnostics.Core.CpuSampling;
 
@@ -80,4 +83,58 @@ public sealed record AllocationSampleArtifact(AllocationSample Summary, CpuSampl
 {
     /// <summary>Byte-weighted allocation-tick tree; absent in historical artifacts that only retained tick counts.</summary>
     public CpuSampleTraceArtifact? EstimatedBytesTrace { get; init; }
+
+    /// <summary>
+    /// Additive capture identity used by bounded multi-capture reproducibility analysis. Historical
+    /// artifacts omit this block and remain readable; callers must not reconstruct it from the
+    /// current process or host.
+    /// </summary>
+    public AllocationReproducibilityCaptureMetadata? Reproducibility { get; init; }
+}
+
+/// <summary>
+/// Compatibility and provenance metadata captured at the same time as an allocation profile.
+/// Process and capture identities are provenance only; reproducibility compatibility is evaluated
+/// from the runtime, backend, quantity semantics and capture settings.
+/// </summary>
+public sealed record AllocationReproducibilityCaptureMetadata(
+    string Schema,
+    string RuntimeFlavor,
+    string? RuntimeVersion,
+    string OperatingSystem,
+    string Architecture,
+    string Backend,
+    string Quantity,
+    string Unit,
+    string Aggregation,
+    string Normalization,
+    int RequestedDurationSeconds,
+    int RequestedTopN,
+    DateTimeOffset? ProcessStartedAt)
+{
+    public const string SchemaV1 = "dotnet-diagnostics/allocation-reproducibility-capture/v1";
+    public const string EventPipeBackend = "eventpipe-gc-allocation-tick";
+
+    public static AllocationReproducibilityCaptureMetadata Create(
+        ProcessContext? context,
+        int processId,
+        int requestedDurationSeconds,
+        int requestedTopN)
+        => new(
+            SchemaV1,
+            context?.Runtime.ToString() ?? "Unknown",
+            context?.RuntimeVersion,
+            System.OperatingSystem.IsWindows() ? "windows"
+                : System.OperatingSystem.IsLinux() ? "linux"
+                : System.OperatingSystem.IsMacOS() ? "macos"
+                : "unknown",
+            RuntimeInformation.ProcessArchitecture.ToString().ToLowerInvariant(),
+            EventPipeBackend,
+            "gc-allocation-tick-estimated-bytes",
+            "estimated-bytes",
+            "capture-total",
+            "none",
+            requestedDurationSeconds,
+            requestedTopN,
+            ProcessLifetime.TryReadStart(processId));
 }
