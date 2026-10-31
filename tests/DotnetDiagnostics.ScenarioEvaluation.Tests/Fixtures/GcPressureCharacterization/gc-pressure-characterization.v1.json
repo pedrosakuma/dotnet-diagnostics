@@ -1,0 +1,125 @@
+{
+  "schemaVersion": 1,
+  "scenarios": [
+    {
+      "id": "stable-healthy",
+      "capture": {
+        "schemaVersion": 1,
+        "id": "fixture-stable-healthy",
+        "scenario": "stable-healthy",
+        "runtimeVersion": "10.0",
+        "operatingSystem": "fixture-os",
+        "architecture": "x64",
+        "windowSeconds": 3,
+        "windows": [
+          { "index": 0, "phase": "baseline", "lohSizeBytes": 2097152, "gen2CollectionsPerSecond": 0.0, "pauseP95Milliseconds": 0.1, "timeInGcPercent": 0.2, "sourceEvents": 12, "lostOrDropped": 0, "representation": "exact" },
+          { "index": 1, "phase": "cooldown", "lohSizeBytes": 2202009, "gen2CollectionsPerSecond": 0.0, "pauseP95Milliseconds": 0.1, "timeInGcPercent": 0.3, "sourceEvents": 12, "lostOrDropped": 0, "representation": "exact" },
+          { "index": 2, "phase": "cooldown", "lohSizeBytes": 2097152, "gen2CollectionsPerSecond": 0.0, "pauseP95Milliseconds": 0.2, "timeInGcPercent": 0.2, "sourceEvents": 12, "lostOrDropped": 0, "representation": "exact" },
+          { "index": 3, "phase": "cooldown", "lohSizeBytes": 2306867, "gen2CollectionsPerSecond": 0.0, "pauseP95Milliseconds": 0.1, "timeInGcPercent": 0.4, "sourceEvents": 12, "lostOrDropped": 0, "representation": "exact" },
+          { "index": 4, "phase": "cooldown", "lohSizeBytes": 2202009, "gen2CollectionsPerSecond": 0.0, "pauseP95Milliseconds": 0.1, "timeInGcPercent": 0.2, "sourceEvents": 12, "lostOrDropped": 0, "representation": "exact" },
+          { "index": 5, "phase": "cooldown", "lohSizeBytes": 2097152, "gen2CollectionsPerSecond": 0.0, "pauseP95Milliseconds": 0.1, "timeInGcPercent": 0.2, "sourceEvents": 12, "lostOrDropped": 0, "representation": "exact" }
+        ],
+        "notes": [ "Known-shape healthy control." ]
+      },
+      "expectedAction": "continued-observation",
+      "expectedPostLoadStabilized": true,
+      "minimumPressureWindows": 0
+    },
+    {
+      "id": "transient-allocation-burst",
+      "capture": {
+        "schemaVersion": 1,
+        "id": "fixture-transient-allocation-burst",
+        "scenario": "transient-allocation-burst",
+        "runtimeVersion": "10.0",
+        "operatingSystem": "fixture-os",
+        "architecture": "x64",
+        "windowSeconds": 3,
+        "windows": [
+          { "index": 0, "phase": "baseline", "lohSizeBytes": 2097152, "gen2CollectionsPerSecond": 0.0, "pauseP95Milliseconds": 0.1, "timeInGcPercent": 0.2, "sourceEvents": 12, "lostOrDropped": 0, "representation": "exact" },
+          { "index": 1, "phase": "active", "lohSizeBytes": 41943040, "gen2CollectionsPerSecond": 4.0, "pauseP95Milliseconds": 12.0, "timeInGcPercent": 35.0, "sourceEvents": 220, "lostOrDropped": 0, "representation": "exact" },
+          { "index": 2, "phase": "cooldown", "lohSizeBytes": 5242880, "gen2CollectionsPerSecond": 0.2, "pauseP95Milliseconds": 1.0, "timeInGcPercent": 2.0, "sourceEvents": 30, "lostOrDropped": 0, "representation": "exact" },
+          { "index": 3, "phase": "cooldown", "lohSizeBytes": 3145728, "gen2CollectionsPerSecond": 0.0, "pauseP95Milliseconds": 0.2, "timeInGcPercent": 0.5, "sourceEvents": 14, "lostOrDropped": 0, "representation": "exact" },
+          { "index": 4, "phase": "cooldown", "lohSizeBytes": 2621440, "gen2CollectionsPerSecond": 0.0, "pauseP95Milliseconds": 0.1, "timeInGcPercent": 0.3, "sourceEvents": 12, "lostOrDropped": 0, "representation": "exact" },
+          { "index": 5, "phase": "cooldown", "lohSizeBytes": 2306867, "gen2CollectionsPerSecond": 0.0, "pauseP95Milliseconds": 0.1, "timeInGcPercent": 0.2, "sourceEvents": 12, "lostOrDropped": 0, "representation": "exact" }
+        ],
+        "notes": [ "One bounded allocation burst followed by four cooldown windows." ]
+      },
+      "expectedAction": "continued-observation",
+      "expectedPostLoadStabilized": true,
+      "minimumPressureWindows": 1
+    },
+    {
+      "id": "sustained-allocation-pressure",
+      "capture": {
+        "schemaVersion": 1,
+        "id": "fixture-sustained-allocation-pressure",
+        "scenario": "sustained-allocation-pressure",
+        "runtimeVersion": "10.0",
+        "operatingSystem": "fixture-os",
+        "architecture": "x64",
+        "windowSeconds": 3,
+        "windows": [
+          { "index": 0, "phase": "baseline", "lohSizeBytes": 2097152, "gen2CollectionsPerSecond": 0.0, "pauseP95Milliseconds": 0.1, "timeInGcPercent": 0.2, "sourceEvents": 12, "lostOrDropped": 0, "representation": "exact" },
+          { "index": 1, "phase": "active", "lohSizeBytes": 31457280, "gen2CollectionsPerSecond": 3.0, "pauseP95Milliseconds": 8.0, "timeInGcPercent": 20.0, "sourceEvents": 180, "lostOrDropped": 0, "representation": "exact" },
+          { "index": 2, "phase": "active", "lohSizeBytes": 35651584, "gen2CollectionsPerSecond": 4.0, "pauseP95Milliseconds": 9.0, "timeInGcPercent": 24.0, "sourceEvents": 210, "lostOrDropped": 0, "representation": "exact" },
+          { "index": 3, "phase": "active", "lohSizeBytes": 33554432, "gen2CollectionsPerSecond": 3.5, "pauseP95Milliseconds": 8.5, "timeInGcPercent": 22.0, "sourceEvents": 195, "lostOrDropped": 0, "representation": "exact" },
+          { "index": 4, "phase": "cooldown", "lohSizeBytes": 4194304, "gen2CollectionsPerSecond": 0.0, "pauseP95Milliseconds": 0.5, "timeInGcPercent": 1.0, "sourceEvents": 18, "lostOrDropped": 0, "representation": "exact" },
+          { "index": 5, "phase": "cooldown", "lohSizeBytes": 3145728, "gen2CollectionsPerSecond": 0.0, "pauseP95Milliseconds": 0.2, "timeInGcPercent": 0.5, "sourceEvents": 14, "lostOrDropped": 0, "representation": "exact" }
+        ],
+        "notes": [ "Three consecutive pressure windows followed by bounded cooldown." ]
+      },
+      "expectedAction": "allocation-investigation",
+      "expectedPostLoadStabilized": true,
+      "minimumPressureWindows": 3
+    },
+    {
+      "id": "retained-growth",
+      "capture": {
+        "schemaVersion": 1,
+        "id": "fixture-retained-growth",
+        "scenario": "retained-growth",
+        "runtimeVersion": "10.0",
+        "operatingSystem": "fixture-os",
+        "architecture": "x64",
+        "windowSeconds": 3,
+        "windows": [
+          { "index": 0, "phase": "baseline", "lohSizeBytes": 2097152, "gen2CollectionsPerSecond": 0.0, "pauseP95Milliseconds": 0.1, "timeInGcPercent": 0.2, "sourceEvents": 12, "lostOrDropped": 0, "representation": "exact" },
+          { "index": 1, "phase": "active", "lohSizeBytes": 10485760, "gen2CollectionsPerSecond": 0.2, "pauseP95Milliseconds": 1.0, "timeInGcPercent": 1.0, "sourceEvents": 60, "lostOrDropped": 0, "representation": "exact" },
+          { "index": 2, "phase": "active", "lohSizeBytes": 18874368, "gen2CollectionsPerSecond": 0.2, "pauseP95Milliseconds": 1.2, "timeInGcPercent": 1.2, "sourceEvents": 64, "lostOrDropped": 0, "representation": "exact" },
+          { "index": 3, "phase": "active", "lohSizeBytes": 27262976, "gen2CollectionsPerSecond": 0.2, "pauseP95Milliseconds": 1.4, "timeInGcPercent": 1.4, "sourceEvents": 68, "lostOrDropped": 0, "representation": "exact" },
+          { "index": 4, "phase": "cooldown", "lohSizeBytes": 27262976, "gen2CollectionsPerSecond": 0.0, "pauseP95Milliseconds": 0.5, "timeInGcPercent": 1.0, "sourceEvents": 18, "lostOrDropped": 0, "representation": "exact" },
+          { "index": 5, "phase": "cooldown", "lohSizeBytes": 27262976, "gen2CollectionsPerSecond": 0.0, "pauseP95Milliseconds": 0.2, "timeInGcPercent": 0.5, "sourceEvents": 14, "lostOrDropped": 0, "representation": "exact" }
+        ],
+        "notes": [ "Retained buffers remain reachable during cooldown; graph/root evidence is intentionally outside this fixture." ]
+      },
+      "expectedAction": "retained-heap-investigation",
+      "expectedPostLoadStabilized": false,
+      "minimumPressureWindows": 3
+    },
+    {
+      "id": "capture-loss",
+      "capture": {
+        "schemaVersion": 1,
+        "id": "fixture-capture-loss",
+        "scenario": "capture-loss",
+        "runtimeVersion": "10.0",
+        "operatingSystem": "fixture-os",
+        "architecture": "x64",
+        "windowSeconds": 3,
+        "windows": [
+          { "index": 0, "phase": "baseline", "lohSizeBytes": 2097152, "gen2CollectionsPerSecond": 0.0, "pauseP95Milliseconds": 0.1, "timeInGcPercent": 0.2, "sourceEvents": 12, "lostOrDropped": 0, "representation": "exact" },
+          { "index": 1, "phase": "active", "lohSizeBytes": 31457280, "gen2CollectionsPerSecond": 3.0, "pauseP95Milliseconds": 8.0, "timeInGcPercent": 20.0, "sourceEvents": 180, "lostOrDropped": 0, "representation": "exact" },
+          { "index": 2, "phase": "active", "lohSizeBytes": 35651584, "gen2CollectionsPerSecond": 4.0, "pauseP95Milliseconds": 9.0, "timeInGcPercent": 24.0, "sourceEvents": 210, "lostOrDropped": 17, "representation": "truncated" },
+          { "index": 3, "phase": "active", "lohSizeBytes": 33554432, "gen2CollectionsPerSecond": 3.5, "pauseP95Milliseconds": 8.5, "timeInGcPercent": 22.0, "sourceEvents": 195, "lostOrDropped": 0, "representation": "exact" },
+          { "index": 4, "phase": "cooldown", "lohSizeBytes": 4194304, "gen2CollectionsPerSecond": 0.0, "pauseP95Milliseconds": 0.5, "timeInGcPercent": 1.0, "sourceEvents": 18, "lostOrDropped": 0, "representation": "exact" },
+          { "index": 5, "phase": "cooldown", "lohSizeBytes": 3145728, "gen2CollectionsPerSecond": 0.0, "pauseP95Milliseconds": 0.2, "timeInGcPercent": 0.5, "sourceEvents": 14, "lostOrDropped": 0, "representation": "exact" }
+        ],
+        "notes": [ "One active window reports collector loss and truncated representation." ]
+      },
+      "expectedAction": "justified-inconclusion",
+      "expectedPostLoadStabilized": null,
+      "minimumPressureWindows": 0
+    }
+  ]
+}
