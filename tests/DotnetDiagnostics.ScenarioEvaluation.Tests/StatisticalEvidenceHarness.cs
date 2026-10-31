@@ -14,7 +14,7 @@ public static class ScenarioStatisticalEvidenceHarness
         "sha256(method-version|compatibility-identity|ordered-input|scenario-protocol)-v1";
     private const string BootstrapPrng = "xoshiro256-star-star-v1";
     private const string BootstrapQuantileRule = "linear-r7-v1";
-    private static readonly string[] RequiredIdentityDimensions =
+    internal static IReadOnlyList<string> RequiredIdentityDimensions { get; } =
     [
         "target.runtime-flavor",
         "target.runtime-version-policy",

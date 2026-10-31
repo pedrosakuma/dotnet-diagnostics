@@ -562,6 +562,17 @@ app.MapGet("/slow-hang", async (int? seconds) =>
     return Results.Ok(new { delayedSeconds = delay.TotalSeconds });
 });
 
+// Deterministic request-latency fixture used by ScenarioEvaluation evidence tests.
+app.MapGet("/request-latency-fixture", async (int? delayMilliseconds, int? statusCode) =>
+{
+    var delay = TimeSpan.FromMilliseconds(Math.Clamp(delayMilliseconds ?? 0, 0, 2_000));
+    await Task.Delay(delay);
+    var code = Math.Clamp(statusCode ?? StatusCodes.Status200OK, 100, 599);
+    return code >= StatusCodes.Status400BadRequest
+        ? Results.StatusCode(code)
+        : Results.Ok(new { delayedMilliseconds = delay.TotalMilliseconds });
+});
+
 // 14. Async continuation stalls — detect with collect_thread_snapshot + query_snapshot(view="async-stalls")
 app.MapGet("/async-stall", async (string? bucket, int? seconds) =>
 {
