@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Schema;
 using System.Text.Json.Serialization;
+using DotnetDiagnostics.Core.Comparison;
 using DotnetDiagnostics.Core.ThreadPool;
 using FluentAssertions;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -275,6 +276,89 @@ public sealed class ToolCatalogBudgetTests : IClassFixture<ToolCatalogBudgetTest
                 measuredBytes.ToString("N0", CultureInfo.InvariantCulture),
                 "the catalog budget report must carry the executable ThreadPool backlog measurement");
         }
+    }
+
+    [Fact]
+    public async Task RequestLatencyComparison_MeasuresExistingPlacementAndPayloadCost()
+    {
+        await using var client = await ConnectAsync();
+        var result = await client.ListToolsAsync(
+            new ListToolsRequestParams(),
+            cancellationToken: CancellationToken.None);
+        var current = ToolCatalogMeasurement.Measure(result);
+        var resultSchema = McpJsonUtilities.DefaultOptions.GetJsonSchemaAsNode(
+            typeof(RequestLatencyComparisonResult),
+            new JsonSchemaExporterOptions
+            {
+                TreatNullObliviousAsNonNullable = true,
+            });
+        var resultSchemaBytes = SerializedLength(resultSchema);
+        var actualCatalog = JsonSerializer.SerializeToNode(
+            result,
+            McpJsonUtilities.DefaultOptions)?.AsObject()
+            ?? throw new InvalidOperationException("Could not serialize the MCP tool catalog.");
+        var actualCompare = actualCatalog["tools"]!.AsArray()
+            .Select(tool => tool!.AsObject())
+            .Single(tool => tool["name"]!.GetValue<string>() == "compare_to_baseline");
+        var currentDataSchema = actualCompare["outputSchema"]!["properties"]!["data"]!.AsObject();
+        var projected = actualCatalog.DeepClone().AsObject();
+        var projectedCompare = projected["tools"]!.AsArray()
+            .Select(tool => tool!.AsObject())
+            .Single(tool => tool["name"]!.GetValue<string>() == "compare_to_baseline");
+        projectedCompare["outputSchema"]!["properties"]!["data"] = resultSchema.DeepClone();
+        var typedCatalogBytes = SerializedLength(projected);
+        var availableBytes = JsonSerializer.SerializeToUtf8Bytes(
+            RepresentativeRequestLatencyComparison.Available,
+            McpJsonUtilities.DefaultOptions).Length;
+        var incompatibleBytes = JsonSerializer.SerializeToUtf8Bytes(
+            RepresentativeRequestLatencyComparison.Incompatible,
+            McpJsonUtilities.DefaultOptions).Length;
+
+        _output.WriteLine(
+            $"request-latency current maximal catalog: {current.SerializedBytes:N0} bytes");
+        _output.WriteLine(
+            $"request-latency current default catalog: {current.DefaultCatalogBytes:N0} bytes");
+        _output.WriteLine(
+            "request-latency existing compare_to_baseline output-schema delta: +0 bytes");
+        _output.WriteLine(
+            $"request-latency typed result schema: {resultSchemaBytes:N0} bytes");
+        _output.WriteLine(
+            $"request-latency typed catalog projection: {typedCatalogBytes:N0} bytes " +
+            $"(delta +{typedCatalogBytes - current.SerializedBytes:N0})");
+        _output.WriteLine(
+            $"request-latency available payload: {availableBytes:N0} bytes");
+        _output.WriteLine(
+            $"request-latency incompatible payload: {incompatibleBytes:N0} bytes");
+
+        result.Tools.Should().HaveCount(17);
+        currentDataSchema.Should().BeEmpty(
+            "the existing compare_to_baseline data envelope accepts the Core result without adding a typed tools/list schema");
+        typedCatalogBytes.Should().BeGreaterThan(current.SerializedBytes,
+            "the avoided typed projection cost must be measured rather than assumed");
+        availableBytes.Should().BeLessThanOrEqualTo(16 * 1024);
+        incompatibleBytes.Should().BeLessThanOrEqualTo(16 * 1024);
+
+        var budgetReport = File.ReadAllText(Path.Combine(
+            FindRepoRoot(),
+            "docs",
+            "research",
+            "mcp-tool-catalog-budget.md"));
+        foreach (var measuredBytes in new[]
+                 {
+                     current.SerializedBytes,
+                     current.DefaultCatalogBytes,
+                     resultSchemaBytes,
+                     typedCatalogBytes,
+                     typedCatalogBytes - current.SerializedBytes,
+                     availableBytes,
+                     incompatibleBytes,
+                 })
+        {
+            budgetReport.Should().Contain(
+                measuredBytes.ToString("N0", CultureInfo.InvariantCulture));
+        }
+        budgetReport.Should().Contain(
+            "existing `compare_to_baseline` output-schema delta is **0 bytes**");
     }
 
     [Fact]
@@ -709,6 +793,84 @@ internal static class RepresentativeStatisticalEvidence
             unavailableFields ?? [],
             ["Process runs are independent under the scenario protocol."],
             limitations ?? []);
+}
+
+internal static class RepresentativeRequestLatencyComparison
+{
+    internal static RequestLatencyComparisonResult Available { get; } =
+        RequestLatencyComparison.Compare(
+            WindowSet("baseline", "build-a", 10),
+            WindowSet("candidate", "build-b", 30));
+
+    internal static RequestLatencyComparisonResult Incompatible { get; } =
+        RequestLatencyComparison.Compare(
+            WindowSet("baseline", "build-a", 10),
+            WindowSet("candidate", "build-b", 30) with
+            {
+                Identity = WindowSet("candidate", "build-b", 30).Identity with
+                {
+                    Quantity = WindowSet("candidate", "build-b", 30).Identity.Quantity with
+                    {
+                        Filters = "endpoint=/different",
+                    },
+                },
+            });
+
+    private static RequestLatencyWindowSet WindowSet(
+        string id,
+        string axisValue,
+        double offset)
+        => new(
+            RequestLatencyWindowSet.SchemaV1,
+            id,
+            new(
+                new("CoreCLR", "major-compatible", "linux", "x64", $"{id}-run"),
+                new("eventpipe", "1"),
+                new(
+                    "request-latency",
+                    "ms",
+                    "completed-request-duration",
+                    "per-completed-request",
+                    "endpoint=/checkout;method=GET",
+                    RequestLatencyRepresentation.Exact),
+                new(
+                    "8-requests",
+                    "non-overlapping-sequential-windows",
+                    "Microsoft.AspNetCore.Hosting",
+                    "activity-stop",
+                    "retain-all",
+                    "none"),
+                new(
+                    "checkout",
+                    "1",
+                    "endpoint=/checkout;method=GET",
+                    "1",
+                    "single-process"),
+                new(
+                    "bounded_time_window",
+                    "request-event-within-window-pair",
+                    "pairKey"),
+                new("build", axisValue)),
+            Enumerable.Range(0, RequestLatencyComparison.MinimumCompleteWindowPairs)
+                .Select(window => new RequestLatencyWindow(
+                    $"window-{window + 1}",
+                    $"pair-{window + 1}",
+                    window % 2 == 0
+                        ? RequestLatencyPairOrder.BaselineFirst
+                        : RequestLatencyPairOrder.CandidateFirst,
+                    RequestLatencyWindowOutcome.Complete,
+                    RequestLatencyComparison.MinimumCompletedRequestsPerWindow,
+                    ErrorCount: 0,
+                    CensoredCount: 0,
+                    MissingCompletionCount: 0,
+                    LostOrDropped: 0,
+                    RequestLatencyRepresentation.Exact,
+                    Enumerable.Range(
+                            0,
+                            RequestLatencyComparison.MinimumCompletedRequestsPerWindow)
+                        .Select(sample => offset + window * 0.1 + sample * 0.01)
+                        .ToArray()))
+                .ToArray());
 }
 
 internal sealed record ToolCatalogMeasurement(

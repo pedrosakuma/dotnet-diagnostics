@@ -36,7 +36,7 @@ The CLI replies with the negotiated protocol, its informational CLI version, sup
 names, and additive versioned feature capabilities:
 
 ```json
-{"type":"hello","protocolVersion":2,"cliVersion":"<informational-version>","supportedLiveKinds":["counters","event_source","gc"],"threadPoolBacklog":{"version":1,"maximumWindows":64,"defaultMinimumWindows":4,"defaultDrainTailWindows":2},"heapGrowth":{"version":1,"available":true,"storeCapacity":32,"minimumStoreCapacity":2,"queryView":"growth","handleKind":"heap-snapshot","baselineField":"baselineHandle","rankBy":["bytes","instances"],"defaultMinDeltaPct":5,"defaultTopN":25,"maxTopN":500,"requiresSameProcess":true,"requiresSameProvenance":true,"storage":"in-memory","boundedLifetime":true,"storePolicy":"shared-configured-bounded"},"cpuHandleComparison":{"version":1,"queryView":"diff","baselineHandleField":"baselineHandle","retainedHandleLimit":2,"maxTopMovers":50},"capabilities":{"investigationEvidence":{"version":1,"kinds":["cpu","allocation","off_cpu","contention","threadpool","gc","requests"],"maxItems":7,"maxItemBytes":1048576,"maxTotalBytes":4194304}}}
+{"type":"hello","protocolVersion":2,"cliVersion":"<informational-version>","supportedLiveKinds":["counters","event_source","gc"],"threadPoolBacklog":{"version":1,"maximumWindows":64,"defaultMinimumWindows":4,"defaultDrainTailWindows":2},"heapGrowth":{"version":1,"available":true,"storeCapacity":32,"minimumStoreCapacity":2,"queryView":"growth","handleKind":"heap-snapshot","baselineField":"baselineHandle","rankBy":["bytes","instances"],"defaultMinDeltaPct":5,"defaultTopN":25,"maxTopN":500,"requiresSameProcess":true,"requiresSameProvenance":true,"storage":"in-memory","boundedLifetime":true,"storePolicy":"shared-configured-bounded"},"cpuHandleComparison":{"version":1,"queryView":"diff","baselineHandleField":"baselineHandle","retainedHandleLimit":2,"maxTopMovers":50},"requestLatencyComparison":{"version":1,"messageType":"compare","kind":"request-latency","inputSchema":"dotnet-diagnostics/request-latency-window-set/v1","resultSchema":"dotnet-diagnostics/request-latency-comparison/v1","maxWindowsPerSide":32,"maxRetainedSamplesPerWindow":256},"capabilities":{"investigationEvidence":{"version":1,"kinds":["cpu","allocation","off_cpu","contention","threadpool","gc","requests"],"maxItems":7,"maxItemBytes":1048576,"maxTotalBytes":4194304}}}
 ```
 
 Clients may use `cliVersion` for feature-compatibility guidance and `supportedLiveKinds` to gate
@@ -47,6 +47,23 @@ two-handle heap growth queries. `storeCapacity` is the effective shared handle-s
 capacity of 1 therefore advertises `available:false` without removing the versioned capability
 object. Prefer `cpuHandleComparison` itself to gate CPU handle comparison: older CLIs omit the
 capability and must degrade without sending `baselineHandle` for view `diff`.
+`requestLatencyComparison` advertises the additive offline Core comparison. Send
+exactly two inline `dotnet-diagnostics/request-latency-window-set/v1` objects:
+
+```json
+{"type":"compare","requestId":"latency-1","kind":"request-latency","baseline":{...},"candidate":{...}}
+```
+
+The correlated response is:
+
+```json
+{"type":"comparison","requestId":"latency-1","kind":"request-latency","result":{"schema":"dotnet-diagnostics/request-latency-comparison/v1",...}}
+```
+
+Malformed input returns a correlated `type="error"` frame. The control frame is
+bounded to 576 KiB so it can carry two maximum-size 256 KiB window sets plus
+envelope overhead. No live collection is added to JSONL; producers remain
+responsible for constructing the window-set records.
 `capabilities.investigationEvidence` is also additive: older clients may ignore it, and clients
 must treat a missing or incompatible capability as unavailable without rejecting protocol version
 2. These fields do not change protocol negotiation.
@@ -1530,6 +1547,57 @@ or accept filters, file inputs, `--save`, or `--mode` alongside these selectors.
 See [historical comparisons](./historical-comparisons.md) for the supported matrix,
 explicit examples, null/delta semantics, authorization, and finite bounds.
 The existing file-based behavior below is unchanged.
+
+Exactly two `dotnet-diagnostics/request-latency-window-set/v1` files select the
+Core-owned request-latency path:
+
+```bash
+dotnet-diagnostics-cli compare ./baseline-latency.json ./candidate-latency.json
+dotnet-diagnostics-cli compare ./baseline-latency.json ./candidate-latency.json --json
+dotnet-diagnostics-cli compare ./baseline-latency.json ./candidate-latency.json \
+  --save ./latency-comparison.json
+```
+
+The result schema is `dotnet-diagnostics/request-latency-comparison/v1`. Human,
+JSON and saved output report:
+
+- p50, p95 and p99 completed-request latency for each side, including source and
+  retained completed counts;
+- candidate-minus-baseline absolute milliseconds and relative deltas (relative is
+  explicitly unavailable when the baseline estimate is zero);
+- the median of paired window-level quantile deltas and its deterministic 95%
+  percentile-bootstrap interval when at least eight valid independent complete
+  window pairs exist;
+- separate window/request counts for failed, aborted, error, censored, missing,
+  lost/dropped and below-minimum evidence;
+- explicit `available`, `insufficient_observations`, `incompatible`,
+  `loss_detected`, or `unsupported_approximation` availability.
+
+The deterministic interval uses 2,048 resamples of whole valid window-pair
+deltas. It never resamples individual request events. Each side accepts at most
+32 windows, each window at most 256 retained latency values, and each one-shot
+input file at most 256 KiB. A valid inferential window contains at least eight
+source-completed requests, exact retention of every completed request, zero
+errors/censoring/missing completions/loss, and a matching complete partner.
+Failed and aborted windows remain in denominators and are not replaced.
+
+Compatibility is ordinal and strict across runtime flavor/version policy,
+OS/architecture, backend/version, quantity semantics/filters/representation,
+capture protocol, workload identity, window independence/nesting/pairing
+semantics, and comparison-axis name. Process-run IDs and comparison-axis values
+remain provenance and may differ. Incompatible fields are reported individually.
+
+Descriptive quantiles and compatible absolute/relative deltas may remain available
+when paired inference is withheld. Errors, censored requests, missing completions,
+loss and approximate/projected/truncated retention are never silently folded into
+completed-request quantiles. Rank-biserial effect is deliberately omitted: it is
+not registered by the v1 evidence foundation, and the scenario A/A evidence showed
+a large magnitude for a non-actionable shift.
+
+This output is objective evidence only. It emits no regression, improvement,
+significance, causation, equivalent-load, or operational-importance verdict.
+`--mode` does not apply, mixed request-latency/snapshot inputs are rejected, and
+more or fewer than two request-latency inputs are rejected.
 
 Compare two or more saved comparable snapshots from `collect --save`. Human output keeps the compact verdict, first→last headline, and top metric/key deltas in the terminal; `--json` emits the full `SnapshotJourneyDiff`, and `--save` writes that full matrix to a file. Local MCP `compare_to_baseline` / `query_snapshot(view="diff")` calls use a `journey://diff/{handle}` Resource link when the matrix is large. Proxied pod calls return full results inline because dynamic pod Resources are not forwarded.
 
