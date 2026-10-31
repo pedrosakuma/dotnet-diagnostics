@@ -106,4 +106,10 @@ public sealed record CounterSnapshot(
     /// <c>null</c> when the collector didn't populate it (e.g. older callers).
     /// </summary>
     public IReadOnlyList<CounterValue>? MaxCounters { get; init; }
+
+    /// <summary>
+    /// Optional caller-declared bounded ThreadPool backlog evidence. Null when no backlog protocol
+    /// was requested; missing never means a zero queue or a healthy ThreadPool.
+    /// </summary>
+    public DotnetDiagnostics.Core.ThreadPool.ThreadPoolBacklogEvidence? ThreadPoolBacklog { get; init; }
 }

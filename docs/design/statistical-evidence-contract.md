@@ -422,21 +422,22 @@ record into a global verdict.
 `ToolCatalogBudgetTests` measures the real shipping catalog and a synthetic,
 non-shipping representative evidence record.
 
-On 2026-10-30 with the repository's pinned SDK/serializer:
+On 2026-10-31 with the repository's pinned SDK/serializer and the first approved
+scenario vertical slice (#1323) present:
 
 | Measurement | UTF-8 bytes |
 |---|---:|
-| Current maximal 17-tool catalog | 283,845 |
-| Current default 13-tool catalog | 250,677 |
+| Current maximal 17-tool catalog | 286,320 |
+| Current default 13-tool catalog | 253,152 |
 | Representative evidence JSON schema | 3,493 |
-| Prospective maximal catalog when the typed record is added to `collect_events`, `collect_sample`, and `compare_to_baseline` | 294,393 |
-| Prospective default catalog with the same three existing tools | 261,225 |
+| Prospective maximal catalog when the typed record is added to `collect_events`, `collect_sample`, and `compare_to_baseline` | 296,868 |
+| Prospective default catalog with the same three existing tools | 263,700 |
 | Catalog increase, maximal and default | 10,548 |
 | Representative `available` payload | 1,058 |
 | Representative unavailable payload range | 1,006–1,047 |
 
 Tool counts remain 17/13. The prospective maximal catalog exceeds the current
-285,000-byte ceiling by 9,393 bytes. This placement is deliberately representative,
+287,000-byte ceiling by 9,868 bytes. This placement is deliberately representative,
 not approved architecture, but it proves that result DTOs are not free: one 3,493-byte
 record repeated in three generated output schemas costs 10,548 catalog bytes.
 

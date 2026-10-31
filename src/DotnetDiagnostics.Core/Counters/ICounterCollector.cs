@@ -15,3 +15,19 @@ public interface ICounterCollector
         int maxInstrumentTimeSeries = 1000,
         CancellationToken cancellationToken = default);
 }
+
+/// <summary>
+/// Collects the ordinary counter snapshot plus caller-declared bounded ThreadPool backlog evidence.
+/// </summary>
+public interface IThreadPoolBacklogCollector : ICounterCollector
+{
+    Task<CounterSnapshot> CollectWithThreadPoolBacklogAsync(
+        int processId,
+        TimeSpan duration,
+        DotnetDiagnostics.Core.ThreadPool.ThreadPoolBacklogProtocol protocol,
+        IReadOnlyList<string>? providers = null,
+        IReadOnlyList<string>? meters = null,
+        int intervalSeconds = 1,
+        int maxInstrumentTimeSeries = 1000,
+        CancellationToken cancellationToken = default);
+}

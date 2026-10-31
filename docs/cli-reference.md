@@ -36,7 +36,7 @@ The CLI replies with the negotiated protocol, its informational CLI version, sup
 names, and additive versioned feature capabilities:
 
 ```json
-{"type":"hello","protocolVersion":2,"cliVersion":"<informational-version>","supportedLiveKinds":["counters","event_source","gc"],"heapGrowth":{"version":1,"available":true,"storeCapacity":32,"minimumStoreCapacity":2,"queryView":"growth","handleKind":"heap-snapshot","baselineField":"baselineHandle","rankBy":["bytes","instances"],"defaultMinDeltaPct":5,"defaultTopN":25,"maxTopN":500,"requiresSameProcess":true,"requiresSameProvenance":true,"storage":"in-memory","boundedLifetime":true,"storePolicy":"shared-configured-bounded"},"cpuHandleComparison":{"version":1,"queryView":"diff","baselineHandleField":"baselineHandle","retainedHandleLimit":2,"maxTopMovers":50},"capabilities":{"investigationEvidence":{"version":1,"kinds":["cpu","allocation","off_cpu","contention","threadpool","gc","requests"],"maxItems":7,"maxItemBytes":1048576,"maxTotalBytes":4194304}}}
+{"type":"hello","protocolVersion":2,"cliVersion":"<informational-version>","supportedLiveKinds":["counters","event_source","gc"],"threadPoolBacklog":{"version":1,"maximumWindows":64,"defaultMinimumWindows":4,"defaultDrainTailWindows":2},"heapGrowth":{"version":1,"available":true,"storeCapacity":32,"minimumStoreCapacity":2,"queryView":"growth","handleKind":"heap-snapshot","baselineField":"baselineHandle","rankBy":["bytes","instances"],"defaultMinDeltaPct":5,"defaultTopN":25,"maxTopN":500,"requiresSameProcess":true,"requiresSameProvenance":true,"storage":"in-memory","boundedLifetime":true,"storePolicy":"shared-configured-bounded"},"cpuHandleComparison":{"version":1,"queryView":"diff","baselineHandleField":"baselineHandle","retainedHandleLimit":2,"maxTopMovers":50},"capabilities":{"investigationEvidence":{"version":1,"kinds":["cpu","allocation","off_cpu","contention","threadpool","gc","requests"],"maxItems":7,"maxItemBytes":1048576,"maxTotalBytes":4194304}}}
 ```
 
 Clients may use `cliVersion` for feature-compatibility guidance and `supportedLiveKinds` to gate
@@ -162,10 +162,12 @@ request shapes are accepted:
 
 - **Legacy single-kind shape** (unchanged since the original counters-only protocol): omit `kinds`
   entirely. `providers`, `intervalSeconds`, and `observationCapacity` are optional and apply to an
-  implicit `counters` session:
+  implicit `counters` session. To request bounded ThreadPool backlog evidence in the terminal frame,
+  also send `threadPoolQueueLevel` and optionally `threadPoolMinimumWindows` (default 4) and
+  `threadPoolDrainTailWindows` (default 2):
 
   ```json
-  {"type":"start","requestId":"capture-1","processId":1234,"providers":["System.Runtime"],"intervalSeconds":1,"observationCapacity":256}
+  {"type":"start","requestId":"capture-1","processId":1234,"providers":["System.Runtime"],"intervalSeconds":1,"observationCapacity":256,"threadPoolQueueLevel":10,"threadPoolMinimumWindows":4,"threadPoolDrainTailWindows":2}
   ```
 
 - **Multi-kind shape**: send a non-empty `kinds` array to run several live kinds concurrently in one
@@ -203,6 +205,20 @@ The Core session APIs apply these provider and queue bounds themselves as well; 
 protocol-side validation. Malformed or unsupported requests receive an `error` frame. EOF stops an
 active session, drains it, emits its terminal frame, and exits. Closing a panel should send `cancel`
 (or close stdin) before disposing the child process.
+
+When a counters request declares `threadPoolQueueLevel`, the terminal frame adds
+`threadPoolBacklog`. The evidence retains at most 64 queue windows and 64 worker windows and reports
+the proportion at or above the caller's level, longest contiguous duration above it, drained-tail
+state, and queue/worker movement independently. `reason.state` is `known` only for a
+`runtime-observed` reason from the same capture; the counters-only path normally reports
+`unknown`/`missing` rather than opening another collector. EventPipe loss, dispatch loss, retention
+truncation, processing failure, irregular cadence, or too few windows produces an explicit
+non-`available` state and makes action-relevant fields unavailable. Median and Theil-Sen slope are descriptive;
+queue growth is not a starvation verdict. `collectorQueueP95Median` is omitted and named in
+`unavailableFields` in one-shot JSON when the collector did not produce per-window p95 values. In JSONL terminal
+frames these unavailable properties are present with JSON `null`; one-shot `--json` omits null
+properties under its existing serializer policy. Consumers must use `availability`,
+`abstentionReasons`, and `unavailableFields`, not key presence, to interpret evidence.
 
 #### EventSource live kind
 
@@ -1129,6 +1145,9 @@ See [networking correlation and capture quality](networking-correlation.md).
 | `--max-events <int>` | Per-kind cap (events / exceptions / activities / catalog occurrence sample). |
 | `--max-gc-events <int>` | `gc-activities` only: independent GC collection-row, heap-stat and suspension-interval detail cap (default 200, 1–10000). Does not affect activity retention or GC pairing-state limits. |
 | `--interval <int>` | Refresh interval in seconds (`counters`, `db`, `kestrel`, `networking`). Default 1. |
+| `--threadpool-queue-level <number>` | `counters` only: opt in to bounded ThreadPool backlog evidence at this caller-declared non-negative queue level. There is no universal default threshold. |
+| `--threadpool-min-windows <int>` | Minimum queue and worker windows required for available backlog evidence (default 4, range 2–64). Requires `--threadpool-queue-level`. |
+| `--threadpool-drain-tail-windows <int>` | Number of trailing queue windows that must all be below the declared level for `drainedAtTail=true` (default 2, no greater than the minimum window count). Requires `--threadpool-queue-level`. |
 | `--watch <seconds>` | Re-run the command every N seconds, clear/redraw the human output, and stop cleanly on Ctrl-C. Not compatible with `--json`. With `--capture-when` it is reinterpreted as the metric **sample interval** for the bounded gated watch (no redraw loop). |
 | `--capture-when <pred>` | Threshold-gated capture (`--kind counters`). Arm a **bounded** watch and capture when a single metric predicate `<metric><op><value>` trips — e.g. `cpu>85`, `gcHeapMb>=1500`, `rssMb>2000`, `threadCount>400`, `activeTimerCount>1000`. Operators: `>` `>=` `<` `<=`. |
 | `--capture <kind>` | What to capture on trip: `dump`, `cpu-sample`, `heap`, `thread-snapshot`. Required with `--capture-when`. |
@@ -1260,6 +1279,7 @@ a known-trace request; a fixed startup sleep is not readiness evidence.
 
 ```bash
 dotnet-diagnostics-cli collect --kind counters --pid 1234 --duration 5
+dotnet-diagnostics-cli collect --kind counters --pid 1234 --duration 10 --threadpool-queue-level 10 --threadpool-min-windows 4 --json
 dotnet-diagnostics-cli collect --kind counters --pid CoreClrSample --watch 2
 dotnet-diagnostics-cli collect --kind counters --pid CoreClrSample --capture-when 'cpu>85' --capture cpu-sample --window 60
 dotnet-diagnostics-cli collect --kind counters --pid CoreClrSample --capture-when 'rssMb>2000' --capture dump --window 120 --confirm --acknowledge-risk critical
@@ -1275,6 +1295,31 @@ dotnet-diagnostics-cli collect --kind catalog --pid 1234 --json
 dotnet-diagnostics-cli collect --kind event_source --provider System.Net.Http --pid 1234
 dotnet-diagnostics-cli collect --kind startup --suspend-startup --launch --acknowledge-risk high -- dotnet App.dll   # cold start
 ```
+
+#### Bounded ThreadPool backlog evidence
+
+`collect --kind counters --threadpool-queue-level <number>` adds
+`data.threadPoolBacklog` to JSON and a compact evidence block to human output. The queue level is a
+caller/scenario protocol value, not a product-wide threshold. Each retained EventCounter interval is
+one bounded, non-overlapping window. Available evidence reports:
+
+- retained queue and worker window counts;
+- queue windows at or above the declared level and their proportion;
+- longest contiguous duration at or above the level;
+- whether a previously observed backlog is below the level for every configured tail window;
+- queue and worker first/last/delta/median/Theil-Sen slope as separate descriptive series;
+- runtime-reason known/unknown state with same-capture provenance;
+- collector p95 only when every retained queue window supplied one.
+
+The collector retains at most 64 queue and 64 worker windows. Any retention truncation, irregular
+cadence, EventPipe/dispatch loss, processing failure, or insufficient queue/worker window count
+forces abstention: `availability` becomes `unsupported_approximation`, `loss_detected`, or
+`insufficient_observations`, `abstentionReasons` names the cause, and the proportion/duration/tail
+and movement fields are unavailable (omitted in one-shot JSON and explicit `null` in JSONL terminal
+frames). The evidence never emits a starvation verdict, never selects an
+automatic waits/stacks capture, and cannot be combined with threshold-gated capture. VS Code may
+consume the JSONL terminal field, but collection remains in the Core-owned CLI process; the
+extension does not open EventPipe or implement a separate collector.
 
 For `--kind logs`, human output places retained entries under an explicit
 `UNTRUSTED TARGET EVIDENCE` heading. Messages, exception text, category/event

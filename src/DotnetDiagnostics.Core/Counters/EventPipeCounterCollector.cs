@@ -4,6 +4,7 @@ using System.Globalization;
 using DotnetDiagnostics.Core.CaptureRecording;
 using DotnetDiagnostics.Core.Internal;
 using DotnetDiagnostics.Core.Security;
+using DotnetDiagnostics.Core.ThreadPool;
 using Microsoft.Diagnostics.NETCore.Client;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Extensions.Logging;
@@ -15,7 +16,7 @@ namespace DotnetDiagnostics.Core.Counters;
 /// Default <see cref="ICounterCollector"/> backed by an EventPipe session subscribed to
 /// EventCounter providers (defaults to <c>System.Runtime</c> and <c>Microsoft.AspNetCore.Hosting</c>).
 /// </summary>
-public sealed class EventPipeCounterCollector : ICounterCollector, ICounterSessionFactory
+public sealed class EventPipeCounterCollector : ICounterCollector, IThreadPoolBacklogCollector, ICounterSessionFactory
 {
     private const string MetricsProviderName = "System.Diagnostics.Metrics";
     private const long MetricsKeywords = 0x2;
@@ -34,7 +35,7 @@ public sealed class EventPipeCounterCollector : ICounterCollector, ICounterSessi
         _logger = logger ?? NullLogger<EventPipeCounterCollector>.Instance;
     }
 
-    public async Task<CounterSnapshot> CollectAsync(
+    public Task<CounterSnapshot> CollectAsync(
         int processId,
         TimeSpan duration,
         IReadOnlyList<string>? providers = null,
@@ -42,6 +43,48 @@ public sealed class EventPipeCounterCollector : ICounterCollector, ICounterSessi
         int intervalSeconds = 1,
         int maxInstrumentTimeSeries = 1000,
         CancellationToken cancellationToken = default)
+        => CollectCoreAsync(
+            processId,
+            duration,
+            providers,
+            meters,
+            intervalSeconds,
+            maxInstrumentTimeSeries,
+            backlogProtocol: null,
+            cancellationToken);
+
+    public Task<CounterSnapshot> CollectWithThreadPoolBacklogAsync(
+        int processId,
+        TimeSpan duration,
+        ThreadPoolBacklogProtocol protocol,
+        IReadOnlyList<string>? providers = null,
+        IReadOnlyList<string>? meters = null,
+        int intervalSeconds = 1,
+        int maxInstrumentTimeSeries = 1000,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(protocol);
+        protocol.Validate();
+        return CollectCoreAsync(
+            processId,
+            duration,
+            providers,
+            meters,
+            intervalSeconds,
+            maxInstrumentTimeSeries,
+            protocol,
+            cancellationToken);
+    }
+
+    private async Task<CounterSnapshot> CollectCoreAsync(
+        int processId,
+        TimeSpan duration,
+        IReadOnlyList<string>? providers,
+        IReadOnlyList<string>? meters,
+        int intervalSeconds,
+        int maxInstrumentTimeSeries,
+        ThreadPoolBacklogProtocol? backlogProtocol,
+        CancellationToken cancellationToken)
     {
         if (duration <= TimeSpan.Zero)
         {
@@ -107,6 +150,12 @@ public sealed class EventPipeCounterCollector : ICounterCollector, ICounterSessi
             .ConfigureAwait(false);
 
         var startedAt = DateTimeOffset.UtcNow;
+        var backlog = backlogProtocol is null
+            ? null
+            : new ThreadPoolBacklogAccumulator(
+                $"counter-{Guid.NewGuid():N}",
+                startedAt,
+                backlogProtocol);
         var latestCounters = new ConcurrentDictionary<string, CounterValue>(StringComparer.Ordinal);
         // First-observed value per counter key, so the signal-grouping layer (#527) can derive an
         // intra-window delta/trend (latestCounters[key] - firstCounters[key]) without a second pass.
@@ -122,6 +171,8 @@ public sealed class EventPipeCounterCollector : ICounterCollector, ICounterSessi
         int? targetProcessorCount = null;
         var recording = CaptureRecordingContext.Current;
         var redactor = recording is null ? null : new SensitiveDataRedactor();
+        long? detectedTransportLossEvents = null;
+        var processingFailed = false;
 
         var processingTask = Task.Run(() =>
         {
@@ -169,16 +220,20 @@ public sealed class EventPipeCounterCollector : ICounterCollector, ICounterSessi
                     }
 
                     var value = payload with { Provider = traceEvent.ProviderName };
+                    var timestamp = new DateTimeOffset(traceEvent.TimeStamp.ToUniversalTime());
+                    backlog?.Observe(timestamp, value);
                     ObserveCounter(value, latestCounters, firstCounters, maxCounters, recording,
-                        recording is null ? null : new DateTimeOffset(traceEvent.TimeStamp.ToUniversalTime()),
+                        recording is null ? null : timestamp,
                         recording is null ? null : traceEvent.TimeStampRelativeMSec, redactor, valueAvailable);
                 };
 
                 source.Process();
+                detectedTransportLossEvents = source.EventsLost;
                 sourceLoss = source.EventsLost;
             }
             catch (Exception ex)
             {
+                processingFailed = true;
                 _logger.LogDebug(ex, "EventPipe source ended for pid {Pid}.", processId);
             }
             finally
@@ -223,11 +278,17 @@ public sealed class EventPipeCounterCollector : ICounterCollector, ICounterSessi
             .Select(c => maxCounters.TryGetValue($"{c.Provider}/{c.Name}", out var max) ? max : c)
             .ToList();
 
+        var endedAt = DateTimeOffset.UtcNow;
         return new CounterSnapshot(processId, startedAt, duration, counters, meterValues, orderedNotes)
         {
             ProcessorCount = targetProcessorCount,
             FirstCounters = firstCounterValues,
             MaxCounters = maxCounterValues,
+            ThreadPoolBacklog = backlog?.Complete(
+                endedAt,
+                detectedTransportLossEvents,
+                droppedObservations: 0,
+                processingFailed),
         };
     }
 

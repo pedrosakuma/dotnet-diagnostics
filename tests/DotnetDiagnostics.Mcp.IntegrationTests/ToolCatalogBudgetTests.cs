@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Schema;
 using System.Text.Json.Serialization;
+using DotnetDiagnostics.Core.ThreadPool;
 using FluentAssertions;
 using Microsoft.AspNetCore.Mvc.Testing;
 using ModelContextProtocol;
@@ -50,7 +51,11 @@ public sealed class ToolCatalogBudgetTests : IClassFixture<ToolCatalogBudgetTest
     // Issue #1192: the fixed-key EvidenceQuality.Observed output contract reaches
     // 284,392 bytes on Linux and Windows. The approved 285,000 ceiling preserves
     // these typed facts with 608 bytes of headroom; tool counts remain 17/13.
-    private const int MaximumCatalogBytes = 285_000;
+    // Issue #1323: the Core-owned ThreadPoolBacklogEvidence record is exposed
+    // through the existing CounterSnapshot output path. The maximal catalog is
+    // 286,320 bytes and the default catalog is 253,152 bytes; 287,000 preserves
+    // the typed contract with 680 bytes of headroom and adds no tool.
+    private const int MaximumCatalogBytes = 287_000;
 
     private readonly FullCatalogFactory _factory;
     private readonly ITestOutputHelper _output;
@@ -196,6 +201,80 @@ public sealed class ToolCatalogBudgetTests : IClassFixture<ToolCatalogBudgetTest
             $"{unavailablePayloadBytes.Min():N0}–{unavailablePayloadBytes.Max():N0}");
         contract.Should().Contain(unavailableRange);
         budgetReport.Should().Contain(unavailableRange);
+    }
+
+    [Fact]
+    public async Task ThreadPoolBacklogEvidence_MeasuresShippingSchemaAndPayloadCost()
+    {
+        await using var client = await ConnectAsync();
+        var result = await client.ListToolsAsync(
+            new ListToolsRequestParams(),
+            cancellationToken: CancellationToken.None);
+        var current = ToolCatalogMeasurement.Measure(result);
+        var schema = McpJsonUtilities.DefaultOptions.GetJsonSchemaAsNode(
+            typeof(ThreadPoolBacklogEvidence),
+            new JsonSchemaExporterOptions
+            {
+                TreatNullObliviousAsNonNullable = true,
+            });
+        var schemaBytes = SerializedLength(schema);
+        var windows = Enumerable.Range(0, 4)
+            .Select(index => new ThreadPoolBacklogWindow(
+                DateTimeOffset.UnixEpoch.AddSeconds(index),
+                1,
+                10 + index))
+            .ToArray();
+        var request = new ThreadPoolBacklogEvidenceRequest(
+            "capture-1",
+            DateTimeOffset.UnixEpoch,
+            DateTimeOffset.UnixEpoch.AddSeconds(4),
+            new ThreadPoolBacklogProtocol(10),
+            windows,
+            windows,
+            new ThreadPoolBacklogReason(
+                null,
+                ThreadPoolEvidence.Missing,
+                null,
+                null));
+        var available = ThreadPoolBacklogAnalyzer.Evaluate(request);
+        var unavailable = ThreadPoolBacklogAnalyzer.Evaluate(request with
+        {
+            EventPipeEventsLost = 1,
+        });
+        var availablePayloadBytes = JsonSerializer.SerializeToUtf8Bytes(
+            available,
+            McpJsonUtilities.DefaultOptions).Length;
+        var unavailablePayloadBytes = JsonSerializer.SerializeToUtf8Bytes(
+            unavailable,
+            McpJsonUtilities.DefaultOptions).Length;
+
+        _output.WriteLine($"ThreadPool backlog evidence schema: {schemaBytes:N0} bytes");
+        _output.WriteLine($"ThreadPool backlog available payload: {availablePayloadBytes:N0} bytes");
+        _output.WriteLine($"ThreadPool backlog unavailable payload: {unavailablePayloadBytes:N0} bytes");
+
+        current.Tools.Should().HaveCount(17);
+        schemaBytes.Should().BeLessThanOrEqualTo(4_096);
+        availablePayloadBytes.Should().BeLessThanOrEqualTo(4_096);
+        unavailablePayloadBytes.Should().BeLessThanOrEqualTo(4_096);
+
+        var budgetReport = File.ReadAllText(Path.Combine(
+            FindRepoRoot(),
+            "docs",
+            "research",
+            "mcp-tool-catalog-budget.md"));
+        foreach (var measuredBytes in new[]
+                 {
+                     current.SerializedBytes,
+                     current.DefaultCatalogBytes,
+                     schemaBytes,
+                     availablePayloadBytes,
+                     unavailablePayloadBytes,
+                 })
+        {
+            budgetReport.Should().Contain(
+                measuredBytes.ToString("N0", CultureInfo.InvariantCulture),
+                "the catalog budget report must carry the executable ThreadPool backlog measurement");
+        }
     }
 
     [Fact]

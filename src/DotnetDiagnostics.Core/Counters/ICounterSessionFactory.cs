@@ -29,4 +29,10 @@ public sealed record CounterSessionOptions
 
     /// <summary>Maximum number of pending observations retained for the single consumer.</summary>
     public int ObservationCapacity { get; init; } = 256;
+
+    /// <summary>
+    /// Optional caller-declared protocol for final bounded ThreadPool backlog evidence. The live
+    /// counter session itself continues to emit ordinary observations.
+    /// </summary>
+    public DotnetDiagnostics.Core.ThreadPool.ThreadPoolBacklogProtocol? ThreadPoolBacklogProtocol { get; init; }
 }

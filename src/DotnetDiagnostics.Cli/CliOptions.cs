@@ -94,6 +94,15 @@ internal sealed record CliOptions
     /// <summary>Refresh interval in seconds (<c>--interval</c>) for <c>kind=counters</c>/<c>kind=db</c>. Null applies the default (1).</summary>
     public int? IntervalSeconds { get; init; }
 
+    /// <summary>Caller-declared ThreadPool queue level for bounded counter-window evidence.</summary>
+    public double? ThreadPoolQueueLevel { get; init; }
+
+    /// <summary>Minimum bounded queue and worker windows required for ThreadPool backlog evidence.</summary>
+    public int? ThreadPoolMinimumWindows { get; init; }
+
+    /// <summary>Trailing queue windows used to determine whether an observed backlog drained.</summary>
+    public int? ThreadPoolDrainTailWindows { get; init; }
+
     /// <summary>Re-run the one-shot command every N seconds (<c>--watch</c>). Null runs once.</summary>
     public int? WatchIntervalSeconds { get; init; }
 
@@ -539,6 +548,30 @@ internal sealed record CliOptions
         return true;
     }
 
+    private static bool TryTakeDouble(IReadOnlyList<string> args, ref int i, string flag, out double value, out string? error)
+    {
+        value = 0;
+        error = null;
+        if (i + 1 >= args.Count)
+        {
+            error = $"Option '{flag}' requires a value.";
+            return false;
+        }
+
+        var raw = args[++i];
+        if (!double.TryParse(
+                raw,
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out value))
+        {
+            error = $"Option '{flag}' expects a number, got '{raw}'.";
+            return false;
+        }
+
+        return true;
+    }
+
     private static Dictionary<string, OptionDescriptor> CreateOptionLookup()
     {
         var descriptors = new OptionDescriptor[]
@@ -586,6 +619,9 @@ internal sealed record CliOptions
             new StringOptionDescriptor((state, value) => state.Kind = value, "--kind"),
             new IntOptionDescriptor((state, value) => state.DurationSeconds = value, "--duration", "-d"),
             new IntOptionDescriptor((state, value) => state.IntervalSeconds = value, "--interval"),
+            new DoubleOptionDescriptor((state, value) => state.ThreadPoolQueueLevel = value, "--threadpool-queue-level"),
+            new IntOptionDescriptor((state, value) => state.ThreadPoolMinimumWindows = value, "--threadpool-min-windows"),
+            new IntOptionDescriptor((state, value) => state.ThreadPoolDrainTailWindows = value, "--threadpool-drain-tail-windows"),
             new IntOptionDescriptor((state, value) => state.MaxEvents = value, "--max-events"),
             new IntOptionDescriptor((state, value) => state.MaxGcEvents = value, "--max-gc-events"),
             new IntOptionDescriptor((state, value) => state.MaxMatchedActivities = value, "--max-matched-activities"),
@@ -730,6 +766,12 @@ internal sealed record CliOptions
         public List<string> Categories { get; } = new();
 
         public int? IntervalSeconds { get; set; }
+
+        public double? ThreadPoolQueueLevel { get; set; }
+
+        public int? ThreadPoolMinimumWindows { get; set; }
+
+        public int? ThreadPoolDrainTailWindows { get; set; }
 
         public int? WatchIntervalSeconds { get; set; }
 
@@ -931,6 +973,9 @@ internal sealed record CliOptions
                 Sources = Sources,
                 Categories = Categories,
                 IntervalSeconds = IntervalSeconds,
+                ThreadPoolQueueLevel = ThreadPoolQueueLevel,
+                ThreadPoolMinimumWindows = ThreadPoolMinimumWindows,
+                ThreadPoolDrainTailWindows = ThreadPoolDrainTailWindows,
                 WatchIntervalSeconds = WatchIntervalSeconds,
                 MaxEvents = MaxEvents,
                 MaxGcEvents = MaxGcEvents,
@@ -1103,6 +1148,28 @@ internal sealed record CliOptions
         public override bool TryApply(IReadOnlyList<string> args, ref int index, ParseState state, out string? error)
         {
             if (!TryTakeLong(args, ref index, args[index], out var value, out error))
+            {
+                return false;
+            }
+
+            _apply(state, value);
+            return true;
+        }
+    }
+
+    private sealed class DoubleOptionDescriptor : OptionDescriptor
+    {
+        private readonly Action<ParseState, double> _apply;
+
+        public DoubleOptionDescriptor(Action<ParseState, double> apply, params string[] aliases)
+            : base(aliases)
+        {
+            _apply = apply;
+        }
+
+        public override bool TryApply(IReadOnlyList<string> args, ref int index, ParseState state, out string? error)
+        {
+            if (!TryTakeDouble(args, ref index, args[index], out var value, out error))
             {
                 return false;
             }

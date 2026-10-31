@@ -34,10 +34,31 @@ part of both surfaces.
 
 ## Reproduce
 
+### ThreadPool bounded-backlog evidence (2026-11-01, #1323)
+
+The real HTTP budget test measures **286,320 bytes** for the maximal 17-tool
+catalog and **253,152 bytes** for the default 13-tool subset. Relative to the
+pre-#1323 shipping measurement of 283,845/250,677 bytes, the typed
+`ThreadPoolBacklogEvidence` property on the existing counter snapshot path adds
+**2,475 bytes** to each catalog. No MCP tool is added.
+
+The executable measurement also records:
+
+- ThreadPool backlog evidence schema: **3,738 bytes**;
+- representative available payload: **755 bytes**;
+- representative loss-abstention payload: **567 bytes**.
+
+The approved ceiling changes from **285,000 to 287,000 bytes** (+2,000 bytes,
+0.702%), leaving **680 bytes** of measured headroom. This preserves explicit
+availability, abstention, independent queue/worker movement, same-capture reason
+provenance and unavailable-p95 fields instead of replacing the contract with an
+opaque object. The existing `collect_events` counter output path carries the
+record; tool counts and registration gates remain unchanged.
+
 ### Scenario-first statistical evidence prospective cost (2026-10-30, #1308)
 
-The real HTTP test measures the unchanged shipping catalog at **283,845 bytes**
-for the maximal 17-tool surface and **250,677 bytes** for the default 13 tools.
+The real HTTP test measures the current shipping catalog at **286,320 bytes**
+for the maximal 17-tool surface and **253,152 bytes** for the default 13 tools.
 
 The same executable test generates a design-only representative statistical
 evidence schema and projects it onto the existing `collect_events`,
@@ -45,14 +66,15 @@ evidence schema and projects it onto the existing `collect_events`,
 tool or changing production DTOs:
 
 - representative evidence schema: **3,493 bytes**;
-- prospective maximal catalog: **294,393 bytes** (**+10,548**);
-- prospective default catalog: **261,225 bytes** (**+10,548**);
+- prospective maximal catalog: **296,868 bytes** (**+10,548**);
+- prospective default catalog: **263,700 bytes** (**+10,548**);
 - representative available payload: **1,058 bytes**;
 - representative unavailable payloads: **1,006–1,047 bytes**.
 
 The projection is deliberately conservative and is not approved field placement.
 It proves that a result record repeated across generated output schemas is not
-free. The current 285,000-byte shipping ceiling is unchanged; #1308 therefore
+free. The current 287,000-byte shipping ceiling already includes #1323's exact
+single-scenario placement; #1308 therefore
 defers a shared public record until scenario vertical slices justify exact
 placement and a deliberate catalog-budget decision. The contract and interpretation
 are in

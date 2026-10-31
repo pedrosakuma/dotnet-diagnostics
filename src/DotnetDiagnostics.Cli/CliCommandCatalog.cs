@@ -29,6 +29,7 @@ internal static class CliCommandCatalog
     public static readonly IReadOnlyList<string> ValueFlags =
     [
         "-p", "--pid", "--kind", "-d", "--duration", "--depth", "--max-events", "--max-gc-events", "--max-matched-activities", "--interval",
+        "--threadpool-queue-level", "--threadpool-min-windows", "--threadpool-drain-tail-windows",
         "--provider", "--meter", "--source", "--category", "--min-level", "--save", "--dump-file",
         "--top-types", "--retention-path-limit", "--symbol-path", "--native-aot-map", "--cpu-backend", "--dump-type", "--out", "--mvid",
         "--asset", "--handle", "--gc-handle", "--latest-of-kind", "--view", "--trace-id", "--provider-filter", "--root-method-filter", "--rank-by",
@@ -236,6 +237,16 @@ collect options:
       --include-http-destination
                                 activities / gc-activities: opt-in redacted HTTP authority, separate from native tags.
       --interval <int>          Refresh interval in seconds (counters, db, kestrel, networking). Default 1.
+      --threadpool-queue-level <number>
+                                counters: caller-declared queue level for bounded ThreadPool backlog
+                                evidence. No universal level or starvation verdict is applied.
+      --threadpool-min-windows <int>
+                                counters with --threadpool-queue-level: minimum queue and worker
+                                windows (default 4, range 2..64).
+      --threadpool-drain-tail-windows <int>
+                                counters with --threadpool-queue-level: trailing queue windows that
+                                must remain below the declared level to report a drained tail
+                                (default 2, no greater than --threadpool-min-windows).
       --symbol-path <path>      NT_SYMBOL_PATH-style search path for cpu, off_cpu and
                                 thread-snapshot symbol resolution.
       --export-trace            cpu: persist the raw .nettrace under the artifact root.
@@ -286,6 +297,7 @@ collect options:
 """,
 """
   dotnet-diagnostics-cli collect --kind counters --pid 1234 --duration 5
+  dotnet-diagnostics-cli collect --kind counters --pid 1234 --duration 10 --threadpool-queue-level 20
   dotnet-diagnostics-cli collect --kind counters --pid MyApp --watch 2
   dotnet-diagnostics-cli collect --kind counters --pid MyApp --capture-when 'cpu>85' --capture cpu-sample --window 60
   dotnet-diagnostics-cli collect --kind cpu --pid 1234 --top 20 --export-trace
@@ -313,6 +325,9 @@ collect options:
                 "--include-http-destination",
                 "--max-gc-events",
                 "--interval",
+                "--threadpool-queue-level",
+                "--threadpool-min-windows",
+                "--threadpool-drain-tail-windows",
                 "--symbol-path",
                 "--export-trace",
                 "--capture-inlining",

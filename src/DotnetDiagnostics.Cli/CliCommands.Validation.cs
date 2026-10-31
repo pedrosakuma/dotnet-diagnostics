@@ -1,6 +1,7 @@
 using DotnetDiagnostics.Core.Collection;
 using DotnetDiagnostics.Core.Comparison;
 using DotnetDiagnostics.Core.Dump;
+using DotnetDiagnostics.Core.ThreadPool;
 using DotnetDiagnostics.Core.Threads;
 
 namespace DotnetDiagnostics.Cli;
@@ -275,6 +276,46 @@ internal static partial class CliCommands
             return false;
         }
 
+        var hasThreadPoolBacklogOption = options.ThreadPoolQueueLevel.HasValue
+            || options.ThreadPoolMinimumWindows.HasValue
+            || options.ThreadPoolDrainTailWindows.HasValue;
+        if (hasThreadPoolBacklogOption && options.Kind != "counters")
+        {
+            error = "ThreadPool backlog evidence options require 'collect --kind counters'.";
+            return false;
+        }
+
+        if (hasThreadPoolBacklogOption && options.ThreadPoolQueueLevel is null)
+        {
+            error = "--threadpool-min-windows and --threadpool-drain-tail-windows require --threadpool-queue-level <number>.";
+            return false;
+        }
+
+        if (options.ThreadPoolQueueLevel is double queueLevel
+            && (!double.IsFinite(queueLevel) || queueLevel < 0))
+        {
+            error = "--threadpool-queue-level must be finite and non-negative.";
+            return false;
+        }
+
+        var minimumWindows = options.ThreadPoolMinimumWindows
+            ?? ThreadPoolBacklogProtocol.DefaultMinimumWindows;
+        var drainTailWindows = options.ThreadPoolDrainTailWindows
+            ?? ThreadPoolBacklogProtocol.DefaultDrainTailWindows;
+        if (hasThreadPoolBacklogOption
+            && minimumWindows is < 2 or > ThreadPoolBacklogProtocol.MaximumWindows)
+        {
+            error = $"--threadpool-min-windows must be between 2 and {ThreadPoolBacklogProtocol.MaximumWindows}.";
+            return false;
+        }
+
+        if (hasThreadPoolBacklogOption
+            && (drainTailWindows < 1 || drainTailWindows > minimumWindows))
+        {
+            error = "--threadpool-drain-tail-windows must be positive and no greater than --threadpool-min-windows.";
+            return false;
+        }
+
         // Threshold-gated capture (#419): --capture-when / --capture / --window form one bounded
         // watch and must be supplied together with kind=counters. Deep validation (predicate parse,
         // ranges) happens in the use case so the error surfaces with recovery hints.
@@ -284,6 +325,12 @@ internal static partial class CliCommands
             if (options.Kind != "counters")
             {
                 error = "Threshold-gated capture (--capture-when) requires --kind counters.";
+                return false;
+            }
+
+            if (hasThreadPoolBacklogOption)
+            {
+                error = "ThreadPool backlog evidence cannot be combined with threshold-gated capture.";
                 return false;
             }
 
