@@ -1,0 +1,1782 @@
+{
+  "schemaVersion": 1,
+  "id": "cpu-hotspot-movement-deterministic-v1",
+  "cases": [
+    {
+      "id": "aa-control",
+      "selectedMethodId": "alpha",
+      "baseline": {
+        "id": "baseline",
+        "role": "baseline",
+        "captures": [
+          {
+            "id": "aa-baseline-1",
+            "pairKey": "pair-1",
+            "pairOrder": "baseline_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "steady-alpha",
+            "offeredLoad": 4,
+            "totalSamples": 1100,
+            "unresolvedExclusiveSamples": 50,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 600
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 250
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 100
+              }
+            ]
+          },
+          {
+            "id": "aa-baseline-2",
+            "pairKey": "pair-2",
+            "pairOrder": "candidate_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "steady-alpha",
+            "offeredLoad": 4,
+            "totalSamples": 1100,
+            "unresolvedExclusiveSamples": 50,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 610
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 250
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 100
+              }
+            ]
+          },
+          {
+            "id": "aa-baseline-3",
+            "pairKey": "pair-3",
+            "pairOrder": "baseline_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "steady-alpha",
+            "offeredLoad": 4,
+            "totalSamples": 1100,
+            "unresolvedExclusiveSamples": 50,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 590
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 250
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 100
+              }
+            ]
+          },
+          {
+            "id": "aa-baseline-4",
+            "pairKey": "pair-4",
+            "pairOrder": "candidate_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "steady-alpha",
+            "offeredLoad": 4,
+            "totalSamples": 1100,
+            "unresolvedExclusiveSamples": 50,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 605
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 250
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 100
+              }
+            ]
+          }
+        ]
+      },
+      "candidate": {
+        "id": "candidate",
+        "role": "candidate",
+        "captures": [
+          {
+            "id": "aa-candidate-1",
+            "pairKey": "pair-1",
+            "pairOrder": "baseline_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "steady-alpha-repeat",
+            "offeredLoad": 4,
+            "totalSamples": 1100,
+            "unresolvedExclusiveSamples": 50,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 595
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 255
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 100
+              }
+            ]
+          },
+          {
+            "id": "aa-candidate-2",
+            "pairKey": "pair-2",
+            "pairOrder": "candidate_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "steady-alpha-repeat",
+            "offeredLoad": 4,
+            "totalSamples": 1100,
+            "unresolvedExclusiveSamples": 50,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 605
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 255
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 100
+              }
+            ]
+          },
+          {
+            "id": "aa-candidate-3",
+            "pairKey": "pair-3",
+            "pairOrder": "baseline_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "steady-alpha-repeat",
+            "offeredLoad": 4,
+            "totalSamples": 1100,
+            "unresolvedExclusiveSamples": 50,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 600
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 255
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 100
+              }
+            ]
+          },
+          {
+            "id": "aa-candidate-4",
+            "pairKey": "pair-4",
+            "pairOrder": "candidate_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "steady-alpha-repeat",
+            "offeredLoad": 4,
+            "totalSamples": 1100,
+            "unresolvedExclusiveSamples": 50,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 590
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 255
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 100
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "deterministic-hotspot-shift",
+      "selectedMethodId": "alpha",
+      "baseline": {
+        "id": "baseline",
+        "role": "baseline",
+        "captures": [
+          {
+            "id": "shift-baseline-1",
+            "pairKey": "pair-1",
+            "pairOrder": "baseline_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "alpha-dominant",
+            "offeredLoad": 4,
+            "totalSamples": 1100,
+            "unresolvedExclusiveSamples": 50,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 600
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 240
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 100
+              }
+            ]
+          },
+          {
+            "id": "shift-baseline-2",
+            "pairKey": "pair-2",
+            "pairOrder": "candidate_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "alpha-dominant",
+            "offeredLoad": 4,
+            "totalSamples": 1100,
+            "unresolvedExclusiveSamples": 50,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 610
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 240
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 100
+              }
+            ]
+          },
+          {
+            "id": "shift-baseline-3",
+            "pairKey": "pair-3",
+            "pairOrder": "baseline_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "alpha-dominant",
+            "offeredLoad": 4,
+            "totalSamples": 1100,
+            "unresolvedExclusiveSamples": 50,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 620
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 240
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 100
+              }
+            ]
+          },
+          {
+            "id": "shift-baseline-4",
+            "pairKey": "pair-4",
+            "pairOrder": "candidate_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "alpha-dominant",
+            "offeredLoad": 4,
+            "totalSamples": 1100,
+            "unresolvedExclusiveSamples": 50,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 605
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 240
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 100
+              }
+            ]
+          }
+        ]
+      },
+      "candidate": {
+        "id": "candidate",
+        "role": "candidate",
+        "captures": [
+          {
+            "id": "shift-candidate-1",
+            "pairKey": "pair-1",
+            "pairOrder": "baseline_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "beta-dominant",
+            "offeredLoad": 4,
+            "totalSamples": 1100,
+            "unresolvedExclusiveSamples": 50,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 190
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 660
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 100
+              }
+            ]
+          },
+          {
+            "id": "shift-candidate-2",
+            "pairKey": "pair-2",
+            "pairOrder": "candidate_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "beta-dominant",
+            "offeredLoad": 4,
+            "totalSamples": 1100,
+            "unresolvedExclusiveSamples": 50,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 200
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 660
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 100
+              }
+            ]
+          },
+          {
+            "id": "shift-candidate-3",
+            "pairKey": "pair-3",
+            "pairOrder": "baseline_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "beta-dominant",
+            "offeredLoad": 4,
+            "totalSamples": 1100,
+            "unresolvedExclusiveSamples": 50,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 185
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 660
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 100
+              }
+            ]
+          },
+          {
+            "id": "shift-candidate-4",
+            "pairKey": "pair-4",
+            "pairOrder": "candidate_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "beta-dominant",
+            "offeredLoad": 4,
+            "totalSamples": 1100,
+            "unresolvedExclusiveSamples": 50,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 195
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 660
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 100
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "changed-offered-load",
+      "selectedMethodId": "alpha",
+      "baseline": {
+        "id": "baseline",
+        "role": "baseline",
+        "captures": [
+          {
+            "id": "load-baseline-1",
+            "pairKey": "pair-1",
+            "pairOrder": "baseline_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "alpha-dominant",
+            "offeredLoad": 4,
+            "totalSamples": 1100,
+            "unresolvedExclusiveSamples": 50,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 600
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 250
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 100
+              }
+            ]
+          },
+          {
+            "id": "load-baseline-2",
+            "pairKey": "pair-2",
+            "pairOrder": "candidate_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "alpha-dominant",
+            "offeredLoad": 4,
+            "totalSamples": 1100,
+            "unresolvedExclusiveSamples": 50,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 600
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 250
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 100
+              }
+            ]
+          },
+          {
+            "id": "load-baseline-3",
+            "pairKey": "pair-3",
+            "pairOrder": "baseline_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "alpha-dominant",
+            "offeredLoad": 4,
+            "totalSamples": 1100,
+            "unresolvedExclusiveSamples": 50,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 600
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 250
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 100
+              }
+            ]
+          },
+          {
+            "id": "load-baseline-4",
+            "pairKey": "pair-4",
+            "pairOrder": "candidate_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "alpha-dominant",
+            "offeredLoad": 4,
+            "totalSamples": 1100,
+            "unresolvedExclusiveSamples": 50,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 600
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 250
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 100
+              }
+            ]
+          }
+        ]
+      },
+      "candidate": {
+        "id": "candidate",
+        "role": "candidate",
+        "captures": [
+          {
+            "id": "load-candidate-1",
+            "pairKey": "pair-1",
+            "pairOrder": "baseline_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "alpha-dominant-higher-load",
+            "offeredLoad": 8,
+            "totalSamples": 1100,
+            "unresolvedExclusiveSamples": 50,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 600
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 250
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 100
+              }
+            ]
+          },
+          {
+            "id": "load-candidate-2",
+            "pairKey": "pair-2",
+            "pairOrder": "candidate_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "alpha-dominant-higher-load",
+            "offeredLoad": 8,
+            "totalSamples": 1100,
+            "unresolvedExclusiveSamples": 50,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 600
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 250
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 100
+              }
+            ]
+          },
+          {
+            "id": "load-candidate-3",
+            "pairKey": "pair-3",
+            "pairOrder": "baseline_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "alpha-dominant-higher-load",
+            "offeredLoad": 8,
+            "totalSamples": 1100,
+            "unresolvedExclusiveSamples": 50,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 600
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 250
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 100
+              }
+            ]
+          },
+          {
+            "id": "load-candidate-4",
+            "pairKey": "pair-4",
+            "pairOrder": "candidate_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "alpha-dominant-higher-load",
+            "offeredLoad": 8,
+            "totalSamples": 1100,
+            "unresolvedExclusiveSamples": 50,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 600
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 250
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 100
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "unresolved-symbol-degradation",
+      "selectedMethodId": "alpha",
+      "baseline": {
+        "id": "baseline",
+        "role": "baseline",
+        "captures": [
+          {
+            "id": "symbols-baseline-1",
+            "pairKey": "pair-1",
+            "pairOrder": "baseline_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "alpha-dominant",
+            "offeredLoad": 4,
+            "totalSamples": 1100,
+            "unresolvedExclusiveSamples": 50,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 600
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 250
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 100
+              }
+            ]
+          },
+          {
+            "id": "symbols-baseline-2",
+            "pairKey": "pair-2",
+            "pairOrder": "candidate_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "alpha-dominant",
+            "offeredLoad": 4,
+            "totalSamples": 1100,
+            "unresolvedExclusiveSamples": 50,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 600
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 250
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 100
+              }
+            ]
+          },
+          {
+            "id": "symbols-baseline-3",
+            "pairKey": "pair-3",
+            "pairOrder": "baseline_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "alpha-dominant",
+            "offeredLoad": 4,
+            "totalSamples": 1100,
+            "unresolvedExclusiveSamples": 50,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 600
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 250
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 100
+              }
+            ]
+          },
+          {
+            "id": "symbols-baseline-4",
+            "pairKey": "pair-4",
+            "pairOrder": "candidate_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "alpha-dominant",
+            "offeredLoad": 4,
+            "totalSamples": 1100,
+            "unresolvedExclusiveSamples": 50,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 600
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 250
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 100
+              }
+            ]
+          }
+        ]
+      },
+      "candidate": {
+        "id": "candidate",
+        "role": "candidate",
+        "captures": [
+          {
+            "id": "symbols-candidate-1",
+            "pairKey": "pair-1",
+            "pairOrder": "baseline_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "alpha-dominant-degraded-symbols",
+            "offeredLoad": 4,
+            "totalSamples": 1100,
+            "unresolvedExclusiveSamples": 550,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 300
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 150
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 50
+              }
+            ]
+          },
+          {
+            "id": "symbols-candidate-2",
+            "pairKey": "pair-2",
+            "pairOrder": "candidate_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "alpha-dominant-degraded-symbols",
+            "offeredLoad": 4,
+            "totalSamples": 1100,
+            "unresolvedExclusiveSamples": 550,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 300
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 150
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 50
+              }
+            ]
+          },
+          {
+            "id": "symbols-candidate-3",
+            "pairKey": "pair-3",
+            "pairOrder": "baseline_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "alpha-dominant-degraded-symbols",
+            "offeredLoad": 4,
+            "totalSamples": 1100,
+            "unresolvedExclusiveSamples": 550,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 300
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 150
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 50
+              }
+            ]
+          },
+          {
+            "id": "symbols-candidate-4",
+            "pairKey": "pair-4",
+            "pairOrder": "candidate_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "alpha-dominant-degraded-symbols",
+            "offeredLoad": 4,
+            "totalSamples": 1100,
+            "unresolvedExclusiveSamples": 550,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 300
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 150
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 50
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "backend-incompatibility",
+      "selectedMethodId": "alpha",
+      "baseline": {
+        "id": "baseline",
+        "role": "baseline",
+        "captures": [
+          {
+            "id": "backend-baseline-1",
+            "pairKey": "pair-1",
+            "pairOrder": "baseline_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "alpha-dominant",
+            "offeredLoad": 4,
+            "totalSamples": 1100,
+            "unresolvedExclusiveSamples": 50,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 600
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 250
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 100
+              }
+            ]
+          },
+          {
+            "id": "backend-baseline-2",
+            "pairKey": "pair-2",
+            "pairOrder": "candidate_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "alpha-dominant",
+            "offeredLoad": 4,
+            "totalSamples": 1100,
+            "unresolvedExclusiveSamples": 50,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 600
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 250
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 100
+              }
+            ]
+          },
+          {
+            "id": "backend-baseline-3",
+            "pairKey": "pair-3",
+            "pairOrder": "baseline_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "alpha-dominant",
+            "offeredLoad": 4,
+            "totalSamples": 1100,
+            "unresolvedExclusiveSamples": 50,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 600
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 250
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 100
+              }
+            ]
+          },
+          {
+            "id": "backend-baseline-4",
+            "pairKey": "pair-4",
+            "pairOrder": "candidate_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "alpha-dominant",
+            "offeredLoad": 4,
+            "totalSamples": 1100,
+            "unresolvedExclusiveSamples": 50,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 600
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 250
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 100
+              }
+            ]
+          }
+        ]
+      },
+      "candidate": {
+        "id": "candidate",
+        "role": "candidate",
+        "captures": [
+          {
+            "id": "backend-candidate-1",
+            "pairKey": "pair-1",
+            "pairOrder": "baseline_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "linux-perf",
+            "evidenceKind": "os-on-cpu-samples",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "alpha-dominant",
+            "offeredLoad": 4,
+            "totalSamples": 1100,
+            "unresolvedExclusiveSamples": 50,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 600
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 250
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 100
+              }
+            ]
+          },
+          {
+            "id": "backend-candidate-2",
+            "pairKey": "pair-2",
+            "pairOrder": "candidate_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "linux-perf",
+            "evidenceKind": "os-on-cpu-samples",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "alpha-dominant",
+            "offeredLoad": 4,
+            "totalSamples": 1100,
+            "unresolvedExclusiveSamples": 50,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 600
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 250
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 100
+              }
+            ]
+          },
+          {
+            "id": "backend-candidate-3",
+            "pairKey": "pair-3",
+            "pairOrder": "baseline_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "linux-perf",
+            "evidenceKind": "os-on-cpu-samples",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "alpha-dominant",
+            "offeredLoad": 4,
+            "totalSamples": 1100,
+            "unresolvedExclusiveSamples": 50,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 600
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 250
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 100
+              }
+            ]
+          },
+          {
+            "id": "backend-candidate-4",
+            "pairKey": "pair-4",
+            "pairOrder": "candidate_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "linux-perf",
+            "evidenceKind": "os-on-cpu-samples",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "alpha-dominant",
+            "offeredLoad": 4,
+            "totalSamples": 1100,
+            "unresolvedExclusiveSamples": 50,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 600
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 250
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 100
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "low-sample-count",
+      "selectedMethodId": "alpha",
+      "baseline": {
+        "id": "baseline",
+        "role": "baseline",
+        "captures": [
+          {
+            "id": "low-baseline-1",
+            "pairKey": "pair-1",
+            "pairOrder": "baseline_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "alpha-dominant",
+            "offeredLoad": 4,
+            "totalSamples": 30,
+            "unresolvedExclusiveSamples": 2,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 18
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 8
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 2
+              }
+            ]
+          },
+          {
+            "id": "low-baseline-2",
+            "pairKey": "pair-2",
+            "pairOrder": "candidate_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "alpha-dominant",
+            "offeredLoad": 4,
+            "totalSamples": 30,
+            "unresolvedExclusiveSamples": 2,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 18
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 8
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 2
+              }
+            ]
+          },
+          {
+            "id": "low-baseline-3",
+            "pairKey": "pair-3",
+            "pairOrder": "baseline_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "alpha-dominant",
+            "offeredLoad": 4,
+            "totalSamples": 30,
+            "unresolvedExclusiveSamples": 2,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 18
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 8
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 2
+              }
+            ]
+          },
+          {
+            "id": "low-baseline-4",
+            "pairKey": "pair-4",
+            "pairOrder": "candidate_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "alpha-dominant",
+            "offeredLoad": 4,
+            "totalSamples": 30,
+            "unresolvedExclusiveSamples": 2,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 18
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 8
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 2
+              }
+            ]
+          }
+        ]
+      },
+      "candidate": {
+        "id": "candidate",
+        "role": "candidate",
+        "captures": [
+          {
+            "id": "low-candidate-1",
+            "pairKey": "pair-1",
+            "pairOrder": "baseline_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "beta-dominant",
+            "offeredLoad": 4,
+            "totalSamples": 30,
+            "unresolvedExclusiveSamples": 2,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 8
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 18
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 2
+              }
+            ]
+          },
+          {
+            "id": "low-candidate-2",
+            "pairKey": "pair-2",
+            "pairOrder": "candidate_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "beta-dominant",
+            "offeredLoad": 4,
+            "totalSamples": 30,
+            "unresolvedExclusiveSamples": 2,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 8
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 18
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 2
+              }
+            ]
+          },
+          {
+            "id": "low-candidate-3",
+            "pairKey": "pair-3",
+            "pairOrder": "baseline_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "beta-dominant",
+            "offeredLoad": 4,
+            "totalSamples": 30,
+            "unresolvedExclusiveSamples": 2,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 8
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 18
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 2
+              }
+            ]
+          },
+          {
+            "id": "low-candidate-4",
+            "pairKey": "pair-4",
+            "pairOrder": "candidate_first",
+            "processRunId": "fixture-process-run",
+            "runtimeFlavor": "CoreCLR",
+            "runtimeVersionPolicy": "major-minor",
+            "operatingSystem": "fixture-os",
+            "architecture": "x64",
+            "backend": "eventpipe-sample-profiler",
+            "evidenceKind": "stack-frequency-with-heuristic-waits",
+            "durationSeconds": 3,
+            "samplingPeriod": "1ms-nominal",
+            "workloadScenario": "cpu-hotspot-fixture",
+            "workloadVersion": "1",
+            "workloadVariant": "beta-dominant",
+            "offeredLoad": 4,
+            "totalSamples": 30,
+            "unresolvedExclusiveSamples": 2,
+            "representation": "exact",
+            "methods": [
+              {
+                "methodId": "alpha",
+                "inclusiveSamples": 8
+              },
+              {
+                "methodId": "beta",
+                "inclusiveSamples": 18
+              },
+              {
+                "methodId": "other",
+                "inclusiveSamples": 2
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

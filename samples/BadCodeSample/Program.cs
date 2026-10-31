@@ -70,6 +70,7 @@ const int maximumThreadPoolStarvationGates = 16;
 var badCodeEndpoints = new[]
 {
     "/cpu-burn?ms=2000",
+    "/cpu-hotspot-fixture?alphaWorkers=7&betaWorkers=1&ms=4500",
     "/leak?mb=4",
     "/exceptions?count=200",
     "/sync-over-async?n=20",
@@ -131,6 +132,12 @@ app.MapGet("/cpu-burn", (int? ms) =>
     }
     return Results.Ok(new { iterations, elapsedMs = sw.ElapsedMilliseconds });
 });
+
+app.MapGet("/cpu-hotspot-fixture", (int? alphaWorkers, int? betaWorkers, int? ms) =>
+    Results.Ok(CpuHotspotWorkload.Run(
+        alphaWorkers ?? 7,
+        betaWorkers ?? 1,
+        ms ?? 4500)));
 
 // 2. Managed memory leak — detect with collect_events(kind="counters") (gc-heap-size, gen2)
 //    + collect_events(kind="gc") + collect_process_dump

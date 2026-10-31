@@ -524,16 +524,19 @@ get-bytes options:
             ["--kind", "--out", "--mvid", "--asset", "--dump-file"]),
         new(
             "compare",
-            "Compare two or more comparable snapshot JSON files.",
+            "Compare compatible snapshot journeys or two bounded request-latency window sets.",
 """
 compare options:
-      --json                    Emit the full SnapshotJourneyDiff JSON.
-      --save <file>             Write the full journey diff JSON to disk.
-      --mode <mode>             Journey mode: trend (default) or dispersion.
+      --json                    Emit the full Core comparison JSON.
+      --save <file>             Write the full comparison JSON to disk.
+      --mode <mode>             Snapshot journey only: trend (default) or dispersion.
+                                Request-latency inputs require exactly two
+                                dotnet-diagnostics/request-latency-window-set/v1 documents.
 """,
 """
   dotnet-diagnostics-cli compare ./before.json ./after.json
   dotnet-diagnostics-cli compare ./a.json ./b.json ./c.json --mode dispersion --save ./matrix.json
+  dotnet-diagnostics-cli compare ./latency-baseline.json ./latency-candidate.json --json
   dotnet-diagnostics-cli compare --capture-root ./captures --baseline-capture-id <id> --baseline-artifact-id <id> --candidate-capture-id <id> --candidate-artifact-id <id> --json
   Historical references compare whole retained CPU/heap/counter snapshots; no filters, paths, live attach, or causal verdicts.
 """,

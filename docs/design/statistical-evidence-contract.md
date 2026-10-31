@@ -239,6 +239,15 @@ streaming percentile behavior and explicitly admits reservoir approximation. A
 reservoir element is not an independence unit. Do not use the sampler as a bootstrap
 population, and do not treat its deterministic PRNG as the bootstrap PRNG contract.
 
+**First shipping vertical slice (#1317):** Core now owns the scenario-specific
+`dotnet-diagnostics/request-latency-window-set/v1` input and
+`dotnet-diagnostics/request-latency-comparison/v1` result. It deliberately does
+not introduce the deferred universal evidence DTO. Its deterministic percentile
+bootstrap resamples exact complete independent window pairs, while approximate,
+lossy, incomplete, failed, aborted, unpaired, or incompatible evidence remains
+explicitly unavailable for paired inference. CLI and the existing MCP
+`compare_to_baseline` placement consume this same Core calculation.
+
 ### 8.2 BenchmarkDotNet
 
 The BenchmarkDotNet project already references Core; Core must never reference

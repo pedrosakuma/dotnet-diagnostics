@@ -2666,6 +2666,124 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
     }
 
     [Fact]
+    public async Task CompareToBaseline_RequestLatency_ReusesExistingToolWithoutVerdict()
+    {
+        static RequestLatencyWindowSet WindowSet(string id, string axisValue, double offset)
+            => new(
+                RequestLatencyWindowSet.SchemaV1,
+                id,
+                new(
+                    new("CoreCLR", "major-compatible", "linux", "x64", $"{id}-run"),
+                    new("eventpipe", "1"),
+                    new(
+                        "request-latency",
+                        "ms",
+                        "completed-request-duration",
+                        "per-completed-request",
+                        "endpoint=/checkout;method=GET",
+                        RequestLatencyRepresentation.Exact),
+                    new(
+                        "8-requests",
+                        "non-overlapping-sequential-windows",
+                        "Microsoft.AspNetCore.Hosting",
+                        "activity-stop",
+                        "retain-all",
+                        "none"),
+                    new(
+                        "checkout",
+                        "1",
+                        "endpoint=/checkout;method=GET",
+                        "1",
+                        "single-process"),
+                    new(
+                        "bounded_time_window",
+                        "request-event-within-window-pair",
+                        "pairKey"),
+                    new("build", axisValue)),
+                Enumerable.Range(0, RequestLatencyComparison.MinimumCompleteWindowPairs)
+                    .Select(window => new RequestLatencyWindow(
+                        $"window-{window + 1}",
+                        $"pair-{window + 1}",
+                        window % 2 == 0
+                            ? RequestLatencyPairOrder.BaselineFirst
+                            : RequestLatencyPairOrder.CandidateFirst,
+                        RequestLatencyWindowOutcome.Complete,
+                        RequestLatencyComparison.MinimumCompletedRequestsPerWindow,
+                        ErrorCount: 0,
+                        CensoredCount: 0,
+                        MissingCompletionCount: 0,
+                        LostOrDropped: 0,
+                        RequestLatencyRepresentation.Exact,
+                        Enumerable.Range(
+                                0,
+                                RequestLatencyComparison.MinimumCompletedRequestsPerWindow)
+                            .Select(sample => offset + window * 0.1 + sample * 0.01)
+                            .ToArray()))
+                    .ToArray());
+
+        var baseline = JsonSerializer.Serialize(
+            WindowSet("baseline", "build-a", 10),
+            RequestLatencyComparisonJsonContext.Default.RequestLatencyWindowSet);
+        var candidate = JsonSerializer.Serialize(
+            WindowSet("candidate", "build-b", 30),
+            RequestLatencyComparisonJsonContext.Default.RequestLatencyWindowSet);
+        await using var client = await ConnectAsync();
+
+        var result = await client.CallToolAsync(
+            "compare_to_baseline",
+            new Dictionary<string, object?>
+            {
+                ["snapshotsJson"] = new[] { baseline, candidate },
+            },
+            cancellationToken: CancellationToken.None);
+
+        result.IsError.Should().NotBeTrue(JsonSerializer.Serialize(result));
+        var comparison = DeserializeStructured<RequestLatencyComparisonResult>(result)!;
+        comparison.Schema.Should().Be(RequestLatencyComparisonResult.SchemaV1);
+        comparison.Availability.Should().Be(RequestLatencyEvidenceAvailability.Available);
+        comparison.Quantiles.Should().HaveCount(3);
+        comparison.PairCounts.ValidIndependentComplete.Should().Be(8);
+        var envelope = DeserializeEnvelope(result)!;
+        envelope.Summary.Should().Contain("Objective evidence only")
+            .And.Contain("no regression")
+            .And.Contain("equivalent-load")
+            .And.NotContain("warranted");
+        JsonSerializer.Serialize(result.StructuredContent).Should().NotContain("\"verdict\"");
+
+        var oversized = WindowSet("oversized", "build-a", 10);
+        oversized = oversized with
+        {
+            Identity = oversized.Identity with
+            {
+                Quantity = oversized.Identity.Quantity with
+                {
+                    Filters = new string(
+                        'x',
+                        RequestLatencyComparison.MaximumSerializedWindowSetBytes),
+                },
+            },
+        };
+        var oversizedResult = await client.CallToolAsync(
+            "compare_to_baseline",
+            new Dictionary<string, object?>
+            {
+                ["snapshotsJson"] = new[]
+                {
+                    JsonSerializer.Serialize(
+                        oversized,
+                        RequestLatencyComparisonJsonContext.Default.RequestLatencyWindowSet),
+                    candidate,
+                },
+            },
+            cancellationToken: CancellationToken.None);
+
+        oversizedResult.IsError.Should().BeTrue();
+        var oversizedEnvelope = DeserializeEnvelope(oversizedResult)!;
+        oversizedEnvelope.Error!.Kind.Should().Be("InvalidRequestLatencyEvidence");
+        oversizedEnvelope.Error.Message.Should().Contain("262144-byte limit");
+    }
+
+    [Fact]
     public async Task CompareToBaseline_NonfiniteMeasurement_ReturnsExplicitError()
     {
         await using var client = await ConnectAsync();
