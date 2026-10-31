@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Comparison;
@@ -18,7 +19,7 @@ internal static class DiagnosticToolBaselineComparison
         IPrincipalAccessor principalAccessor,
         [Description("Baseline summary JSON (from a prior export_investigation_summary). Optional when snapshotsJson is supplied.")] string? baselineSummaryJson = null,
         [Description("Current summary JSON (from export_investigation_summary on the new investigation). Optional when snapshotsJson is supplied.")] string? currentSummaryJson = null,
-        [Description("Ordered ComparableSnapshot JSON bodies to compare as a journey. JSON bodies only; do not pass file paths.")] string[]? snapshotsJson = null,
+        [Description("Ordered comparison JSON bodies. Accepts 2..N ComparableSnapshot documents or exactly two request-latency window-set v1 documents. JSON only; no file paths.")] string[]? snapshotsJson = null,
         [Description("ComparableSnapshot journey only: maximum metric series / key rows returned in compact inline payloads and used to bound key-matrix construction. Must be >= 1. Defaults to 25.")] int topN = 25,
         [Description("ComparableSnapshot journey only: inline verbosity. `full` returns the full matrix; local large results may use a journey://diff/{handle} Resource link, while proxied results stay inline because dynamic pod Resources are not forwarded. `compact` returns verdict/headline/counts/notes plus top-N deltas. Defaults to `full`.")] string depth = "full",
         [Description("ComparableSnapshot journey only: `trend` (default) compares ordered captures over time; `dispersion` compares unordered replicas for outliers.")] string? mode = null,
@@ -128,11 +129,76 @@ internal static class DiagnosticToolBaselineComparison
                     "ComparableSnapshot comparison requires at least two JSON documents.",
                     new DiagnosticError("InvalidArgument", $"Received {snapshotsJson.Length} ComparableSnapshot document.", nameof(snapshotsJson)),
                     new NextActionHint("compare_to_baseline", "Pass 2..N ComparableSnapshot JSON documents for a journey comparison.")),
+            RequestLatencyWindowSet.SchemaV1 => snapshotsJson.Length == 2
+                ? CompareRequestLatency(snapshotsJson[0], snapshotsJson[1])
+                : DiagnosticResult.Fail<object>(
+                    "Request-latency comparison requires exactly two JSON documents.",
+                    new DiagnosticError(
+                        "InvalidArgument",
+                        $"Received {snapshotsJson.Length} request-latency window-set documents.",
+                        nameof(snapshotsJson)),
+                    new NextActionHint(
+                        "compare_to_baseline",
+                        "Pass exactly two request-latency window-set v1 JSON documents: baseline then candidate.")),
             _ => DiagnosticResult.Fail<object>(
                 "Unsupported comparison schema.",
                 new DiagnosticError("UnsupportedSchema", "The supplied comparison schema is unsupported.", "UnsupportedComparisonSchema"),
                 new NextActionHint("compare_to_baseline", "Re-export snapshots or summaries with the current server version.")),
         };
+    }
+
+    private static DiagnosticResult<object> CompareRequestLatency(
+        string baselineJson,
+        string candidateJson)
+    {
+        try
+        {
+            EnsureRequestLatencyWindowSetSize(baselineJson, "Baseline");
+            EnsureRequestLatencyWindowSetSize(candidateJson, "Candidate");
+            var baseline = JsonSerializer.Deserialize(
+                baselineJson,
+                RequestLatencyComparisonJsonContext.Default.RequestLatencyWindowSet)
+                ?? throw new InvalidDataException("Baseline request-latency document was empty.");
+            var candidate = JsonSerializer.Deserialize(
+                candidateJson,
+                RequestLatencyComparisonJsonContext.Default.RequestLatencyWindowSet)
+                ?? throw new InvalidDataException("Candidate request-latency document was empty.");
+            var comparison = RequestLatencyComparison.Compare(baseline, candidate);
+            var summary =
+                $"Request-latency comparison availability={JsonNamingPolicy.SnakeCaseLower.ConvertName(comparison.Availability.ToString())}; " +
+                $"{comparison.PairCounts.ValidIndependentComplete} valid independent complete window pair(s). " +
+                "Objective evidence only; no regression, improvement, significance, causation, equivalent-load, or operational-importance verdict.";
+            return DiagnosticResult.Ok<object>(
+                comparison,
+                summary,
+                new NextActionHint(
+                    "start_investigation",
+                    "If a named scenario protocol requires follow-up, investigate request, database, and network evidence without treating this comparison as a verdict."));
+        }
+        catch (Exception exception) when (
+            exception is JsonException or ArgumentException or InvalidDataException)
+        {
+            return DiagnosticResult.Fail<object>(
+                "Request-latency comparison input is malformed or incompatible with the v1 contract.",
+                new DiagnosticError(
+                    "InvalidRequestLatencyEvidence",
+                    exception.Message,
+                    "RequestLatencyContractValidationFailed"),
+                new NextActionHint(
+                    "compare_to_baseline",
+                    "Re-export both request-latency window sets from the same contract version and retry."));
+        }
+    }
+
+    private static void EnsureRequestLatencyWindowSetSize(string json, string side)
+    {
+        var serializedBytes = Encoding.UTF8.GetByteCount(json);
+        if (serializedBytes > RequestLatencyComparison.MaximumSerializedWindowSetBytes)
+        {
+            throw new InvalidDataException(
+                $"{side} request-latency window set exceeds the " +
+                $"{RequestLatencyComparison.MaximumSerializedWindowSetBytes}-byte limit.");
+        }
     }
 
     private static DiagnosticResult<object> CompareInvestigationSummaries(
@@ -526,8 +592,9 @@ internal static class DiagnosticToolBaselineComparison
                 return false;
             }
 
-            if (!document.RootElement.TryGetProperty("Schema", out var schemaElement) ||
-                schemaElement.ValueKind != JsonValueKind.String)
+            if ((!document.RootElement.TryGetProperty("Schema", out var schemaElement)
+                    && !document.RootElement.TryGetProperty("schema", out schemaElement))
+                || schemaElement.ValueKind != JsonValueKind.String)
             {
                 error = "Schema field is missing or not a string.";
                 return false;

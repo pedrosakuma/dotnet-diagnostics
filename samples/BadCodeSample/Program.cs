@@ -79,6 +79,7 @@ var badCodeEndpoints = new[]
     "/culture-lookup-fixed?iterations=2000000",
     "/lock-contention?threads=32&ms=1500",
     "/loh-alloc?count=20",
+    "/allocation-shape?shape=primary&milliseconds=1500",
     "/slow-http?url=https://httpbin.org/delay/3",
     "/fd-leak?count=64",
     "/socket-leak?count=32&host=loopback",
@@ -302,6 +303,18 @@ app.MapGet("/loh-alloc", (int? count) =>
         allocated += buf.Length;
     }
     return Results.Ok(new { iterations = n, allocatedBytes = allocated });
+});
+
+app.MapGet("/allocation-shape", (string? shape, int? milliseconds) =>
+{
+    var selected = shape?.Trim().ToLowerInvariant() ?? "primary";
+    var duration = TimeSpan.FromMilliseconds(Math.Clamp(milliseconds ?? 1500, 25, 10_000));
+    return selected switch
+    {
+        "primary" => Results.Ok(AllocationShapeWorkload.RunPrimary(duration)),
+        "changed" => Results.Ok(AllocationShapeWorkload.RunChanged(duration)),
+        _ => Results.BadRequest(new { error = "shape must be primary or changed" }),
+    };
 });
 
 // 7. Slow outbound HTTP — detect with collect_events(kind="event_source") name=System.Net.Http

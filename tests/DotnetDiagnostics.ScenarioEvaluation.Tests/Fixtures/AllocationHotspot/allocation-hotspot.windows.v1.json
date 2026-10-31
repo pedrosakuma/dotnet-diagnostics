@@ -1,0 +1,757 @@
+{
+  "schemaVersion": 1,
+  "id": "allocation-hotspot-live-windows-v1",
+  "environment": "Microsoft Windows NT 10.0.26300.0; 10.0.14",
+  "captures": [
+    {
+      "captureId": "stable-hotspot-01",
+      "scenario": "stable_hotspot",
+      "workloadVariant": "primary",
+      "origin": "live_capture",
+      "runtimeVersion": "10.0.14",
+      "operatingSystem": "windows",
+      "architecture": "x64",
+      "durationSeconds": 3,
+      "handleState": "available",
+      "rawAllocationTicks": 6405,
+      "rawEstimatedBytes": 1226993232,
+      "attributedAllocationTicks": 6405,
+      "attributedEstimatedBytes": 1226993232,
+      "types": [
+        {
+          "key": "System.Byte[]",
+          "rank": 1,
+          "estimatedBytes": 815627856,
+          "allocationTicks": 4247
+        },
+        {
+          "key": "System.Char[]",
+          "rank": 2,
+          "estimatedBytes": 407717904,
+          "allocationTicks": 2123
+        }
+      ],
+      "stacks": [
+        {
+          "key": "BadCodeSample!BadCodeSample.AllocationShapeWorkload.AllocatePrimaryBytes()",
+          "rank": 1,
+          "estimatedBytes": 815627856,
+          "allocationTicks": 4247
+        },
+        {
+          "key": "BadCodeSample!BadCodeSample.AllocationShapeWorkload.AllocateSharedChars()",
+          "rank": 2,
+          "estimatedBytes": 407717904,
+          "allocationTicks": 2123
+        }
+      ],
+      "limitations": [
+        "Live ranks independently filter the workload\u0027s array types and allocation helper methods; no type-to-stack join is inferred.",
+        "Estimated bytes and allocation ticks are sampled GCAllocationTick evidence, not exact allocation totals."
+      ]
+    },
+    {
+      "captureId": "repeated-aa-01",
+      "scenario": "repeated_aa",
+      "workloadVariant": "primary",
+      "origin": "live_capture",
+      "runtimeVersion": "10.0.14",
+      "operatingSystem": "windows",
+      "architecture": "x64",
+      "durationSeconds": 3,
+      "handleState": "available",
+      "rawAllocationTicks": 5727,
+      "rawEstimatedBytes": 1096976456,
+      "attributedAllocationTicks": 5727,
+      "attributedEstimatedBytes": 1096976456,
+      "types": [
+        {
+          "key": "System.Byte[]",
+          "rank": 1,
+          "estimatedBytes": 729229056,
+          "allocationTicks": 3798
+        },
+        {
+          "key": "System.Char[]",
+          "rank": 2,
+          "estimatedBytes": 364507104,
+          "allocationTicks": 1898
+        }
+      ],
+      "stacks": [
+        {
+          "key": "BadCodeSample!BadCodeSample.AllocationShapeWorkload.AllocatePrimaryBytes()",
+          "rank": 1,
+          "estimatedBytes": 729014208,
+          "allocationTicks": 3796
+        },
+        {
+          "key": "BadCodeSample!BadCodeSample.AllocationShapeWorkload.AllocateSharedChars()",
+          "rank": 2,
+          "estimatedBytes": 364507104,
+          "allocationTicks": 1898
+        }
+      ],
+      "limitations": [
+        "Live ranks independently filter the workload\u0027s array types and allocation helper methods; no type-to-stack join is inferred.",
+        "Estimated bytes and allocation ticks are sampled GCAllocationTick evidence, not exact allocation totals."
+      ]
+    },
+    {
+      "captureId": "changed-mix-01",
+      "scenario": "changed_mix",
+      "workloadVariant": "changed",
+      "origin": "live_capture",
+      "runtimeVersion": "10.0.14",
+      "operatingSystem": "windows",
+      "architecture": "x64",
+      "durationSeconds": 3,
+      "handleState": "available",
+      "rawAllocationTicks": 5079,
+      "rawEstimatedBytes": 972876896,
+      "attributedAllocationTicks": 5079,
+      "attributedEstimatedBytes": 972876896,
+      "types": [
+        {
+          "key": "System.Int32[]",
+          "rank": 1,
+          "estimatedBytes": 646625616,
+          "allocationTicks": 3367
+        },
+        {
+          "key": "System.Char[]",
+          "rank": 2,
+          "estimatedBytes": 323216784,
+          "allocationTicks": 1683
+        },
+        {
+          "key": "System.Byte[]",
+          "rank": 3,
+          "estimatedBytes": 107912,
+          "allocationTicks": 1
+        }
+      ],
+      "stacks": [
+        {
+          "key": "BadCodeSample!BadCodeSample.AllocationShapeWorkload.AllocateChangedIntegers()",
+          "rank": 1,
+          "estimatedBytes": 646625616,
+          "allocationTicks": 3367
+        },
+        {
+          "key": "BadCodeSample!BadCodeSample.AllocationShapeWorkload.AllocateSharedChars()",
+          "rank": 2,
+          "estimatedBytes": 323216784,
+          "allocationTicks": 1683
+        }
+      ],
+      "limitations": [
+        "Live ranks independently filter the workload\u0027s array types and allocation helper methods; no type-to-stack join is inferred.",
+        "Estimated bytes and allocation ticks are sampled GCAllocationTick evidence, not exact allocation totals."
+      ]
+    },
+    {
+      "captureId": "stable-hotspot-02",
+      "scenario": "stable_hotspot",
+      "workloadVariant": "primary",
+      "origin": "live_capture",
+      "runtimeVersion": "10.0.14",
+      "operatingSystem": "windows",
+      "architecture": "x64",
+      "durationSeconds": 3,
+      "handleState": "available",
+      "rawAllocationTicks": 4782,
+      "rawEstimatedBytes": 915855464,
+      "attributedAllocationTicks": 4782,
+      "attributedEstimatedBytes": 915855464,
+      "types": [
+        {
+          "key": "System.Byte[]",
+          "rank": 1,
+          "estimatedBytes": 608812816,
+          "allocationTicks": 3171
+        },
+        {
+          "key": "System.Char[]",
+          "rank": 2,
+          "estimatedBytes": 304204032,
+          "allocationTicks": 1584
+        }
+      ],
+      "stacks": [
+        {
+          "key": "BadCodeSample!BadCodeSample.AllocationShapeWorkload.AllocatePrimaryBytes()",
+          "rank": 1,
+          "estimatedBytes": 608600112,
+          "allocationTicks": 3169
+        },
+        {
+          "key": "BadCodeSample!BadCodeSample.AllocationShapeWorkload.AllocateSharedChars()",
+          "rank": 2,
+          "estimatedBytes": 304204032,
+          "allocationTicks": 1584
+        }
+      ],
+      "limitations": [
+        "Live ranks independently filter the workload\u0027s array types and allocation helper methods; no type-to-stack join is inferred.",
+        "Estimated bytes and allocation ticks are sampled GCAllocationTick evidence, not exact allocation totals."
+      ]
+    },
+    {
+      "captureId": "repeated-aa-02",
+      "scenario": "repeated_aa",
+      "workloadVariant": "primary",
+      "origin": "live_capture",
+      "runtimeVersion": "10.0.14",
+      "operatingSystem": "windows",
+      "architecture": "x64",
+      "durationSeconds": 3,
+      "handleState": "available",
+      "rawAllocationTicks": 6273,
+      "rawEstimatedBytes": 1201651936,
+      "attributedAllocationTicks": 6272,
+      "attributedEstimatedBytes": 1201542744,
+      "types": [
+        {
+          "key": "System.Byte[]",
+          "rank": 1,
+          "estimatedBytes": 798834680,
+          "allocationTicks": 4160
+        },
+        {
+          "key": "System.Char[]",
+          "rank": 2,
+          "estimatedBytes": 399267792,
+          "allocationTicks": 2079
+        }
+      ],
+      "stacks": [
+        {
+          "key": "BadCodeSample!BadCodeSample.AllocationShapeWorkload.AllocatePrimaryBytes()",
+          "rank": 1,
+          "estimatedBytes": 798727632,
+          "allocationTicks": 4159
+        },
+        {
+          "key": "BadCodeSample!BadCodeSample.AllocationShapeWorkload.AllocateSharedChars()",
+          "rank": 2,
+          "estimatedBytes": 399267792,
+          "allocationTicks": 2079
+        }
+      ],
+      "limitations": [
+        "Live ranks independently filter the workload\u0027s array types and allocation helper methods; no type-to-stack join is inferred.",
+        "Estimated bytes and allocation ticks are sampled GCAllocationTick evidence, not exact allocation totals.",
+        "Some sampled allocation evidence was not attributed to a usable stack; raw totals remain separate from stack-attributed totals."
+      ]
+    },
+    {
+      "captureId": "changed-mix-02",
+      "scenario": "changed_mix",
+      "workloadVariant": "changed",
+      "origin": "live_capture",
+      "runtimeVersion": "10.0.14",
+      "operatingSystem": "windows",
+      "architecture": "x64",
+      "durationSeconds": 3,
+      "handleState": "available",
+      "rawAllocationTicks": 5544,
+      "rawEstimatedBytes": 1061939640,
+      "attributedAllocationTicks": 5544,
+      "attributedEstimatedBytes": 1061939640,
+      "types": [
+        {
+          "key": "System.Int32[]",
+          "rank": 1,
+          "estimatedBytes": 705776400,
+          "allocationTicks": 3675
+        },
+        {
+          "key": "System.Char[]",
+          "rank": 2,
+          "estimatedBytes": 352792176,
+          "allocationTicks": 1837
+        }
+      ],
+      "stacks": [
+        {
+          "key": "BadCodeSample!BadCodeSample.AllocationShapeWorkload.AllocateChangedIntegers()",
+          "rank": 1,
+          "estimatedBytes": 705776400,
+          "allocationTicks": 3675
+        },
+        {
+          "key": "BadCodeSample!BadCodeSample.AllocationShapeWorkload.AllocateSharedChars()",
+          "rank": 2,
+          "estimatedBytes": 352792176,
+          "allocationTicks": 1837
+        }
+      ],
+      "limitations": [
+        "Live ranks independently filter the workload\u0027s array types and allocation helper methods; no type-to-stack join is inferred.",
+        "Estimated bytes and allocation ticks are sampled GCAllocationTick evidence, not exact allocation totals."
+      ]
+    },
+    {
+      "captureId": "stable-hotspot-03",
+      "scenario": "stable_hotspot",
+      "workloadVariant": "primary",
+      "origin": "live_capture",
+      "runtimeVersion": "10.0.14",
+      "operatingSystem": "windows",
+      "architecture": "x64",
+      "durationSeconds": 3,
+      "handleState": "available",
+      "rawAllocationTicks": 4798,
+      "rawEstimatedBytes": 919017232,
+      "attributedAllocationTicks": 4798,
+      "attributedEstimatedBytes": 919017232,
+      "types": [
+        {
+          "key": "System.Byte[]",
+          "rank": 1,
+          "estimatedBytes": 610712640,
+          "allocationTicks": 3180
+        },
+        {
+          "key": "System.Char[]",
+          "rank": 2,
+          "estimatedBytes": 305356320,
+          "allocationTicks": 1590
+        }
+      ],
+      "stacks": [
+        {
+          "key": "BadCodeSample!BadCodeSample.AllocationShapeWorkload.AllocatePrimaryBytes()",
+          "rank": 1,
+          "estimatedBytes": 610712640,
+          "allocationTicks": 3180
+        },
+        {
+          "key": "BadCodeSample!BadCodeSample.AllocationShapeWorkload.AllocateSharedChars()",
+          "rank": 2,
+          "estimatedBytes": 305356320,
+          "allocationTicks": 1590
+        }
+      ],
+      "limitations": [
+        "Live ranks independently filter the workload\u0027s array types and allocation helper methods; no type-to-stack join is inferred.",
+        "Estimated bytes and allocation ticks are sampled GCAllocationTick evidence, not exact allocation totals."
+      ]
+    },
+    {
+      "captureId": "repeated-aa-03",
+      "scenario": "repeated_aa",
+      "workloadVariant": "primary",
+      "origin": "live_capture",
+      "runtimeVersion": "10.0.14",
+      "operatingSystem": "windows",
+      "architecture": "x64",
+      "durationSeconds": 3,
+      "handleState": "available",
+      "rawAllocationTicks": 6107,
+      "rawEstimatedBytes": 1169940440,
+      "attributedAllocationTicks": 6107,
+      "attributedEstimatedBytes": 1169940440,
+      "types": [
+        {
+          "key": "System.Byte[]",
+          "rank": 1,
+          "estimatedBytes": 777602352,
+          "allocationTicks": 4049
+        },
+        {
+          "key": "System.Char[]",
+          "rank": 2,
+          "estimatedBytes": 388705152,
+          "allocationTicks": 2024
+        },
+        {
+          "key": "System.Int32[]",
+          "rank": 3,
+          "estimatedBytes": 194376,
+          "allocationTicks": 1
+        }
+      ],
+      "stacks": [
+        {
+          "key": "BadCodeSample!BadCodeSample.AllocationShapeWorkload.AllocatePrimaryBytes()",
+          "rank": 1,
+          "estimatedBytes": 777602352,
+          "allocationTicks": 4049
+        },
+        {
+          "key": "BadCodeSample!BadCodeSample.AllocationShapeWorkload.AllocateSharedChars()",
+          "rank": 2,
+          "estimatedBytes": 388705152,
+          "allocationTicks": 2024
+        }
+      ],
+      "limitations": [
+        "Live ranks independently filter the workload\u0027s array types and allocation helper methods; no type-to-stack join is inferred.",
+        "Estimated bytes and allocation ticks are sampled GCAllocationTick evidence, not exact allocation totals."
+      ]
+    },
+    {
+      "captureId": "changed-mix-03",
+      "scenario": "changed_mix",
+      "workloadVariant": "changed",
+      "origin": "live_capture",
+      "runtimeVersion": "10.0.14",
+      "operatingSystem": "windows",
+      "architecture": "x64",
+      "durationSeconds": 3,
+      "handleState": "available",
+      "rawAllocationTicks": 6505,
+      "rawEstimatedBytes": 1246106856,
+      "attributedAllocationTicks": 6505,
+      "attributedEstimatedBytes": 1246106856,
+      "types": [
+        {
+          "key": "System.Int32[]",
+          "rank": 1,
+          "estimatedBytes": 828303024,
+          "allocationTicks": 4313
+        },
+        {
+          "key": "System.Char[]",
+          "rank": 2,
+          "estimatedBytes": 414055488,
+          "allocationTicks": 2156
+        }
+      ],
+      "stacks": [
+        {
+          "key": "BadCodeSample!BadCodeSample.AllocationShapeWorkload.AllocateChangedIntegers()",
+          "rank": 1,
+          "estimatedBytes": 828303024,
+          "allocationTicks": 4313
+        },
+        {
+          "key": "BadCodeSample!BadCodeSample.AllocationShapeWorkload.AllocateSharedChars()",
+          "rank": 2,
+          "estimatedBytes": 414055488,
+          "allocationTicks": 2156
+        }
+      ],
+      "limitations": [
+        "Live ranks independently filter the workload\u0027s array types and allocation helper methods; no type-to-stack join is inferred.",
+        "Estimated bytes and allocation ticks are sampled GCAllocationTick evidence, not exact allocation totals."
+      ]
+    },
+    {
+      "captureId": "stable-hotspot-04",
+      "scenario": "stable_hotspot",
+      "workloadVariant": "primary",
+      "origin": "live_capture",
+      "runtimeVersion": "10.0.14",
+      "operatingSystem": "windows",
+      "architecture": "x64",
+      "durationSeconds": 3,
+      "handleState": "available",
+      "rawAllocationTicks": 7483,
+      "rawEstimatedBytes": 1433582520,
+      "attributedAllocationTicks": 7483,
+      "attributedEstimatedBytes": 1433582520,
+      "types": [
+        {
+          "key": "System.Byte[]",
+          "rank": 1,
+          "estimatedBytes": 952942176,
+          "allocationTicks": 4962
+        },
+        {
+          "key": "System.Char[]",
+          "rank": 2,
+          "estimatedBytes": 476471088,
+          "allocationTicks": 2481
+        }
+      ],
+      "stacks": [
+        {
+          "key": "BadCodeSample!BadCodeSample.AllocationShapeWorkload.AllocatePrimaryBytes()",
+          "rank": 1,
+          "estimatedBytes": 952942176,
+          "allocationTicks": 4962
+        },
+        {
+          "key": "BadCodeSample!BadCodeSample.AllocationShapeWorkload.AllocateSharedChars()",
+          "rank": 2,
+          "estimatedBytes": 476471088,
+          "allocationTicks": 2481
+        }
+      ],
+      "limitations": [
+        "Live ranks independently filter the workload\u0027s array types and allocation helper methods; no type-to-stack join is inferred.",
+        "Estimated bytes and allocation ticks are sampled GCAllocationTick evidence, not exact allocation totals."
+      ]
+    },
+    {
+      "captureId": "repeated-aa-04",
+      "scenario": "repeated_aa",
+      "workloadVariant": "primary",
+      "origin": "live_capture",
+      "runtimeVersion": "10.0.14",
+      "operatingSystem": "windows",
+      "architecture": "x64",
+      "durationSeconds": 3,
+      "handleState": "available",
+      "rawAllocationTicks": 3074,
+      "rawEstimatedBytes": 588627616,
+      "attributedAllocationTicks": 3074,
+      "attributedEstimatedBytes": 588627616,
+      "types": [
+        {
+          "key": "System.Byte[]",
+          "rank": 1,
+          "estimatedBytes": 391009728,
+          "allocationTicks": 2036
+        },
+        {
+          "key": "System.Char[]",
+          "rank": 2,
+          "estimatedBytes": 195504864,
+          "allocationTicks": 1018
+        }
+      ],
+      "stacks": [
+        {
+          "key": "BadCodeSample!BadCodeSample.AllocationShapeWorkload.AllocatePrimaryBytes()",
+          "rank": 1,
+          "estimatedBytes": 391009728,
+          "allocationTicks": 2036
+        },
+        {
+          "key": "BadCodeSample!BadCodeSample.AllocationShapeWorkload.AllocateSharedChars()",
+          "rank": 2,
+          "estimatedBytes": 195504864,
+          "allocationTicks": 1018
+        },
+        {
+          "key": "BadCodeSample!BadCodeSample.AllocationShapeWorkload.Run(value class System.TimeSpan,class System.Func\u00601\u003Cint32\u003E,class System.Func\u00601\u003Cint32\u003E,class System.String)",
+          "rank": 3,
+          "estimatedBytes": 103152,
+          "allocationTicks": 1
+        }
+      ],
+      "limitations": [
+        "Live ranks independently filter the workload\u0027s array types and allocation helper methods; no type-to-stack join is inferred.",
+        "Estimated bytes and allocation ticks are sampled GCAllocationTick evidence, not exact allocation totals."
+      ]
+    },
+    {
+      "captureId": "changed-mix-04",
+      "scenario": "changed_mix",
+      "workloadVariant": "changed",
+      "origin": "live_capture",
+      "runtimeVersion": "10.0.14",
+      "operatingSystem": "windows",
+      "architecture": "x64",
+      "durationSeconds": 3,
+      "handleState": "available",
+      "rawAllocationTicks": 5760,
+      "rawEstimatedBytes": 1103328872,
+      "attributedAllocationTicks": 5760,
+      "attributedEstimatedBytes": 1103328872,
+      "types": [
+        {
+          "key": "System.Int32[]",
+          "rank": 1,
+          "estimatedBytes": 733239264,
+          "allocationTicks": 3818
+        },
+        {
+          "key": "System.Char[]",
+          "rank": 2,
+          "estimatedBytes": 366619632,
+          "allocationTicks": 1909
+        }
+      ],
+      "stacks": [
+        {
+          "key": "BadCodeSample!BadCodeSample.AllocationShapeWorkload.AllocateChangedIntegers()",
+          "rank": 1,
+          "estimatedBytes": 733239264,
+          "allocationTicks": 3818
+        },
+        {
+          "key": "BadCodeSample!BadCodeSample.AllocationShapeWorkload.AllocateSharedChars()",
+          "rank": 2,
+          "estimatedBytes": 366619632,
+          "allocationTicks": 1909
+        }
+      ],
+      "limitations": [
+        "Live ranks independently filter the workload\u0027s array types and allocation helper methods; no type-to-stack join is inferred.",
+        "Estimated bytes and allocation ticks are sampled GCAllocationTick evidence, not exact allocation totals."
+      ]
+    },
+    {
+      "captureId": "low-sample-controlled-01",
+      "scenario": "low_sample",
+      "workloadVariant": "primary",
+      "origin": "controlled_projection",
+      "runtimeVersion": "10.0.14",
+      "operatingSystem": "windows",
+      "architecture": "x64",
+      "durationSeconds": 3,
+      "handleState": "available",
+      "rawAllocationTicks": 2,
+      "rawEstimatedBytes": 383136,
+      "attributedAllocationTicks": 1,
+      "attributedEstimatedBytes": 191568,
+      "types": [
+        {
+          "key": "System.Byte[]",
+          "rank": 1,
+          "estimatedBytes": 383136,
+          "allocationTicks": 2
+        }
+      ],
+      "stacks": [
+        {
+          "key": "BadCodeSample!BadCodeSample.AllocationShapeWorkload.AllocatePrimaryBytes()",
+          "rank": 1,
+          "estimatedBytes": 191568,
+          "allocationTicks": 1
+        }
+      ],
+      "limitations": [
+        "Controlled projection of two live allocation ticks, one with usable stack attribution, validates both the low-sample and partial-attribution paths without claiming event-level independence."
+      ]
+    },
+    {
+      "captureId": "raw-empty-controlled-01",
+      "scenario": "raw_empty",
+      "workloadVariant": "primary",
+      "origin": "controlled_projection",
+      "runtimeVersion": "10.0.14",
+      "operatingSystem": "windows",
+      "architecture": "x64",
+      "durationSeconds": 3,
+      "handleState": "available",
+      "rawAllocationTicks": 0,
+      "rawEstimatedBytes": 0,
+      "attributedAllocationTicks": 0,
+      "attributedEstimatedBytes": 0,
+      "types": [],
+      "stacks": [],
+      "limitations": [
+        "Controlled projection validates that a completed bounded capture with no ticks remains raw-empty rather than zero-allocation evidence."
+      ]
+    },
+    {
+      "captureId": "no-stack-controlled-01",
+      "scenario": "raw_nonzero_no_stack",
+      "workloadVariant": "primary",
+      "origin": "controlled_projection",
+      "runtimeVersion": "10.0.14",
+      "operatingSystem": "windows",
+      "architecture": "x64",
+      "durationSeconds": 3,
+      "handleState": "available",
+      "rawAllocationTicks": 6405,
+      "rawEstimatedBytes": 1226993232,
+      "attributedAllocationTicks": 0,
+      "attributedEstimatedBytes": 0,
+      "types": [
+        {
+          "key": "System.Byte[]",
+          "rank": 1,
+          "estimatedBytes": 815627856,
+          "allocationTicks": 4247
+        },
+        {
+          "key": "System.Char[]",
+          "rank": 2,
+          "estimatedBytes": 407717904,
+          "allocationTicks": 2123
+        }
+      ],
+      "stacks": [],
+      "limitations": [
+        "Controlled projection preserves live raw totals and type ranks while removing every usable stack."
+      ]
+    },
+    {
+      "captureId": "zero-weight-controlled-01",
+      "scenario": "usable_stack_zero_weight",
+      "workloadVariant": "primary",
+      "origin": "controlled_projection",
+      "runtimeVersion": "10.0.14",
+      "operatingSystem": "windows",
+      "architecture": "x64",
+      "durationSeconds": 3,
+      "handleState": "available",
+      "rawAllocationTicks": 6405,
+      "rawEstimatedBytes": 1226993232,
+      "attributedAllocationTicks": 6405,
+      "attributedEstimatedBytes": 0,
+      "types": [
+        {
+          "key": "System.Byte[]",
+          "rank": 1,
+          "estimatedBytes": 815627856,
+          "allocationTicks": 4247
+        },
+        {
+          "key": "System.Char[]",
+          "rank": 2,
+          "estimatedBytes": 407717904,
+          "allocationTicks": 2123
+        }
+      ],
+      "stacks": [
+        {
+          "key": "BadCodeSample!BadCodeSample.AllocationShapeWorkload.AllocatePrimaryBytes()",
+          "rank": 1,
+          "estimatedBytes": 0,
+          "allocationTicks": 4247
+        },
+        {
+          "key": "BadCodeSample!BadCodeSample.AllocationShapeWorkload.AllocateSharedChars()",
+          "rank": 2,
+          "estimatedBytes": 0,
+          "allocationTicks": 2123
+        }
+      ],
+      "limitations": [
+        "Controlled projection preserves usable stack ticks while removing sampled byte weights; tick and byte rankings remain distinct."
+      ]
+    },
+    {
+      "captureId": "invalid-handle-controlled-01",
+      "scenario": "invalid_handle",
+      "workloadVariant": "primary",
+      "origin": "controlled_projection",
+      "runtimeVersion": "10.0.14",
+      "operatingSystem": "windows",
+      "architecture": "x64",
+      "durationSeconds": 3,
+      "handleState": "invalid_or_expired",
+      "rawAllocationTicks": 6405,
+      "rawEstimatedBytes": 1226993232,
+      "attributedAllocationTicks": 0,
+      "attributedEstimatedBytes": 0,
+      "types": [
+        {
+          "key": "System.Byte[]",
+          "rank": 1,
+          "estimatedBytes": 815627856,
+          "allocationTicks": 4247
+        },
+        {
+          "key": "System.Char[]",
+          "rank": 2,
+          "estimatedBytes": 407717904,
+          "allocationTicks": 2123
+        }
+      ],
+      "stacks": [],
+      "limitations": [
+        "Controlled projection preserves live raw totals and type ranks while modeling an invalid or expired retained handle; stack coverage is unavailable, not zero."
+      ]
+    }
+  ],
+  "expectedVerdict": "GO"
+}

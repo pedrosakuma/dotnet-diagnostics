@@ -4269,6 +4269,27 @@ definitions, and unavailable deltas without a causal verdict. See
 [historical comparisons](./historical-comparisons.md) for the exact matrix,
 CLI/MCP examples and bounds. The summary comparison contract below is separate.
 
+`snapshotsJson` also accepts exactly two
+`dotnet-diagnostics/request-latency-window-set/v1` bodies, baseline then
+candidate. That path returns the Core-owned
+`dotnet-diagnostics/request-latency-comparison/v1` result through the existing
+`data` envelope. It reports p50/p95/p99, source/retained counts,
+candidate-minus-baseline absolute/relative deltas, and paired-window median
+deltas with a deterministic 2,048-resample 95% bootstrap interval when at
+least eight valid independent complete pairs exist. The bootstrap resamples
+whole window pairs, never request events.
+Each request-latency JSON body is limited to 256 KiB, with at most 32 windows
+and 256 retained completed-request values per window.
+
+Compatibility is strict across runtime, backend, quantity, capture, workload,
+window semantics and comparison-axis name. Process-run IDs and axis values are
+provenance and may differ. Loss, approximation, incomplete populations,
+failed/aborted/unpaired windows and identity mismatches remain explicit
+availability states/reasons; unavailable values stay `null`, never zero. The
+result makes no regression, improvement, significance, causation,
+equivalent-load or operational-importance verdict. `topN`, `depth` and `mode`
+are journey-only knobs and do not apply to request latency.
+
 Diffs a current investigation summary against a baseline (or compares an ordered
 journey of `ComparableSnapshot` bodies) and returns a verdict + headline + ranked
 deltas. Large local matrices return a compact inline payload plus a
@@ -4281,7 +4302,7 @@ dynamic pod Resources are not forwarded.
 |---|---|---|---|
 | `baselineSummaryJson` | `string?` | — | Baseline summary JSON (from a prior `export_investigation_summary`). Optional when `snapshotsJson` is supplied |
 | `currentSummaryJson` | `string?` | — | Current summary JSON. Optional when `snapshotsJson` is supplied |
-| `snapshotsJson` | `string[]?` | — | Ordered `ComparableSnapshot` JSON bodies for an N-way journey diff (bodies, not file paths) |
+| `snapshotsJson` | `string[]?` | — | Ordered `ComparableSnapshot` JSON bodies for an N-way journey diff, or exactly two request-latency window-set v1 bodies (baseline then candidate); bodies, not file paths |
 | `topN` | `int` | `25` | Max metric series / key rows in compact inline payloads |
 | `depth` | `string` | `full` | `full` (whole matrix when small) or `compact` (verdict/headline/top deltas) |
 | `mode` | `string?` | `trend` | `trend` (ordered captures over time) or `dispersion` (unordered replicas → outliers) |
