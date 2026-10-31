@@ -473,6 +473,42 @@ app.MapPost("/gcdump-known-graph/pressure/prepare", (int? objectCount, int? payl
 app.MapGet("/gcdump-known-graph/status", () => Results.Json(GcDumpKnownGraphFixture.Status()))
     .WithName("GetGcDumpKnownGraphStatus");
 
+app.MapPost("/retained-growth/reset", (int? retainedCount, int? payloadBytes) =>
+{
+    var count = Math.Clamp(retainedCount ?? 4_000, 1, 10_000);
+    var bytes = Math.Clamp(payloadBytes ?? 512, 64, 1_024);
+    return Results.Json(GcDumpKnownGraphFixture.ResetRetainedGrowth(count, bytes));
+})
+.WithName("ResetRetainedGrowth");
+
+app.MapPost(
+    "/retained-growth/apply",
+    (string? mode, int? objectCount, int? payloadBytes, int? batches, int? delayMilliseconds) =>
+    {
+        var normalizedMode = mode?.Trim().ToLowerInvariant();
+        if (normalizedMode is not ("retained" or "churn"))
+        {
+            return Results.BadRequest(new { error = "mode must be retained or churn" });
+        }
+
+        var count = Math.Clamp(objectCount ?? 20_000, 1, 50_000);
+        var bytes = Math.Clamp(payloadBytes ?? 512, 64, 1_024);
+        var batchCount = Math.Clamp(batches ?? 10, 1, 16);
+        var delay = Math.Clamp(delayMilliseconds ?? 20, 0, 50);
+        return Results.Json(
+            GcDumpKnownGraphFixture.ApplyRetainedGrowthWorkload(
+                normalizedMode,
+                count,
+                bytes,
+                batchCount,
+                delay));
+    })
+.WithName("ApplyRetainedGrowthWorkload");
+
+app.MapPost("/retained-growth/stabilize", () =>
+    Results.Json(GcDumpKnownGraphFixture.StabilizeRetainedGrowth()))
+    .WithName("StabilizeRetainedGrowth");
+
 app.Run();
 
 [MethodImpl(MethodImplOptions.NoInlining)]
@@ -648,6 +684,12 @@ static class GcDumpKnownGraphFixture
     private static GcDumpPressureNode[] _pressure = [];
     private static DateTimeOffset _resetAtUtc;
     private static DateTimeOffset? _pressureReadyAtUtc;
+    private static int _pressurePayloadBytes;
+    private static string? _lastWorkload;
+    private static int _lastAllocatedObjectCount;
+    private static long _lastAllocatedPayloadBytes;
+    private static long _lastChecksum;
+    private static DateTimeOffset? _lastWorkloadAtUtc;
 
     public static object Reset()
     {
@@ -662,6 +704,12 @@ static class GcDumpKnownGraphFixture
             _pressure = [];
             _resetAtUtc = DateTimeOffset.UtcNow;
             _pressureReadyAtUtc = null;
+            _pressurePayloadBytes = 0;
+            _lastWorkload = null;
+            _lastAllocatedObjectCount = 0;
+            _lastAllocatedPayloadBytes = 0;
+            _lastChecksum = 0;
+            _lastWorkloadAtUtc = null;
         }
 
         GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
@@ -680,9 +728,101 @@ static class GcDumpKnownGraphFixture
         {
             _pressure = pressure;
             _pressureReadyAtUtc = DateTimeOffset.UtcNow;
+            _pressurePayloadBytes = payloadBytes;
         }
 
         GC.KeepAlive(pressure);
+        return Status();
+    }
+
+    public static object ResetRetainedGrowth(int retainedCount, int payloadBytes)
+    {
+        Reset();
+        PreparePressure(retainedCount, payloadBytes);
+        lock (Gate)
+        {
+            _lastWorkload = "seed";
+            _lastAllocatedObjectCount = retainedCount;
+            _lastAllocatedPayloadBytes = checked((long)retainedCount * payloadBytes);
+            _lastWorkloadAtUtc = DateTimeOffset.UtcNow;
+        }
+
+        return StabilizeRetainedGrowth();
+    }
+
+    public static object ApplyRetainedGrowthWorkload(
+        string mode,
+        int objectCount,
+        int payloadBytes,
+        int batches,
+        int delayMilliseconds)
+    {
+        var additions = mode == "retained"
+            ? new GcDumpPressureNode[objectCount]
+            : null;
+        long checksum = 0;
+        var allocated = 0;
+        for (var batch = 0; batch < batches; batch++)
+        {
+            var remaining = objectCount - allocated;
+            var batchSize = Math.Min(
+                remaining,
+                (objectCount + batches - 1) / batches);
+            if (batchSize <= 0)
+            {
+                break;
+            }
+
+            var churnBatch = mode == "churn"
+                ? new GcDumpPressureNode[batchSize]
+                : null;
+            for (var index = 0; index < batchSize; index++)
+            {
+                var node = new GcDumpPressureNode(allocated + index, payloadBytes);
+                checksum = unchecked(checksum + node.Id + node.Payload.Length);
+                if (additions is not null)
+                {
+                    additions[allocated + index] = node;
+                }
+                else
+                {
+                    churnBatch![index] = node;
+                }
+            }
+
+            allocated += batchSize;
+            GC.KeepAlive(churnBatch);
+            if (delayMilliseconds > 0)
+            {
+                Thread.Sleep(delayMilliseconds);
+            }
+        }
+
+        lock (Gate)
+        {
+            if (additions is not null)
+            {
+                _pressure = [.. _pressure, .. additions];
+                _pressureReadyAtUtc = DateTimeOffset.UtcNow;
+                _pressurePayloadBytes = payloadBytes;
+            }
+
+            _lastWorkload = mode;
+            _lastAllocatedObjectCount = allocated;
+            _lastAllocatedPayloadBytes = checked((long)allocated * payloadBytes);
+            _lastChecksum = checksum;
+            _lastWorkloadAtUtc = DateTimeOffset.UtcNow;
+        }
+
+        GC.KeepAlive(additions);
+        return Status();
+    }
+
+    public static object StabilizeRetainedGrowth()
+    {
+        GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
+        GC.WaitForPendingFinalizers();
+        GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
         return Status();
     }
 
@@ -699,8 +839,14 @@ static class GcDumpKnownGraphFixture
                 expectedBranchLeafEdges = 8,
                 pressureCount = _pressure.Length,
                 pressureReady = _pressureReadyAtUtc is not null,
+                pressurePayloadBytes = _pressurePayloadBytes,
                 resetAtUtc = _resetAtUtc,
                 pressureReadyAtUtc = _pressureReadyAtUtc,
+                lastWorkload = _lastWorkload,
+                lastAllocatedObjectCount = _lastAllocatedObjectCount,
+                lastAllocatedPayloadBytes = _lastAllocatedPayloadBytes,
+                lastChecksum = _lastChecksum,
+                lastWorkloadAtUtc = _lastWorkloadAtUtc,
                 gen0Collections = GC.CollectionCount(0),
                 gen1Collections = GC.CollectionCount(1),
                 gen2Collections = GC.CollectionCount(2),

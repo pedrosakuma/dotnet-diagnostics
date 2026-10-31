@@ -1,0 +1,236 @@
+{
+  "schemaVersion": 1,
+  "id": "retained-growth-degraded-incomplete",
+  "truth": {
+    "variant": "degraded",
+    "seedRetainedObjects": 4000,
+    "workloadAllocatedObjects": 20000,
+    "payloadBytes": 512,
+    "expectedRetainedObjectsAfterWorkload": 24000,
+    "intentionalRetention": true
+  },
+  "evidence": {
+    "schemaVersion": 1,
+    "id": "retained-growth-degraded-incomplete",
+    "variant": "degraded",
+    "targetType": "GcDumpPressureNode",
+    "baselineCompatibility": {
+      "runtimeFlavor": "CoreCLR",
+      "runtimeVersionPolicy": "major-minor",
+      "os": "fixture-os",
+      "architecture": "x64",
+      "backendId": "EventPipe-gcdump",
+      "backendVersion": "1",
+      "captureDuration": "bounded-100ms-timeout",
+      "captureWindowing": "one-induced-gc-snapshot",
+      "captureProviders": "Microsoft-Windows-DotNETRuntime",
+      "captureSamplingPeriod": "not-applicable",
+      "captureRetention": "snapshot-top-types=1",
+      "captureEnrichment": "none",
+      "workloadScenario": "retained-growth-known-shape",
+      "workloadVersion": "1",
+      "workloadParameters": "seed=4000;growth=20000;payload=512",
+      "workloadConcurrency": "1",
+      "workloadDeployment": "replay"
+    },
+    "candidateCompatibility": {
+      "runtimeFlavor": "CoreCLR",
+      "runtimeVersionPolicy": "major-minor",
+      "os": "fixture-os",
+      "architecture": "x64",
+      "backendId": "EventPipe-gcdump",
+      "backendVersion": "1",
+      "captureDuration": "bounded-100ms-timeout",
+      "captureWindowing": "one-induced-gc-snapshot",
+      "captureProviders": "Microsoft-Windows-DotNETRuntime",
+      "captureSamplingPeriod": "not-applicable",
+      "captureRetention": "snapshot-top-types=1",
+      "captureEnrichment": "none",
+      "workloadScenario": "retained-growth-known-shape",
+      "workloadVersion": "1",
+      "workloadParameters": "seed=4000;growth=20000;payload=512",
+      "workloadConcurrency": "1",
+      "workloadDeployment": "replay"
+    },
+    "runs": [
+      {
+        "runId": "run-1",
+        "pairOrder": "baseline_first",
+        "baseline": {
+          "captureId": "run-1-baseline",
+          "totalHeapBytes": 3200000,
+          "types": [
+            { "typeName": "GcDumpPressureNode", "bytes": 128000, "instances": 4000 }
+          ],
+          "postGcStabilized": true,
+          "captureInducedGen2Collections": 1,
+          "captureCompleted": true,
+          "lostOrDropped": 0,
+          "representation": "projected",
+          "positiveRetentionSupported": true,
+          "absenceSupported": false,
+          "rootPathAvailability": "incomplete_evidence",
+          "rootPathCount": null
+        },
+        "candidate": {
+          "captureId": "run-1-candidate",
+          "totalHeapBytes": 0,
+          "types": [],
+          "postGcStabilized": true,
+          "captureInducedGen2Collections": 0,
+          "captureCompleted": false,
+          "lostOrDropped": 5,
+          "representation": "truncated",
+          "positiveRetentionSupported": false,
+          "absenceSupported": false,
+          "rootPathAvailability": "incomplete_evidence",
+          "rootPathCount": null
+        },
+        "persistence": {
+          "captureId": "run-1-persistence",
+          "totalHeapBytes": 0,
+          "types": [],
+          "postGcStabilized": false,
+          "captureInducedGen2Collections": 0,
+          "captureCompleted": false,
+          "lostOrDropped": 5,
+          "representation": "truncated",
+          "positiveRetentionSupported": false,
+          "absenceSupported": false,
+          "rootPathAvailability": "incomplete_evidence",
+          "rootPathCount": null
+        },
+        "allocationTraffic": {
+          "sampledBytes": 10000000,
+          "sampleEvents": 100,
+          "lostOrDropped": 7,
+          "representation": "truncated"
+        }
+      },
+      {
+        "runId": "run-2",
+        "pairOrder": "candidate_first",
+        "baseline": {
+          "captureId": "run-2-baseline",
+          "totalHeapBytes": 3200000,
+          "types": [
+            { "typeName": "GcDumpPressureNode", "bytes": 128000, "instances": 4000 }
+          ],
+          "postGcStabilized": true,
+          "captureInducedGen2Collections": 1,
+          "captureCompleted": true,
+          "lostOrDropped": 0,
+          "representation": "projected",
+          "positiveRetentionSupported": true,
+          "absenceSupported": false,
+          "rootPathAvailability": "incomplete_evidence",
+          "rootPathCount": null
+        },
+        "candidate": {
+          "captureId": "run-2-candidate",
+          "totalHeapBytes": 0,
+          "types": [],
+          "postGcStabilized": true,
+          "captureInducedGen2Collections": 0,
+          "captureCompleted": false,
+          "lostOrDropped": 5,
+          "representation": "truncated",
+          "positiveRetentionSupported": false,
+          "absenceSupported": false,
+          "rootPathAvailability": "incomplete_evidence",
+          "rootPathCount": null
+        },
+        "persistence": {
+          "captureId": "run-2-persistence",
+          "totalHeapBytes": 0,
+          "types": [],
+          "postGcStabilized": false,
+          "captureInducedGen2Collections": 0,
+          "captureCompleted": false,
+          "lostOrDropped": 5,
+          "representation": "truncated",
+          "positiveRetentionSupported": false,
+          "absenceSupported": false,
+          "rootPathAvailability": "incomplete_evidence",
+          "rootPathCount": null
+        },
+        "allocationTraffic": {
+          "sampledBytes": 9900000,
+          "sampleEvents": 99,
+          "lostOrDropped": 7,
+          "representation": "truncated"
+        }
+      },
+      {
+        "runId": "run-3",
+        "pairOrder": "baseline_first",
+        "baseline": {
+          "captureId": "run-3-baseline",
+          "totalHeapBytes": 3200000,
+          "types": [
+            { "typeName": "GcDumpPressureNode", "bytes": 128000, "instances": 4000 }
+          ],
+          "postGcStabilized": true,
+          "captureInducedGen2Collections": 1,
+          "captureCompleted": true,
+          "lostOrDropped": 0,
+          "representation": "projected",
+          "positiveRetentionSupported": true,
+          "absenceSupported": false,
+          "rootPathAvailability": "incomplete_evidence",
+          "rootPathCount": null
+        },
+        "candidate": {
+          "captureId": "run-3-candidate",
+          "totalHeapBytes": 0,
+          "types": [],
+          "postGcStabilized": true,
+          "captureInducedGen2Collections": 0,
+          "captureCompleted": false,
+          "lostOrDropped": 5,
+          "representation": "truncated",
+          "positiveRetentionSupported": false,
+          "absenceSupported": false,
+          "rootPathAvailability": "incomplete_evidence",
+          "rootPathCount": null
+        },
+        "persistence": {
+          "captureId": "run-3-persistence",
+          "totalHeapBytes": 0,
+          "types": [],
+          "postGcStabilized": false,
+          "captureInducedGen2Collections": 0,
+          "captureCompleted": false,
+          "lostOrDropped": 5,
+          "representation": "truncated",
+          "positiveRetentionSupported": false,
+          "absenceSupported": false,
+          "rootPathAvailability": "incomplete_evidence",
+          "rootPathCount": null
+        },
+        "allocationTraffic": {
+          "sampledBytes": 10100000,
+          "sampleEvents": 101,
+          "lostOrDropped": 7,
+          "representation": "truncated"
+        }
+      }
+    ]
+  },
+  "expected": {
+    "positiveRetainedGrowthEvidence": "inconclusive",
+    "retainedBytesAvailability": "insufficient_observations",
+    "retainedInstancesAvailability": "insufficient_observations",
+    "repeatedChangeAvailability": "insufficient_observations",
+    "spreadAvailability": "insufficient_observations",
+    "intervalAvailability": "insufficient_observations",
+    "persistenceAvailability": "insufficient_observations",
+    "concentrationAvailability": "insufficient_observations",
+    "rootPathAvailability": "incomplete_evidence",
+    "retainedBytesAbsoluteDelta": null,
+    "retainedInstancesAbsoluteDelta": null,
+    "repeatedChangeEstimate": null,
+    "persistenceRate": null,
+    "noLeakVerdict": true
+  }
+}
