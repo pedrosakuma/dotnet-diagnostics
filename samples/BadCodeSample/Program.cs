@@ -63,6 +63,10 @@ var leakedTimers = new List<Timer>();
 var leakedAssemblyLoadContexts = new List<AlcLeakRoot>();
 var leakedExceptions = new List<Exception>();
 var leakedNativeAllocations = new List<nint>();
+var threadPoolStarvationGates = new Dictionary<string, ManualResetEventSlim>(
+    StringComparer.Ordinal);
+var threadPoolStarvationGatesLock = new object();
+const int maximumThreadPoolStarvationGates = 16;
 var badCodeEndpoints = new[]
 {
     "/cpu-burn?ms=2000",
@@ -87,7 +91,7 @@ var badCodeEndpoints = new[]
     "/jit-pressure?count=200",
     "/slow-hang?seconds=5",
     "/async-stall?bucket=tcs&seconds=5",
-    "/threadpool-starve?blockers=50",
+    "/threadpool-starve?blockers=50&seconds=15",
     "/lock-storm?seconds=5&blockers=8",
     "/contention-shape?shape=dominant&milliseconds=2000&locks=1&contenders=16",
     "/db-n+1?count=15",
@@ -592,15 +596,115 @@ app.MapGet("/async-stall", async (string? bucket, int? seconds) =>
 });
 
 // 15. ThreadPool starvation — detect with collect_events(kind="threadpool")
-app.MapGet("/threadpool-starve", (int? blockers) =>
+app.MapGet("/threadpool-starve", (int? blockers, int? seconds, int? minWorkers, string? gate) =>
 {
     var blockedWorkers = Math.Clamp(blockers ?? 50, 1, 256);
-    for (var i = 0; i < blockedWorkers; i++)
+    var duration = TimeSpan.FromSeconds(Math.Clamp(seconds ?? 15, 1, 120));
+    var releaseAt = Stopwatch.GetTimestamp()
+        + (long)(duration.TotalSeconds * Stopwatch.Frequency);
+    var normalizedGate = string.IsNullOrWhiteSpace(gate)
+        ? null
+        : gate.Trim();
+    if (normalizedGate is { Length: > 64 })
     {
-        Task.Run(static () => Thread.Sleep(TimeSpan.FromSeconds(15)));
+        return Results.BadRequest(new { error = "gate must be at most 64 characters." });
     }
 
-    return Results.Accepted($"/threadpool-starve?blockers={blockedWorkers}", new { blockers = blockedWorkers });
+    ManualResetEventSlim? releaseGate = null;
+    if (normalizedGate is not null)
+    {
+        lock (threadPoolStarvationGatesLock)
+        {
+            if (!threadPoolStarvationGates.TryGetValue(normalizedGate, out releaseGate))
+            {
+                if (threadPoolStarvationGates.Count >= maximumThreadPoolStarvationGates)
+                {
+                    return Results.Json(
+                        new { error = "Too many active ThreadPool starvation gates." },
+                        statusCode: StatusCodes.Status429TooManyRequests);
+                }
+
+                releaseGate = new ManualResetEventSlim(false);
+                threadPoolStarvationGates.Add(normalizedGate, releaseGate);
+            }
+        }
+    }
+
+    int? appliedMinWorkers = null;
+    if (minWorkers is int requestedMinWorkers)
+    {
+        ThreadPool.GetMinThreads(out _, out var currentIocpMinimum);
+        var boundedMinWorkers = Math.Clamp(requestedMinWorkers, 1, 256);
+        if (ThreadPool.SetMinThreads(boundedMinWorkers, currentIocpMinimum))
+        {
+            appliedMinWorkers = boundedMinWorkers;
+        }
+    }
+
+    for (var i = 0; i < blockedWorkers; i++)
+    {
+        Task.Run(() =>
+        {
+            if (releaseGate is not null)
+            {
+                var gateRemainingTicks = releaseAt - Stopwatch.GetTimestamp();
+                var released = gateRemainingTicks > 0
+                    && releaseGate.Wait(TimeSpan.FromSeconds(
+                        (double)gateRemainingTicks / Stopwatch.Frequency));
+                if (!released)
+                {
+                    lock (threadPoolStarvationGatesLock)
+                    {
+                        if (threadPoolStarvationGates.TryGetValue(normalizedGate!, out var current)
+                            && ReferenceEquals(current, releaseGate))
+                        {
+                            threadPoolStarvationGates.Remove(normalizedGate!);
+                        }
+                    }
+                }
+
+                return;
+            }
+
+            var remainingTicks = releaseAt - Stopwatch.GetTimestamp();
+            if (remainingTicks > 0)
+            {
+                Thread.Sleep(TimeSpan.FromSeconds(
+                    (double)remainingTicks / Stopwatch.Frequency));
+            }
+        });
+    }
+
+    return Results.Accepted(
+        $"/threadpool-starve?blockers={blockedWorkers}&seconds={duration.TotalSeconds}",
+        new
+        {
+            blockers = blockedWorkers,
+            seconds = duration.TotalSeconds,
+            minWorkers = appliedMinWorkers,
+            gate = normalizedGate,
+        });
+});
+
+app.MapPost("/threadpool-starve/release", (string gate) =>
+{
+    var normalizedGate = gate.Trim();
+    ManualResetEventSlim? releaseGate;
+    lock (threadPoolStarvationGatesLock)
+    {
+        if (!threadPoolStarvationGates.Remove(normalizedGate, out releaseGate))
+        {
+            return Results.NotFound(new { gate = normalizedGate });
+        }
+    }
+
+    if (releaseGate is null)
+    {
+        return Results.NotFound(new { gate = normalizedGate });
+    }
+
+    releaseGate.Set();
+    return Results.Ok(new { gate = normalizedGate, released = true });
 });
 
 // 15. Lock storm — detect with collect_events(kind="contention")
