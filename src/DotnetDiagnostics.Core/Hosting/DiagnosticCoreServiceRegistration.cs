@@ -85,6 +85,7 @@ public static class DiagnosticCoreServiceRegistration
         services.AddSingleton<IProcessContextResolver, ProcessContextResolver>();
         services.AddSingleton<EventPipeCounterCollector>();
         services.AddSingleton<ICounterCollector>(provider => provider.GetRequiredService<EventPipeCounterCollector>());
+        services.AddSingleton<IThreadPoolBacklogCollector>(provider => provider.GetRequiredService<EventPipeCounterCollector>());
         services.AddSingleton<ICounterSessionFactory>(provider => provider.GetRequiredService<EventPipeCounterCollector>());
         services.AddSingleton(_ => new MvidReader(capacity: 128));
         services.AddSingleton<FileChunkReader>();

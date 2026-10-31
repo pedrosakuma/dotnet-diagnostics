@@ -60,6 +60,67 @@ public static class EventCollectionUseCases
         int maxInstrumentTimeSeries = 1000,
         SamplingDepth depth = SamplingDepth.Summary,
         CancellationToken cancellationToken = default)
+        => await SnapshotCountersCore(
+            collector,
+            resolver,
+            handles,
+            processId,
+            durationSeconds,
+            providers,
+            meters,
+            intervalSeconds,
+            maxInstrumentTimeSeries,
+            depth,
+            backlogProtocol: null,
+            cancellationToken).ConfigureAwait(false);
+
+    /// <summary>
+    /// Snapshots counters and evaluates bounded ThreadPool backlog evidence using the caller's
+    /// declared queue level. No starvation verdict is produced.
+    /// </summary>
+    public static async Task<DiagnosticResult<CounterSnapshot>> SnapshotCountersWithThreadPoolBacklog(
+        IThreadPoolBacklogCollector collector,
+        IProcessContextResolver resolver,
+        IDiagnosticHandleStore handles,
+        DotnetDiagnostics.Core.ThreadPool.ThreadPoolBacklogProtocol backlogProtocol,
+        int? processId = null,
+        int durationSeconds = 5,
+        string[]? providers = null,
+        string[]? meters = null,
+        int intervalSeconds = 1,
+        int maxInstrumentTimeSeries = 1000,
+        SamplingDepth depth = SamplingDepth.Summary,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(backlogProtocol);
+        return await SnapshotCountersCore(
+            collector,
+            resolver,
+            handles,
+            processId,
+            durationSeconds,
+            providers,
+            meters,
+            intervalSeconds,
+            maxInstrumentTimeSeries,
+            depth,
+            backlogProtocol,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<DiagnosticResult<CounterSnapshot>> SnapshotCountersCore(
+        ICounterCollector collector,
+        IProcessContextResolver resolver,
+        IDiagnosticHandleStore handles,
+        int? processId,
+        int durationSeconds,
+        string[]? providers,
+        string[]? meters,
+        int intervalSeconds,
+        int maxInstrumentTimeSeries,
+        SamplingDepth depth,
+        DotnetDiagnostics.Core.ThreadPool.ThreadPoolBacklogProtocol? backlogProtocol,
+        CancellationToken cancellationToken)
     {
         if (durationSeconds < 1)
         {
@@ -78,14 +139,24 @@ public static class EventCollectionUseCases
         if (resolved.Failure is not null) return resolved.Failure;
         var pid = resolved.ProcessId;
 
-        var snapshot = await collector.CollectAsync(
-            pid,
-            TimeSpan.FromSeconds(durationSeconds),
-            providers,
-            meters,
-            intervalSeconds,
-            maxInstrumentTimeSeries,
-            cancellationToken).ConfigureAwait(false);
+        var snapshot = backlogProtocol is null
+            ? await collector.CollectAsync(
+                pid,
+                TimeSpan.FromSeconds(durationSeconds),
+                providers,
+                meters,
+                intervalSeconds,
+                maxInstrumentTimeSeries,
+                cancellationToken).ConfigureAwait(false)
+            : await ((IThreadPoolBacklogCollector)collector).CollectWithThreadPoolBacklogAsync(
+                pid,
+                TimeSpan.FromSeconds(durationSeconds),
+                backlogProtocol,
+                providers,
+                meters,
+                intervalSeconds,
+                maxInstrumentTimeSeries,
+                cancellationToken).ConfigureAwait(false);
 
         var cpu = snapshot.Counters.FirstOrDefault(c => c.Provider == "System.Runtime" && c.Name == "cpu-usage");
         var heap = snapshot.Counters.FirstOrDefault(c => c.Provider == "System.Runtime" && c.Name == "gc-heap-size");

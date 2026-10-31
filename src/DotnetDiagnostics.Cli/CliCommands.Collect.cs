@@ -66,6 +66,19 @@ internal static partial class CliCommands
                     : new NativeAotSymbolResolutionOptions(MapFilePath: options.NativeAotMapFile),
                 cancellationToken).ConfigureAwait(false)),
 
+            "counters" when options.ThreadPoolQueueLevel is double queueLevel =>
+                BuildResultWithComparableSave(
+                    options,
+                    await EventCollectionUseCases.SnapshotCountersWithThreadPoolBacklog(
+                        services.GetRequiredService<IThreadPoolBacklogCollector>(), resolver, handles,
+                        new ThreadPoolBacklogProtocol(
+                            queueLevel,
+                            options.ThreadPoolMinimumWindows ?? ThreadPoolBacklogProtocol.DefaultMinimumWindows,
+                            options.ThreadPoolDrainTailWindows ?? ThreadPoolBacklogProtocol.DefaultDrainTailWindows),
+                        pid, duration, NullIfEmptyArray(options.Providers), NullIfEmptyArray(options.Meters),
+                        options.IntervalSeconds ?? 1, 1000, depth, cancellationToken).ConfigureAwait(false),
+                    RenderCounterBacklogEvidence),
+
             "counters" => Wrap(options, await EventCollectionUseCases.SnapshotCounters(
                 services.GetRequiredService<ICounterCollector>(), resolver, handles,
                 pid, duration, NullIfEmptyArray(options.Providers), NullIfEmptyArray(options.Meters),
@@ -189,6 +202,77 @@ internal static partial class CliCommands
 
     private static CliCommandResult Wrap<T>(CliOptions options, DiagnosticResult<T> result) =>
         BuildResultWithComparableSave(options, result, static (_, _) => { });
+
+    internal static void RenderCounterBacklogEvidence(
+        System.Text.StringBuilder text,
+        CounterSnapshot snapshot)
+    {
+        if (snapshot.ThreadPoolBacklog is not { } evidence)
+        {
+            return;
+        }
+
+        text.AppendLine();
+        text.AppendLine(System.Globalization.CultureInfo.InvariantCulture,
+            $"  ThreadPool backlog evidence: availability={BacklogAvailabilityName(evidence.Availability)}, queue-level={evidence.Protocol.QueueLevel:G}, queue-windows={evidence.QueueWindowCount}, worker-windows={evidence.WorkerWindowCount}");
+        if (evidence.AbstentionReasons.Count > 0)
+        {
+            text.AppendLine(System.Globalization.CultureInfo.InvariantCulture,
+                $"    abstained: {string.Join(", ", evidence.AbstentionReasons.Select(BacklogAbstentionName))}");
+        }
+        else
+        {
+            text.AppendLine(System.Globalization.CultureInfo.InvariantCulture,
+                $"    above-level: {evidence.WindowsAboveLevel}/{evidence.QueueWindowCount} ({evidence.ProportionAboveLevel * 100:F1}%); longest={evidence.LongestContiguousDurationAboveLevelSeconds:G}s; drained-tail={evidence.DrainedAtTail}");
+            text.AppendLine(System.Globalization.CultureInfo.InvariantCulture,
+                $"    queue movement: first={evidence.QueueMovement!.First:G}, last={evidence.QueueMovement.Last:G}, delta={evidence.QueueMovement.Delta:G}, median={evidence.QueueMovement.Median:G}, slope={evidence.QueueMovement.TheilSenSlopePerSecond:G}/s");
+            text.AppendLine(System.Globalization.CultureInfo.InvariantCulture,
+                $"    worker movement: first={evidence.WorkerMovement!.First:G}, last={evidence.WorkerMovement.Last:G}, delta={evidence.WorkerMovement.Delta:G}, median={evidence.WorkerMovement.Median:G}, slope={evidence.WorkerMovement.TheilSenSlopePerSecond:G}/s");
+        }
+
+        text.AppendLine(System.Globalization.CultureInfo.InvariantCulture,
+            $"    runtime reason: state={BacklogReasonStateName(evidence.Reason.State)}, provenance={evidence.Reason.Provenance}, same-capture={evidence.Reason.SameCapture}");
+        if (evidence.CollectorQueueP95Median is double p95)
+        {
+            text.AppendLine(System.Globalization.CultureInfo.InvariantCulture,
+                $"    collector queue p95 median: {p95:G}");
+        }
+        else
+        {
+            text.AppendLine("    collector queue p95 median: unavailable (collector did not provide per-window p95)");
+        }
+        text.AppendLine("    note: queue and worker movement are descriptive; this evidence does not establish starvation.");
+    }
+
+    private static string BacklogAvailabilityName(ThreadPoolBacklogAvailability availability) =>
+        availability switch
+        {
+            ThreadPoolBacklogAvailability.Available => "available",
+            ThreadPoolBacklogAvailability.InsufficientObservations => "insufficient_observations",
+            ThreadPoolBacklogAvailability.LossDetected => "loss_detected",
+            ThreadPoolBacklogAvailability.UnsupportedApproximation => "unsupported_approximation",
+            _ => throw new ArgumentOutOfRangeException(nameof(availability)),
+        };
+
+    private static string BacklogAbstentionName(ThreadPoolBacklogAbstentionReason reason) =>
+        reason switch
+        {
+            ThreadPoolBacklogAbstentionReason.EventPipeLoss => "eventpipe_loss",
+            ThreadPoolBacklogAbstentionReason.DispatchLoss => "dispatch_loss",
+            ThreadPoolBacklogAbstentionReason.ProcessingFailure => "processing_failure",
+            ThreadPoolBacklogAbstentionReason.RetentionTruncated => "retention_truncated",
+            ThreadPoolBacklogAbstentionReason.IrregularCadence => "irregular_cadence",
+            ThreadPoolBacklogAbstentionReason.InsufficientWindows => "insufficient_windows",
+            _ => throw new ArgumentOutOfRangeException(nameof(reason)),
+        };
+
+    private static string BacklogReasonStateName(ThreadPoolBacklogReasonState state) =>
+        state switch
+        {
+            ThreadPoolBacklogReasonState.Known => "known",
+            ThreadPoolBacklogReasonState.Unknown => "unknown",
+            _ => throw new ArgumentOutOfRangeException(nameof(state)),
+        };
 
     private static void RenderGcActivities(System.Text.StringBuilder text, GcActivitiesCapture capture)
     {

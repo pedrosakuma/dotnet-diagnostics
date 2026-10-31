@@ -15,6 +15,7 @@ using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.Safety;
 using DotnetDiagnostics.Core.Security;
+using DotnetDiagnostics.Core.ThreadPool;
 using DotnetDiagnostics.Core.Threads;
 using DotnetDiagnostics.Core.UseCases;
 using Microsoft.Extensions.DependencyInjection;
@@ -337,6 +338,13 @@ internal static partial class CliStreamingProtocol
                             protocolVersion = ProtocolVersion,
                             cliVersion = CliBuildVersion.Current,
                             supportedLiveKinds = LiveKinds.Keys.Order(StringComparer.Ordinal).ToArray(),
+                            threadPoolBacklog = new
+                            {
+                                version = 1,
+                                maximumWindows = ThreadPoolBacklogProtocol.MaximumWindows,
+                                defaultMinimumWindows = ThreadPoolBacklogProtocol.DefaultMinimumWindows,
+                                defaultDrainTailWindows = ThreadPoolBacklogProtocol.DefaultDrainTailWindows,
+                            },
                             heapGrowth = ProjectHeapGrowthCapability(services),
                             requestActivities = new
                             {
@@ -691,6 +699,22 @@ internal static partial class CliStreamingProtocol
             {
                 var descriptor = LiveKinds[kindRequest.Kind];
                 candidate.Subscriptions.Add(descriptor.AttachForwarding(composed, writer, candidate.SessionId, candidate.EventsGate));
+                if (kindRequest.Options is CounterSessionOptions
+                    {
+                        ThreadPoolBacklogProtocol: { } backlogProtocol,
+                    })
+                {
+                    var accumulator = new ThreadPoolBacklogAccumulator(
+                        candidate.SessionId,
+                        DateTimeOffset.UtcNow,
+                        backlogProtocol);
+                    candidate.ThreadPoolBacklogAccumulator = accumulator;
+                    candidate.Subscriptions.Add(composed.Attach<CounterObservation>((observation, _) =>
+                    {
+                        accumulator.Observe(observation.Timestamp, observation.Counter);
+                        return ValueTask.CompletedTask;
+                    }));
+                }
                 var childSession = descriptor.CreateChildSession(services, request.ProcessId, kindRequest.Options!);
                 if (childSession is EventSourceSession eventSession)
                 {
@@ -3371,11 +3395,60 @@ internal static partial class CliStreamingProtocol
             providers = providerArray.EnumerateArray().Select(provider => provider.GetString()!).ToArray();
         }
 
+        ThreadPoolBacklogProtocol? backlogProtocol = null;
+        var hasQueueLevel = root.TryGetProperty("threadPoolQueueLevel", out var queueLevelElement);
+        var hasMinimumWindows = root.TryGetProperty("threadPoolMinimumWindows", out var minimumWindowsElement);
+        var hasDrainTailWindows = root.TryGetProperty("threadPoolDrainTailWindows", out var drainTailWindowsElement);
+        if (hasMinimumWindows || hasDrainTailWindows)
+        {
+            if (!hasQueueLevel)
+            {
+                error = "'threadPoolMinimumWindows' and 'threadPoolDrainTailWindows' require 'threadPoolQueueLevel'.";
+                return false;
+            }
+        }
+        if (hasQueueLevel)
+        {
+            if (queueLevelElement.ValueKind != JsonValueKind.Number
+                || !queueLevelElement.TryGetDouble(out var queueLevel)
+                || !double.IsFinite(queueLevel)
+                || queueLevel < 0)
+            {
+                error = "'threadPoolQueueLevel' must be a finite non-negative number.";
+                return false;
+            }
+
+            var minimumWindows = ThreadPoolBacklogProtocol.DefaultMinimumWindows;
+            if (hasMinimumWindows
+                && (!minimumWindowsElement.TryGetInt32(out minimumWindows)
+                    || minimumWindows is < 2 or > ThreadPoolBacklogProtocol.MaximumWindows))
+            {
+                error = $"'threadPoolMinimumWindows' must be between 2 and {ThreadPoolBacklogProtocol.MaximumWindows}.";
+                return false;
+            }
+
+            var drainTailWindows = ThreadPoolBacklogProtocol.DefaultDrainTailWindows;
+            if (hasDrainTailWindows
+                && (!drainTailWindowsElement.TryGetInt32(out drainTailWindows)
+                    || drainTailWindows < 1
+                    || drainTailWindows > minimumWindows))
+            {
+                error = "'threadPoolDrainTailWindows' must be positive and no greater than 'threadPoolMinimumWindows'.";
+                return false;
+            }
+
+            backlogProtocol = new ThreadPoolBacklogProtocol(
+                queueLevel,
+                minimumWindows,
+                drainTailWindows);
+        }
+
         options = new CounterSessionOptions
         {
             Providers = providers,
             IntervalSeconds = intervalSeconds,
             ObservationCapacity = observationCapacity,
+            ThreadPoolBacklogProtocol = backlogProtocol,
         };
         return true;
     }
@@ -3604,6 +3677,10 @@ for a one-shot point-in-time capture that does not open a live session. Exceptio
 The result includes observed type counts, retained recent events and explicit omission notes.
 Only crash-guard includes available managed stacks. Messages and stacks may contain sensitive data.
 Start capture before load; writing a request is not an EventPipe readiness acknowledgement.
+Counters may also declare threadPoolQueueLevel plus optional threadPoolMinimumWindows and
+threadPoolDrainTailWindows. The terminal frame then carries bounded threadPoolBacklog evidence.
+Loss, dispatch drops, retention truncation, irregular cadence, or insufficient windows force
+explicit abstention; queue/worker movement remains descriptive and never establishes starvation.
 If hello advertises requestActivities.version=1, use kind "request-activities" with required
 processId and 1-20 exact ActivitySource "sources", durationSeconds 1-300. One union session
 retains at most 100 pending requests and 200 completed Activities in one replaceable artifact.
@@ -3745,6 +3822,7 @@ results are 0x hexadecimal strings.
         public string SessionId { get; } = sessionId;
         public IReadOnlyList<string> Kinds { get; } = kinds;
         public EventSourceSession? EventSourceSession { get; set; }
+        public ThreadPoolBacklogAccumulator? ThreadPoolBacklogAccumulator { get; set; }
         public Task TerminalTask { get; private set; } = Task.CompletedTask;
 
         public void AllowEvents() => EventsGate.Allow();
@@ -3825,18 +3903,14 @@ results are 0x hexadecimal strings.
                     }, CancellationToken.None).WaitAsync(TerminalWriteBudget).ConfigureAwait(false);
                 }
 
-                await writer.WriteAsync(new
-                {
-                    type = "terminal",
-                    sessionId = SessionId,
-                    kinds = Kinds,
-                    completion.Status,
-                    completion.StartedAt,
-                    completion.EndedAt,
-                    completion.EventPipeEventsLost,
-                    completion.DroppedObservations,
-                    error = completion.Error?.Message,
-                }, CancellationToken.None).WaitAsync(TerminalWriteBudget).ConfigureAwait(false);
+                await writer.WriteAsync(
+                        BuildTerminalFrame(
+                            SessionId,
+                            Kinds,
+                            completion,
+                            ThreadPoolBacklogAccumulator),
+                        CancellationToken.None)
+                    .WaitAsync(TerminalWriteBudget).ConfigureAwait(false);
             }
             catch (TimeoutException)
             {
@@ -3852,6 +3926,36 @@ results are 0x hexadecimal strings.
                 }
             }
         }
+    }
+
+    internal static IReadOnlyDictionary<string, object?> BuildTerminalFrame(
+        string sessionId,
+        IReadOnlyList<string> kinds,
+        DiagnosticSessionCompletion completion,
+        ThreadPoolBacklogAccumulator? backlogAccumulator)
+    {
+        var terminal = new Dictionary<string, object?>
+        {
+            ["type"] = "terminal",
+            ["sessionId"] = sessionId,
+            ["kinds"] = kinds,
+            ["status"] = completion.Status,
+            ["startedAt"] = completion.StartedAt,
+            ["endedAt"] = completion.EndedAt,
+            ["eventPipeEventsLost"] = completion.EventPipeEventsLost,
+            ["droppedObservations"] = completion.DroppedObservations,
+            ["error"] = completion.Error?.Message,
+        };
+        if (backlogAccumulator is not null)
+        {
+            terminal["threadPoolBacklog"] = backlogAccumulator.Complete(
+                completion.EndedAt,
+                completion.EventPipeEventsLost,
+                completion.DroppedObservations,
+                completion.Status == DiagnosticSessionStatus.Failed);
+        }
+
+        return terminal;
     }
 
     private sealed class ProtocolWriter(TextWriter stdout) : IDisposable
