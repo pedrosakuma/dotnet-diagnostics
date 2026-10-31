@@ -1,10 +1,11 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Collection;
-using DotnetDiagnostics.Core.Captures;
 using DotnetDiagnostics.Core.Comparison;
+using DotnetDiagnostics.Core.Captures;
 using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Dump;
@@ -83,7 +84,7 @@ internal static partial class CliCommands
     {
         if (kind == HeapInspectionUseCases.HeapSnapshotKind)
         {
-            return HeapSnapshotQueryDispatcher.ProjectionViews;
+            return [.. HeapSnapshotQueryDispatcher.ProjectionViews, "growth"];
         }
 
         if (CpuSampleSessionKinds.Contains(kind))
@@ -195,6 +196,13 @@ internal static partial class CliCommands
         }
 
         var kind = lookup.Value.Kind;
+        if (!string.IsNullOrWhiteSpace(options.BaselineHandle)
+            && kind != HeapInspectionUseCases.HeapSnapshotKind)
+        {
+            return Fail("query: --baseline-handle is supported only for heap-snapshot view 'growth'.", "InvalidArgument",
+                "Use a heap-snapshot --handle, --view growth, --baseline-handle <earlier>, and --type-filter <exact-full-name>.");
+        }
+
         var durableService = CliDurableCaptures.For(services).FindBinding(options.Handle);
         if (durableService is not null)
         {
@@ -362,6 +370,17 @@ internal static partial class CliCommands
         }
 
         var view = string.IsNullOrWhiteSpace(options.View) ? "top-types" : options.View;
+        if (string.Equals(view, "growth", StringComparison.OrdinalIgnoreCase))
+        {
+            return QueryHeapGrowthSession(services, options, heap);
+        }
+
+        if (!string.IsNullOrWhiteSpace(options.BaselineHandle))
+        {
+            return Fail("query: --baseline-handle is supported only with --view growth.", "InvalidArgument",
+                "Remove --baseline-handle or select --view growth with --type-filter <exact-full-name>.");
+        }
+
         var topN = ResolveQueryTopN(options, 50);
         var outcome = HeapSnapshotQueryDispatcher.Dispatch(heap, options.Handle!, view, topN, options.RankBy, options.TypeFilter);
 
@@ -399,7 +418,150 @@ internal static partial class CliCommands
 
         // outcome.UnknownView
         return Fail($"query: unknown view '{view}' for a heap snapshot.", "InvalidArgument",
-            $"Valid views: {string.Join(", ", HeapSnapshotQueryDispatcher.ProjectionViews)}.");
+            $"Valid views: {string.Join(", ", SessionViewsFor(HeapInspectionUseCases.HeapSnapshotKind))}.");
+    }
+
+    private static CliCommandResult QueryHeapGrowthSession(
+        IServiceProvider services,
+        CliOptions options,
+        HeapSnapshotArtifact current)
+    {
+        if (string.IsNullOrWhiteSpace(options.BaselineHandle))
+        {
+            return Fail("query: --view growth requires --baseline-handle <id>.", "InvalidArgument",
+                "Pass the earlier heap-snapshot handle as --baseline-handle.");
+        }
+
+        if (string.IsNullOrWhiteSpace(options.TypeFilter))
+        {
+            return Fail("query: --view growth requires --type-filter <exact-full-name>.", "InvalidArgument",
+                "Name one objective managed type exactly; the objective contract does not promote common-type concentration.");
+        }
+
+        if (string.Equals(options.Handle, options.BaselineHandle, StringComparison.Ordinal))
+        {
+            return Fail("query: the baseline and current heap handles must be different captures.", "InvalidArgument",
+                "Capture an earlier and a later heap snapshot.");
+        }
+
+        var store = services.GetRequiredService<IDiagnosticHandleStore>();
+        var baselineResult = store.LookupWithKind(options.BaselineHandle);
+        if (baselineResult.Lookup is not { } baselineLookup)
+        {
+            return HandleUnavailable(options.BaselineHandle, baselineResult);
+        }
+
+        if (baselineLookup.Kind != HeapInspectionUseCases.HeapSnapshotKind
+            || baselineLookup.Artifact is not HeapSnapshotArtifact baseline)
+        {
+            return Fail($"query: baseline handle '{options.BaselineHandle}' is not a heap snapshot.", "InvalidArgument",
+                "Pass the handle from an earlier inspect-heap capture.");
+        }
+
+        var validationFailure = ValidateSessionGrowthPair(baseline, current);
+        if (validationFailure is not null)
+        {
+            return Fail($"query: {validationFailure}", "InvalidArgument",
+                "Use chronological captures from the same process lifetime and capture source.");
+        }
+
+        var growth = HeapGrowthDiff.Build(
+            baseline,
+            options.BaselineHandle,
+            current,
+            options.Handle!,
+            HeapGrowthDiff.RankByBytes,
+            minDeltaPct: 0,
+            topN: 1,
+            objectiveTargetType: new TypeIdentity(options.TypeFilter.Trim()));
+        var evidence = growth.ObjectiveRetainedGrowth!;
+        var result = DiagnosticResult.Ok(
+            evidence,
+            $"query: retained growth for {evidence.TargetType.TypeFullName}");
+        return BuildResult(result, static (sb, data) =>
+        {
+            var pair = data.Pairs[0];
+            sb.AppendLine();
+            sb.Append("Pair: ").Append(pair.Availability);
+            if (pair.BaselineRetainedBytes is { } baselineBytes
+                && pair.CurrentRetainedBytes is { } currentBytes
+                && pair.RetainedBytesDelta is { } bytesDelta)
+            {
+                sb.Append(" bytes=")
+                    .Append(baselineBytes.ToString(CultureInfo.InvariantCulture))
+                    .Append(" -> ")
+                    .Append(currentBytes.ToString(CultureInfo.InvariantCulture))
+                    .Append(" delta=")
+                    .Append(bytesDelta.ToString("+0;-0;0", CultureInfo.InvariantCulture));
+            }
+            if (pair.BaselineRetainedInstances is { } baselineInstances
+                && pair.CurrentRetainedInstances is { } currentInstances
+                && pair.RetainedInstancesDelta is { } instancesDelta)
+            {
+                sb.Append(" instances=")
+                    .Append(baselineInstances.ToString(CultureInfo.InvariantCulture))
+                    .Append(" -> ")
+                    .Append(currentInstances.ToString(CultureInfo.InvariantCulture))
+                    .Append(" delta=")
+                    .Append(instancesDelta.ToString("+0;-0;0", CultureInfo.InvariantCulture));
+            }
+            sb.AppendLine();
+            sb.Append("Repeated: ").Append(data.Repeated.Availability)
+                .Append(" acceptedPairs=")
+                .AppendLine(data.Repeated.AcceptedPairs.ToString(CultureInfo.InvariantCulture));
+            sb.Append("Allocation: ").AppendLine(data.AllocationEvidence.Availability.ToString());
+            sb.Append("Root/path: ").AppendLine(data.RootPathEvidence.Availability.ToString());
+            sb.Append("Observer effects: gcdumpCaptures=")
+                .Append(data.ObserverEffects.GcDumpCaptures.ToString(CultureInfo.InvariantCulture))
+                .Append(" provenance=")
+                .AppendLine(data.ObserverEffects.Provenance);
+        });
+    }
+
+    private static string? ValidateSessionGrowthPair(
+        HeapSnapshotArtifact baseline,
+        HeapSnapshotArtifact current)
+    {
+        if (baseline.ProcessId != current.ProcessId)
+        {
+            return $"heap growth requires snapshots from the same process; baseline pid is {baseline.ProcessId} and current pid is {current.ProcessId}.";
+        }
+
+        if (baseline.Origin != current.Origin)
+        {
+            return $"heap growth requires matching capture provenance; baseline origin is '{baseline.Origin}' and current origin is '{current.Origin}'.";
+        }
+
+        if (current.CapturedAt < baseline.CapturedAt)
+        {
+            return $"current capture {current.CapturedAt:O} predates baseline {baseline.CapturedAt:O}.";
+        }
+
+        if (current.Origin is HeapSnapshotOrigin.Live or HeapSnapshotOrigin.GcDump)
+        {
+            try
+            {
+                using var process = Process.GetProcessById(current.ProcessId);
+                var startedAt = new DateTimeOffset(process.StartTime).ToUniversalTime();
+                if (process.HasExited)
+                {
+                    return $"target pid {current.ProcessId} has exited.";
+                }
+                if (startedAt > baseline.CapturedAt || startedAt > current.CapturedAt)
+                {
+                    return $"target pid {current.ProcessId} was reused after one or both captures.";
+                }
+            }
+            catch (Exception ex) when (ex is ArgumentException
+                or InvalidOperationException
+                or NotSupportedException
+                or System.ComponentModel.Win32Exception)
+            {
+                return $"target pid {current.ProcessId} is unavailable: {ex.Message}";
+            }
+        }
+
+        return null;
     }
 
     /// <summary>

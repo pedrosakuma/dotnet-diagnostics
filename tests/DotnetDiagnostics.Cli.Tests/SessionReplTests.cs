@@ -229,6 +229,50 @@ public sealed class SessionReplTests
     }
 
     [Fact]
+    public async Task Query_HeapHandle_Growth_RendersObjectivePairWithoutVerdict()
+    {
+        var (services, store) = BuildServices();
+        var baselineTime = DateTimeOffset.UtcNow.AddSeconds(-2);
+        var baselineSnapshot = DumpHeapSnapshot() with
+        {
+            CapturedAt = baselineTime,
+            Heap = new DumpHeapSummary(4096, 0, 0, 4096, 0, 0, 4096),
+        };
+        var currentStats = new[]
+        {
+            new TypeStat("System.String", "System.Private.CoreLib", 200, 8192, 100),
+        };
+        var currentSnapshot = DumpHeapSnapshot() with
+        {
+            CapturedAt = baselineTime.AddSeconds(1),
+            Heap = new DumpHeapSummary(8192, 0, 0, 8192, 0, 0, 8192),
+            TopTypesByBytes = currentStats,
+            TopTypesByInstances = currentStats,
+        };
+        var baseline = store.Register(
+            Environment.ProcessId,
+            HeapInspectionUseCases.HeapSnapshotKind,
+            baselineSnapshot,
+            TimeSpan.FromMinutes(10));
+        var current = store.Register(
+            Environment.ProcessId,
+            HeapInspectionUseCases.HeapSnapshotKind,
+            currentSnapshot,
+            TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, stderr) = await RunReplAsync(
+            $"query --handle {current.Id} --baseline-handle {baseline.Id} --view growth --type-filter System.String\nexit\n",
+            services);
+
+        exit.Should().Be(0);
+        stderr.Should().BeEmpty();
+        stdout.Should().Contain("retained growth for System.String");
+        stdout.Should().Contain("Pair: Available bytes=4096 -> 8192 delta=+4096");
+        stdout.Should().Contain("Repeated: InsufficientObservations acceptedPairs=1");
+        stdout.Should().NotContain("leak_suspected");
+    }
+
+    [Fact]
     public async Task Query_HeapHandle_TopTakesPrecedenceOverLegacyTopTypes()
     {
         var (services, store) = BuildServices();
@@ -1435,12 +1479,13 @@ public sealed class SessionReplTests
     }
 
     [Fact]
-    public void SessionViewsFor_HeapKind_ReturnsProjectionViews()
+    public void SessionViewsFor_HeapKind_ReturnsProjectionViewsAndGrowth()
     {
         var sessionViews = CliCommands.SessionViewsFor(HeapInspectionUseCases.HeapSnapshotKind);
 
-        sessionViews.Should().Equal(HeapSnapshotQueryDispatcher.ProjectionViews);
+        sessionViews.Should().Equal([.. HeapSnapshotQueryDispatcher.ProjectionViews, "growth"]);
         sessionViews.Should().Contain("top-types");
+        sessionViews.Should().Contain("growth");
         // Server-only views never surface in the session-advertised list.
         sessionViews.Should().NotContain("object");
         sessionViews.Should().NotContain("duplicate-strings");

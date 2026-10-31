@@ -36,7 +36,7 @@ The CLI replies with the negotiated protocol, its informational CLI version, sup
 names, and additive versioned feature capabilities:
 
 ```json
-{"type":"hello","protocolVersion":2,"cliVersion":"<informational-version>","supportedLiveKinds":["counters","event_source","gc"],"heapGrowth":{"version":1,"available":true,"storeCapacity":32,"minimumStoreCapacity":2,"queryView":"growth","handleKind":"heap-snapshot","baselineField":"baselineHandle","rankBy":["bytes","instances"],"defaultMinDeltaPct":5,"defaultTopN":25,"maxTopN":500,"requiresSameProcess":true,"requiresSameProvenance":true,"storage":"in-memory","boundedLifetime":true,"storePolicy":"shared-configured-bounded"},"cpuHandleComparison":{"version":1,"queryView":"diff","baselineHandleField":"baselineHandle","retainedHandleLimit":2,"maxTopMovers":50},"requestLatencyComparison":{"version":1,"messageType":"compare","kind":"request-latency","inputSchema":"dotnet-diagnostics/request-latency-window-set/v1","resultSchema":"dotnet-diagnostics/request-latency-comparison/v1","maxWindowsPerSide":32,"maxRetainedSamplesPerWindow":256},"capabilities":{"investigationEvidence":{"version":1,"kinds":["cpu","allocation","off_cpu","contention","threadpool","gc","requests"],"maxItems":7,"maxItemBytes":1048576,"maxTotalBytes":4194304}}}
+{"type":"hello","protocolVersion":2,"cliVersion":"<informational-version>","supportedLiveKinds":["counters","event_source","gc"],"heapGrowth":{"version":1,"available":true,"storeCapacity":32,"minimumStoreCapacity":2,"queryView":"growth","handleKind":"heap-snapshot","baselineField":"baselineHandle","objectiveTargetField":"typeFilter","comparisonPairsField":"comparisonPairs","objectiveSchema":"dotnet-diagnostics/retained-growth-evidence/v1","maxAttempts":8,"minimumRobustPairs":3,"rankBy":["bytes","instances"],"defaultMinDeltaPct":5,"defaultTopN":25,"maxTopN":500,"requiresSameProcess":true,"requiresSameProvenance":true,"storage":"in-memory","boundedLifetime":true,"storePolicy":"shared-configured-bounded"},"cpuHandleComparison":{"version":1,"queryView":"diff","baselineHandleField":"baselineHandle","retainedHandleLimit":2,"maxTopMovers":50},"requestLatencyComparison":{"version":1,"messageType":"compare","kind":"request-latency","inputSchema":"dotnet-diagnostics/request-latency-window-set/v1","resultSchema":"dotnet-diagnostics/request-latency-comparison/v1","maxWindowsPerSide":32,"maxRetainedSamplesPerWindow":256},"capabilities":{"investigationEvidence":{"version":1,"kinds":["cpu","allocation","off_cpu","contention","threadpool","gc","requests"],"maxItems":7,"maxItemBytes":1048576,"maxTotalBytes":4194304}}}
 ```
 
 Clients may use `cliVersion` for feature-compatibility guidance and `supportedLiveKinds` to gate
@@ -640,7 +640,8 @@ historical reasons — see `HeapSnapshotQueryDispatcher`). Thread-snapshot handl
 caps ranked results the same way it does for the `cpu` capture. `thread-statics` re-opens the
 handle's origin (live process or dump) via ClrMD, like the REPL view of the same name, and requires
 the optional `typeFilter` string on the `query` request (the EXACT full type name); omitting it
-returns an `invalid_query` error. `typeFilter` is ignored by every other view.
+returns an `invalid_query` error. The `growth` view also uses `typeFilter` to select one objective
+type; other views ignore it.
 `thread-statics` results are bounded by `topN` (default 50, max 500) threads: the `result` carries
 `threadStatics` (`typeFullName`, `threads`, optional `warnings`), plus `totalThreads`,
 `omittedThreads`, and `notes` (a truncation note when `omittedThreads > 0`). Of the address-targeted drilldown views, only `object` and `gcroot` are exposed
@@ -670,6 +671,40 @@ path correlation are identical to the existing Core behavior. The `query` respon
 outer `handle`/`view` fields, adds `baselineHandle`, and returns Core's growth result plus the two
 capture origins, including both handles, PID, baseline/current capture timestamps, elapsed time,
 heap totals, ranked growers, quality, verdict, and notes.
+
+To request the objective retained-growth contract instead of the legacy ranked-grower projection,
+name one exact managed type:
+
+```json
+{"type":"query","requestId":"growth-objective-1","handle":"<current-handle>","baselineHandle":"<baseline-handle>","view":"growth","typeFilter":"Example.RetainedNode","comparisonPairs":[{"attemptId":"run-2","baselineHandle":"<run-2-baseline>","currentHandle":"<run-2-current>","observedGen2Collections":2,"allocation":{"sampledBytes":11700000,"sampleEvents":1200,"lostOrDropped":0}},{"attemptId":"run-3","outcome":"failed","failureReason":"target exited before the current capture"}]}
+```
+
+This response returns `objectiveRetainedGrowth` with schema
+`dotnet-diagnostics/retained-growth-evidence/v1` and deliberately omits the legacy `verdict` and
+ranked `growers`. It reports exact baseline/current retained bytes and instances plus signed paired
+deltas for the selected type. It never emits leak, regression, health, or no-leak conclusions and
+does not promote common-type concentration.
+
+The primary handles count as one attempt. `comparisonPairs` accepts at most seven additional
+attempts, so the total is bounded to eight. Completed attempts require distinct baseline/current
+handle pairs and a process ID not reused by another accepted pair. Reusing a PID keeps the pair in
+the denominator but rejects it with `process_run_independence_not_established`; this conservative
+gate avoids treating repeated windows from one process as independent runs. Failed or aborted
+attempts retain their `attemptId`, `outcome`, and `failureReason` in the denominator without
+replacement. Three compatible completed process-run pairs are required for
+repeated median, MAD, and deterministic 95% percentile-bootstrap evidence; otherwise
+`availability:"insufficient_observations"` is explicit. Runtime, version, architecture, backend,
+target identity, quantity representation, capture settings, independence unit, and comparison axis
+form the compatibility identity; mismatches and rejected-pair counts are returned rather than
+silently pooled.
+
+Optional per-attempt `allocation` fields are a separate sampled-allocation record. They never
+contribute to retained bytes or instances. `observedGen2Collections` records measured observer
+effects; gcdump captures separately report that the mechanism induces a blocking Gen2 GC and that
+an exact observed count is unavailable when the caller did not provide one. Root/path availability
+is independent of retained-growth availability: gcdump reports
+`unavailable_by_mechanism`, live/dump captures distinguish available, not-collected, and incomplete
+evidence. Every unavailable quantity includes reasons, assumptions, and limitations.
 
 Both handles must resolve to `heap-snapshot` payloads, be distinct, describe the same PID, have the
 same `live`, `dump`, or `gcDump` provenance, and be supplied in chronological order. For `live` and
@@ -2217,6 +2252,7 @@ address-addressed drilldowns:
 | `top-types` (default) | top types by bytes/instances | `--top` (`--top-types` compatibility alias), `--rank-by bytes\|instances` |
 | `retention-paths` | short GC retention chains | `--type-filter <substring>`, `--top` (`--top-types` compatibility alias) |
 | `fragmentation` | ranked segment aggregates plus bounded observed material free-block evidence | `--top` (`--top-types` compatibility alias) |
+| `growth` | one exact type's verdict-free retained bytes/instances and signed paired deltas | `--baseline-handle <earlier>`, `--type-filter <exact-full-name>` |
 | `gcroot` | shortest GC-root chain for one object (SOS `!gcroot`) | `--address <decimal\|0x-hex>` (**dump-origin handles only**) |
 | `object` | one managed object's shape (SOS `!do`) | `--address <decimal\|0x-hex>` (**dump-origin handles only**) |
 | `heap-integrity` | `ClrHeap.VerifyHeap()` corruption triage | none (requires the handle was captured with `--verify-heap`; dump-origin only) |
@@ -2227,6 +2263,8 @@ the recorded `.dmp` — no live attach — so an offline dump can still answer "
 `object` view never prints raw string/field values in-session (the standalone CLI holds no sensitive-value
 gate); previews are replaced with `<redacted:metadata-only>`. Live-origin `gcroot`/`object` and the
 `objsize` / `duplicate-strings` views stay server-only — use the MCP server's `query_snapshot` tool.
+The session `growth` view is single-pair evidence, so its repeated block reports
+`insufficient_observations`; use JSONL `comparisonPairs` for bounded repeated process-run evidence.
 
 Off-CPU handles (`collect --kind off_cpu` or `off-cpu`) expose the off-CPU drilldowns already
 captured in the artifact:

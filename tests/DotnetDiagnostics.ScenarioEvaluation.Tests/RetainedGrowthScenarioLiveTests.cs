@@ -1,6 +1,7 @@
 using System.Net.Http.Json;
 using System.Runtime.InteropServices;
 using DotnetDiagnostics.Core.Artifacts;
+using DotnetDiagnostics.Core.Comparison;
 using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Dump;
 using DotnetDiagnostics.Core.Evidence;
@@ -28,6 +29,9 @@ public sealed class RetainedGrowthScenarioLiveTests
         var retainedResult = RetainedGrowthScenarioEvaluator.Evaluate(retained.Evidence);
         var churnResult = RetainedGrowthScenarioEvaluator.Evaluate(churn.Evidence);
         var stableResult = RetainedGrowthScenarioEvaluator.Evaluate(stable.Evidence);
+        var retainedObjective = retained.ObjectiveEvidence;
+        var churnObjective = churn.ObjectiveEvidence;
+        var stableObjective = stable.ObjectiveEvidence;
 
         retainedResult.PositiveRetainedGrowthEvidence.Should()
             .Be(RetainedGrowthPositiveEvidence.Supported);
@@ -58,6 +62,31 @@ public sealed class RetainedGrowthScenarioLiveTests
         stableResult.CaptureInducedGen2Collections.Should().BeGreaterThanOrEqualTo(
             Repetitions * RetainedGrowthScenarioBounds.MaximumCapturesPerRun);
 
+        retainedObjective.Repeated.Availability.Should().Be(RetainedGrowthEvidenceAvailability.Available);
+        churnObjective.Repeated.Availability.Should().Be(RetainedGrowthEvidenceAvailability.Available);
+        stableObjective.Repeated.Availability.Should().Be(RetainedGrowthEvidenceAvailability.Available);
+        retainedObjective.Repeated.MedianRetainedInstancesDelta.Should().Be(WorkloadObjects);
+        churnObjective.Repeated.MedianRetainedInstancesDelta.Should().Be(0);
+        stableObjective.Repeated.MedianRetainedInstancesDelta.Should().Be(0);
+        retainedObjective.Repeated.MedianRetainedBytesDelta.Should().BeGreaterThan(0);
+        churnObjective.Repeated.MedianRetainedBytesDelta.Should().Be(0);
+        stableObjective.Repeated.MedianRetainedBytesDelta.Should().Be(0);
+        retainedObjective.AllocationEvidence.Availability.Should().Be(RetainedGrowthEvidenceAvailability.Available);
+        churnObjective.AllocationEvidence.Availability.Should().Be(RetainedGrowthEvidenceAvailability.Available);
+        stableObjective.AllocationEvidence.Availability.Should().Be(RetainedGrowthEvidenceAvailability.NotApplicable);
+        retainedObjective.RootPathEvidence.Availability.Should()
+            .Be(DotnetDiagnostics.Core.Comparison.RetainedGrowthRootPathAvailability.UnavailableByMechanism);
+        churnObjective.RootPathEvidence.Availability.Should()
+            .Be(DotnetDiagnostics.Core.Comparison.RetainedGrowthRootPathAvailability.UnavailableByMechanism);
+        stableObjective.RootPathEvidence.Availability.Should()
+            .Be(DotnetDiagnostics.Core.Comparison.RetainedGrowthRootPathAvailability.UnavailableByMechanism);
+        retainedObjective.ObserverEffects.GcDumpCaptures.Should().Be(Repetitions * 2);
+        churnObjective.ObserverEffects.GcDumpCaptures.Should().Be(Repetitions * 2);
+        stableObjective.ObserverEffects.GcDumpCaptures.Should().Be(Repetitions * 2);
+        retainedObjective.ObserverEffects.ObservedGen2Collections.Should().BeGreaterThanOrEqualTo(Repetitions * 2);
+        churnObjective.ObserverEffects.ObservedGen2Collections.Should().BeGreaterThanOrEqualTo(Repetitions * 2);
+        stableObjective.ObserverEffects.ObservedGen2Collections.Should().BeGreaterThanOrEqualTo(Repetitions * 2);
+
         retained.Truth.Should().OnlyContain(item =>
             item.LastAllocatedObjectCount == WorkloadObjects
             && item.LastAllocatedPayloadBytes == (long)WorkloadObjects * PayloadBytes
@@ -80,16 +109,19 @@ public sealed class RetainedGrowthScenarioLiveTests
             retained = new
             {
                 result = retainedResult,
+                objective = retainedObjective,
                 truth = retained.Truth,
             },
             churn = new
             {
                 result = churnResult,
+                objective = churnObjective,
                 truth = churn.Truth,
             },
             stable = new
             {
                 result = stableResult,
+                objective = stableObjective,
                 truth = stable.Truth,
             },
             observerEffects = new
@@ -105,11 +137,13 @@ public sealed class RetainedGrowthScenarioLiveTests
     private static async Task<LiveScenario> RunScenarioAsync(RetainedGrowthScenarioVariant variant)
     {
         var runs = new List<RetainedGrowthScenarioRun>(Repetitions);
+        var objectiveAttempts = new List<RetainedGrowthEvidenceAttempt>(Repetitions);
         var truth = new List<RetainedGrowthStatus>(Repetitions);
         for (var repetition = 1; repetition <= Repetitions; repetition++)
         {
             var trial = await RunTrialAsync(variant, repetition);
             runs.Add(trial.Run);
+            objectiveAttempts.Add(trial.ObjectiveAttempt);
             truth.Add(trial.Truth);
         }
 
@@ -136,15 +170,17 @@ public sealed class RetainedGrowthScenarioLiveTests
             parameters,
             "1",
             "owned-local-process");
-        return new(
-            new RetainedGrowthScenarioEvidence(
+        var scenarioEvidence = new RetainedGrowthScenarioEvidence(
                 1,
                 $"live-{variant.ToString().ToLowerInvariant()}",
                 variant,
                 TargetType,
                 compatibility,
                 compatibility,
-                runs),
+                runs);
+        return new(
+            scenarioEvidence,
+            RetainedGrowthEvidence.Build(new TypeIdentity(TargetType), objectiveAttempts),
             truth);
     }
 
@@ -221,12 +257,32 @@ public sealed class RetainedGrowthScenarioLiveTests
 
         stabilized.PressureCount.Should().Be(workloadTruth.PressureCount);
         persisted.PressureCount.Should().Be(workloadTruth.PressureCount);
-        FindType(baseline, TargetType).Instances.Should().Be(SeedRetainedObjects);
+        FindType(baseline.Observation, TargetType).Instances.Should().Be(SeedRetainedObjects);
         var expectedRetained = variant == RetainedGrowthScenarioVariant.RetainedGrowth
             ? SeedRetainedObjects + WorkloadObjects
             : SeedRetainedObjects;
-        FindType(candidate, TargetType).Instances.Should().Be(expectedRetained);
-        FindType(persistence, TargetType).Instances.Should().Be(expectedRetained);
+        FindType(candidate.Observation, TargetType).Instances.Should().Be(expectedRetained);
+        FindType(persistence.Observation, TargetType).Instances.Should().Be(expectedRetained);
+
+        var observedGen2Collections =
+            baseline.Observation.CaptureInducedGen2Collections
+            + candidate.Observation.CaptureInducedGen2Collections;
+        var objectiveAttempt = new RetainedGrowthEvidenceAttempt(
+            $"run-{repetition}",
+            RetainedGrowthAttemptOutcome.Completed,
+            baseline.Observation.CaptureId,
+            baseline.Snapshot,
+            candidate.Observation.CaptureId,
+            candidate.Snapshot)
+        {
+            ObservedGen2Collections = observedGen2Collections,
+            Allocation = traffic is null
+                ? null
+                : new RetainedGrowthAllocationObservation(
+                    traffic.SampledBytes,
+                    traffic.SampleEvents,
+                    traffic.LostOrDropped),
+        };
 
         return new(
             new RetainedGrowthScenarioRun(
@@ -234,14 +290,15 @@ public sealed class RetainedGrowthScenarioLiveTests
                 repetition % 2 == 1
                     ? ScenarioStatisticalPairOrder.BaselineFirst
                     : ScenarioStatisticalPairOrder.CandidateFirst,
-                baseline,
-                candidate,
-                persistence,
+                baseline.Observation,
+                candidate.Observation,
+                persistence.Observation,
                 traffic),
+            objectiveAttempt,
             workloadTruth);
     }
 
-    private static async Task<RetainedGrowthHeapObservation> CaptureAsync(
+    private static async Task<LiveCapture> CaptureAsync(
         int processId,
         HttpClient http,
         string captureId,
@@ -280,19 +337,21 @@ public sealed class RetainedGrowthScenarioLiveTests
                 .OrderBy(type => type.TypeName, StringComparer.Ordinal)
                 .ToArray();
             return new(
-                captureId,
-                snapshot.Heap.TotalBytes,
-                types,
-                postGcStabilized,
-                after.Gen2Collections - before.Gen2Collections,
-                captureCompleted,
-                LostOrDropped: 0,
-                ScenarioStatisticalRepresentation.Exact,
-                snapshot.Quality?.Conclusions.RetainedExplicitPositiveEvidence
-                    == EvidenceConclusionSupport.Supported,
-                GcDumpEvidence.SupportsAbsence(snapshot),
-                RetainedGrowthRootPathAvailability.UnavailableByMechanism,
-                RootPathCount: null);
+                new RetainedGrowthHeapObservation(
+                    captureId,
+                    snapshot.Heap.TotalBytes,
+                    types,
+                    postGcStabilized,
+                    after.Gen2Collections - before.Gen2Collections,
+                    captureCompleted,
+                    LostOrDropped: 0,
+                    ScenarioStatisticalRepresentation.Exact,
+                    snapshot.Quality?.Conclusions.RetainedExplicitPositiveEvidence
+                        == EvidenceConclusionSupport.Supported,
+                    GcDumpEvidence.SupportsAbsence(snapshot),
+                    RetainedGrowthRootPathAvailability.UnavailableByMechanism,
+                    RootPathCount: null),
+                snapshot);
         }
         finally
         {
@@ -321,11 +380,17 @@ public sealed class RetainedGrowthScenarioLiveTests
 
     private sealed record LiveTrial(
         RetainedGrowthScenarioRun Run,
+        RetainedGrowthEvidenceAttempt ObjectiveAttempt,
         RetainedGrowthStatus Truth);
 
     private sealed record LiveScenario(
         RetainedGrowthScenarioEvidence Evidence,
+        RetainedGrowthEvidenceResult ObjectiveEvidence,
         IReadOnlyList<RetainedGrowthStatus> Truth);
+
+    private sealed record LiveCapture(
+        RetainedGrowthHeapObservation Observation,
+        HeapSnapshotArtifact Snapshot);
 
     private sealed record RetainedGrowthStatus(
         int PressureCount,
