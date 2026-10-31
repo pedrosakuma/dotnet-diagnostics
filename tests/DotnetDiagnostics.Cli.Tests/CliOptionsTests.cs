@@ -451,10 +451,33 @@ public sealed class CliOptionsTests
         options.View.Should().Be("top-types");
     }
 
+    [Fact]
+    public void Parse_QueryGrowthFlags_AreCaptured()
+    {
+        var options = CliOptions.Parse(
+            new[]
+            {
+                "query",
+                "--handle", "current",
+                "--baseline-handle", "baseline",
+                "--view", "growth",
+                "--type-filter", "Example.Cache",
+            },
+            out var error);
+
+        error.Should().BeNull();
+        options.Should().NotBeNull();
+        options!.Handle.Should().Be("current");
+        options.BaselineHandle.Should().Be("baseline");
+        options.View.Should().Be("growth");
+        options.TypeFilter.Should().Be("Example.Cache");
+    }
+
     [Theory]
     [InlineData("--mvid")]
     [InlineData("--asset")]
     [InlineData("--handle")]
+    [InlineData("--baseline-handle")]
     [InlineData("--view")]
     public void Parse_NewFlagsMissingValue_ReturnError(string flag)
     {

@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Text.Json;
 using DotnetDiagnostics.Core.Comparison;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Dump;
@@ -11,6 +12,15 @@ namespace DotnetDiagnostics.Cli;
 internal static partial class CliStreamingProtocol
 {
     private const int MinimumHeapGrowthStoreCapacity = 2;
+
+    private sealed record HeapGrowthAttemptRequest(
+        string AttemptId,
+        RetainedGrowthAttemptOutcome Outcome,
+        string? BaselineHandle,
+        string? CurrentHandle,
+        string? FailureReason,
+        int? ObservedGen2Collections,
+        RetainedGrowthAllocationObservation? Allocation);
 
     private static object ProjectHeapGrowthCapability(IServiceProvider services)
     {
@@ -27,6 +37,11 @@ internal static partial class CliStreamingProtocol
             queryView = HeapGrowthView,
             handleKind = HeapInspectionUseCases.HeapSnapshotKind,
             baselineField = "baselineHandle",
+            objectiveTargetField = "typeFilter",
+            comparisonPairsField = "comparisonPairs",
+            objectiveSchema = RetainedGrowthEvidenceResult.SchemaV1,
+            maxAttempts = RetainedGrowthEvidenceBounds.MaximumAttempts,
+            minimumRobustPairs = RetainedGrowthEvidenceBounds.MinimumRobustPairs,
             rankBy = new[] { HeapGrowthDiff.RankByBytes, HeapGrowthDiff.RankByInstances },
             defaultMinDeltaPct = 5.0,
             defaultTopN = 25,
@@ -39,6 +54,184 @@ internal static partial class CliStreamingProtocol
         };
     }
 
+    private static bool TryParseHeapGrowthAttempts(
+        JsonElement root,
+        bool isHeapGrowth,
+        out IReadOnlyList<HeapGrowthAttemptRequest> attempts,
+        out string? error)
+    {
+        attempts = [];
+        error = null;
+        if (!root.TryGetProperty("comparisonPairs", out var pairsElement)
+            || pairsElement.ValueKind == JsonValueKind.Null)
+        {
+            return true;
+        }
+
+        if (!isHeapGrowth)
+        {
+            error = "'comparisonPairs' is supported only for view 'growth'.";
+            return false;
+        }
+
+        if (pairsElement.ValueKind != JsonValueKind.Array)
+        {
+            error = $"'comparisonPairs' must be an array with at most {RetainedGrowthEvidenceBounds.MaximumAttempts - 1} additional attempts.";
+            return false;
+        }
+
+        var pairElements = pairsElement.EnumerateArray().ToArray();
+        if (pairElements.Length > RetainedGrowthEvidenceBounds.MaximumAttempts - 1)
+        {
+            error = $"'comparisonPairs' accepts at most {RetainedGrowthEvidenceBounds.MaximumAttempts - 1} additional attempts because the primary handle pair counts toward the {RetainedGrowthEvidenceBounds.MaximumAttempts}-attempt bound.";
+            return false;
+        }
+
+        var parsed = new List<HeapGrowthAttemptRequest>(pairElements.Length);
+        var attemptIds = new HashSet<string>(StringComparer.Ordinal) { "primary" };
+        var completedPairs = new HashSet<string>(StringComparer.Ordinal);
+        if (TryGetString(root, "baselineHandle", out var primaryBaseline)
+            && TryGetString(root, "handle", out var primaryCurrent))
+        {
+            completedPairs.Add(primaryBaseline + "\0" + primaryCurrent);
+        }
+
+        for (var index = 0; index < pairElements.Length; index++)
+        {
+            var element = pairElements[index];
+            if (element.ValueKind != JsonValueKind.Object)
+            {
+                error = $"'comparisonPairs[{index}]' must be an object.";
+                return false;
+            }
+
+            if (!TryGetString(element, "attemptId", out var attemptId)
+                || attemptId is not { Length: <= 128 }
+                || string.IsNullOrWhiteSpace(attemptId)
+                || attemptId.Any(char.IsControl)
+                || !attemptIds.Add(attemptId))
+            {
+                error = $"'comparisonPairs[{index}].attemptId' must be a unique non-empty string of at most 128 characters without control characters; 'primary' is reserved.";
+                return false;
+            }
+
+            var outcome = RetainedGrowthAttemptOutcome.Completed;
+            if (element.TryGetProperty("outcome", out var outcomeElement)
+                && outcomeElement.ValueKind != JsonValueKind.Null)
+            {
+                var outcomeText = outcomeElement.ValueKind == JsonValueKind.String
+                    ? outcomeElement.GetString()
+                    : null;
+                outcome = outcomeText switch
+                {
+                    "completed" => RetainedGrowthAttemptOutcome.Completed,
+                    "failed" => RetainedGrowthAttemptOutcome.Failed,
+                    "aborted" => RetainedGrowthAttemptOutcome.Aborted,
+                    _ => (RetainedGrowthAttemptOutcome)(-1),
+                };
+                if (!Enum.IsDefined(outcome))
+                {
+                    error = $"'comparisonPairs[{index}].outcome' must be 'completed', 'failed', or 'aborted'.";
+                    return false;
+                }
+            }
+
+            string? baselineHandle = null;
+            string? currentHandle = null;
+            string? failureReason = null;
+            if (outcome == RetainedGrowthAttemptOutcome.Completed)
+            {
+                if (!TryGetString(element, "baselineHandle", out baselineHandle)
+                    || !IsValidProtocolHandle(baselineHandle)
+                    || !TryGetString(element, "currentHandle", out currentHandle)
+                    || !IsValidProtocolHandle(currentHandle))
+                {
+                    error = $"'comparisonPairs[{index}]' completed attempts require valid non-empty 'baselineHandle' and 'currentHandle' strings.";
+                    return false;
+                }
+
+                if (string.Equals(baselineHandle, currentHandle, StringComparison.Ordinal))
+                {
+                    error = $"'comparisonPairs[{index}]' baseline and current handles must be different captures.";
+                    return false;
+                }
+
+                if (!completedPairs.Add(baselineHandle + "\0" + currentHandle))
+                {
+                    error = $"'comparisonPairs[{index}]' duplicates a handle pair already present in this request; repeated evidence requires distinct capture pairs.";
+                    return false;
+                }
+            }
+            else
+            {
+                if (!TryGetString(element, "failureReason", out failureReason)
+                    || failureReason is not { Length: <= 512 }
+                    || string.IsNullOrWhiteSpace(failureReason)
+                    || failureReason.Any(char.IsControl))
+                {
+                    error = $"'comparisonPairs[{index}].failureReason' is required for failed or aborted attempts and must be at most 512 characters without control characters.";
+                    return false;
+                }
+
+                if (element.TryGetProperty("baselineHandle", out _)
+                    || element.TryGetProperty("currentHandle", out _))
+                {
+                    error = $"'comparisonPairs[{index}]' failed or aborted attempts must not provide heap handles.";
+                    return false;
+                }
+            }
+
+            int? observedGen2Collections = null;
+            if (element.TryGetProperty("observedGen2Collections", out var gen2Element)
+                && gen2Element.ValueKind != JsonValueKind.Null)
+            {
+                if (!gen2Element.TryGetInt32(out var gen2) || gen2 < 0)
+                {
+                    error = $"'comparisonPairs[{index}].observedGen2Collections' must be a non-negative Int32.";
+                    return false;
+                }
+                observedGen2Collections = gen2;
+            }
+
+            RetainedGrowthAllocationObservation? allocation = null;
+            if (element.TryGetProperty("allocation", out var allocationElement)
+                && allocationElement.ValueKind != JsonValueKind.Null)
+            {
+                if (allocationElement.ValueKind != JsonValueKind.Object
+                    || !allocationElement.TryGetProperty("sampledBytes", out var sampledBytesElement)
+                    || !sampledBytesElement.TryGetInt64(out var sampledBytes)
+                    || sampledBytes < 0
+                    || !allocationElement.TryGetProperty("sampleEvents", out var sampleEventsElement)
+                    || !sampleEventsElement.TryGetInt64(out var sampleEvents)
+                    || sampleEvents < 0
+                    || !allocationElement.TryGetProperty("lostOrDropped", out var lostElement)
+                    || !lostElement.TryGetInt64(out var lostOrDropped)
+                    || lostOrDropped < 0)
+                {
+                    error = $"'comparisonPairs[{index}].allocation' must contain non-negative Int64 sampledBytes, sampleEvents, and lostOrDropped fields.";
+                    return false;
+                }
+
+                allocation = new RetainedGrowthAllocationObservation(
+                    sampledBytes,
+                    sampleEvents,
+                    lostOrDropped);
+            }
+
+            parsed.Add(new HeapGrowthAttemptRequest(
+                attemptId,
+                outcome,
+                baselineHandle,
+                currentHandle,
+                failureReason,
+                observedGen2Collections,
+                allocation));
+        }
+
+        attempts = parsed;
+        return true;
+    }
+
     private static async Task HandleHeapGrowthQueryAsync(
         string requestId,
         ProtocolWriter writer,
@@ -49,6 +242,8 @@ internal static partial class CliStreamingProtocol
         string rankBy,
         double minDeltaPct,
         int topN,
+        string? objectiveTargetType,
+        IReadOnlyList<HeapGrowthAttemptRequest> comparisonAttempts,
         CancellationToken cancellationToken)
     {
         if (string.Equals(baselineHandle, currentHandle, StringComparison.Ordinal))
@@ -155,6 +350,110 @@ internal static partial class CliStreamingProtocol
             }
         }
 
+        var objectiveAttempts = objectiveTargetType is null
+            ? null
+            : new List<RetainedGrowthEvidenceAttempt>(
+                Math.Min(RetainedGrowthEvidenceBounds.MaximumAttempts, comparisonAttempts.Count + 1))
+            {
+                new(
+                    "primary",
+                    RetainedGrowthAttemptOutcome.Completed,
+                    baselineHandle,
+                    baseline,
+                    currentHandle,
+                    current),
+            };
+
+        if (objectiveAttempts is not null)
+        {
+            foreach (var attempt in comparisonAttempts)
+            {
+                if (attempt.Outcome != RetainedGrowthAttemptOutcome.Completed)
+                {
+                    objectiveAttempts.Add(new RetainedGrowthEvidenceAttempt(
+                        attempt.AttemptId,
+                        attempt.Outcome,
+                        null,
+                        null,
+                        null,
+                        null)
+                    {
+                        FailureReason = attempt.FailureReason,
+                        ObservedGen2Collections = attempt.ObservedGen2Collections,
+                        Allocation = attempt.Allocation,
+                    });
+                    continue;
+                }
+
+                var additionalBaselineResult = handles.LookupWithKind(attempt.BaselineHandle!);
+                if (additionalBaselineResult.Lookup is not { } additionalBaselineLookup)
+                {
+                    await WriteGrowthHandleUnavailableAsync(
+                        writer,
+                        requestId,
+                        attempt.BaselineHandle!,
+                        $"comparisonPairs[{attempt.AttemptId}].baseline",
+                        additionalBaselineResult.Status).ConfigureAwait(false);
+                    return;
+                }
+
+                var additionalCurrentResult = handles.LookupWithKind(attempt.CurrentHandle!);
+                if (additionalCurrentResult.Lookup is not { } additionalCurrentLookup)
+                {
+                    await WriteGrowthHandleUnavailableAsync(
+                        writer,
+                        requestId,
+                        attempt.CurrentHandle!,
+                        $"comparisonPairs[{attempt.AttemptId}].current",
+                        additionalCurrentResult.Status).ConfigureAwait(false);
+                    return;
+                }
+
+                if (additionalBaselineLookup.Kind != HeapInspectionUseCases.HeapSnapshotKind
+                    || additionalCurrentLookup.Kind != HeapInspectionUseCases.HeapSnapshotKind
+                    || additionalBaselineLookup.Artifact is not HeapSnapshotArtifact additionalBaseline
+                    || additionalCurrentLookup.Artifact is not HeapSnapshotArtifact additionalCurrent)
+                {
+                    await WriteGrowthErrorAsync(
+                        writer,
+                        requestId,
+                        "invalid_query",
+                        $"Comparison attempt '{attempt.AttemptId}' requires two heap-snapshot handles.",
+                        reason: "comparison_pair_invalid_payload").ConfigureAwait(false);
+                    return;
+                }
+
+                if (!TryValidateGrowthPair(
+                        additionalBaseline,
+                        attempt.BaselineHandle!,
+                        additionalCurrent,
+                        attempt.CurrentHandle!,
+                        out var validationMessage,
+                        out var validationReason))
+                {
+                    await WriteGrowthErrorAsync(
+                        writer,
+                        requestId,
+                        "invalid_query",
+                        $"Comparison attempt '{attempt.AttemptId}' is invalid: {validationMessage}",
+                        validationReason).ConfigureAwait(false);
+                    return;
+                }
+
+                objectiveAttempts.Add(new RetainedGrowthEvidenceAttempt(
+                    attempt.AttemptId,
+                    RetainedGrowthAttemptOutcome.Completed,
+                    attempt.BaselineHandle,
+                    additionalBaseline,
+                    attempt.CurrentHandle,
+                    additionalCurrent)
+                {
+                    ObservedGen2Collections = attempt.ObservedGen2Collections,
+                    Allocation = attempt.Allocation,
+                });
+            }
+        }
+
         var growth = HeapGrowthDiff.Build(
             baseline,
             baselineHandle,
@@ -162,7 +461,9 @@ internal static partial class CliStreamingProtocol
             currentHandle,
             rankBy,
             minDeltaPct,
-            topN);
+            topN,
+            objectiveTargetType is null ? null : new TypeIdentity(objectiveTargetType),
+            objectiveAttempts);
 
         await writer.WriteAsync(new
         {
@@ -171,8 +472,84 @@ internal static partial class CliStreamingProtocol
             handle = currentHandle,
             baselineHandle,
             view = HeapGrowthView,
-            result = ProjectHeapGrowth(growth, baseline.Origin, current.Origin),
+            result = objectiveTargetType is null
+                ? ProjectHeapGrowth(growth, baseline.Origin, current.Origin)
+                : ProjectObjectiveRetainedGrowth(growth, baseline.Origin, current.Origin),
         }, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static object ProjectObjectiveRetainedGrowth(
+        HeapGrowthResult growth,
+        HeapSnapshotOrigin baselineOrigin,
+        HeapSnapshotOrigin currentOrigin) => new
+    {
+        growth.BaselineHandle,
+        growth.CurrentHandle,
+        growth.ProcessId,
+        growth.BaselineCapturedAt,
+        growth.CurrentCapturedAt,
+        growth.Elapsed,
+        baselineOrigin,
+        currentOrigin,
+        objectiveRetainedGrowth = growth.ObjectiveRetainedGrowth,
+    };
+
+    private static bool TryValidateGrowthPair(
+        HeapSnapshotArtifact baseline,
+        string baselineHandle,
+        HeapSnapshotArtifact current,
+        string currentHandle,
+        out string message,
+        out string reason)
+    {
+        if (string.Equals(baselineHandle, currentHandle, StringComparison.Ordinal))
+        {
+            message = "The baseline and current heap handles must be different captures.";
+            reason = "same_handle";
+            return false;
+        }
+
+        if (baseline.ProcessId != current.ProcessId)
+        {
+            message = $"Heap growth comparison requires snapshots from the same process; baseline pid is {baseline.ProcessId} and current pid is {current.ProcessId}.";
+            reason = "process_mismatch";
+            return false;
+        }
+
+        if (baseline.Origin != current.Origin)
+        {
+            message = $"Heap growth comparison requires matching capture provenance; baseline origin is '{baseline.Origin}' and current origin is '{current.Origin}'.";
+            reason = "provenance_mismatch";
+            return false;
+        }
+
+        if (current.CapturedAt < baseline.CapturedAt)
+        {
+            message = $"The current heap snapshot was captured at {current.CapturedAt:O}, before baseline {baseline.CapturedAt:O}. Pass the earlier handle as 'baselineHandle'.";
+            reason = "reversed_chronology";
+            return false;
+        }
+
+        if (current.Origin is HeapSnapshotOrigin.Live or HeapSnapshotOrigin.GcDump)
+        {
+            if (!TryGetRunningProcessStartTime(current.ProcessId, out var processStartedAt, out var failure))
+            {
+                message = $"Heap growth comparison cannot validate target pid {current.ProcessId}: {failure}";
+                reason = "target_process_unavailable";
+                return false;
+            }
+
+            if (processStartedAt > baseline.CapturedAt || processStartedAt > current.CapturedAt)
+            {
+                message = $"Heap growth comparison rejected pid {current.ProcessId} because its current lifetime started at {processStartedAt:O}, after one or both captures ({baseline.CapturedAt:O}, {current.CapturedAt:O}). The PID was reused or the capture identity is stale.";
+                reason = "process_lifetime_mismatch";
+                return false;
+            }
+        }
+
+        message = string.Empty;
+        reason = string.Empty;
+        return true;
     }
 
     private static object ProjectHeapGrowth(
@@ -284,6 +661,7 @@ internal static partial class CliStreamingProtocol
             _ => "unknown",
         };
         var roleLabel = string.Equals(handleRole, "baseline", StringComparison.Ordinal)
+            || handleRole.EndsWith(".baseline", StringComparison.Ordinal)
             ? "Baseline"
             : "Current";
         var message = status switch

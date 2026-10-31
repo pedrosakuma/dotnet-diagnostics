@@ -41,7 +41,9 @@ public static class HeapGrowthDiff
         string currentHandle,
         string rankBy,
         double minDeltaPct,
-        int topN)
+        int topN,
+        TypeIdentity? objectiveTargetType = null,
+        IReadOnlyList<RetainedGrowthEvidenceAttempt>? objectiveAttempts = null)
     {
         ArgumentNullException.ThrowIfNull(baseline);
         ArgumentNullException.ThrowIfNull(current);
@@ -197,6 +199,23 @@ public static class HeapGrowthDiff
                 "Lower-ranked observed growth rows were omitted from this bounded response.");
         }
 
+        RetainedGrowthEvidenceResult? objectiveEvidence = null;
+        if (objectiveTargetType is not null)
+        {
+            objectiveEvidence = RetainedGrowthEvidence.Build(
+                objectiveTargetType,
+                objectiveAttempts ??
+                [
+                    new RetainedGrowthEvidenceAttempt(
+                        "primary",
+                        RetainedGrowthAttemptOutcome.Completed,
+                        baselineHandle,
+                        baseline,
+                        currentHandle,
+                        current),
+                ]);
+        }
+
         return new HeapGrowthResult(
             baselineHandle,
             currentHandle,
@@ -216,6 +235,7 @@ public static class HeapGrowthDiff
             Notes = notes.Count > 0 ? notes : null,
             BaselineQuality = baselineQuality,
             CurrentQuality = currentQuality,
+            ObjectiveRetainedGrowth = objectiveEvidence,
         };
     }
 

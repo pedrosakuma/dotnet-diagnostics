@@ -6,6 +6,9 @@ using System.Text.Json.Nodes;
 using System.Text.Json.Schema;
 using System.Text.Json.Serialization;
 using DotnetDiagnostics.Core.Comparison;
+using DotnetDiagnostics.Core.Drilldown;
+using DotnetDiagnostics.Core.Dump;
+using DotnetDiagnostics.Core.Evidence;
 using FluentAssertions;
 using Microsoft.AspNetCore.Mvc.Testing;
 using ModelContextProtocol;
@@ -283,6 +286,63 @@ public sealed class ToolCatalogBudgetTests : IClassFixture<ToolCatalogBudgetTest
     }
 
     [Fact]
+    public async Task RetainedGrowthEvidence_MeasuresCoreSchemaPayloadAndZeroCatalogDelta()
+    {
+        await using var client = await ConnectAsync();
+        var result = await client.ListToolsAsync(
+            new ListToolsRequestParams(),
+            cancellationToken: CancellationToken.None);
+        var clientTools = await client.ListToolsAsync(cancellationToken: CancellationToken.None);
+        var current = ToolCatalogMeasurement.Measure(result);
+        var schema = McpJsonUtilities.DefaultOptions.GetJsonSchemaAsNode(
+            typeof(RetainedGrowthEvidenceResult),
+            new JsonSchemaExporterOptions
+            {
+                TreatNullObliviousAsNonNullable = true,
+            });
+        var schemaBytes = SerializedLength(schema);
+        var payload = RepresentativeRetainedGrowthEvidence();
+        var payloadBytes = JsonSerializer.SerializeToUtf8Bytes(
+            payload,
+            McpJsonUtilities.DefaultOptions).Length;
+        var querySnapshotData = clientTools.Single(tool => tool.Name == "query_snapshot")
+            .ReturnJsonSchema!.Value.GetProperty("properties").GetProperty("data");
+
+        _output.WriteLine($"retained-growth result schema: {schemaBytes:N0} bytes");
+        _output.WriteLine($"retained-growth representative payload: {payloadBytes:N0} bytes");
+        _output.WriteLine(
+            $"retained-growth shipping catalog: {current.SerializedBytes:N0} maximal / " +
+            $"{current.DefaultCatalogBytes:N0} default bytes (delta +0 / +0)");
+
+        result.Tools.Should().HaveCount(17,
+            "objective retained growth reuses query_snapshot data and must not add an MCP tool");
+        querySnapshotData.EnumerateObject().Should().BeEmpty(
+            "query_snapshot.data remains intentionally unconstrained, so this Core/CLI result adds zero tools/list schema bytes");
+        current.SerializedBytes.Should().BeLessThanOrEqualTo(MaximumCatalogBytes);
+        schemaBytes.Should().BeLessThanOrEqualTo(20_000);
+        payloadBytes.Should().BeLessThanOrEqualTo(16_384);
+
+        var budgetReport = File.ReadAllText(Path.Combine(
+            FindRepoRoot(),
+            "docs",
+            "research",
+            "mcp-tool-catalog-budget.md"));
+        foreach (var measuredBytes in new[]
+                 {
+                     current.SerializedBytes,
+                     current.DefaultCatalogBytes,
+                     schemaBytes,
+                     payloadBytes,
+                 })
+        {
+            budgetReport.Should().Contain(
+                measuredBytes.ToString("N0", CultureInfo.InvariantCulture),
+                "the catalog budget report must carry the executable retained-growth measurement");
+        }
+        budgetReport.Should().Contain("delta is **0 bytes**");
+    }
+
+    [Fact]
     public void StatisticalMethodRegistry_DefinesTheDesignOnlyFoundation()
     {
         var registryPath = Path.Combine(
@@ -483,6 +543,88 @@ public sealed class ToolCatalogBudgetTests : IClassFixture<ToolCatalogBudgetTest
 
     private static int SerializedLength(JsonNode node)
         => Encoding.UTF8.GetByteCount(node.ToJsonString(McpJsonUtilities.DefaultOptions));
+
+    private static RetainedGrowthEvidenceResult RepresentativeRetainedGrowthEvidence()
+    {
+        var target = new TypeIdentity("Example.RetainedNode") { ModuleName = "Example.dll" };
+        var quality = new EvidenceQuality(
+            EvidenceQuality.SchemaV1,
+            [
+                new EvidenceLimitation(
+                    EvidenceLimitationCategory.MechanismUnobservable,
+                    "eventpipe-loss",
+                    null,
+                    "The gcdump transport does not expose an exact loss count."),
+            ],
+            new EvidenceConclusionPolicy(
+                EvidenceConclusionSupport.Supported,
+                EvidenceConclusionSupport.Inconclusive,
+                EvidenceConclusionSupport.Inconclusive));
+        var attempts = Enumerable.Range(1, 3)
+            .Select(index =>
+            {
+                var capturedAt = new DateTimeOffset(2026, 1, index, 0, 0, 0, TimeSpan.Zero);
+                var baseline = RetainedGrowthSnapshot(
+                    processId: 1_000 + index,
+                    capturedAt,
+                    target,
+                    bytes: 1_000_000 + (index * 10_000),
+                    instances: 10_000 + (index * 100),
+                    quality);
+                var current = RetainedGrowthSnapshot(
+                    processId: 1_000 + index,
+                    capturedAt.AddMinutes(1),
+                    target,
+                    bytes: baseline.TopTypesByBytes[0].TotalBytes + 640_000 + (index * 1_000),
+                    instances: baseline.TopTypesByBytes[0].InstanceCount + 20_000,
+                    quality);
+                return new RetainedGrowthEvidenceAttempt(
+                    $"run-{index}",
+                    RetainedGrowthAttemptOutcome.Completed,
+                    $"baseline-{index}",
+                    baseline,
+                    $"current-{index}",
+                    current)
+                {
+                    ObservedGen2Collections = 2,
+                    Allocation = new RetainedGrowthAllocationObservation(
+                        11_000_000 + (index * 100_000),
+                        1_000 + index,
+                        LostOrDropped: 0),
+                };
+            })
+            .ToArray();
+        return RetainedGrowthEvidence.Build(target, attempts);
+    }
+
+    private static HeapSnapshotArtifact RetainedGrowthSnapshot(
+        int processId,
+        DateTimeOffset capturedAt,
+        TypeIdentity target,
+        long bytes,
+        long instances,
+        EvidenceQuality quality)
+    {
+        var stat = new TypeStat(
+            target.TypeFullName,
+            target.ModuleName,
+            instances,
+            bytes,
+            TotalBytesPercent: 100,
+            Identity: target);
+        return new HeapSnapshotArtifact(
+            HeapSnapshotOrigin.GcDump,
+            processId,
+            capturedAt,
+            TimeSpan.FromSeconds(1),
+            new DumpRuntimeInfo("CoreCLR", "10.0.0", "x64", IsServerGC: false, HeapCount: 1),
+            new DumpHeapSummary(bytes, 0, 0, bytes, 0, 0, bytes),
+            [stat],
+            [stat])
+        {
+            Quality = quality,
+        };
+    }
 
     private static string FindRepoRoot()
     {
