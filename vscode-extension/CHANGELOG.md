@@ -5,6 +5,14 @@ versioned independently from the CLI and the .NET packages.
 
 ## Unreleased
 
+- Add an optional incremental retained-memory growth lens over the CLI's advertised bounded JSONL
+  contract. Explicitly select compatible earlier/later live or GC-dump evidence, keep retained
+  bytes/instances and repeated median/MAD/bootstrap evidence CLI-owned, separate allocation traffic
+  and GC-dump observer effects, and expose identity, method, assumptions, limitations, root/path
+  availability and unavailable reasons. Rank types only from supported quality, then route a
+  selected type to the canonical heap explorer and its bounded live drilldowns. Handles remain
+  ephemeral and connection-owned; no automatic capture, TypeScript statistics, verdict, collector,
+  tool or hidden persistence is added.
 - Add an optional **What are you investigating?** entry above the unchanged expert action groups.
   Six bounded symptom paths show the active target, one recommended first measurement, alternatives,
   evidence mode, impact/privacy/platform prerequisites, and direct access to all diagnostic actions.

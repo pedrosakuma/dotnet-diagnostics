@@ -231,6 +231,12 @@ function renderHeapTypeNavigation(types: Array<Record<string, unknown>>): void {
         button.className = "heap-type-link";
         const name = String(type.typeFullName ?? "Unavailable");
         button.textContent = name;
+        button.dataset.typeFullName = name;
+        if (typeof type.moduleName === "string") button.dataset.moduleName = type.moduleName;
+        const identity = typeof type.identity === "object" && type.identity !== null
+            ? type.identity as Record<string, unknown> : { typeFullName: name, moduleName: type.moduleName ?? null };
+        if (typeof identity.moduleVersionId === "string") button.dataset.moduleVersionId = identity.moduleVersionId;
+        if (typeof identity.metadataToken === "number") button.dataset.metadataToken = String(identity.metadataToken);
         button.addEventListener("click", () => {
             selectedButton?.removeAttribute("aria-current");
             selectedButton = button;
@@ -242,11 +248,13 @@ function renderHeapTypeNavigation(types: Array<Record<string, unknown>>): void {
             const counts = document.createElement("p");
             counts.textContent = String(type.instanceCount ?? "Unavailable") + " instances | "
                 + String(type.totalBytes ?? "Unavailable") + " direct bytes. Not dominator-retained size.";
-            const identity = typeof type.identity === "object" && type.identity !== null
-                ? type.identity as Record<string, unknown> : { typeFullName: name, moduleName: type.moduleName ?? null };
             const status = document.createElement("p");
             status.setAttribute("role", "status");
-            status.textContent = "Requesting the first bounded instance page…";
+            const supportsInstances = workspace?.dataset.instanceQueriesAvailable !== "false";
+            status.textContent = supportsInstances
+                ? "Requesting the first bounded instance page…"
+                : workspace?.dataset.instanceQueriesReason
+                    || "Bounded instance enumeration is unavailable for this snapshot source.";
             const instances = document.createElement("div");
             instances.className = "heap-type-instances";
             const more = document.createElement("button");
@@ -282,7 +290,8 @@ function renderHeapTypeNavigation(types: Array<Record<string, unknown>>): void {
                 updateEvidenceViewSwitcher(views);
             }
             applyHeapTypeFocus();
-            vscode.postMessage({ type: "queryHeapInstances", selectionId, typeIdentity: identity });
+            if (supportsInstances)
+                vscode.postMessage({ type: "queryHeapInstances", selectionId, typeIdentity: identity });
             if (pane) showDetails();
             else {
                 detail.focus({ preventScroll: true });
@@ -291,6 +300,25 @@ function renderHeapTypeNavigation(types: Array<Record<string, unknown>>): void {
         });
         cell.replaceChildren(button);
     });
+}
+
+function selectHeapTypeFromGrowth(identity: Record<string, unknown>): void {
+    const table = document.getElementById("captureHeapTable");
+    const buttons = Array.from(table?.querySelectorAll<HTMLButtonElement>(".heap-type-link") ?? []);
+    const exact = buttons.find(button =>
+        button.dataset.typeFullName === identity.typeFullName
+        && (identity.moduleVersionId == null || button.dataset.moduleVersionId === String(identity.moduleVersionId))
+        && (identity.metadataToken == null || button.dataset.metadataToken === String(identity.metadataToken))
+        && (identity.moduleName == null || button.dataset.moduleName === String(identity.moduleName)));
+    const fallback = buttons.find(button => button.dataset.typeFullName === identity.typeFullName);
+    const selected = exact ?? fallback;
+    if (selected) {
+        selected.click();
+        selected.focus({ preventScroll: true });
+        return;
+    }
+    const status = document.getElementById("retainedGrowthStatus");
+    if (status) status.textContent = "The selected type is outside the bounded current heap table. Use direct expert heap views or capture with a larger CLI top-type bound.";
 }
 
 function handleHeapInstancesMessage(message: Record<string, unknown>): boolean {
@@ -736,6 +764,7 @@ function updateThreadNavigation(view: string, result: Record<string, unknown>): 
 
 export const SNAPSHOT_NAVIGATION_SCRIPT = navigateHeapDetails.toString() + "\n" + resetHeapDetailsNavigation.toString() + "\n"
     + renderHeapTypeNavigation.toString() + "\n"
+    + selectHeapTypeFromGrowth.toString() + "\n"
     + handleHeapInstancesMessage.toString() + "\n"
     + applyHeapTypeFocus.toString() + "\n" + setThreadWorkspaceView.toString() + "\n" + navigateThreadTo.toString()
     + "\n" + navigateThreadFromGroup.toString() + "\n" + updateThreadNavigation.toString();
