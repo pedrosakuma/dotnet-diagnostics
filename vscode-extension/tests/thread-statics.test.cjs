@@ -131,7 +131,7 @@ test("SingleFlightGuard runs one task at a time and releases on success or failu
 
 test("live and dump controllers guard thread-statics and report busy state", () => {
     const source = fs.readFileSync(path.join(__dirname, "..", "src", "extension.ts"), "utf8");
-    assert.equal((source.match(/new SingleFlightGuard\(\)/g) || []).length, 3);
+    assert.equal((source.match(/new SingleFlightGuard\(\)/g) || []).length, 4);
     assert.equal((source.match(/this\.threadStaticsGuard\.run\(/g) || []).length, 2);
     assert.equal((source.match(/type: "threadStaticsState", evidenceId, state: "running"/g) || []).length, 1);
     assert.equal((source.match(/type: "threadStaticsState", evidenceId, state: "idle"/g) || []).length, 1);
