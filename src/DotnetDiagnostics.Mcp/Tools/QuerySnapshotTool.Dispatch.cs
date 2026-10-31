@@ -336,6 +336,8 @@ public sealed partial class QuerySnapshotTool
                     CpuSampleQueryDispatcher.RenderInlining(trace, context.Handle, context.RootMethodFilter, cpuTopN)),
                 CpuSampleQueryDispatcher.CodeVersionsView => AsObjectEnvelope(
                     CpuSampleQueryDispatcher.RenderCodeVersions(trace, context.Handle, context.RootMethodFilter, cpuTopN)),
+                CpuSampleQueryDispatcher.HotspotVariabilityView => AsObjectEnvelope(
+                    CpuSampleQueryDispatcher.RenderHotspotVariability(trace, context.Handle)),
                 CpuSampleQueryDispatcher.CallerCalleeView => AsObjectEnvelope(
                     CpuSampleQueryDispatcher.RenderCallerCallee(trace, context.Handle, context.RootMethodFilter, cpuTopN)),
                 _ => UnknownView(cpuView, context.Kind, CpuViewNames),

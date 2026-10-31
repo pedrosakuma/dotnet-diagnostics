@@ -65,6 +65,30 @@ operate only over those bounded pair-level deltas, so work cannot scale with an
 unbounded raw request stream. Descriptive p50/p95/p99 values use retained
 completed requests; failure and incompleteness counts remain separate.
 
+### Offline CPU-hotspot variability comparison
+
+The Core-owned CPU-hotspot comparison (#1331) is not a collector. Each side
+accepts **1-12** separately started capture observations, each capture profile
+retains at most **16** ranked methods, and each one-shot CLI or MCP JSON body is
+limited to **256 KiB**. JSONL uses the same existing **576 KiB** bounded control
+frame, enough for two maximum-size capture sets plus envelope overhead.
+
+All bounds are enforced before comparison. Capture IDs and pair keys are
+unique within a side; counts are non-negative and fit signed 64-bit totals;
+method IDs are unique; and no per-method or unresolved count may exceed the
+capture total. Capture intervals for the same process must not overlap, and
+paired captures must name the same process/run identity. The comparison
+performs fixed-size sorting over at most 24
+capture rows and their bounded method inventories. It does not retain raw
+sample events or replay traces.
+
+At least four complete compatible capture pairs with at least 80 samples per
+capture are required for pooled selected-share, paired-delta, top-2, and rank
+evidence. Exact counts and unresolved shares remain visible when those fields
+are withheld. Approximate/truncated capture representation, unresolved share
+above 35%, or paired unresolved-share change above 20 percentage points is an
+explicit degraded state rather than silently accepted attribution.
+
 ### JSONL structured capture views
 
 The VS Code **Capture Diagnostics** path reuses the existing bounded Core collectors and
