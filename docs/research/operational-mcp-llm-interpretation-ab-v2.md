@@ -132,8 +132,86 @@ substitute, or model-quality CI gate.
 
 ## Empirical outcome
 
-The frozen implementation must pass build, deterministic tests, live MCP
-sequence validation, and independent cross-model review before empirical
-execution. Development runs first. Held-out runs only if every frozen
-development gate passes. The final retained outcome is recorded here after the
-single permitted execution.
+The frozen implementation passed build, deterministic tests, real-MCP sequence
+validation, and independent cross-model review before execution. The review
+identified and fixed favorable-retry, effective-byte-cap, product-fingerprint,
+follow-up-accounting, tool-call-id, and assessor-provenance defects before the
+protocol was committed.
+
+The single permitted run used evaluator commit
+`3bf1af62393da544fdf6c1a8b2c747b2b48aad34`, GitHub Copilot CLI transport
+`1.0.92`, `gpt-5.3-codex` for diagnosis, and `gpt-5.6-sol` for isolated
+assessment. Provider model revisions, token usage, and monetary cost were
+unavailable. The assessor preflight passed before the first target started.
+
+All four development arms passed every frozen prerequisite. The evaluator then
+ran all sixteen held-out arms exactly once. All twenty attempts completed the
+predeclared real-MCP sequence against fresh target processes, and no attempt was
+retried.
+
+The run interval was 2026-10-31 21:11:53-21:31:03 UTC. Retained reports
+occupied 7,728,547 bytes outside the repository. The evaluator retained twenty
+investigation reports, twenty run reports, and one pilot report. Raw diagnostic
+reports remain uncommitted because they can contain local paths and
+target-controlled names.
+
+### Held-out family results
+
+| Dimension | Allocation control | Allocation indicator | CPU control | CPU indicator |
+|---|---:|---:|---:|---:|
+| Attempts | 4 | 4 | 4 | 4 |
+| Completed diagnoses | 4/4 | 4/4 | 4/4 | 4/4 |
+| Mechanically valid citations | 4/4 | 3/4 | 4/4 | 4/4 |
+| Strict assessor outputs admitted | 4/4 | 4/4 | 3/4 | 3/4 |
+| Assessable attempts | 4/4 | 3/4 | 3/4 | 3/4 |
+| Claim support | 97.5% across 20 claims | 86.7% across 15 claims | 95.8% across 12 claims | 91.7% across 12 claims |
+| Unsupported certainty | 0 | 2 | 0 | 0 |
+| Appropriate uncertainty | 4/4 assessable | 3/3 assessable | 3/3 assessable | 3/3 assessable |
+| Useful next steps | 4/4 assessable | 3/3 assessable | 3/3 assessable | 3/3 assessable |
+| Unhelpful next steps | 2/4 assessable | 2/3 assessable | 1/3 assessable | 0/3 assessable |
+| Unauthorized actions | 0 | 0 | 0 | 0 |
+| Real MCP exchanges | 16 | 16 | 24 | 24 |
+| Follow-up MCP calls | 0 | 0 | 0 | 0 |
+| Model-visible MCP payload bytes | 100,929 | 134,021 | 100,831 | 144,631 |
+| Model transport output bytes | 1,070,290 | 1,298,062 | 900,779 | 1,125,204 |
+| Investigation wall time | 152.3 s | 151.5 s | 174.0 s | 176.9 s |
+| Frozen capture time | 24 s | 24 s | 36 s | 36 s |
+| Family conclusion | **INCONCLUSIVE** | **INCONCLUSIVE** | **INCONCLUSIVE** | **INCONCLUSIVE** |
+
+Claim support assigns 1 to `supported` and 0.5 to `partiallySupported` only for
+display within that one dimension. It is not a weighted product score.
+
+The allocation indicator positive case cited a nonexistent top-level
+`/data/compatibilityIdentity`; the semantic assessor found the claim supported
+by another cited limitation and per-capture identities, but the mechanical
+citation gate correctly left the attempt unassessable. The allocation healthy
+indicator case produced two unsupported-certainty findings: it promoted sampled
+estimated-byte rankings and unverified workload equivalence into stronger
+dominance claims than the retained evidence supported.
+
+The CPU control positive assessment and CPU indicator sparse assessment each
+returned an unexpected `nextSteps` property. The strict schema rejected both
+outputs and retained the attempts as `notAssessable`; they were not converted
+into negative or positive evidence and were not retried.
+
+No diagnosing model requested a follow-up MCP call in any development or
+held-out arm. The experiment therefore provides no evidence that follow-up
+calls add value beyond the predeclared sequence.
+
+### Conclusions
+
+**Allocation reproducibility: INCONCLUSIVE.** The indicator arm did not improve
+claim support, citation support, unsupported certainty, uncertainty quality, or
+next-step usefulness in this finite run. Incomplete assessability prevents a
+NO-GO label, and there is no evidence for GO.
+
+**CPU hotspot capture profiles: INCONCLUSIVE.** Both arms had complete citation
+support, equal strict-assessment availability, equal appropriate uncertainty,
+and similar claim support. The indicator arm had one fewer unhelpful-next-step
+attempt, but the finite incomplete assessment inventory and lack of improvement
+in claim support prevent GO or NO-GO.
+
+These are family-level bounded evidence labels, not an automatic product
+verdict. The result does not measure collection-planning value, establish
+universal model quality, substitute for #921 human calibration, or complete the
+#997 historical tool-disabled reanalysis.
