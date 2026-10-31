@@ -129,6 +129,21 @@ All scenario gates selected their expected assessment. The GO approves a separat
 minimal product-contract investigation, not these scenario DTOs, workload routes, or
 validation thresholds as shipping APIs.
 
+## Product contract cost measurement
+
+The additive product contract reuses `query_snapshot`, its existing
+`comparisonHandles` parameter, and the existing CLI JSONL `query` frame. It adds no
+MCP tool and no shared statistical record to generated output schemas. Updated
+parameter descriptions increase both shipping MCP catalogs by 132 bytes: the maximal
+17-tool catalog is 283,977 bytes and the default 13-tool catalog is 250,809 bytes.
+
+The deterministic maximum result fixture uses all 8 captures and top-K 16 for both
+independent inventories. Its serialized payload is 37,670 bytes, below the explicit
+128 KiB test ceiling. Smaller capture counts/top-K values serialize proportionally
+less evidence. `AllocationReproducibilityTests` pins the schema/method identifiers,
+the exact representative maximum payload, list bounds, and reordered-input stability
+so a future additive field requires a deliberate cost/documentation update.
+
 ## Limitations
 
 - The live characterization covers one Windows environment and one synthetic

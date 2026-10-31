@@ -528,7 +528,8 @@ Views available per `kind`:
 | `heap-snapshot` | `inspect_heap` / `inspect_heap(source="live")` / `inspect_heap(source="dump")` / `inspect_heap(source="gcdump")` | `top-types` (default), `retention-paths`, `roots-by-kind`, `finalizer-queue`, `fragmentation`, `static-fields`, `delegate-targets`, `duplicate-strings`, `retained-exceptions`, `gchandles`, `timers`, `alc`, `com-wrappers`, `object`, `gcroot`, `objsize`, `async`, `diff`, `growth` |
 | `thread-snapshot` | `collect_thread_snapshot` | `top-blocked` (default), `threads-summary`, `stack`, `lock-graph`, `deadlocks`, `unique-stacks`, `async-stalls`, `wait-chains`, `threadpool`, `resolve-address`, `frame-vars`, `thread-statics` |
 | `off-cpu-snapshot` | `collect_sample(kind="off_cpu")` | `topStacks` (default), `byThread`, `stack` |
-| `cpu-sample` / `allocation-sample` / `native-alloc-sample` / `native-lock-contention-sample` | `collect_sample(kind="cpu")` / `collect_sample(kind="allocation")` / `collect_sample(kind="native-alloc")` / `collect_sample(kind="native-lock-contention")` | `call-tree`, `top-methods`, `by-module`, `by-namespace`, `hot-path`, `caller-callee`, `triage`, `code-versions`, `inlining`, `diff` |
+| `cpu-sample` / `native-alloc-sample` / `native-lock-contention-sample` | `collect_sample(kind="cpu")` / `collect_sample(kind="native-alloc")` / `collect_sample(kind="native-lock-contention")` | `call-tree`, `top-methods`, `by-module`, `by-namespace`, `hot-path`, `caller-callee`, `triage`, `code-versions`, `inlining`, `diff` |
+| `allocation-sample` | `collect_sample(kind="allocation")` | `call-tree`, `top-methods`, `by-module`, `by-namespace`, `hot-path`, `caller-callee`, `triage`, `code-versions`, `inlining`, `diff`, `allocation-reproducibility` |
 
 **Live heap snapshots and stack roots (issue #1160).** `inspect_heap(source="live")` does not walk
 managed thread stacks for roots: the CLR DAC can fault natively (SIGSEGV in
@@ -561,6 +562,18 @@ Proxied pod calls keep full results inline because dynamic pod Resources are not
 Pairwise sample diffs remain
 inline and accepted pairs are `cpu-sample × cpu-sample`, `heap-snapshot × heap-snapshot` and
 `allocation-sample × allocation-sample`. Allocation diffs normalize totals to per-second rates.
+
+`allocation-sample` also accepts `view="allocation-reproducibility"` with one or more earlier
+separately started capture handles in `comparisonHandles`; the current `handle` is appended.
+This is not the generic `diff` verdict path. It accepts 2-8 captures and top-K 1-16 (default 3),
+preserves each capture's estimated-byte/tick totals with descriptive median and raw MAD, and
+evaluates allocated types and allocation stacks independently using top-K Jaccard membership plus
+shared-key Spearman ranks. The payload exposes attributed/unattributed byte and tick shares and
+explicit empty, no-stack, zero-weight, partial, complete and unavailable states. Historical
+captures missing compatibility identity remain incompatible without synthetic backfill. The view
+does not gate on sampled-total overlap/deltas, build generic intervals over weighted ticks,
+correlate types to stacks, or emit causal, severity, regression, health or performance verdicts.
+Scenario thresholds are caller-named and non-universal.
 
 Counters, contention and ThreadPool journey comparisons report objective deltas,
 not workload-independent improvement/regression. Their metrics are direction-neutral:
@@ -3507,9 +3520,11 @@ contract.
   `byGeneration`, `heap-stats`, `n+1`, `connectionPool`, `queues`, `dns`,
   `config`, `timeline`, `hillClimbing`, `requests`, `longRunning`, … Activities
   handles additionally accept `trace` with a required `traceId`.
-- **cpu-sample / allocation-sample / native-alloc-sample / native-lock-contention-sample**: `call-tree`
+- **cpu-sample / native-alloc-sample / native-lock-contention-sample**: `call-tree`
   (default), `top-methods`, `by-module`, `by-namespace`, `hot-path`,
   `caller-callee`, `triage`, `code-versions`, `inlining`, `diff`.
+- **allocation-sample**: the same views, plus `allocation-reproducibility`
+  over separately started compatible captures.
 
 **Common view-specific parameters** (each ignored outside its view):
 `rankBy` (`bytes`/`instances`), `typeFullName`, `address`,

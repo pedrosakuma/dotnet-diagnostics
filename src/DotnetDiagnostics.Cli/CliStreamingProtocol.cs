@@ -350,6 +350,17 @@ internal static partial class CliStreamingProtocol
                                 retainedHandleLimit = CliStreamingCpuHandleWindow.RetainedHandleLimit,
                                 maxTopMovers = CpuSampleHandleComparison.MaxTopMovers,
                             },
+                            allocationReproducibility = new
+                            {
+                                version = 1,
+                                queryView = "allocation-reproducibility",
+                                comparisonHandlesField = "comparisonHandles",
+                                independenceUnit = "capture",
+                                minimumCaptures = AllocationReproducibilityBounds.MinimumCaptures,
+                                maximumCaptures = AllocationReproducibilityBounds.MaximumCaptures,
+                                defaultTopK = AllocationReproducibilityBounds.DefaultTopK,
+                                maximumTopK = AllocationReproducibilityBounds.MaximumTopK,
+                            },
                             capabilities = new
                             {
                                 investigationEvidence = investigationEvidence.Capability,
@@ -1404,6 +1415,7 @@ internal static partial class CliStreamingProtocol
         var normalizedView = view.Trim().ToLowerInvariant();
         var isHeapGrowth = normalizedView == HeapGrowthView;
         var isCpuDiff = normalizedView == "diff";
+        var isAllocationReproducibility = normalizedView == "allocation-reproducibility";
         string? baselineHandle = null;
         var hasBaselineHandle = root.TryGetProperty("baselineHandle", out var baselineElement)
             && baselineElement.ValueKind != JsonValueKind.Null;
@@ -1451,6 +1463,44 @@ internal static partial class CliStreamingProtocol
             return;
         }
 
+        string[] comparisonHandles = [];
+        if (root.TryGetProperty("comparisonHandles", out var comparisonHandlesElement)
+            && comparisonHandlesElement.ValueKind != JsonValueKind.Null)
+        {
+            if (!isAllocationReproducibility
+                || comparisonHandlesElement.ValueKind != JsonValueKind.Array)
+            {
+                await writer.WriteAsync(new
+                {
+                    type = "error",
+                    requestId,
+                    code = "invalid_query",
+                    message = "'comparisonHandles' is supported only as an array for view 'allocation-reproducibility'.",
+                }, CancellationToken.None).ConfigureAwait(false);
+                return;
+            }
+
+            var values = new List<string>();
+            foreach (var element in comparisonHandlesElement.EnumerateArray())
+            {
+                if (element.ValueKind != JsonValueKind.String
+                    || !IsValidProtocolHandle(element.GetString()))
+                {
+                    await writer.WriteAsync(new
+                    {
+                        type = "error",
+                        requestId,
+                        code = "invalid_query",
+                        message = "Every 'comparisonHandles' entry must be a non-empty string of at most 256 characters without control characters.",
+                    }, CancellationToken.None).ConfigureAwait(false);
+                    return;
+                }
+                values.Add(element.GetString()!);
+            }
+
+            comparisonHandles = values.ToArray();
+        }
+
         var growthRankBy = HeapGrowthDiff.RankByBytes;
         if (isHeapGrowth && root.TryGetProperty("rankBy", out var rankByElement)
             && rankByElement.ValueKind != JsonValueKind.Null)
@@ -1491,7 +1541,11 @@ internal static partial class CliStreamingProtocol
             return;
         }
 
-        var topN = isHeapGrowth ? 25 : 50;
+        var topN = isAllocationReproducibility
+            ? AllocationReproducibilityBounds.DefaultTopK
+            : isHeapGrowth
+                ? 25
+                : 50;
         if (root.TryGetProperty("topN", out var topNElement)
             && topNElement.ValueKind != JsonValueKind.Null
             && (!topNElement.TryGetInt32(out topN) || topN is < 1 or > 500))
@@ -1514,6 +1568,17 @@ internal static partial class CliStreamingProtocol
                 requestId,
                 code = "invalid_query",
                 message = $"'topN' must be between 1 and {CpuSampleHandleComparison.MaxTopMovers} for CPU view 'diff'.",
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+        if (isAllocationReproducibility && topN > AllocationReproducibilityBounds.MaximumTopK)
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId,
+                code = "invalid_query",
+                message = $"'topN' must be between 1 and {AllocationReproducibilityBounds.MaximumTopK} for view 'allocation-reproducibility'.",
             }, CancellationToken.None).ConfigureAwait(false);
             return;
         }
@@ -1638,6 +1703,63 @@ internal static partial class CliStreamingProtocol
         }
 
         var handles = services.GetRequiredService<IDiagnosticHandleStore>();
+        if (isAllocationReproducibility)
+        {
+            if (addressStatus == CliStreamingQueryNavigation.AddressStatus.Valid
+                || includeSensitiveValues
+                || objectOptions is not null
+                || typeIdentity is not null
+                || cursor is not null
+                || typeFilter is not null
+                || rootMethodFilter is not null)
+            {
+                await writer.WriteAsync(new
+                {
+                    type = "error",
+                    requestId,
+                    code = "invalid_query",
+                    message = "View 'allocation-reproducibility' accepts only handle, comparisonHandles and topN query fields.",
+                }, CancellationToken.None).ConfigureAwait(false);
+                return;
+            }
+
+            var requestedHandles = comparisonHandles.Append(handle).ToArray();
+            var inputs = requestedHandles.Select(captureHandle =>
+                AllocationReproducibilityInput.FromLookup(
+                    captureHandle,
+                    handles.LookupWithKind(captureHandle))).ToArray();
+            var analysis = AllocationReproducibility.Analyze(inputs, topN);
+            if (analysis.IsError)
+            {
+                await writer.WriteAsync(new
+                {
+                    type = "error",
+                    requestId,
+                    code = "invalid_query",
+                    message = analysis.Error!.Message,
+                }, CancellationToken.None).ConfigureAwait(false);
+                return;
+            }
+
+            await writer.WriteAsync(new
+            {
+                type = "query",
+                requestId,
+                handle,
+                comparisonHandles,
+                view = normalizedView,
+                result = new
+                {
+                    handle,
+                    comparisonHandles,
+                    view = normalizedView,
+                    summary = analysis.Summary,
+                    data = analysis.Data,
+                },
+            }, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
         var lookup = handles.LookupWithKind(handle);
         if (lookup.Status != DiagnosticHandleLookupStatus.Found || lookup.Lookup is not { } found)
         {

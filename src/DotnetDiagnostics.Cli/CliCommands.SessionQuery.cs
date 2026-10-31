@@ -4,6 +4,7 @@ using System.Text.Json;
 using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Collection;
 using DotnetDiagnostics.Core.Captures;
+using DotnetDiagnostics.Core.Comparison;
 using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Dump;
@@ -19,6 +20,8 @@ namespace DotnetDiagnostics.Cli;
 
 internal static partial class CliCommands
 {
+    private const string AllocationReproducibilityView = "allocation-reproducibility";
+
     private static CliCommandResult Query()
     {
         const string detail =
@@ -85,7 +88,9 @@ internal static partial class CliCommands
 
         if (CpuSampleSessionKinds.Contains(kind))
         {
-            return CpuSampleQueryDispatcher.SessionViews;
+            return kind == "allocation-sample"
+                ? [.. CpuSampleQueryDispatcher.SessionViews, AllocationReproducibilityView]
+                : CpuSampleQueryDispatcher.SessionViews;
         }
 
         if (kind == ThreadSnapshotSessionKind)
@@ -168,6 +173,18 @@ internal static partial class CliCommands
         {
             return Fail("query: --handle <id> is required.", "InvalidArgument",
                 "Pass the handle printed after a collect command, e.g. query --handle <id> --view <view> (or use --latest-of-kind <kind> instead).");
+        }
+
+        if (string.Equals(options.View, AllocationReproducibilityView, StringComparison.OrdinalIgnoreCase))
+        {
+            return QueryAllocationReproducibility(store, options);
+        }
+        if (options.ComparisonHandles.Count > 0)
+        {
+            return Fail(
+                "query: --comparison-handle is supported only by --view allocation-reproducibility.",
+                "InvalidArgument",
+                "Remove --comparison-handle or select --view allocation-reproducibility.");
         }
 
         var lookupResult = store.LookupWithKind(options.Handle);
@@ -541,6 +558,74 @@ internal static partial class CliCommands
 
         return BuildResult<CallTreeView>(result, SerializeQuery);
     }
+
+    private static CliCommandResult QueryAllocationReproducibility(
+        IDiagnosticHandleStore store,
+        CliOptions options)
+    {
+        var handles = options.ComparisonHandles.Append(options.Handle!).ToArray();
+        var inputs = handles.Select(handle => AllocationReproducibilityInput.FromLookup(
+            handle,
+            store.LookupWithKind(handle))).ToArray();
+        var result = AllocationReproducibility.Analyze(
+            inputs,
+            options.Top ?? AllocationReproducibilityBounds.DefaultTopK);
+        return BuildResult(result, RenderAllocationReproducibility);
+    }
+
+    private static void RenderAllocationReproducibility(
+        StringBuilder text,
+        AllocationReproducibilityResult result)
+    {
+        text.AppendLine(CultureInfo.InvariantCulture,
+            $"  method: {result.Method}; availability: {result.Availability}; independence unit: {result.IndependenceUnit}");
+        text.AppendLine(CultureInfo.InvariantCulture,
+            $"  captures: requested={result.RequestedCaptureCount}, available={result.AvailableCaptureCount}, topK={result.TopK}; compatibility={result.Compatibility.Status}");
+        text.AppendLine(CultureInfo.InvariantCulture,
+            $"  estimated bytes: median={FormatAllocationNumber(result.EstimatedBytes.Median)}, raw MAD={FormatAllocationNumber(result.EstimatedBytes.RawMedianAbsoluteDeviation)}");
+        text.AppendLine(CultureInfo.InvariantCulture,
+            $"  allocation ticks: median={FormatAllocationNumber(result.AllocationTicks.Median)}, raw MAD={FormatAllocationNumber(result.AllocationTicks.RawMedianAbsoluteDeviation)}");
+        RenderStability(text, "allocated types", result.AllocatedTypeStability);
+        RenderStability(text, "allocation stacks", result.AllocationStackStability);
+        foreach (var capture in result.Captures)
+        {
+            text.AppendLine(CultureInfo.InvariantCulture,
+                $"  capture {capture.Handle}: handle={capture.HandleStatus}, attribution={capture.AttributionState}, ticks={FormatAllocationNumber(capture.AllocationTicks)}, estimatedBytes={FormatAllocationNumber(capture.EstimatedBytes)}, attributedTickShare={FormatAllocationPercent(capture.AttributedTickShare)}, attributedByteShare={FormatAllocationPercent(capture.AttributedByteShare)}");
+            if (capture.UnavailableReason is not null)
+            {
+                text.AppendLine(CultureInfo.InvariantCulture,
+                    $"    unavailable: {capture.UnavailableReason}");
+            }
+        }
+        foreach (var reason in result.Compatibility.Reasons)
+        {
+            text.AppendLine(CultureInfo.InvariantCulture,
+                $"  compatibility: {reason.Code} ({reason.Field}) — {reason.Message}");
+        }
+        foreach (var limitation in result.Limitations)
+        {
+            text.AppendLine(CultureInfo.InvariantCulture, $"  limitation: {limitation}");
+        }
+    }
+
+    private static void RenderStability(
+        StringBuilder text,
+        string label,
+        AllocationRankStability stability)
+        => text.AppendLine(CultureInfo.InvariantCulture,
+            $"  {label}: pairs={stability.PairCount}, Jaccard median/min={FormatAllocationRatio(stability.MedianMembershipJaccard)}/{FormatAllocationRatio(stability.MinimumMembershipJaccard)}, shared-key Spearman median/min={FormatAllocationRatio(stability.MedianSharedKeySpearman)}/{FormatAllocationRatio(stability.MinimumSharedKeySpearman)}");
+
+    private static string FormatAllocationNumber(double? value)
+        => value?.ToString("N2", CultureInfo.InvariantCulture) ?? "unavailable";
+
+    private static string FormatAllocationNumber(long? value)
+        => value?.ToString("N0", CultureInfo.InvariantCulture) ?? "unavailable";
+
+    private static string FormatAllocationPercent(double? value)
+        => value is null ? "unavailable" : value.Value.ToString("P2", CultureInfo.InvariantCulture);
+
+    private static string FormatAllocationRatio(double? value)
+        => value?.ToString("F3", CultureInfo.InvariantCulture) ?? "unavailable";
 
     private static void SerializeQuery<T>(StringBuilder sb, T payload)
     {

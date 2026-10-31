@@ -36,8 +36,8 @@ part of both surfaces.
 
 ### Scenario-first statistical evidence prospective cost (2026-10-30, #1308)
 
-The real HTTP test measures the unchanged shipping catalog at **283,845 bytes**
-for the maximal 17-tool surface and **250,677 bytes** for the default 13 tools.
+The real HTTP test measures the shipping catalog at **283,977 bytes**
+for the maximal 17-tool surface and **250,809 bytes** for the default 13 tools.
 
 The same executable test generates a design-only representative statistical
 evidence schema and projects it onto the existing `collect_events`,
@@ -45,8 +45,8 @@ evidence schema and projects it onto the existing `collect_events`,
 tool or changing production DTOs:
 
 - representative evidence schema: **3,493 bytes**;
-- prospective maximal catalog: **294,393 bytes** (**+10,548**);
-- prospective default catalog: **261,225 bytes** (**+10,548**);
+- prospective maximal catalog: **294,525 bytes** (**+10,548**);
+- prospective default catalog: **261,357 bytes** (**+10,548**);
 - representative available payload: **1,058 bytes**;
 - representative unavailable payloads: **1,006–1,047 bytes**.
 
@@ -60,8 +60,8 @@ are in
 
 ### Objective summary comparison (2026-10-19, #1192)
 
-The real HTTP budget test measures **283,845 bytes** for the maximal 17-tool
-catalog and **250,677 bytes** for the default 13-tool subset on Linux
+The real HTTP budget test measures **283,977 bytes** for the maximal 17-tool
+catalog and **250,809 bytes** for the default 13-tool subset on Linux
 (SDK 10.0.401, runtime 10.0.12). Both are **38 bytes** above the October 18
 comparison follow-up below, from the revised `compare_to_baseline` description.
 The **285,000-byte ceiling is unchanged**, leaving **1,155 bytes** of headroom.
