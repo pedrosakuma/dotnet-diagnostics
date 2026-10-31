@@ -31,6 +31,10 @@ internal static class CliCommandExecution
         WriteIndented = true,
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
     };
+    private static readonly JsonSerializerOptions JsonLinesOptions = new(JsonOptions)
+    {
+        WriteIndented = false,
+    };
 
     internal const string OneShotHandleNotice =
         "This handle is in-memory and valid only until this one-shot command exits; a later invocation cannot query it. Use --depth detail or --json for inline evidence, or run the originating command and query inside one 'session' REPL.";
@@ -94,7 +98,7 @@ internal static class CliCommandExecution
             options = options with { LaunchedByCli = true };
         }
 
-        if (prepared.InheritedTarget && !options.Json)
+        if (prepared.InheritedTarget && !options.Json && !options.Jsonl)
         {
             await stdout.WriteLineAsync(string.Create(
                 CultureInfo.InvariantCulture,
@@ -278,7 +282,7 @@ internal static class CliCommandExecution
         TextWriter stderr,
         CliExecutionOptions executionOptions)
     {
-        if (options.Json)
+        if (options.Json || options.Jsonl)
         {
             var envelope = JsonSerializer.SerializeToNode(result.Envelope, result.Envelope.GetType(), JsonOptions);
             if (envelope is JsonObject boundEnvelope
@@ -318,7 +322,8 @@ internal static class CliCommandExecution
                 captureEnvelope["capture"] = captureNode;
             }
 
-            await stdout.WriteLineAsync(JsonSerializer.Serialize(envelope, JsonOptions))
+            var jsonOptions = options.Jsonl ? JsonLinesOptions : JsonOptions;
+            await stdout.WriteLineAsync(JsonSerializer.Serialize(envelope, jsonOptions))
                 .ConfigureAwait(false);
         }
         else

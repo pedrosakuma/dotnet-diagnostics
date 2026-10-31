@@ -1,3 +1,4 @@
+using DotnetDiagnostics.Core.Gc;
 using FluentAssertions;
 
 namespace DotnetDiagnostics.ScenarioEvaluation.Tests;
@@ -27,7 +28,8 @@ public sealed class GcPressureCharacterizationTests
 
         first.NextAction.Should().Be(scenario.ExpectedAction);
         first.PostLoadStabilized.Should().Be(scenario.ExpectedPostLoadStabilized);
-        first.PressureWindows.Should().BeGreaterThanOrEqualTo(scenario.MinimumPressureWindows);
+        (first.Persistence?.PressureWindows ?? 0)
+            .Should().BeGreaterThanOrEqualTo(scenario.MinimumPressureWindows);
         GcPressureCharacterizationHarness.Serialize(second)
             .Should().Be(GcPressureCharacterizationHarness.Serialize(first));
     }
@@ -52,11 +54,11 @@ public sealed class GcPressureCharacterizationTests
             .Should().BeGreaterThan(4 * 1024 * 1024);
         results[GcPressureScenarioKind.StableHealthy].NextAction
             .Should().Be(GcPressureNextAction.ContinuedObservation);
-        results[GcPressureScenarioKind.StableHealthy].PressureWindows.Should().Be(0);
+        results[GcPressureScenarioKind.StableHealthy].Persistence!.PressureWindows.Should().Be(0);
         results[GcPressureScenarioKind.CaptureLoss].NextAction
             .Should().Be(GcPressureNextAction.JustifiedInconclusion);
         results[GcPressureScenarioKind.CaptureLoss].LohSize.Median.Availability
-            .Should().Be(ScenarioStatisticalAvailability.LossDetected);
+            .Should().Be(GcPressureAvailability.LossDetected);
     }
 
     [Fact]
@@ -68,12 +70,12 @@ public sealed class GcPressureCharacterizationTests
         var result = GcPressureCharacterizationHarness.Evaluate(scenario.Capture);
 
         result.LohSize.Median.IndependenceUnit
-            .Should().Be(ScenarioStatisticalIndependenceUnit.BoundedTimeWindow);
+            .Should().Be("bounded_time_window");
         result.LohSize.Median.Counts.IndependenceUnits.Should().Be(6);
         result.TimingObservations.Should().OnlyContain(observation =>
             observation.Interpretation.Contains("do not establish causality", StringComparison.Ordinal));
         result.Limitations.Should().Contain(limitation =>
-            limitation.Contains("does not establish a leak", StringComparison.Ordinal));
+            limitation.Contains("does not identify a retaining cause", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -97,7 +99,7 @@ public sealed class GcPressureCharacterizationTests
 
         result.NextAction.Should().Be(GcPressureNextAction.JustifiedInconclusion);
         result.LohSize.Median.Availability
-            .Should().Be(ScenarioStatisticalAvailability.InsufficientObservations);
+            .Should().Be(GcPressureAvailability.InsufficientObservations);
 
         var unbounded = scenario.Capture with
         {
@@ -133,9 +135,11 @@ public sealed class GcPressureCharacterizationTests
             }).ToArray(),
         };
 
-        Action action = () => GcPressureCharacterizationHarness.Evaluate(noCooldown);
+        var result = GcPressureCharacterizationHarness.Evaluate(noCooldown);
 
-        action.Should().Throw<InvalidDataException>().WithMessage("*at least 2 cooldown windows*");
+        result.NextAction.Should().Be(GcPressureNextAction.JustifiedInconclusion);
+        result.LohSize.Median.Availability.Should().Be(GcPressureAvailability.InsufficientObservations);
+        result.LohSize.Median.UnavailableReason.Should().Be("minimum_cooldown_windows_not_met");
     }
 
     [Fact]
@@ -198,14 +202,14 @@ public sealed class GcPressureCharacterizationLiveTests
 
         result.NextAction.Should().Be(expectedAction, $"{result.Reason} {windows}");
         PersistWhenRequested(capture, result);
-        capture.Windows.Should().HaveCount(GcPressureCharacterizationBounds.LiveWindowCount);
+        capture.Windows.Should().HaveCount(GcPressureLiveBounds.WindowCount);
         result.LohSize.Median.Counts.Windows.Should()
-            .Be(GcPressureCharacterizationBounds.LiveWindowCount);
+            .Be(GcPressureLiveBounds.WindowCount);
         if (scenario == GcPressureScenarioKind.CaptureLoss)
         {
             capture.Windows.Should().Contain(window => window.LostOrDropped > 0);
             result.LohSize.Median.Availability
-                .Should().Be(ScenarioStatisticalAvailability.LossDetected);
+                .Should().Be(GcPressureAvailability.LossDetected);
         }
     }
 

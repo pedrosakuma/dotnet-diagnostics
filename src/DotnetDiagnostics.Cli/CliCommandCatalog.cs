@@ -18,6 +18,7 @@ internal static class CliCommandCatalog
         "-p",
         "--pid",
         "--json",
+        "--jsonl",
         "--explain-risk",
         "--acknowledge-risk",
         "--capture-root",
@@ -77,6 +78,7 @@ Options:
   -p, --pid <pid|name>          Target OS process id, or visible .NET process name/prefix
                                 (auto-resolved when only one is visible).
       --json                    Emit the raw DiagnosticResult envelope as JSON.
+      --jsonl                   Emit one compact DiagnosticResult JSON object per line.
       --capture-root <directory>
                                 Stable capture store root, independent of --out and session scratch.
       --explain-risk            Print the resolved Core safety descriptor without executing.
@@ -623,6 +625,27 @@ stream options:
 """,
             "",
             ["--protocol"]),
+        new(
+            "gc-pressure",
+            "Characterize bounded GC/LOH observation windows from a capture JSON file.",
+"""
+gc-pressure options:
+      --file <path>             Required. GC pressure capture schema v1 JSON containing
+                                1-8 independent bounded windows.
+      --json                    Emit the full result envelope as indented JSON.
+      --jsonl                   Emit the same envelope as one compact JSON line.
+
+  The scenario protocol requires at least five valid windows, exactly one baseline,
+  and at least two cooldown windows. Loss, truncation, unsupported approximation,
+  insufficient evidence, and legacy artifacts select justified inconclusion.
+  Thresholds are scenario geometry, not universal production defaults.
+""",
+"""
+  dotnet-diagnostics-cli gc-pressure --file ./gc-pressure.capture.json
+  dotnet-diagnostics-cli gc-pressure --file ./gc-pressure.capture.json --json
+  dotnet-diagnostics-cli gc-pressure --file ./gc-pressure.capture.json --jsonl
+""",
+            ["--file", "--json", "--jsonl"]),
         new(
             "completion",
             "Emit a shell-completion script for bash, zsh or PowerShell.",

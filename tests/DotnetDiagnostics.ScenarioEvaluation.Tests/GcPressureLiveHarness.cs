@@ -38,16 +38,16 @@ public static class GcPressureLiveHarness
             Timeout = TimeSpan.FromSeconds(30),
         };
 
-        var windows = new List<GcPressureWindow>(GcPressureCharacterizationBounds.LiveWindowCount);
+        var windows = new List<GcPressureWindow>(GcPressureLiveBounds.WindowCount);
         var notes = new List<string>();
-        for (var index = 0; index < GcPressureCharacterizationBounds.LiveWindowCount; index++)
+        for (var index = 0; index < GcPressureLiveBounds.WindowCount; index++)
         {
             timeout.Token.ThrowIfCancellationRequested();
             var phase = Phase(scenario, index);
-            var duration = TimeSpan.FromSeconds(GcPressureCharacterizationBounds.LiveWindowSeconds);
+            var duration = TimeSpan.FromSeconds(GcPressureLiveBounds.WindowSeconds);
             var gcCap = scenario == GcPressureScenarioKind.CaptureLoss
-                ? GcPressureCharacterizationBounds.LossGcDetailCap
-                : GcPressureCharacterizationBounds.NormalGcDetailCap;
+                ? GcPressureLiveBounds.LossGcDetailCap
+                : GcPressureLiveBounds.NormalGcDetailCap;
             var countersTask = new EventPipeCounterCollector().CollectAsync(
                 sample.ProcessId,
                 duration,
@@ -71,8 +71,8 @@ public static class GcPressureLiveHarness
                 + gc.DroppedHeapStats
                 + (gc.Suspension?.DroppedIntervals ?? 0);
             var representation = lost > 0
-                ? ScenarioStatisticalRepresentation.Truncated
-                : ScenarioStatisticalRepresentation.Exact;
+                ? GcPressureRepresentation.Truncated
+                : GcPressureRepresentation.Exact;
             var counterLoh = CounterMaximum(counters, "loh-size");
             var heapLoh = gc.HeapStats?.Count > 0
                 ? gc.HeapStats.Max(sample => (double)sample.LohSizeBytes)
@@ -105,13 +105,13 @@ public static class GcPressureLiveHarness
         }
 
         return new(
-            GcPressureCharacterizationHarness.CurrentSchemaVersion,
+            GcPressureCharacterizer.CurrentCaptureSchemaVersion,
             $"gc-pressure-{scenario.ToString().ToLowerInvariant()}-{Guid.NewGuid():N}",
             scenario,
             Environment.Version.ToString(),
             OperatingSystem.IsWindows() ? "windows" : OperatingSystem.IsLinux() ? "linux" : "unsupported",
             RuntimeInformation.ProcessArchitecture.ToString().ToLowerInvariant(),
-            GcPressureCharacterizationBounds.LiveWindowSeconds,
+            GcPressureLiveBounds.WindowSeconds,
             windows,
             notes.Take(20).ToArray());
     }

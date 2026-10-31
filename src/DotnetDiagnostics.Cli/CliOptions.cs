@@ -52,6 +52,9 @@ internal sealed record CliOptions
     /// <summary>Emit the raw <see cref="DotnetDiagnostics.Core.DiagnosticResult{T}"/> envelope as JSON (<c>--json</c>).</summary>
     public bool Json { get; init; }
 
+    /// <summary>Emit one compact machine-readable JSON object per output line (<c>--jsonl</c>).</summary>
+    public bool Jsonl { get; init; }
+
     /// <summary>Explain the resolved Core safety descriptor without executing the command (<c>--explain-risk</c>).</summary>
     public bool ExplainRisk { get; init; }
 
@@ -412,7 +415,7 @@ internal sealed record CliOptions
     private static readonly HashSet<string> HistoricalOptions = new(StringComparer.Ordinal)
     {
         "--baseline-capture-id", "--baseline-artifact-id", "--candidate-capture-id", "--candidate-artifact-id",
-        "--capture-root", "--json", "--explain-risk", "--acknowledge-risk", "--help", "-h",
+        "--capture-root", "--json", "--jsonl", "--explain-risk", "--acknowledge-risk", "--help", "-h",
     };
 
     /// <summary>
@@ -556,6 +559,7 @@ internal sealed record CliOptions
         {
             new FlagOptionDescriptor(state => state.Help = true, "--help", "-h"),
             new FlagOptionDescriptor(state => state.Json = true, "--json"),
+            new FlagOptionDescriptor(state => state.Jsonl = true, "--jsonl"),
             new FlagOptionDescriptor(state => state.ExplainRisk = true, "--explain-risk"),
             new StringOptionDescriptor((state, value) => state.AcknowledgeRisk = value, "--acknowledge-risk"),
             new StringOptionDescriptor((state, value) => state.SavePath = value, "--save"),
@@ -715,6 +719,8 @@ internal sealed record CliOptions
         public string? CommandLineContains { get; set; }
 
         public bool Json { get; set; }
+
+        public bool Jsonl { get; set; }
 
         public bool ExplainRisk { get; set; }
 
@@ -932,6 +938,7 @@ internal sealed record CliOptions
                 PidName = PidName,
                 CommandLineContains = CommandLineContains,
                 Json = Json,
+                Jsonl = Jsonl,
                 ExplainRisk = ExplainRisk,
                 AcknowledgeRisk = AcknowledgeRisk,
                 SavePath = SavePath,

@@ -295,11 +295,14 @@ internal static class CliHost
             // tests, which pass a StringWriter rather than Console.Error). This keeps stdout clean and
             // leaves every existing test's captured stderr empty.
             var showProgress = !options.Json
+                && !options.Jsonl
                 && ProgressCommandSet.Contains(options.Command!)
                 && ReferenceEquals(stderr, Console.Error)
                 && !Console.IsErrorRedirected;
 
-            var ansiEnabled = !options.Json && CliAnsi.IsEnabled(stdout, runtimeOptions.ForceAnsi);
+            var ansiEnabled = !options.Json
+                && !options.Jsonl
+                && CliAnsi.IsEnabled(stdout, runtimeOptions.ForceAnsi);
             // In threshold-gated capture mode (--capture-when) the watch is a single bounded run, not
             // the human redraw loop — fall through to a normal one-shot RunCommandAsync.
             if (options.WatchIntervalSeconds is not null && options.CaptureWhen is null)
@@ -465,7 +468,7 @@ internal static class CliHost
         {
             // In --json mode pump the child's console to stderr so stdout carries only the envelope;
             // otherwise let the child inherit the console for real-time, interactive output.
-            var consoleSink = options.Json ? stderr : null;
+            var consoleSink = options.Json || options.Jsonl ? stderr : null;
             target = ChildProcessLauncher.Launch(program, argv, consoleSink);
         }
         catch (InvalidOperationException ex)
@@ -562,7 +565,7 @@ internal static class CliHost
             argv[i - 1] = options.LaunchArgs[i];
         }
 
-        var consoleSink = options.Json ? stderr : null;
+        var consoleSink = options.Json || options.Jsonl ? stderr : null;
 
         await stderr.WriteLineAsync(string.Create(
             CultureInfo.InvariantCulture,
@@ -599,7 +602,9 @@ internal static class CliHost
                 .ConfigureAwait(false);
 
             using var host = BuildHost(options);
-            var ansiEnabled = !options.Json && CliAnsi.IsEnabled(stdout, forceAnsi: null);
+            var ansiEnabled = !options.Json
+                && !options.Jsonl
+                && CliAnsi.IsEnabled(stdout, forceAnsi: null);
             var result = options.Persist
                 ? await CliCommands.PersistAsync(host.Services, options,
                     ct => CliCommands.RunColdStartStartupAsync(host.Services, options, target, ct), coldCts.Token).ConfigureAwait(false)
