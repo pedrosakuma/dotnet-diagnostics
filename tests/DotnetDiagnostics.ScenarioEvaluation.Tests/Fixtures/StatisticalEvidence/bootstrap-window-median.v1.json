@@ -1,0 +1,159 @@
+{
+  "schemaVersion": 1,
+  "id": "bootstrap-window-median-compact-replay",
+  "request": {
+    "schemaVersion": 1,
+    "protocol": {
+      "id": "fixture-bootstrap-protocol",
+      "version": "1",
+      "method": {
+        "id": "percentile-bootstrap-interval",
+        "version": 1
+      },
+      "independenceUnit": "bounded_time_window",
+      "minimumIndependenceUnits": 2,
+      "admitLoss": false,
+      "admitApproximation": false,
+      "bootstrapResamples": 128,
+      "confidenceLevel": 0.95,
+      "parentMethodId": "window-median"
+    },
+    "arms": [
+      {
+        "id": "observed",
+        "role": "observed",
+        "compatibilityIdentity": {
+          "dimensions": [
+            { "name": "target.runtime-flavor", "value": "CoreCLR" },
+            { "name": "target.runtime-version-policy", "value": "major-minor" },
+            { "name": "target.os", "value": "fixture-os" },
+            { "name": "target.architecture", "value": "x64" },
+            { "name": "target.process-run-id", "value": "fixture-bootstrap-run" },
+            { "name": "backend.id", "value": "EventPipe" },
+            { "name": "backend.version", "value": "1" },
+            { "name": "quantity.id", "value": "request-latency" },
+            { "name": "quantity.unit", "value": "ms" },
+            { "name": "quantity.aggregation", "value": "median" },
+            { "name": "quantity.normalization", "value": "per-accepted-request" },
+            { "name": "quantity.filters", "value": "endpoint=/work" },
+            { "name": "quantity.representation", "value": "exact" },
+            { "name": "capture.duration", "value": "4s" },
+            { "name": "capture.windowing", "value": "non-overlapping-1s" },
+            { "name": "capture.providers", "value": "System.Runtime" },
+            { "name": "capture.sampling-period", "value": "1s" },
+            { "name": "capture.retention", "value": "bounded-v1" },
+            { "name": "capture.enrichment", "value": "none" },
+            { "name": "workload.scenario", "value": "fixture-bootstrap" },
+            { "name": "workload.version", "value": "1" },
+            { "name": "workload.parameters", "value": "size=1" },
+            { "name": "workload.concurrency", "value": "1" },
+            { "name": "workload.deployment", "value": "replay" },
+            { "name": "workload.variant", "value": "observed" },
+            { "name": "independence.unit", "value": "bounded_time_window" },
+            { "name": "independence.nesting", "value": "events->windows" },
+            { "name": "independence.pairing-key", "value": "none" },
+            { "name": "comparison.axis", "value": "workload.variant" }
+          ]
+        },
+        "attempts": [
+          {
+            "repetitionId": "rep-1",
+            "attemptId": "attempt-1",
+            "outcome": "passed"
+          },
+          {
+            "repetitionId": "rep-2",
+            "attemptId": "attempt-1",
+            "outcome": "passed"
+          },
+          {
+            "repetitionId": "rep-3",
+            "attemptId": "attempt-1",
+            "outcome": "passed"
+          },
+          {
+            "repetitionId": "rep-4",
+            "attemptId": "attempt-1",
+            "outcome": "passed"
+          }
+        ],
+        "observations": [
+          {
+            "id": "window-1",
+            "repetitionId": "rep-1",
+            "attemptId": "attempt-1",
+            "environmentAllocationId": "allocation-1",
+            "captureId": "capture-1",
+            "windowId": "window-1",
+            "independenceUnitId": "window-1",
+            "value": 1,
+            "x": null,
+            "sourceEventCount": 100,
+            "lostOrDropped": 0,
+            "representation": "exact"
+          },
+          {
+            "id": "window-2",
+            "repetitionId": "rep-2",
+            "attemptId": "attempt-1",
+            "environmentAllocationId": "allocation-2",
+            "captureId": "capture-2",
+            "windowId": "window-2",
+            "independenceUnitId": "window-2",
+            "value": 2,
+            "x": null,
+            "sourceEventCount": 100,
+            "lostOrDropped": 0,
+            "representation": "exact"
+          },
+          {
+            "id": "window-3",
+            "repetitionId": "rep-3",
+            "attemptId": "attempt-1",
+            "environmentAllocationId": "allocation-3",
+            "captureId": "capture-3",
+            "windowId": "window-3",
+            "independenceUnitId": "window-3",
+            "value": 3,
+            "x": null,
+            "sourceEventCount": 100,
+            "lostOrDropped": 0,
+            "representation": "exact"
+          },
+          {
+            "id": "window-4",
+            "repetitionId": "rep-4",
+            "attemptId": "attempt-1",
+            "environmentAllocationId": "allocation-4",
+            "captureId": "capture-4",
+            "windowId": "window-4",
+            "independenceUnitId": "window-4",
+            "value": 4,
+            "x": null,
+            "sourceEventCount": 100,
+            "lostOrDropped": 0,
+            "representation": "exact"
+          }
+        ]
+      }
+    ],
+    "selectedArmId": "observed"
+  },
+  "expected": {
+    "availability": "available",
+    "independenceUnits": 4,
+    "windows": 4,
+    "captures": 4,
+    "attempts": 4,
+    "failedAttempts": 0,
+    "abortedAttempts": 0,
+    "estimate": null,
+    "absoluteDelta": null,
+    "intervalLower": 1,
+    "intervalUpper": 4,
+    "seedSha256": "a6afd93e8859f467fbf1f2d806b6d186d10a7f49be4b857c8995242c99e962f1",
+    "resamplesRequested": 128,
+    "unavailableReason": null,
+    "orderedInputSha256": "a18a3c71aea0cd1cb4ad9856d3a5bb2a7be912489fd9900b8f43d00ca887373e"
+  }
+}

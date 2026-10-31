@@ -27,6 +27,9 @@
     <None Update="Scenarios\**\*.json" CopyToOutputDirectory="PreserveNewest" />
     <None Update="Fixtures\**\*.json" CopyToOutputDirectory="PreserveNewest" />
     <None Update="Calibration\**\*.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\docs\design\statistical-evidence-method-registry.v1.json"
+          Link="Design\statistical-evidence-method-registry.v1.json"
+          CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
