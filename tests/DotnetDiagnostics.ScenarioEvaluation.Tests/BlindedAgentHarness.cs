@@ -4,6 +4,7 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using ModelContextProtocol;
 
 namespace DotnetDiagnostics.ScenarioEvaluation.Tests;
 
@@ -150,13 +151,28 @@ public static class BlindedAgentHarness
         AgentHarnessRequest request,
         IAgentModelTransport transport,
         CancellationToken cancellationToken)
+        => await RunAsync(
+            request,
+            transport,
+            static (processId, budget, _) => Task.FromResult<IBlindedDiagnosticToolGateway>(
+                new BlindedDiagnosticToolGateway(processId, budget)),
+            cancellationToken).ConfigureAwait(false);
+
+    internal static async Task<AgentHarnessReport> RunAsync(
+        AgentHarnessRequest request,
+        IAgentModelTransport transport,
+        Func<int, AgentHarnessBudget, CancellationToken, Task<IBlindedDiagnosticToolGateway>> gatewayFactory,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(transport);
+        ArgumentNullException.ThrowIfNull(gatewayFactory);
         ValidateBudget(request.Budget);
         var startedAt = DateTimeOffset.UtcNow;
         var activationWatch = Stopwatch.StartNew();
         AgentScenarioTarget? target = null;
+        IBlindedDiagnosticToolGateway? gateway = null;
+        string? gatewayCleanupFailure = null;
         var report = FailureReport(
             request,
             startedAt,
@@ -174,7 +190,10 @@ public static class BlindedAgentHarness
                 AgentHarnessFailureKind.None,
                 "A fresh authorized target and evaluator-private workload driver were started.",
                 activationWatch.Elapsed);
-            var gateway = new BlindedDiagnosticToolGateway(target.ProcessId, request.Budget);
+            gateway = await gatewayFactory(
+                target.ProcessId,
+                request.Budget,
+                wallTime.Token).ConfigureAwait(false);
             report = await RunConversationAsync(
                 request,
                 transport,
@@ -212,6 +231,7 @@ public static class BlindedAgentHarness
         catch (Exception exception)
         {
             activationWatch.Stop();
+            var gatewayStartupFailed = target is not null && gateway is null;
             report = FailureReport(
                 request,
                 startedAt,
@@ -228,13 +248,29 @@ public static class BlindedAgentHarness
                     ? exception is PlatformNotSupportedException
                         ? AgentHarnessFailureKind.Environment
                         : AgentHarnessFailureKind.Activation
-                    : AgentHarnessFailureKind.Model,
+                    : gatewayStartupFailed
+                        ? AgentHarnessFailureKind.Transport
+                        : AgentHarnessFailureKind.Model,
                 target is null
                     ? "Agent execution did not start because target activation failed."
+                    : gatewayStartupFailed
+                        ? $"Agent execution did not start because diagnostic gateway startup failed: {exception.Message}"
                     : $"The agent harness failed after activation: {exception.Message}");
         }
         finally
         {
+            if (gateway is IAsyncDisposable asyncDisposable)
+            {
+                try
+                {
+                    await asyncDisposable.DisposeAsync().ConfigureAwait(false);
+                }
+                catch (Exception exception)
+                {
+                    gatewayCleanupFailure = exception.Message;
+                }
+            }
+
             if (target is not null)
             {
                 var cleanupWatch = Stopwatch.StartNew();
@@ -244,11 +280,17 @@ public static class BlindedAgentHarness
                     report = report with
                     {
                         CompletedAtUtc = DateTimeOffset.UtcNow,
-                        Cleanup = Stage(
-                            AgentHarnessStageStatus.Passed,
-                            AgentHarnessFailureKind.None,
-                            "The evaluator-owned workload stopped and termination of its original process identity was observed.",
-                            cleanupWatch.Elapsed),
+                        Cleanup = gatewayCleanupFailure is null
+                            ? Stage(
+                                AgentHarnessStageStatus.Passed,
+                                AgentHarnessFailureKind.None,
+                                "The diagnostic gateway stopped, the evaluator-owned workload stopped, and termination of its original process identity was observed.",
+                                cleanupWatch.Elapsed)
+                            : Stage(
+                                AgentHarnessStageStatus.Failed,
+                                AgentHarnessFailureKind.Cleanup,
+                                $"Diagnostic gateway cleanup failed: {gatewayCleanupFailure}. Target termination was observed.",
+                                cleanupWatch.Elapsed),
                     };
                 }
                 catch (AgentScenarioCleanupException exception)
@@ -263,6 +305,18 @@ public static class BlindedAgentHarness
                             cleanupWatch.Elapsed),
                     };
                 }
+            }
+            else if (gatewayCleanupFailure is not null)
+            {
+                report = report with
+                {
+                    CompletedAtUtc = DateTimeOffset.UtcNow,
+                    Cleanup = Stage(
+                        AgentHarnessStageStatus.Failed,
+                        AgentHarnessFailureKind.Cleanup,
+                        $"Diagnostic gateway cleanup failed: {gatewayCleanupFailure}",
+                        TimeSpan.Zero),
+                };
             }
         }
 
@@ -361,6 +415,7 @@ public static class BlindedAgentHarness
                     }
 
                     messages.Add(AssistantMessage(turn));
+                    AgentTransportException? toolTransportFailure = null;
                     foreach (var call in turn.ToolCalls)
                     {
                         if (string.IsNullOrWhiteSpace(call.Id) || !seenToolCallIds.Add(call.Id))
@@ -369,7 +424,47 @@ public static class BlindedAgentHarness
                         }
 
                         totalCalls++;
-                        var (result, approval) = await gateway.ExecuteAsync(call, cancellationToken).ConfigureAwait(false);
+                        AgentToolResult result;
+                        AgentApprovalEvent approval;
+                        try
+                        {
+                            (result, approval) = await gateway.ExecuteAsync(
+                                call,
+                                cancellationToken).ConfigureAwait(false);
+                        }
+                        catch (Exception exception) when (
+                            exception is IOException or McpException)
+                        {
+                            var content = JsonSerializer.Serialize(new
+                            {
+                                error = new
+                                {
+                                    kind = "mcp_transport_failed",
+                                    message = exception.Message,
+                                },
+                            });
+                            result = new AgentToolResult(
+                                call.Id,
+                                call.Name,
+                                false,
+                                content,
+                                BlindedDiagnosticToolGateway.Sha256(content),
+                                System.Text.Encoding.UTF8.GetByteCount(content),
+                                false,
+                                "mcp_transport_failed");
+                            approval = new AgentApprovalEvent(
+                                call.Id,
+                                call.Name,
+                                false,
+                                "not-required-read-only",
+                                true,
+                                false,
+                                "The diagnostic transport failed before a result was returned.");
+                            toolTransportFailure = new AgentTransportException(
+                                $"Diagnostic gateway transport failed: {exception.Message}",
+                                innerException: exception);
+                        }
+
                         results.Add(result);
                         approvals.Add(approval);
                         messages.Add(new JsonObject
@@ -378,6 +473,23 @@ public static class BlindedAgentHarness
                             ["tool_call_id"] = call.Id,
                             ["content"] = result.ContentJson,
                         });
+                        if (toolTransportFailure is not null)
+                        {
+                            break;
+                        }
+                    }
+
+                    if (toolTransportFailure is not null)
+                    {
+                        transcript.Add(new AgentTranscriptTurn(
+                            turnNumber,
+                            turn.RawResponse,
+                            turn.AssistantContent,
+                            turn.ToolCalls,
+                            results,
+                            turn.Usage,
+                            turn.ProviderRequestId));
+                        throw toolTransportFailure;
                     }
                 }
                 else if (!string.IsNullOrWhiteSpace(turn.AssistantContent))
@@ -407,6 +519,14 @@ public static class BlindedAgentHarness
         catch (AgentTransportException exception)
         {
             executionStage = Stage(AgentHarnessStageStatus.Failed, AgentHarnessFailureKind.Transport, exception.Message, executionWatch.Elapsed);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            executionStage = Stage(
+                AgentHarnessStageStatus.Failed,
+                AgentHarnessFailureKind.Cancelled,
+                "The bounded agent conversation was cancelled or exceeded its wall-time budget.",
+                executionWatch.Elapsed);
         }
         catch (AgentBudgetException exception)
         {
@@ -459,6 +579,8 @@ public static class BlindedAgentHarness
                     AgentHarnessStageStatus.Failed,
                     toolResults.Any(result => result.ErrorCode == "environment_denied")
                         ? AgentHarnessFailureKind.Environment
+                        : toolResults.Any(result => result.ErrorCode == "mcp_transport_failed")
+                            ? AgentHarnessFailureKind.Transport
                         : toolResults.Any(result => result.ErrorCode is "capture_budget_exceeded" or "artifact_budget_exceeded")
                             ? AgentHarnessFailureKind.Budget
                             : AgentHarnessFailureKind.Collection,
@@ -478,7 +600,7 @@ public static class BlindedAgentHarness
             executionStage,
             Stage(AgentHarnessStageStatus.NotRun, AgentHarnessFailureKind.None, "Target cleanup is recorded by the owning RunAsync operation.", TimeSpan.Zero),
             assessment,
-            Provenance(request),
+            Provenance(request, gateway.Tools),
             transcript,
             approvals,
             diagnosis,
@@ -579,7 +701,9 @@ public static class BlindedAgentHarness
         return invalid;
     }
 
-    private static AgentHarnessProvenance Provenance(AgentHarnessRequest request)
+    private static AgentHarnessProvenance Provenance(
+        AgentHarnessRequest request,
+        IReadOnlyList<AgentToolDefinition>? tools = null)
     {
         return new AgentHarnessProvenance(
             request.Model.Provider,
@@ -592,7 +716,9 @@ public static class BlindedAgentHarness
                 request.Model.Provider == "github-copilot-cli"
                     ? SystemPrompt + "\n" + CopilotCliAgentTransport.ProtocolInstructions + CopilotCliAgentTransport.ProtocolReminder
                     : SystemPrompt),
-            BlindedDiagnosticToolGateway.Sha256(JsonSerializer.Serialize(BlindedDiagnosticToolGateway.ToolDefinitions)),
+            BlindedDiagnosticToolGateway.Sha256(
+                JsonSerializer.Serialize(
+                    tools ?? BlindedDiagnosticToolGateway.ToolDefinitions)),
             CurrentProductCommit,
             CurrentProductVersion,
             request.Manifest.Id,
@@ -607,7 +733,7 @@ public static class BlindedAgentHarness
             "local loopback; fresh evaluator-owned process; model receives neutral target identity only",
             $"toolCalls<={request.Budget.MaximumToolCalls}; captureSeconds<={request.Budget.MaximumCaptureSeconds}; artifactBytes<={request.Budget.MaximumArtifactBytes}; estimatedCostUsd<={request.Budget.MaximumEstimatedCostUsd?.ToString(CultureInfo.InvariantCulture) ?? "unavailable"}",
             "Evaluator-private report at the caller-selected path; CI artifacts should use 30-day retention. Workload configuration is retained for repeatability. No credentials are written.",
-            "Credentials, authorization headers, API keys, process arguments, source paths, and evaluator answers are never persisted or model-visible. Controller routes and private workload configuration are evaluator-private provenance and are excluded from model-visible messages and transcripts.",
+            "Credentials, authorization headers, API keys, process arguments, and evaluator answers are never persisted or model-visible. Existing diagnostic payloads may include module/source paths and target-controlled names; those values remain sensitive. Controller routes and private workload configuration are evaluator-private provenance and are excluded from model-visible messages and transcripts.",
             request.Model.Provider == "github-copilot-cli"
                 ? "github-copilot-cli"
                 : "openai-compatible-http",

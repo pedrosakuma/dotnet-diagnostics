@@ -60,6 +60,9 @@ public sealed class BlindedAgentHarnessTests
             .Should().OnlyContain(text => !text.Contains("/sync-over-async", StringComparison.Ordinal));
         report.Provenance.WorkloadConfiguration["endpoint"].Should().Be("/sync-over-async");
         report.Provenance.RedactionPolicy.Should().Contain("evaluator-private provenance");
+        report.Provenance.ToolPolicySha256.Should().Be(
+            BlindedDiagnosticToolGateway.Sha256(
+                JsonSerializer.Serialize(gateway.Tools)));
     }
 
     [Fact]
@@ -92,6 +95,72 @@ public sealed class BlindedAgentHarnessTests
         report.Assessment.Stage.Status.Should().Be(AgentHarnessStageStatus.Failed);
         report.Assessment.InvalidEvidenceLocations.Should().ContainSingle("tool-result://missing#/evidence");
         report.Collection.Status.Should().Be(AgentHarnessStageStatus.NotRun);
+    }
+
+    [Fact]
+    public async Task Conversation_CancellationPreservesCompletedTurnsAndToolEvidence()
+    {
+        var manifest = ScenarioManifestLoader.LoadAll().Single(value => value.Id == "sync-over-async");
+        using var cancellation = new CancellationTokenSource();
+        var transport = new CancellingTransport(
+            new AgentModelTurn(
+                """{"id":"response-1","choices":[]}""",
+                null,
+                [new AgentToolCall("call-counters", "collect_events", """{"target":"target-1","kind":"counters","durationSeconds":2}""")],
+                new AgentModelUsage(null, null, null),
+                "response-1"),
+            cancellation);
+
+        var report = await BlindedAgentHarness.RunConversationAsync(
+            Request(manifest, "scripted"),
+            transport,
+            new FakeGateway(),
+            DateTimeOffset.UtcNow,
+            new AgentHarnessStage(AgentHarnessStageStatus.Passed, AgentHarnessFailureKind.None, "test", 0),
+            cancellation.Token);
+
+        report.AgentExecution.Status.Should().Be(AgentHarnessStageStatus.Failed);
+        report.AgentExecution.FailureKind.Should().Be(AgentHarnessFailureKind.Cancelled);
+        report.Transcript.Should().ContainSingle();
+        report.Transcript[0].ToolResults.Should().ContainSingle();
+        report.ApprovalEvents.Should().ContainSingle();
+        report.Collection.Status.Should().Be(AgentHarnessStageStatus.Passed);
+        report.TotalToolCalls.Should().Be(1);
+        report.RetainedArtifactBytes.Should().BeGreaterThan(0);
+    }
+
+    [Fact]
+    public async Task Conversation_GatewayTransportFailurePreservesTurnAndClassification()
+    {
+        var manifest = ScenarioManifestLoader.LoadAll().Single(value => value.Id == "sync-over-async");
+        var transport = new ScriptedTransport(
+        [
+            new AgentModelTurn(
+                """{"id":"response-1","choices":[]}""",
+                null,
+                [new AgentToolCall("call-counters", "collect_events", """{"target":"target-1","kind":"counters","durationSeconds":2}""")],
+                new AgentModelUsage(null, null, null),
+                "response-1"),
+        ]);
+
+        var report = await BlindedAgentHarness.RunConversationAsync(
+            Request(manifest, "scripted"),
+            transport,
+            new ThrowingGateway(),
+            DateTimeOffset.UtcNow,
+            new AgentHarnessStage(AgentHarnessStageStatus.Passed, AgentHarnessFailureKind.None, "test", 0),
+            CancellationToken.None);
+
+        report.AgentExecution.Status.Should().Be(AgentHarnessStageStatus.Failed);
+        report.AgentExecution.FailureKind.Should().Be(AgentHarnessFailureKind.Transport);
+        report.Collection.Status.Should().Be(AgentHarnessStageStatus.Failed);
+        report.Collection.FailureKind.Should().Be(AgentHarnessFailureKind.Transport);
+        report.Transcript.Should().ContainSingle();
+        report.Transcript[0].ToolCalls.Should().ContainSingle();
+        report.Transcript[0].ToolResults.Should().ContainSingle(result =>
+            result.ErrorCode == "mcp_transport_failed");
+        report.ApprovalEvents.Should().ContainSingle();
+        report.TotalToolCalls.Should().Be(1);
     }
 
     [Fact]
@@ -177,12 +246,12 @@ public sealed class BlindedAgentHarnessTests
             var invocationDirectory = Path.Combine(work, "invocation");
             var info = transport.CreateStartInfo(
                 configuration,
-                """{"private":"prompt"}""",
                 invocationDirectory,
                 Guid.Parse("e1bf1639-7d23-4d66-a7f3-c21a2280201f"));
 
             info.UseShellExecute.Should().BeFalse();
             info.WorkingDirectory.Should().Be(invocationDirectory);
+            info.ArgumentList.Should().NotContain("""{"private":"prompt"}""");
             info.ArgumentList.Should().ContainInOrder("--effort", "low");
             info.ArgumentList.Should().ContainInOrder(
                 "--session-id",
@@ -348,6 +417,16 @@ public sealed class BlindedAgentHarnessTests
     }
 
     [Fact]
+    public void CopilotCliTransport_AcceptsCurrentBarePluginInventory()
+    {
+        const string inventory = """[]""";
+
+        var action = () => CopilotCliAgentTransport.ValidatePluginInventory(inventory);
+
+        action.Should().NotThrow();
+    }
+
+    [Fact]
     public void CopilotCliTransport_ClassifiesKnownCliErrorWithoutRetainingRawStderr()
     {
         const string stderr =
@@ -462,6 +541,29 @@ public sealed class BlindedAgentHarnessTests
         }
     }
 
+    private sealed class CancellingTransport(
+        AgentModelTurn completedTurn,
+        CancellationTokenSource cancellation) : IAgentModelTransport
+    {
+        private bool _completedFirstTurn;
+
+        public Task<AgentModelTurn> CompleteAsync(
+            AgentModelConfiguration configuration,
+            IReadOnlyList<JsonObject> messages,
+            IReadOnlyList<AgentToolDefinition> tools,
+            CancellationToken cancellationToken)
+        {
+            if (!_completedFirstTurn)
+            {
+                _completedFirstTurn = true;
+                return Task.FromResult(completedTurn);
+            }
+
+            cancellation.Cancel();
+            return Task.FromCanceled<AgentModelTurn>(cancellationToken);
+        }
+    }
+
     private sealed class FakeGateway : IBlindedDiagnosticToolGateway
     {
         public IReadOnlyList<AgentToolDefinition> Tools => BlindedDiagnosticToolGateway.ToolDefinitions;
@@ -496,6 +598,19 @@ public sealed class BlindedAgentHarnessTests
                     true,
                     "Read-only allowlisted tool.")));
         }
+    }
+
+    private sealed class ThrowingGateway : IBlindedDiagnosticToolGateway
+    {
+        public IReadOnlyList<AgentToolDefinition> Tools =>
+            BlindedDiagnosticToolGateway.ToolDefinitions;
+
+        public int RetainedArtifactBytes => 0;
+
+        public Task<(AgentToolResult Result, AgentApprovalEvent Approval)> ExecuteAsync(
+            AgentToolCall call,
+            CancellationToken cancellationToken)
+            => throw new IOException("stdio transport closed");
     }
 
     private sealed class RecordingHandler(string response) : HttpMessageHandler

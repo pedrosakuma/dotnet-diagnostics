@@ -105,14 +105,13 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
                 configuration.MaximumResponseBytes,
                 cancellationToken).ConfigureAwait(false);
             var prompt = BuildPrompt(messages, tools);
-            var startInfo = CreateStartInfo(configuration, prompt, workingDirectory, invocationId);
+            var startInfo = CreateStartInfo(configuration, workingDirectory, invocationId);
             using var process = new Process { StartInfo = startInfo };
             if (!process.Start())
             {
                 throw new AgentTransportException("Copilot CLI did not start.");
             }
 
-            process.StandardInput.Close();
             var stdoutTask = ReadBoundedAsync(
                 process.StandardOutput,
                 configuration.MaximumResponseBytes,
@@ -123,6 +122,10 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
                 cancellationToken);
             try
             {
+                await process.StandardInput.WriteAsync(prompt.AsMemory(), cancellationToken)
+                    .ConfigureAwait(false);
+                await process.StandardInput.FlushAsync(cancellationToken).ConfigureAwait(false);
+                process.StandardInput.Close();
                 await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
                 await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false);
             }
@@ -161,7 +164,9 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
             or InvalidOperationException
             or System.ComponentModel.Win32Exception)
         {
-            throw new AgentTransportException("Copilot CLI transport failed.", innerException: exception);
+            throw new AgentTransportException(
+                $"Copilot CLI transport failed ({exception.GetType().Name}: {exception.Message}).",
+                innerException: exception);
         }
         finally
         {
@@ -171,7 +176,6 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
 
     internal ProcessStartInfo CreateStartInfo(
         AgentModelConfiguration configuration,
-        string prompt,
         string workingDirectory,
         Guid invocationId)
     {
@@ -185,8 +189,6 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
             UseShellExecute = false,
             CreateNoWindow = true,
         };
-        info.ArgumentList.Add("--prompt");
-        info.ArgumentList.Add(prompt);
         info.ArgumentList.Add("--model");
         info.ArgumentList.Add(configuration.Model);
         info.ArgumentList.Add("--effort");
@@ -352,23 +354,39 @@ public sealed class CopilotCliAgentTransport : IAgentModelTransport
     {
         using var document = JsonDocument.Parse(json);
         var root = document.RootElement;
-        if (!root.TryGetProperty("errors", out var errors)
-            || errors.ValueKind != JsonValueKind.Array
-            || errors.GetArrayLength() != 0
-            || !root.TryGetProperty("plugins", out var plugins)
-            || plugins.ValueKind != JsonValueKind.Array)
+        JsonElement plugins;
+        if (root.ValueKind == JsonValueKind.Array)
+        {
+            plugins = root;
+        }
+        else if (root.ValueKind == JsonValueKind.Object
+            && root.TryGetProperty("errors", out var errors)
+            && errors.ValueKind == JsonValueKind.Array
+            && errors.GetArrayLength() == 0
+            && root.TryGetProperty("plugins", out plugins)
+            && plugins.ValueKind == JsonValueKind.Array)
+        {
+        }
+        else
         {
             throw new AgentTransportException("Copilot CLI isolation preflight returned an invalid inventory.");
         }
 
         foreach (var plugin in plugins.EnumerateArray())
         {
+            if (plugin.ValueKind != JsonValueKind.Object)
+            {
+                throw new AgentTransportException("Copilot CLI isolation preflight returned an invalid inventory.");
+            }
+
             var enabled = !plugin.TryGetProperty("enabled", out var enabledElement)
                 || enabledElement.ValueKind != JsonValueKind.False;
             var scope = plugin.TryGetProperty("scope", out var scopeElement)
+                && scopeElement.ValueKind == JsonValueKind.String
                 ? scopeElement.GetString()
                 : null;
             var source = plugin.TryGetProperty("source", out var sourceElement)
+                && sourceElement.ValueKind == JsonValueKind.String
                 ? sourceElement.GetString()
                 : null;
             if (enabled

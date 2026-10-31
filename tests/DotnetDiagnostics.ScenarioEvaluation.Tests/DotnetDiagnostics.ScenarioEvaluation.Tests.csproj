@@ -4,6 +4,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <IsPackable>false</IsPackable>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <NoWarn>$(NoWarn);MCPEXP001</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
@@ -12,10 +13,13 @@
     <PackageReference Include="xunit" />
     <PackageReference Include="xunit.runner.visualstudio" />
     <PackageReference Include="FluentAssertions" />
+    <PackageReference Include="ModelContextProtocol" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\DotnetDiagnostics.Core\DotnetDiagnostics.Core.csproj" />
+    <ProjectReference Include="..\..\src\DotnetDiagnostics.Mcp\DotnetDiagnostics.Mcp.csproj"
+                      ReferenceOutputAssembly="false" />
     <ProjectReference Include="..\DotnetDiagnostics.TestSupport\DotnetDiagnostics.TestSupport.csproj" />
     <ProjectReference Include="..\..\samples\BadCodeSample\BadCodeSample.csproj"
                       ReferenceOutputAssembly="false"
@@ -31,6 +35,7 @@
     <None Update="Scenarios\**\*.json" CopyToOutputDirectory="PreserveNewest" />
     <None Update="Fixtures\**\*.json" CopyToOutputDirectory="PreserveNewest" />
     <None Update="Calibration\**\*.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="OperationalMcp\**\*.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\docs\design\statistical-evidence-method-registry.v1.json"
           Link="Design\statistical-evidence-method-registry.v1.json"
           CopyToOutputDirectory="PreserveNewest" />

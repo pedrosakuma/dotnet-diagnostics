@@ -1,0 +1,254 @@
+{
+  "schemaVersion": 1,
+  "protocolId": "operational-mcp-statistical-ab",
+  "protocolVersion": "1.4.0",
+  "frozenAtUtc": "2026-10-31T16:45:26Z",
+  "armOrderSeed": "issue-1338-heldout-v5",
+  "failurePolicy": "Every started arm is retained. Failed, aborted, budget-exhausted, transport-failed, model-invalid, and assessment-missing attempts remain in denominators. No favorable retry is permitted.",
+  "expectedCatalogFingerprint": "7dbea518d1298f8d3404b9367b8cc19df84cac5027585f96d8be39958c7dcdf2",
+  "budgets": {
+    "maximumSuiteWallTimeSeconds": 7200,
+    "maximumWallTimeSeconds": 240,
+    "maximumAssessmentWallTimeSeconds": 60,
+    "maximumToolCalls": 8,
+    "maximumModelTurns": 9,
+    "maximumCaptureSeconds": 18,
+    "maximumInputTokens": 60000,
+    "maximumOutputTokens": 7200,
+    "maximumEstimatedCostUsd": 2.0,
+    "maximumResponseBytes": 262144,
+    "maximumArtifactBytes": 4194304
+  },
+  "inventory": [
+    {
+      "family": "allocationReproducibility",
+      "eligibility": "eligible",
+      "tool": "query_snapshot",
+      "view": "allocation-reproducibility",
+      "schema": "dotnet-diagnostics/allocation-reproducibility/v1",
+      "reason": "Three or more separately started allocation captures can be collected and compared entirely through collect_sample and query_snapshot over the real MCP protocol.",
+      "expectedToolDefinitionFingerprint": "646b870b240ace578fe232a74b7934d5af48a7224008dfefdb0079dbd44746d1"
+    },
+    {
+      "family": "cpuHotspotCaptureProfiles",
+      "eligibility": "eligible",
+      "tool": "query_snapshot",
+      "view": "hotspot-variability",
+      "schema": "dotnet-diagnostics/cpu-hotspot-capture/v1",
+      "reason": "Fresh CPU captures expose bounded per-capture hotspot profiles through query_snapshot. This family tests LLM interpretation of those MCP-visible profiles, not the separate paired movement comparison.",
+      "expectedToolDefinitionFingerprint": "225d543824283c103c63cbeb5ea329a33bad792a93a6d6bbf3b0f45e20155e9d"
+    },
+    {
+      "family": "cpuHotspotMovementComparison",
+      "eligibility": "excluded",
+      "tool": "compare_to_baseline",
+      "view": "snapshotsJson",
+      "schema": "dotnet-diagnostics/cpu-hotspot-comparison/v1",
+      "reason": "The validated paired movement comparison consumes caller-constructed capture-set JSON; no current MCP response emits that capture-set document, so this pilot does not claim to evaluate the paired indicator.",
+      "expectedToolDefinitionFingerprint": null
+    },
+    {
+      "family": "contentionConcentration",
+      "eligibility": "excluded",
+      "tool": "collect_events",
+      "view": "contention",
+      "schema": "dotnet-diagnostics/contention-concentration-evidence/v1",
+      "reason": "The MCP contention projection intentionally omits the Core/CLI-only concentration block.",
+      "expectedToolDefinitionFingerprint": null
+    },
+    {
+      "family": "gcPressureCharacterization",
+      "eligibility": "excluded",
+      "tool": "none",
+      "view": "none",
+      "schema": "dotnet-diagnostics/gc-pressure-characterization/v1",
+      "reason": "The characterized block is Core/CLI-only and has no current MCP response placement.",
+      "expectedToolDefinitionFingerprint": null
+    },
+    {
+      "family": "retainedGrowth",
+      "eligibility": "excluded",
+      "tool": "none",
+      "view": "none",
+      "schema": "dotnet-diagnostics/retained-growth-evidence/v1",
+      "reason": "The statistical retained-growth block is not reachable through the current MCP catalog.",
+      "expectedToolDefinitionFingerprint": null
+    },
+    {
+      "family": "threadPoolBacklog",
+      "eligibility": "excluded",
+      "tool": "collect_events",
+      "view": "counters",
+      "schema": "dotnet-diagnostics/threadpool-backlog-evidence/v1",
+      "reason": "The shared output type is catalog-visible, but no current MCP argument requests the backlog protocol, so live MCP responses cannot truthfully populate the block.",
+      "expectedToolDefinitionFingerprint": null
+    },
+    {
+      "family": "requestLatencyDistribution",
+      "eligibility": "excluded",
+      "tool": "compare_to_baseline",
+      "view": "snapshotsJson",
+      "schema": "dotnet-diagnostics/request-latency-comparison/v1",
+      "reason": "The comparison accepts caller-supplied window-set JSON, but the real target MCP surface does not collect those statistical window sets.",
+      "expectedToolDefinitionFingerprint": null
+    }
+  ],
+  "projections": [
+    {
+      "family": "allocationReproducibility",
+      "version": "neutral-unavailable-v1",
+      "schema": "dotnet-diagnostics/allocation-reproducibility/v1",
+      "neutralSummary": "The requested statistical detail is unavailable in this response; do not infer zero, absence, health, or successful statistical support.",
+      "jsonPointers": [ "/data" ]
+    },
+    {
+      "family": "cpuHotspotCaptureProfiles",
+      "version": "neutral-unavailable-v1",
+      "schema": "dotnet-diagnostics/cpu-hotspot-capture/v1",
+      "neutralSummary": "The requested statistical detail is unavailable in this response; do not infer zero, absence, health, or successful statistical support.",
+      "jsonPointers": [ "/data" ]
+    }
+  ],
+  "cases": [
+    {
+      "id": "dev-allocation-primary",
+      "partition": "development",
+      "family": "allocationReproducibility",
+      "caseClass": "positive",
+      "reportedSymptom": "Repeated allocation load appears dominated by a small number of sites. Determine whether fresh independent captures support a reproducible allocation hotspot, and abstain if the evidence is insufficient.",
+      "endpointPath": "/allocation-shape?shape=primary&milliseconds=1500",
+      "workers": 1,
+      "warmupMilliseconds": 500,
+      "requiredCaptures": 3,
+      "expectedEvidence": "Compatible complete captures should support high top-k membership and shared-rank stability for the primary allocation shape.",
+      "forbiddenCertainty": [ "exact allocation totals", "causation", "production regression", "operational severity" ],
+      "usefulNextSteps": [ "inspect the dominant allocation stack", "repeat under a representative production workload" ]
+    },
+    {
+      "id": "dev-cpu-alpha",
+      "partition": "development",
+      "family": "cpuHotspotCaptureProfiles",
+      "caseClass": "positive",
+      "reportedSymptom": "CPU work appears concentrated in one application path. Determine whether fresh independent CPU captures support a stable hotspot, and distinguish sampled evidence from CPU time.",
+      "endpointPath": "/cpu-hotspot-fixture?alphaWorkers=7&betaWorkers=1&ms=4500",
+      "workers": 1,
+      "warmupMilliseconds": 500,
+      "requiredCaptures": 3,
+      "expectedEvidence": "Fresh capture profiles should repeatedly rank the alpha workload above the beta workload while preserving sampling and unresolved-symbol limitations.",
+      "forbiddenCertainty": [ "exact CPU time", "causation", "production regression", "operational severity" ],
+      "usefulNextSteps": [ "query callers and callees for the repeated method", "repeat under equivalent representative load" ]
+    },
+    {
+      "id": "heldout-allocation-primary",
+      "partition": "heldout",
+      "family": "allocationReproducibility",
+      "caseClass": "positive",
+      "reportedSymptom": "A service shows sustained allocation pressure. Determine whether repeated captures support a reproducible dominant allocation shape without treating sampled estimates as exact totals.",
+      "endpointPath": "/allocation-shape?shape=primary&milliseconds=1200",
+      "workers": 2,
+      "warmupMilliseconds": 700,
+      "requiredCaptures": 3,
+      "expectedEvidence": "The repeated primary workload should yield compatible complete captures with stable top-k membership and rank evidence.",
+      "forbiddenCertainty": [ "exact allocation totals", "causation", "production regression", "operational severity" ],
+      "usefulNextSteps": [ "inspect the repeated allocation stack", "validate the workload identity before comparing another environment" ]
+    },
+    {
+      "id": "heldout-allocation-mixed",
+      "partition": "heldout",
+      "family": "allocationReproducibility",
+      "caseClass": "competingExplanation",
+      "reportedSymptom": "Allocation pressure may come from a changing mix rather than one stable hotspot. Determine what repeated captures support and avoid forcing a single-cause conclusion.",
+      "endpointPath": "/allocation-shape?shape=changed&milliseconds=1100",
+      "workers": 2,
+      "warmupMilliseconds": 600,
+      "requiredCaptures": 3,
+      "expectedEvidence": "The changed workload can retain repeated ranked evidence but should not be translated into a single causal or severity verdict.",
+      "forbiddenCertainty": [ "single root cause", "exact allocation totals", "production regression", "operational severity" ],
+      "usefulNextSteps": [ "compare type and stack stability separately", "segment captures by workload phase" ]
+    },
+    {
+      "id": "heldout-cpu-alpha",
+      "partition": "heldout",
+      "family": "cpuHotspotCaptureProfiles",
+      "caseClass": "positive",
+      "reportedSymptom": "CPU observations suggest one application method dominates. Determine whether repeated fresh samples support that claim and report unresolved or sampling limits.",
+      "endpointPath": "/cpu-hotspot-fixture?alphaWorkers=6&betaWorkers=2&ms=4000",
+      "workers": 1,
+      "warmupMilliseconds": 650,
+      "requiredCaptures": 3,
+      "expectedEvidence": "Independent capture profiles should repeatedly rank the alpha workload above beta, subject to sample and symbol limits.",
+      "forbiddenCertainty": [ "exact CPU time", "causation", "production regression", "operational severity" ],
+      "usefulNextSteps": [ "drill into the repeated method call tree", "validate under equivalent representative load" ]
+    },
+    {
+      "id": "heldout-cpu-balanced",
+      "partition": "heldout",
+      "family": "cpuHotspotCaptureProfiles",
+      "caseClass": "competingExplanation",
+      "reportedSymptom": "Two application CPU paths may contribute similarly. Determine whether repeated fresh samples support a dominant hotspot or whether the evidence calls for uncertainty.",
+      "endpointPath": "/cpu-hotspot-fixture?alphaWorkers=4&betaWorkers=4&ms=4000",
+      "workers": 1,
+      "warmupMilliseconds": 650,
+      "requiredCaptures": 3,
+      "expectedEvidence": "Balanced offered work is a competing explanation; the assessment should reward uncertainty when profiles do not support one stable dominant method.",
+      "forbiddenCertainty": [ "single root cause", "exact CPU time", "production regression", "operational severity" ],
+      "usefulNextSteps": [ "inspect both repeated method call trees", "repeat with workload phase labels" ]
+    },
+    {
+      "id": "heldout-allocation-healthy",
+      "partition": "heldout",
+      "family": "allocationReproducibility",
+      "caseClass": "healthyControl",
+      "reportedSymptom": "A low-work service is suspected of having a dominant allocation hotspot. Determine whether repeated captures actually support that claim and avoid converting ordinary request allocations into a severity or causation verdict.",
+      "endpointPath": "/",
+      "workers": 1,
+      "warmupMilliseconds": 500,
+      "requiredCaptures": 3,
+      "expectedEvidence": "The healthy request path should not be assumed to contain the fixture's dominant allocation shape; absence or weak stability should preserve uncertainty.",
+      "forbiddenCertainty": [ "dominant fixture hotspot", "exact allocation totals", "production regression", "operational severity" ],
+      "usefulNextSteps": [ "verify workload identity before hotspot attribution", "repeat only if representative load is available" ]
+    },
+    {
+      "id": "heldout-allocation-sparse",
+      "partition": "heldout",
+      "family": "allocationReproducibility",
+      "caseClass": "degradedEvidence",
+      "reportedSymptom": "A mostly waiting request path is suspected of allocation pressure. Determine whether sparse repeated captures support a reproducible allocation claim or require abstention.",
+      "endpointPath": "/async-stall?bucket=external&seconds=4",
+      "workers": 1,
+      "warmupMilliseconds": 300,
+      "requiredCaptures": 3,
+      "expectedEvidence": "Sparse allocation evidence may be empty, incomplete, or insufficient and should not be converted into a stable-hotspot conclusion.",
+      "forbiddenCertainty": [ "stable allocation hotspot from sparse evidence", "exact allocation totals", "causation", "operational severity" ],
+      "usefulNextSteps": [ "capture under representative allocating load", "report the evidence availability state explicitly" ]
+    },
+    {
+      "id": "heldout-cpu-healthy",
+      "partition": "heldout",
+      "family": "cpuHotspotCaptureProfiles",
+      "caseClass": "healthyControl",
+      "reportedSymptom": "A low-work service is suspected of one dominant application CPU path. Determine whether repeated fresh profiles support that claim rather than forcing a hotspot from framework or unresolved samples.",
+      "endpointPath": "/",
+      "workers": 1,
+      "warmupMilliseconds": 500,
+      "requiredCaptures": 3,
+      "expectedEvidence": "The healthy request path should not be assumed to contain the fixture alpha or beta hotspot and may require uncertainty.",
+      "forbiddenCertainty": [ "dominant fixture method", "exact CPU time", "production regression", "operational severity" ],
+      "usefulNextSteps": [ "verify representative CPU load before attribution", "report unresolved and sampling limits" ]
+    },
+    {
+      "id": "heldout-cpu-sparse",
+      "partition": "heldout",
+      "family": "cpuHotspotCaptureProfiles",
+      "caseClass": "degradedEvidence",
+      "reportedSymptom": "A mostly waiting request path is suspected of consuming CPU. Determine whether sparse repeated profiles support a stable application hotspot or require abstention.",
+      "endpointPath": "/async-stall?bucket=external&seconds=4",
+      "workers": 1,
+      "warmupMilliseconds": 300,
+      "requiredCaptures": 3,
+      "expectedEvidence": "Sparse CPU evidence may have too few resolved samples for a stable application-hotspot claim.",
+      "forbiddenCertainty": [ "stable hotspot from sparse samples", "exact CPU time", "causation", "operational severity" ],
+      "usefulNextSteps": [ "repeat under representative CPU load", "report sample sufficiency and unresolved share" ]
+    }
+  ]
+}
