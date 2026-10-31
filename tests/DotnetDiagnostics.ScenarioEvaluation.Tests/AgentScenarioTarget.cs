@@ -60,7 +60,8 @@ internal sealed class AgentScenarioTarget : IAsyncDisposable
                     ["DOTNET_TC_QuickJit"] = "1",
                     ["DOTNET_TieredPGO"] = "1",
                 },
-            }).ConfigureAwait(false);
+            },
+            cancellationToken).ConfigureAwait(false);
 
         Process? terminationObserver = null;
         HttpClient? http = null;
@@ -261,6 +262,9 @@ internal sealed class AgentScenarioTarget : IAsyncDisposable
             "gc-storm" => (
                 $"{Parameter(manifest, "endpoint")}?count={PositiveInt(manifest, "count")}",
                 PositiveInt(manifest, "concurrentRequests")),
+            var id when id.StartsWith("operational-mcp-", StringComparison.Ordinal) => (
+                Parameter(manifest, "endpoint"),
+                PositiveInt(manifest, "workers")),
             _ => throw new InvalidDataException($"No blinded-agent activation is registered for '{manifest.Id}'."),
         };
 
