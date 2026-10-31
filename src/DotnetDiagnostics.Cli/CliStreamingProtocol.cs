@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using DotnetDiagnostics.Core;
@@ -36,7 +37,8 @@ internal static partial class CliStreamingProtocol
 {
     private const int ProtocolVersion = 2;
     private const string HeapGrowthView = "growth";
-    private const int MaxControlLineBytes = 64 * 1024;
+    private const int MaxControlLineBytes =
+        RequestLatencyComparison.MaximumSerializedWindowSetBytes * 2 + 64 * 1024;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
@@ -350,6 +352,17 @@ internal static partial class CliStreamingProtocol
                                 retainedHandleLimit = CliStreamingCpuHandleWindow.RetainedHandleLimit,
                                 maxTopMovers = CpuSampleHandleComparison.MaxTopMovers,
                             },
+                            requestLatencyComparison = new
+                            {
+                                version = 1,
+                                messageType = "compare",
+                                kind = "request-latency",
+                                inputSchema = RequestLatencyWindowSet.SchemaV1,
+                                resultSchema = RequestLatencyComparisonResult.SchemaV1,
+                                maxWindowsPerSide = RequestLatencyComparison.MaximumWindowsPerSide,
+                                maxRetainedSamplesPerWindow =
+                                    RequestLatencyComparison.MaximumRetainedSamplesPerWindow,
+                            },
                             capabilities = new
                             {
                                 investigationEvidence = investigationEvidence.Capability,
@@ -425,11 +438,19 @@ internal static partial class CliStreamingProtocol
                                     .ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
                             break;
 
+                        case "compare":
+                            await HandleComparisonAsync(
+                                document.RootElement,
+                                writer,
+                                cancellationToken).ConfigureAwait(false);
+                            break;
+
                         default:
                             await WriteErrorAsync(writer, "unknown_message_type", $"Unknown message type '{type}'.")
                                 .ConfigureAwait(false);
                             break;
                     }
+
                 }
             }
         }
@@ -450,6 +471,90 @@ internal static partial class CliStreamingProtocol
             {
                 await StopAndDrainAsync(activeSession).ConfigureAwait(false);
             }
+        }
+    }
+
+    private static async Task HandleComparisonAsync(
+        JsonElement root,
+        ProtocolWriter writer,
+        CancellationToken cancellationToken)
+    {
+        if (!TryGetString(root, "requestId", out var requestId)
+            || string.IsNullOrWhiteSpace(requestId))
+        {
+            await WriteErrorAsync(
+                writer,
+                "invalid_comparison",
+                "A non-empty string 'requestId' is required.").ConfigureAwait(false);
+            return;
+        }
+        if (!TryGetString(root, "kind", out var kind)
+            || !string.Equals(kind, "request-latency", StringComparison.Ordinal))
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId,
+                code = "unsupported_comparison_kind",
+                message = "Comparison kind must be 'request-latency'.",
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+        if (!root.TryGetProperty("baseline", out var baselineElement)
+            || baselineElement.ValueKind != JsonValueKind.Object
+            || !root.TryGetProperty("candidate", out var candidateElement)
+            || candidateElement.ValueKind != JsonValueKind.Object)
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId,
+                code = "invalid_comparison",
+                message = "Object properties 'baseline' and 'candidate' are required.",
+            }, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
+
+        try
+        {
+            EnsureRequestLatencyWindowSetSize(baselineElement, "Baseline");
+            EnsureRequestLatencyWindowSetSize(candidateElement, "Candidate");
+            var baseline = baselineElement.Deserialize(
+                RequestLatencyComparisonJsonContext.Default.RequestLatencyWindowSet)
+                ?? throw new InvalidDataException("Baseline request-latency window set was empty.");
+            var candidate = candidateElement.Deserialize(
+                RequestLatencyComparisonJsonContext.Default.RequestLatencyWindowSet)
+                ?? throw new InvalidDataException("Candidate request-latency window set was empty.");
+            var result = RequestLatencyComparison.Compare(baseline, candidate);
+            await writer.WriteAsync(new
+            {
+                type = "comparison",
+                requestId,
+                kind,
+                result,
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (
+            exception is JsonException or ArgumentException or InvalidDataException)
+        {
+            await writer.WriteAsync(new
+            {
+                type = "error",
+                requestId,
+                code = "invalid_comparison",
+                message = exception.Message,
+            }, CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    private static void EnsureRequestLatencyWindowSetSize(JsonElement element, string side)
+    {
+        var serializedBytes = Encoding.UTF8.GetByteCount(element.GetRawText());
+        if (serializedBytes > RequestLatencyComparison.MaximumSerializedWindowSetBytes)
+        {
+            throw new InvalidDataException(
+                $"{side} request-latency window set exceeds the " +
+                $"{RequestLatencyComparison.MaximumSerializedWindowSetBytes}-byte limit.");
         }
     }
 
