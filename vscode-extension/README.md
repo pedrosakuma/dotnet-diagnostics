@@ -143,6 +143,18 @@ keep their source-specific result surfaces.
 On a process, **Capture New Persistent Snapshot** collects a separate durable live heap, GC dump,
 or thread snapshot. It never converts a temporary panel result or a redacted sharing document.
 
+After two compatible heap captures, expand **Incremental retained-memory growth** in the live
+Workspace and explicitly choose the earlier baseline and later current evidence. The extension
+sends only CLI JSONL queries: the CLI supplies bounded retained byte/instance deltas, supported
+growing-type rankings, and any repeated median/MAD/bootstrap evidence. Allocation traffic, root
+path availability, GC-dump-induced Gen2 observer effects, evidence identity, assumptions,
+limitations, and unavailable reasons remain separate and visible under disclosure. Selecting a
+supported growing type requests its objective evidence and returns to the canonical current heap
+explorer for bounded instances, object details, and an actual GC root path where the source
+supports them. The lens never captures automatically, persists handles, or reports a leak,
+regression, health, causality, or no-leak verdict; expired or replaced handles require another
+explicit pair or capture.
+
 **Requests + completed Activities** is a separate explicit reproduction action in Requests &
 networking and the Command Palette. It requires the additive `hello.requestActivities` v1
 capability. CLI 0.32.1 includes it, but the extension still checks the actual hello contract rather

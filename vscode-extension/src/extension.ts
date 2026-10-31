@@ -83,6 +83,21 @@ import {
     type CpuHandleComparisonCapability,
 } from "./cpuComparison";
 import {
+    RETAINED_HEAP_EVIDENCE_LIMIT,
+    RETAINED_MEMORY_GROWTH_HTML,
+    RETAINED_MEMORY_GROWTH_SCRIPT,
+    RETAINED_MEMORY_GROWTH_STYLES,
+    buildHeapGrowthFrame,
+    heapEvidenceCompatibility,
+    isHeapGrowthQueryResult,
+    isRetainedGrowthObjectiveResult,
+    supportsHeapGrowth,
+    type HeapGrowthCapability,
+    type HeapGrowthQueryResult,
+    type RetainedGrowthObjectiveResult,
+    type RetainedHeapEvidence,
+} from "./retainedMemoryGrowth";
+import {
     INVESTIGATION_EVIDENCE_KINDS,
     InvestigationEvidenceStore,
     parseInvestigationEvidenceDescriptor,
@@ -231,6 +246,7 @@ interface StreamChild {
     supportedLiveKinds?: string[];
     requestActivities?: boolean;
     cpuHandleComparison?: CpuHandleComparisonCapability;
+    heapGrowth?: HeapGrowthCapability;
     investigationEvidence?: boolean;
     investigationConnectionId?: string;
     pendingJointQueries?: Map<string, Deferred<JointQuery<RelatedActivity>>>;
@@ -242,6 +258,11 @@ interface RetainedCpuProfile {
     evidenceId: string;
     summary: CpuSampleSummary;
     trace?: boolean;
+}
+
+interface OwnedRetainedHeapEvidence extends RetainedHeapEvidence {
+    session: StreamChild;
+    queryOptIns: HeapQueryOptIns;
 }
 
 class CounterPanelController implements vscode.Disposable {
@@ -315,6 +336,8 @@ class CounterPanelController implements vscode.Disposable {
      * connection stays open (like `threadSnapshot`) because handles live in the CLI process.
      */
     private heapSnapshot?: { session: StreamChild; handle: string; evidenceId: string };
+    private retainedHeapEvidence: OwnedRetainedHeapEvidence[] = [];
+    private readonly heapGrowthGuard = new SingleFlightGuard();
     private readonly liveReadConsent = new LiveReadConsent(state => this.postMessage(state));
     private readonly addressNavigation = new AddressNavigationController(this.createAddressNavigationHost());
     private readonly typeInstanceNavigation = new TypeInstanceNavigationController(this.createTypeInstanceNavigationHost());
@@ -1315,15 +1338,12 @@ class CounterPanelController implements vscode.Disposable {
             return;
         }
 
-        this.heapSnapshot = undefined;
-        this.liveReadConsent.clear();
         this.postMessage({
             type: "captureStatus",
             kind: "heap",
             evidenceId: requestId,
             state: "running",
-            retainedEvidenceInvalidated: true,
-            message: `Capture dispatched (${sourcePick.label}). It cannot be stopped from this extension; waiting for a result…`,
+            message: `Capture dispatched (${sourcePick.label}). It cannot be stopped from this extension; prior retained evidence remains available until the new result succeeds or its bounded handle expires.`,
         });
         const pending: PendingCapture = { kind: "heap", evidenceId: requestId, deferred: deferred<HeapCaptureResult>() };
         session.pendingCaptures.set(requestId, pending);
@@ -1347,8 +1367,37 @@ class CounterPanelController implements vscode.Disposable {
             // than the CPU capture's fixed-duration sample, so this uses a longer ceiling.
             const result = await withTimeout(pending.deferred.promise, 120_000);
             const handle = result.data?.handle;
-            if (handle && sourcePick.source !== "gcdump") {
-                this.heapSnapshot = { session, handle, evidenceId: requestId };
+            if (handle) {
+                let capturedAt = new Date().toISOString();
+                try {
+                    const metadata = await this.sendQuery(session, handle, "top-types");
+                    if (typeof metadata.capturedAt === "string" && Number.isFinite(Date.parse(metadata.capturedAt)))
+                        capturedAt = metadata.capturedAt;
+                } catch (error) {
+                    this.output.appendLine(`Heap snapshot metadata query failed; using extension receipt time: ${errorMessage(error)}`);
+                }
+                const data = result.data as unknown as Record<string, unknown>;
+                const quality = isRecord(data.quality) && Array.isArray(data.quality.limitations)
+                    ? `${data.quality.limitations.length} structured limitation(s)`
+                    : sourcePick.source === "gcdump" ? "quality unavailable" : "no structured limitation reported";
+                this.retainHeapEvidence({
+                    session,
+                    handle,
+                    evidenceId: requestId,
+                    source: sourcePick.source,
+                    processId: target.processId,
+                    capturedAt,
+                    quality,
+                    available: true,
+                    detailsAvailable: sourcePick.source === "live",
+                    identity: "ephemeral",
+                    result,
+                    queryOptIns,
+                });
+                if (sourcePick.source !== "gcdump")
+                    this.heapSnapshot = { session, handle, evidenceId: requestId };
+                else this.heapSnapshot = undefined;
+                this.liveReadConsent.clear();
                 keepSession = true;
             }
             this.postMessage({
@@ -1394,6 +1443,181 @@ class CounterPanelController implements vscode.Disposable {
                 session.expectedShutdown = true;
                 await this.closeChild(session);
             }
+        }
+    }
+
+    private retainHeapEvidence(evidence: OwnedRetainedHeapEvidence): void {
+        this.retainedHeapEvidence = [
+            evidence,
+            ...(this.retainedHeapEvidence ?? []).filter(item => item.evidenceId !== evidence.evidenceId),
+        ].slice(0, RETAINED_HEAP_EVIDENCE_LIMIT);
+        this.publishHeapGrowthCatalog(evidence.session);
+    }
+
+    private publishHeapGrowthCatalog(session?: StreamChild): void {
+        const capability = session?.heapGrowth ?? this.activeChild?.heapGrowth;
+        this.postMessage({
+            type: "heapGrowthCatalog",
+            supported: capability?.available === true,
+            capability: capability ? {
+                maxAttempts: capability.maxAttempts,
+                minimumRobustPairs: capability.minimumRobustPairs,
+                storeCapacity: capability.storeCapacity,
+                boundedLifetime: capability.boundedLifetime,
+                storage: capability.storage,
+            } : undefined,
+            evidence: (this.retainedHeapEvidence ?? []).map(({
+                evidenceId, source, processId, capturedAt, quality, available, unavailableReason,
+                detailsAvailable, identity,
+            }) => ({
+                evidenceId, source, processId, capturedAt, quality, available, unavailableReason,
+                detailsAvailable, identity,
+            })),
+        });
+    }
+
+    private retainedHeap(evidenceId: string): OwnedRetainedHeapEvidence | undefined {
+        return (this.retainedHeapEvidence ?? []).find(evidence => evidence.evidenceId === evidenceId);
+    }
+
+    private recoverUnavailableHeapHandle(error: unknown): void {
+        if (!(error instanceof Error) || !isRecord(error) || error.code !== "handle_unavailable"
+            || typeof error.handle !== "string") return;
+        const status = typeof error.status === "string" ? error.status : "unavailable";
+        let changed = false;
+        this.retainedHeapEvidence = (this.retainedHeapEvidence ?? []).map(evidence => {
+            if (evidence.handle !== error.handle || !evidence.available) return evidence;
+            changed = true;
+            return {
+                ...evidence,
+                available: false,
+                unavailableReason: `The CLI reported this bounded handle as ${status}. Capture again or choose another available pair.`,
+            };
+        });
+        if (changed) this.publishHeapGrowthCatalog();
+    }
+
+    private async queryHeapGrowth(
+        baselineEvidenceId: string,
+        currentEvidenceId: string,
+        rankBy: "bytes" | "instances",
+    ): Promise<void> {
+        const outcome = await this.heapGrowthGuard.run(async () => {
+            const baseline = this.retainedHeap(baselineEvidenceId);
+            const current = this.retainedHeap(currentEvidenceId);
+            const compatibility = baseline && current ? heapEvidenceCompatibility(baseline, current) : undefined;
+            if (!baseline || !current || !compatibility?.compatible || baseline.session !== current.session
+                || current.session.heapGrowth?.available !== true) {
+                this.postMessage({
+                    type: "heapGrowthError",
+                    message: compatibility?.reason
+                        ?? "The selected retained evidence is unavailable, belongs to another CLI connection, or the CLI does not advertise heap-growth support.",
+                });
+                return;
+            }
+            this.postMessage({ type: "heapGrowthState", state: "running" });
+            try {
+                const result = await this.sendHeapGrowthQuery(current, baseline, rankBy);
+                this.postMessage({
+                    type: "heapGrowthResult",
+                    baselineEvidenceId,
+                    currentEvidenceId,
+                    result,
+                });
+            } catch (error) {
+                this.recoverUnavailableHeapHandle(error);
+                this.postMessage({ type: "heapGrowthError", message: errorMessage(error) });
+                this.output.appendLine(`Retained-memory growth query failed: ${errorMessage(error)}`);
+            } finally {
+                this.postMessage({ type: "heapGrowthState", state: "idle" });
+            }
+        });
+        if (!outcome.started)
+            this.postMessage({ type: "heapGrowthError", message: "Wait for the current retained-memory query to finish." });
+    }
+
+    private async queryHeapGrowthType(
+        baselineEvidenceId: string,
+        currentEvidenceId: string,
+        rankBy: "bytes" | "instances",
+        typeIdentity: HeapTypeIdentity,
+    ): Promise<void> {
+        const typeFilter = parseTypeFilter(typeIdentity.typeFullName);
+        if (!typeFilter) {
+            this.postMessage({ type: "heapGrowthError", message: "The selected type identity is invalid." });
+            return;
+        }
+        const outcome = await this.heapGrowthGuard.run(async () => {
+            const baseline = this.retainedHeap(baselineEvidenceId);
+            const current = this.retainedHeap(currentEvidenceId);
+            const compatibility = baseline && current ? heapEvidenceCompatibility(baseline, current) : undefined;
+            if (!baseline || !current || !compatibility?.compatible || baseline.session !== current.session
+                || current.session.heapGrowth?.available !== true) {
+                this.postMessage({ type: "heapGrowthError", message: compatibility?.reason ?? "The selected retained pair is no longer available." });
+                return;
+            }
+            this.postMessage({ type: "heapGrowthState", state: "running" });
+            try {
+                const result = await this.sendHeapGrowthQuery(current, baseline, rankBy, typeFilter);
+                this.heapSnapshot = current.detailsAvailable
+                    ? { session: current.session, handle: current.handle, evidenceId: current.evidenceId }
+                    : undefined;
+                this.liveReadConsent.clear();
+                this.postMessage({
+                    type: "heapEvidenceActivated",
+                    evidenceId: current.evidenceId,
+                    source: current.source,
+                    retainedHandleAvailable: current.detailsAvailable,
+                    result: current.result,
+                });
+                if (current.detailsAvailable)
+                    await this.runHeapQueries(current.session, current.handle, current.queryOptIns, current.evidenceId);
+                this.postMessage({
+                    type: "heapGrowthObjective",
+                    baselineEvidenceId,
+                    currentEvidenceId,
+                    typeIdentity,
+                    result,
+                });
+            } catch (error) {
+                this.recoverUnavailableHeapHandle(error);
+                this.postMessage({ type: "heapGrowthError", message: errorMessage(error) });
+                this.output.appendLine(`Objective retained-memory query failed: ${errorMessage(error)}`);
+            } finally {
+                this.postMessage({ type: "heapGrowthState", state: "idle" });
+            }
+        });
+        if (!outcome.started)
+            this.postMessage({ type: "heapGrowthError", message: "Wait for the current retained-memory query to finish." });
+    }
+
+    private async sendHeapGrowthQuery(
+        current: OwnedRetainedHeapEvidence,
+        baseline: OwnedRetainedHeapEvidence,
+        rankBy: "bytes" | "instances",
+        typeFilter?: string,
+    ): Promise<HeapGrowthQueryResult | RetainedGrowthObjectiveResult> {
+        const requestId = randomBytes(12).toString("hex");
+        const pending = deferred<QueryResult>();
+        current.session.pendingQueries.set(requestId, pending);
+        try {
+            this.writeFrame(current.session,
+                buildHeapGrowthFrame(requestId, current.handle, baseline.handle, rankBy, typeFilter));
+            const result = await withTimeout(pending.promise, 60_000);
+            if (typeFilter === undefined) {
+                if (!isHeapGrowthQueryResult(result))
+                    throw new Error("The CLI returned an unsupported retained-memory growth response.");
+                if (result.handle !== current.handle || result.baselineHandle !== baseline.handle)
+                    throw new Error("The CLI returned retained-memory evidence for a different handle pair.");
+                return result;
+            }
+            if (!isRetainedGrowthObjectiveResult(result))
+                throw new Error("The CLI returned an unsupported objective retained-memory response.");
+            if (result.handle !== current.handle || result.baselineHandle !== baseline.handle)
+                throw new Error("The CLI returned retained-memory evidence for a different handle pair.");
+            return result;
+        } finally {
+            current.session.pendingQueries.delete(requestId);
         }
     }
 
@@ -1788,7 +2012,9 @@ class CounterPanelController implements vscode.Disposable {
     }
 
     private hasRetainedProfileFor(session: StreamChild): boolean {
-        return this.cpuExport?.session === session || this.allocationProfile?.session === session || this.joint?.session === session;
+        return this.cpuExport?.session === session || this.allocationProfile?.session === session
+            || this.joint?.session === session || this.threadSnapshot?.session === session
+            || (this.retainedHeapEvidence ?? []).some(evidence => evidence.session === session && evidence.available);
     }
 
     /**
@@ -2159,6 +2385,22 @@ class CounterPanelController implements vscode.Disposable {
                 void this.captureAllocations();
             } else if (message.type === "captureHeap") {
                 void this.captureHeap();
+            } else if (message.type === "queryHeapGrowth"
+                && typeof message.baselineEvidenceId === "string"
+                && typeof message.currentEvidenceId === "string"
+                && (message.rankBy === "bytes" || message.rankBy === "instances")) {
+                void this.queryHeapGrowth(message.baselineEvidenceId, message.currentEvidenceId, message.rankBy);
+            } else if (message.type === "queryHeapGrowthType"
+                && typeof message.baselineEvidenceId === "string"
+                && typeof message.currentEvidenceId === "string"
+                && (message.rankBy === "bytes" || message.rankBy === "instances")
+                && isRecord(message.typeIdentity)) {
+                void this.queryHeapGrowthType(
+                    message.baselineEvidenceId,
+                    message.currentEvidenceId,
+                    message.rankBy,
+                    message.typeIdentity as unknown as HeapTypeIdentity,
+                );
             } else if (message.type === "captureThreadSnapshot") {
                 void this.captureThreadSnapshot();
             } else if (message.type === "queryThreadStatics") {
@@ -2566,6 +2808,7 @@ class CounterPanelController implements vscode.Disposable {
                 session.requestActivities = supportsRequestActivities(frame.requestActivities);
                 session.cpuHandleComparison = supportsCpuHandleComparison(frame.cpuHandleComparison)
                     ? frame.cpuHandleComparison : undefined;
+                session.heapGrowth = supportsHeapGrowth(frame.heapGrowth) ? frame.heapGrowth : undefined;
                 session.investigationEvidence = isRecord(frame.capabilities)
                     && supportsInvestigationEvidence(frame.capabilities.investigationEvidence);
                 this.output.appendLine(profileDiagnostic("child-handshake", {
@@ -2578,6 +2821,7 @@ class CounterPanelController implements vscode.Disposable {
                     type: "investigationEvidenceCapability",
                     supported: session.investigationEvidence,
                 });
+                this.publishHeapGrowthCatalog(session);
                 session.handshake.resolve();
                 break;
 
@@ -2661,6 +2905,19 @@ class CounterPanelController implements vscode.Disposable {
                 session.terminalReceived = true;
                 if (frame.status === "targetExited" && this.heapSnapshot?.session === session)
                     this.liveReadConsent.clear();
+                if (frame.status === "targetExited") {
+                    let changed = false;
+                    this.retainedHeapEvidence = (this.retainedHeapEvidence ?? []).map(evidence => {
+                        if (evidence.session !== session || !evidence.available) return evidence;
+                        changed = true;
+                        return {
+                            ...evidence,
+                            available: false,
+                            unavailableReason: "The target exited; live/gcdump growth handles can no longer validate the original process lifetime.",
+                        };
+                    });
+                    if (changed) this.publishHeapGrowthCatalog(session);
+                }
                 session.sessionId = undefined;
                 session.terminal.resolve();
                 if (session.eventsConnection) {
@@ -2797,7 +3054,13 @@ class CounterPanelController implements vscode.Disposable {
                         : frame.code === "unsupported_capture_kind"
                             ? withRuntimeGuidance(message)
                             : message,
-                ), { code: frame.code });
+                ), {
+                    code: frame.code,
+                    handle: frame.handle,
+                    handleRole: frame.handleRole,
+                    status: frame.status,
+                    reason: frame.reason,
+                });
                 const requestId = typeof frame.requestId === "string" ? frame.requestId : undefined;
                 const pendingCapture = requestId ? session.pendingCaptures.get(requestId) : undefined;
                 const pendingQuery = requestId ? session.pendingQueries.get(requestId) : undefined;
@@ -3121,6 +3384,17 @@ class CounterPanelController implements vscode.Disposable {
                 message: "The owning CLI connection closed. The rendered snapshot remains available for inspection.",
             });
         }
+        let changed = false;
+        this.retainedHeapEvidence = (this.retainedHeapEvidence ?? []).map(evidence => {
+            if (evidence.session !== session || !evidence.available) return evidence;
+            changed = true;
+            return {
+                ...evidence,
+                available: false,
+                unavailableReason: "The owning CLI connection closed; the rendered capture is display-only.",
+            };
+        });
+        if (changed) this.publishHeapGrowthCatalog();
     }
 
     private postEventsMessage(message: object): void {
@@ -4155,6 +4429,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     .export-controls { margin:.6rem 0; }
     ${ACTION_AVAILABILITY_STYLES}
     ${MEMORY_OVERVIEW_STYLES}
+    ${RETAINED_MEMORY_GROWTH_STYLES}
     ${INVESTIGATION_LENS_STYLES}
     .result-tabs, .monitoring-tabs { display:flex; gap:.2rem; overflow-x:auto; padding:.45rem 0; background:var(--vscode-editor-background); border-bottom:1px solid var(--vscode-panel-border); }
     .result-tabs { position:sticky; top:0; z-index:2; }
@@ -4411,6 +4686,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
   <section id="resultHeap" class="result-tab-panel" role="tabpanel" aria-labelledby="resultTabHeap" hidden>
     <div class="panel-actions"><button id="captureHeap" type="button" aria-label="Capture heap snapshot">Capture heap snapshot…</button></div>
     <div id="captureHeapStatus" role="status" aria-live="polite"></div>
+    ${RETAINED_MEMORY_GROWTH_HTML}
     <div id="captureHeapResult" class="empty">
       <div id="captureHeapHeadline"></div>
       <div id="heapWorkspace" class="heap-workspace" data-focused="false">
@@ -4530,6 +4806,12 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     const captureHeapResultElement = document.getElementById('captureHeapResult');
     const captureHeapHeadline = document.getElementById('captureHeapHeadline');
     const captureHeapBody = document.getElementById('captureHeapBody');
+    const retainedGrowthBaseline = document.getElementById('retainedGrowthBaseline');
+    const retainedGrowthCurrent = document.getElementById('retainedGrowthCurrent');
+    const retainedGrowthRank = document.getElementById('retainedGrowthRank');
+    const runRetainedGrowth = document.getElementById('runRetainedGrowth');
+    const retainedGrowthStatus = document.getElementById('retainedGrowthStatus');
+    const retainedGrowthResult = document.getElementById('retainedGrowthResult');
     const captureThreadStatusElement = document.getElementById('captureThreadStatus');
     const threadStaticsInput = document.getElementById('threadStaticsType');
     const threadStaticsButton = document.getElementById('threadStaticsButton');
@@ -4545,6 +4827,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     ${CPU_COMPARISON_SCRIPT}
     ${LIVE_TIME_NAVIGATION_SCRIPT}
     ${MEMORY_OVERVIEW_SCRIPT}
+    ${RETAINED_MEMORY_GROWTH_SCRIPT}
     ${LIVE_READ_CONSENT_SCRIPT}
     ${INVESTIGATION_LENS_SCRIPT}
     let cpuProfileResult;
@@ -4668,6 +4951,10 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     let heapEvidenceSource;
     let heapDetailsAvailable = false;
     let heapCaptureBusy = false;
+    let retainedHeapCatalog = [];
+    let retainedGrowthSupported = false;
+    let retainedGrowthBusy = false;
+    let retainedGrowthPair;
     let memoryHeapEvidenceAvailable = false;
     let diagnosticsRequestId;
     let pendingCpuEvidenceId;
@@ -4675,6 +4962,71 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     let pendingHeapEvidenceId;
     const cpuViewCache = new Map();
     const allocationViewCache = new Map();
+    function retainedGrowthCompatibility(baseline, current) {
+      if (!baseline || !current) return { compatible:false, reason:'Choose both baseline and current evidence.' };
+      if (!baseline.available || !current.available)
+        return { compatible:false, reason:baseline.unavailableReason || current.unavailableReason || 'One retained handle is unavailable.' };
+      if (baseline.evidenceId === current.evidenceId)
+        return { compatible:false, reason:'Baseline and current must be different captures.' };
+      if (baseline.processId !== current.processId)
+        return { compatible:false, reason:'The selected captures belong to different process IDs.' };
+      if (baseline.source !== current.source)
+        return { compatible:false, reason:'The selected captures use different heap sources.' };
+      const baselineTime = Date.parse(baseline.capturedAt), currentTime = Date.parse(current.capturedAt);
+      if (!Number.isFinite(baselineTime) || !Number.isFinite(currentTime))
+        return { compatible:false, reason:'Capture chronology is unavailable.' };
+      if (baselineTime > currentTime)
+        return { compatible:false, reason:'Baseline must be earlier than current evidence.' };
+      return { compatible:true, reason:'Compatible retained pair. The CLI will revalidate handle lifetime and evidence identity.' };
+    }
+    function retainedEvidenceLabel(evidence) {
+      const captured = new Date(evidence.capturedAt);
+      const time = Number.isFinite(captured.getTime()) ? captured.toLocaleString() : 'capture time unavailable';
+      const state = evidence.available ? '' : ' · unavailable';
+      return time + ' · ' + evidence.source + ' · PID ' + evidence.processId + ' · ' + evidence.quality + state;
+    }
+    function fillRetainedGrowthChoices() {
+      const baselineValue = retainedGrowthBaseline.value;
+      const currentValue = retainedGrowthCurrent.value;
+      retainedGrowthBaseline.replaceChildren();
+      retainedGrowthCurrent.replaceChildren();
+      for (const evidence of retainedHeapCatalog) {
+        for (const select of [retainedGrowthBaseline, retainedGrowthCurrent]) {
+          const option = document.createElement('option');
+          option.value = evidence.evidenceId;
+          option.textContent = retainedEvidenceLabel(evidence);
+          option.disabled = !evidence.available;
+          select.appendChild(option);
+        }
+      }
+      const available = retainedHeapCatalog.filter(item => item.available);
+      const restore = (select, value) => {
+        if (available.some(item => item.evidenceId === value)) select.value = value;
+      };
+      restore(retainedGrowthBaseline, baselineValue);
+      restore(retainedGrowthCurrent, currentValue);
+      if (!available.some(item => item.evidenceId === retainedGrowthCurrent.value))
+        retainedGrowthCurrent.value = available[0]?.evidenceId || '';
+      const current = available.find(item => item.evidenceId === retainedGrowthCurrent.value) || available[0];
+      if (!available.some(item => item.evidenceId === retainedGrowthBaseline.value)
+          || retainedGrowthBaseline.value === current?.evidenceId) {
+        retainedGrowthBaseline.value = available.find(item =>
+          retainedGrowthCompatibility(item, current).compatible)?.evidenceId || '';
+      }
+      updateRetainedGrowthControls();
+    }
+    function updateRetainedGrowthControls(preserveStatus) {
+      const baseline = retainedHeapCatalog.find(item => item.evidenceId === retainedGrowthBaseline.value);
+      const current = retainedHeapCatalog.find(item => item.evidenceId === retainedGrowthCurrent.value);
+      const compatibility = retainedGrowthCompatibility(baseline, current);
+      runRetainedGrowth.disabled = retainedGrowthBusy || !retainedGrowthSupported || !compatibility.compatible;
+      if (!preserveStatus) {
+        retainedGrowthStatus.textContent = !retainedGrowthSupported
+          ? 'The configured CLI does not advertise available heap-growth JSONL support.'
+          : retainedGrowthBusy ? 'Querying retained-memory evidence from the CLI…'
+          : compatibility.reason;
+      }
+    }
     const profileViewLabels = {
       comparison: 'Baseline / current',
       triage: 'Overview',
@@ -6527,6 +6879,36 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         if (captureKind === 'gc' || captureKind === 'gc-activities') {
           workspaceGcStatus.textContent = 'Current generic capture: ' + (genericCaptureLabels[captureKind] || captureKind) + '.';
         }
+      } else if (message.type === 'heapGrowthCatalog') {
+        retainedGrowthSupported = message.supported === true;
+        retainedHeapCatalog = Array.isArray(message.evidence) ? message.evidence.slice(0, 8) : [];
+        fillRetainedGrowthChoices();
+      } else if (message.type === 'heapGrowthState') {
+        retainedGrowthBusy = message.state === 'running';
+        updateRetainedGrowthControls(message.state !== 'running');
+      } else if (message.type === 'heapGrowthError') {
+        retainedGrowthBusy = false;
+        updateRetainedGrowthControls(true);
+        retainedGrowthStatus.textContent = String(message.message || 'Retained-memory growth is unavailable.');
+      } else if (message.type === 'heapGrowthResult') {
+        retainedGrowthBusy = false;
+        retainedGrowthPair = {
+          baselineEvidenceId: message.baselineEvidenceId,
+          currentEvidenceId: message.currentEvidenceId,
+          rankBy: message.result?.rankBy === 'instances' ? 'instances' : 'bytes',
+        };
+        renderRetainedGrowth(retainedGrowthResult, message.result, typeIdentity => {
+          if (!retainedGrowthPair) return;
+          vscode.postMessage({ type:'queryHeapGrowthType', ...retainedGrowthPair, typeIdentity });
+        });
+        updateRetainedGrowthControls(true);
+        retainedGrowthStatus.textContent = 'CLI retained-growth evidence loaded. Select a supported growing type for objective evidence and canonical heap drilldown.';
+      } else if (message.type === 'heapGrowthObjective') {
+        retainedGrowthBusy = false;
+        renderRetainedGrowth(retainedGrowthResult, message.result, () => {});
+        updateRetainedGrowthControls(true);
+        retainedGrowthStatus.textContent = 'Objective retained evidence loaded; the canonical current heap explorer is focused on the selected type when it is present in the bounded table.';
+        selectHeapTypeFromGrowth(message.typeIdentity || {});
       } else if (message.type === 'captureStatus' && message.kind === 'heap') {
         if (typeof message.evidenceId === 'string') pendingHeapEvidenceId = message.evidenceId;
         if (message.state === 'starting') activateCaptureTab('heap');
@@ -6612,11 +6994,39 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
         memoryHeapEvidenceAvailable = true;
         memoryOverview.render();
         setAddressLiveQueriesAvailable(message.retainedHandleAvailable === true);
+        const heapWorkspace = document.getElementById('heapWorkspace');
+        if (heapWorkspace) {
+          heapWorkspace.dataset.instanceQueriesAvailable = message.retainedHandleAvailable === true ? 'true' : 'false';
+          heapWorkspace.dataset.instanceQueriesReason = message.retainedHandleAvailable === true
+            ? '' : 'This heap source has no retained handle for bounded instance, object or GC-root reads.';
+        }
         renderHeapCapture(message.source, message.result);
         setWorkspaceStatus('heap', message.retainedHandleAvailable === true
           ? 'Current evidence: heap snapshot (' + String(message.source || 'source unavailable') + '). Live follow-up reads require separate consent.'
           : 'Current evidence is display-only: heap snapshot (' + String(message.source || 'source unavailable')
             + ') has no retained live-query handle.');
+        if (selectedWorkspaceEvidence === 'heap') setWorkspaceEvidence('heap');
+      } else if (message.type === 'heapEvidenceActivated') {
+        heapCaptureBusy = false;
+        heapEvidenceSource = message.source;
+        heapEvidenceId = typeof message.evidenceId === 'string' ? message.evidenceId : undefined;
+        heapDetailsAvailable = message.source === 'live';
+        memoryHeapEvidenceAvailable = true;
+        memoryOverview.render();
+        setAddressLiveQueriesAvailable(message.retainedHandleAvailable === true);
+        const heapWorkspace = document.getElementById('heapWorkspace');
+        if (heapWorkspace) {
+          heapWorkspace.dataset.instanceQueriesAvailable = message.retainedHandleAvailable === true ? 'true' : 'false';
+          heapWorkspace.dataset.instanceQueriesReason = message.retainedHandleAvailable === true
+            ? '' : 'GC dump evidence supports retained totals and growth comparison, but not bounded instance, object or GC-root reads.';
+        }
+        document.getElementById('heapQueryViews').replaceChildren();
+        resetAddressNavigation();
+        resetHeapDetailsNavigation();
+        renderHeapCapture(message.source, message.result);
+        setWorkspaceStatus('heap', message.retainedHandleAvailable === true
+          ? 'Current evidence: selected retained live heap snapshot. Follow-up reads require separate consent.'
+          : 'Current evidence: selected retained GC dump. Type totals are available; instances, object details and actual GC-root paths are unavailable by mechanism.');
         if (selectedWorkspaceEvidence === 'heap') setWorkspaceEvidence('heap');
       } else if (message.type === 'capture' && message.kind === 'thread-snapshot') {
         if (message.evidenceId !== pendingThreadSnapshotEvidenceId) return;
@@ -6811,6 +7221,24 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     captureExceptionsButton.addEventListener('click', () => vscode.postMessage({ type: 'captureExceptions' }));
     document.getElementById('captureAllocation').addEventListener('click', () => vscode.postMessage({ type: 'captureAllocation' }));
     captureHeapButton.addEventListener('click', () => vscode.postMessage({ type: 'captureHeap' }));
+    retainedGrowthBaseline.addEventListener('change', updateRetainedGrowthControls);
+    retainedGrowthCurrent.addEventListener('change', updateRetainedGrowthControls);
+    retainedGrowthRank.addEventListener('change', updateRetainedGrowthControls);
+    runRetainedGrowth.addEventListener('click', () => {
+      const baseline = retainedHeapCatalog.find(item => item.evidenceId === retainedGrowthBaseline.value);
+      const current = retainedHeapCatalog.find(item => item.evidenceId === retainedGrowthCurrent.value);
+      const compatibility = retainedGrowthCompatibility(baseline, current);
+      if (!compatibility.compatible) {
+        retainedGrowthStatus.textContent = compatibility.reason;
+        return;
+      }
+      retainedGrowthPair = {
+        baselineEvidenceId: baseline.evidenceId,
+        currentEvidenceId: current.evidenceId,
+        rankBy: retainedGrowthRank.value === 'instances' ? 'instances' : 'bytes',
+      };
+      vscode.postMessage({ type:'queryHeapGrowth', ...retainedGrowthPair });
+    });
     captureThreadSnapshotButton.addEventListener('click', () => vscode.postMessage({ type: 'captureThreadSnapshot' }));
     window.addEventListener('resize', resizeCanvas);
     // The webview can be laid out while hidden (zero size); re-measure whenever the canvas gets a real size.
