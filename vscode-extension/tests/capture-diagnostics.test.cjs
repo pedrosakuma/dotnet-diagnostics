@@ -427,6 +427,128 @@ test("heap confirmation names its target, source and selected enrichments withou
     assert.deepEqual(frames, []);
 });
 
+test("retained heap growth runs only after an explicit compatible pair request on the owning JSONL stream", async () => {
+    const controller = Object.create(Controller.prototype);
+    const messages = [], frames = [];
+    const session = {
+        pendingCaptures: new Map(), pendingQueries: new Map(), startInFlight: false, closing: false,
+        process: { exitCode: null, signalCode: null },
+        heapGrowth: { available: true },
+    };
+    const captureResult = {
+        summary: "heap",
+        data: {
+            processId: 4242, suspendDuration: "00:00:00.01", handle: "unused",
+            topTypesByBytes: [], topTypesByInstances: [],
+        },
+    };
+    controller.output = { appendLine() {} };
+    controller.postMessage = message => messages.push(message);
+    controller.heapGrowthGuard = new SingleFlightGuard();
+    controller.retainedHeapEvidence = [
+        {
+            session, handle: "current", evidenceId: "current-evidence", source: "live", processId: 4242,
+            capturedAt: "2026-10-31T10:01:00Z", quality: "complete", available: true,
+            detailsAvailable: true, identity: "ephemeral", result: captureResult, queryOptIns: {},
+        },
+        {
+            session, handle: "baseline", evidenceId: "baseline-evidence", source: "live", processId: 4242,
+            capturedAt: "2026-10-31T10:00:00Z", quality: "complete", available: true,
+            detailsAvailable: true, identity: "ephemeral", result: captureResult, queryOptIns: {},
+        },
+    ];
+    controller.writeFrame = (_session, frame) => {
+        frames.push(frame);
+        controller.handleFrame(session, JSON.stringify({
+            type: "query",
+            requestId: frame.requestId,
+            result: {
+                handle: "current",
+                baselineHandle: "baseline",
+                view: "growth",
+                baselineOrigin: "live",
+                currentOrigin: "live",
+                processId: 4242,
+                baselineCapturedAt: "2026-10-31T10:00:00Z",
+                currentCapturedAt: "2026-10-31T10:01:00Z",
+                elapsed: "00:01:00",
+                rankBy: "bytes",
+                baselineHeapBytes: 100,
+                currentHeapBytes: 200,
+                totalHeapGrowthBytes: 100,
+                totalGrowers: 1,
+                growers: [{
+                    typeFullName: "Sample.Cache", baselineBytes: 10, currentBytes: 50, bytesDelta: 40,
+                    baselineInstances: 1, currentInstances: 5, instancesDelta: 4,
+                }],
+            },
+        }));
+    };
+
+    await controller.queryHeapGrowth("baseline-evidence", "current-evidence", "bytes");
+
+    assert.equal(frames.length, 1);
+    assert.deepEqual(Object.fromEntries(Object.entries(frames[0]).filter(([key]) => key !== "requestId")), {
+        type: "query", handle: "current", baselineHandle: "baseline", view: "growth",
+        rankBy: "bytes", minDeltaPct: 0, topN: 25,
+    });
+    assert.ok(messages.some(message => message.type === "heapGrowthResult"));
+    assert.deepEqual(messages.filter(message => message.type === "heapGrowthState").map(message => message.state),
+        ["running", "idle"]);
+    assert.equal(session.pendingQueries.size, 0);
+});
+
+test("objective retained growth activates the chosen current canonical heap before type drilldown", async () => {
+    const controller = Object.create(Controller.prototype);
+    const messages = [];
+    const session = {
+        pendingQueries: new Map(), closing: false, process: { exitCode: null, signalCode: null },
+        heapGrowth: { available: true },
+    };
+    const captureResult = {
+        summary: "heap",
+        data: {
+            processId: 4242, suspendDuration: "00:00:00.01",
+            topTypesByBytes: [{ typeFullName: "Sample.Cache", instanceCount: 5, totalBytes: 50, totalBytesPercent: 50 }],
+            topTypesByInstances: [],
+        },
+    };
+    const evidence = (handle, id, capturedAt) => ({
+        session, handle, evidenceId: id, source: "live", processId: 4242, capturedAt,
+        quality: "complete", available: true, detailsAvailable: true, identity: "ephemeral",
+        result: captureResult, queryOptIns: { includeRetentionPaths: true },
+    });
+    controller.output = { appendLine() {} };
+    controller.postMessage = message => messages.push(message);
+    controller.heapGrowthGuard = new SingleFlightGuard();
+    controller.liveReadConsent = { clear() {} };
+    controller.retainedHeapEvidence = [
+        evidence("current", "current-evidence", "2026-10-31T10:01:00Z"),
+        evidence("baseline", "baseline-evidence", "2026-10-31T10:00:00Z"),
+    ];
+    controller.sendHeapGrowthQuery = async () => ({
+        handle: "current", baselineHandle: "baseline", view: "growth",
+        objectiveRetainedGrowth: {
+            schema: "dotnet-diagnostics/retained-growth-evidence/v1",
+            targetType: { typeFullName: "Sample.Cache" },
+            pairMethod: { id: "paired-delta", version: 1 },
+            counts: {}, pairs: [], repeated: {}, allocationEvidence: {},
+            rootPathEvidence: {}, observerEffects: {}, assumptions: [], limitations: [],
+        },
+    });
+    controller.runHeapQueries = async () => messages.push({ type: "queries-ran" });
+
+    await controller.queryHeapGrowthType(
+        "baseline-evidence", "current-evidence", "bytes", { typeFullName: "Sample.Cache" });
+
+    assert.equal(controller.heapSnapshot.evidenceId, "current-evidence");
+    const activation = messages.findIndex(message => message.type === "heapEvidenceActivated");
+    const queries = messages.findIndex(message => message.type === "queries-ran");
+    const objective = messages.findIndex(message => message.type === "heapGrowthObjective");
+    assert.ok(activation >= 0 && queries > activation && objective > queries);
+    assert.equal(messages[activation].retainedHandleAvailable, true);
+});
+
 test("heap and thread confirmation do not dispatch when the selected target changes", async () => {
     const target = { processId: 4242, managedEntrypointAssemblyName: "Sample" };
     for (const kind of ["heap", "thread-snapshot"]) {

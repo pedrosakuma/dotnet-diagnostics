@@ -32,7 +32,7 @@ internal static class CliCommandCatalog
         "--threadpool-queue-level", "--threadpool-min-windows", "--threadpool-drain-tail-windows",
         "--provider", "--meter", "--source", "--category", "--min-level", "--save", "--dump-file",
         "--top-types", "--retention-path-limit", "--symbol-path", "--native-aot-map", "--cpu-backend", "--dump-type", "--out", "--mvid",
-        "--asset", "--handle", "--gc-handle", "--latest-of-kind", "--view", "--trace-id", "--provider-filter", "--root-method-filter", "--rank-by",
+        "--asset", "--handle", "--baseline-handle", "--gc-handle", "--latest-of-kind", "--view", "--trace-id", "--provider-filter", "--root-method-filter", "--rank-by",
         "--type-filter", "--address", "--offset", "--cursor", "--max-depth", "--max-nodes", "--thread-id",
         "--native-alloc-sample-period", "--native-lock-contention-sample-period", "--max-frames-per-thread", "--watch",
         "--frames-to-hash", "--min-count", "--top", "--threshold", "--mode", "--stack-rank",
@@ -452,6 +452,7 @@ query options:
       --after-record-id <int>   records: exclusive continuation from the previous page.
       --page-size <int>         records: bounded page size, 1..1000 (default 100).
       --handle <id>             Session drill-down handle. Exactly one of --handle/--latest-of-kind is required.
+      --baseline-handle <id>    Session heap growth: earlier heap-snapshot handle paired with --handle.
       --latest-of-kind <kind>   Session query: alias for --handle — resolves to the most recently registered
                                 non-expired handle of this kind (e.g. cpu-sample); narrow with --pid.
       --view <name>             Existing drill-down view, records, or children for a durable group.
@@ -468,6 +469,7 @@ query options:
       --cursor <opaque>         Session query: stable continuation returned by the prior thread/lock page.
       --address <decimal|0xhex> Session query: heap object/root address or exact thread-snapshot lock address.
       --stack-rank <int>        Session query: 1-based rank for the off-CPU 'stack' view.
+      --type-filter <name>      Heap growth: exact full objective type name; required with --baseline-handle.
   Note: handles are process-local. A one-shot command's handle disappears when that command exits,
   so one-shot 'query --handle' returns a NotSupported envelope (exit 1). Use --capture-id plus
   --artifact-id to reopen persisted evidence across processes. Only advertised offline views are
@@ -494,6 +496,7 @@ query options:
                 "--capture-id", "--artifact-id", "--from", "--to", "--category", "--name",
                 "--after-record-id", "--page-size",
                 "--handle",
+                "--baseline-handle",
                 "--gc-handle",
                 "--latest-of-kind",
                 "--view",
