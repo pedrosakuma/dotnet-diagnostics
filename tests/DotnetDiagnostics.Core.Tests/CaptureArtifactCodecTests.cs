@@ -267,6 +267,7 @@ public sealed partial class CaptureArtifactCodecTests
                 "triage" => CpuSampleQueryDispatcher.RenderTriage(cpu, "stable", 50, 80),
                 "code-versions" => CpuSampleQueryDispatcher.RenderCodeVersions(cpu, "stable", null, 50),
                 "inlining" => CpuSampleQueryDispatcher.RenderInlining(cpu, "stable", null, 50),
+                "hotspot-variability" => CpuSampleQueryDispatcher.RenderHotspotVariability(cpu, "stable"),
                 _ => throw new InvalidOperationException(view),
             };
         }
