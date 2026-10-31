@@ -32,6 +32,7 @@ internal sealed record CaptureView(string Kind, string Title, string Summary, Ca
     public string? Handle { get; init; }
     public DateTimeOffset? HandleExpiresAt { get; init; }
     public string Backend { get; init; } = "unknown";
+    public ContentionConcentrationEvidence? ContentionConcentration { get; init; }
 }
 
 internal sealed class CaptureViewBuilder
@@ -128,6 +129,7 @@ internal static class CliStreamingCaptureViews
         DateTimeOffset? start = null;
         TimeSpan? duration = null;
         object? evidence = null;
+        ContentionConcentrationEvidence? contentionConcentration = null;
         var backend = "eventpipe";
         string summary;
         switch (result.Envelope)
@@ -172,9 +174,19 @@ internal static class CliStreamingCaptureViews
                 b.Metric("Distinct monitors", s.DistinctMonitors);
                 b.Metric("Total contention (ms)", s.TotalContentionDuration.TotalMilliseconds);
                 b.Metric("P95 contention (ms)", s.TotalEvents > 0 ? s.P95ContentionDuration.TotalMilliseconds : null);
+                contentionConcentration = s.Concentration;
+                b.Metric("Top-1 wait-duration share", s.Concentration?.Top1WaitDurationShare);
+                b.Metric("Top-3 wait-duration share", s.Concentration?.Top3WaitDurationShare);
+                b.Metric("Active-window fraction", s.Concentration?.ActiveWindowFraction);
+                b.Metric("Concentration availability", s.Concentration?.Availability.ToString());
+                b.Metric("Concentration shape", s.Concentration?.Shape.ToString());
                 b.Table("sites", "Retained contention sites", ["Module", "Method", "Duration (ms)", "Thread"], s.Events, top,
                     e => [e.CallSiteModule, e.CallSiteMethod, e.Duration.TotalMilliseconds, e.ContendingThreadId]);
                 b.Notes(s.Notes);
+                if (s.Concentration is null)
+                {
+                    b.Note("Contention concentration evidence is unavailable because this artifact predates the additive evidence block; values were not backfilled.");
+                }
                 b.Note("Site rows cover retained events only; aggregate totals cover observed events. Empty data do not prove no unmanaged contention.");
                 break;
             case DiagnosticResult<ThreadPoolEventSnapshot> { Data: { } s } envelope:
@@ -300,6 +312,7 @@ internal static class CliStreamingCaptureViews
             Handle = result.Handle ?? allocationEnvelope?.Handle,
             HandleExpiresAt = result.HandleExpiresAt ?? allocationEnvelope?.HandleExpiresAt,
             Backend = backend,
+            ContentionConcentration = contentionConcentration,
         };
     }
 

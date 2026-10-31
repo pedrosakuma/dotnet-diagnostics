@@ -766,7 +766,7 @@ public sealed record CollectEventsEnvelope(
     LogSnapshot? Logs = null,
     JitSnapshot? Jit = null,
     ThreadPoolEventSnapshot? ThreadPool = null,
-    ContentionSnapshot? Contention = null,
+    CollectEventsContentionSnapshot? Contention = null,
     DbSnapshot? Db = null,
     KestrelSnapshot? Kestrel = null,
     NetworkingSnapshot? Networking = null,
@@ -778,3 +778,31 @@ public sealed record CollectEventsEnvelope(
     ReplicaCounterSkew? ReplicaCounters = null,
     IReadOnlyList<string>? PodErrors = null,
     IReadOnlyList<RemoteCaptureReference>? RemoteCaptures = null);
+
+public sealed record CollectEventsContentionSnapshot(
+    int ProcessId,
+    DateTimeOffset StartedAt,
+    TimeSpan Duration,
+    int TotalEvents,
+    int DistinctMonitors,
+    TimeSpan TotalContentionDuration,
+    TimeSpan P50ContentionDuration,
+    TimeSpan P95ContentionDuration,
+    TimeSpan MaxContentionDuration,
+    IReadOnlyList<ContentionEventSample> Events,
+    IReadOnlyList<string> Notes)
+{
+    public static CollectEventsContentionSnapshot From(ContentionSnapshot snapshot)
+        => new(
+            snapshot.ProcessId,
+            snapshot.StartedAt,
+            snapshot.Duration,
+            snapshot.TotalEvents,
+            snapshot.DistinctMonitors,
+            snapshot.TotalContentionDuration,
+            snapshot.P50ContentionDuration,
+            snapshot.P95ContentionDuration,
+            snapshot.MaxContentionDuration,
+            snapshot.Events,
+            snapshot.Notes);
+}
