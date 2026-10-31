@@ -43,6 +43,28 @@ implications:
 
 ## Per-collector reference
 
+### Offline request-latency comparison
+
+The Core-owned request-latency comparison (#1317) is not a collector, but its
+caller-supplied evidence is bounded before calculation: each side contains
+**1-32 windows**, each window retains at most **256** finite non-negative
+millisecond values, and one-shot CLI files are at most **256 KiB** each. JSONL
+accepts one bounded **576 KiB** control frame, enough for two maximum-size
+window sets plus envelope overhead. MCP likewise rejects either inline
+window-set body above **256 KiB**. Window and pair identifiers must be unique
+within each side, counts are non-negative, and failed/aborted windows cannot
+carry completed latency values.
+
+Exact complete windows must retain every source-completed request. Any known
+loss, error, censored request, missing completion, approximation, unpaired
+window, failed/aborted window, pair-order mismatch, or insufficient request
+count remains explicit and can withhold paired inference. The inferential path
+requires at least eight completed requests in each window and eight valid
+independent complete window pairs. Its fixed **2,048** bootstrap resamples
+operate only over those bounded pair-level deltas, so work cannot scale with an
+unbounded raw request stream. Descriptive p50/p95/p99 values use retained
+completed requests; failure and incompleteness counts remain separate.
+
 ### JSONL structured capture views
 
 The VS Code **Capture Diagnostics** path reuses the existing bounded Core collectors and

@@ -32,6 +32,30 @@ orchestrator-gated tools (`attach_to_pod`, `detach_from_pod`,
 `list_orchestrator`) and the Azure-gated `discover_azure`. `collect_batch` is
 part of both surfaces.
 
+### Request-latency comparison placement (#1317)
+
+The request-latency comparison reuses the existing `compare_to_baseline.snapshotsJson`
+parameter and returns the Core result through the tool's existing unconstrained `data`
+envelope. It adds no tool and no new parameter. The registered output schema therefore
+does not expand with the result record.
+
+Measured against the canonical source-generated schemas and representative
+available/incompatible results:
+
+- current maximal catalog: **283,845 bytes**
+- current default catalog: **250,677 bytes**
+- existing `compare_to_baseline` output-schema delta is **0 bytes**
+- standalone typed request-latency result schema: **10,142 bytes**
+- projected catalog if that result were wired into the typed output schema:
+  **293,985 bytes** (**+10,140 bytes**)
+- representative available result payload: **5,688 bytes**
+- representative incompatible result payload: **6,277 bytes**
+
+This is the intended placement trade-off: callers pay the bounded result only when they
+invoke the comparison, rather than adding about 10.1 KB to every maximal `tools/list`
+response. The slightly larger incompatible payload is expected because it carries
+field-level identity mismatches and explicit unavailable-field reasons.
+
 ## Reproduce
 
 ### Scenario-first statistical evidence prospective cost (2026-10-30, #1308)

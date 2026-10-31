@@ -37,6 +37,64 @@ internal static partial class CliCommands
                     new DiagnosticError("CaptureStoreError", exception.Message, exception.Code.ToString())), static (_, _) => { });
             }
         }
+
+        if (options.ComparePaths.Count == 2)
+        {
+            var schemas = new string?[2];
+            for (var index = 0; index < options.ComparePaths.Count; index++)
+            {
+                try
+                {
+                    await using var stream = File.OpenRead(options.ComparePaths[index]);
+                    using var document = await JsonDocument.ParseAsync(
+                        stream,
+                        cancellationToken: cancellationToken).ConfigureAwait(false);
+                    schemas[index] = document.RootElement.ValueKind == JsonValueKind.Object
+                        && document.RootElement.TryGetProperty("schema", out var camelSchema)
+                        && camelSchema.ValueKind == JsonValueKind.String
+                        ? camelSchema.GetString()
+                        : document.RootElement.ValueKind == JsonValueKind.Object
+                            && document.RootElement.TryGetProperty("Schema", out var pascalSchema)
+                            && pascalSchema.ValueKind == JsonValueKind.String
+                            ? pascalSchema.GetString()
+                            : null;
+                }
+                catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException or NotSupportedException)
+                {
+                    return BuildResult<object>(DiagnosticResult.Fail<object>(
+                        $"compare: failed to read '{options.ComparePaths[index]}'.",
+                        new DiagnosticError("InvalidSnapshot", ex.Message)), static (_, _) => { });
+                }
+            }
+
+            if (schemas.Any(schema =>
+                    string.Equals(schema, RequestLatencyWindowSet.SchemaV1, StringComparison.Ordinal)))
+            {
+                if (!schemas.All(schema =>
+                        string.Equals(schema, RequestLatencyWindowSet.SchemaV1, StringComparison.Ordinal)))
+                {
+                    return BuildResult<object>(DiagnosticResult.Fail<object>(
+                        "compare: mixed request-latency and snapshot schemas are unsupported.",
+                        new DiagnosticError(
+                            "MixedSchemas",
+                            "Both request-latency inputs must use the request-latency window-set v1 schema.")),
+                        static (_, _) => { });
+                }
+                if (options.Mode is not null)
+                {
+                    return BuildResult<object>(DiagnosticResult.Fail<object>(
+                        "compare: --mode does not apply to request-latency window sets.",
+                        new DiagnosticError(
+                            "InvalidArgument",
+                            "Request-latency comparison has fixed paired-window semantics.",
+                            nameof(options.Mode))),
+                        static (_, _) => { });
+                }
+
+                return await CompareRequestLatencyAsync(options, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
         var snapshots = new List<ComparableSnapshot>(options.ComparePaths.Count);
         foreach (var path in options.ComparePaths)
         {
@@ -102,6 +160,167 @@ internal static partial class CliCommands
 
         return new CliCommandResult(IsError: false, Cancelled: false, diff, RenderJourneyDiff(diff));
     }
+
+    private static async Task<CliCommandResult> CompareRequestLatencyAsync(
+        CliOptions options,
+        CancellationToken cancellationToken)
+    {
+        RequestLatencyComparisonResult result;
+        try
+        {
+            var baseline = await ReadRequestLatencyWindowSetAsync(
+                options.ComparePaths[0],
+                cancellationToken).ConfigureAwait(false);
+            var candidate = await ReadRequestLatencyWindowSetAsync(
+                options.ComparePaths[1],
+                cancellationToken).ConfigureAwait(false);
+            result = RequestLatencyComparison.Compare(baseline, candidate);
+        }
+        catch (Exception ex) when (
+            ex is IOException
+                or JsonException
+                or UnauthorizedAccessException
+                or NotSupportedException
+                or ArgumentException)
+        {
+            return BuildResult<object>(DiagnosticResult.Fail<object>(
+                "compare: request-latency evidence is invalid.",
+                new DiagnosticError("InvalidRequestLatencyEvidence", ex.Message)),
+                static (_, _) => { });
+        }
+
+        if (!string.IsNullOrWhiteSpace(options.SavePath))
+        {
+            try
+            {
+                var fullPath = Path.GetFullPath(options.SavePath);
+                var directory = Path.GetDirectoryName(fullPath);
+                if (!string.IsNullOrWhiteSpace(directory))
+                {
+                    Directory.CreateDirectory(directory);
+                }
+
+                await using var output = File.Create(fullPath);
+                await JsonSerializer.SerializeAsync(
+                    output,
+                    result,
+                    RequestLatencyComparisonJsonContext.Default.RequestLatencyComparisonResult,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (
+                ex is IOException
+                    or UnauthorizedAccessException
+                    or NotSupportedException
+                    or ArgumentException)
+            {
+                return BuildResult<object>(DiagnosticResult.Fail<object>(
+                    $"compare: failed to write '{options.SavePath}'.",
+                    new DiagnosticError("OutputWriteFailure", ex.Message)),
+                    static (_, _) => { });
+            }
+        }
+
+        return new(false, false, result, RenderRequestLatencyComparison(result));
+    }
+
+    private static async Task<RequestLatencyWindowSet> ReadRequestLatencyWindowSetAsync(
+        string path,
+        CancellationToken cancellationToken)
+    {
+        var info = new FileInfo(path);
+        if (!info.Exists)
+        {
+            throw new FileNotFoundException("Request-latency window-set file was not found.", path);
+        }
+        if (info.Length is < 1 or > RequestLatencyComparison.MaximumSerializedWindowSetBytes)
+        {
+            throw new InvalidDataException(
+                $"Request-latency window-set files must be 1..{RequestLatencyComparison.MaximumSerializedWindowSetBytes} bytes.");
+        }
+
+        await using var stream = info.OpenRead();
+        return await JsonSerializer.DeserializeAsync(
+            stream,
+            RequestLatencyComparisonJsonContext.Default.RequestLatencyWindowSet,
+            cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidDataException("Request-latency window-set JSON was empty.");
+    }
+
+    internal static string RenderRequestLatencyComparison(RequestLatencyComparisonResult result)
+    {
+        var text = new StringBuilder();
+        text.AppendLine(CultureInfo.InvariantCulture,
+            $"request-latency comparison: availability={ToWireName(result.Availability)}; no performance verdict");
+        if (result.UnavailableReason is not null)
+        {
+            text.AppendLine(CultureInfo.InvariantCulture,
+                $"  unavailable reason : {result.UnavailableReason}");
+        }
+        text.AppendLine(CultureInfo.InvariantCulture,
+            $"  baseline counts     : completed source={result.BaselineCounts.SourceCompleted}, retained={result.BaselineCounts.RetainedCompleted}; errors={result.BaselineCounts.Errors}; censored={result.BaselineCounts.Censored}; missing={result.BaselineCounts.MissingCompletions}; windows complete/failed/aborted={result.BaselineCounts.CompleteWindows}/{result.BaselineCounts.FailedWindows}/{result.BaselineCounts.AbortedWindows}; loss={result.BaselineCounts.LostOrDropped}");
+        text.AppendLine(CultureInfo.InvariantCulture,
+            $"  candidate counts    : completed source={result.CandidateCounts.SourceCompleted}, retained={result.CandidateCounts.RetainedCompleted}; errors={result.CandidateCounts.Errors}; censored={result.CandidateCounts.Censored}; missing={result.CandidateCounts.MissingCompletions}; windows complete/failed/aborted={result.CandidateCounts.CompleteWindows}/{result.CandidateCounts.FailedWindows}/{result.CandidateCounts.AbortedWindows}; loss={result.CandidateCounts.LostOrDropped}");
+        text.AppendLine(CultureInfo.InvariantCulture,
+            $"  paired windows      : matched={result.PairCounts.Matched}; valid-independent-complete={result.PairCounts.ValidIndependentComplete}; unpaired={result.PairCounts.Unpaired}; order-mismatch={result.PairCounts.PairOrderMismatches}; incomplete={result.PairCounts.Incomplete}; failed={result.PairCounts.Failed}; aborted={result.PairCounts.Aborted}; below-minimum={result.PairCounts.BelowMinimumCompletedRequests}");
+        if (result.IdentityMismatches.Count > 0)
+        {
+            text.AppendLine("  compatibility mismatches:");
+            foreach (var mismatch in result.IdentityMismatches)
+            {
+                text.AppendLine(CultureInfo.InvariantCulture,
+                    $"    {mismatch.Field}: baseline={mismatch.BaselineValue ?? "unavailable"}, candidate={mismatch.CandidateValue ?? "unavailable"} ({mismatch.Reason})");
+            }
+        }
+
+        text.AppendLine();
+        text.AppendLine("  quantile  baseline ms (source/retained)  candidate ms (source/retained)  absolute ms  relative  paired median ms  95% interval ms");
+        foreach (var quantile in result.Quantiles)
+        {
+            text.AppendLine(CultureInfo.InvariantCulture,
+                $"  {quantile.Name,-8} {FormatLatencyNumber(quantile.Baseline.ValueMilliseconds),11} ({quantile.Baseline.SourceCompletedCount}/{quantile.Baseline.RetainedCompletedCount})" +
+                $"  {FormatLatencyNumber(quantile.Candidate.ValueMilliseconds),12} ({quantile.Candidate.SourceCompletedCount}/{quantile.Candidate.RetainedCompletedCount})" +
+                $"  {FormatLatencyNumber(quantile.AbsoluteDeltaMilliseconds),11}" +
+                $"  {FormatLatencyRelative(quantile.RelativeDelta),8}" +
+                $"  {FormatLatencyNumber(quantile.PairedWindowMedianDeltaMilliseconds),16}" +
+                $"  {FormatLatencyInterval(quantile.PairedWindowBootstrapInterval)}");
+            if (quantile.UnavailableFields.Count > 0)
+            {
+                text.AppendLine(CultureInfo.InvariantCulture,
+                    $"    {quantile.Name} unavailable: {string.Join(", ", quantile.UnavailableFields.Select(field => $"{field.Field}={field.Reason}"))}");
+            }
+        }
+        text.AppendLine();
+        text.Append("  unavailable values are not zero, unchanged, insignificant, or equivalent load.");
+        return text.ToString();
+    }
+
+    private static string ToWireName(RequestLatencyEvidenceAvailability availability)
+        => availability switch
+        {
+            RequestLatencyEvidenceAvailability.Available => "available",
+            RequestLatencyEvidenceAvailability.InsufficientObservations => "insufficient_observations",
+            RequestLatencyEvidenceAvailability.Incompatible => "incompatible",
+            RequestLatencyEvidenceAvailability.LossDetected => "loss_detected",
+            RequestLatencyEvidenceAvailability.UnsupportedApproximation => "unsupported_approximation",
+            _ => throw new ArgumentOutOfRangeException(nameof(availability)),
+        };
+
+    private static string FormatLatencyNumber(double? value)
+        => value is { } number
+            ? number.ToString("0.###", CultureInfo.InvariantCulture)
+            : "unavailable";
+
+    private static string FormatLatencyRelative(double? value)
+        => value is { } ratio
+            ? ratio.ToString("+0.##%;-0.##%;0%", CultureInfo.InvariantCulture)
+            : "unavailable";
+
+    private static string FormatLatencyInterval(RequestLatencyInterval? interval)
+        => interval is null
+            ? "unavailable"
+            : string.Create(
+                CultureInfo.InvariantCulture,
+                $"[{interval.LowerMilliseconds:0.###}, {interval.UpperMilliseconds:0.###}]");
 
     private static async Task<CliCommandResult> InvestigateAsync(
         IServiceProvider services,
