@@ -89,6 +89,7 @@ var badCodeEndpoints = new[]
     "/async-stall?bucket=tcs&seconds=5",
     "/threadpool-starve?blockers=50",
     "/lock-storm?seconds=5&blockers=8",
+    "/contention-shape?shape=dominant&milliseconds=2000&locks=1&contenders=16",
     "/db-n+1?count=15",
     "/crash?mode=unhandled|stackoverflow|oom",
 };
@@ -616,6 +617,25 @@ app.MapGet("/lock-storm", (int? seconds, int? blockers) =>
     return Results.Ok(new { seconds = duration.TotalSeconds, blockers = contenderCount, completedEntries });
 });
 
+app.MapGet("/contention-shape", async (string? shape, int? milliseconds, int? locks, int? contenders) =>
+{
+    var normalizedShape = ContentionShapeFixture.NormalizeShape(shape);
+    if (normalizedShape is null)
+    {
+        return Results.BadRequest(new
+        {
+            error = "shape must be one of: dominant, diffuse, burst, truncated, healthy",
+        });
+    }
+
+    var result = await ContentionShapeFixture.RunAsync(
+        normalizedShape,
+        TimeSpan.FromMilliseconds(Math.Clamp(milliseconds ?? 2000, 100, 10_000)),
+        Math.Clamp(locks ?? 1, 1, 32),
+        Math.Clamp(contenders ?? 16, 2, 128));
+    return Results.Ok(result);
+});
+
 // 16. DB N+1 query storm — detect with collect_events(kind="db")
 app.MapGet("/db-n+1", async (IDbContextFactory<BadCodeDbContext> dbContextFactory, int? count) =>
 {
@@ -943,6 +963,85 @@ static class AsyncStallFixture
             await Task.Delay(delay).ConfigureAwait(false);
             return 42;
         }).Result;
+}
+
+static class ContentionShapeFixture
+{
+    public static string? NormalizeShape(string? shape)
+        => shape?.Trim().ToLowerInvariant() switch
+        {
+            "dominant" => "dominant",
+            "diffuse" => "diffuse",
+            "burst" => "burst",
+            "truncated" => "truncated",
+            "healthy" => "healthy",
+            _ => null,
+        };
+
+    public static async Task<object> RunAsync(
+        string shape,
+        TimeSpan duration,
+        int requestedLockCount,
+        int contenderCount)
+    {
+        if (shape == "healthy")
+        {
+            await Task.Delay(duration).ConfigureAwait(false);
+            return new
+            {
+                shape,
+                milliseconds = duration.TotalMilliseconds,
+                locks = 0,
+                contenders = 0,
+                completedEntries = 0L,
+            };
+        }
+
+        var lockCount = shape switch
+        {
+            "dominant" or "burst" => 1,
+            "diffuse" => Math.Max(4, requestedLockCount),
+            "truncated" => Math.Max(12, requestedLockCount),
+            _ => requestedLockCount,
+        };
+        var gates = Enumerable.Range(0, lockCount).Select(_ => new object()).ToArray();
+        var stopAt = Stopwatch.GetTimestamp() + (long)(duration.TotalSeconds * Stopwatch.Frequency);
+        var start = new ManualResetEventSlim(false);
+        long completedEntries = 0;
+        var workers = Enumerable.Range(0, contenderCount)
+            .Select(index => Task.Factory.StartNew(
+                () =>
+                {
+                    start.Wait();
+                    var gate = gates[index % gates.Length];
+                    while (Stopwatch.GetTimestamp() < stopAt)
+                    {
+                        lock (gate)
+                        {
+                            Interlocked.Increment(ref completedEntries);
+                            Thread.Sleep(shape == "diffuse" || shape == "truncated" ? 18 : 45);
+                        }
+
+                        Thread.Yield();
+                    }
+                },
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default))
+            .ToArray();
+
+        start.Set();
+        await Task.WhenAll(workers).ConfigureAwait(false);
+        start.Dispose();
+        return new
+        {
+            shape,
+            milliseconds = duration.TotalMilliseconds,
+            locks = lockCount,
+            contenders = contenderCount,
+            completedEntries,
+        };
+    }
 }
 
 sealed class LoopbackCloseServer : IDisposable
