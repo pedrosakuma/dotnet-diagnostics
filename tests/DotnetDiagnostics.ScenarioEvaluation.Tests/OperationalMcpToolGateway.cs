@@ -15,6 +15,7 @@ internal sealed class OperationalMcpToolGateway : IBlindedDiagnosticToolGateway,
     private readonly OperationalMcpFamily _family;
     private readonly OperationalMcpArm _arm;
     private readonly OperationalMcpProjection _projection;
+    private readonly int _maximumMcpPayloadBytes;
     private readonly int _processId;
     private readonly int _requiredCaptures;
     private readonly HashSet<string> _collectedHandles = new(StringComparer.Ordinal);
@@ -31,6 +32,7 @@ internal sealed class OperationalMcpToolGateway : IBlindedDiagnosticToolGateway,
         OperationalMcpProjection projection,
         int processId,
         int requiredCaptures,
+        int maximumMcpPayloadBytes,
         IReadOnlyList<AgentToolDefinition> tools,
         string catalogFingerprint,
         string toolDefinitionFingerprint)
@@ -42,6 +44,7 @@ internal sealed class OperationalMcpToolGateway : IBlindedDiagnosticToolGateway,
         _projection = projection;
         _processId = processId;
         _requiredCaptures = requiredCaptures;
+        _maximumMcpPayloadBytes = maximumMcpPayloadBytes;
         Tools = tools;
         CatalogFingerprint = catalogFingerprint;
         ToolDefinitionFingerprint = toolDefinitionFingerprint;
@@ -145,6 +148,7 @@ internal sealed class OperationalMcpToolGateway : IBlindedDiagnosticToolGateway,
                 projection,
                 processId,
                 requiredCaptures,
+                protocol.Budgets.MaximumMcpPayloadBytes,
                 definitions,
                 catalogFingerprint,
                 toolDefinitionFingerprint);
@@ -158,6 +162,107 @@ internal sealed class OperationalMcpToolGateway : IBlindedDiagnosticToolGateway,
 
     public async Task<(AgentToolResult Result, AgentApprovalEvent Approval)> ExecuteAsync(
         AgentToolCall call,
+        CancellationToken cancellationToken)
+        => await ExecuteAsync(
+            call,
+            OperationalMcpExchangeOrigin.FollowUp,
+            cancellationToken).ConfigureAwait(false);
+
+    public async Task<IReadOnlyList<AgentPredeclaredEvidence>> CollectPredeclaredEvidenceAsync(
+        OperationalMcpCase testCase,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(testCase);
+        if (testCase.Family != _family
+            || testCase.RequiredCaptures != _requiredCaptures)
+        {
+            throw new ArgumentException(
+                "The predeclared case does not match this operational MCP gateway.",
+                nameof(testCase));
+        }
+
+        var evidence = new List<AgentPredeclaredEvidence>();
+        var handles = new List<string>();
+        for (var capture = 0; capture < _requiredCaptures; capture++)
+        {
+            var call = new AgentToolCall(
+                $"predeclared-collect-{capture + 1}",
+                "collect_sample",
+                JsonSerializer.Serialize(new
+                {
+                    target = AgentScenarioTarget.AuthorizedTargetId,
+                    kind = _family == OperationalMcpFamily.AllocationReproducibility
+                        ? "allocation"
+                        : "cpu",
+                    durationSeconds = testCase.CaptureDurationSeconds,
+                    topN = testCase.CaptureTopN,
+                }, OperationalMcpJson.Options));
+            var (result, approval) = await ExecuteAsync(
+                call,
+                OperationalMcpExchangeOrigin.Predeclared,
+                cancellationToken).ConfigureAwait(false);
+            evidence.Add(new(call, result, approval));
+            if (!result.Succeeded)
+            {
+                return evidence;
+            }
+
+            using var response = JsonDocument.Parse(result.ContentJson);
+            if (!response.RootElement.TryGetProperty("handle", out var handle)
+                || handle.GetString() is not { Length: > 0 } handleValue)
+            {
+                throw new AgentPredeclaredEvidenceException(
+                    "A successful predeclared collect_sample response returned no handle.");
+            }
+
+            handles.Add(handleValue);
+        }
+
+        if (_family == OperationalMcpFamily.AllocationReproducibility)
+        {
+            var call = new AgentToolCall(
+                "predeclared-query-1",
+                "query_snapshot",
+                JsonSerializer.Serialize(new
+                {
+                    handle = handles[^1],
+                    view = "allocation-reproducibility",
+                    comparisonHandles = handles.Take(handles.Count - 1).ToArray(),
+                    topN = testCase.QueryTopN,
+                }, OperationalMcpJson.Options));
+            var (result, approval) = await ExecuteAsync(
+                call,
+                OperationalMcpExchangeOrigin.Predeclared,
+                cancellationToken).ConfigureAwait(false);
+            evidence.Add(new(call, result, approval));
+        }
+        else
+        {
+            for (var index = 0; index < handles.Count; index++)
+            {
+                var call = new AgentToolCall(
+                    $"predeclared-query-{index + 1}",
+                    "query_snapshot",
+                    JsonSerializer.Serialize(new
+                    {
+                        handle = handles[index],
+                        view = "hotspot-variability",
+                        topN = testCase.QueryTopN,
+                    }, OperationalMcpJson.Options));
+                var (result, approval) = await ExecuteAsync(
+                    call,
+                    OperationalMcpExchangeOrigin.Predeclared,
+                    cancellationToken).ConfigureAwait(false);
+                evidence.Add(new(call, result, approval));
+            }
+        }
+
+        return evidence;
+    }
+
+    private async Task<(AgentToolResult Result, AgentApprovalEvent Approval)> ExecuteAsync(
+        AgentToolCall call,
+        OperationalMcpExchangeOrigin origin,
         CancellationToken cancellationToken)
     {
         try
@@ -174,7 +279,8 @@ internal sealed class OperationalMcpToolGateway : IBlindedDiagnosticToolGateway,
                 return Failure(
                     call,
                     "tool_not_allowed",
-                    "The requested tool is outside the frozen operational MCP allowlist.");
+                    "The requested tool is outside the frozen operational MCP allowlist.",
+                    origin);
             }
 
             var result = await _client.CallToolAsync(
@@ -190,13 +296,14 @@ internal sealed class OperationalMcpToolGateway : IBlindedDiagnosticToolGateway,
                 out var projectedSchema);
             var rawBytes = Encoding.UTF8.GetByteCount(raw);
             var projectedBytes = Encoding.UTF8.GetByteCount(projected);
-            if (projectedBytes > _budget.MaximumResponseBytes
+            if (Math.Max(rawBytes, projectedBytes) > _maximumMcpPayloadBytes
                 || _artifactBytes + rawBytes + projectedBytes > _budget.MaximumArtifactBytes)
             {
                 return Failure(
                     call,
                     "artifact_budget_exceeded",
-                    "The exact MCP response plus model-visible projection exceeded the retained-artifact budget.");
+                    "The exact MCP response plus model-visible projection exceeded the retained-artifact budget.",
+                    origin);
             }
 
             _artifactBytes += rawBytes + projectedBytes;
@@ -238,7 +345,10 @@ internal sealed class OperationalMcpToolGateway : IBlindedDiagnosticToolGateway,
                 succeeded,
                 didProject,
                 projectedSchema,
-                errorCode));
+                errorCode)
+            {
+                Origin = origin,
+            });
             return (
                 new AgentToolResult(
                     call.Id,
@@ -262,19 +372,19 @@ internal sealed class OperationalMcpToolGateway : IBlindedDiagnosticToolGateway,
         }
         catch (AgentCaptureBudgetException exception)
         {
-            return Failure(call, "capture_budget_exceeded", exception.Message);
+            return Failure(call, "capture_budget_exceeded", exception.Message, origin);
         }
         catch (Exception exception) when (exception is JsonException or ArgumentException)
         {
-            return Failure(call, "invalid_arguments", exception.Message);
+            return Failure(call, "invalid_arguments", exception.Message, origin);
         }
         catch (AgentTargetBoundaryException exception)
         {
-            return Failure(call, "target_not_authorized", exception.Message);
+            return Failure(call, "target_not_authorized", exception.Message, origin);
         }
         catch (UnauthorizedAccessException exception)
         {
-            return Failure(call, "environment_denied", exception.Message);
+            return Failure(call, "environment_denied", exception.Message, origin);
         }
         catch (Exception exception) when (
             exception is InvalidOperationException
@@ -282,7 +392,7 @@ internal sealed class OperationalMcpToolGateway : IBlindedDiagnosticToolGateway,
             or IOException
             or McpException)
         {
-            return Failure(call, "mcp_transport_failed", exception.Message);
+            return Failure(call, "mcp_transport_failed", exception.Message, origin);
         }
     }
 
@@ -516,10 +626,11 @@ internal sealed class OperationalMcpToolGateway : IBlindedDiagnosticToolGateway,
         _captureSeconds += seconds;
     }
 
-    private static (AgentToolResult Result, AgentApprovalEvent Approval) Failure(
+    private (AgentToolResult Result, AgentApprovalEvent Approval) Failure(
         AgentToolCall call,
         string code,
-        string detail)
+        string detail,
+        OperationalMcpExchangeOrigin origin)
     {
         var content = new JsonObject
         {
@@ -527,14 +638,34 @@ internal sealed class OperationalMcpToolGateway : IBlindedDiagnosticToolGateway,
             ["errorCode"] = code,
             ["detail"] = detail,
         }.ToJsonString();
+        var bytes = Encoding.UTF8.GetByteCount(content);
+        var hash = BlindedDiagnosticToolGateway.Sha256(content);
+        _artifactBytes += bytes * 2;
+        _exchanges.Add(new OperationalMcpExchange(
+            _exchanges.Count + 1,
+            call.Name,
+            call.ArgumentsJson,
+            content,
+            hash,
+            bytes,
+            content,
+            hash,
+            bytes,
+            false,
+            false,
+            null,
+            code)
+        {
+            Origin = origin,
+        });
         return (
             new AgentToolResult(
                 call.Id,
                 call.Name,
                 false,
                 content,
-                BlindedDiagnosticToolGateway.Sha256(content),
-                Encoding.UTF8.GetByteCount(content),
+                hash,
+                bytes,
                 false,
                 code),
             Approval(

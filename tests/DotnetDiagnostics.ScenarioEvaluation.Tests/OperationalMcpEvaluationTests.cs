@@ -9,7 +9,20 @@ public sealed class OperationalMcpProtocolTests
     public void FrozenProtocol_DeclaresOnlyTruthfullyReachableMcpFamilies()
     {
         var protocol = OperationalMcpProtocolLoader.LoadDefault();
+        var preserved = OperationalMcpProtocolLoader.LoadPreservedV1();
 
+        protocol.SchemaVersion.Should().Be(2);
+        protocol.ProtocolVersion.Should().Be("2.0.0");
+        preserved.ProtocolVersion.Should().Be("1.4.0");
+        protocol.Models.Should().NotBeNull();
+        protocol.Models!.DiagnosingPromptSha256.Should().Be(
+            BlindedAgentHarness.SystemPromptSha256);
+        protocol.Models.AssessorPromptSha256.Should().Be(
+            OperationalMcpAssessor.SystemPromptSha256);
+        protocol.Models.TransportProtocolSha256.Should().Be(
+            BlindedAgentHarness.TransportProtocolSha256);
+        protocol.Budgets.MaximumMcpPayloadBytes.Should().BeLessThan(
+            protocol.Budgets.MaximumModelTransportOutputBytes);
         protocol.Inventory
             .Where(value => value.Eligibility == OperationalMcpEligibility.Eligible)
             .Select(value => value.Family)
@@ -28,18 +41,19 @@ public sealed class OperationalMcpProtocolTests
             .Reason.Should().Contain("omits");
         protocol.Inventory.Single(value =>
                 value.Family == OperationalMcpFamily.ThreadPoolBacklog)
-            .Reason.Should().Contain("cannot truthfully populate");
+            .Reason.Should().Contain("truthfully populates");
         protocol.Cases.Should().Contain(value =>
             value.Partition == OperationalMcpPartition.Development);
         protocol.Cases.Should().Contain(value =>
             value.Partition == OperationalMcpPartition.Heldout);
         var manifest = OperationalMcpProtocolLoader.ToScenarioManifest(
-            protocol.Cases.Single(value => value.Id == "dev-allocation-primary"));
+            protocol.Cases.Single(value => value.Id == "v2-dev-allocation-primary"));
         manifest.ReportedSymptom.Should().Contain(
-            "request exactly 3 fresh collect_sample(kind=\"allocation\") captures");
+            "already executed exactly 3 fresh collect_sample(kind=\"allocation\") captures");
         manifest.ReportedSymptom.Should().Contain(
-            "view=\"allocation-reproducibility\" before returning a diagnosis");
-        manifest.ReportedSymptom.Should().NotContain("dev-allocation-primary");
+            "query_snapshot(view=\"allocation-reproducibility\") sequence");
+        manifest.ReportedSymptom.Should().Contain("follow-up can add evidence");
+        manifest.ReportedSymptom.Should().NotContain("v2-dev-allocation-primary");
         manifest.ReportedSymptom.Should().NotContain("control");
         manifest.ReportedSymptom.Should().NotContain("indicator");
         manifest.ReportedSymptom.Should().NotContain("projection");
@@ -56,13 +70,146 @@ public sealed class OperationalMcpProtocolTests
 
         OperationalMcpProtocolLoader.ProtocolFingerprint(protocol)
             .Should().Be(
-                "1b2ef845bd52287994d822decfca71a073114c72a2c7b5602a70d8e570779879");
+                "df1db2c83d7d71967fa582153f49e88b0201017f3f4486602f2da49a2604c43d");
         OperationalMcpProtocolLoader.InventoryFingerprint(protocol)
             .Should().Be(
-                "c01e7f13107854fdc4f8f9aae5d60d6b0cd4f33a3728b5027c0d88947e57947e");
+                "5502f0bfd8617e77faf3315fe5e8087976f8667d08c353b01093c4be95463f67");
         OperationalMcpProtocolLoader.ProjectionFingerprint(protocol)
             .Should().Be(
-                "ea96a3a44e6326df5e1d58b8a88695ec4dc5307a77d871a0cb2a190674a8010e");
+                "9ab6488c85a32d5fa89426411068866c6966832e41cfa899d2c348e8ced47696");
+    }
+
+    [Theory]
+    [InlineData("tool-result://call-1#")]
+    [InlineData("tool-result://call-1#/")]
+    public void CitationResolver_AcceptsCanonicalAndLegacyDocumentRoot(string location)
+    {
+        var result = new AgentToolResult(
+            "call-1",
+            "query_snapshot",
+            true,
+            """{"availability":"available"}""",
+            "hash",
+            28,
+            false,
+            null);
+
+        var resolution = AgentEvidenceResolver.Resolve(location, [result]);
+
+        resolution.Exists.Should().BeTrue();
+        resolution.Value!.Value.GetProperty("availability").GetString()
+            .Should().Be("available");
+    }
+
+    [Fact]
+    public async Task Conversation_ReceivesPredeclaredEvidenceBeforeFirstModelTurn()
+    {
+        var protocol = OperationalMcpProtocolLoader.LoadDefault();
+        var testCase = protocol.Cases.Single(value =>
+            value.Id == "v2-dev-allocation-primary");
+        var call = new AgentToolCall(
+            "predeclared-query-1",
+            "query_snapshot",
+            """{"handle":"h-3","view":"allocation-reproducibility"}""");
+        var result = new AgentToolResult(
+            call.Id,
+            call.Name,
+            true,
+            """{"availability":"available"}""",
+            "hash",
+            28,
+            false,
+            null);
+        var request = new AgentHarnessRequest(
+            OperationalMcpProtocolLoader.ToScenarioManifest(testCase),
+            ModelConfiguration(),
+            protocol.Budgets.ToAgentBudget(),
+            "unused.json",
+            "test")
+        {
+            PredeclaredEvidence =
+            [
+                new AgentPredeclaredEvidence(
+                    call,
+                    result,
+                    Approval(call.Id, "not-required-read-only", executed: true)),
+            ],
+        };
+        var transport = new PredeclaredEvidenceTransport();
+        var stage = new AgentHarnessStage(
+            AgentHarnessStageStatus.Passed,
+            AgentHarnessFailureKind.None,
+            "test",
+            0);
+
+        var report = await BlindedAgentHarness.RunConversationAsync(
+            request,
+            transport,
+            new NoOpGateway(),
+            DateTimeOffset.UtcNow,
+            stage,
+            CancellationToken.None);
+
+        transport.SawPredeclaredEvidence.Should().BeTrue();
+        report.AgentExecution.Status.Should().Be(AgentHarnessStageStatus.Passed);
+        report.Assessment.Stage.Status.Should().Be(AgentHarnessStageStatus.Passed);
+        report.TotalToolCalls.Should().Be(1);
+        report.ModelTransportOutputBytes.Should().Be(4096);
+        report.Transcript[0].Turn.Should().Be(0);
+        report.Transcript[0].ToolResults.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task Conversation_RejectsFollowUpIdCollisionWithPredeclaredEvidence()
+    {
+        var protocol = OperationalMcpProtocolLoader.LoadDefault();
+        var testCase = protocol.Cases.Single(value =>
+            value.Id == "v2-dev-allocation-primary");
+        var call = new AgentToolCall(
+            "same-id",
+            "query_snapshot",
+            """{"handle":"h-3","view":"allocation-reproducibility"}""");
+        var result = new AgentToolResult(
+            call.Id,
+            call.Name,
+            true,
+            """{"availability":"available"}""",
+            "hash",
+            28,
+            false,
+            null);
+        var request = new AgentHarnessRequest(
+            OperationalMcpProtocolLoader.ToScenarioManifest(testCase),
+            ModelConfiguration(),
+            protocol.Budgets.ToAgentBudget(),
+            "unused.json",
+            "test")
+        {
+            PredeclaredEvidence =
+            [
+                new AgentPredeclaredEvidence(
+                    call,
+                    result,
+                    Approval(call.Id, "not-required-read-only", executed: true)),
+            ],
+        };
+        var stage = new AgentHarnessStage(
+            AgentHarnessStageStatus.Passed,
+            AgentHarnessFailureKind.None,
+            "test",
+            0);
+
+        var report = await BlindedAgentHarness.RunConversationAsync(
+            request,
+            new CollidingToolCallTransport(),
+            new NoOpGateway(),
+            DateTimeOffset.UtcNow,
+            stage,
+            CancellationToken.None);
+
+        report.AgentExecution.Status.Should().Be(AgentHarnessStageStatus.Failed);
+        report.AgentExecution.FailureKind.Should().Be(AgentHarnessFailureKind.Model);
+        report.AgentExecution.Detail.Should().Contain("unique non-empty id");
     }
 
     [Fact]
@@ -88,6 +235,37 @@ public sealed class OperationalMcpProtocolTests
         assessment.Stage.Status.Should().Be(AgentHarnessStageStatus.Failed);
         assessment.Stage.FailureKind.Should().Be(AgentHarnessFailureKind.Assessment);
         assessment.Stage.Detail.Should().Contain("claims").And.Contain("missing");
+        assessment.Claims.Should().BeEmpty();
+        assessment.Uncertainty.Should().Be(OperationalUncertaintyQuality.NotAssessable);
+        assessment.UnsupportedCertaintyCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task AssessorPreflight_RequiresStrictSchemaAndRecordsTransportBytes()
+    {
+        var turn = new AgentModelTurn(
+            "wire",
+            """
+            {"claims":[{"index":0,"support":"supported","rationale":"The synthetic evidence exists."}],"uncertainty":"appropriate","uncertaintyRationale":"The response is limited to preflight.","unsupportedCertaintyCount":0,"usefulNextSteps":[],"unhelpfulNextSteps":[],"summary":"Schema preflight passed."}
+            """,
+            [],
+            new AgentModelUsage(null, null, null),
+            null)
+        {
+            TransportOutputBytes = 4096,
+        };
+
+        var preflight = await OperationalMcpAssessor.PreflightAsync(
+            ModelConfiguration(),
+            new SingleTurnTransport(turn),
+            maximumWallTimeSeconds: 5,
+            maximumInputBytes: 32_768,
+            maximumTransportOutputBytes: 8_192,
+            CancellationToken.None);
+
+        preflight.Stage.Status.Should().Be(AgentHarnessStageStatus.Passed);
+        preflight.TransportOutputBytes.Should().Be(4096);
+        preflight.RawResponseSha256.Should().HaveLength(64);
     }
 
     [Fact]
@@ -344,24 +522,23 @@ public sealed class OperationalMcpProtocolTests
         cancellation.Cancel();
         try
         {
-            var action = () => OperationalMcpEvaluationRunner.RunAsync(
+            var report = await OperationalMcpEvaluationRunner.RunAsync(
                 OperationalMcpProtocolLoader.LoadDefault(),
                 new AgentModelConfiguration(
-                    "unused",
-                    "unused",
+                    "github-copilot-cli",
+                    "gpt-5.3-codex",
                     new Uri("https://model.example.test"),
                     0,
-                    1),
+                    1,
+                    MaximumResponseBytes: 524_288),
                 new NeverTransport(),
                 outputRoot,
                 cancellation.Token);
 
-            await action.Should().ThrowAsync<OperationCanceledException>();
-            var report = OperationalMcpJson.Read<OperationalMcpPilotReport>(
-                Path.Combine(outputRoot, "pilot-report.json"));
             report.Attempts.Should().BeEmpty();
-            report.Limitations.Should().Contain(value =>
-                value.Contains("External suite cancellation", StringComparison.Ordinal));
+            report.AssessorPreflight.Should().NotBeNull();
+            report.AssessorPreflight!.Stage.Status.Should().Be(AgentHarnessStageStatus.Failed);
+            File.Exists(Path.Combine(outputRoot, "pilot-report.json")).Should().BeTrue();
         }
         finally
         {
@@ -390,6 +567,61 @@ public sealed class OperationalMcpProtocolTests
             IReadOnlyList<AgentToolDefinition> tools,
             CancellationToken cancellationToken)
             => Task.FromResult(turn);
+    }
+
+    private sealed class PredeclaredEvidenceTransport : IAgentModelTransport
+    {
+        public bool SawPredeclaredEvidence { get; private set; }
+
+        public Task<AgentModelTurn> CompleteAsync(
+            AgentModelConfiguration configuration,
+            IReadOnlyList<System.Text.Json.Nodes.JsonObject> messages,
+            IReadOnlyList<AgentToolDefinition> tools,
+            CancellationToken cancellationToken)
+        {
+            SawPredeclaredEvidence = messages.Any(message =>
+                message["role"]?.GetValue<string>() == "tool"
+                && message["tool_call_id"]?.GetValue<string>() == "predeclared-query-1");
+            return Task.FromResult(new AgentModelTurn(
+                "wire",
+                """
+                {"claims":[{"text":"Evidence is available.","posture":"observed","evidenceLocations":["tool-result://predeclared-query-1#"]}],"uncertainty":"The retained document is limited.","nextSteps":[]}
+                """,
+                [],
+                new AgentModelUsage(null, null, null),
+                null)
+            {
+                TransportOutputBytes = 4096,
+            });
+        }
+
+    }
+
+    private sealed class CollidingToolCallTransport : IAgentModelTransport
+    {
+        public Task<AgentModelTurn> CompleteAsync(
+            AgentModelConfiguration configuration,
+            IReadOnlyList<System.Text.Json.Nodes.JsonObject> messages,
+            IReadOnlyList<AgentToolDefinition> tools,
+            CancellationToken cancellationToken)
+            => Task.FromResult(new AgentModelTurn(
+                "wire",
+                null,
+                [new AgentToolCall("same-id", "query_snapshot", "{}")],
+                new AgentModelUsage(null, null, null),
+                null));
+    }
+
+    private sealed class NoOpGateway : IBlindedDiagnosticToolGateway
+    {
+        public IReadOnlyList<AgentToolDefinition> Tools => [];
+
+        public int RetainedArtifactBytes => 28;
+
+        public Task<(AgentToolResult Result, AgentApprovalEvent Approval)> ExecuteAsync(
+            AgentToolCall call,
+            CancellationToken cancellationToken)
+            => throw new InvalidOperationException("No follow-up call was expected.");
     }
 
     private static AgentModelConfiguration ModelConfiguration()
@@ -475,6 +707,68 @@ public sealed class OperationalMcpLiveTests
 {
     [Fact(Timeout = 120_000)]
     [Trait("Category", "ScenarioAgentHarnessLive")]
+    public async Task PredeclaredFailure_IsRetainedWithoutCallingModel()
+    {
+        var protocol = OperationalMcpProtocolLoader.LoadDefault();
+        var testCase = protocol.Cases.Single(value =>
+            value.Id == "v2-dev-allocation-primary");
+        var outputPath = Path.Combine(
+            Path.GetTempPath(),
+            "dotnet-diagnostics-predeclared-failure",
+            Guid.NewGuid().ToString("n"),
+            "investigation.json");
+        var transport = new CountingTransport();
+        var call = new AgentToolCall(
+            "predeclared-collect-1",
+            "collect_sample",
+            """{"target":"target-1","kind":"allocation","durationSeconds":2,"topN":12}""");
+        var content = """{"status":"failed","errorCode":"capture_failed"}""";
+        var failed = new AgentToolResult(
+            call.Id,
+            call.Name,
+            false,
+            content,
+            BlindedDiagnosticToolGateway.Sha256(content),
+            content.Length,
+            false,
+            "capture_failed");
+
+        var report = await BlindedAgentHarness.RunAsync(
+            new AgentHarnessRequest(
+                OperationalMcpProtocolLoader.ToScenarioManifest(testCase),
+                FrozenModelConfiguration(),
+                protocol.Budgets.ToAgentBudget(),
+                outputPath,
+                "test"),
+            transport,
+            static (_, _, _) => Task.FromResult<IBlindedDiagnosticToolGateway>(
+                new RetainedFailureGateway()),
+            (_, _) => Task.FromResult<IReadOnlyList<AgentPredeclaredEvidence>>(
+            [
+                new(
+                    call,
+                    failed,
+                    new AgentApprovalEvent(
+                        call.Id,
+                        call.Name,
+                        false,
+                        "not-required-read-only",
+                        true,
+                        false,
+                        "The frozen collection failed.")),
+            ]),
+            CancellationToken.None);
+
+        transport.Calls.Should().Be(0);
+        report.Collection.Status.Should().Be(AgentHarnessStageStatus.Failed);
+        report.AgentExecution.Status.Should().Be(AgentHarnessStageStatus.NotRun);
+        report.Transcript.Should().ContainSingle();
+        report.Transcript[0].ToolResults.Should().ContainSingle(value =>
+            !value.Succeeded && value.ErrorCode == "capture_failed");
+    }
+
+    [Fact(Timeout = 120_000)]
+    [Trait("Category", "ScenarioAgentHarnessLive")]
     public async Task Runner_CancellationDuringArmPersistsInFlightAttempt()
     {
         var protocol = OperationalMcpProtocolLoader.LoadDefault();
@@ -487,8 +781,8 @@ public sealed class OperationalMcpLiveTests
         {
             var action = () => OperationalMcpEvaluationRunner.RunAsync(
                 protocol,
-                LiveModelConfiguration(),
-                new CancellingTransport(cancellation),
+                FrozenModelConfiguration(),
+                new PreflightThenCancellingTransport(cancellation),
                 outputRoot,
                 cancellation.Token);
 
@@ -523,7 +817,7 @@ public sealed class OperationalMcpLiveTests
     public async Task RealMcpGateway_CollectsAndQueriesAllocationReproducibility()
     {
         var protocol = OperationalMcpProtocolLoader.LoadDefault();
-        var testCase = protocol.Cases.Single(value => value.Id == "dev-allocation-primary");
+        var testCase = protocol.Cases.Single(value => value.Id == "v2-dev-allocation-primary");
         var manifest = OperationalMcpProtocolLoader.ToScenarioManifest(testCase);
         await using var target = await AgentScenarioTarget.StartAsync(
             manifest,
@@ -537,36 +831,18 @@ public sealed class OperationalMcpLiveTests
             protocol,
             Path.Combine(Path.GetTempPath(), "dotnet-diagnostics-operational-mcp", Guid.NewGuid().ToString("n")),
             CancellationToken.None);
-        var handles = new List<string>();
-        for (var capture = 0; capture < testCase.RequiredCaptures; capture++)
-        {
-            var (result, _) = await gateway.ExecuteAsync(
-                new AgentToolCall(
-                    $"collect-{capture}",
-                    "collect_sample",
-                    """{"target":"target-1","kind":"allocation","durationSeconds":2,"topN":10}"""),
-                CancellationToken.None);
-            result.Succeeded.Should().BeTrue(result.ContentJson);
-            using var document = JsonDocument.Parse(result.ContentJson);
-            handles.Add(document.RootElement.GetProperty("handle").GetString()!);
-        }
-
-        var queryArguments = JsonSerializer.Serialize(new
-        {
-            handle = handles[^1],
-            view = "allocation-reproducibility",
-            comparisonHandles = handles.Take(handles.Count - 1).ToArray(),
-            topN = 3,
-        });
-        var (query, _) = await gateway.ExecuteAsync(
-            new AgentToolCall("query", "query_snapshot", queryArguments),
+        var predeclared = await gateway.CollectPredeclaredEvidenceAsync(
+            testCase,
             CancellationToken.None);
 
-        query.Succeeded.Should().BeTrue(query.ContentJson);
-        using var queryDocument = JsonDocument.Parse(query.ContentJson);
+        predeclared.Should().HaveCount(testCase.RequiredCaptures + 1);
+        predeclared.Should().OnlyContain(value => value.Result.Succeeded);
+        using var queryDocument = JsonDocument.Parse(predeclared[^1].Result.ContentJson);
         queryDocument.RootElement.GetProperty("data").GetProperty("schema").GetString()
             .Should().Be("dotnet-diagnostics/allocation-reproducibility/v1");
         gateway.Exchanges.Should().HaveCount(testCase.RequiredCaptures + 1);
+        gateway.Exchanges.Should().OnlyContain(value =>
+            value.Origin == OperationalMcpExchangeOrigin.Predeclared);
         gateway.Exchanges.Should().OnlyContain(value =>
             value.RawResponseSha256.Length == 64
             && value.ModelVisibleResponseSha256.Length == 64);
@@ -586,6 +862,10 @@ public sealed class OperationalMcpLiveTests
             CancellationToken.None);
         extraCapture.Succeeded.Should().BeFalse();
         extraCapture.ErrorCode.Should().Be("invalid_arguments");
+        gateway.Exchanges.Should().ContainSingle(value =>
+            value.Origin == OperationalMcpExchangeOrigin.FollowUp
+            && !value.Succeeded
+            && value.ErrorCode == "invalid_arguments");
         OperationalMcpAssessor.CountUnauthorizedAttempts([extraApproval]).Should().Be(0);
         var (unknownQuery, unknownApproval) = await gateway.ExecuteAsync(
             new AgentToolCall(
@@ -606,7 +886,7 @@ public sealed class OperationalMcpLiveTests
         wrongTarget.ErrorCode.Should().Be("target_not_authorized");
         OperationalMcpAssessor.CountUnauthorizedAttempts([wrongTargetApproval]).Should().Be(1);
 
-        var cpuCase = protocol.Cases.Single(value => value.Id == "dev-cpu-alpha");
+        var cpuCase = protocol.Cases.Single(value => value.Id == "v2-dev-cpu-alpha");
         await using var cpuGateway = await OperationalMcpToolGateway.StartAsync(
             target.ProcessId,
             protocol.Budgets.ToAgentBudget(),
@@ -626,27 +906,69 @@ public sealed class OperationalMcpLiveTests
                 value.Family == cpuCase.Family).ExpectedToolDefinitionFingerprint);
     }
 
-    private sealed class CancellingTransport(
+    private sealed class PreflightThenCancellingTransport(
         CancellationTokenSource cancellation) : IAgentModelTransport
     {
+        private int _calls;
+
         public Task<AgentModelTurn> CompleteAsync(
             AgentModelConfiguration configuration,
             IReadOnlyList<System.Text.Json.Nodes.JsonObject> messages,
             IReadOnlyList<AgentToolDefinition> tools,
             CancellationToken cancellationToken)
         {
+            if (Interlocked.Increment(ref _calls) == 1)
+            {
+                return Task.FromResult(new AgentModelTurn(
+                    "preflight",
+                    """
+                    {"claims":[{"index":0,"support":"supported","rationale":"Synthetic evidence exists."}],"uncertainty":"appropriate","uncertaintyRationale":"Preflight only.","unsupportedCertaintyCount":0,"usefulNextSteps":[],"unhelpfulNextSteps":[],"summary":"Passed."}
+                    """,
+                    [],
+                    new AgentModelUsage(null, null, null),
+                    null));
+            }
+
             cancellation.Cancel();
             return Task.FromCanceled<AgentModelTurn>(cancellationToken);
         }
     }
 
-    private static AgentModelConfiguration LiveModelConfiguration()
+    private sealed class CountingTransport : IAgentModelTransport
+    {
+        public int Calls { get; private set; }
+
+        public Task<AgentModelTurn> CompleteAsync(
+            AgentModelConfiguration configuration,
+            IReadOnlyList<System.Text.Json.Nodes.JsonObject> messages,
+            IReadOnlyList<AgentToolDefinition> tools,
+            CancellationToken cancellationToken)
+        {
+            Calls++;
+            throw new InvalidOperationException("The model must not be called.");
+        }
+    }
+
+    private sealed class RetainedFailureGateway : IBlindedDiagnosticToolGateway
+    {
+        public IReadOnlyList<AgentToolDefinition> Tools => [];
+
+        public int RetainedArtifactBytes => 128;
+
+        public Task<(AgentToolResult Result, AgentApprovalEvent Approval)> ExecuteAsync(
+            AgentToolCall call,
+            CancellationToken cancellationToken)
+            => throw new InvalidOperationException("No follow-up call was expected.");
+    }
+
+    private static AgentModelConfiguration FrozenModelConfiguration()
         => new(
-            "scripted",
-            "scripted-model",
+            "github-copilot-cli",
+            "gpt-5.3-codex",
             new Uri("https://model.example.test"),
             0,
-            1);
+            1,
+            MaximumResponseBytes: 524_288);
 }
 
 [Collection(ScenarioEvaluationLiveGroup.Name)]

@@ -40,7 +40,13 @@ internal static class AgentEvidenceResolver
         try
         {
             using var document = JsonDocument.Parse(matches[0].ContentJson);
-            if (!TryResolvePointer(document.RootElement, location[(hashIndex + 1)..], out var value, out var error))
+            var pointer = location[(hashIndex + 1)..];
+            if (pointer == "/")
+            {
+                pointer = string.Empty;
+            }
+
+            if (!TryResolvePointer(document.RootElement, pointer, out var value, out var error))
             {
                 return Missing(location, error!);
             }

@@ -96,7 +96,10 @@ public sealed class OpenAiCompatibleAgentTransport(HttpClient httpClient, string
             content,
             calls,
             new AgentModelUsage(inputTokens, outputTokens, estimatedCost),
-            root.TryGetProperty("id", out var id) ? id.GetString() : null);
+            root.TryGetProperty("id", out var id) ? id.GetString() : null)
+        {
+            TransportOutputBytes = Encoding.UTF8.GetByteCount(raw),
+        };
     }
 
     private static JsonObject ToWireTool(AgentToolDefinition tool)

@@ -25,6 +25,8 @@ internal static class OperationalMcpEvaluationRunner
         Directory.CreateDirectory(outputRoot);
         var startedAt = DateTimeOffset.UtcNow;
         var attempts = new List<OperationalMcpRunReport>();
+        var assessorConfiguration = AssessorConfiguration(protocol, configuration);
+        OperationalMcpPreflightReport? assessorPreflight = null;
         using var suiteWallTime =
             CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         suiteWallTime.CancelAfter(
@@ -32,10 +34,31 @@ internal static class OperationalMcpEvaluationRunner
 
         try
         {
+            assessorPreflight = await OperationalMcpAssessor.PreflightAsync(
+                assessorConfiguration,
+                transport,
+                protocol.Budgets.MaximumPreflightWallTimeSeconds,
+                protocol.Budgets.MaximumAssessmentInputBytes,
+                protocol.Budgets.MaximumAssessmentTransportOutputBytes,
+                suiteWallTime.Token).ConfigureAwait(false);
+            if (assessorPreflight.Stage.Status != AgentHarnessStageStatus.Passed)
+            {
+                return CreateAndWriteReport(
+                    protocol,
+                    configuration,
+                    outputRoot,
+                    startedAt,
+                    attempts,
+                    assessorPreflight,
+                    suiteCancelled: false,
+                    suiteBudgetExhausted: false);
+            }
+
             await RunPartitionAsync(
                 protocol,
                 OperationalMcpPartition.Development,
                 configuration,
+                assessorConfiguration,
                 transport,
                 outputRoot,
                 attempts,
@@ -47,6 +70,7 @@ internal static class OperationalMcpEvaluationRunner
                     protocol,
                     OperationalMcpPartition.Heldout,
                     configuration,
+                    assessorConfiguration,
                     transport,
                     outputRoot,
                     attempts,
@@ -61,6 +85,7 @@ internal static class OperationalMcpEvaluationRunner
                 outputRoot,
                 startedAt,
                 attempts,
+                assessorPreflight,
                 suiteCancelled: true,
                 suiteBudgetExhausted: !cancellationToken.IsCancellationRequested);
             if (cancellationToken.IsCancellationRequested)
@@ -77,6 +102,7 @@ internal static class OperationalMcpEvaluationRunner
             outputRoot,
             startedAt,
             attempts,
+            assessorPreflight,
             suiteCancelled: false,
             suiteBudgetExhausted: false);
     }
@@ -87,6 +113,7 @@ internal static class OperationalMcpEvaluationRunner
         string outputRoot,
         DateTimeOffset startedAt,
         IReadOnlyList<OperationalMcpRunReport> attempts,
+        OperationalMcpPreflightReport? assessorPreflight,
         bool suiteCancelled,
         bool suiteBudgetExhausted)
     {
@@ -119,7 +146,7 @@ internal static class OperationalMcpEvaluationRunner
             OperationalMcpProtocolLoader.ProtocolFingerprint(protocol),
             OperationalMcpProtocolLoader.InventoryFingerprint(protocol),
             OperationalMcpProtocolLoader.ProjectionFingerprint(protocol),
-            BlindedAgentHarness.CurrentProductCommit,
+            protocol.ExpectedProductFingerprint,
             configuration.Provider,
             configuration.Model,
             configuration.Version ?? "unavailable",
@@ -149,7 +176,16 @@ internal static class OperationalMcpEvaluationRunner
                         ? $"The frozen {protocol.Budgets.MaximumSuiteWallTimeSeconds}-second suite budget stopped additional arms; every completed arm and this partial pilot report were retained."
                         : "External suite cancellation stopped additional arms; every completed arm and this partial pilot report were retained."
                     : "The evaluator completed its permitted partition sequence without external suite cancellation.",
-            ]);
+                assessorPreflight is null
+                    ? "The assessor preflight result was unavailable because execution was cancelled before it completed."
+                    : assessorPreflight.Stage.Status == AgentHarnessStageStatus.Passed
+                        ? $"Assessor preflight passed for {assessorPreflight.AssessorModel} before the first target process started."
+                        : "Empirical execution did not start because the frozen assessor transport/schema preflight failed.",
+            ])
+        {
+            AssessorPreflight = assessorPreflight,
+            EvaluatorCommit = BlindedAgentHarness.CurrentProductCommit,
+        };
         OperationalMcpJson.Write(Path.Combine(outputRoot, "pilot-report.json"), report);
         return report;
     }
@@ -158,6 +194,7 @@ internal static class OperationalMcpEvaluationRunner
         OperationalMcpProtocol protocol,
         OperationalMcpPartition partition,
         AgentModelConfiguration configuration,
+        AgentModelConfiguration assessorConfiguration,
         IAgentModelTransport transport,
         string outputRoot,
         List<OperationalMcpRunReport> attempts,
@@ -175,6 +212,7 @@ internal static class OperationalMcpEvaluationRunner
                     order[armIndex],
                     armIndex + 1,
                     configuration,
+                    assessorConfiguration,
                     transport,
                     outputRoot,
                     cancellationToken).ConfigureAwait(false));
@@ -188,6 +226,7 @@ internal static class OperationalMcpEvaluationRunner
         OperationalMcpArm arm,
         int armOrder,
         AgentModelConfiguration configuration,
+        AgentModelConfiguration assessorConfiguration,
         IAgentModelTransport transport,
         string outputRoot,
         CancellationToken cancellationToken)
@@ -222,14 +261,36 @@ internal static class OperationalMcpEvaluationRunner
                     token).ConfigureAwait(false);
                 return gateway;
             },
+            async (createdGateway, token) =>
+            {
+                if (createdGateway is not OperationalMcpToolGateway operationalGateway)
+                {
+                    throw new InvalidOperationException(
+                        "The operational evaluator requires its real MCP gateway.");
+                }
+
+                return await operationalGateway.CollectPredeclaredEvidenceAsync(
+                    testCase,
+                    token).ConfigureAwait(false);
+            },
             cancellationToken).ConfigureAwait(false);
         var assessment = await OperationalMcpAssessor.AssessAsync(
             testCase,
             investigation,
-            configuration,
+            assessorConfiguration,
             transport,
             protocol.Budgets.MaximumAssessmentWallTimeSeconds,
+            protocol.Budgets.MaximumAssessmentInputBytes,
+            protocol.Budgets.MaximumAssessmentTransportOutputBytes,
             cancellationToken).ConfigureAwait(false);
+        var exchanges = gateway?.Exchanges ?? [];
+        var predeclaredHashes = exchanges
+            .Where(value => value.Origin == OperationalMcpExchangeOrigin.Predeclared)
+            .Select(value => value.ModelVisibleResponseSha256)
+            .ToHashSet(StringComparer.Ordinal);
+        var followUp = exchanges
+            .Where(value => value.Origin == OperationalMcpExchangeOrigin.FollowUp)
+            .ToArray();
         var report = new OperationalMcpRunReport(
             OperationalMcpProtocolLoader.CurrentRunSchemaVersion,
             OperationalMcpProtocolLoader.ProtocolFingerprint(protocol),
@@ -244,8 +305,16 @@ internal static class OperationalMcpEvaluationRunner
             armOrder,
             gateway?.RequiredEvidenceSequenceCompleted == true,
             investigation,
-            gateway?.Exchanges ?? [],
-            assessment);
+            exchanges,
+            assessment)
+        {
+            PredeclaredToolCalls = exchanges.Count(value =>
+                value.Origin == OperationalMcpExchangeOrigin.Predeclared),
+            FollowUpToolCalls = followUp.Length,
+            FollowUpAddedEvidence = followUp.Any(value =>
+                value.Succeeded
+                && !predeclaredHashes.Contains(value.ModelVisibleResponseSha256)),
+        };
         OperationalMcpJson.Write(Path.Combine(attemptDirectory, "run-report.json"), report);
         return report;
     }
@@ -335,6 +404,16 @@ internal static class OperationalMcpEvaluationRunner
             value.McpExchanges.Sum(exchange => exchange.ModelVisibleResponseBytes));
         var indicatorBytes = indicator.Sum(value =>
             value.McpExchanges.Sum(exchange => exchange.ModelVisibleResponseBytes));
+        var controlTransportBytes = control.Sum(value =>
+            value.Investigation.ModelTransportOutputBytes
+            + value.Assessment.TransportOutputBytes);
+        var indicatorTransportBytes = indicator.Sum(value =>
+            value.Investigation.ModelTransportOutputBytes
+            + value.Assessment.TransportOutputBytes);
+        var controlFollowUp = control.Sum(value => value.FollowUpToolCalls);
+        var indicatorFollowUp = indicator.Sum(value => value.FollowUpToolCalls);
+        var controlAddedEvidence = control.Count(value => value.FollowUpAddedEvidence);
+        var indicatorAddedEvidence = indicator.Count(value => value.FollowUpAddedEvidence);
         var controlSeconds = control.Sum(InvestigationSeconds);
         var indicatorSeconds = indicator.Sum(InvestigationSeconds);
         var controlCompleted = control.Count(value =>
@@ -442,10 +521,20 @@ internal static class OperationalMcpEvaluationRunner
                     indicatorCalls.ToString(CultureInfo.InvariantCulture),
                     "Counts real retained MCP exchanges, including attempts whose final model turn timed out."),
                 Delta(
-                    "model-visible MCP bytes",
+                    "model-visible MCP payload bytes",
                     controlBytes.ToString(CultureInfo.InvariantCulture),
                     indicatorBytes.ToString(CultureInfo.InvariantCulture),
-                    "Response-volume cost is reported separately from diagnostic quality."),
+                    "MCP payload volume is bounded and reported separately from model transport output."),
+                Delta(
+                    "model transport output bytes",
+                    controlTransportBytes.ToString(CultureInfo.InvariantCulture),
+                    indicatorTransportBytes.ToString(CultureInfo.InvariantCulture),
+                    "Diagnosing and assessor transport output is bounded independently from MCP payloads."),
+                Delta(
+                    "follow-up MCP calls",
+                    $"{controlFollowUp}; added evidence in {controlAddedEvidence}/{control.Length} attempts",
+                    $"{indicatorFollowUp}; added evidence in {indicatorAddedEvidence}/{indicator.Length} attempts",
+                    "Follow-up calls are separated from the frozen evaluator-owned evidence sequence."),
                 Delta(
                     "investigation wall seconds",
                     controlSeconds.ToString("F1", CultureInfo.InvariantCulture),
@@ -549,4 +638,33 @@ internal static class OperationalMcpEvaluationRunner
             0,
             (attempt.Investigation.CompletedAtUtc - attempt.Investigation.StartedAtUtc)
             .TotalSeconds);
+
+    private static AgentModelConfiguration AssessorConfiguration(
+        OperationalMcpProtocol protocol,
+        AgentModelConfiguration configuration)
+    {
+        var models = protocol.Models
+            ?? throw new InvalidDataException(
+                "The frozen operational MCP protocol must declare diagnosing and assessor models.");
+        if (!string.Equals(configuration.Provider, models.Provider, StringComparison.Ordinal)
+            || !string.Equals(configuration.Model, models.DiagnosingModel, StringComparison.Ordinal)
+            || !string.Equals(configuration.ContextTier, models.ContextTier, StringComparison.Ordinal)
+            || configuration.MaximumResponseBytes
+                < protocol.Budgets.MaximumModelTransportOutputBytes
+            || configuration.MaximumResponseBytes
+                < protocol.Budgets.MaximumAssessmentTransportOutputBytes)
+        {
+            throw new InvalidOperationException(
+                $"The configured diagnosing model '{configuration.Provider}/{configuration.Model}' "
+                + $"with context '{configuration.ContextTier}' does not match the frozen "
+                + $"'{models.Provider}/{models.DiagnosingModel}' with context '{models.ContextTier}', "
+                + "or its transport response cap is below the frozen protocol budget.");
+        }
+
+        return configuration with
+        {
+            Model = models.AssessorModel,
+            Version = null,
+        };
+    }
 }
